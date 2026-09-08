@@ -282,7 +282,18 @@ async function claimAndExecute(db: DB, runId: string) {
     db,
   });
   expect(claimed?.id).toBe(runId);
-  return executeAiRun(runId);
+  const execution = await executeAiRun(runId);
+  if (execution.state !== 'succeeded') {
+    const [failedRun] = await db
+      .select({ failureClass: aiWorkflowRun.failureClass, lastError: aiWorkflowRun.lastError })
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.id, runId))
+      .limit(1);
+    throw new Error(
+      `existing-document worker ${execution.state}: ${failedRun?.failureClass ?? 'unknown'} ${failedRun?.lastError ?? 'no persisted error'}`,
+    );
+  }
+  return execution;
 }
 
 async function executeDocumentList(

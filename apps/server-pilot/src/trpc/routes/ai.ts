@@ -117,6 +117,8 @@ async function activeQuoteAdmission() {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
+    propertyCode: 'HRCEN',
+    sourceRevision: hmsRelease.sourceRevision,
   };
 }
 
@@ -191,6 +193,13 @@ async function activeLinkedContextAdmission(input: {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
+    propertyCode: 'HRCEN',
+    // The parent Guest Stay receipt is the source authority for a linked
+    // context. Bind to its active revision, not the child tool's revision.
+    sourceRevision:
+      (active.releases.get('hms_find_reservation')?.evidenceKind === 'hms'
+        ? active.releases.get('hms_find_reservation')?.sourceRevision
+        : undefined) ?? resolveHmsSourceRevision(),
   };
 }
 

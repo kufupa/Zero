@@ -6,6 +6,12 @@ import {
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
 import {
+  assertLinkedContextReference,
+  linkedContextReferenceSchema,
+  type LinkedContextReference,
+  type LinkedContextReferenceKind,
+} from './context-read-reference.js';
+import {
   normalizeQuoteRequestFromAuthoredSegment,
   unavailableQuoteReferenceAuthority,
   type QuoteReferenceAuthorityLoader,
@@ -45,6 +51,8 @@ export type ReadAdmissionReleaseInput = {
   releaseId: string;
   requestBranchId: string;
   manifestSha256?: string;
+  propertyCode?: string;
+  sourceRevision?: string;
 };
 
 export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
@@ -395,7 +403,13 @@ async function loadParentFind(input: {
   candidateId: string;
   now: Date;
   db: DB;
-}): Promise<string> {
+  requiredContext?: {
+    kind: LinkedContextReferenceKind;
+    reference: string;
+    propertyCode: string;
+    sourceRevision: string;
+  };
+}): Promise<{ evidenceExpiresAt: string; contextReference: LinkedContextReference | null }> {
   const [parent] = await input.db
     .select()
     .from(aiWorkflowRun)
@@ -462,7 +476,52 @@ async function loadParentFind(input: {
   const parsedResult = reservationFindResultSchema.safeParse(receipt.result);
   if (!parsedResult.success)
     throw authError('READ_PARENT_RESULT_INVALID', 'parent result is not reservation find data');
-  return positiveFindEvidence({ result: parsedResult.data, now: input.now });
+  const evidenceExpiresAt = positiveFindEvidence({ result: parsedResult.data, now: input.now });
+  let contextReference: LinkedContextReference | null = null;
+  if (input.requiredContext) {
+    const metrics =
+      parent.metrics && typeof parent.metrics === 'object'
+        ? (parent.metrics as Record<string, unknown>)
+        : null;
+    const bindings = Array.isArray(metrics?.linkedContextReferences)
+      ? metrics.linkedContextReferences
+          .map((value) => linkedContextReferenceSchema.safeParse(value))
+          .filter(
+            (value): value is { success: true; data: LinkedContextReference } => value.success,
+          )
+          .map((value) => value.data)
+      : [];
+    const candidateBinding = bindings.find(
+      (binding) =>
+        binding.reference === input.requiredContext!.reference &&
+        binding.kind === input.requiredContext!.kind,
+    );
+    if (!candidateBinding) {
+      throw authError(
+        'READ_CONTEXT_REFERENCE_INVALID',
+        'context reference is not a server-owned parent source binding',
+      );
+    }
+    try {
+      contextReference = assertLinkedContextReference({
+        binding: candidateBinding,
+        reference: input.requiredContext.reference,
+        kind: input.requiredContext.kind,
+        parentReadResultRef: input.parentReadResultRef,
+        propertyCode: input.requiredContext.propertyCode,
+        requestBranchId: parsedRequest.data.admission?.requestBranchId ?? '',
+        sourceRevision: input.requiredContext.sourceRevision,
+        now: input.now,
+        maximumExpiry: evidenceExpiresAt,
+      });
+    } catch (error) {
+      throw authError(
+        'READ_CONTEXT_REFERENCE_INVALID',
+        error instanceof Error ? error.message : 'context reference binding is invalid',
+      );
+    }
+  }
+  return { evidenceExpiresAt, contextReference };
 }
 
 /**
@@ -490,6 +549,8 @@ export async function issueReadAdmissionFromMailbox(
     triggerMessageId: trigger.triggerMessageId,
     releaseId: input.releaseId,
     requestBranchId: input.requestBranchId,
+    propertyCode: input.propertyCode ?? process.env.HMS_EXPECTED_PROPERTY_CODE?.trim() ?? 'HRCEN',
+    sourceRevision: input.sourceRevision ?? process.env.NAVA_BUILD_COMMIT?.trim() ?? 'unknown',
     ...(input.manifestSha256 ? { manifestSha256: input.manifestSha256 } : {}),
     ...(input.captureBindingRef ? { captureBindingRef: input.captureBindingRef } : {}),
   };
@@ -562,12 +623,18 @@ export async function issueReadAdmissionFromMailbox(
         'company context read requires an exact candidate, linked reference, and find receipt',
       );
     }
-    const evidenceExpiresAt = await loadParentFind({
+    const parentEvidence = await loadParentFind({
       source,
       parentReadResultRef: input.parentReadResultRef,
       candidateId: trigger.candidateId,
       now,
       db,
+      requiredContext: {
+        kind: 'company',
+        reference: input.reservationRef,
+        propertyCode: source.propertyCode ?? 'HRCEN',
+        sourceRevision: source.sourceRevision ?? 'unknown',
+      },
     });
     issued = issueReadAdmission({
       source,
@@ -575,8 +642,9 @@ export async function issueReadAdmissionFromMailbox(
       toolId: input.toolId,
       candidateId: trigger.candidateId,
       reservationRef: input.reservationRef,
+      contextReference: parentEvidence.contextReference ?? undefined,
       parentReadResultRef: input.parentReadResultRef,
-      evidenceExpiresAt,
+      evidenceExpiresAt: parentEvidence.evidenceExpiresAt,
     });
   } else if (input.toolId === 'hms_group_block_read') {
     if (!trigger.candidateId || !input.groupRef || !input.parentReadResultRef) {
@@ -585,12 +653,18 @@ export async function issueReadAdmissionFromMailbox(
         'group context read requires an exact candidate, linked reference, and find receipt',
       );
     }
-    const evidenceExpiresAt = await loadParentFind({
+    const parentEvidence = await loadParentFind({
       source,
       parentReadResultRef: input.parentReadResultRef,
       candidateId: trigger.candidateId,
       now,
       db,
+      requiredContext: {
+        kind: 'group',
+        reference: input.groupRef,
+        propertyCode: source.propertyCode ?? 'HRCEN',
+        sourceRevision: source.sourceRevision ?? 'unknown',
+      },
     });
     issued = issueReadAdmission({
       source,
@@ -598,9 +672,10 @@ export async function issueReadAdmissionFromMailbox(
       toolId: input.toolId,
       candidateId: trigger.candidateId,
       groupRef: input.groupRef,
+      contextReference: parentEvidence.contextReference ?? undefined,
       sections: input.sections,
       parentReadResultRef: input.parentReadResultRef,
-      evidenceExpiresAt,
+      evidenceExpiresAt: parentEvidence.evidenceExpiresAt,
     });
   } else if (input.toolId === 'hms_event_read') {
     if (!trigger.candidateId || !input.eventRef || !input.parentReadResultRef) {
@@ -609,12 +684,18 @@ export async function issueReadAdmissionFromMailbox(
         'event context read requires an exact candidate, linked reference, and find receipt',
       );
     }
-    const evidenceExpiresAt = await loadParentFind({
+    const parentEvidence = await loadParentFind({
       source,
       parentReadResultRef: input.parentReadResultRef,
       candidateId: trigger.candidateId,
       now,
       db,
+      requiredContext: {
+        kind: 'event',
+        reference: input.eventRef,
+        propertyCode: source.propertyCode ?? 'HRCEN',
+        sourceRevision: source.sourceRevision ?? 'unknown',
+      },
     });
     issued = issueReadAdmission({
       source,
@@ -622,8 +703,9 @@ export async function issueReadAdmissionFromMailbox(
       toolId: input.toolId,
       candidateId: trigger.candidateId,
       eventRef: input.eventRef,
+      contextReference: parentEvidence.contextReference ?? undefined,
       parentReadResultRef: input.parentReadResultRef,
-      evidenceExpiresAt,
+      evidenceExpiresAt: parentEvidence.evidenceExpiresAt,
     });
   } else if (input.toolId === 'hms_read_notes_traces') {
     if (!trigger.candidateId || !input.resourceRef || !input.parentReadResultRef) {
@@ -632,12 +714,18 @@ export async function issueReadAdmissionFromMailbox(
         'notes context read requires an exact candidate, linked reference, and find receipt',
       );
     }
-    const evidenceExpiresAt = await loadParentFind({
+    const parentEvidence = await loadParentFind({
       source,
       parentReadResultRef: input.parentReadResultRef,
       candidateId: trigger.candidateId,
       now,
       db,
+      requiredContext: {
+        kind: 'notes',
+        reference: input.resourceRef,
+        propertyCode: source.propertyCode ?? 'HRCEN',
+        sourceRevision: source.sourceRevision ?? 'unknown',
+      },
     });
     issued = issueReadAdmission({
       source,
@@ -645,12 +733,13 @@ export async function issueReadAdmissionFromMailbox(
       toolId: input.toolId,
       candidateId: trigger.candidateId,
       resourceRef: input.resourceRef,
+      contextReference: parentEvidence.contextReference ?? undefined,
       states: input.states,
       limit: input.limit,
       cursor: input.cursor,
       audience: input.audience,
       parentReadResultRef: input.parentReadResultRef,
-      evidenceExpiresAt,
+      evidenceExpiresAt: parentEvidence.evidenceExpiresAt,
     });
   } else {
     if (!trigger.candidateId) {
@@ -667,13 +756,15 @@ export async function issueReadAdmissionFromMailbox(
           'context read requires a succeeded find receipt',
         );
       }
-      evidenceExpiresAt = await loadParentFind({
-        source,
-        parentReadResultRef: input.parentReadResultRef,
-        candidateId: trigger.candidateId,
-        now,
-        db,
-      });
+      evidenceExpiresAt = (
+        await loadParentFind({
+          source,
+          parentReadResultRef: input.parentReadResultRef,
+          candidateId: trigger.candidateId,
+          now,
+          db,
+        })
+      ).evidenceExpiresAt;
     }
     issued = issueReadAdmission({
       source,

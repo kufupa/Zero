@@ -30,6 +30,12 @@ import {
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
 import {
+  assertLinkedContextReference,
+  linkedContextReferenceSchema,
+  type LinkedContextReference,
+  type LinkedContextReferenceKind,
+} from '../hms/context-read-reference.js';
+import {
   parseEnv,
   requireHmsEvidenceHmacChildKey,
   requireHmsReadRuntimeConfig,
@@ -437,6 +443,8 @@ export type CandidateSessionInput = {
     | import('../hms/read-tools.js').ReadToolId
     | 'hms_read_reservation'
     | 'hms_read_notes_traces';
+  /** Resolved private source value for a server-owned linked context ref. */
+  linkedContextSourceRef?: string;
   /** Closed finance section selection for the optional folio adapter. */
   folioSections?: readonly string[];
   /** Authored quote candidates when hms_quote_stay is active. */
@@ -931,6 +939,7 @@ export function createLiveHmsCandidateSessionFactory(
     const companyAccountRead =
       input.readOnly && companyRelease
         ? async (reservationRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const sourceReservationRef = input.linkedContextSourceRef ?? reservationRef;
             const branch = companyRelease.requestBranches.find(
               (candidate) => candidate.id === 'reservation_linked_company_billing',
             );
@@ -947,7 +956,7 @@ export function createLiveHmsCandidateSessionFactory(
               parentEvidenceId: randomUUID(),
               tools: [{ toolId: 'hms_company_account_read', requestBranchId: branch.id }],
               propertyCode,
-              scopeHash: createHash('sha256').update(reservationRef).digest('hex'),
+              scopeHash: createHash('sha256').update(sourceReservationRef).digest('hex'),
               expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
             })[0]!;
             const authorization = contextAuthorization({
@@ -978,6 +987,7 @@ export function createLiveHmsCandidateSessionFactory(
             _sections: readonly string[],
             signal: AbortSignal,
           ): Promise<ReadResult<unknown>> => {
+            const sourceGroupRef = input.linkedContextSourceRef ?? groupRef;
             const branch = groupRelease.requestBranches.find(
               (candidate) => candidate.id === 'group_block_list',
             );
@@ -992,11 +1002,14 @@ export function createLiveHmsCandidateSessionFactory(
             const startDate = new Date();
             const endDate = new Date(startDate.getTime() + 31 * 86_400_000);
             const candidate: GroupReadCandidate = {
-              id: createHash('sha256').update(`u15-group:${groupRef}`).digest('hex').slice(0, 32),
+              id: createHash('sha256')
+                .update(`u15-group:${sourceGroupRef}`)
+                .digest('hex')
+                .slice(0, 32),
               kind: 'group_block',
-              exactGroupReference: groupRef,
+              exactGroupReference: sourceGroupRef,
               exactGroupReferenceHash: createHash('sha256')
-                .update(`group_ref:${groupRef}`)
+                .update(`group_ref:${sourceGroupRef}`)
                 .digest('hex'),
               startDate: startDate.toISOString().slice(0, 10),
               endDate: endDate.toISOString().slice(0, 10),
@@ -1020,6 +1033,7 @@ export function createLiveHmsCandidateSessionFactory(
                     executionClass: 'normal',
                     inputClass: 'authorized_exact',
                     requestBranchId: branch.id,
+                    sourceRevision: authorization.sourceRevision,
                     roleProofSha256: authorization.roleProofSha256,
                     roleProofExpiresAt: authorization.expiresAt,
                   }
@@ -1031,6 +1045,7 @@ export function createLiveHmsCandidateSessionFactory(
     const eventRead =
       input.readOnly && eventRelease
         ? async (eventRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const sourceEventRef = input.linkedContextSourceRef ?? eventRef;
             const branch = eventRelease.requestBranches.find(
               (candidate) => candidate.id === 'event_list',
             );
@@ -1043,11 +1058,14 @@ export function createLiveHmsCandidateSessionFactory(
                 expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
               });
             const candidate: EventReadCandidate = {
-              id: createHash('sha256').update(`u15-event:${eventRef}`).digest('hex').slice(0, 32),
+              id: createHash('sha256')
+                .update(`u15-event:${sourceEventRef}`)
+                .digest('hex')
+                .slice(0, 32),
               kind: 'event_summary',
-              exactEventReference: eventRef,
+              exactEventReference: sourceEventRef,
               exactEventReferenceHash: createHash('sha256')
-                .update(`event_ref:${eventRef}`)
+                .update(`event_ref:${sourceEventRef}`)
                 .digest('hex'),
             };
             const authorization = contextAuthorization({
@@ -1081,6 +1099,7 @@ export function createLiveHmsCandidateSessionFactory(
             audience: 'staff' | 'customer';
             signal: AbortSignal;
           }): Promise<ReadResult<unknown>> => {
+            const sourceResourceRef = input.linkedContextSourceRef ?? notesInput.resourceRef;
             const branch = notesRelease.requestBranches.find(
               (candidate) => candidate.id === 'notes_traces_list',
             );
@@ -1106,7 +1125,11 @@ export function createLiveHmsCandidateSessionFactory(
                 discoveryOperationId: 'notes_traces_list',
                 requestBranchId: branch.id,
               },
-              { ...notesRequest, states: [...notesInput.states] as ('open' | 'completed')[] },
+              {
+                ...notesRequest,
+                resourceRef: sourceResourceRef,
+                states: [...notesInput.states] as ('open' | 'completed')[],
+              },
               notesSignal,
             );
           }
@@ -1760,7 +1783,9 @@ async function assertCurrentReadAdmissionAuthority(input: {
   request: Record<string, unknown>;
   admission: ReadAdmissionBinding;
   now: Date;
-}): Promise<CurrentAppAccessProof> {
+  expectedPropertyCode: string;
+  expectedSourceRevision: string;
+}): Promise<CurrentAppAccessProof & { contextReference: LinkedContextReference | null }> {
   const metrics =
     input.run.metrics && typeof input.run.metrics === 'object'
       ? (input.run.metrics as Record<string, unknown>)
@@ -1849,7 +1874,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
     if (issuerData.parentReadResultRef !== null || issuerData.evidenceExpiresAt !== null) {
       throw readAdmissionAuthError('find admission unexpectedly carries a parent receipt');
     }
-    return issueCurrentAccess();
+    return Object.assign(issueCurrentAccess(), { contextReference: null });
   }
 
   if (!issuerData.parentReadResultRef || !issuerData.evidenceExpiresAt) {
@@ -1940,7 +1965,64 @@ async function assertCurrentReadAdmissionAuthority(input: {
       'resolved read admission candidate is not bound to the parent receipt',
     );
   }
-  return issueCurrentAccess();
+  let contextReference: LinkedContextReference | null = null;
+  const contextKind: LinkedContextReferenceKind | null =
+    input.request.toolId === 'hms_company_account_read'
+      ? 'company'
+      : input.request.toolId === 'hms_group_block_read'
+        ? 'group'
+        : input.request.toolId === 'hms_event_read'
+          ? 'event'
+          : input.request.toolId === 'hms_read_notes_traces'
+            ? 'notes'
+            : null;
+  if (contextKind) {
+    const parentBindings = Array.isArray(parentMetrics?.linkedContextReferences)
+      ? parentMetrics.linkedContextReferences
+          .map((value) => linkedContextReferenceSchema.safeParse(value))
+          .filter(
+            (value): value is { success: true; data: LinkedContextReference } => value.success,
+          )
+          .map((value) => value.data)
+      : [];
+    const requestedReference = input.admission.reservationRef;
+    const candidateBinding = parentBindings.find(
+      (binding) => binding.reference === requestedReference && binding.kind === contextKind,
+    );
+    if (!candidateBinding || !issuerData.contextReference) {
+      throw readAdmissionAuthError(
+        'resolved linked context reference is not bound to the parent source result',
+      );
+    }
+    try {
+      contextReference = assertLinkedContextReference({
+        binding: candidateBinding,
+        reference: requestedReference ?? '',
+        kind: contextKind,
+        parentReadResultRef: issuerData.parentReadResultRef,
+        propertyCode: input.expectedPropertyCode,
+        requestBranchId: parentRequest.data.admission?.requestBranchId ?? '',
+        sourceRevision: input.expectedSourceRevision,
+        now: input.now,
+        maximumExpiry: evidenceExpiry,
+      });
+      if (
+        issuerData.contextReference.reference !== contextReference.reference ||
+        issuerData.contextReference.sourceRef !== contextReference.sourceRef
+      ) {
+        throw new Error('queued context binding differs from the current parent binding');
+      }
+    } catch (error) {
+      throw readAdmissionAuthError(
+        error instanceof Error
+          ? error.message
+          : 'resolved linked context reference is stale or mismatched',
+      );
+    }
+  } else if (issuerData.contextReference !== null) {
+    throw readAdmissionAuthError('reservation context binding is invalid for this read branch');
+  }
+  return Object.assign(issueCurrentAccess(), { contextReference });
 }
 
 function unavailableU15Result(input: {
@@ -2094,8 +2176,21 @@ async function executeProductionReadTool(input: {
   runtime?: import('../hms/runtime.js').HmsRuntime;
   /** Internal server-owned source seam; absent production source fails closed. */
   quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
-}): Promise<{ result: ReadResult<unknown>; readResultRef: string }> {
+}): Promise<{
+  result: ReadResult<unknown>;
+  readResultRef: string;
+  linkedContextReferences?: import('../hms/context-read-reference.js').LinkedContextReference[];
+}> {
   const request = readRequestSchema.parse(input.run.readRequest);
+  const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
+  // Existing-document reads are DB-backed mail-source reads, not HMS/PMS
+  // browser reads. Keep their release revision applicable without requiring
+  // an HMS build revision; every PMS branch still resolves a concrete HMS
+  // source revision below.
+  const sourceRevision =
+    request.toolId === 'documents_list_existing' || request.toolId === 'documents_read_existing'
+      ? 'mail-existing-documents-v1'
+      : resolveHmsSourceRevision();
   const expectedPropertyCode =
     request.toolId === 'hms_quote_stay'
       ? request.quoteRequest.propertyCode
@@ -2135,6 +2230,8 @@ async function executeProductionReadTool(input: {
     request: request as unknown as Record<string, unknown>,
     admission,
     now: new Date(),
+    expectedPropertyCode,
+    expectedSourceRevision: sourceRevision,
   });
 
   // Mail-document reads revalidate through the DB-backed source adapter and
@@ -2163,6 +2260,7 @@ async function executeProductionReadTool(input: {
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
       propertyCode: 'MAIL',
+      sourceRevision,
       parentRef: input.run.id,
       branchId: admission.requestBranchId,
       releaseId: admission.releaseId,
@@ -2193,7 +2291,13 @@ async function executeProductionReadTool(input: {
         resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
       }),
     );
-    return { result: receipt.result, readResultRef: receipt.readResultRef };
+    return {
+      result: receipt.result,
+      readResultRef: receipt.readResultRef,
+      ...(receipt.linkedContextReferences.length > 0
+        ? { linkedContextReferences: receipt.linkedContextReferences }
+        : {}),
+    };
   }
 
   if (request.toolId === 'hms_quote_stay') {
@@ -2377,6 +2481,7 @@ async function executeProductionReadTool(input: {
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
       propertyCode: request.quoteRequest.propertyCode,
+      sourceRevision,
       parentRef: input.run.id,
       branchId: admission.requestBranchId,
       releaseId: admission.releaseId,
@@ -2448,6 +2553,7 @@ async function executeProductionReadTool(input: {
       readOnly: true,
       readAdmission: admission,
       readToolId: request.toolId,
+      linkedContextSourceRef: currentAppAccessProof.contextReference?.sourceRef,
     });
     const propertyReadLock = session.propertyReadLock;
     if (!propertyReadLock) {
@@ -2476,6 +2582,7 @@ async function executeProductionReadTool(input: {
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
       propertyCode: expectedPropertyCode,
+      sourceRevision,
       parentRef: input.run.id,
       branchId: admission.requestBranchId,
       releaseId: admission.releaseId,
@@ -2507,7 +2614,10 @@ async function executeProductionReadTool(input: {
           ? {
               readCompanyAccount: async ({ reservationRef }: { reservationRef: string }) =>
                 session.readCompanyAccount
-                  ? session.readCompanyAccount(reservationRef, input.signal)
+                  ? session.readCompanyAccount(
+                      currentAppAccessProof.contextReference?.sourceRef ?? reservationRef,
+                      input.signal,
+                    )
                   : fallback(),
             }
           : {}),
@@ -2521,14 +2631,23 @@ async function executeProductionReadTool(input: {
                 sections: readonly string[];
               }) =>
                 session.readGroupBlock
-                  ? session.readGroupBlock(groupRef, sections, input.signal)
+                  ? session.readGroupBlock(
+                      currentAppAccessProof.contextReference?.sourceRef ?? groupRef,
+                      sections,
+                      input.signal,
+                    )
                   : fallback(),
             }
           : {}),
         ...(request.toolId === 'hms_event_read'
           ? {
               readEvent: async ({ eventRef }: { eventRef: string }) =>
-                session.readEvent ? session.readEvent(eventRef, input.signal) : fallback(),
+                session.readEvent
+                  ? session.readEvent(
+                      currentAppAccessProof.contextReference?.sourceRef ?? eventRef,
+                      input.signal,
+                    )
+                  : fallback(),
             }
           : {}),
         ...(request.toolId === 'hms_read_notes_traces'
@@ -2548,7 +2667,7 @@ async function executeProductionReadTool(input: {
               }) =>
                 session.readNotesTraces
                   ? session.readNotesTraces({
-                      resourceRef,
+                      resourceRef: currentAppAccessProof.contextReference?.sourceRef ?? resourceRef,
                       states,
                       limit,
                       cursor,
@@ -2944,6 +3063,7 @@ async function executeProductionReadTool(input: {
     threadId: input.run.threadId,
     triggerMessageId: input.run.triggerMessageId,
     propertyCode: expectedPropertyCode,
+    sourceRevision,
     parentRef: input.run.id,
     branchId: admission.requestBranchId,
     releaseId: admission.releaseId,
@@ -3004,7 +3124,13 @@ async function executeProductionReadTool(input: {
         resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
       });
     });
-    return { result: receipt.result, readResultRef: receipt.readResultRef };
+    return {
+      result: receipt.result,
+      readResultRef: receipt.readResultRef,
+      ...(receipt.linkedContextReferences.length > 0
+        ? { linkedContextReferences: receipt.linkedContextReferences }
+        : {}),
+    };
   } finally {
     await session.close?.();
   }
@@ -3022,7 +3148,11 @@ export async function executeAiRun(
       run: typeof aiWorkflowRun.$inferSelect;
       fence: AiRunFence;
       signal: AbortSignal;
-    }) => Promise<{ result: ReadResult<unknown>; readResultRef: string }>;
+    }) => Promise<{
+      result: ReadResult<unknown>;
+      readResultRef: string;
+      linkedContextReferences?: import('../hms/context-read-reference.js').LinkedContextReference[];
+    }>;
     /** Lower browser/PMS edge substitution for normal release-bound proof. */
     hmsRuntime?: import('../hms/runtime.js').HmsRuntime;
     /** Internal server-owned current quote authority; absent source fails closed. */
@@ -3114,20 +3244,36 @@ export async function executeAiRun(
       const read = await executor({ run, fence, signal });
       const readResultRef = run.readResultRef ?? read.readResultRef;
       if (!readResultRef) throw new Error('read_tool result reference missing');
+      const readResult: ReadResult<unknown> =
+        read.result.toolId === 'hms_find_reservation' &&
+        read.linkedContextReferences &&
+        read.linkedContextReferences.length > 0
+          ? (readResultSchema.parse({
+              ...read.result,
+              linkedContextRefs: read.linkedContextReferences.map((binding) => ({
+                kind: binding.kind,
+                reference: binding.reference,
+                expiresAt: binding.expiresAt,
+              })),
+            }) as ReadResult<unknown>)
+          : read.result;
       const marked = await markAiRunSucceeded({
         runId,
         claimOwner: owner,
         claimToken,
         expectedStates: ['running'],
         readResultRef,
-        readResult: read.result,
-        readResultExpiresAt: readResultExpiry(read.result, fence.deadlineAt),
+        readResult,
+        readResultExpiresAt: readResultExpiry(readResult, fence.deadlineAt),
         metrics: {
           readTool: true,
           status: read.result.status,
           schemaVersion: read.result.schemaVersion,
           modelId: 'not_applicable',
           promptVersion: run.promptVersion,
+          ...(read.linkedContextReferences && read.linkedContextReferences.length > 0
+            ? { linkedContextReferences: read.linkedContextReferences }
+            : {}),
         },
       });
       return { runId, state: marked ? 'succeeded' : 'retry_wait' };

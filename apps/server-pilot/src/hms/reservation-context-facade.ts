@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   reservationContextReadResultSchema,
   reservationContextSections,
@@ -14,6 +13,8 @@ import {
   type ReadFact,
   type ReadSection,
 } from './read-service-contracts.js';
+import type { LinkedContextReferenceKind } from './context-read-reference.js';
+import { randomUUID } from 'node:crypto';
 
 export interface ReservationContextLookup {
   transportId: string;
@@ -39,21 +40,49 @@ export interface ReservationRow {
   reservationStatus: string | null;
   roomType: string | null;
   ratePlan: string | null;
+  /** Explicit source adapter output; arbitrary row keys never mint context authority. */
+  linkedContextRefs?: Partial<Record<LinkedContextReferenceKind, string>>;
   [key: string]: unknown;
 }
 
 export type ReservationLookupResult =
-  | { status: 'matched'; row: ReservationRow; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
-  | { status: 'ambiguous'; rows: ReservationRow[]; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
-  | { status: 'not_found'; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
-  | { status: 'unverified_negative'; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string };
+  | {
+      status: 'matched';
+      row: ReservationRow;
+      evidenceRef?: string;
+      observedAt?: Date | string;
+      expiresAt?: Date | string;
+    }
+  | {
+      status: 'ambiguous';
+      rows: ReservationRow[];
+      evidenceRef?: string;
+      observedAt?: Date | string;
+      expiresAt?: Date | string;
+    }
+  | {
+      status: 'not_found';
+      evidenceRef?: string;
+      observedAt?: Date | string;
+      expiresAt?: Date | string;
+    }
+  | {
+      status: 'unverified_negative';
+      evidenceRef?: string;
+      observedAt?: Date | string;
+      expiresAt?: Date | string;
+    };
 
 export type ReservationContextLookupFn = (
   input: ReservationContextLookup,
 ) => Promise<ReservationLookupResult>;
 
 export type ReservationContextReader = (
-  input: ReservationContextLookup & { reservationRef: string; sections: ReservationContextSection[]; detail?: 'summary' | 'detail' },
+  input: ReservationContextLookup & {
+    reservationRef: string;
+    sections: ReservationContextSection[];
+    detail?: 'summary' | 'detail';
+  },
   row: ReservationRow,
 ) => Promise<Partial<Record<ReservationContextSection, unknown>>>;
 
@@ -72,6 +101,13 @@ type FacadeOptions = {
   readContext: ReservationContextReader;
   /** Trusted worker binding for a persisted, opaque reservation reference. */
   reservationRefFor?: (input: ReservationContextLookup, row: ReservationRow) => string;
+  /** Emit only explicit source-linked U15 references to the trusted executor seam. */
+  linkedContextReferenceSink?: (input: {
+    kind: LinkedContextReferenceKind;
+    sourceRef: string;
+    observedAt: Date | string;
+    expiresAt: Date | string;
+  }) => void;
 };
 
 function iso(value: Date | string): string {
@@ -88,7 +124,12 @@ function safeRef(): string {
   return `resref_${randomUUID()}`;
 }
 
-function evidence(ref: string, input: ReservationContextLookup, observedAt: Date | string, expiresAt: Date | string) {
+function evidence(
+  ref: string,
+  input: ReservationContextLookup,
+  observedAt: Date | string,
+  expiresAt: Date | string,
+) {
   return {
     evidenceRef: readRefSchema.parse(ref),
     sourceSystem: 'hms' as const,
@@ -137,7 +178,12 @@ function matchFor(
   return {
     reservationRef,
     // Ambiguous rows must not expose guest names or a selectable identifier.
-    label: fact(ambiguous ? 'reservation match' : 'reservation match', evidenceRef, observedAt, expiresAt),
+    label: fact(
+      ambiguous ? 'reservation match' : 'reservation match',
+      evidenceRef,
+      observedAt,
+      expiresAt,
+    ),
     referenceKind: fact(referenceKind, evidenceRef, observedAt, expiresAt),
     status: fact(row.reservationStatus, evidenceRef, observedAt, expiresAt),
     arrival: fact(row.arrivalDate, evidenceRef, observedAt, expiresAt),
@@ -194,7 +240,12 @@ function normalizeSectionData(
   if (section === 'core') {
     return {
       confirmation: retainFact(value('confirmation', row.confirmationNumber), ev, at, until),
-      externalReference: retainFact(value('externalReference', row.externalReference), ev, at, until),
+      externalReference: retainFact(
+        value('externalReference', row.externalReference),
+        ev,
+        at,
+        until,
+      ),
       status: retainFact(value('reservationStatus', row.reservationStatus), ev, at, until),
       guestRefs: retainFact(value('guestRefs'), ev, at, until),
       organizationRef: retainFact(value('organizationRef'), ev, at, until),
@@ -233,11 +284,30 @@ export function createReservationContextFacade(options: FacadeOptions) {
     const observedAt = result.observedAt ?? input.observedAt;
     const expiresAt = result.expiresAt ?? input.expiresAt;
     const evidenceRef = result.evidenceRef ?? `hms-evidence-${randomUUID()}`;
-    const rows = result.status === 'matched' ? [result.row] : result.status === 'ambiguous' ? result.rows : [];
+    const rows =
+      result.status === 'matched' ? [result.row] : result.status === 'ambiguous' ? result.rows : [];
     const matches = rows.map((row) => {
-      if (result.status !== 'matched') return matchFor(row, input, null, evidenceRef, observedAt, expiresAt, true);
+      if (result.status !== 'matched')
+        return matchFor(row, input, null, evidenceRef, observedAt, expiresAt, true);
       const reservationRef = options.reservationRefFor?.(input, row) ?? safeRef();
       readRefSchema.parse(reservationRef);
+      const linkedContextRefs = row.linkedContextRefs;
+      if (linkedContextRefs) {
+        for (const [kind, sourceRef] of Object.entries(linkedContextRefs)) {
+          if (
+            (kind === 'company' || kind === 'group' || kind === 'event' || kind === 'notes') &&
+            typeof sourceRef === 'string' &&
+            sourceRef.length > 0
+          ) {
+            options.linkedContextReferenceSink?.({
+              kind,
+              sourceRef,
+              observedAt,
+              expiresAt,
+            });
+          }
+        }
+      }
       bindings.set(reservationRef, {
         reservationRef,
         lookup: input,
@@ -251,13 +321,14 @@ export function createReservationContextFacade(options: FacadeOptions) {
     const response = {
       toolId: 'hms_find_reservation' as const,
       schemaVersion: 'reservation-find/1' as const,
-      status: result.status === 'matched'
-        ? 'ok' as const
-        : result.status === 'ambiguous'
-          ? 'ambiguous' as const
-          : result.status === 'unverified_negative'
-            ? 'unverified_negative' as const
-            : 'not_found' as const,
+      status:
+        result.status === 'matched'
+          ? ('ok' as const)
+          : result.status === 'ambiguous'
+            ? ('ambiguous' as const)
+            : result.status === 'unverified_negative'
+              ? ('unverified_negative' as const)
+              : ('not_found' as const),
       data: { matches, matchCount: matches.length, capped: false },
       completeness: 'complete' as const,
       unavailableSections: [],
@@ -274,7 +345,13 @@ export function createReservationContextFacade(options: FacadeOptions) {
     return reservationFindResultSchema.parse(response);
   }
 
-  async function readReservation(input: ReservationContextLookup & { reservationRef: string; sections: ReservationContextSection[]; detail?: 'summary' | 'detail' }) {
+  async function readReservation(
+    input: ReservationContextLookup & {
+      reservationRef: string;
+      sections: ReservationContextSection[];
+      detail?: 'summary' | 'detail';
+    },
+  ) {
     let ref: string;
     try {
       ref = readRefSchema.parse(input.reservationRef);
@@ -282,22 +359,43 @@ export function createReservationContextFacade(options: FacadeOptions) {
       throw errorWithCode('RESERVATION_REF_NOT_FOUND', 'reservation reference is not known');
     }
     const binding = bindings.get(ref);
-    if (!binding) throw errorWithCode('RESERVATION_REF_NOT_FOUND', 'reservation reference is not known');
+    if (!binding)
+      throw errorWithCode('RESERVATION_REF_NOT_FOUND', 'reservation reference is not known');
     const expiry = Date.parse(iso(binding.expiresAt));
     if (!Number.isFinite(expiry) || options.now().getTime() >= expiry) {
       bindings.delete(ref);
       throw errorWithCode('RESERVATION_REF_EXPIRED', 'reservation reference has expired');
     }
-    const sameScope = ['transportId', 'mailboxId', 'threadId', 'triggerMessageId', 'parentRef', 'branchId', 'propertyCode']
-      .every((key) => input[key as keyof ReservationContextLookup] === binding.lookup[key as keyof ReservationContextLookup]);
-    if (!sameScope) throw errorWithCode('RESERVATION_REF_BINDING_MISMATCH', 'reservation reference scope does not match');
+    const sameScope = [
+      'transportId',
+      'mailboxId',
+      'threadId',
+      'triggerMessageId',
+      'parentRef',
+      'branchId',
+      'propertyCode',
+    ].every(
+      (key) =>
+        input[key as keyof ReservationContextLookup] ===
+        binding.lookup[key as keyof ReservationContextLookup],
+    );
+    if (!sameScope)
+      throw errorWithCode(
+        'RESERVATION_REF_BINDING_MISMATCH',
+        'reservation reference scope does not match',
+      );
 
     const sections = [...new Set(input.sections)] as ReservationContextSection[];
     const rawSections = await options.readContext(input, binding.row);
     const data = {} as Record<ReservationContextSection, ReadSection<unknown>>;
     for (const section of reservationContextSections) {
       if (!sections.includes(section)) {
-        data[section] = { state: 'not_requested', data: null, reasonCode: 'NOT_REQUESTED', issues: [] };
+        data[section] = {
+          state: 'not_requested',
+          data: null,
+          reasonCode: 'NOT_REQUESTED',
+          issues: [],
+        };
       } else {
         data[section] = requestedSection(section, rawSections[section], binding.row, binding);
       }
@@ -308,7 +406,12 @@ export function createReservationContextFacade(options: FacadeOptions) {
         section,
         reasonCode: (data[section] as unknown as { reasonCode: never }).reasonCode,
       }));
-    const status = unavailableSections.length === 0 ? 'ok' : unavailableSections.length === sections.length ? 'partial' : 'partial';
+    const status =
+      unavailableSections.length === 0
+        ? 'ok'
+        : unavailableSections.length === sections.length
+          ? 'partial'
+          : 'partial';
     return reservationContextReadResultSchema.parse({
       toolId: 'hms_read_reservation' as const,
       schemaVersion: 'reservation-context/1',
@@ -317,7 +420,9 @@ export function createReservationContextFacade(options: FacadeOptions) {
       completeness: unavailableSections.length === 0 ? 'complete' : 'partial',
       unavailableSections,
       scopeRef: ref,
-      evidence: [evidence(binding.evidenceRef, binding.lookup, binding.observedAt, binding.expiresAt)],
+      evidence: [
+        evidence(binding.evidenceRef, binding.lookup, binding.observedAt, binding.expiresAt),
+      ],
       page: null,
       issues: unavailableSections.length ? [readIssue('SOURCE_UNAVAILABLE', 'manual_review')] : [],
     });

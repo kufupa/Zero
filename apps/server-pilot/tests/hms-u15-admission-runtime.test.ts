@@ -1,4 +1,5 @@
 import { assertReadAdmissionIssuer, issueReadAdmission } from '../src/hms/read-admission.js';
+import { mintLinkedContextReference } from '../src/hms/context-read-reference.js';
 import { createLiveHmsCandidateSessionFactory } from '../src/ai/worker.js';
 import { readRequestSchema } from '../src/hms/read-service.js';
 import { describe, expect, it } from 'vitest';
@@ -12,12 +13,28 @@ const source = {
   triggerMessageId: 'message-u15',
   releaseId: 'release-u15',
   requestBranchId: 'u15-context',
+  propertyCode: 'HRCEN',
+  sourceRevision: 'u15-test-source',
   manifestSha256: 'a'.repeat(64),
   captureBindingRef: 'result-u15',
 };
 const companyReservationRef = 'reservation-u15';
 
 describe('U15 normal admission and queue boundary', () => {
+  it('does not mint a linked context admission from a caller-selected business reference', () => {
+    expect(() =>
+      issueReadAdmission({
+        source,
+        now,
+        toolId: 'hms_group_block_read',
+        candidateId: 'candidate-u15',
+        groupRef: 'GROUP-CALLER-SELECTED',
+        parentReadResultRef: 'find-result-u15',
+        evidenceExpiresAt: new Date('2026-09-08T12:04:00.000Z'),
+      }),
+    ).toThrow(/server-owned|context reference|linked/i);
+  });
+
   it.each([
     {
       toolId: 'hms_company_account_read' as const,
@@ -41,6 +58,30 @@ describe('U15 normal admission and queue boundary', () => {
       },
     },
   ])('binds $toolId to the exact parent/read reference', ({ toolId, request }) => {
+    const contextReference = mintLinkedContextReference({
+      kind:
+        toolId === 'hms_company_account_read'
+          ? 'company'
+          : toolId === 'hms_group_block_read'
+            ? 'group'
+            : toolId === 'hms_event_read'
+              ? 'event'
+              : 'notes',
+      sourceRef:
+        toolId === 'hms_company_account_read'
+          ? request.reservationRef
+          : toolId === 'hms_group_block_read'
+            ? request.groupRef
+            : toolId === 'hms_event_read'
+              ? request.eventRef
+              : request.resourceRef,
+      parentReadResultRef: 'find-result-u15',
+      propertyCode: 'HRCEN',
+      requestBranchId: source.requestBranchId,
+      sourceRevision: source.sourceRevision,
+      issuedAt: now,
+      expiresAt: new Date('2026-09-08T12:04:00.000Z'),
+    });
     const issued = issueReadAdmission({
       source,
       now,
@@ -49,13 +90,14 @@ describe('U15 normal admission and queue boundary', () => {
       parentReadResultRef: 'find-result-u15',
       evidenceExpiresAt: new Date('2026-09-08T12:04:00.000Z'),
       ...(toolId === 'hms_company_account_read'
-        ? { reservationRef: request.reservationRef }
+        ? { reservationRef: request.reservationRef, contextReference }
         : toolId === 'hms_group_block_read'
-          ? { groupRef: request.groupRef, sections: request.sections }
+          ? { groupRef: request.groupRef, contextReference, sections: request.sections }
           : toolId === 'hms_event_read'
-            ? { eventRef: request.eventRef }
+            ? { eventRef: request.eventRef, contextReference }
             : {
                 resourceRef: request.resourceRef,
+                contextReference,
                 states: request.states,
                 limit: request.limit,
                 audience: request.audience,
@@ -68,12 +110,12 @@ describe('U15 normal admission and queue boundary', () => {
     expect(parsed.admission?.captureBindingRef).toBe('result-u15');
     expect(parsed.admission?.reservationRef).toBe(
       toolId === 'hms_company_account_read'
-        ? request.reservationRef
+        ? contextReference.reference
         : toolId === 'hms_group_block_read'
-          ? request.groupRef
+          ? contextReference.reference
           : toolId === 'hms_event_read'
-            ? request.eventRef
-            : request.resourceRef,
+            ? contextReference.reference
+            : contextReference.reference,
     );
     expect(
       assertReadAdmissionIssuer({

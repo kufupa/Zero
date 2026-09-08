@@ -35,6 +35,11 @@ import {
   type ReservationRow,
 } from './reservation-context-facade.js';
 import {
+  mintLinkedContextReference,
+  type LinkedContextReference,
+  type LinkedContextReferenceKind,
+} from './context-read-reference.js';
+import {
   assertCurrentAppAccessProof,
   assertReadRequesterScope,
   type CurrentAppAccessProof,
@@ -165,6 +170,15 @@ export interface ReadExecutionContext {
   /** Production worker paths must carry server-authenticated current app access. */
   requireCurrentAppAccess?: boolean;
   currentAppAccessProof?: CurrentAppAccessProof;
+  /** Trusted source-row seam used only while minting parent-linked context refs. */
+  linkedContextReferenceSink?: (input: {
+    kind: LinkedContextReferenceKind;
+    sourceRef: string;
+    observedAt: Date | string;
+    expiresAt: Date | string;
+  }) => void;
+  /** Exact source revision joined to any parent-linked context refs. */
+  sourceRevision?: string;
   /** Trusted producer requests available to the opaque quote tool facade. */
   quoteRequests?: ReadonlyMap<string, QuoteRequest>;
 }
@@ -195,6 +209,8 @@ const executionKeys = new Set([
   'readResultRef',
   'requireCurrentAppAccess',
   'currentAppAccessProof',
+  'linkedContextReferenceSink',
+  'sourceRevision',
   'quoteRequests',
 ]);
 
@@ -604,6 +620,7 @@ async function dispatchRead(
     const facade = createReservationContextFacade({
       now: context.now,
       lookup: async (input) => normalizeHandlerResult(await handler(input)),
+      linkedContextReferenceSink: context.linkedContextReferenceSink,
       readContext: async (input, row) => {
         if (!context.handlers?.readReservation)
           return {
@@ -754,6 +771,7 @@ export async function executeReadToolRun(input: ReadToolRunInput): Promise<{
   promptVersion: typeof READ_CONTRACT_VERSION;
   readResultRef: string;
   result: ReadResult<unknown>;
+  linkedContextReferences: LinkedContextReference[];
 }> {
   if (input.runKind !== 'read_tool')
     throw codedError('READ_RUN_KIND_INVALID', 'run is not a read_tool run');
@@ -761,11 +779,35 @@ export async function executeReadToolRun(input: ReadToolRunInput): Promise<{
     throw codedError('READ_EXECUTOR_LANE_INVALID', 'read_tool must run on the HMS lane');
   if (input.draftingEnabled)
     throw codedError('READ_DRAFTING_DEPENDENCY', 'read_tool cannot depend on drafting');
-  const result = await executeRead(input.context, input.request);
+  const linkedContextReferences: LinkedContextReference[] = [];
+  const existingSink = input.context.linkedContextReferenceSink;
+  const context: ReadExecutionContext = {
+    ...input.context,
+    linkedContextReferenceSink: (linked) => {
+      existingSink?.(linked);
+      try {
+        linkedContextReferences.push(
+          mintLinkedContextReference({
+            ...linked,
+            parentReadResultRef: input.resultRef,
+            propertyCode: input.context.propertyCode,
+            requestBranchId: input.context.branchId,
+            sourceRevision: input.context.sourceRevision ?? 'unknown',
+            issuedAt: input.context.now(),
+            expiresAt: linked.expiresAt,
+          }),
+        );
+      } catch {
+        // Invalid or unreviewed source refs never become context authority.
+      }
+    },
+  };
+  const result = await executeRead(context, input.request);
   return {
     modelId: NOT_APPLICABLE_MODEL_ID,
     promptVersion: READ_CONTRACT_VERSION,
     readResultRef: readRefSchema.parse(input.resultRef),
     result: readResultSchema.parse(result) as ReadResult<unknown>,
+    linkedContextReferences,
   };
 }

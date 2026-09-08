@@ -44,16 +44,16 @@ export type GroupBlockListParse = {
   bytesObserved: number;
 };
 
-const GROUP_REF_KEYS = [
-  'groupbookingreferencenumber',
-  'groupreference',
-  'groupref',
-  'groupcode',
-  'groupid',
-] as const;
-const STATUS_KEYS = ['groupstatus', 'status', 'state'] as const;
-const START_DATE_KEYS = ['startdate', 'fromdate', 'begindate', 'arrivaldate'] as const;
-const END_DATE_KEYS = ['enddate', 'todate', 'finishdate', 'departuredate'] as const;
+/**
+ * These are the only semantic fields retained by the reviewed GSGRPB.LST
+ * list surface.  Case and scalar `{ value }` wrappers vary in the transport;
+ * business aliases do not.  In particular, `groupcode`, `state`, `fromdate`,
+ * and `arrivaldate` are not interchangeable evidence for this reader.
+ */
+const GROUP_REF_KEYS = ['groupbookingreferencenumber'] as const;
+const STATUS_KEYS = ['status'] as const;
+const START_DATE_KEYS = ['startdate'] as const;
+const END_DATE_KEYS = ['enddate'] as const;
 
 function parseHmsDate(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -168,19 +168,6 @@ function sourceRoot(text: string): Record<string, unknown> | null {
   return null;
 }
 
-function dataRows(value: unknown, key = ''): Record<string, unknown>[] {
-  if (Array.isArray(value)) {
-    if (key.toLowerCase() === 'data') {
-      return value.filter((item): item is Record<string, unknown> =>
-        Boolean(item && typeof item === 'object' && !Array.isArray(item)),
-      );
-    }
-    return value.flatMap((item) => dataRows(item));
-  }
-  if (!value || typeof value !== 'object') return [];
-  return Object.entries(value).flatMap(([childKey, child]) => dataRows(child, childKey));
-}
-
 function rowValue(row: Record<string, unknown>, keys: readonly string[]): unknown {
   const lower = new Map(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value]));
   for (const key of keys) {
@@ -195,11 +182,39 @@ function rowValue(row: Record<string, unknown>, keys: readonly string[]): unknow
   return null;
 }
 
+function objectValue(value: unknown, key: string): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entry = Object.entries(value).find(([candidate]) => candidate.toLowerCase() === key);
+  return entry && entry[1] && typeof entry[1] === 'object' && !Array.isArray(entry[1])
+    ? (entry[1] as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Resolve only the retained response envelope:
+ * pageData → grid → GRIDRESULT → GRID → DATA.
+ * A generic object containing a DATA array is deliberately not a group-list
+ * response, even when one row happens to resemble the reviewed fields.
+ */
+function reviewedDataRows(root: Record<string, unknown>): Record<string, unknown>[] | null {
+  const pageData = objectValue(root, 'pagedata') ?? root;
+  const grid = objectValue(pageData, 'grid');
+  const gridResult = grid ? objectValue(grid, 'gridresult') : null;
+  const resultGrid = gridResult ? objectValue(gridResult, 'grid') : null;
+  if (!resultGrid) return null;
+  const dataEntry = Object.entries(resultGrid).find(([key]) => key.toLowerCase() === 'data');
+  if (!dataEntry || !Array.isArray(dataEntry[1])) return null;
+  return dataEntry[1].filter((item): item is Record<string, unknown> =>
+    Boolean(item && typeof item === 'object' && !Array.isArray(item)),
+  );
+}
+
 /** Parse only the reviewed GSGRPB.LST identity/status/date fields. */
 export function parseGroupBlockListTransport(text: string): GroupBlockListParse {
   const root = sourceRoot(text);
-  const rows = root
-    ? dataRows(root).flatMap((row) => {
+  const envelopeRows = root ? reviewedDataRows(root) : null;
+  const rows = envelopeRows
+    ? envelopeRows.flatMap((row) => {
         const rawRef = rowValue(row, GROUP_REF_KEYS);
         if (typeof rawRef !== 'string' || rawRef.trim() === '') return [];
         return [
@@ -213,7 +228,7 @@ export function parseGroupBlockListTransport(text: string): GroupBlockListParse 
       })
     : [];
   return {
-    envelopeRecognized: Boolean(root && /GRIDRESULT|pageData/i.test(text)),
+    envelopeRecognized: envelopeRows !== null,
     rows,
     bytesObserved: Buffer.byteLength(text, 'utf8'),
   };
@@ -453,6 +468,7 @@ export type LiveGroupBlockDriverOptions = {
 function finalizedGroupReceipt(
   session: { lastReceipt?: () => HmsBrowserArtifactReceiptV1 | null },
   auditSpec: HmsBrowserAuditSpec | undefined,
+  authorization: HmsSessionAuthorization,
   requestBranchId: string,
 ): HmsBrowserArtifactReceiptV1 | null {
   if (!auditSpec || typeof session.lastReceipt !== 'function') return null;
@@ -462,22 +478,66 @@ function finalizedGroupReceipt(
   } catch {
     return null;
   }
+  const isDigest = (value: unknown): value is string =>
+    typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  const isTimestamp = (value: unknown): value is string =>
+    typeof value === 'string' && Number.isFinite(Date.parse(value));
+  const isCount = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const completeArtifact =
+    receipt &&
+    receipt.artifactState === 'complete' &&
+    typeof receipt.artifactId === 'string' &&
+    receipt.artifactId.length > 0 &&
+    typeof receipt.trace === 'object' &&
+    receipt.trace !== null &&
+    isDigest(receipt.trace.sha256) &&
+    isCount(receipt.trace.bytes) &&
+    (receipt.video === null ||
+      (typeof receipt.video === 'object' &&
+        receipt.video !== null &&
+        isDigest(receipt.video.sha256) &&
+        isCount(receipt.video.bytes)));
+  const safetyCountersAreZero =
+    receipt &&
+    isCount(receipt.blockedRequests) &&
+    receipt.blockedRequests === 0 &&
+    isCount(receipt.mutationRequests) &&
+    receipt.mutationRequests === 0 &&
+    isCount(receipt.popupCount) &&
+    receipt.popupCount === 0 &&
+    isCount(receipt.downloadCount) &&
+    receipt.downloadCount === 0 &&
+    isCount(receipt.webSocketCount) &&
+    receipt.webSocketCount === 0 &&
+    Array.isArray(receipt.requestRules) &&
+    receipt.requestRules.every(
+      (rule) =>
+        !!rule && typeof rule.ruleId === 'string' && rule.ruleId.length > 0 && isCount(rule.count),
+    );
   if (
     !receipt ||
-    receipt.artifactState !== 'complete' ||
-    typeof receipt.artifactId !== 'string' ||
-    receipt.artifactId.length === 0 ||
+    receipt.schemaVersion !== 1 ||
+    !completeArtifact ||
     receipt.operationId !== auditSpec.operationId ||
     receipt.toolId !== auditSpec.toolId ||
     receipt.toolVersion !== auditSpec.toolVersion ||
+    receipt.dependencyRevision !== auditSpec.dependencyRevision ||
+    !auditSpec.sourceRevision ||
+    receipt.sourceRevision !== auditSpec.sourceRevision ||
     receipt.executionClass !== auditSpec.executionClass ||
     receipt.inputClass !== auditSpec.inputClass ||
+    receipt.credentialMode !== 'view_only' ||
     receipt.roleProofSha256 !== (auditSpec.roleProofSha256 ?? null) ||
     receipt.roleProofExpiresAt !== (auditSpec.roleProofExpiresAt ?? null) ||
     receipt.requestBranchId !== requestBranchId ||
     receipt.operationOutcome !== 'succeeded' ||
-    !Number.isFinite(Date.parse(receipt.expiresAt)) ||
-    Date.parse(receipt.expiresAt) <= Date.now()
+    receipt.terminalCode !== 'OK' ||
+    receipt.terminalStage !== 'tool' ||
+    !isTimestamp(receipt.expiresAt) ||
+    Date.parse(receipt.expiresAt) <= Date.now() ||
+    Date.parse(authorization.expiresAt) <= Date.now() ||
+    !safetyCountersAreZero
   ) {
     return null;
   }
@@ -570,6 +630,17 @@ export async function observeGroupBlockContext(
     }
     const parsed = parseGroupBlockListTransport(transport);
     const sourceHash = sha256Hex(transport);
+    if (!parsed.envelopeRecognized) {
+      await close('unverified_negative', 'UNVERIFIED_NEGATIVE');
+      return groupContextUnavailable({
+        groupRef: candidate.exactGroupReference,
+        reasonCode: 'SURFACE_UNPROVEN',
+        observedAt,
+        expiresAt,
+        sourceHash,
+        manifestSha256: authorization.manifestSha256,
+      });
+    }
     const exactRows = parsed.rows.filter(
       (row) => row.groupRef === candidate.exactGroupReference.toUpperCase(),
     );
@@ -600,6 +671,7 @@ export async function observeGroupBlockContext(
     const receipt = finalizedGroupReceipt(
       session,
       options.auditSpec,
+      authorization,
       authorization.requestBranchId,
     );
     if (!receipt) {
@@ -624,8 +696,25 @@ export async function observeGroupBlockContext(
           toolId: receipt.toolId,
           toolVersion: receipt.toolVersion,
           requestBranchId: receipt.requestBranchId,
+          dependencyRevision: receipt.dependencyRevision,
+          sourceRevision: receipt.sourceRevision,
+          executionClass: receipt.executionClass,
+          inputClass: receipt.inputClass,
+          credentialMode: receipt.credentialMode,
+          roleProofSha256: receipt.roleProofSha256,
+          roleProofExpiresAt: receipt.roleProofExpiresAt,
           operationOutcome: receipt.operationOutcome,
+          terminalCode: receipt.terminalCode,
+          terminalStage: receipt.terminalStage,
+          requestRules: receipt.requestRules,
+          blockedRequests: receipt.blockedRequests,
+          mutationRequests: receipt.mutationRequests,
+          popupCount: receipt.popupCount,
+          downloadCount: receipt.downloadCount,
+          webSocketCount: receipt.webSocketCount,
           expiresAt: receipt.expiresAt,
+          trace: receipt.trace,
+          video: receipt.video,
         },
       }),
     );

@@ -45,6 +45,8 @@ export type HmsBrowserAuditSpec = {
   toolId: HmsReadToolId;
   toolVersion: string;
   dependencyRevision: string;
+  /** Exact source revision expected in the finalized capture receipt. */
+  sourceRevision?: string;
   executionClass: HmsExecutionClass;
   inputClass: 'authorized_exact' | 'synthetic_not_found';
   roleProofSha256?: string;

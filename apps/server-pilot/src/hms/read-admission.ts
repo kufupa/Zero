@@ -19,6 +19,11 @@ import {
   type DocumentsReadReadRequest,
   type ReadAdmission,
 } from './read-service-contracts.js';
+import {
+  assertLinkedContextReference,
+  linkedContextReferenceSchema,
+  type LinkedContextReference,
+} from './context-read-reference.js';
 import { HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS } from './browser-artifacts.js';
 import type { QuoteRequest } from './quote-request-normalization.js';
 import { randomUUID } from 'node:crypto';
@@ -93,6 +98,10 @@ export type ReadAdmissionSource = {
   triggerMessageId: string;
   releaseId: string;
   requestBranchId: string;
+  /** Configured property joined to a server-owned context binding. */
+  propertyCode?: string;
+  /** Concrete source revision joined to a server-owned context binding. */
+  sourceRevision?: string;
   /** Independently reviewed manifest digest for the exact release branch. */
   manifestSha256?: string;
   /** Private read-result reference that the browser artifact must join. */
@@ -124,6 +133,7 @@ export type ReadAdmissionIssuer = ReadAdmissionIssuerMarker & {
   readonly reservationRef: string | null;
   readonly reservationRefIssuedAt: string | null;
   readonly reservationRefExpiresAt: string | null;
+  readonly contextReference: LinkedContextReference | null;
   readonly inputDigest: string;
   readonly manifestSha256: string | null;
 };
@@ -142,6 +152,7 @@ export const persistedReadAdmissionIssuerSchema = z
     reservationRef: readIssuerRefSchema.nullable(),
     reservationRefIssuedAt: readTimestampSchema.nullable(),
     reservationRefExpiresAt: readTimestampSchema.nullable(),
+    contextReference: linkedContextReferenceSchema.nullable(),
     inputDigest: z.string().regex(/^[a-f0-9]{64}$/),
     manifestSha256: readDigestSchema.nullable(),
   })
@@ -191,6 +202,8 @@ type ContextIssueReadAdmissionInput = {
   limit?: number;
   cursor?: string;
   audience?: 'staff' | 'customer';
+  /** Server-owned mapping resolved from the exact positive parent source. */
+  contextReference?: LinkedContextReference;
   parentReadResultRef?: string;
   evidenceExpiresAt?: Date | string;
 };
@@ -230,6 +243,7 @@ function createIssuerTicket(input: {
   reservationRef: string | null;
   reservationRefIssuedAt: string | null;
   reservationRefExpiresAt: string | null;
+  contextReference: LinkedContextReference | null;
   manifestSha256: string | null;
 }): ReadAdmissionIssuer {
   const source = input.source;
@@ -246,6 +260,7 @@ function createIssuerTicket(input: {
     reservationRef: input.reservationRef,
     reservationRefIssuedAt: input.reservationRefIssuedAt,
     reservationRefExpiresAt: input.reservationRefExpiresAt,
+    contextReference: input.contextReference,
     inputDigest: input.inputDigest,
     manifestSha256: input.manifestSha256,
   };
@@ -305,6 +320,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   let reservationRefExpiresAt: string | null = null;
   let evidenceExpiresAt: string | null = null;
   let parentReadResultRef: string | null = null;
+  let contextReference: LinkedContextReference | null = null;
 
   if (input.toolId === 'hms_read_reservation' || input.toolId === 'hms_read_folio') {
     if (candidateId === null) {
@@ -353,17 +369,32 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     }
     reservationRefIssuedAt = now.toISOString();
     reservationRefExpiresAt = new Date(expiresAtMs).toISOString();
-    const contextRef =
+    const contextKind =
       contextInput.toolId === 'hms_company_account_read'
-        ? contextInput.reservationRef
+        ? 'company'
         : contextInput.toolId === 'hms_group_block_read'
-          ? contextInput.groupRef
+          ? 'group'
           : contextInput.toolId === 'hms_event_read'
-            ? contextInput.eventRef
-            : contextInput.resourceRef;
-    reservationRef = requiredRef(contextRef ?? '', 'context reference');
+            ? 'event'
+            : 'notes';
+    if (!contextInput.contextReference) {
+      throw new Error('linked context admission requires a server-owned context reference');
+    }
+    contextReference = assertLinkedContextReference({
+      binding: contextInput.contextReference,
+      reference: contextInput.contextReference.reference,
+      kind: contextKind,
+      parentReadResultRef,
+      propertyCode: source.propertyCode ?? 'HRCEN',
+      requestBranchId: contextInput.contextReference.requestBranchId,
+      sourceRevision: source.sourceRevision ?? 'unknown',
+      now,
+      maximumExpiry: reservationRefExpiresAt,
+    });
+    reservationRef = contextReference.reference;
   }
 
+  const contextInput = input as ContextIssueReadAdmissionInput;
   let closedRequest: Record<string, unknown>;
   if (input.toolId === 'documents_list_existing' || input.toolId === 'documents_read_existing') {
     if ('admission' in input.request) {
@@ -384,32 +415,28 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     });
     closedRequest = parsedRequest;
   } else if (input.toolId === 'hms_company_account_read') {
-    const contextInput = input as ContextIssueReadAdmissionInput;
     closedRequest = companyAccountReadRequestSchema.omit({ admission: true }).parse({
       toolId: input.toolId,
-      reservationRef: requiredRef(contextInput.reservationRef ?? '', 'reservationRef'),
+      reservationRef: requiredRef(contextReference?.reference ?? '', 'reservationRef'),
     });
   } else if (input.toolId === 'hms_group_block_read') {
-    const contextInput = input as ContextIssueReadAdmissionInput;
     closedRequest = groupBlockReadRequestSchema.omit({ admission: true }).parse({
       toolId: input.toolId,
-      groupRef: requiredRef(contextInput.groupRef ?? '', 'groupRef'),
+      groupRef: requiredRef(contextReference?.reference ?? '', 'groupRef'),
       sections: [...(contextInput.sections ?? ['summary'])],
     });
   } else if (input.toolId === 'hms_event_read') {
-    const contextInput = input as ContextIssueReadAdmissionInput;
     closedRequest = eventReadRequestSchema.omit({ admission: true }).parse({
       toolId: input.toolId,
-      eventRef: requiredRef(contextInput.eventRef ?? '', 'eventRef'),
+      eventRef: requiredRef(contextReference?.reference ?? '', 'eventRef'),
     });
   } else if (input.toolId === 'hms_read_notes_traces') {
-    const contextInput = input as ContextIssueReadAdmissionInput;
     closedRequest = notesTracesReadRequestSchema
       .innerType()
       .omit({ admission: true })
       .parse({
         toolId: input.toolId,
-        resourceRef: requiredRef(contextInput.resourceRef ?? '', 'resourceRef'),
+        resourceRef: requiredRef(contextReference?.reference ?? '', 'resourceRef'),
         states: [...(contextInput.states ?? ['open'])],
         limit: contextInput.limit ?? 20,
         ...(contextInput.cursor ? { cursor: contextInput.cursor } : {}),
@@ -446,6 +473,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     reservationRef,
     reservationRefIssuedAt,
     reservationRefExpiresAt,
+    contextReference,
     manifestSha256,
   });
   const issuer = createIssuerTicket({
@@ -456,6 +484,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     reservationRef,
     reservationRefIssuedAt,
     reservationRefExpiresAt,
+    contextReference,
     manifestSha256,
   });
   return {
@@ -482,6 +511,7 @@ export function persistReadAdmissionIssuer(
     reservationRef: issuer.reservationRef,
     reservationRefIssuedAt: issuer.reservationRefIssuedAt,
     reservationRefExpiresAt: issuer.reservationRefExpiresAt,
+    contextReference: issuer.contextReference,
     inputDigest: issuer.inputDigest,
     manifestSha256: issuer.manifestSha256,
   });
@@ -545,7 +575,8 @@ export function assertPersistedReadAdmissionIssuer(input: {
       data.evidenceExpiresAt !== null ||
       data.reservationRef !== null ||
       data.reservationRefIssuedAt !== null ||
-      data.reservationRefExpiresAt !== null
+      data.reservationRefExpiresAt !== null ||
+      data.contextReference !== null
     ) {
       throw new Error('find admission issuer provenance is not find-only');
     }
@@ -593,13 +624,34 @@ export function assertReadAdmissionIssuer(input: {
   ) {
     throw new Error('read_tool admission issuer window is not bound to the request');
   }
+  const requestToolId = input.request.toolId;
+  if (typeof requestToolId !== 'string') {
+    throw new Error('read_tool admission issuer request has no tool id');
+  }
+  const contextTools = new Set([
+    'hms_company_account_read',
+    'hms_group_block_read',
+    'hms_event_read',
+    'hms_read_notes_traces',
+  ]);
+  if (contextTools.has(requestToolId)) {
+    if (
+      !persisted.contextReference ||
+      persisted.contextReference.reference !== persisted.reservationRef ||
+      persisted.contextReference.parentReadResultRef !== persisted.parentReadResultRef
+    ) {
+      throw new Error('linked context admission issuer is missing its server-owned binding');
+    }
+  } else if (persisted.contextReference !== null) {
+    throw new Error('non-context admission unexpectedly carries a linked context binding');
+  }
   if (
-    (input.request.toolId === 'hms_read_reservation' ||
-      input.request.toolId === 'hms_read_folio' ||
-      input.request.toolId === 'hms_company_account_read' ||
-      input.request.toolId === 'hms_group_block_read' ||
-      input.request.toolId === 'hms_event_read' ||
-      input.request.toolId === 'hms_read_notes_traces') &&
+    (requestToolId === 'hms_read_reservation' ||
+      requestToolId === 'hms_read_folio' ||
+      requestToolId === 'hms_company_account_read' ||
+      requestToolId === 'hms_group_block_read' ||
+      requestToolId === 'hms_event_read' ||
+      requestToolId === 'hms_read_notes_traces') &&
     !persisted.parentReadResultRef
   ) {
     throw new Error('resolved read_tool admission requires a parent typed receipt');

@@ -24,6 +24,10 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import {
+  linkedContextReferenceSchema,
+  type LinkedContextReference,
+} from '../src/hms/context-read-reference.js';
+import {
   extractLookupCandidates,
   filterExactReservationCandidates,
 } from '../src/ai/thread-context.js';
@@ -152,7 +156,7 @@ async function createAuditedGroupRuntime(transport: string): Promise<{
             outcome: options?.outcome ?? 'failed',
             terminalCode: options?.terminalCode ?? 'TOOL_ERROR',
             terminalStage: 'tool',
-            sourceRevision: 'u15-db-synthetic',
+            sourceRevision: input.auditSpec.sourceRevision ?? 'unknown',
             playwrightRevision: '1.52.0',
             chromiumRevision: '1169',
             requestRules: [],
@@ -544,6 +548,12 @@ function syntheticMatchedRead(
           departureDate: '2026-09-12',
           roomType: 'STD',
           ratePlan: null,
+          linkedContextRefs: {
+            company: 'CONF-RED',
+            group: 'GROUP-U15',
+            event: 'EVENT-U15',
+            notes: 'RESOURCE-U15',
+          },
         },
       ],
       matchCount: 1,
@@ -854,7 +864,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             syntheticMatchedRead('evidence-route-find', '2099-09-07T12:05:00.000Z'),
           ),
         });
-        expect(findExecution.state).toBe('succeeded');
+        if (findExecution.state !== 'succeeded') {
+          const [failedRun] = await db
+            .select({
+              lastError: aiWorkflowRun.lastError,
+              failureClass: aiWorkflowRun.failureClass,
+            })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, find.runId))
+            .limit(1);
+          throw new Error(
+            `find execution failed: ${failedRun?.failureClass ?? 'unknown'} ${failedRun?.lastError ?? 'no error'}`,
+          );
+        }
         expect(modelRuntime).not.toHaveBeenCalled();
         const findReceipt = await caller.ai.readHmsReceipt({
           threadId: context.threadId,
@@ -1017,6 +1039,98 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           }),
         ).toMatchObject({ state: 'succeeded' });
 
+        const parentReceipt = await caller.ai.readHmsReceipt({
+          threadId: context.threadId,
+          readResultRef: find.readResultRef,
+        });
+        const publicLinkedContextRefs = parentReceipt.result.linkedContextRefs ?? [];
+        expect(publicLinkedContextRefs).toHaveLength(4);
+        for (const binding of publicLinkedContextRefs) {
+          expect(Object.keys(binding).sort()).toEqual(['expiresAt', 'kind', 'reference']);
+          expect(Date.parse(binding.expiresAt)).toBeGreaterThan(Date.now());
+        }
+
+        const [parentAfterFind] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, find.runId))
+          .limit(1);
+        if (!parentAfterFind) throw new Error('U15 parent run was not retained');
+        const parentMetrics =
+          parentAfterFind.metrics && typeof parentAfterFind.metrics === 'object'
+            ? (parentAfterFind.metrics as Record<string, unknown>)
+            : {};
+        const linkedContextReferences = Array.isArray(parentMetrics.linkedContextReferences)
+          ? parentMetrics.linkedContextReferences
+              .map((value) => linkedContextReferenceSchema.safeParse(value))
+              .filter(
+                (value): value is { success: true; data: LinkedContextReference } => value.success,
+              )
+              .map((value) => value.data)
+          : [];
+        expect(linkedContextReferences).toHaveLength(4);
+        for (const binding of linkedContextReferences) {
+          expect(binding.parentReadResultRef).toBe(find.readResultRef);
+          expect(binding.propertyCode).toBe('HRCEN');
+          expect(binding.requestBranchId).toBe('guest_stay_search');
+          expect(binding.sourceRef).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+        }
+        const contextReferenceFor = (kind: 'company' | 'group' | 'event' | 'notes') => {
+          const binding = publicLinkedContextRefs.find((value) => value.kind === kind);
+          if (!binding) throw new Error(`missing synthetic ${kind} parent binding`);
+          return binding.reference;
+        };
+        const companyContextReference = contextReferenceFor('company');
+        const groupContextReference = contextReferenceFor('group');
+        const eventContextReference = contextReferenceFor('event');
+        const notesContextReference = contextReferenceFor('notes');
+
+        const mutatedQueuedGroup = await caller.ai.enqueueHmsGroupRead({
+          threadId: context.threadId,
+          findResultRef: find.readResultRef,
+          groupRef: groupContextReference,
+          sections: ['summary'],
+        });
+        const [mutatedQueuedRow] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, mutatedQueuedGroup.runId))
+          .limit(1);
+        if (!mutatedQueuedRow) throw new Error('mutated queued group run was not retained');
+        const mutatedRequest = mutatedQueuedRow.readRequest as Record<string, unknown>;
+        const mutatedAdmission = mutatedRequest.admission as Record<string, unknown>;
+        await db
+          .update(aiWorkflowRun)
+          .set({
+            readRequest: {
+              ...mutatedRequest,
+              groupRef: companyContextReference,
+              admission: {
+                ...mutatedAdmission,
+                reservationRef: companyContextReference,
+                contextReference: {
+                  ...(mutatedAdmission.contextReference as Record<string, unknown>),
+                  reference: companyContextReference,
+                },
+              },
+            },
+          })
+          .where(eq(aiWorkflowRun.id, mutatedQueuedGroup.runId));
+        expect(
+          await claimNextAiRun({
+            ownerId: 'u15-review-worker',
+            lane: 'hms',
+            runKind: 'read_tool',
+            db,
+          }),
+        ).toMatchObject({ id: mutatedQueuedGroup.runId });
+        const openReadSession = vi.fn();
+        const mutatedExecution = await executeAiRun(mutatedQueuedGroup.runId, {
+          hmsRuntime: { openReadSession } as never,
+        });
+        expect(mutatedExecution.state).toBe('dead_letter');
+        expect(openReadSession).not.toHaveBeenCalled();
+
         const syntheticGroupTransport = JSON.stringify({
           pageData: {
             grid: {
@@ -1043,7 +1157,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             run: await caller.ai.enqueueHmsCompanyRead({
               threadId: context.threadId,
               findResultRef: find.readResultRef,
-              reservationRef: 'CONF-RED',
+              reservationRef: companyContextReference,
             }),
             expected: {
               status: 'manual_required',
@@ -1058,7 +1172,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             run: await caller.ai.enqueueHmsGroupRead({
               threadId: context.threadId,
               findResultRef: find.readResultRef,
-              groupRef: 'GROUP-U15',
+              groupRef: groupContextReference,
               sections: ['summary', 'blocks', 'delegates'],
             }),
             expected: {
@@ -1085,7 +1199,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             run: await caller.ai.enqueueHmsEventRead({
               threadId: context.threadId,
               findResultRef: find.readResultRef,
-              eventRef: 'EVENT-U15',
+              eventRef: eventContextReference,
             }),
             expected: {
               status: 'manual_required',
@@ -1102,7 +1216,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             run: await caller.ai.enqueueHmsNotesRead({
               threadId: context.threadId,
               findResultRef: find.readResultRef,
-              resourceRef: 'RESOURCE-U15',
+              resourceRef: notesContextReference,
               states: ['open', 'completed'],
               limit: 20,
               audience: 'customer',

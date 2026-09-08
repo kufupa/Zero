@@ -49,6 +49,114 @@ function candidate(overrides: Partial<GroupReadCandidate> = {}): GroupReadCandid
   return { ...parsed, ...overrides };
 }
 
+function auditSpecForReceipt() {
+  return {
+    operationId: randomUUID(),
+    toolId: 'hms_group_block_read' as const,
+    toolVersion: '1.0.0',
+    dependencyRevision: 'playwright-1.52.0-chromium-1169',
+    sourceRevision: 'test-rev',
+    executionClass: 'normal' as const,
+    inputClass: 'authorized_exact' as const,
+    requestBranchId: 'group_block_list',
+    roleProofSha256: 'b'.repeat(64),
+    roleProofExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+}
+
+function completeReceiptFor(
+  auditSpec: ReturnType<typeof auditSpecForReceipt>,
+): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    artifactState: 'complete',
+    artifactId: 'group-artifact-receipt-matrix',
+    operationId: auditSpec.operationId,
+    sourceRevision: auditSpec.sourceRevision,
+    toolId: auditSpec.toolId,
+    toolVersion: auditSpec.toolVersion,
+    dependencyRevision: auditSpec.dependencyRevision,
+    playwrightRevision: '1.52.0',
+    chromiumRevision: '1169',
+    executionClass: auditSpec.executionClass,
+    inputClass: auditSpec.inputClass,
+    credentialMode: 'view_only',
+    roleProofSha256: auditSpec.roleProofSha256,
+    roleProofExpiresAt: auditSpec.roleProofExpiresAt,
+    requestBranchId: auditSpec.requestBranchId,
+    operationOutcome: 'succeeded',
+    requestRules: [],
+    blockedRequests: 0,
+    mutationRequests: 0,
+    popupCount: 0,
+    downloadCount: 0,
+    webSocketCount: 0,
+    milestones: {},
+    terminalCode: 'OK',
+    terminalStage: 'tool',
+    expiresAt: '2099-09-07T12:05:00.000Z',
+    trace: { sha256: 'a'.repeat(64), bytes: 1 },
+    video: null,
+  };
+}
+
+function groupRuntimeForReceipt(transport: string, receipt: Record<string, unknown>) {
+  const postForm = vi.fn(async (url: string) => (url.endsWith('GSGRPB.LST') ? transport : ''));
+  return {
+    openReadSession: vi.fn(async () => ({
+      origin: ORIGIN,
+      page: {
+        postForm,
+        waitForCorrelatedResponse: vi.fn(async () => undefined),
+        content: vi.fn(async () => transport),
+      },
+      terminal: () => false,
+      violation: () => null,
+      close: vi.fn(async () => undefined),
+      lastReceipt: () => receipt as never,
+    })),
+  };
+}
+
+const receiptMutations: readonly {
+  label: string;
+  mutate: (receipt: Record<string, unknown>) => void;
+}[] = [
+  { label: 'missing schema version', mutate: (receipt) => delete receipt.schemaVersion },
+  { label: 'incomplete artifact state', mutate: (receipt) => (receipt.artifactState = 'staging') },
+  { label: 'missing artifact identity', mutate: (receipt) => (receipt.artifactId = '') },
+  { label: 'source revision mismatch', mutate: (receipt) => (receipt.sourceRevision = 'other') },
+  {
+    label: 'dependency revision mismatch',
+    mutate: (receipt) => (receipt.dependencyRevision = 'other'),
+  },
+  {
+    label: 'write-capable credentials',
+    mutate: (receipt) => (receipt.credentialMode = 'write_capable'),
+  },
+  { label: 'role proof mismatch', mutate: (receipt) => (receipt.roleProofSha256 = 'c'.repeat(64)) },
+  { label: 'wrong request branch', mutate: (receipt) => (receipt.requestBranchId = 'event_list') },
+  { label: 'failed operation outcome', mutate: (receipt) => (receipt.operationOutcome = 'failed') },
+  { label: 'unsafe terminal code', mutate: (receipt) => (receipt.terminalCode = 'TOOL_ERROR') },
+  {
+    label: 'expired artifact',
+    mutate: (receipt) => (receipt.expiresAt = '2020-01-01T00:00:00.000Z'),
+  },
+  {
+    label: 'malformed trace digest',
+    mutate: (receipt) => (receipt.trace = { sha256: 'bad', bytes: 1 }),
+  },
+  { label: 'unsafe blocked request', mutate: (receipt) => (receipt.blockedRequests = 1) },
+  { label: 'unsafe mutation request', mutate: (receipt) => (receipt.mutationRequests = 1) },
+  { label: 'popup event', mutate: (receipt) => (receipt.popupCount = 1) },
+  { label: 'download event', mutate: (receipt) => (receipt.downloadCount = 1) },
+  { label: 'websocket event', mutate: (receipt) => (receipt.webSocketCount = 1) },
+  {
+    label: 'malformed request-rule count',
+    mutate: (receipt) => (receipt.requestRules = [{ ruleId: 'list', count: -1 }]),
+  },
+];
+
 describe('group read candidate parser', () => {
   it('parses exact reference + bounded dates', () => {
     const c = parseGroupReadCandidateFromAuthoredSegment(
@@ -125,6 +233,46 @@ describe('live group block aggregate (blocked counts)', () => {
     expect(JSON.stringify(parsed)).not.toContain('Private');
   });
 
+  it('rejects generic DATA payloads and semantic aliases as source evidence', () => {
+    const generic = parseGroupBlockListTransport(
+      JSON.stringify({
+        DATA: [
+          {
+            groupcode: 'G-100',
+            state: 'Tentative',
+            fromdate: '2026-09-01',
+            todate: '2026-09-03',
+          },
+        ],
+      }),
+    );
+    expect(generic.envelopeRecognized).toBe(false);
+    expect(generic.rows).toEqual([]);
+
+    const aliasDrift = parseGroupBlockListTransport(
+      JSON.stringify({
+        pageData: {
+          grid: {
+            GRIDRESULT: {
+              GRID: {
+                DATA: [
+                  {
+                    groupcode: 'G-100',
+                    status: 'Tentative',
+                    startdate: '01-SEP-2026',
+                    enddate: '03-SEP-2026',
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+    expect(aliasDrift.envelopeRecognized).toBe(true);
+    expect(aliasDrift.rows).toEqual([]);
+  });
+
   it('returns source-bound summary facts while keeping counts and delegates unavailable', async () => {
     const transport = JSON.stringify({
       pageData: {
@@ -151,6 +299,7 @@ describe('live group block aggregate (blocked counts)', () => {
       toolId: 'hms_group_block_read' as const,
       toolVersion: '1.0.0',
       dependencyRevision: 'playwright-1.52.0-chromium-1169',
+      sourceRevision: 'test-rev',
       executionClass: 'normal' as const,
       inputClass: 'authorized_exact' as const,
       requestBranchId: 'group_block_list',
@@ -158,19 +307,35 @@ describe('live group block aggregate (blocked counts)', () => {
       roleProofExpiresAt: auth().expiresAt,
     };
     const receipt = {
+      schemaVersion: 1 as const,
       artifactState: 'complete' as const,
       artifactId: 'group-artifact-1',
       operationId: auditSpec.operationId,
+      sourceRevision: auditSpec.sourceRevision,
       toolId: auditSpec.toolId,
       toolVersion: auditSpec.toolVersion,
       dependencyRevision: auditSpec.dependencyRevision,
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
       executionClass: auditSpec.executionClass,
       inputClass: auditSpec.inputClass,
+      credentialMode: 'view_only' as const,
       roleProofSha256: auditSpec.roleProofSha256,
       roleProofExpiresAt: auditSpec.roleProofExpiresAt,
       requestBranchId: auditSpec.requestBranchId,
       operationOutcome: 'succeeded' as const,
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      milestones: {},
+      terminalCode: 'OK' as const,
+      terminalStage: 'tool' as const,
       expiresAt: '2099-09-07T12:05:00.000Z',
+      trace: { sha256: 'a'.repeat(64), bytes: 1 },
+      video: null,
     } as never;
     const runtime = {
       openReadSession: vi.fn(async () => ({
@@ -244,6 +409,39 @@ describe('live group block aggregate (blocked counts)', () => {
     expect(JSON.stringify(result)).not.toContain('inquiryClass');
     expect(JSON.stringify(result)).not.toContain('contactfirstname');
     expect(JSON.stringify(result)).not.toContain('rooming');
+  });
+
+  it.each(receiptMutations)('rejects a finalized receipt with %s', async ({ mutate }) => {
+    const transport = JSON.stringify({
+      pageData: {
+        grid: {
+          GRIDRESULT: {
+            GRID: {
+              DATA: [
+                {
+                  groupbookingreferencenumber: 'G-100',
+                  status: 'Tentative',
+                  startdate: '01-SEP-2026',
+                  enddate: '03-SEP-2026',
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const auditSpec = auditSpecForReceipt();
+    const receipt = completeReceiptFor(auditSpec);
+    mutate(receipt);
+    const result = await createLiveGroupBlockDriver({
+      runtime: groupRuntimeForReceipt(transport, receipt) as never,
+      transportId: 'transport-u15',
+      auditSpec,
+    }).observeGroupBlockContext(auth(), candidate(), new AbortController().signal);
+
+    expect(result.status).toBe('manual_required');
+    expect(result.data?.summary).toMatchObject({ state: 'unavailable' });
+    expect(result.evidence[0]?.scopeVerified).toBe(false);
   });
 
   it('rejects stale / cross-tool / unknown branch / hash mismatch', async () => {

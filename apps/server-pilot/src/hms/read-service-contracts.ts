@@ -7,6 +7,10 @@ import {
   documentsListExistingInputSchema,
   documentsReadExistingInputSchema,
 } from '../mail/artifacts/existing-document-contracts.js';
+import {
+  linkedContextReferencePublicSchema,
+  linkedContextReferenceSchema,
+} from './context-read-reference.js';
 import { quoteRequestSchema } from './quote-request-normalization.js';
 import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { createHash } from 'node:crypto';
@@ -41,6 +45,8 @@ export const readAdmissionSchema = z
     /** Issuance window carried by the trusted reservation admission. */
     reservationRefIssuedAt: readTimestampSchema.nullable(),
     reservationRefExpiresAt: readTimestampSchema.nullable(),
+    /** Private server-owned source binding; absent only for legacy/non-context requests. */
+    contextReference: linkedContextReferenceSchema.nullable().optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -620,6 +626,8 @@ const readResultSchemaBase = z
     evidence: z.array(readEvidenceSchema),
     page: readPageSchema.nullable(),
     issues: z.array(readIssueSchema),
+    /** Opaque child capabilities published only by a successful parent find. */
+    linkedContextRefs: z.array(linkedContextReferencePublicSchema).max(4).optional(),
   })
   .strict();
 
