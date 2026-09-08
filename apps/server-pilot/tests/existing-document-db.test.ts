@@ -30,6 +30,8 @@ type ExistingDocumentListInput = {
   threadId: string;
   source: 'mail_attachment' | 'hms_sent_attachment';
   kind?: 'tax_invoice';
+  limit?: number;
+  cursor?: string;
   requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
 };
 
@@ -65,6 +67,7 @@ type ExistingDocumentReadData = {
     retrievalBlocker?: string | null;
   } | null;
   artifactRef?: string | null;
+  sourceHash?: string | null;
 };
 
 type ExistingDocumentCaller = {
@@ -591,6 +594,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
         expect(read.result.status).toBe('manual_required');
         expect(read.result.issues?.[0]?.code).toMatch(/SOURCE_UNAVAILABLE|UNSUPPORTED_FORMAT/);
         expect(read.result.data?.text).toBeNull();
+        expect(read.result.data?.sourceHash ?? null).toBeNull();
+      }),
+    );
+  }, 30000);
+
+  it('does not expose a hash when a listed object is truncated before read', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+        await getS3Storage().putObject({
+          key: `attachments/${fixture.messageId}/000-synthetic-tax-invoice-v1.txt`,
+          body: DOCUMENT_BYTES.subarray(0, DOCUMENT_BYTES.byteLength - 1),
+          contentType: 'text/plain',
+        });
+
+        const read = await executeDocumentRead(db, caller, {
+          threadId: fixture.threadId,
+          documentRef: documentRef!,
+          format: 'text',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.data?.sourceHash ?? null).toBeNull();
+        expect(read.result.data?.text).toBeNull();
       }),
     );
   }, 30000);
@@ -754,6 +790,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
         const caller = (await authenticatedCaller(db)) as unknown as {
           ai: ExistingDocumentCaller;
         };
+        let storageReads = 0;
+        const storage = getS3Storage();
+        const originalGetObjectBounded = storage.getObjectBounded.bind(storage);
+        storage.getObjectBounded = async (key, maxBytes, signal) => {
+          storageReads += 1;
+          return originalGetObjectBounded(key, maxBytes, signal);
+        };
         const sent = await caller.ai.enqueueExistingDocumentList({
           threadId: fixture.threadId,
           source: 'hms_sent_attachment',
@@ -769,6 +812,46 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
           retrievable: false,
           retrievalBlocker: 'METADATA_ONLY',
         });
+        expect(storageReads).toBe(0);
+      }),
+    );
+  }, 30000);
+
+  it('hashes only the requested page before list I/O and preserves continuation', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        for (let index = 0; index < 50; index += 1) {
+          await addDocumentMessageWithAttachment(db, {
+            threadId: fixture.threadId,
+            messageId: `u9-large-message-${index}-${randomUUID()}`,
+            attachmentId: `u9-large-attachment-${index}-${randomUUID()}`,
+            direction: 'inbound',
+            observedAt: new Date(OBSERVED_AT.getTime() - (index + 1) * 60 * 1000),
+            filename: `large-tax-invoice-${index}.txt`,
+            textBody: `Large thread document ${index}.`,
+            bytes: DOCUMENT_BYTES,
+          });
+        }
+        const storage = getS3Storage();
+        let storageReads = 0;
+        const originalGetObjectBounded = storage.getObjectBounded.bind(storage);
+        storage.getObjectBounded = async (key, maxBytes, signal) => {
+          storageReads += 1;
+          return originalGetObjectBounded(key, maxBytes, signal);
+        };
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          limit: 1,
+        });
+        expect(listed.result.status).toBe('ok');
+        expect(listed.result.data?.documents).toHaveLength(1);
+        expect(listed.result.data?.page.hasMore).toBe(true);
+        expect(listed.result.data?.page.nextCursor).toMatch(/^doc:/);
+        expect(storageReads).toBe(1);
       }),
     );
   }, 30000);

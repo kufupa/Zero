@@ -595,12 +595,13 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
       sourceOutcomes: [sourceOutcome],
     });
 
+    const boundedBlocker = page.blocker?.startsWith('LIST_') ? page.blocker : null;
     if (selected.length === 0 && page.inventoryComplete !== true) {
       return {
-        status: 'unverified_negative',
+        status: boundedBlocker ? 'partial' : 'unverified_negative',
         data,
-        blocker: 'INVENTORY_INCOMPLETE',
-        issues: [issue('INVENTORY_INCOMPLETE')],
+        blocker: boundedBlocker ?? 'INVENTORY_INCOMPLETE',
+        issues: [issue(boundedBlocker ?? 'INVENTORY_INCOMPLETE')],
       };
     }
     return {
@@ -608,9 +609,9 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
       // metadata response; its inability to provide bytes is represented by
       // each row's retrievalBlocker and the source outcome, not hidden as a
       // failed list call.
-      status: 'ok',
+      status: boundedBlocker ? 'partial' : 'ok',
       data,
-      blocker: null,
+      blocker: boundedBlocker,
       issues: page.blocker ? [issue(page.blocker)] : [],
     };
   }
@@ -724,7 +725,11 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
         blocker: 'SOURCE_UNAVAILABLE',
       });
     }
-    const sourceHash = result.evidence.sourceHash;
+    const sourceHash =
+      typeof result.evidence.sourceHash === 'string' &&
+      /^[a-f0-9]{64}$/i.test(result.evidence.sourceHash)
+        ? result.evidence.sourceHash
+        : null;
     if (result.status !== 'ok' || !result.data.text) {
       const blocker = extractionBlocker(result.data.reason);
       return manualRead({
@@ -734,7 +739,7 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
         blocker,
         extractionState: result.data.reason === 'unsupported' ? 'unsupported' : 'partial',
         pageCount: result.data.pageCount,
-        sourceHash: /^[a-f0-9]{64}$/i.test(sourceHash) ? sourceHash : null,
+        sourceHash,
       });
     }
     if (entry.record.sha256 && sourceHash !== entry.record.sha256) {

@@ -36,7 +36,16 @@ export type ArtifactData = {
   reason: ArtifactReason;
 };
 
-export type ArtifactReadResult = ToolResult<ArtifactData>;
+type MailArtifactEvidence = Omit<
+  Extract<ToolResult<ArtifactData>['evidence'], { kind: 'mail_attachment' }>,
+  'sourceHash'
+> & {
+  sourceHash: string | null;
+};
+
+export type ArtifactReadResult = Omit<ToolResult<ArtifactData>, 'evidence'> & {
+  evidence: MailArtifactEvidence;
+};
 
 export type AttachmentLocator = {
   /** Server-resolved only; never from model. */
@@ -117,7 +126,7 @@ function normalizeUtf8Text(raw: string): string {
 
 function emptyEvidence(
   attachmentId: string,
-  sourceHash: string,
+  sourceHash: string | null,
   now: Date,
 ): ArtifactReadResult['evidence'] {
   return {
@@ -136,7 +145,7 @@ function manualResult(args: {
   attachmentId: string;
   mimeType: 'text/plain' | 'application/pdf';
   reason: ArtifactReason;
-  sourceHash: string;
+  sourceHash: string | null;
   pageCount?: number | null;
   now: Date;
   unresolvedFields?: string[];
@@ -337,7 +346,7 @@ export async function extractEmbeddedPdfText(
       attachmentId,
       mimeType,
       reason: 'too_large',
-      sourceHash: sha256Hex(source.body.subarray(0, Math.min(source.body.byteLength, 64))),
+      sourceHash: null,
       now,
     });
   }
@@ -347,7 +356,7 @@ export async function extractEmbeddedPdfText(
       attachmentId,
       mimeType,
       reason: 'malformed',
-      sourceHash: sha256Hex(source.body),
+      sourceHash: null,
       now,
     });
   }
@@ -558,7 +567,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: 'application/pdf',
         reason: 'unsupported',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
         unresolvedFields: ['attachment'],
       }),
@@ -572,7 +581,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: 'application/pdf',
         reason: 'malformed',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
         unresolvedFields: ['attachment'],
       }),
@@ -585,7 +594,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'malformed',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
       }),
     );
@@ -597,7 +606,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: 'application/pdf',
         reason: 'unsupported',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
         unresolvedFields: ['attachment'],
       }),
@@ -614,7 +623,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'malformed',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
         unresolvedFields: ['attachment'],
       }),
@@ -627,7 +636,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'too_large',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
       }),
     );
@@ -639,7 +648,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: 'application/pdf',
         reason: 'unsupported',
-        sourceHash: sha256Hex(''),
+        sourceHash: null,
         now,
       }),
     );
@@ -659,7 +668,7 @@ export async function readAuthorizedArtifact(input: {
             attachmentId: input.attachmentId,
             mimeType: locator.mimeType,
             reason: 'unsupported',
-            sourceHash: sha256Hex(''),
+            sourceHash: null,
             now,
           }),
         );
@@ -670,7 +679,7 @@ export async function readAuthorizedArtifact(input: {
           attachmentId: input.attachmentId,
           mimeType: locator.mimeType,
           reason: 'unsupported',
-          sourceHash: sha256Hex(''),
+          sourceHash: null,
           now,
         }),
       );
@@ -687,7 +696,7 @@ export async function readAuthorizedArtifact(input: {
           attachmentId: input.attachmentId,
           mimeType: locator.mimeType,
           reason: 'malformed',
-          sourceHash: sha256Hex(''),
+          sourceHash: null,
           now,
         }),
       );
@@ -702,7 +711,7 @@ export async function readAuthorizedArtifact(input: {
           attachmentId: input.attachmentId,
           mimeType: locator.mimeType,
           reason,
-          sourceHash: sha256Hex(''),
+          sourceHash: null,
           now,
         }),
       );
@@ -716,7 +725,7 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType,
         reason: 'malformed',
-        sourceHash: sha256Hex(object.body.subarray(0, Math.min(object.body.byteLength, 64))),
+        sourceHash: null,
         now,
       }),
     );

@@ -56,6 +56,8 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   parentReadResultRef?: string;
   source?: DocumentSource;
   kind?: DocumentKind;
+  limit?: number;
+  cursor?: string;
   requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
   documentRef?: string;
   format?: 'text' | 'artifact';
@@ -419,7 +421,8 @@ export async function issueReadAdmissionFromMailbox(
         scopeRef: authority.scope.scopeRef,
         source: documentSource,
         ...(input.kind ? { kinds: [input.kind] } : {}),
-        limit: 20,
+        limit: input.limit ?? 20,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
         requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
       },
     });

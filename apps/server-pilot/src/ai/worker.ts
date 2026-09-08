@@ -50,6 +50,7 @@ import {
 import {
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
+  type ArtifactData,
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
@@ -68,6 +69,7 @@ import {
   type WorkflowTriageOutput,
 } from './triage.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
+import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
@@ -79,6 +81,7 @@ import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
+import type { ToolResult } from './draft-evidence.js';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
@@ -724,6 +727,8 @@ type MailDocumentAuthority = {
   records: ExistingDocumentRecord[];
   locators: Map<string, AttachmentLocator>;
   authorizedAttachmentIds: ReadonlySet<string>;
+  listHasMore: boolean;
+  listBlocker: string | null;
 };
 
 function readAdmissionAuthorizationId(request: Record<string, unknown>): string | null {
@@ -922,35 +927,103 @@ async function loadMailDocumentAuthority(input: {
         (row.direction === 'inbound' ? row.receivedAt : row.sentAt)?.toISOString() ?? null,
     }),
   );
-  if (!input.includeHashes) return { scope, records, locators, authorizedAttachmentIds };
+  if (!input.includeHashes) {
+    return {
+      scope,
+      records,
+      locators,
+      authorizedAttachmentIds,
+      listHasMore: false,
+      listBlocker: null,
+    };
+  }
 
-  const hashedRecords = await Promise.all(
-    records.map(async (record) => {
-      if (record.source !== 'mail_attachment' || !record.attachment) return record;
-      const bytes = await readAuthorizedArtifactBytes({
-        attachmentId: record.attachment.attachmentId,
-        authorizedAttachmentIds,
-        s3: getS3Storage(),
-        signal: AbortSignal.timeout(30_000),
-        resolveLocator: async (attachmentId) => locators.get(attachmentId) ?? null,
-        expectedLocator: record.attachment.locator,
-        revalidate: () =>
-          currentMailAttachmentAuthority({
-            run: input.run,
-            request: input.request,
-            attachmentId: record.attachment!.attachmentId,
-            expectedLocator: record.attachment!.locator,
-          }),
-      });
-      if (!bytes) return record;
-      return {
-        ...record,
-        sha256: bytes.sha256,
-        attachment: { ...record.attachment, expectedSha256: bytes.sha256 },
-      };
-    }),
-  );
-  return { scope, records: hashedRecords, locators, authorizedAttachmentIds };
+  const requestedSource =
+    input.request.source === 'mail_attachment' || input.request.source === 'hms_sent_attachment'
+      ? input.request.source
+      : null;
+  const requestedLimit =
+    typeof input.request.limit === 'number'
+      ? Math.min(Math.max(Math.trunc(input.request.limit), 1), DOCUMENT_LIST_MAX_ROWS)
+      : 20;
+  const requestedCursor = typeof input.request.cursor === 'string' ? input.request.cursor : null;
+  const sourceIndices = records.reduce<number[]>((indices, record, index) => {
+    if (requestedSource === null || record.source === requestedSource) indices.push(index);
+    return indices;
+  }, []);
+  let aggregateBytes = 0;
+  let listBlocker: string | null = null;
+
+  const hashRecordAt = async (index: number): Promise<boolean> => {
+    const record = records[index];
+    if (!record || record.source !== 'mail_attachment' || !record.attachment || record.sha256) {
+      return true;
+    }
+    const sizeBytes = record.attachment.locator.sizeBytes;
+    if (aggregateBytes + sizeBytes > DOCUMENT_LIST_MAX_BYTES) {
+      listBlocker ??= 'LIST_BYTE_LIMIT';
+      return false;
+    }
+    const bytes = await readAuthorizedArtifactBytes({
+      attachmentId: record.attachment.attachmentId,
+      authorizedAttachmentIds,
+      s3: getS3Storage(),
+      signal: AbortSignal.timeout(30_000),
+      resolveLocator: async (attachmentId) => locators.get(attachmentId) ?? null,
+      expectedLocator: record.attachment.locator,
+      revalidate: () =>
+        currentMailAttachmentAuthority({
+          run: input.run,
+          request: input.request,
+          attachmentId: record.attachment!.attachmentId,
+          expectedLocator: record.attachment!.locator,
+        }),
+    });
+    if (!bytes) {
+      listBlocker ??= 'LIST_SOURCE_UNAVAILABLE';
+      return false;
+    }
+    aggregateBytes += bytes.body.byteLength;
+    records[index] = {
+      ...record,
+      sha256: bytes.sha256,
+      attachment: { ...record.attachment, expectedSha256: bytes.sha256 },
+    };
+    return true;
+  };
+
+  let pageStart = 0;
+  if (requestedCursor) {
+    let cursorFound = false;
+    const scanLimit = Math.min(sourceIndices.length, DOCUMENT_LIST_MAX_ROWS);
+    for (let sourceIndex = 0; sourceIndex < scanLimit; sourceIndex += 1) {
+      const recordIndex = sourceIndices[sourceIndex]!;
+      if (!(await hashRecordAt(recordIndex))) break;
+      if (existingDocumentRefForRecord(records[recordIndex]!) === requestedCursor) {
+        pageStart = sourceIndex + 1;
+        cursorFound = true;
+        break;
+      }
+    }
+    if (!cursorFound) listBlocker ??= 'LIST_CURSOR_UNRESOLVED';
+  }
+
+  if (!listBlocker) {
+    const pageIndices = sourceIndices.slice(pageStart, pageStart + requestedLimit);
+    for (const recordIndex of pageIndices) {
+      if (!(await hashRecordAt(recordIndex))) break;
+    }
+  }
+
+  const listHasMore = listBlocker !== null || pageStart + requestedLimit < sourceIndices.length;
+  return {
+    scope,
+    records,
+    locators,
+    authorizedAttachmentIds,
+    listHasMore,
+    listBlocker,
+  };
 }
 
 function createMailDocumentService(input: {
@@ -1029,7 +1102,20 @@ function createMailDocumentService(input: {
         sourceId === 'mail_attachment'
           ? current.records.filter((record) => record.source === 'mail_attachment')
           : current.records.filter((record) => record.source === sourceId);
-      return { records, inventoryComplete: true };
+      if (current.listBlocker === 'LIST_CURSOR_UNRESOLVED') {
+        return {
+          records: [],
+          inventoryComplete: false,
+          hasMore: false,
+          blocker: current.listBlocker,
+        };
+      }
+      return {
+        records,
+        inventoryComplete: current.listBlocker === null,
+        hasMore: current.listHasMore,
+        blocker: current.listBlocker ?? undefined,
+      };
     },
   });
 
@@ -2212,13 +2298,13 @@ export async function executeAiRun(
                     failureClass: 'AUTH' as const,
                   });
                 }
-                return readAuthorizedArtifact({
+                return (await readAuthorizedArtifact({
                   attachmentId,
                   authorizedAttachmentIds: currentAuthorized,
                   s3,
                   signal: artifactSignal,
                   resolveLocator: async (id) => currentLocators.get(id) ?? null,
-                });
+                })) as unknown as ToolResult<ArtifactData>;
               },
               recheckArtifactIdentity: async ({
                 attachmentId,

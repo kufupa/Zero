@@ -291,6 +291,8 @@ export const aiRouter = tRouter({
         threadId: z.string().min(1),
         source: existingDocumentSourceSchema.default('mail_attachment'),
         kind: existingDocumentKindSchema.optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+        cursor: readRefSchema.optional(),
         requestedPriceVisibility: z.enum(['allowed', 'forbidden', 'unknown']).default('allowed'),
       }),
     )
@@ -304,6 +306,8 @@ export const aiRouter = tRouter({
         toolId: 'documents_list_existing',
         source: input.source,
         kind: input.kind,
+        limit: input.limit,
+        cursor: input.cursor,
         requestedPriceVisibility: input.requestedPriceVisibility,
         ...existingDocumentAdmissionRelease(),
       });
@@ -314,7 +318,7 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-doc-list:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${input.source}:${input.kind ?? ''}:${input.requestedPriceVisibility}`,
+          idempotencyKey: `hms-read-doc-list:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${input.source}:${input.kind ?? ''}:${input.limit ?? 20}:${input.cursor ?? ''}:${input.requestedPriceVisibility}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
