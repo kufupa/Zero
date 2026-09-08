@@ -46,6 +46,17 @@ export type AttachmentLocator = {
   messageId: string;
 };
 
+/**
+ * Internal bounded-byte result. Callers may turn this into a private artifact
+ * handle, but must not serialize `body`, `locator`, or an object URL.
+ */
+export type AuthorizedArtifactBytes = {
+  body: Buffer;
+  contentType: string;
+  sha256: string;
+  locator: AttachmentLocator;
+};
+
 export type SandboxResult = {
   stdout: Buffer;
   stderr: Buffer;
@@ -762,6 +773,61 @@ export async function readAuthorizedArtifact(input: {
       },
     ),
   );
+}
+
+/**
+ * Authorized attachment ID → resolved locator → bounded bytes. This is the
+ * private artifact branch used after all document validation has passed. It
+ * deliberately shares the authorization, attachment-prefix, MIME, size and
+ * bounded S3 checks with `readAuthorizedArtifact`; it never accepts an S3 key
+ * from a caller and never returns a URL or model-facing body.
+ */
+export async function readAuthorizedArtifactBytes(input: {
+  attachmentId: string;
+  authorizedAttachmentIds: ReadonlySet<string>;
+  s3: S3Storage;
+  signal: AbortSignal;
+  resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
+}): Promise<AuthorizedArtifactBytes | null> {
+  if (input.signal.aborted) {
+    throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+  }
+  if (!input.authorizedAttachmentIds.has(input.attachmentId)) return null;
+
+  const locator = await input.resolveLocator(input.attachmentId);
+  if (!locator) return null;
+  if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) return null;
+  if (
+    !Number.isInteger(locator.sizeBytes) ||
+    locator.sizeBytes < 0 ||
+    locator.sizeBytes > ARTIFACT_MAX_INPUT_BYTES
+  ) {
+    return null;
+  }
+  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
+    return null;
+  }
+
+  let object: { body: Buffer; contentType: string } | null;
+  try {
+    object = await input.s3.getObjectBounded(
+      locator.s3Key,
+      Math.min(locator.sizeBytes, ARTIFACT_MAX_INPUT_BYTES),
+      input.signal,
+    );
+  } catch (error) {
+    if (error instanceof S3ObjectTooLargeError) return null;
+    throw error;
+  }
+  if (!object || object.body.byteLength !== locator.sizeBytes) return null;
+  if (object.contentType && object.contentType !== locator.mimeType) return null;
+
+  return {
+    body: object.body,
+    contentType: locator.mimeType,
+    sha256: sha256Hex(object.body),
+    locator,
+  };
 }
 
 function sameLocator(a: AttachmentLocator, b: AttachmentLocator): boolean {
