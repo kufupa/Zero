@@ -117,6 +117,8 @@
 
 - Second U8 residual RED checkpoint:14 focused unit cases contain3 intended failures (partial/manual status collapse, forgeable lock-held marker, ignored requested branch);13 owned-PG16 DB cases contain2 intended failures (missing admission accepted, nonterminal receipt readable). Existing wrong-scope/requester/expiry/replay/foreign/malformed receipt and stale-fence controls pass. No production or migration edit in that RED stage. Same Luna owner proceeds with those fixes plus explicit production requester-plan and previously minted-ref validation/negative cases; no new family or migration scope is needed. U8 remains unapproved.
 
+- U8 second residual repair checkpoint: owner reports trusted enqueue/requester/exact-branch/ref binding, status rejection, nonforgeable same-handle ownership and success-only receipts implemented; focused unit15/15 and owned-DB16/16 passed before the last patch. A cross-thread reference replay regression then correctly exposed `succeeded` instead of required denial; a scope-bound reference repair is saved, but its post-patch verdict was interrupted and is not inferred. No processes remain. Same owner resumes only replay and fresh required gates/regressions/type/build/lint; applied0023/0024 remain unchanged. Independent approval remains pending.
+
 ## Minor findings / follow-ups
 
 - U1 Important findings are resolved and independently approved, including the later eligibility, default-config and Chromium-egress findings. No U1 Critical/Important finding remains open.
