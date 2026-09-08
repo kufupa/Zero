@@ -23,9 +23,9 @@ import {
 } from './run-ledger.js';
 import {
   existingDocumentRefForRecord,
+  existingDocumentSha256FromRef,
   existingDocumentScopeRef,
   mailAttachmentRecord,
-  parseMailDocumentHints,
   createExistingDocumentService,
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
@@ -726,12 +726,94 @@ type MailDocumentAuthority = {
   authorizedAttachmentIds: ReadonlySet<string>;
 };
 
+function readAdmissionAuthorizationId(request: Record<string, unknown>): string | null {
+  const admission = request.admission;
+  if (!admission || typeof admission !== 'object') return null;
+  const value = (admission as { requesterAuthorizationId?: unknown }).requesterAuthorizationId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+async function currentMailAttachmentAuthority(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  request: Record<string, unknown>;
+  attachmentId: string;
+  expectedLocator: AttachmentLocator;
+}): Promise<boolean> {
+  const authorizationId = readAdmissionAuthorizationId(input.request);
+  if (!authorizationId) return false;
+  const db = getDb();
+  const [grant] = await db
+    .select({ id: mailboxAccess.id })
+    .from(mailboxAccess)
+    .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
+    .where(
+      and(
+        eq(mailboxAccess.id, authorizationId),
+        eq(mailboxAccess.transportId, input.run.transportId),
+        eq(mailboxTransport.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (!grant) return false;
+
+  const [trigger] = await db
+    .select({
+      id: message.id,
+      receivedAt: message.receivedAt,
+      createdAt: message.createdAt,
+    })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.run.triggerMessageId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  if (!trigger) return false;
+
+  const [row] = await db
+    .select({
+      id: attachment.id,
+      messageId: attachment.messageId,
+      s3Key: attachment.s3Key,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      direction: message.direction,
+      receivedAt: message.receivedAt,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(
+      and(
+        eq(attachment.id, input.attachmentId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+      ),
+    )
+    .limit(1);
+  if (!row || row.direction !== 'inbound' || !row.receivedAt) return false;
+
+  const triggerAt = trigger.receivedAt ?? trigger.createdAt;
+  if (row.receivedAt > triggerAt) return false;
+  return (
+    row.messageId === input.expectedLocator.messageId &&
+    row.s3Key === input.expectedLocator.s3Key &&
+    row.mimeType === input.expectedLocator.mimeType &&
+    row.sizeBytes === input.expectedLocator.sizeBytes
+  );
+}
+
 /**
  * Resolve the mail source from current DB rows. The worker creates this for
  * every queued execution; no process-local document-ref map is authoritative.
  */
 async function loadMailDocumentAuthority(input: {
   run: typeof aiWorkflowRun.$inferSelect;
+  request: Record<string, unknown>;
+  includeHashes: boolean;
   requestedKind?:
     | 'reservation_confirmation'
     | 'tax_invoice'
@@ -748,12 +830,8 @@ async function loadMailDocumentAuthority(input: {
   const [trigger] = await db
     .select({
       id: message.id,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      subject: message.subject,
       receivedAt: message.receivedAt,
-      sentAt: message.sentAt,
-      direction: message.direction,
+      createdAt: message.createdAt,
     })
     .from(message)
     .where(
@@ -767,22 +845,20 @@ async function loadMailDocumentAuthority(input: {
     .limit(1);
   if (!trigger) throw readAdmissionAuthError('document trigger is no longer in scope');
 
-  const triggerText = [trigger.subject?.trim() ?? '', trigger.textBody ?? trigger.htmlBody ?? '']
-    .filter(Boolean)
-    .join('\n')
-    .slice(0, 16_384);
-  const triggerHints = parseMailDocumentHints({ filename: 'message.txt', text: triggerText });
   const scope: ExistingDocumentScope = {
     scopeRef: existingDocumentScopeRef({
       transportId: input.run.transportId,
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
     }),
-    propertyRef: triggerHints.propertyRef ?? input.run.transportId,
-    guestRef: triggerHints.guestRef,
-    stayStart: triggerHints.stayStart,
-    stayEnd: triggerHints.stayEnd,
-    payerRef: triggerHints.payerRef,
+    // The mail schema has no independently-authoritative property/guest/stay
+    // document identity. Keep these explicit as unknown instead of copying
+    // message labels into the source scope.
+    propertyRef: 'unknown',
+    guestRef: null,
+    stayStart: null,
+    stayEnd: null,
+    payerRef: null,
     requestedKind: input.requestedKind ?? null,
     requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
   };
@@ -799,12 +875,22 @@ async function loadMailDocumentAuthority(input: {
       textBody: message.textBody,
       htmlBody: message.htmlBody,
       subject: message.subject,
-      observedAt: message.receivedAt,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
     })
     .from(attachment)
     .innerJoin(message, eq(message.id, attachment.messageId))
     .where(
-      and(eq(message.threadId, input.run.threadId), eq(message.transportId, input.run.transportId)),
+      and(
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        trigger.receivedAt
+          ? or(
+              and(eq(message.direction, 'inbound'), lte(message.receivedAt, trigger.receivedAt)),
+              and(eq(message.direction, 'outbound'), lte(message.sentAt, trigger.receivedAt)),
+            )
+          : eq(message.id, trigger.id),
+      ),
     );
   const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
   const locators = new Map<string, AttachmentLocator>(
@@ -832,10 +918,39 @@ async function loadMailDocumentAuthority(input: {
       text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
         .filter(Boolean)
         .join('\n'),
-      observedAt: row.observedAt?.toISOString() ?? null,
+      observedAt:
+        (row.direction === 'inbound' ? row.receivedAt : row.sentAt)?.toISOString() ?? null,
     }),
   );
-  return { scope, records, locators, authorizedAttachmentIds };
+  if (!input.includeHashes) return { scope, records, locators, authorizedAttachmentIds };
+
+  const hashedRecords = await Promise.all(
+    records.map(async (record) => {
+      if (record.source !== 'mail_attachment' || !record.attachment) return record;
+      const bytes = await readAuthorizedArtifactBytes({
+        attachmentId: record.attachment.attachmentId,
+        authorizedAttachmentIds,
+        s3: getS3Storage(),
+        signal: AbortSignal.timeout(30_000),
+        resolveLocator: async (attachmentId) => locators.get(attachmentId) ?? null,
+        expectedLocator: record.attachment.locator,
+        revalidate: () =>
+          currentMailAttachmentAuthority({
+            run: input.run,
+            request: input.request,
+            attachmentId: record.attachment!.attachmentId,
+            expectedLocator: record.attachment!.locator,
+          }),
+      });
+      if (!bytes) return record;
+      return {
+        ...record,
+        sha256: bytes.sha256,
+        attachment: { ...record.attachment, expectedSha256: bytes.sha256 },
+      };
+    }),
+  );
+  return { scope, records: hashedRecords, locators, authorizedAttachmentIds };
 }
 
 function createMailDocumentService(input: {
@@ -857,6 +972,8 @@ function createMailDocumentService(input: {
   const authority = () =>
     (authorityPromise ??= loadMailDocumentAuthority({
       run: input.run,
+      request: input.request,
+      includeHashes: input.request.toolId === 'documents_list_existing',
       requestedKind,
       requestedPriceVisibility,
     }));
@@ -881,13 +998,20 @@ function createMailDocumentService(input: {
       )
       .limit(1);
     const row = rows[0];
-    return row
-      ? {
-          s3Key: row.s3Key,
-          mimeType: row.mimeType,
-          sizeBytes: row.sizeBytes,
-          messageId: row.messageId,
-        }
+    if (!row) return null;
+    const locator = {
+      s3Key: row.s3Key,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      messageId: row.messageId,
+    } satisfies AttachmentLocator;
+    return (await currentMailAttachmentAuthority({
+      run: input.run,
+      request: input.request,
+      attachmentId,
+      expectedLocator: locator,
+    }))
+      ? locator
       : null;
   };
 
@@ -904,7 +1028,7 @@ function createMailDocumentService(input: {
       const records =
         sourceId === 'mail_attachment'
           ? current.records.filter((record) => record.source === 'mail_attachment')
-          : current.records.map((record) => ({ ...record, source: sourceId }));
+          : current.records.filter((record) => record.source === sourceId);
       return { records, inventoryComplete: true };
     },
   });
@@ -917,11 +1041,17 @@ function createMailDocumentService(input: {
     },
     resolveDocument: async (documentRef) => {
       const current = await authority();
+      const expectedSha256 = existingDocumentSha256FromRef(documentRef);
       for (const record of current.records) {
-        for (const candidate of [record, { ...record, source: 'hms_sent_attachment' as const }]) {
-          if (existingDocumentRefForRecord(candidate) === documentRef) {
-            return { record: candidate, scope: current.scope };
-          }
+        const candidate = expectedSha256
+          ? {
+              ...record,
+              sha256: expectedSha256,
+              attachment: record.attachment ? { ...record.attachment, expectedSha256 } : undefined,
+            }
+          : record;
+        if (existingDocumentRefForRecord(candidate) === documentRef) {
+          return { record: candidate, scope: current.scope };
         }
       }
       return null;
@@ -937,6 +1067,14 @@ function createMailDocumentService(input: {
         s3: getS3Storage(),
         signal: input.signal,
         resolveLocator: resolveCurrentLocator,
+        expectedLocator: attachmentValue.locator,
+        revalidate: () =>
+          currentMailAttachmentAuthority({
+            run: input.run,
+            request: input.request,
+            attachmentId: attachmentValue.attachmentId,
+            expectedLocator: attachmentValue.locator,
+          }),
       }),
     readBytes: async (attachmentValue) =>
       readAuthorizedArtifactBytes({
@@ -945,6 +1083,15 @@ function createMailDocumentService(input: {
         s3: getS3Storage(),
         signal: input.signal,
         resolveLocator: resolveCurrentLocator,
+        expectedLocator: attachmentValue.locator,
+        expectedSha256: attachmentValue.expectedSha256,
+        revalidate: () =>
+          currentMailAttachmentAuthority({
+            run: input.run,
+            request: input.request,
+            attachmentId: attachmentValue.attachmentId,
+            expectedLocator: attachmentValue.locator,
+          }),
       }),
   });
 }
@@ -1142,9 +1289,9 @@ async function executeProductionReadTool(input: {
   });
 
   // Mail-document reads revalidate through the DB-backed source adapter and
-  // never construct a PMS candidate/session. The lock is an executor-bound
-  // no-op serialization boundary because this branch has no PMS connection;
-  // DB mailbox/attachment authority is rechecked by the adapter itself.
+  // never construct a PMS candidate/session. Reuse the accepted Postgres
+  // property advisory lock so the full typed dispatch and final byte checks
+  // share one real serialization boundary.
   if (
     request.toolId === 'documents_list_existing' ||
     request.toolId === 'documents_read_existing'
@@ -1154,19 +1301,13 @@ async function executeProductionReadTool(input: {
       signal: input.signal,
       request: request as unknown as Record<string, unknown>,
     });
-    const mailReadLock = {
-      key: `mail-document:${input.run.transportId}`,
-      withLock: async <T>(
-        callback: (connection: {
-          query: <R = unknown>(statement: string) => Promise<R>;
-          close: () => Promise<void>;
-        }) => Promise<T>,
-      ) =>
-        callback({
-          query: async <R = unknown>(_statement: string) => [] as unknown as R,
-          close: async () => undefined,
-        }),
-    };
+    const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
+    const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
+    const mailReadLock = createPostgresPropertyReadLock({
+      tenantId: input.run.transportId,
+      propertyCode: 'MAIL',
+      databaseUrl: workerEnv.DATABASE_URL,
+    });
     const readContext: ReadExecutionContext = {
       transportId: input.run.transportId,
       mailboxId: input.run.transportId,
@@ -1191,13 +1332,13 @@ async function executeProductionReadTool(input: {
       propertyReadLock: mailReadLock,
       existingDocumentService: service,
     };
-    const receipt = await mailReadLock.withLock(async () =>
+    const receipt = await mailReadLock.withLock(async (propertyReadLockConnection) =>
       executeReadToolRun({
         runKind: input.run.runKind,
         executorLane: input.run.executorLane,
         draftingEnabled: false,
         request,
-        context: readContext,
+        context: { ...readContext, propertyReadLockConnection },
         resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
       }),
     );

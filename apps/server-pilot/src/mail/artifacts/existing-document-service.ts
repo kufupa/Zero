@@ -9,7 +9,6 @@ import {
   existingDocumentListDataSchema,
   existingDocumentReadDataSchema,
   existingDocumentScopeSchema,
-  EXISTING_DOCUMENT_ARTIFACT_TTL_MS,
   EXISTING_DOCUMENT_MAX_LIMIT,
   type DocumentIssue,
   type DocumentKind,
@@ -37,6 +36,7 @@ export type ExistingDocumentAttachment = {
   attachmentId: string;
   authorizedAttachmentIds: ReadonlySet<string>;
   locator: AttachmentLocator;
+  expectedSha256?: string;
 };
 
 /**
@@ -63,6 +63,8 @@ export type ExistingDocumentRecord = {
   stayStart: string | null;
   stayEnd: string | null;
   currentVersion: boolean;
+  /** Internal source-evidence result; never serialized as caller input. */
+  validation?: DocumentValidation;
   attachment?: ExistingDocumentAttachment;
 };
 
@@ -122,9 +124,9 @@ function hash(value: string): string {
 
 function opaqueDocumentRef(record: ExistingDocumentRecord): string {
   const locator = record.attachment?.locator;
-  return `doc:${hash(
+  const digest = hash(
     [
-      'existing-document/v1',
+      'existing-document/v2',
       record.source,
       record.scopeRef,
       record.sourceRecordId,
@@ -134,7 +136,14 @@ function opaqueDocumentRef(record: ExistingDocumentRecord): string {
       locator?.messageId ?? '',
       locator?.sizeBytes ?? '',
     ].join('|'),
-  )}`;
+  );
+  return `doc:${record.sha256 ?? 'unknown'}:${digest}`;
+}
+
+/** Extract only the server-issued content-hash binding from an opaque ref. */
+export function existingDocumentSha256FromRef(documentRef: string): string | null {
+  const match = /^doc:([a-f0-9]{64}):[a-f0-9]{64}$/i.exec(documentRef);
+  return match?.[1]?.toLowerCase() ?? null;
 }
 
 /** Stable server-owned scope reference for one authenticated mail thread. */
@@ -188,12 +197,15 @@ export function parseMailDocumentHints(input: {
   const lowerName = input.filename.toLowerCase();
   const lowerText = text.toLowerCase();
   const kind: DocumentKind =
-    lowerName.includes('invoice') || lowerText.includes('tax invoice')
-      ? 'tax_invoice'
-      : lowerName.includes('confirm')
-        ? 'reservation_confirmation'
-        : lowerName.includes('proforma') || lowerName.includes('pro-forma')
-          ? 'pro_forma'
+    lowerName.includes('proforma') ||
+    lowerName.includes('pro-forma') ||
+    lowerText.includes('pro forma') ||
+    lowerText.includes('pro-forma')
+      ? 'pro_forma'
+      : lowerName.includes('invoice') || lowerText.includes('tax invoice')
+        ? 'tax_invoice'
+        : lowerName.includes('confirm')
+          ? 'reservation_confirmation'
           : lowerName.includes('contract')
             ? 'contract'
             : 'other_existing';
@@ -233,27 +245,36 @@ export type MailDocumentRecordInput = {
 export function mailAttachmentRecord(input: MailDocumentRecordInput): ExistingDocumentRecord {
   const hints = parseMailDocumentHints({ filename: input.filename, text: input.text });
   const parentRef = hash(JSON.stringify(['existing-document-parent/v1', input.messageId]));
-  const version = hints.version ?? input.observedAt ?? 'unknown';
   return {
     sourceRecordId: input.attachmentId,
     scopeRef: input.scope.scopeRef,
     source: input.source,
     kind: hints.kind,
-    version,
+    // Filename/message labels are candidate hints only. The DB adapter has no
+    // independent version/finality/type/price authority for these rows.
+    version: 'unknown',
     issuedAt: input.observedAt,
-    status: 'final',
+    status: 'unknown',
     parentRef,
-    payerRef: hints.payerRef ?? input.scope.payerRef ?? null,
+    payerRef: null,
     displayName: input.filename,
     mime: input.mimeType,
     sizeBytes: input.sizeBytes,
     sha256: null,
-    priceVisibility: hints.priceVisibility,
-    propertyRef: hints.propertyRef ?? input.scope.propertyRef,
-    guestRef: hints.guestRef ?? input.scope.guestRef ?? null,
-    stayStart: hints.stayStart ?? input.scope.stayStart ?? null,
-    stayEnd: hints.stayEnd ?? input.scope.stayEnd ?? null,
-    currentVersion: true,
+    priceVisibility: 'unknown',
+    propertyRef: input.scope.propertyRef,
+    guestRef: null,
+    stayStart: null,
+    stayEnd: null,
+    currentVersion: false,
+    validation: {
+      identity: 'unknown',
+      stayDates: 'unknown',
+      payer: 'unknown',
+      kind: 'unknown',
+      version: 'unknown',
+      priceVisibility: 'unknown',
+    },
     attachment: {
       attachmentId: input.attachmentId,
       authorizedAttachmentIds: input.authorizedAttachmentIds,
@@ -302,6 +323,7 @@ function recordFingerprint(record: ExistingDocumentRecord): string {
       stayStart: record.stayStart,
       stayEnd: record.stayEnd,
       currentVersion: record.currentVersion,
+      validation: record.validation ?? null,
       attachmentId: record.attachment?.attachmentId ?? null,
       locator: locator
         ? {
@@ -353,7 +375,7 @@ function makeMetadata(
 
   return {
     metadata,
-    validation: evaluateDocumentValidation({ document: metadata, scope }),
+    validation: record.validation ?? evaluateDocumentValidation({ document: metadata, scope }),
   };
 }
 
@@ -431,8 +453,6 @@ export function createMetadataOnlyDocumentSource(input: {
 export type ExistingDocumentService = ReturnType<typeof createExistingDocumentService>;
 
 export function createExistingDocumentService(input: ExistingDocumentServiceInput) {
-  const now = input.now ?? (() => new Date());
-  const ttlMs = input.artifactTtlMs ?? EXISTING_DOCUMENT_ARTIFACT_TTL_MS;
   const refs = new Map<string, StoredDocument>();
 
   const manualList = (
@@ -648,7 +668,7 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
 
     const current = currentMetadata(entry);
     const validationBlocker = documentValidationBlocker(current.validation);
-    if (validationBlocker) {
+    if (validationBlocker && request.format === 'artifact') {
       return manualRead({
         metadata: current.metadata,
         validation: current.validation,
@@ -674,58 +694,15 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
     }
 
     if (request.format === 'artifact') {
-      if (!input.readBytes) {
-        return manualRead({
-          metadata: current.metadata,
-          validation: current.validation,
-          format: request.format,
-          blocker: 'SOURCE_UNAVAILABLE',
-        });
-      }
-      let bytes: AuthorizedArtifactBytes | null;
-      try {
-        bytes = await input.readBytes(entry.record.attachment);
-      } catch {
-        return manualRead({
-          metadata: current.metadata,
-          validation: current.validation,
-          format: request.format,
-          blocker: 'SOURCE_UNAVAILABLE',
-        });
-      }
-      if (!bytes) {
-        return manualRead({
-          metadata: current.metadata,
-          validation: current.validation,
-          format: request.format,
-          blocker: 'UNSUPPORTED_FORMAT',
-          extractionState: 'unsupported',
-        });
-      }
-      if (entry.record.sha256 && bytes.sha256 !== entry.record.sha256) {
-        return manualRead({
-          metadata: current.metadata,
-          validation: current.validation,
-          format: request.format,
-          blocker: 'DOCUMENT_CHANGED',
-        });
-      }
-      const artifactRef = `artifact:${hash(`${request.documentRef}|${bytes.sha256}`)}`;
-      const expires = new Date(now().getTime() + ttlMs).toISOString();
-      return {
-        status: 'ok',
-        data: readData({
-          metadata: current.metadata,
-          validation: current.validation,
-          format: request.format,
-          extractionState: 'complete',
-          artifactRef,
-          sourceHash: bytes.sha256,
-          artifactExpiresAt: expires,
-        }),
-        blocker: null,
-        issues: [],
-      };
+      // The existing U9 surface has no private artifact persistence/resolver.
+      // Never mint a handle that cannot be resolved by an authorized route.
+      return manualRead({
+        metadata: current.metadata,
+        validation: current.validation,
+        format: request.format,
+        blocker: 'UNSUPPORTED_FORMAT',
+        extractionState: 'unsupported',
+      });
     }
 
     if (!input.readArtifact) {
@@ -771,7 +748,7 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
       });
     }
     return {
-      status: 'ok',
+      status: validationBlocker ? 'manual_required' : 'ok',
       data: readData({
         metadata: current.metadata,
         validation: current.validation,
@@ -781,8 +758,8 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
         pageCount: result.data.pageCount,
         sourceHash,
       }),
-      blocker: null,
-      issues: [],
+      blocker: validationBlocker,
+      issues: validationBlocker ? [issue(validationBlocker)] : [],
     };
   }
 

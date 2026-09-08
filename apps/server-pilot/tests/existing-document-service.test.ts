@@ -161,7 +161,7 @@ describe('existing document service', () => {
     expect(result.data?.document.sha256).toBe(BODY_SHA256);
   });
 
-  it('returns a private artifact ref without exposing bytes or a signed URL', async () => {
+  it('denies artifact mode without a scoped private artifact resolver', async () => {
     const s3 = new FakeS3Storage('documents-test');
     await s3.putObject({
       key: 'attachments/message-1/invoice.txt',
@@ -178,11 +178,10 @@ describe('existing document service', () => {
       format: 'artifact',
     });
 
-    expect(result.status).toBe('ok');
+    expect(result.status).toBe('manual_required');
     expect(result.data?.text).toBeNull();
-    expect(result.data?.artifactRef).toMatch(/^artifact:/);
-    expect(JSON.stringify(result)).not.toContain('invoice bytes');
-    expect(JSON.stringify(result)).not.toMatch(/https?:\/\/|presign|signature|attachments\//i);
+    expect(result.data?.artifactRef).toBeNull();
+    expect(result.blocker).toBe('UNSUPPORTED_FORMAT');
   });
 
   it('denies cross-scope reads and changed locator/hash before bytes become usable', async () => {

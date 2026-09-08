@@ -3,14 +3,14 @@
  * No OCR. No raw text persistence. Hash-bound MailEvidenceRef only.
  * Model never receives S3 keys.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawn } from 'node:child_process';
-import type { ToolResult } from '../../ai/draft-evidence.js';
 import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import type { ToolResult } from '../../ai/draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 export const ARTIFACT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 export const ARTIFACT_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -94,9 +94,7 @@ const PDF_BINS = [
 ] as const;
 
 /** Startup gate: missing Poppler/bwrap/prlimit fail closed. */
-export function assertPdfToolchain(
-  exists: (path: string) => boolean = existsSync,
-): void {
+export function assertPdfToolchain(exists: (path: string) => boolean = existsSync): void {
   for (const bin of PDF_BINS) {
     if (!exists(bin)) {
       throw new Error(`pdf toolchain missing: ${bin}`);
@@ -321,10 +319,7 @@ export async function extractEmbeddedPdfText(
   const now = options.now ?? new Date();
   const mimeType = 'application/pdf' as const;
 
-  if (
-    source.declaredMime !== 'application/pdf' ||
-    source.objectMime !== 'application/pdf'
-  ) {
+  if (source.declaredMime !== 'application/pdf' || source.objectMime !== 'application/pdf') {
     return manualResult({
       attachmentId,
       mimeType,
@@ -542,12 +537,13 @@ export async function readAuthorizedArtifact(input: {
   s3: S3Storage;
   signal: AbortSignal;
   /** Server-side resolve by attachmentId (DB in prod; fixture map in tests). */
-  resolveLocator: (
-    attachmentId: string,
-  ) => Promise<AttachmentLocator | null>;
+  resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
   runner?: SandboxRunner;
   ledger?: ToolLedger;
   now?: Date;
+  expectedLocator?: AttachmentLocator;
+  /** Revalidate current DB grant/source immediately before object bytes. */
+  revalidate?: () => Promise<boolean>;
 }): Promise<ArtifactReadResult> {
   const now = input.now ?? new Date();
 
@@ -583,6 +579,18 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
+  if (input.expectedLocator && !sameLocator(locator, input.expectedLocator)) {
+    return finish(
+      manualResult({
+        attachmentId: input.attachmentId,
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        reason: 'malformed',
+        sourceHash: sha256Hex(''),
+        now,
+      }),
+    );
+  }
+
   if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) {
     return finish(
       manualResult({
@@ -604,8 +612,7 @@ export async function readAuthorizedArtifact(input: {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
-        mimeType:
-          locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'malformed',
         sourceHash: sha256Hex(''),
         now,
@@ -618,8 +625,7 @@ export async function readAuthorizedArtifact(input: {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
-        mimeType:
-          locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'too_large',
         sourceHash: sha256Hex(''),
         now,
@@ -627,10 +633,7 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  if (
-    locator.mimeType !== 'text/plain' &&
-    locator.mimeType !== 'application/pdf'
-  ) {
+  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
@@ -642,14 +645,42 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
+  if (input.revalidate) {
+    try {
+      const head = await input.s3.headObject(locator.s3Key);
+      if (
+        !head ||
+        head.sizeBytes !== locator.sizeBytes ||
+        (head.contentType && head.contentType !== locator.mimeType) ||
+        !(await input.revalidate())
+      ) {
+        return finish(
+          manualResult({
+            attachmentId: input.attachmentId,
+            mimeType: locator.mimeType,
+            reason: 'unsupported',
+            sourceHash: sha256Hex(''),
+            now,
+          }),
+        );
+      }
+    } catch {
+      return finish(
+        manualResult({
+          attachmentId: input.attachmentId,
+          mimeType: locator.mimeType,
+          reason: 'unsupported',
+          sourceHash: sha256Hex(''),
+          now,
+        }),
+      );
+    }
+  }
+
   const maxBytes = Math.min(locator.sizeBytes, ARTIFACT_MAX_INPUT_BYTES);
   let object: { body: Buffer; contentType: string };
   try {
-    const fetched = await input.s3.getObjectBounded(
-      locator.s3Key,
-      maxBytes,
-      input.signal,
-    );
+    const fetched = await input.s3.getObjectBounded(locator.s3Key, maxBytes, input.signal);
     if (!fetched) {
       return finish(
         manualResult({
@@ -685,19 +716,14 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType,
         reason: 'malformed',
-        sourceHash: sha256Hex(
-          object.body.subarray(0, Math.min(object.body.byteLength, 64)),
-        ),
+        sourceHash: sha256Hex(object.body.subarray(0, Math.min(object.body.byteLength, 64))),
         now,
       }),
     );
   }
 
   if (locator.mimeType === 'text/plain') {
-    if (
-      object.contentType &&
-      object.contentType !== 'text/plain'
-    ) {
+    if (object.contentType && object.contentType !== 'text/plain') {
       return finish(
         manualResult({
           attachmentId: input.attachmentId,
@@ -761,9 +787,7 @@ export async function readAuthorizedArtifact(input: {
         declaredSize: locator.sizeBytes,
         declaredMime: locator.mimeType,
         objectMime:
-          object.contentType === 'application/pdf'
-            ? 'application/pdf'
-            : object.contentType,
+          object.contentType === 'application/pdf' ? 'application/pdf' : object.contentType,
       },
       {
         runner: input.runner,
@@ -788,6 +812,10 @@ export async function readAuthorizedArtifactBytes(input: {
   s3: S3Storage;
   signal: AbortSignal;
   resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
+  expectedLocator?: AttachmentLocator;
+  expectedSha256?: string;
+  /** Revalidate current DB grant/source immediately before object bytes. */
+  revalidate?: () => Promise<boolean>;
 }): Promise<AuthorizedArtifactBytes | null> {
   if (input.signal.aborted) {
     throw Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -796,6 +824,7 @@ export async function readAuthorizedArtifactBytes(input: {
 
   const locator = await input.resolveLocator(input.attachmentId);
   if (!locator) return null;
+  if (input.expectedLocator && !sameLocator(locator, input.expectedLocator)) return null;
   if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) return null;
   if (
     !Number.isInteger(locator.sizeBytes) ||
@@ -806,6 +835,22 @@ export async function readAuthorizedArtifactBytes(input: {
   }
   if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
     return null;
+  }
+
+  if (input.revalidate) {
+    try {
+      const head = await input.s3.headObject(locator.s3Key);
+      if (
+        !head ||
+        head.sizeBytes !== locator.sizeBytes ||
+        (head.contentType && head.contentType !== locator.mimeType) ||
+        !(await input.revalidate())
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
   }
 
   let object: { body: Buffer; contentType: string } | null;
@@ -822,10 +867,13 @@ export async function readAuthorizedArtifactBytes(input: {
   if (!object || object.body.byteLength !== locator.sizeBytes) return null;
   if (object.contentType && object.contentType !== locator.mimeType) return null;
 
+  const sha256 = sha256Hex(object.body);
+  if (input.expectedSha256 && sha256 !== input.expectedSha256) return null;
+
   return {
     body: object.body,
     contentType: locator.mimeType,
-    sha256: sha256Hex(object.body),
+    sha256,
     locator,
   };
 }
@@ -867,11 +915,7 @@ export async function recheckAuthorizedArtifactIdentity(input: {
     return false;
   }
   try {
-    const object = await input.s3.getObjectBounded(
-      current.s3Key,
-      current.sizeBytes,
-      input.signal,
-    );
+    const object = await input.s3.getObjectBounded(current.s3Key, current.sizeBytes, input.signal);
     if (!object || object.body.byteLength !== current.sizeBytes) return false;
     return sha256Hex(object.body) === input.expectedSha256;
   } catch (error) {

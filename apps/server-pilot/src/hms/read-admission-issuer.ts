@@ -1,8 +1,8 @@
 import {
   existingDocumentRefForRecord,
+  existingDocumentSha256FromRef,
   existingDocumentScopeRef,
   mailAttachmentRecord,
-  parseMailDocumentHints,
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
 import {
@@ -32,7 +32,7 @@ import { extractLookupCandidates, filterExactReservationCandidates } from '../ai
 import { normalizeMessageText } from '../ai/thread-context.js';
 import { readAiRunReceipt } from '../ai/run-ledger.js';
 import { readRequestSchema } from './read-service.js';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, lte, or } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 
 export type ReadAdmissionReleaseInput = {
@@ -107,7 +107,7 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
       htmlBody: message.htmlBody,
       subject: message.subject,
       receivedAt: message.receivedAt,
-      sentAt: message.sentAt,
+      createdAt: message.createdAt,
     })
     .from(message)
     .where(and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)))
@@ -136,7 +136,7 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
     triggerMessageId: trigger.id,
     candidateId: exact.length === 1 ? exact[0]!.id : null,
     text: triggerText,
-    observedAt: trigger.receivedAt ?? trigger.sentAt,
+    observedAt: trigger.receivedAt ?? trigger.createdAt,
   };
 }
 
@@ -156,11 +156,8 @@ async function loadDocumentScopeAuthority(input: {
   const [trigger] = await input.db
     .select({
       id: message.id,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      subject: message.subject,
       receivedAt: message.receivedAt,
-      sentAt: message.sentAt,
+      createdAt: message.createdAt,
     })
     .from(message)
     .where(
@@ -175,11 +172,6 @@ async function loadDocumentScopeAuthority(input: {
   if (!trigger)
     throw authError('READ_TRIGGER_MISSING', 'document trigger is not in the active mailbox');
 
-  const text = [trigger.subject?.trim() ?? '', trigger.textBody ?? trigger.htmlBody ?? '']
-    .filter(Boolean)
-    .join('\n')
-    .slice(0, 16_384);
-  const hints = parseMailDocumentHints({ filename: 'message.txt', text });
   const scopeRef = existingDocumentScopeRef({
     transportId: input.transportId,
     threadId: input.threadId,
@@ -189,11 +181,11 @@ async function loadDocumentScopeAuthority(input: {
     scopeRef,
     // These identity/stay values are server-derived from the authorized
     // trigger context. They are never accepted from the route input.
-    propertyRef: hints.propertyRef ?? input.transportId,
-    guestRef: hints.guestRef,
-    stayStart: hints.stayStart,
-    stayEnd: hints.stayEnd,
-    payerRef: hints.payerRef,
+    propertyRef: 'unknown',
+    guestRef: null,
+    stayStart: null,
+    stayEnd: null,
+    payerRef: null,
     requestedKind: input.requestedKind ?? null,
     requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
   };
@@ -210,11 +202,23 @@ async function loadDocumentScopeAuthority(input: {
       textBody: message.textBody,
       htmlBody: message.htmlBody,
       subject: message.subject,
-      observedAt: message.receivedAt,
+      receivedAt: message.receivedAt,
+      createdAt: message.createdAt,
     })
     .from(attachment)
     .innerJoin(message, eq(message.id, attachment.messageId))
-    .where(and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)));
+    .where(
+      and(
+        eq(message.threadId, input.threadId),
+        eq(message.transportId, input.transportId),
+        trigger.receivedAt
+          ? or(
+              and(eq(message.direction, 'inbound'), lte(message.receivedAt, trigger.receivedAt)),
+              and(eq(message.direction, 'outbound'), lte(message.createdAt, trigger.receivedAt)),
+            )
+          : eq(message.id, trigger.id),
+      ),
+    );
   const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
   const records = rows.map((row) =>
     mailAttachmentRecord({
@@ -230,7 +234,9 @@ async function loadDocumentScopeAuthority(input: {
       text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
         .filter(Boolean)
         .join('\n'),
-      observedAt: row.observedAt?.toISOString() ?? null,
+      observedAt:
+        (row.messageDirection === 'inbound' ? row.receivedAt : row.createdAt)?.toISOString() ??
+        null,
     }),
   );
   return { scope, records };
@@ -250,9 +256,16 @@ async function assertDocumentRefInCurrentScope(input: {
     triggerMessageId: input.triggerMessageId,
     requestedPriceVisibility: 'allowed',
   });
-  const found = authority.records.some(
-    (record) => existingDocumentRefForRecord(record) === input.documentRef,
-  );
+  const expectedSha256 = existingDocumentSha256FromRef(input.documentRef);
+  const found = authority.records.some((record) => {
+    const candidate = expectedSha256
+      ? {
+          ...record,
+          sha256: expectedSha256,
+        }
+      : record;
+    return existingDocumentRefForRecord(candidate) === input.documentRef;
+  });
   if (!found) {
     throw authError(
       'DOCUMENT_REF_SCOPE_DENIED',

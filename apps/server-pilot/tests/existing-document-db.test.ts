@@ -39,6 +39,34 @@ type ExistingDocumentReadInput = {
   format: 'text' | 'artifact';
 };
 
+type ExistingDocumentMetadata = {
+  documentRef: string | null;
+  displayName?: string;
+  source?: string;
+  kind?: string;
+  version?: string;
+  status?: string;
+  currentVersion?: boolean;
+  propertyRef?: string | null;
+  guestRef?: string | null;
+  priceVisibility?: string;
+  retrievable?: boolean;
+  retrievalBlocker?: string | null;
+};
+
+type ExistingDocumentReadData = {
+  documents?: ExistingDocumentMetadata[];
+  document?: {
+    documentRef: string | null;
+    artifactRef?: string | null;
+    extractionState?: string;
+    validation?: Record<string, unknown>;
+    text?: string | null;
+    retrievalBlocker?: string | null;
+  } | null;
+  artifactRef?: string | null;
+};
+
 type ExistingDocumentCaller = {
   enqueueExistingDocumentList(input: ExistingDocumentListInput): Promise<{
     runId: string;
@@ -54,10 +82,9 @@ type ExistingDocumentCaller = {
     result: {
       toolId: string;
       status: string;
-      data: {
-        documents?: Array<{ documentRef: string | null }>;
-        document?: { documentRef: string | null };
-      } | null;
+      blocker?: string | null;
+      issues?: Array<{ code: string }>;
+      data: ExistingDocumentReadData | null;
     };
   }>;
 };
@@ -104,6 +131,11 @@ async function authenticatedCaller(db: DB, userId = CENTURION_USER_ID) {
     sessionUser: { id: userId, email: '', name: null },
     ...mailbox,
   });
+}
+
+async function authenticatedDocumentCaller(db: DB): Promise<ExistingDocumentCaller> {
+  const caller = await authenticatedCaller(db);
+  return (caller as unknown as { ai: ExistingDocumentCaller }).ai;
 }
 
 async function seedDocumentMailbox(db: DB) {
@@ -176,6 +208,85 @@ async function claimAndExecute(db: DB, runId: string) {
   return executeAiRun(runId);
 }
 
+async function executeDocumentList(
+  db: DB,
+  caller: ExistingDocumentCaller,
+  input: ExistingDocumentListInput,
+) {
+  const list = await caller.enqueueExistingDocumentList(input);
+  expect(list.runState).toBe('queued');
+  expect((await claimAndExecute(db, list.runId)).state).toBe('succeeded');
+  const receipt = await caller.readHmsReceipt({
+    threadId: input.threadId,
+    readResultRef: list.readResultRef,
+  });
+  return { list, result: receipt.result };
+}
+
+async function executeDocumentRead(
+  db: DB,
+  caller: ExistingDocumentCaller,
+  input: ExistingDocumentReadInput,
+) {
+  const read = await caller.enqueueExistingDocumentRead(input);
+  expect(read.runState).toBe('queued');
+  expect((await claimAndExecute(db, read.runId)).state).toBe('succeeded');
+  const receipt = await caller.readHmsReceipt({
+    threadId: input.threadId,
+    readResultRef: read.readResultRef,
+  });
+  return { read, result: receipt.result };
+}
+
+async function addDocumentMessageWithAttachment(
+  db: DB,
+  input: {
+    threadId: string;
+    messageId: string;
+    attachmentId: string;
+    direction: 'inbound' | 'outbound';
+    observedAt: Date;
+    filename: string;
+    textBody: string;
+    bytes: Buffer;
+  },
+) {
+  await db.insert(message).values({
+    id: input.messageId,
+    transportId: TRANSPORT_ID,
+    threadId: input.threadId,
+    direction: input.direction,
+    fromAddress: 'synthetic-billing@legacyhotel.com',
+    toAddresses: ['centurion@legacyhotel.com'],
+    subject: input.filename,
+    textBody: input.textBody,
+    ...(input.direction === 'inbound'
+      ? { receivedAt: input.observedAt }
+      : { sentAt: input.observedAt }),
+  });
+  const s3Key = `attachments/${input.messageId}/000-${input.filename}`;
+  await db.insert(attachment).values({
+    id: input.attachmentId,
+    messageId: input.messageId,
+    filename: input.filename,
+    mimeType: 'text/plain',
+    sizeBytes: input.bytes.byteLength,
+    s3Key,
+  });
+  await getS3Storage().putObject({
+    key: s3Key,
+    body: input.bytes,
+    contentType: 'text/plain',
+  });
+  return { s3Key };
+}
+
+function sameLengthDocumentBytes(text: string) {
+  const bytes = Buffer.alloc(DOCUMENT_BYTES.byteLength, 0x21);
+  Buffer.from(text, 'utf8').copy(bytes, 0, 0, bytes.byteLength);
+  return bytes;
+}
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted DB path', () => {
   beforeEach(() => {
     setS3Storage(new FakeS3Storage());
@@ -191,6 +302,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
       withSeededTestDb(async (db) => {
         __setDbForTests({ db, conn: null as never });
         const fixture = await seedDocumentMailbox(db);
+        await addDocumentMessageWithAttachment(db, {
+          threadId: fixture.threadId,
+          messageId: `u9-sent-only-message-${randomUUID()}`,
+          attachmentId: `u9-sent-only-attachment-${randomUUID()}`,
+          direction: 'outbound',
+          observedAt: new Date(OBSERVED_AT.getTime() - 30 * 60 * 1000),
+          filename: 'sent-tax-invoice-v1.txt',
+          textBody: `Sent tax invoice. Property ${SYNTHETIC_PROPERTY}. Guest ${SYNTHETIC_GUEST}.`,
+          bytes: DOCUMENT_BYTES,
+        });
         const caller = (await authenticatedCaller(db)) as unknown as {
           ai: ExistingDocumentCaller;
         };
@@ -226,9 +347,337 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
         });
         expect(readReceipt.result).toMatchObject({
           toolId: 'documents_read_existing',
-          status: 'ok',
+          status: 'manual_required',
         });
         expect(readReceipt.result.data?.document?.documentRef).toBe(documentRef);
+        expect(readReceipt.result.data?.text).toBe(DOCUMENT_BYTES.toString('utf8').trim());
+        expect(readReceipt.result.data?.validation).toEqual({
+          identity: 'unknown',
+          stayDates: 'unknown',
+          payer: 'unknown',
+          kind: 'unknown',
+          version: 'unknown',
+          priceVisibility: 'unknown',
+        });
+        expect(readReceipt.result.issues?.[0]?.code).toBe('INPUT_MISSING');
+      }),
+    );
+  }, 30000);
+
+  it('bounds list results to the trigger horizon and the requested message direction', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        await addDocumentMessageWithAttachment(db, {
+          threadId: fixture.threadId,
+          messageId: `u9-sent-message-${randomUUID()}`,
+          attachmentId: `u9-sent-attachment-${randomUUID()}`,
+          direction: 'outbound',
+          observedAt: new Date(OBSERVED_AT.getTime() - 30 * 60 * 1000),
+          filename: 'sent-tax-invoice-v1.txt',
+          textBody: `Sent tax invoice. Property ${SYNTHETIC_PROPERTY}. Guest ${SYNTHETIC_GUEST}.`,
+          bytes: DOCUMENT_BYTES,
+        });
+        const caller = await authenticatedDocumentCaller(db);
+        const queuedInbound = await caller.enqueueExistingDocumentList({
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        expect(queuedInbound.runState).toBe('queued');
+        await addDocumentMessageWithAttachment(db, {
+          threadId: fixture.threadId,
+          messageId: `u9-later-message-${randomUUID()}`,
+          attachmentId: `u9-later-attachment-${randomUUID()}`,
+          direction: 'inbound',
+          observedAt: new Date(OBSERVED_AT.getTime() + 60 * 60 * 1000),
+          filename: 'later-tax-invoice-v2.txt',
+          textBody: `Later tax invoice. Property ${SYNTHETIC_PROPERTY}. Guest ${SYNTHETIC_GUEST}.`,
+          bytes: DOCUMENT_BYTES,
+        });
+        expect((await claimAndExecute(db, queuedInbound.runId)).state).toBe('succeeded');
+        const inboundReceipt = await caller.readHmsReceipt({
+          threadId: fixture.threadId,
+          readResultRef: queuedInbound.readResultRef,
+        });
+        const inbound = inboundReceipt;
+        expect(inbound.result.status).toBe('ok');
+        expect(inbound.result.data?.documents).toHaveLength(1);
+        expect(inbound.result.data?.documents?.[0]?.displayName).toBe(
+          'synthetic-tax-invoice-v1.txt',
+        );
+
+        const sent = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'hms_sent_attachment',
+        });
+        expect(sent.result.status).toBe('ok');
+        expect(sent.result.data?.documents).toHaveLength(1);
+        expect(sent.result.data?.documents?.[0]?.displayName).toBe('sent-tax-invoice-v1.txt');
+        expect(sent.result.data?.documents?.[0]?.source).toBe('hms_sent_attachment');
+      }),
+    );
+  }, 30000);
+
+  it('does not promote misleading labels into independently verified document facts', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        await db
+          .update(message)
+          .set({
+            subject: 'proforma-invoice-v9-draft.txt',
+            textBody:
+              'Tax invoice FINAL v9. Property WRONG-PROPERTY. Guest wrong-guest. Payer wrong-payer. Stay 2030-01-01 through 2030-01-02. Prices visible.',
+          })
+          .where(eq(message.id, fixture.messageId));
+        await db
+          .update(attachment)
+          .set({ filename: 'proforma-invoice-v9-draft.txt' })
+          .where(eq(attachment.id, fixture.attachmentId));
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+        });
+        expect(listed.result.data?.documents).toHaveLength(1);
+        const metadata = listed.result.data?.documents?.[0];
+        expect(metadata?.retrievable).toBe(false);
+        expect(metadata?.retrievalBlocker).toBe('DOCUMENT_VALIDATION_INCOMPLETE');
+
+        const read = await executeDocumentRead(db, caller, {
+          threadId: fixture.threadId,
+          documentRef: metadata?.documentRef ?? '',
+          format: 'text',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.issues?.[0]?.code).toBe('INPUT_MISSING');
+        expect(read.result.data?.validation).toMatchObject({
+          identity: 'unknown',
+          stayDates: 'unknown',
+          payer: 'unknown',
+          kind: 'unknown',
+          version: 'unknown',
+          priceVisibility: 'unknown',
+        });
+      }),
+    );
+  }, 30000);
+
+  it('does not classify a pro-forma invoice filename as a tax invoice', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        await db
+          .update(attachment)
+          .set({ filename: 'proforma-invoice-v1.txt' })
+          .where(eq(attachment.id, fixture.attachmentId));
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+        });
+        expect(listed.result.data?.documents).toHaveLength(1);
+        expect(listed.result.data?.documents?.[0]?.kind).not.toBe('tax_invoice');
+      }),
+    );
+  }, 30000);
+
+  it('rejects a listed ref after its locator changes before queue insertion', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+        const replacementKey = `attachments/${fixture.messageId}/000-replaced-same-size.txt`;
+        await db
+          .update(attachment)
+          .set({ s3Key: replacementKey })
+          .where(eq(attachment.id, fixture.attachmentId));
+        await getS3Storage().putObject({
+          key: replacementKey,
+          body: DOCUMENT_BYTES,
+          contentType: 'text/plain',
+        });
+        let storageIoStarted = false;
+        const storage = getS3Storage();
+        const originalGetObjectBounded = storage.getObjectBounded.bind(storage);
+        storage.getObjectBounded = async (key, maxBytes, signal) => {
+          storageIoStarted = true;
+          return originalGetObjectBounded(key, maxBytes, signal);
+        };
+
+        await expect(
+          caller.enqueueExistingDocumentRead({
+            threadId: fixture.threadId,
+            documentRef: documentRef!,
+            format: 'text',
+          }),
+        ).rejects.toThrow(/DOCUMENT_CHANGED|document reference is not current/i);
+        expect(storageIoStarted).toBe(false);
+        const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+        expect(runs).toHaveLength(1);
+      }),
+    );
+  }, 30000);
+
+  it('does not accept a same-key same-size replacement under an old listed ref', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+        await getS3Storage().putObject({
+          key: `attachments/${fixture.messageId}/000-synthetic-tax-invoice-v1.txt`,
+          body: sameLengthDocumentBytes('Wrong body identity, draft, v9, hidden price.'),
+          contentType: 'text/plain',
+        });
+
+        const read = await executeDocumentRead(db, caller, {
+          threadId: fixture.threadId,
+          documentRef: documentRef!,
+          format: 'text',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.issues?.[0]?.code).toBe('DOCUMENT_CHANGED');
+        expect(read.result.data?.text).toBeNull();
+      }),
+    );
+  }, 30000);
+
+  it('denies a listed ref when its authorized bytes disappear before read', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+        await getS3Storage().deleteObject(
+          `attachments/${fixture.messageId}/000-synthetic-tax-invoice-v1.txt`,
+        );
+
+        const read = await executeDocumentRead(db, caller, {
+          threadId: fixture.threadId,
+          documentRef: documentRef!,
+          format: 'text',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.issues?.[0]?.code).toMatch(/SOURCE_UNAVAILABLE|UNSUPPORTED_FORMAT/);
+        expect(read.result.data?.text).toBeNull();
+      }),
+    );
+  }, 30000);
+
+  it('revalidates the grant immediately before storage I/O', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+
+        const revokingStorage = new FakeS3Storage();
+        await revokingStorage.putObject({
+          key: `attachments/${fixture.messageId}/000-synthetic-tax-invoice-v1.txt`,
+          body: DOCUMENT_BYTES,
+          contentType: 'text/plain',
+        });
+        let storageIoStarted = false;
+        const originalHeadObject = revokingStorage.headObject.bind(revokingStorage);
+        revokingStorage.headObject = async (key) => {
+          await db
+            .delete(mailboxAccess)
+            .where(eq(mailboxAccess.id, `access-${CENTURION_USER_ID}-${TRANSPORT_ID}`));
+          return originalHeadObject(key);
+        };
+        const originalGetObjectBounded = revokingStorage.getObjectBounded.bind(revokingStorage);
+        revokingStorage.getObjectBounded = async (key, maxBytes, signal) => {
+          storageIoStarted = true;
+          return originalGetObjectBounded(key, maxBytes, signal);
+        };
+        setS3Storage(revokingStorage);
+
+        const read = await caller.enqueueExistingDocumentRead({
+          threadId: fixture.threadId,
+          documentRef: documentRef!,
+          format: 'text',
+        });
+        expect((await claimAndExecute(db, read.runId)).state).toBe('succeeded');
+        const [storedRun] = await db
+          .select({ readResult: aiWorkflowRun.readResult })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, read.runId));
+        const result = storedRun?.readResult as {
+          status?: string;
+          blocker?: string | null;
+          issues?: Array<{ code: string }>;
+          data?: { text?: string | null } | null;
+        } | null;
+        expect(storageIoStarted).toBe(false);
+        expect(result?.status).toBe('manual_required');
+        expect(result?.issues?.[0]?.code).toMatch(
+          /SOURCE_UNAVAILABLE|SCOPE_DENIED|READ_AUTH|UNSUPPORTED_FORMAT/i,
+        );
+        expect(result?.data?.text ?? null).toBeNull();
+      }),
+    );
+  }, 30000);
+
+  it('does not emit an unusable artifact handle when artifact retrieval is unsupported', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const listed = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          kind: 'tax_invoice',
+          requestedPriceVisibility: 'allowed',
+        });
+        const documentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(documentRef).toMatch(/^doc:/);
+        const read = await executeDocumentRead(db, caller, {
+          threadId: fixture.threadId,
+          documentRef: documentRef!,
+          format: 'artifact',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.data?.artifactRef ?? null).toBeNull();
       }),
     );
   }, 30000);
@@ -292,6 +741,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
       withSeededTestDb(async (db) => {
         __setDbForTests({ db, conn: null as never });
         const fixture = await seedDocumentMailbox(db);
+        await addDocumentMessageWithAttachment(db, {
+          threadId: fixture.threadId,
+          messageId: `u9-sent-only-message-${randomUUID()}`,
+          attachmentId: `u9-sent-only-attachment-${randomUUID()}`,
+          direction: 'outbound',
+          observedAt: new Date(OBSERVED_AT.getTime() - 30 * 60 * 1000),
+          filename: 'sent-tax-invoice-v1.txt',
+          textBody: `Sent tax invoice. Property ${SYNTHETIC_PROPERTY}. Guest ${SYNTHETIC_GUEST}.`,
+          bytes: DOCUMENT_BYTES,
+        });
         const caller = (await authenticatedCaller(db)) as unknown as {
           ai: ExistingDocumentCaller;
         };
