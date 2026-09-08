@@ -12,17 +12,23 @@ import {
   type ActiveReadRuntimeState,
 } from '../src/hms/active-read-runtime.js';
 import {
+  aiWorkflowRun,
+  mailboxAccess,
+  mailboxTransport,
+  mailThread,
+  message,
+} from '../src/db/schema/mail.js';
+import {
   extractLookupCandidates,
   filterExactReservationCandidates,
 } from '../src/ai/thread-context.js';
 import { executeAiRun, runAiWorkerOnce, type CandidateSessionFactory } from '../src/ai/worker.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { issueReadAdmissionFromMailbox } from '../src/hms/read-admission-issuer.js';
+import { CENTURION_USER_ID, MARTHA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { createPostgresPropertyReadLock } from '../src/hms/property-read-lock.js';
 import type { CandidateToolSession } from '../src/ai/candidate-draft-agent.js';
-import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { __setDbForTests, getDb, type DB } from '../src/db/client.js';
-import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as mastraModule from '../src/ai/mastra.js';
@@ -422,6 +428,114 @@ function syntheticReadSessionFactory(
   });
 }
 
+function installActiveFindReleaseForTests(): void {
+  __setCachedActiveReadRuntimeForTests({
+    releases: new Map([
+      [
+        'hms_find_reservation',
+        {
+          releaseId: 'release-red',
+          toolId: 'hms_find_reservation',
+          evidenceKind: 'hms',
+          requestBranches: [{ id: 'guest_stay_search' }],
+        },
+      ],
+    ]),
+    predecessors: new Map(),
+    toolIds: new Set(['hms_find_reservation']),
+    registry: null,
+    handlerPathActive: true,
+    cutoverComplete: false,
+  } as unknown as ActiveReadRuntimeState);
+}
+
+function createInjectedReadCaller(userId: string, transportId: string) {
+  return appRouter.createCaller({
+    auth: null as never,
+    c: null as never,
+    reqHeaders: new Headers(),
+    sessionUser: { id: userId, email: '', name: null },
+    activeTransportId: transportId,
+    transportEmail: '',
+    accessRole: 'owner',
+  });
+}
+
+async function seedSucceededRouteFind(
+  db: DB,
+  context: Awaited<ReturnType<typeof seededMailContext>>,
+) {
+  installActiveFindReleaseForTests();
+  const caller = createInjectedReadCaller(CENTURION_USER_ID, context.transportId);
+  const find = await caller.ai.enqueueHmsRead({ threadId: context.threadId });
+  await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'succeeded',
+      readResult: positiveFindResult,
+      readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+    })
+    .where(eq(aiWorkflowRun.id, find.runId));
+  return { caller, find };
+}
+
+type ParentIssuerMutation = {
+  label: string;
+  apply: (issuer: Record<string, unknown>) => void;
+};
+
+const parentIssuerMutations: readonly ParentIssuerMutation[] = [
+  { label: 'missing provenance', apply: () => undefined },
+  {
+    label: 'foreign user origin',
+    apply: (issuer) => {
+      issuer.userId = 'user-navaai';
+    },
+  },
+  {
+    label: 'foreign mailbox access origin',
+    apply: (issuer) => {
+      issuer.mailboxAccessId = `access-${MARTHA_USER_ID}-${TRANSPORT_ID}`;
+    },
+  },
+  {
+    label: 'spoofed transport origin',
+    apply: (issuer) => {
+      issuer.transportId = 'transport-nava';
+    },
+  },
+  {
+    label: 'spoofed thread origin',
+    apply: (issuer) => {
+      issuer.threadId = randomUUID();
+    },
+  },
+  {
+    label: 'spoofed trigger origin',
+    apply: (issuer) => {
+      issuer.triggerMessageId = randomUUID();
+    },
+  },
+  {
+    label: 'spoofed request digest',
+    apply: (issuer) => {
+      issuer.inputDigest = 'f'.repeat(64);
+    },
+  },
+  {
+    label: 'parent issuer on find',
+    apply: (issuer) => {
+      issuer.parentReadResultRef = 'spoof-parent';
+    },
+  },
+  {
+    label: 'evidence issuer on find',
+    apply: (issuer) => {
+      issuer.evidenceExpiresAt = '2099-09-07T12:05:00.000Z';
+    },
+  },
+];
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED contracts', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -482,6 +596,31 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
       );
     });
   });
+
+  it.each(['serialized', 'object-spread', 'raw-object'] as const)(
+    'rejects a %s issuer ticket before inserting a queued run',
+    async (variant) => {
+      await withWorkerDb(async (db) => {
+        const context = await seededMailContext(db);
+        const input = await readRunInput(context, `issuer-ticket-${variant}`);
+        const issuer =
+          variant === 'serialized'
+            ? JSON.parse(JSON.stringify(input.readAdmissionIssuer))
+            : variant === 'object-spread'
+              ? { ...input.readAdmissionIssuer }
+              : Object.fromEntries(Object.entries(input.readAdmissionIssuer));
+
+        await expect(enqueueAiRun({ ...input, readAdmissionIssuer: issuer }, db)).rejects.toThrow(
+          /issuer|server-owned/i,
+        );
+        const rows = await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.readResultRef, input.readResultRef));
+        expect(rows).toHaveLength(0);
+      });
+    },
+  );
 
   it('rejects a caller-fabricated 2099 context window before inserting a queued run', async () => {
     await withWorkerDb(async (db) => {
@@ -601,6 +740,211 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           toolId: 'hms_read_reservation',
           status: expect.any(String),
         });
+      });
+    });
+  });
+
+  it.each(parentIssuerMutations)(
+    'rejects context issuance with %s before enqueueing a context run',
+    async ({ label, apply }) => {
+      await withWorkerDb(async (db) => {
+        await withReadOnlyWorkerEnv(async () => {
+          const context = await seededMailContext(db);
+          const { caller, find } = await seedSucceededRouteFind(db, context);
+          const [parent] = await db
+            .select()
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, find.runId))
+            .limit(1);
+          if (!parent) throw new Error('route parent fixture was not persisted');
+          const metrics = {
+            ...(parent.metrics as Record<string, unknown>),
+          };
+          if (label === 'missing provenance') {
+            delete metrics.readAdmissionIssuer;
+          } else {
+            const issuer = {
+              ...(metrics.readAdmissionIssuer as Record<string, unknown>),
+            };
+            apply(issuer);
+            metrics.readAdmissionIssuer = issuer;
+          }
+          await db.update(aiWorkflowRun).set({ metrics }).where(eq(aiWorkflowRun.id, find.runId));
+
+          await expect(
+            caller.ai.enqueueHmsContextRead({
+              threadId: context.threadId,
+              findResultRef: find.readResultRef,
+              sections: ['core', 'stay'],
+              detail: 'summary',
+            }),
+          ).rejects.toThrow(/issuer|parent|provenance|scope/i);
+          const rows = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+          expect(rows).toHaveLength(1);
+        });
+      });
+    },
+  );
+
+  it.each(
+    parentIssuerMutations.filter(({ label }) =>
+      [
+        'missing provenance',
+        'foreign user origin',
+        'foreign mailbox access origin',
+        'spoofed request digest',
+      ].includes(label),
+    ),
+  )('worker rejects context with %s parent issuer before session/PMS', async ({ label, apply }) => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const input = await contextReadRunInput(
+          context,
+          `parent-worker-${label.replace(/[^A-Za-z0-9_-]+/g, '-')}`,
+        );
+        const parentRef = input.readAdmissionIssuer.parentReadResultRef;
+        if (!parentRef) throw new Error('context fixture did not retain parent receipt ref');
+        const [parent] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.readResultRef, parentRef))
+          .limit(1);
+        if (!parent) throw new Error('context parent fixture was not persisted');
+        const metrics = { ...(parent.metrics as Record<string, unknown>) };
+        if (label === 'missing provenance') {
+          delete metrics.readAdmissionIssuer;
+        } else {
+          const issuer = { ...(metrics.readAdmissionIssuer as Record<string, unknown>) };
+          apply(issuer);
+          metrics.readAdmissionIssuer = issuer;
+        }
+        await db.update(aiWorkflowRun).set({ metrics }).where(eq(aiWorkflowRun.id, parent.id));
+        const run = await enqueueAiRun(input, db);
+        expect(
+          await claimNextAiRun({
+            ownerId: 'hms-review-worker',
+            lane: 'hms',
+            runKind: 'read_tool',
+            db,
+          }),
+        ).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-parent-origin', '2099-09-07T12:05:00.000Z'),
+        );
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(externalBoundary));
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+        expect(externalBoundary).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it.each([
+    { label: 'false authenticated user', userId: 'user-without-this-grant' },
+    {
+      label: 'missing mailbox access',
+      userId: CENTURION_USER_ID,
+      mutate: async (db: DB) => {
+        await db.delete(mailboxAccess).where(eq(mailboxAccess.id, REQUESTER_AUTHORIZATION_ID));
+      },
+    },
+    {
+      label: 'revoked/deleted mailbox access',
+      userId: CENTURION_USER_ID,
+      mutate: async (db: DB) => {
+        await db.delete(mailboxAccess).where(eq(mailboxAccess.id, REQUESTER_AUTHORIZATION_ID));
+      },
+    },
+    {
+      label: 'inactive transport grant',
+      userId: CENTURION_USER_ID,
+      mutate: async (db: DB) => {
+        await db
+          .update(mailboxTransport)
+          .set({ isActive: false })
+          .where(eq(mailboxTransport.id, TRANSPORT_ID));
+      },
+    },
+  ])('authenticated route rejects a %s before queue insertion', async ({ userId, mutate }) => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        installActiveFindReleaseForTests();
+        if (mutate) await mutate(db);
+        const caller = createInjectedReadCaller(userId, context.transportId);
+
+        await expect(caller.ai.enqueueHmsRead({ threadId: context.threadId })).rejects.toThrow(
+          /grant|mailbox|active|forbidden/i,
+        );
+        const rows = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+        expect(rows).toHaveLength(0);
+      });
+    });
+  });
+
+  it.each([
+    {
+      label: 'false persisted user',
+      kind: 'issuer' as const,
+      mutate: (issuer: Record<string, unknown>) => {
+        issuer.userId = 'user-navaai';
+      },
+    },
+    {
+      label: 'deleted mailbox access',
+      kind: 'grant' as const,
+      mutate: async (db: DB) => {
+        await db.delete(mailboxAccess).where(eq(mailboxAccess.id, REQUESTER_AUTHORIZATION_ID));
+      },
+    },
+    {
+      label: 'inactive transport grant',
+      kind: 'grant' as const,
+      mutate: async (db: DB) => {
+        await db
+          .update(mailboxTransport)
+          .set({ isActive: false })
+          .where(eq(mailboxTransport.id, TRANSPORT_ID));
+      },
+    },
+  ])('worker rejects a %s before session/PMS', async ({ label, kind, mutate }) => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const input = await readRunInput(
+          context,
+          `grant-${label.replace(/[^A-Za-z0-9_-]+/g, '-')}`,
+        );
+        const run = await enqueueAiRun(input, db);
+        if (kind === 'issuer') {
+          const metrics = { ...(run.metrics as Record<string, unknown>) };
+          const issuer = { ...(metrics.readAdmissionIssuer as Record<string, unknown>) };
+          (mutate as (issuer: Record<string, unknown>) => void)(issuer);
+          metrics.readAdmissionIssuer = issuer;
+          await db.update(aiWorkflowRun).set({ metrics }).where(eq(aiWorkflowRun.id, run.id));
+        } else {
+          await (mutate as (db: DB) => Promise<void>)(db);
+        }
+        expect(
+          await claimNextAiRun({
+            ownerId: 'hms-review-worker',
+            lane: 'hms',
+            runKind: 'read_tool',
+            db,
+          }),
+        ).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-grant-origin', '2099-09-07T12:05:00.000Z'),
+        );
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(externalBoundary));
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+        expect(externalBoundary).not.toHaveBeenCalled();
       });
     });
   });

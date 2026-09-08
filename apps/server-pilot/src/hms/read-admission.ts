@@ -302,6 +302,58 @@ export function persistReadAdmissionIssuer(
 }
 
 /**
+ * Validate persisted issuer provenance against the exact queued request and
+ * its durable run scope. Persisted JSON is evidence only; callers must still
+ * supply the current expected user/access when crossing an issuer boundary.
+ */
+export function assertPersistedReadAdmissionIssuer(input: {
+  issuer: unknown;
+  request: Record<string, unknown>;
+  run: { transportId: string; threadId: string; triggerMessageId: string };
+  expectedUserId?: string;
+  expectedMailboxAccessId: string;
+  expectedToolId: 'hms_find_reservation' | 'hms_read_reservation';
+}): PersistedReadAdmissionIssuer {
+  const issuer = persistedReadAdmissionIssuerSchema.safeParse(input.issuer);
+  if (!issuer.success) {
+    throw new Error('read admission issuer provenance is missing or malformed');
+  }
+  const admission = readAdmissionSchema.safeParse(input.request.admission);
+  if (!admission.success || input.request.toolId !== input.expectedToolId) {
+    throw new Error('read admission issuer request is missing a valid expected admission');
+  }
+  const closedRequest = { ...input.request };
+  delete closedRequest.admission;
+  const data = issuer.data;
+  if (
+    data.transportId !== input.run.transportId ||
+    data.threadId !== input.run.threadId ||
+    data.triggerMessageId !== input.run.triggerMessageId ||
+    (input.expectedUserId !== undefined && data.userId !== input.expectedUserId) ||
+    data.mailboxAccessId !== input.expectedMailboxAccessId ||
+    admission.data.requesterAuthorizationId !== input.expectedMailboxAccessId ||
+    data.inputDigest !== admission.data.inputDigest ||
+    data.inputDigest !== readInputDigest(closedRequest)
+  ) {
+    throw new Error('read admission issuer provenance does not bind the exact request scope');
+  }
+  if (input.expectedToolId === 'hms_find_reservation') {
+    if (
+      data.parentReadResultRef !== null ||
+      data.evidenceExpiresAt !== null ||
+      data.reservationRef !== null ||
+      data.reservationRefIssuedAt !== null ||
+      data.reservationRefExpiresAt !== null
+    ) {
+      throw new Error('find admission issuer provenance is not find-only');
+    }
+  } else if (!data.parentReadResultRef || !data.evidenceExpiresAt) {
+    throw new Error('resolved admission issuer provenance has no parent receipt');
+  }
+  return data;
+}
+
+/**
  * Queue-side provenance gate. A serialized ticket has no private marker and
  * is rejected even when every visible admission field is internally valid.
  */

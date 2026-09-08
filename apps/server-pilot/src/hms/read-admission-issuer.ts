@@ -1,15 +1,16 @@
 import {
+  assertPersistedReadAdmissionIssuer,
+  issueReadAdmission,
+  type IssuedReadAdmission,
+  type ReadAdmissionSource,
+} from './read-admission.js';
+import {
   aiWorkflowRun,
   mailboxAccess,
   mailboxTransport,
   mailThread,
   message,
 } from '../db/schema/mail.js';
-import {
-  issueReadAdmission,
-  type IssuedReadAdmission,
-  type ReadAdmissionSource,
-} from './read-admission.js';
 import {
   reservationFindResultSchema,
   type ReservationFindResult,
@@ -171,11 +172,23 @@ async function loadParentFind(input: {
       'parent receipt candidate is not the current trigger candidate',
     );
   }
-  const admission = parsedRequest.data.admission;
-  if (!admission || admission.requesterAuthorizationId !== input.source.mailboxAccessId) {
+  const parentMetrics =
+    parent.metrics && typeof parent.metrics === 'object'
+      ? (parent.metrics as Record<string, unknown>)
+      : null;
+  try {
+    assertPersistedReadAdmissionIssuer({
+      issuer: parentMetrics?.readAdmissionIssuer,
+      request: parsedRequest.data as unknown as Record<string, unknown>,
+      run: parent,
+      expectedUserId: input.source.userId,
+      expectedMailboxAccessId: input.source.mailboxAccessId,
+      expectedToolId: 'hms_find_reservation',
+    });
+  } catch (error) {
     throw authError(
-      'READ_PARENT_REQUESTER_MISMATCH',
-      'parent receipt requester is not the current mailbox grant',
+      'READ_PARENT_ISSUER_INVALID',
+      error instanceof Error ? error.message : 'parent issuer provenance is invalid',
     );
   }
   const receipt = await readAiRunReceipt(

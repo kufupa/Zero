@@ -40,7 +40,6 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
-  readInputDigest,
   readReservationBindingSchema,
   readReservationRef,
   type ReadResult,
@@ -59,7 +58,7 @@ import type { ReservationLookupResult, ReservationRow } from '../hms/reservation
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
-import { persistedReadAdmissionIssuerSchema } from '../hms/read-admission.js';
+import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
@@ -721,24 +720,22 @@ async function assertCurrentReadAdmissionAuthority(input: {
     input.run.metrics && typeof input.run.metrics === 'object'
       ? (input.run.metrics as Record<string, unknown>)
       : null;
-  const issuer = persistedReadAdmissionIssuerSchema.safeParse(metrics?.readAdmissionIssuer);
-  if (!issuer.success) throw readAdmissionAuthError('read admission issuer provenance is missing');
-  const issuerData = issuer.data;
-  const closedRequest = { ...input.request };
-  delete closedRequest.admission;
-  if (
-    issuerData.transportId !== input.run.transportId ||
-    issuerData.threadId !== input.run.threadId ||
-    issuerData.triggerMessageId !== input.run.triggerMessageId ||
-    issuerData.mailboxAccessId !== input.admission.requesterAuthorizationId ||
-    issuerData.inputDigest !== input.admission.inputDigest ||
-    issuerData.inputDigest !== readInputDigest(closedRequest) ||
-    issuerData.reservationRef !== input.admission.reservationRef ||
-    issuerData.reservationRefIssuedAt !== input.admission.reservationRefIssuedAt ||
-    issuerData.reservationRefExpiresAt !== input.admission.reservationRefExpiresAt
-  ) {
+  let issuerData: ReturnType<typeof assertPersistedReadAdmissionIssuer>;
+  try {
+    const expectedToolId = input.request.toolId;
+    if (expectedToolId !== 'hms_find_reservation' && expectedToolId !== 'hms_read_reservation') {
+      throw new Error('read admission request tool is not supported');
+    }
+    issuerData = assertPersistedReadAdmissionIssuer({
+      issuer: metrics?.readAdmissionIssuer,
+      request: input.request,
+      run: input.run,
+      expectedMailboxAccessId: input.admission.requesterAuthorizationId,
+      expectedToolId,
+    });
+  } catch (error) {
     throw readAdmissionAuthError(
-      'read admission issuer provenance does not bind the queued request',
+      error instanceof Error ? error.message : 'read admission issuer provenance is invalid',
     );
   }
 
@@ -822,16 +819,19 @@ async function assertCurrentReadAdmissionAuthority(input: {
     parent.metrics && typeof parent.metrics === 'object'
       ? (parent.metrics as Record<string, unknown>)
       : null;
-  const parentIssuer = persistedReadAdmissionIssuerSchema.safeParse(
-    parentMetrics?.readAdmissionIssuer,
-  );
-  if (
-    !parentIssuer.success ||
-    parentIssuer.data.userId !== issuerData.userId ||
-    parentIssuer.data.mailboxAccessId !== issuerData.mailboxAccessId ||
-    parentIssuer.data.parentReadResultRef !== null
-  ) {
-    throw readAdmissionAuthError('resolved read admission parent issuer is not server-owned');
+  try {
+    assertPersistedReadAdmissionIssuer({
+      issuer: parentMetrics?.readAdmissionIssuer,
+      request: parentRequest.data as unknown as Record<string, unknown>,
+      run: parent,
+      expectedUserId: issuerData.userId,
+      expectedMailboxAccessId: issuerData.mailboxAccessId,
+      expectedToolId: 'hms_find_reservation',
+    });
+  } catch (error) {
+    throw readAdmissionAuthError(
+      error instanceof Error ? error.message : 'resolved read admission parent issuer is invalid',
+    );
   }
   const parentReceipt = await readAiRunReceipt(
     {
