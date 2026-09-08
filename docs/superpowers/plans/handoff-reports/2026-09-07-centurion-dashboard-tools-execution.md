@@ -115,6 +115,8 @@
 
 - Focused U8 re-review at `53dbe7f5` confirms the major first-round repairs and fresh unit20/20, DB9/9,0 required skips, plus read-only25-migration schema proof. Overall specification remains conditional/not accepted: admission is not fully server-trusted/required or carried to the exact branch/requester/minted ref; partial/manual statuses lose semantics; a public lock-held boolean can bypass generic acquisition; receipt success-state/negative/stale-fence coverage is incomplete. Same Luna owner begins a bounded regression-first pass for these concrete in-scope residuals. Synthetic PMS-edge isolation is accepted test evidence, not a defect or live proof. No model escalation threshold or full U8 approval is asserted.
 
+- Second U8 residual RED checkpoint:14 focused unit cases contain3 intended failures (partial/manual status collapse, forgeable lock-held marker, ignored requested branch);13 owned-PG16 DB cases contain2 intended failures (missing admission accepted, nonterminal receipt readable). Existing wrong-scope/requester/expiry/replay/foreign/malformed receipt and stale-fence controls pass. No production or migration edit in that RED stage. Same Luna owner proceeds with those fixes plus explicit production requester-plan and previously minted-ref validation/negative cases; no new family or migration scope is needed. U8 remains unapproved.
+
 ## Minor findings / follow-ups
 
 - U1 Important findings are resolved and independently approved, including the later eligibility, default-config and Chromium-egress findings. No U1 Critical/Important finding remains open.
