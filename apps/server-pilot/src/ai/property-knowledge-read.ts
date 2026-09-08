@@ -1,0 +1,722 @@
+import {
+  PROPERTY_KNOWLEDGE_CONTRACT_VERSION,
+  PROPERTY_KNOWLEDGE_MAX_FILE_BYTES,
+  PROPERTY_KNOWLEDGE_MAX_CONTENT_CHARS,
+  PROPERTY_KNOWLEDGE_MAX_ENTRIES,
+  PROPERTY_KNOWLEDGE_SCOPE,
+  PROPERTY_KNOWLEDGE_TOOL_ID,
+  propertyKnowledgeDataSchema,
+  propertyKnowledgeFileSchema,
+  propertyKnowledgeIssueSchema,
+  propertyKnowledgeReadRequestSchema,
+  propertyKnowledgeReadResultSchema,
+  propertyKnowledgeSourceRecordSchema,
+  type PropertyKnowledgeAudience,
+  type PropertyKnowledgeData,
+  type PropertyKnowledgeDetail,
+  type PropertyKnowledgeEntry,
+  type PropertyKnowledgeEvidence,
+  type PropertyKnowledgeIssue,
+  type PropertyKnowledgeIssueCode,
+  type PropertyKnowledgeReadContext,
+  type PropertyKnowledgeReadRequest,
+  type PropertyKnowledgeReadResult,
+  type PropertyKnowledgeSourceRecord,
+  type PropertyKnowledgeTopic,
+} from './property-knowledge-contract.js';
+import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { open } from 'node:fs/promises';
+
+export type PropertyKnowledgeSourceListInput = {
+  propertyRef: string;
+  topic: PropertyKnowledgeTopic;
+  detail: PropertyKnowledgeDetail;
+  now: Date;
+  signal: AbortSignal;
+};
+
+/**
+ * Source records are resolved by the caller from local approved files or
+ * authorized attachments.  The reader never accepts a path, URL, locator,
+ * credential or arbitrary search expression from a model.
+ */
+export interface PropertyKnowledgeSource {
+  list(input: PropertyKnowledgeSourceListInput): Promise<readonly PropertyKnowledgeSourceRecord[]>;
+}
+
+export type PropertyKnowledgeFileRead = (input: {
+  filePath: string;
+  signal: AbortSignal;
+  maxBytes: number;
+}) => Promise<string>;
+
+export type PropertyKnowledgeFileSourceOptions = {
+  /** Server configuration only; never accepted from a model request. */
+  filePath: string;
+  /** Optional server-owned root that must contain filePath. */
+  allowedRoot?: string;
+  maxBytes?: number;
+  /** Test/object-storage seam; production defaults to bounded local fs read. */
+  readFile?: PropertyKnowledgeFileRead;
+};
+
+export type PropertyKnowledgeAuthorizationInput = PropertyKnowledgeSourceListInput & {
+  audience: PropertyKnowledgeAudience;
+};
+
+export type PropertyKnowledgeAuthorization =
+  | ((input: PropertyKnowledgeAuthorizationInput) => Promise<{ granted: boolean; reason?: string }>)
+  | {
+      authorize(
+        input: PropertyKnowledgeAuthorizationInput,
+      ): Promise<{ granted: boolean; reason?: string }>;
+    };
+
+export type PropertyKnowledgeDocumentCheckStatus =
+  | 'current'
+  | 'changed'
+  | 'expired'
+  | 'unauthorized'
+  | 'missing';
+
+export type PropertyKnowledgeDocumentCheck = {
+  status: PropertyKnowledgeDocumentCheckStatus;
+  expiresAt?: string | null;
+};
+
+export interface PropertyKnowledgeDocumentRevalidator {
+  revalidate(input: {
+    documentRef: string;
+    propertyRef: string;
+    sourceRef: string;
+    now: Date;
+    signal: AbortSignal;
+  }): Promise<PropertyKnowledgeDocumentCheck>;
+}
+
+type ExistingDocumentServiceLike = Pick<ExistingDocumentService, 'documents_read_existing'>;
+
+export type PropertyKnowledgeReaderOptions = {
+  source: PropertyKnowledgeSource;
+  authorization?: PropertyKnowledgeAuthorization;
+  /** Short callback spelling retained for small local adapters. */
+  authorize?: PropertyKnowledgeAuthorization;
+  revalidateDocument?: PropertyKnowledgeDocumentRevalidator['revalidate'];
+  /** Existing mail/document authority may be used to revalidate linked refs. */
+  existingDocumentService?: ExistingDocumentServiceLike;
+  now?: () => Date;
+  defaultPropertyRef?: string;
+  defaultAudience?: PropertyKnowledgeAudience;
+};
+
+export type PropertyKnowledgeReadContextInput = Partial<PropertyKnowledgeReadContext> & {
+  now?: Date;
+  signal?: AbortSignal;
+};
+
+export interface PropertyKnowledgeReader {
+  read(
+    request: PropertyKnowledgeReadRequest,
+    context?: PropertyKnowledgeReadContextInput,
+  ): Promise<PropertyKnowledgeReadResult>;
+}
+
+const DEFAULT_FRESHNESS_MS = 5 * 60 * 1_000;
+
+const PAYMENT_SECRET_PATTERNS = [
+  /\b(?:credit|debit|payment|card)\s*(?:card\s*)?(?:number|no\.?|#)\s*[:=-]?\s*(?:\d[ -]?){13,19}\b/i,
+  /\b(?:cvv|cvc|security\s+code|password|passcode|room\s+pin|api\s+key|access\s+token|secret)\b/i,
+];
+
+function hasPaymentSecret(content: string): boolean {
+  return PAYMENT_SECRET_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+function digestContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function readAbortedError(): Error {
+  const error = new Error('property knowledge source read aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function boundedFilePath(options: PropertyKnowledgeFileSourceOptions): string {
+  if (!options.filePath || options.filePath.includes('\0') || !isAbsolute(options.filePath)) {
+    throw new Error('property knowledge source path must be an absolute server path');
+  }
+  const filePath = resolve(options.filePath);
+  if (!options.allowedRoot) return filePath;
+
+  if (options.allowedRoot.includes('\0') || !isAbsolute(options.allowedRoot)) {
+    throw new Error('property knowledge source root must be an absolute server path');
+  }
+  const root = resolve(options.allowedRoot);
+  const withinRoot = relative(root, filePath);
+  if (
+    !withinRoot ||
+    withinRoot === '..' ||
+    withinRoot.startsWith(`..${sep}`) ||
+    isAbsolute(withinRoot)
+  ) {
+    throw new Error('property knowledge source path is outside its server-owned root');
+  }
+  return filePath;
+}
+
+function issue(
+  code: PropertyKnowledgeIssueCode,
+  detail: string | null = null,
+): PropertyKnowledgeIssue {
+  return propertyKnowledgeIssueSchema.parse({ code, detail });
+}
+
+function uniqueIssues(issues: readonly PropertyKnowledgeIssue[]): PropertyKnowledgeIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((entry) => {
+    const key = `${entry.code}\0${entry.detail ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function result(input: {
+  propertyRef: string;
+  status: PropertyKnowledgeReadResult['status'];
+  data: PropertyKnowledgeData | null;
+  evidence?: readonly PropertyKnowledgeEvidence[];
+  issues?: readonly PropertyKnowledgeIssue[];
+}): PropertyKnowledgeReadResult {
+  return propertyKnowledgeReadResultSchema.parse({
+    toolId: PROPERTY_KNOWLEDGE_TOOL_ID,
+    schemaVersion: PROPERTY_KNOWLEDGE_CONTRACT_VERSION,
+    status: input.status,
+    scopeRef: input.propertyRef,
+    data: input.data,
+    evidence: input.evidence ?? [],
+    issues: uniqueIssues(input.issues ?? []),
+  });
+}
+
+function safeDate(value: string): number | null {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function safeExpiry(now: Date, effectiveUntil: string | null): string {
+  if (effectiveUntil !== null) return effectiveUntil;
+  return new Date(now.getTime() + DEFAULT_FRESHNESS_MS).toISOString();
+}
+
+function audienceAllows(
+  requested: PropertyKnowledgeAudience,
+  entry: PropertyKnowledgeSourceRecord,
+): boolean {
+  return requested === 'staff' || entry.audience === 'customer_disclosable';
+}
+
+function documentIssue(status: PropertyKnowledgeDocumentCheckStatus): PropertyKnowledgeIssue {
+  switch (status) {
+    case 'changed':
+      return issue('DOCUMENT_CHANGED');
+    case 'expired':
+      return issue('DOCUMENT_EXPIRED');
+    case 'unauthorized':
+      return issue('DOCUMENT_UNAUTHORIZED');
+    case 'missing':
+      return issue('DOCUMENT_MISSING');
+    case 'current':
+      return issue('DOCUMENT_REVALIDATION_UNAVAILABLE', 'unexpected current-document blocker');
+  }
+}
+
+async function revalidateWithExistingDocumentService(input: {
+  service: ExistingDocumentServiceLike;
+  documentRef: string;
+  propertyRef: string;
+  now: Date;
+}): Promise<PropertyKnowledgeDocumentCheck> {
+  try {
+    const read = await input.service.documents_read_existing({
+      documentRef: input.documentRef,
+      format: 'text',
+    });
+    const data = read.data;
+    if (!data) {
+      if (read.blocker === 'DOCUMENT_CHANGED') return { status: 'changed' };
+      if (read.blocker === 'SCOPE_DENIED') return { status: 'unauthorized' };
+      return { status: 'missing' };
+    }
+    if (data.document.propertyRef !== input.propertyRef) return { status: 'unauthorized' };
+    if (data.validation.version !== 'current' || !data.document.currentVersion) {
+      return { status: 'expired' };
+    }
+    return {
+      status: 'current',
+      expiresAt:
+        data.artifactExpiresAt ??
+        new Date(input.now.getTime() + DEFAULT_FRESHNESS_MS).toISOString(),
+    };
+  } catch {
+    return { status: 'missing' };
+  }
+}
+
+async function readLocalKnowledgeFile(
+  filePath: string,
+  signal: AbortSignal,
+  maxBytes: number,
+): Promise<string> {
+  const handle = await open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxBytes) {
+      throw new Error('property knowledge source file exceeds the bounded size');
+    }
+    const buffer = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      if (signal.aborted) throw readAbortedError();
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return buffer.subarray(0, offset).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Load a closed, versioned property source from a server-owned local file.
+ * The path and optional object-reader are captured during server composition;
+ * neither can be supplied by the model-facing request.
+ */
+export function createPropertyKnowledgeFileSource(
+  options: PropertyKnowledgeFileSourceOptions,
+): PropertyKnowledgeSource {
+  const filePath = boundedFilePath(options);
+  const maxBytes = options.maxBytes ?? PROPERTY_KNOWLEDGE_MAX_FILE_BYTES;
+  if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > PROPERTY_KNOWLEDGE_MAX_FILE_BYTES) {
+    throw new Error('property knowledge source maxBytes is outside the bounded limit');
+  }
+  const readFile =
+    options.readFile ??
+    ((input) => readLocalKnowledgeFile(input.filePath, input.signal, input.maxBytes));
+
+  return {
+    async list(input) {
+      if (input.signal.aborted) throw readAbortedError();
+      const raw = await readFile({ filePath, signal: input.signal, maxBytes });
+      if (input.signal.aborted) throw readAbortedError();
+      if (Buffer.byteLength(raw, 'utf8') > maxBytes) {
+        throw new Error('property knowledge source file exceeds the bounded size');
+      }
+
+      let parsedFile: ReturnType<typeof propertyKnowledgeFileSchema.parse>;
+      try {
+        parsedFile = propertyKnowledgeFileSchema.parse(JSON.parse(raw));
+      } catch {
+        throw new Error('property knowledge source file is invalid');
+      }
+      if (parsedFile.entries.some((entry) => entry.propertyRef !== parsedFile.propertyRef)) {
+        throw new Error('property knowledge source file has inconsistent property binding');
+      }
+      return parsedFile.entries.filter((record) => record.topic === input.topic);
+    },
+  };
+}
+
+function toEntry(record: PropertyKnowledgeSourceRecord): PropertyKnowledgeEntry {
+  return {
+    entryRef: record.entryRef,
+    topic: record.topic,
+    content: record.content,
+    sourceKind: record.sourceKind,
+    sourceRef: record.sourceRef,
+    sourceHash: record.sourceHash,
+    version: record.version,
+    ownerRef: record.ownerRef,
+    approval: record.approval,
+    approvedAt: record.approvedAt ?? record.approval.approvedAt!,
+    effectiveFrom: record.effectiveFrom,
+    effectiveUntil: record.effectiveUntil,
+    propertyRef: record.propertyRef,
+    audience: record.audience,
+    documentRefs: [...record.documentRefs],
+  };
+}
+
+function toEvidence(
+  record: PropertyKnowledgeSourceRecord,
+  now: Date,
+  expiresAt: string,
+): PropertyKnowledgeEvidence {
+  // The reader only calls this after proving approvedAt is present.
+  return {
+    sourceRef: record.sourceRef,
+    sourceHash: record.sourceHash,
+    version: record.version,
+    ownerRef: record.ownerRef,
+    approvedAt: record.approval.approvedAt!,
+    effectiveFrom: record.effectiveFrom,
+    effectiveUntil: record.effectiveUntil,
+    observedAt: now.toISOString(),
+    expiresAt,
+    documentRefs: [...record.documentRefs],
+  };
+}
+
+function makeData(input: {
+  propertyRef: string;
+  audience: PropertyKnowledgeAudience;
+  topic: PropertyKnowledgeTopic;
+  entries: readonly PropertyKnowledgeEntry[];
+  conflicts?: readonly PropertyKnowledgeData['conflicts'][number][];
+}): PropertyKnowledgeData {
+  return propertyKnowledgeDataSchema.parse({
+    scope: PROPERTY_KNOWLEDGE_SCOPE,
+    propertyRef: input.propertyRef,
+    audience: input.audience,
+    topic: input.topic,
+    entries: input.entries,
+    conflicts: input.conflicts ?? [],
+  });
+}
+
+/**
+ * Adapt already-resolved local records to the reader source interface. This
+ * helper has no network/storage behavior and is intended for deterministic
+ * local fixtures or a caller's existing storage adapter.
+ */
+export function createPropertyKnowledgeSource(
+  records: readonly PropertyKnowledgeSourceRecord[],
+): PropertyKnowledgeSource {
+  const parsed = records.map((record) => propertyKnowledgeSourceRecordSchema.parse(record));
+  return {
+    async list(input) {
+      if (input.signal.aborted) {
+        throw readAbortedError();
+      }
+      // Keep property filtering in the reader so an unauthorized cross-property
+      // row can become an explicit scope mismatch rather than a guessed absence.
+      return parsed.filter((record) => record.topic === input.topic);
+    },
+  };
+}
+
+export function createPropertyKnowledgeReader(
+  options: PropertyKnowledgeReaderOptions,
+): PropertyKnowledgeReader {
+  const nowFactory = options.now ?? (() => new Date());
+  const defaultPropertyRef = options.defaultPropertyRef;
+  const defaultAudience = options.defaultAudience ?? 'customer';
+  const authorizationAdapter = options.authorization ?? options.authorize;
+
+  return {
+    async read(rawRequest, rawContext = {}) {
+      const request = propertyKnowledgeReadRequestSchema.parse(rawRequest);
+      const propertyRef = rawContext.propertyRef ?? defaultPropertyRef;
+      const audience = rawContext.audience ?? defaultAudience;
+      const now = rawContext.now ?? nowFactory();
+      const signal = rawContext.signal ?? new AbortController().signal;
+      if (!propertyRef) {
+        return result({
+          propertyRef: 'unknown-property',
+          status: 'unavailable',
+          data: null,
+          issues: [issue('AUTHORIZATION_UNAVAILABLE', 'property scope was not supplied')],
+        });
+      }
+      if (!Number.isFinite(now.getTime())) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('SOURCE_UNAVAILABLE', 'invalid observation time')],
+        });
+      }
+      if (signal.aborted) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('READ_ABORTED')],
+        });
+      }
+
+      let authorizationResult: { granted: boolean; reason?: string };
+      if (!authorizationAdapter) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('AUTHORIZATION_UNAVAILABLE', 'no server authorization adapter')],
+        });
+      }
+      try {
+        const authorize =
+          typeof authorizationAdapter === 'function'
+            ? authorizationAdapter
+            : authorizationAdapter.authorize.bind(authorizationAdapter);
+        authorizationResult = await authorize({
+          propertyRef,
+          topic: request.topic,
+          detail: request.detail,
+          audience,
+          now,
+          signal,
+        });
+      } catch {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('AUTHORIZATION_UNAVAILABLE')],
+        });
+      }
+      if (!authorizationResult.granted) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('AUTHORIZATION_DENIED', authorizationResult.reason ?? null)],
+        });
+      }
+
+      let rawRecords: readonly PropertyKnowledgeSourceRecord[];
+      try {
+        rawRecords = await options.source.list({
+          propertyRef,
+          topic: request.topic,
+          detail: request.detail,
+          now,
+          signal,
+        });
+      } catch (error) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [
+            issue(
+              error instanceof Error && error.name === 'AbortError'
+                ? 'READ_ABORTED'
+                : 'SOURCE_UNAVAILABLE',
+            ),
+          ],
+        });
+      }
+      if (!Array.isArray(rawRecords)) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [issue('SOURCE_UNAVAILABLE', 'source returned a non-list result')],
+        });
+      }
+
+      const records: PropertyKnowledgeSourceRecord[] = [];
+      const validationIssues: PropertyKnowledgeIssue[] = [];
+      for (const rawRecord of rawRecords) {
+        const parsed = propertyKnowledgeSourceRecordSchema.safeParse(rawRecord);
+        if (!parsed.success) {
+          validationIssues.push(issue('INVALID_SOURCE_RECORD'));
+          continue;
+        }
+        if (digestContent(parsed.data.content) !== parsed.data.sourceHash) {
+          validationIssues.push(issue('SOURCE_HASH_MISMATCH', parsed.data.sourceRef));
+          continue;
+        }
+        records.push(parsed.data);
+      }
+      if (records.length === 0) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [...validationIssues, issue('TOPIC_UNAVAILABLE')],
+        });
+      }
+
+      const propertyRecords = records.filter((record) => record.propertyRef === propertyRef);
+      if (propertyRecords.length === 0) {
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: [...validationIssues, issue('PROPERTY_SCOPE_MISMATCH')],
+        });
+      }
+
+      const currentApproved: Array<{
+        record: PropertyKnowledgeSourceRecord;
+        documentExpiry: string;
+      }> = [];
+      const issues: PropertyKnowledgeIssue[] = [...validationIssues];
+      const deferredIssues: PropertyKnowledgeIssue[] = [];
+      for (const record of propertyRecords) {
+        if (record.approval.status !== 'approved' || record.approval.approvedAt === null) {
+          deferredIssues.push(issue('POLICY_UNAPPROVED', record.sourceRef));
+          continue;
+        }
+        const approvedAt = safeDate(record.approval.approvedAt);
+        const effectiveFrom = safeDate(record.effectiveFrom);
+        const effectiveUntil =
+          record.effectiveUntil === null ? null : safeDate(record.effectiveUntil);
+        if (
+          approvedAt === null ||
+          approvedAt > now.getTime() ||
+          effectiveFrom === null ||
+          effectiveFrom > now.getTime()
+        ) {
+          deferredIssues.push(issue('KNOWLEDGE_NOT_YET_EFFECTIVE', record.sourceRef));
+          continue;
+        }
+        if (effectiveUntil !== null && effectiveUntil <= now.getTime()) {
+          deferredIssues.push(issue('KNOWLEDGE_EXPIRED', record.sourceRef));
+          continue;
+        }
+        if (!audienceAllows(audience, record)) {
+          deferredIssues.push(issue('AUDIENCE_NOT_AUTHORIZED', record.sourceRef));
+          continue;
+        }
+        if (record.content.length > PROPERTY_KNOWLEDGE_MAX_CONTENT_CHARS) {
+          deferredIssues.push(issue('CONTENT_LIMIT', record.sourceRef));
+          continue;
+        }
+        if (hasPaymentSecret(record.content)) {
+          deferredIssues.push(issue('PAYMENT_SECRET_REDACTED', record.sourceRef));
+          continue;
+        }
+
+        let documentExpiry = safeExpiry(now, record.effectiveUntil);
+        let documentBlocked = false;
+        for (const documentRef of record.documentRefs) {
+          let check: PropertyKnowledgeDocumentCheck;
+          try {
+            if (options.revalidateDocument) {
+              check = await options.revalidateDocument({
+                documentRef,
+                propertyRef,
+                sourceRef: record.sourceRef,
+                now,
+                signal,
+              });
+            } else if (options.existingDocumentService) {
+              check = await revalidateWithExistingDocumentService({
+                service: options.existingDocumentService,
+                documentRef,
+                propertyRef,
+                now,
+              });
+            } else {
+              check = { status: 'missing' };
+              issues.push(issue('DOCUMENT_REVALIDATION_UNAVAILABLE', documentRef));
+            }
+          } catch {
+            check = { status: 'missing' };
+          }
+          if (check.status !== 'current') {
+            issues.push(documentIssue(check.status));
+            documentBlocked = true;
+            continue;
+          }
+          if (check.expiresAt) {
+            const expiry = safeDate(check.expiresAt);
+            if (expiry === null || expiry <= now.getTime()) {
+              issues.push(issue('DOCUMENT_EXPIRED', documentRef));
+              documentBlocked = true;
+              continue;
+            }
+            if (expiry < Date.parse(documentExpiry)) documentExpiry = check.expiresAt;
+          }
+        }
+        if (!documentBlocked) currentApproved.push({ record, documentExpiry });
+      }
+
+      if (currentApproved.length === 0) {
+        const unavailableIssues = [...issues, ...deferredIssues];
+        const hasTemporalOrPolicyEvidence = unavailableIssues.some((entry) =>
+          [
+            'POLICY_UNAPPROVED',
+            'KNOWLEDGE_NOT_YET_EFFECTIVE',
+            'KNOWLEDGE_EXPIRED',
+            'AUDIENCE_NOT_AUTHORIZED',
+            'PAYMENT_SECRET_REDACTED',
+            'DOCUMENT_REVALIDATION_UNAVAILABLE',
+            'DOCUMENT_CHANGED',
+            'DOCUMENT_EXPIRED',
+            'DOCUMENT_UNAUTHORIZED',
+            'DOCUMENT_MISSING',
+          ].includes(entry.code),
+        );
+        return result({
+          propertyRef,
+          status: 'unavailable',
+          data: null,
+          issues: hasTemporalOrPolicyEvidence
+            ? unavailableIssues
+            : [...unavailableIssues, issue('TOPIC_UNAVAILABLE')],
+        });
+      }
+
+      const byContent = new Map<string, typeof currentApproved>();
+      for (const candidate of currentApproved) {
+        const key = digestContent(candidate.record.content);
+        const group = byContent.get(key) ?? [];
+        group.push(candidate);
+        byContent.set(key, group);
+      }
+      if (byContent.size > 1) {
+        const conflict = {
+          topic: request.topic,
+          entryRefs: currentApproved.map(({ record }) => record.entryRef),
+          sourceRefs: currentApproved.map(({ record }) => record.sourceRef),
+        };
+        const data = makeData({
+          propertyRef,
+          audience,
+          topic: request.topic,
+          entries: [],
+          conflicts: [conflict],
+        });
+        return result({
+          propertyRef,
+          status: 'ambiguous',
+          data,
+          evidence: [],
+          issues: [...issues, issue('CONFLICTING_APPROVED_SOURCES')],
+        });
+      }
+
+      const entries = currentApproved
+        .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
+        .map(({ record: entry }) => toEntry(entry));
+      const evidence = currentApproved
+        .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
+        .map(({ record: entry, documentExpiry }) => toEvidence(entry, now, documentExpiry));
+      const data = makeData({ propertyRef, audience, topic: request.topic, entries });
+      return result({
+        propertyRef,
+        status: issues.length > 0 ? 'partial' : 'ok',
+        data,
+        evidence,
+        issues,
+      });
+    },
+  };
+}
+
+/** Small functional adapter useful to non-class callers and tests. */
+export function readPropertyKnowledge(
+  reader: PropertyKnowledgeReader,
+  request: PropertyKnowledgeReadRequest,
+  context?: PropertyKnowledgeReadContextInput,
+): Promise<PropertyKnowledgeReadResult> {
+  return reader.read(request, context);
+}

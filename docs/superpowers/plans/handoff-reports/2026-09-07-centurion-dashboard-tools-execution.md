@@ -1,6 +1,12 @@
 # Centurion Dashboard, Read Tools and Drafting — Execution Ledger
 
-## Current checkpoint — U15 local repair accepted (2026-09-08)
+## Current checkpoint — U16 locally verified candidate (2026-09-08)
+
+- U16 implements fixed-topic approved property knowledge with source/hash/version/owner/approval/effective/property/audience bindings, independent linked-document revalidation and a model-free existing-tool facade. After identifying that the first source adapter only accepted already-resolved records, the same Luna worker completed an actual server-configured local-file loader with a closed envelope, bounded bytes, cancellation and property checks; no new storage platform or HMS permission was added.
+- Writer reports19 focused tests/0 skips. Root freshly reruns exact unit knowledge/reads/documents, reviewed server build, installed Oxlint on all4 changed TS files, Prettier on those4 plus the synthetic JSON fixture, and diff check: all PASS. Initial missing-module RED collected0 tests; later fixture property-mismatch failures and corrections are recorded separately. A narrow test TypeScript probe has diagnostics in unchanged shared files with baseline causality unproved; the normal scoped server build passes.
+- Real approved property source/configuration and owner approval are absent; no fixture is hotel policy or live activation. The local reader candidate still requires fresh independent specification/quality review. Private report: `.private/centurion-dashboard-tools-execution/u16-report.md`. No DB migration, live model/storage/PMS call, business write, push or deployment occurred.
+
+## U15 local repair accepted (2026-09-08)
 
 - Independent re-review at04bd6577 returns repair specification PASS and task quality PASS, all three original P1s closed and no new Important/Critical findings. Accepted local repairs are opaque source/parent/property/branch/revision/expiry-bound references with a public `{kind, reference, expiresAt}` projection and durable issuer/worker revalidation; exact reviewed GSGRPB response envelope/fields; complete finalized group receipt, artifact, revision, safety and expiry checks. The document revision/null-manifest path is also accepted. Review: `.private/centurion-dashboard-tools-execution/u15-repair-review.md`. This accepts the local repair, not full native U15 readiness.
 - Root freshly verifies exact unit contexts/reads/documents/quotes/finance, targeted group30/admission6/artifact25 (61 passed), sequential literal owned-PG16 DB documents/reads/quotes/finance, reviewed server build, installed Oxlint/Prettier over all14 changed TS paths and diff check: all PASS. A document regression first produced13/25 dead-letter failures because the shared worker required an HMS revision for non-PMS mail reads; applicable source-revision selection repaired it without inventing capture proof. Earlier failed receipts remain historical, not final verification.
@@ -43,7 +49,7 @@
 | U17 | Finance and deposit evidence | Complete for local implementation; reviewed | `d3af800c` independent specification/quality PASS closes audited receipts, per-branch manifest/scope/artifact joins, authoritative durable expiry and observed property/record scope; no live/Phase2B claim |
 | U7 | All-night availability/rate evidence | Complete for local implementation; reviewed | `d3af800c` independent specification/quality PASS; exact source authority, allocation/currency/segments, audited receipts/digests and typed/durable expiry verified locally. Real commercial catalog remains unavailable; no live/Phase2B acceptance |
 | U15 | Company/group/event/notes context | Local repair PASS/PASS at04bd6577; native readiness incomplete | Three P1s closed; fresh unit/DB/build/14-file checks pass. All four native relationship-discovery paths remain unavailable; synthetic binding and group capture proof are not live readiness |
-| U16 | Approved property knowledge | Pending | U1; shared read/artifact interfaces |
+| U16 | Approved property knowledge | Local candidate verified; independent review pending | Actual bounded local-file loader and existing facade implemented; root unit/build/4TS+JSON static checks pass. Real approved property source/owner configuration remains unavailable |
 | U5 | Safe drafting and approved model adapter | Pending | Useful read milestone; each consumed capability gated |
 | U2 | Ask-aware service projection | Pending | U12/U5 |
 | U13 | Private predictions and factual evaluation | Pending | U2/U5 and released capabilities |
