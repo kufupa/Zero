@@ -543,6 +543,48 @@ describe('live quote stay driver', () => {
     expect(first.evidence.artifactRef).toBe('quote-artifact-1');
   });
 
+  it('bounds typed quote evidence by the actual finalized capture expiry', async () => {
+    const c = candidate();
+    const receiptExpiry = new Date(Date.now() + 2_000).toISOString();
+    const auditSpec: HmsBrowserAuditSpec = {
+      operationId: 'quote-expiry-authority',
+      toolId: 'hms_quote_stay',
+      toolVersion: '2.0.0',
+      dependencyRevision: 'playwright-1.52.0-chromium-1169',
+      executionClass: 'normal',
+      inputClass: 'authorized_exact',
+      requestBranchId: 'quote_availability_search',
+    };
+    const fixture = mockRuntime(
+      liveEnvelope([
+        { date: '2026-09-10', rate: 100, avail: 1 },
+        { date: '2026-09-11', rate: 110, avail: 1 },
+      ]),
+      {
+        artifactId: 'quote-expiry-artifact',
+        operationId: auditSpec.operationId,
+        toolId: auditSpec.toolId,
+        toolVersion: auditSpec.toolVersion,
+        executionClass: auditSpec.executionClass,
+        inputClass: auditSpec.inputClass,
+        requestBranchId: auditSpec.requestBranchId,
+        operationOutcome: 'succeeded',
+        artifactState: 'complete',
+        expiresAt: receiptExpiry,
+      },
+    );
+    const result = await createLiveQuoteStayDriver({
+      runtime: fixture.runtime,
+      transportId: 'transport-centurion',
+      auditSpecFor: () => auditSpec,
+    }).observeExactQuote(auth(), c, new AbortController().signal);
+    expect(result.status).toBe('ok');
+    expect(result.evidence.kind).toBe('hms');
+    if (result.evidence.kind === 'hms') {
+      expect(result.evidence.expiresAt).toBe(receiptExpiry);
+    }
+  });
+
   it('does not bind a quote to a mismatched or unsuccessful finalized receipt', async () => {
     const c = candidate();
     const auditSpec: HmsBrowserAuditSpec = {
@@ -634,6 +676,49 @@ describe('live quote stay driver', () => {
       expect(result.unresolvedFields).toContain('audit_capture_receipt');
       expect(result.evidence.kind).toBe('hms');
       if (result.evidence.kind === 'hms') expect(result.evidence.artifactRef).toBeUndefined();
+    }
+  });
+
+  it('rejects missing and malformed finalized receipt expiry independently', async () => {
+    const c = candidate();
+    const auditSpec: HmsBrowserAuditSpec = {
+      operationId: 'quote-receipt-expiry-shape-negative',
+      toolId: 'hms_quote_stay',
+      toolVersion: '2.0.0',
+      dependencyRevision: 'playwright-1.52.0-chromium-1169',
+      executionClass: 'normal',
+      inputClass: 'authorized_exact',
+      requestBranchId: 'quote_availability_search',
+    };
+    for (const [label, expiresAt] of [
+      ['missing', undefined],
+      ['malformed', 'not-a-timestamp'],
+    ] as const) {
+      const fixture = mockRuntime(
+        liveEnvelope([
+          { date: '2026-09-10', rate: 100, avail: 1 },
+          { date: '2026-09-11', rate: 110, avail: 1 },
+        ]),
+        {
+          artifactId: `quote-expiry-shape-${label}`,
+          operationId: auditSpec.operationId,
+          toolId: auditSpec.toolId,
+          toolVersion: auditSpec.toolVersion,
+          executionClass: auditSpec.executionClass,
+          inputClass: auditSpec.inputClass,
+          requestBranchId: auditSpec.requestBranchId,
+          operationOutcome: 'succeeded',
+          artifactState: 'complete',
+          expiresAt,
+        },
+      );
+      const result = await createLiveQuoteStayDriver({
+        runtime: fixture.runtime,
+        transportId: 'transport-centurion',
+        auditSpecFor: () => auditSpec,
+      }).observeExactQuote(auth(), c, new AbortController().signal);
+      expect(result.status, label).toBe('manual_required');
+      expect(result.unresolvedFields, label).toContain('audit_capture_receipt');
     }
   });
 

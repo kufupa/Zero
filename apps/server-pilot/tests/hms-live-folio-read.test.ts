@@ -386,6 +386,96 @@ describe('mergeFolioEvidence', () => {
     expect(currencyMismatch.status).toBe('manual_required');
     expect(currencyMismatch.unresolvedFields).toContain('FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT');
   });
+
+  it('bounds merged finance evidence by the earliest finalized branch capture', () => {
+    const observedAt = new Date().toISOString();
+    const balanceExpiry = new Date(Date.now() + 30_000).toISOString();
+    const depositExpiry = new Date(Date.now() + 90_000).toISOString();
+    const binding: FolioEvidenceBinding = {
+      runId: 'expiry-run',
+      readResultRef: 'expiry-read-result',
+      transportId: 'expiry-transport',
+      threadId: 'expiry-thread',
+      triggerMessageId: 'expiry-message',
+      candidateId: 'expiry-candidate',
+      reservationRef: 'expiry-reservation',
+      inputDigest: 'a'.repeat(64),
+      requesterAuthorizationId: 'expiry-authorization',
+      releaseId: 'expiry-release',
+      requestBranchIds: ['folio_summary', 'deposit_ledger_summary'],
+      manifestSha256ByBranch: {
+        folio_summary: 'b'.repeat(64),
+        deposit_ledger_summary: 'c'.repeat(64),
+      },
+      scopeHash: SCOPE,
+      captureBindingRef: 'expiry-read-result',
+      propertyCode: 'HRCEN',
+      confirmationToken: CONFIRM,
+    };
+    const receipt = (branch: 'folio_summary' | 'deposit_ledger_summary', expiresAt: string) => ({
+      artifactId: `${branch}-expiry-artifact`,
+      operationId: binding.runId,
+      toolId: 'hms_read_folio' as const,
+      toolVersion: '1.0.0',
+      executionClass: 'normal' as const,
+      inputClass: 'authorized_exact' as const,
+      requestBranchId: branch,
+      operationOutcome: 'succeeded' as const,
+      expiresAt,
+    });
+    const balance: FolioBalanceKernelResult = {
+      status: 'ok',
+      currency: 'ZAR',
+      totalBalance: '12.00',
+      evidenceId: 'expiry-balance-evidence',
+      blocker: null,
+      scopeVerified: true,
+      manifestSha256: binding.manifestSha256ByBranch.folio_summary,
+      scopeHash: SCOPE,
+      artifactRef: 'folio_summary-expiry-artifact',
+      finalizedReceipt: receipt('folio_summary', balanceExpiry),
+      observedAt,
+      rowsScanned: 1,
+      bytesObserved: 100,
+      durationMs: 10,
+    };
+    const deposit: DepositSummaryKernelResult = {
+      status: 'ok',
+      currency: 'ZAR',
+      depositSummary: buildDepositSummary({
+        due: '0.00',
+        paid: '10.00',
+        refunded: '0.00',
+        forfeited: '0.00',
+        transferred: '0.00',
+      }),
+      evidenceId: 'expiry-deposit-evidence',
+      blocker: null,
+      scopeVerified: true,
+      manifestSha256: binding.manifestSha256ByBranch.deposit_ledger_summary,
+      scopeHash: SCOPE,
+      artifactRef: 'deposit_ledger_summary-expiry-artifact',
+      finalizedReceipt: receipt('deposit_ledger_summary', depositExpiry),
+      observedAt,
+      rowsScanned: 1,
+      bytesObserved: 100,
+      durationMs: 10,
+      completeness: 'complete',
+      unmappedActivities: [],
+    };
+    const merged = mergeFolioEvidence(
+      [balance, deposit],
+      disclosure,
+      ['balance', 'deposits'],
+      binding,
+    );
+    expect(merged.status).toBe('ok');
+    expect(merged.evidence.kind).toBe('hms');
+    if (merged.evidence.kind === 'hms') {
+      expect(merged.evidence.expiresAt).toBe(balanceExpiry);
+      expect(Date.parse(merged.evidence.expiresAt)).toBeLessThan(Date.parse(depositExpiry));
+    }
+  });
 });
 
 describe('live folio driver binding + denied actions', () => {
@@ -536,6 +626,8 @@ describe('live folio driver binding + denied actions', () => {
         body: folioEnvelope([
           {
             confirmationnumber: CONFIRM,
+            closingdate: '06-AUG-2026',
+            property: 'HRCEN',
             currency: 'ZAR',
             newdeposits: '10.00',
             refunds: '0.00',
@@ -575,6 +667,71 @@ describe('live folio driver binding + denied actions', () => {
             );
       expect(result.status).toBe('manual_required');
       expect(result.blocker).toBe('FOLIO_FINALIZED_RECEIPT_INVALID');
+    }
+  });
+
+  it('rejects missing and malformed finalized receipt expiry independently on both finance branches', async () => {
+    const cases = [
+      {
+        branch: 'folio_summary' as const,
+        body: folioEnvelope([
+          { confirmationnumber: CONFIRM, foliobalance: '12.00', propertycurrency: 'ZAR' },
+        ]),
+      },
+      {
+        branch: 'deposit_ledger_summary' as const,
+        body: folioEnvelope([
+          {
+            confirmationnumber: CONFIRM,
+            closingdate: '06-AUG-2026',
+            property: 'HRCEN',
+            currency: 'ZAR',
+            newdeposits: '10.00',
+            refunds: '0.00',
+            forfeits: '0.00',
+            toguestledger: '0.00',
+          },
+        ]),
+      },
+    ];
+    for (const testCase of cases) {
+      for (const [label, expiresAt] of [
+        ['missing', undefined],
+        ['malformed', 'not-a-timestamp'],
+      ] as const) {
+        const { runtime } = mockRuntime(testCase.body, { expiresAt });
+        const driver = createLiveFolioReadDriver({
+          runtime,
+          transportId: 't1',
+          expectedConfirmationToken: CONFIRM,
+          expectedPropertyCode: 'HRCEN',
+          auditSpecFor: ({ branchId }) => ({
+            operationId: `finance-expiry-shape-${testCase.branch}-${label}`,
+            toolId: 'hms_read_folio',
+            toolVersion: '1.0.0',
+            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+            requestBranchId: branchId,
+          }),
+        });
+        const result =
+          testCase.branch === 'folio_summary'
+            ? await driver.observeFolioBalance(
+                auth({ requestBranchId: testCase.branch }),
+                child({ requestBranchId: testCase.branch }),
+                new AbortController().signal,
+              )
+            : await driver.observeDepositSummary(
+                auth({ requestBranchId: testCase.branch }),
+                child({ requestBranchId: testCase.branch }),
+                new AbortController().signal,
+              );
+        expect(result.status, `${testCase.branch}/${label}`).toBe('manual_required');
+        expect(result.blocker, `${testCase.branch}/${label}`).toBe(
+          'FOLIO_FINALIZED_RECEIPT_INVALID',
+        );
+      }
     }
   });
 
@@ -667,6 +824,61 @@ describe('live folio driver binding + denied actions', () => {
     expect(
       posts.every((p) => !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path)),
     ).toBe(true);
+  });
+
+  it('rejects missing, malformed, and mixed LST property scope before DLD or aggregation', async () => {
+    const cases = [
+      [
+        {
+          closingdate: '06-AUG-2026',
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          newdeposits: '10.00',
+        },
+      ],
+      [
+        {
+          closingdate: '06-AUG-2026',
+          property: '???',
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          newdeposits: '10.00',
+        },
+      ],
+      [
+        { closingdate: '06-AUG-2026', property: 'HRCEN' },
+        {
+          closingdate: '05-AUG-2026',
+          property: '',
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          newdeposits: '10.00',
+        },
+      ],
+    ];
+    for (const [index, rows] of cases.entries()) {
+      const { runtime, posts } = mockRuntime(folioEnvelope(rows));
+      const driver = createLiveFolioReadDriver({
+        runtime,
+        transportId: 't1',
+        expectedConfirmationToken: CONFIRM,
+        expectedPropertyCode: 'HRCEN',
+      });
+      const result = await driver.observeDepositSummary(
+        auth({ requestBranchId: 'deposit_ledger_summary' }),
+        child({ requestBranchId: 'deposit_ledger_summary' }),
+        new AbortController().signal,
+      );
+      expect(result.status, `property case ${index}`).toBe('manual_required');
+      expect(result.blocker, `property case ${index}`).toBe(
+        'DEPOSIT_LEDGER_PROPERTY_SCOPE_UNRESOLVED',
+      );
+      expect(result.depositSummary, `property case ${index}`).toBeNull();
+      expect(
+        posts.some((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH),
+        `property case ${index}`,
+      ).toBe(false);
+    }
   });
 
   it('rejects an LST property mismatch before any DLD request', async () => {

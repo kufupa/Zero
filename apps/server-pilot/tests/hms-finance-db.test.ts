@@ -282,7 +282,12 @@ async function withReadOnlyWorkerEnv<T>(callback: () => Promise<T>): Promise<T> 
   }
 }
 
-function makeLowerIoRuntime(options: { finalizedReceipt?: boolean } = {}): {
+function makeLowerIoRuntime(
+  options: {
+    finalizedReceipt?: boolean;
+    receiptExpiresAtByBranch?: Partial<Record<'folio_summary' | 'deposit_ledger_summary', string>>;
+  } = {},
+): {
   runtime: import('../src/hms/runtime.js').HmsRuntime;
   calls: Array<{
     releaseId: string;
@@ -440,7 +445,12 @@ function makeLowerIoRuntime(options: { finalizedReceipt?: boolean } = {}): {
             milestones: {},
             terminalCode: 'OK',
             terminalStage: 'receipt_finalize',
-            expiresAt: '2099-09-07T12:05:00.000Z',
+            expiresAt:
+              options.receiptExpiresAtByBranch?.[
+                (latestAuditSpec.requestBranchId ?? 'folio_summary') as
+                  | 'folio_summary'
+                  | 'deposit_ledger_summary'
+              ] ?? '2099-09-07T12:05:00.000Z',
             artifactState: 'complete',
             trace: { sha256: '1'.repeat(64), bytes: 1 },
             video: null,
@@ -692,7 +702,15 @@ describe('U17 finance normal-runtime DB RED contract', () => {
 
       await withReadOnlyWorkerEnv(async () => {
         const installed = await installRealFolioRelease();
-        const lowerIo = makeLowerIoRuntime({ finalizedReceipt: true });
+        const balanceReceiptExpiry = new Date(Date.now() + 30_000).toISOString();
+        const depositReceiptExpiry = new Date(Date.now() + 90_000).toISOString();
+        const lowerIo = makeLowerIoRuntime({
+          finalizedReceipt: true,
+          receiptExpiresAtByBranch: {
+            folio_summary: balanceReceiptExpiry,
+            deposit_ledger_summary: depositReceiptExpiry,
+          },
+        });
         try {
           expect(
             await claimNextAiRun({
@@ -767,6 +785,9 @@ describe('U17 finance normal-runtime DB RED contract', () => {
             totalBalance: '120.00',
             disclosure: { claimEligibility: 'blocked' },
           });
+          expect(lowerIo.calls.map((call) => call.requestBranchId)).toEqual(
+            expect.arrayContaining(['folio_summary', 'deposit_ledger_summary']),
+          );
           expect(receipt.result.evidence[0]).toMatchObject({
             scopeVerified: true,
             artifactRef: expect.stringMatching(/^u17-folio-artifact-/),
@@ -782,10 +803,14 @@ describe('U17 finance normal-runtime DB RED contract', () => {
             },
             scopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
           });
+          expect(receipt.result.evidence[0]?.expiresAt).toBe(balanceReceiptExpiry);
           const [financeRun] = await db
             .select()
             .from(aiWorkflowRun)
             .where(eq(aiWorkflowRun.id, finance.runId));
+          expect(financeRun?.readResultExpiresAt?.getTime()).toBeLessThanOrEqual(
+            Date.parse(balanceReceiptExpiry),
+          );
           const queuedRequest = financeRun?.readRequest as {
             candidateId?: string;
             admission?: { reservationRef?: string | null };

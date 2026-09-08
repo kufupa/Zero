@@ -28,6 +28,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER =
   'BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN';
+export const DEPOSIT_LEDGER_PROPERTY_SCOPE_UNRESOLVED = 'DEPOSIT_LEDGER_PROPERTY_SCOPE_UNRESOLVED';
 export const FOLIO_RESERVATION_SCOPE_BLOCKER = 'BLOCKED_FOLIO_RESERVATION_SCOPE_UNPROVEN';
 
 export const LIVE_FOLIO_BALANCE_ALIAS_KEYS = ['foliobalance', 'propertycurrency'] as const;
@@ -44,6 +45,22 @@ export const LIVE_DEPOSIT_LEDGER_ALIAS_KEYS = [
   'activitytype_display',
   'toaccount',
 ] as const;
+
+const DEPOSIT_LEDGER_SCOPE_FIELDS = new Set([
+  'closingdate',
+  'hoteldate',
+  'closing_date',
+  'property',
+  'confirmationnumber',
+  'currency',
+  'newdeposits',
+  'refunds',
+  'forfeits',
+  'toguestledger',
+  'fromdeposit',
+  'amount',
+  'activitytype_display',
+]);
 
 /** Max LST date rows to open as DLD detail (abort-first budget). */
 export const DEPOSIT_LEDGER_MAX_DETAIL_DATES = 7;
@@ -402,6 +419,8 @@ export type DepositLedgerDateScopeExtraction = {
   truncated: boolean;
   rowsObserved: number;
   propertyMismatch?: boolean;
+  propertyUnknown?: boolean;
+  matchingConfirmationObserved?: boolean;
 };
 
 /**
@@ -412,6 +431,7 @@ export function extractDepositLedgerDateScopes(
   text: string,
   maxDates = DEPOSIT_LEDGER_MAX_DETAIL_DATES,
   expectedPropertyCode?: string,
+  expectedConfirmationToken?: string,
 ): DepositLedgerDateScopeExtraction {
   const pageData = parsePageData(text);
   if (!pageData) return { scopes: [], truncated: false, rowsObserved: 0 };
@@ -422,12 +442,30 @@ export function extractDepositLedgerDateScopes(
   const seen = new Set<string>();
   let truncated = rows.length > boundedRows.length;
   let propertyMismatch = false;
+  let propertyUnknown = false;
+  let matchingConfirmationObserved = false;
   for (const row of boundedRows) {
     const closingdate =
       strOrEmpty(row.closingdate) || strOrEmpty(row.hoteldate) || strOrEmpty(row.closing_date);
     const property = strOrEmpty(row.property);
-    if (!closingdate || !property) continue;
-    if (!/^[A-Z0-9]{2,16}$/i.test(property)) continue;
+    const hasScopeSignals = Object.keys(row).some((key) =>
+      DEPOSIT_LEDGER_SCOPE_FIELDS.has(key.toLowerCase()),
+    );
+    if (
+      expectedConfirmationToken &&
+      strOrEmpty(row.confirmationnumber) === expectedConfirmationToken
+    ) {
+      matchingConfirmationObserved = true;
+    }
+    if (!property) {
+      if (hasScopeSignals) propertyUnknown = true;
+      continue;
+    }
+    if (!/^[A-Z0-9]{2,16}$/i.test(property)) {
+      propertyUnknown = true;
+      continue;
+    }
+    if (!closingdate) continue;
     const normalizedProperty = property.toUpperCase();
     if (expectedPropertyCode && normalizedProperty !== expectedPropertyCode.toUpperCase()) {
       propertyMismatch = true;
@@ -445,7 +483,14 @@ export function extractDepositLedgerDateScopes(
       truncated = true;
     }
   }
-  return { scopes: out, truncated, rowsObserved: rows.length, propertyMismatch };
+  return {
+    scopes: out,
+    truncated,
+    rowsObserved: rows.length,
+    propertyMismatch,
+    propertyUnknown,
+    matchingConfirmationObserved,
+  };
 }
 
 function depositCardLeak(text: string): boolean {
@@ -1113,7 +1158,11 @@ export function mergeFolioEvidence(
   }
 
   const evidenceRef = balance?.evidenceId ?? deposit?.evidenceId ?? evidence.id;
-  const expiresAt = evidence.expiresAt;
+  const finalizedCaptureExpiries = successfulSteps
+    .map((step) => Date.parse(step.finalizedReceipt?.expiresAt ?? ''))
+    .filter((expiry): expiry is number => Number.isFinite(expiry));
+  const policyExpiry = Date.parse(evidence.expiresAt);
+  const expiresAt = new Date(Math.min(policyExpiry, ...finalizedCaptureExpiries)).toISOString();
   const richBalance = richBalanceSection(
     balance,
     currency,
@@ -1171,6 +1220,7 @@ export function mergeFolioEvidence(
       unresolvedFields: partial ? unresolved : [],
       evidence: {
         ...evidence,
+        expiresAt,
         claimKeys: ['folio_deposit_summary'],
         sourceHash: sha256Hex(
           canonicalJson({
@@ -1448,6 +1498,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           lstText,
           DEPOSIT_LEDGER_MAX_DETAIL_DATES,
           expectedPropertyCode,
+          expectedConfirmationToken,
         );
         if (scopeExtraction.propertyMismatch) {
           return {
@@ -1456,6 +1507,24 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             depositSummary: null,
             evidenceId: null,
             blocker: 'DEPOSIT_LEDGER_PROPERTY_SCOPE_MISMATCH',
+            observedAt: observedAt.toISOString(),
+            durationMs: Date.now() - started,
+            bytesObserved: Buffer.byteLength(lstText),
+            rowsScanned: scopeExtraction.rowsObserved,
+            reservationScopeProven: false,
+            scopeVerified: false,
+          };
+        }
+        if (
+          scopeExtraction.propertyUnknown &&
+          (scopeExtraction.matchingConfirmationObserved || scopeExtraction.scopes.length > 0)
+        ) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            depositSummary: null,
+            evidenceId: null,
+            blocker: DEPOSIT_LEDGER_PROPERTY_SCOPE_UNRESOLVED,
             observedAt: observedAt.toISOString(),
             durationMs: Date.now() - started,
             bytesObserved: Buffer.byteLength(lstText),

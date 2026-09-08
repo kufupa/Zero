@@ -85,7 +85,7 @@ function liveEnvelope(): string {
   });
 }
 
-function runtimeFixture() {
+function runtimeFixture(options: { receiptExpiresAt?: string } = {}) {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
   let latestAuditSpec:
     | { operationId?: string; toolId?: string; toolVersion?: string; requestBranchId?: string }
@@ -137,7 +137,7 @@ function runtimeFixture() {
         toolId: auditSpec.toolId ?? 'hms_quote_stay',
         toolVersion: auditSpec.toolVersion ?? '2.0.0',
         requestBranchId: auditSpec.requestBranchId ?? null,
-        expiresAt: '2099-09-08T12:05:00.000Z',
+        expiresAt: options.receiptExpiresAt ?? '2099-09-08T12:05:00.000Z',
         executionClass: 'normal',
         inputClass: 'authorized_exact',
         artifactState: 'complete',
@@ -491,7 +491,8 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
           });
           expect(claimed?.id).toBe(run.id);
 
-          const fixture = runtimeFixture();
+          const receiptExpiry = new Date(Date.now() + 30_000).toISOString();
+          const fixture = runtimeFixture({ receiptExpiresAt: receiptExpiry });
           const execution = await executeAiRun(run.id, {
             hmsRuntime: fixture.runtime,
             quoteReferenceAuthorityLoader: syntheticQuoteReferenceAuthorityLoader(),
@@ -546,6 +547,13 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               ?.evidence?.[0]?.manifestSha256,
           ).toBe(
             activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
+          );
+          expect(
+            (stored?.readResult as { evidence?: Array<{ expiresAt?: string }> } | null)
+              ?.evidence?.[0]?.expiresAt,
+          ).toBe(receiptExpiry);
+          expect(stored?.readResultExpiresAt?.getTime()).toBeLessThanOrEqual(
+            Date.parse(receiptExpiry),
           );
           const receipt = await readAiRunReceipt(
             {

@@ -480,10 +480,15 @@ function attachFinalizedQuoteReceipt(
     };
   }
   const artifactId = receipt!.artifactId;
+  const evidenceExpiry = Date.parse(result.evidence.expiresAt);
+  const effectiveExpiresAt = new Date(
+    Math.min(Number.isFinite(evidenceExpiry) ? evidenceExpiry : receiptExpiry, receiptExpiry),
+  ).toISOString();
   return {
     ...result,
     evidence: {
       ...result.evidence,
+      expiresAt: effectiveExpiresAt,
       artifactRef: artifactId,
       sourceHash: sha256Hex(
         canonicalJson({

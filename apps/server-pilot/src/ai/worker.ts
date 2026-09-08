@@ -944,7 +944,7 @@ export function mapProductionReservationRead(
   return { status: 'matched', row: rows[0]!, ...evidence };
 }
 
-function readResultExpiry(result: ReadResult<unknown>): Date {
+function readResultExpiry(result: ReadResult<unknown>, policyDeadline?: Date): Date {
   const expiries = result.evidence
     .map((evidence) => Date.parse(evidence.expiresAt))
     .filter((value) => Number.isFinite(value));
@@ -952,6 +952,9 @@ function readResultExpiry(result: ReadResult<unknown>): Date {
     throw Object.assign(new Error('read result has no valid evidence expiry'), {
       failureClass: 'SCHEMA_DRIFT' as const,
     });
+  }
+  if (policyDeadline && Number.isFinite(policyDeadline.getTime())) {
+    expiries.push(policyDeadline.getTime());
   }
   return new Date(Math.min(...expiries));
 }
@@ -2547,7 +2550,7 @@ export async function executeAiRun(
         expectedStates: ['running'],
         readResultRef,
         readResult: read.result,
-        readResultExpiresAt: readResultExpiry(read.result),
+        readResultExpiresAt: readResultExpiry(read.result, fence.deadlineAt),
         metrics: {
           readTool: true,
           status: read.result.status,
