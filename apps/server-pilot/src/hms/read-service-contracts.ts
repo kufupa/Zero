@@ -19,7 +19,7 @@ export type ReadRef = z.infer<typeof readRefSchema>;
 
 export const readTimestampSchema = z.string().datetime({ offset: true });
 
-const readDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const readDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 /**
  * Trusted worker-side admission binding. It is carried beside (never inside
@@ -29,6 +29,8 @@ export const readAdmissionSchema = z
   .object({
     releaseId: readRefSchema,
     requestBranchId: z.string().min(1).max(128),
+    /** Independently reviewed manifest digest for this exact request branch. */
+    manifestSha256: readDigestSchema.optional(),
     requesterAuthorizationId: readRefSchema,
     inputDigest: readDigestSchema,
     captureRequired: z.boolean(),
@@ -245,6 +247,12 @@ export const readEvidenceSchema = z
     artifactRef: readRefSchema.nullable(),
     artifactRefs: z.array(readRefSchema).min(1).optional(),
     sourceHash: readDigestSchema.optional(),
+    /** Exact reviewed branch manifest joined to this durable evidence. */
+    manifestSha256: readDigestSchema.optional(),
+    /** Every reviewed branch exercised by one normal finance result. */
+    manifestSha256ByBranch: z.record(readDigestSchema).optional(),
+    /** Canonical finance scope digest joined to this durable evidence. */
+    scopeHash: readDigestSchema.optional(),
   })
   .strict();
 export type ReadEvidence = z.infer<typeof readEvidenceSchema>;

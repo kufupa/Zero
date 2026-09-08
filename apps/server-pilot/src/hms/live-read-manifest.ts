@@ -1310,7 +1310,14 @@ export function buildLiveFolioReadManifest(origin: string): RequestPolicyManifes
  * DLD soft-capture body keys: CURRENT_TAB_NAME, SYSTEM/USER_FUNCTION_NAME,
  * closingdate, property (2026-08-07 Property Ledger → Deposit Ledger row activate).
  */
-export function buildLiveDepositLedgerFunctionalRules(origin: string): RequestRule[] {
+export function buildLiveDepositLedgerFunctionalRules(
+  origin: string,
+  expectedPropertyCode = 'HRCEN',
+): RequestRule[] {
+  const propertyCode = expectedPropertyCode.trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,16}$/.test(propertyCode)) {
+    throw new Error('deposit ledger expected property code is invalid');
+  }
   return [
     {
       id: 'live-osledg-open',
@@ -1370,7 +1377,7 @@ export function buildLiveDepositLedgerFunctionalRules(origin: string): RequestRu
       },
       variableBody: {
         closingdate: { pattern: '.{1,32}', maxLength: 32 },
-        property: { pattern: '^[A-Z0-9]{2,16}$', maxLength: 16 },
+        property: { pattern: propertyCode, maxLength: 16 },
       },
       maxBodyBytes: 65_536,
       redirectPolicy: 'same-reviewed-chain',
@@ -1378,11 +1385,14 @@ export function buildLiveDepositLedgerFunctionalRules(origin: string): RequestRu
   ];
 }
 
-export function buildLiveDepositLedgerManifest(origin: string): RequestPolicyManifest {
+export function buildLiveDepositLedgerManifest(
+  origin: string,
+  expectedPropertyCode = 'HRCEN',
+): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveDepositLedgerFunctionalRules(origin),
+      ...buildLiveDepositLedgerFunctionalRules(origin, expectedPropertyCode),
     ],
   });
 }

@@ -44,6 +44,7 @@ import type { DB } from '../db/client.js';
 export type ReadAdmissionReleaseInput = {
   releaseId: string;
   requestBranchId: string;
+  manifestSha256?: string;
 };
 
 export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
@@ -479,6 +480,7 @@ export async function issueReadAdmissionFromMailbox(
     triggerMessageId: trigger.triggerMessageId,
     releaseId: input.releaseId,
     requestBranchId: input.requestBranchId,
+    ...(input.manifestSha256 ? { manifestSha256: input.manifestSha256 } : {}),
     ...(input.captureBindingRef ? { captureBindingRef: input.captureBindingRef } : {}),
   };
   let issued: IssuedReadAdmission;

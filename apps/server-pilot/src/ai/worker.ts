@@ -380,6 +380,7 @@ async function failAiRun(
 export type ReadAdmissionBinding = {
   releaseId: string;
   requestBranchId: string;
+  manifestSha256?: string;
   requesterAuthorizationId: string;
   inputDigest: string;
   captureRequired: boolean;
@@ -612,6 +613,20 @@ export function createLiveHmsCandidateSessionFactory(
           failureClass: 'AUTH' as const,
         });
       }
+      const admittedBranch = admittedRelease.requestBranches.find(
+        (branch) => branch.id === readAdmission.requestBranchId,
+      );
+      if (
+        !readAdmission.manifestSha256 ||
+        admittedBranch?.manifestSha256 !== readAdmission.manifestSha256
+      ) {
+        throw Object.assign(
+          new Error('read branch manifest admission does not match the active release'),
+          {
+            failureClass: 'AUTH' as const,
+          },
+        );
+      }
       if (
         readAdmission.captureRequired &&
         (!input.readResultRef || readAdmission.captureBindingRef !== input.readResultRef)
@@ -716,6 +731,7 @@ export function createLiveHmsCandidateSessionFactory(
               runtime,
               transportId: input.transportId,
               expectedConfirmationToken: candidate.value,
+              expectedPropertyCode: propertyCode,
               auditSpecFor: ({ branchId }) => ({
                 operationId,
                 toolId: 'hms_read_folio',
@@ -743,14 +759,14 @@ export function createLiveHmsCandidateSessionFactory(
                 sessionId,
                 parentEvidenceId,
                 tools: [{ toolId: 'hms_read_folio', requestBranchId: branch.id }],
-                propertyCode: 'HRCEN',
+                propertyCode,
                 scopeHash,
                 expiresAt,
               })[0]!;
               const manifest =
                 branchId === 'folio_summary'
                   ? buildLiveFolioReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
-                  : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN);
+                  : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN, propertyCode);
               const authorization = buildHmsFolioSessionAuthorization({
                 operationId,
                 requestBranchId: branchId,
@@ -787,7 +803,7 @@ export function createLiveHmsCandidateSessionFactory(
                   id: randomUUID(),
                   toolId: 'hms_read_folio' as const,
                   toolVersion: '1.0.0',
-                  propertyCode: 'HRCEN',
+                  propertyCode,
                   observedAt: new Date().toISOString(),
                   expiresAt: expiresAt.toISOString(),
                   claimKeys: [],
@@ -821,8 +837,12 @@ export function createLiveHmsCandidateSessionFactory(
                       ? ['folio_summary']
                       : ['deposit_ledger_summary'],
                 captureBindingRef: readAdmission.captureBindingRef ?? input.readResultRef ?? '',
-                propertyCode: 'HRCEN',
+                propertyCode,
                 confirmationToken: candidate.value,
+                manifestSha256ByBranch: Object.fromEntries(
+                  folioRelease.requestBranches.map((item) => [item.id, item.manifestSha256]),
+                ) as Partial<Record<'folio_summary' | 'deposit_ledger_summary', string>>,
+                scopeHash,
               },
             );
           }
@@ -1658,9 +1678,24 @@ async function executeProductionReadTool(input: {
   quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
 }): Promise<{ result: ReadResult<unknown>; readResultRef: string }> {
   const request = readRequestSchema.parse(input.run.readRequest);
+  const expectedPropertyCode =
+    request.toolId === 'hms_quote_stay'
+      ? request.quoteRequest.propertyCode
+      : request.toolId === 'hms_read_folio'
+        ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
+            .expectedPropertyCode
+        : 'HRCEN';
   const admission = 'admission' in request ? request.admission : undefined;
   if (!admission) {
     throw Object.assign(new Error('read_tool requires trusted release/input/capture admission'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (
+    (request.toolId === 'hms_quote_stay' || request.toolId === 'hms_read_folio') &&
+    !admission.manifestSha256
+  ) {
+    throw Object.assign(new Error('read branch manifest admission is missing'), {
       failureClass: 'AUTH' as const,
     });
   }
@@ -1856,6 +1891,10 @@ async function executeProductionReadTool(input: {
                     ? { artifactRefs: legacy.evidence.artifactRefs }
                     : {}),
                   sourceHash: legacy.evidence.sourceHash,
+                  manifestSha256: admission.manifestSha256,
+                  manifestSha256ByBranch: {
+                    [admission.requestBranchId]: admission.manifestSha256!,
+                  },
                 },
               ]
             : [],
@@ -2145,7 +2184,7 @@ async function executeProductionReadTool(input: {
     triggerMessageId: input.run.triggerMessageId,
     parentRef: input.run.id,
     branchId: admission.requestBranchId,
-    propertyCode: 'HRCEN',
+    propertyCode: expectedPropertyCode,
     candidateId: candidateValue,
     referenceKind: candidate?.kind === 'external_reference' ? 'external' : 'confirmation',
     value: candidate && 'value' in candidate ? candidate.value : candidateValue,
@@ -2287,6 +2326,15 @@ async function executeProductionReadTool(input: {
           artifactRef: legacy.evidence.artifactRef ?? null,
           ...(legacy.evidence.artifactRefs ? { artifactRefs: legacy.evidence.artifactRefs } : {}),
           sourceHash: legacy.evidence.sourceHash,
+          manifestSha256: admission.manifestSha256,
+          ...(legacy.evidence.manifestSha256ByBranch
+            ? { manifestSha256ByBranch: legacy.evidence.manifestSha256ByBranch }
+            : {
+                manifestSha256ByBranch: {
+                  [admission.requestBranchId]: admission.manifestSha256!,
+                },
+              }),
+          ...(legacy.evidence.scopeHash ? { scopeHash: legacy.evidence.scopeHash } : {}),
         },
       ],
       page: null,
@@ -2321,7 +2369,7 @@ async function executeProductionReadTool(input: {
     mailboxId: input.run.transportId,
     threadId: input.run.threadId,
     triggerMessageId: input.run.triggerMessageId,
-    propertyCode: 'HRCEN',
+    propertyCode: expectedPropertyCode,
     parentRef: input.run.id,
     branchId: admission.requestBranchId,
     releaseId: admission.releaseId,

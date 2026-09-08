@@ -479,6 +479,7 @@ describe('live quote stay driver', () => {
       dependencyRevision: 'playwright-1.52.0-chromium-1169',
       executionClass: 'normal',
       inputClass: 'authorized_exact',
+      requestBranchId: 'quote_availability_search',
     };
     const driver = createLiveQuoteStayDriver({
       runtime,
@@ -499,8 +500,10 @@ describe('live quote stay driver', () => {
       toolVersion: '2.0.0',
       executionClass: 'normal',
       inputClass: 'authorized_exact',
+      requestBranchId: 'quote_availability_search',
       operationOutcome: 'succeeded',
       artifactState: 'complete',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const auditSpec: HmsBrowserAuditSpec = {
       operationId: 'quote-audit-operation',
@@ -569,6 +572,7 @@ describe('live quote stay driver', () => {
           inputClass: auditSpec.inputClass,
           ...receiptPatch,
           artifactState: 'complete',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
         },
       );
       const result = await createLiveQuoteStayDriver({
@@ -577,6 +581,56 @@ describe('live quote stay driver', () => {
         auditSpecFor: () => auditSpec,
       }).observeExactQuote(auth(), c, new AbortController().signal);
       expect(result.status).toBe('manual_required');
+      expect(result.unresolvedFields).toContain('audit_capture_receipt');
+      expect(result.evidence.kind).toBe('hms');
+      if (result.evidence.kind === 'hms') expect(result.evidence.artifactRef).toBeUndefined();
+    }
+  });
+
+  it('rejects a stale, wrong-version, empty-artifact, or branchless finalized receipt', async () => {
+    const c = candidate();
+    const auditSpec: HmsBrowserAuditSpec = {
+      operationId: 'quote-receipt-freshness-negative',
+      toolId: 'hms_quote_stay',
+      toolVersion: '2.0.0',
+      dependencyRevision: 'playwright-1.52.0-chromium-1169',
+      executionClass: 'normal',
+      inputClass: 'authorized_exact',
+      requestBranchId: 'quote_availability_search',
+    };
+    const patches = [
+      { toolVersion: '9.9.9' },
+      { artifactId: '' },
+      { expiresAt: '2000-01-01T00:00:00.000Z' },
+      { requestBranchId: undefined },
+    ];
+    for (const [index, patch] of patches.entries()) {
+      const fixture = mockRuntime(
+        liveEnvelope([
+          { date: '2026-09-10', rate: 100, avail: 1 },
+          { date: '2026-09-11', rate: 110, avail: 1 },
+        ]),
+        {
+          artifactId: `quote-freshness-negative-${index}`,
+          operationId: auditSpec.operationId,
+          toolId: auditSpec.toolId,
+          toolVersion: auditSpec.toolVersion,
+          executionClass: auditSpec.executionClass,
+          inputClass: auditSpec.inputClass,
+          requestBranchId: auditSpec.requestBranchId,
+          operationOutcome: 'succeeded',
+          artifactState: 'complete',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          ...patch,
+        },
+      );
+      const result = await createLiveQuoteStayDriver({
+        runtime: fixture.runtime,
+        transportId: 'transport-centurion',
+        auditSpecFor: () => auditSpec,
+      }).observeExactQuote(auth(), c, new AbortController().signal);
+      expect(result.status).toBe('manual_required');
+      expect(result.draftReady).toBe(false);
       expect(result.unresolvedFields).toContain('audit_capture_receipt');
       expect(result.evidence.kind).toBe('hms');
       if (result.evidence.kind === 'hms') expect(result.evidence.artifactRef).toBeUndefined();

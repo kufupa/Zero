@@ -195,6 +195,7 @@ describe('trusted quote completeness contract', () => {
         triggerMessageId: 'message-quote',
         releaseId: 'release-quote',
         requestBranchId: 'quote_availability_search',
+        manifestSha256: 'e'.repeat(64),
         captureBindingRef: 'read-result-quote',
       },
       now: new Date('2026-09-08T00:00:00.000Z'),
@@ -202,6 +203,8 @@ describe('trusted quote completeness contract', () => {
       quoteRequest: normalized.request,
       detail: 'detail',
     });
+    expect(issued.admission.manifestSha256).toBe('e'.repeat(64));
+    expect(issued.issuer.manifestSha256).toBe('e'.repeat(64));
     expect(issued.admission.reservationRef).toBeNull();
     expect(issued.admission.captureRequired).toBe(true);
     expect(issued.admission.captureBindingRef).toBe('read-result-quote');

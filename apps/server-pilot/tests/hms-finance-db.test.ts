@@ -12,12 +12,19 @@ import {
   sha256Hex,
 } from '../src/hms/release-kernel.js';
 import {
+  claimNextAiRun,
+  enqueueAiRun,
+  NOT_APPLICABLE_MODEL_ID,
+  READ_TOOL_PROMPT_VERSION,
+} from '../src/ai/run-ledger.js';
+import {
   createLiveHmsCandidateSessionFactory,
   executeAiRun,
   type CandidateSessionFactory,
 } from '../src/ai/worker.js';
 import { FOLIO_READ_IMPL_V1, createReadToolHandler } from '../src/hms/read-handler-index.js';
 import { aiWorkflowRun, mailboxAccess, mailThread, message } from '../src/db/schema/mail.js';
+import { issueReadAdmissionFromMailbox } from '../src/hms/read-admission-issuer.js';
 import { CENTURION_USER_ID, MARTHA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { reviewedManifestSha256 } from '../src/hms/release-manifest-binding.js';
 import { resolveHmsSourceRevision } from '../src/hms/production-runtime.js';
@@ -28,10 +35,10 @@ import { probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { claimNextAiRun } from '../src/ai/run-ledger.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -48,7 +55,7 @@ function installFindRelease(): void {
           releaseId: 'u17-db-find-release',
           toolId: 'hms_find_reservation',
           evidenceKind: 'hms',
-          requestBranches: [{ id: 'guest_stay_search' }],
+          requestBranches: [{ id: 'guest_stay_search', manifestSha256: 'a'.repeat(64) }],
         },
       ],
       [
@@ -509,6 +516,8 @@ describe('U17 finance normal-runtime DB RED contract', () => {
           readAdmission: {
             releaseId: installed.releaseId,
             requestBranchId: 'folio_summary',
+            manifestSha256:
+              installed.active.releases.get('hms_read_folio')!.requestBranches[0]!.manifestSha256,
             requesterAuthorizationId: 'access-u17',
             inputDigest: '0'.repeat(64),
             captureRequired: true,
@@ -763,7 +772,108 @@ describe('U17 finance normal-runtime DB RED contract', () => {
             artifactRef: expect.stringMatching(/^u17-folio-artifact-/),
             artifactRefs: expect.arrayContaining([expect.stringMatching(/^u17-folio-artifact-/)]),
             sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            manifestSha256:
+              installed.active.releases.get('hms_read_folio')!.requestBranches[1]!.manifestSha256,
+            manifestSha256ByBranch: {
+              folio_summary:
+                installed.active.releases.get('hms_read_folio')!.requestBranches[0]!.manifestSha256,
+              deposit_ledger_summary:
+                installed.active.releases.get('hms_read_folio')!.requestBranches[1]!.manifestSha256,
+            },
+            scopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
           });
+          const [financeRun] = await db
+            .select()
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, finance.runId));
+          const queuedRequest = financeRun?.readRequest as {
+            candidateId?: string;
+            admission?: { reservationRef?: string | null };
+          } | null;
+          expect(queuedRequest?.admission).toMatchObject({
+            manifestSha256:
+              installed.active.releases.get('hms_read_folio')!.requestBranches[1]!.manifestSha256,
+          });
+          const expectedScopeHash = createHash('sha256')
+            .update(
+              JSON.stringify([
+                TRANSPORT_ID,
+                context.threadId,
+                finance.runId,
+                queuedRequest?.candidateId,
+                queuedRequest?.admission?.reservationRef,
+              ]),
+            )
+            .digest('hex');
+          expect(receipt.result.evidence[0]?.scopeHash).toBe(expectedScopeHash);
+
+          for (const mode of ['missing', 'tampered'] as const) {
+            const issuedGuarded = await issueReadAdmissionFromMailbox({
+              db,
+              userId: CENTURION_USER_ID,
+              transportId: TRANSPORT_ID,
+              threadId: context.threadId,
+              toolId: 'hms_read_folio',
+              parentReadResultRef: parent.readResultRef,
+              sections: ['balance', 'deposits'],
+              releaseId: installed.releaseId,
+              requestBranchId: 'deposit_ledger_summary',
+              manifestSha256:
+                installed.active.releases.get('hms_read_folio')!.requestBranches[1]!.manifestSha256,
+              captureBindingRef: `u17-finance-${mode}-${randomUUID()}`,
+            });
+            const queued = await enqueueAiRun(
+              {
+                transportId: TRANSPORT_ID,
+                threadId: context.threadId,
+                triggerMessageId: issuedGuarded.triggerMessageId,
+                runKind: 'read_tool',
+                idempotencyKey: `u17-finance-${mode}-${randomUUID()}`,
+                modelId: NOT_APPLICABLE_MODEL_ID,
+                promptVersion: READ_TOOL_PROMPT_VERSION,
+                executorLane: 'hms',
+                readRequest: issuedGuarded.readRequest,
+                readAdmissionIssuer: issuedGuarded.issuer,
+                readResultRef: issuedGuarded.readRequest.admission.captureBindingRef!,
+              },
+              db,
+            );
+            const [queuedRow] = await db
+              .select()
+              .from(aiWorkflowRun)
+              .where(eq(aiWorkflowRun.id, queued.id));
+            const queuedRequest = queuedRow?.readRequest as Record<string, unknown> | null;
+            const queuedAdmission = queuedRequest?.admission as Record<string, unknown> | null;
+            if (!queuedRequest || !queuedAdmission) {
+              throw new Error(`queued ${mode} finance request is missing admission`);
+            }
+            const tamperedAdmission =
+              mode === 'missing'
+                ? Object.fromEntries(
+                    Object.entries(queuedAdmission).filter(([key]) => key !== 'manifestSha256'),
+                  )
+                : { ...queuedAdmission, manifestSha256: '0'.repeat(64) };
+            await db
+              .update(aiWorkflowRun)
+              .set({
+                readRequest: { ...queuedRequest, admission: tamperedAdmission },
+              })
+              .where(eq(aiWorkflowRun.id, queued.id));
+            expect(
+              await claimNextAiRun({
+                ownerId: `u17-finance-${mode}-manifest-worker`,
+                lane: 'hms',
+                runKind: 'read_tool',
+                db,
+              }),
+            ).toMatchObject({ id: queued.id });
+            const guardedLowerIo = makeLowerIoRuntime({ finalizedReceipt: true });
+            const guardedExecution = await executeAiRun(queued.id, {
+              hmsRuntime: guardedLowerIo.runtime,
+            });
+            expect(guardedExecution.state).toBe('dead_letter');
+            expect(guardedLowerIo.calls).toHaveLength(0);
+          }
 
           const authorizationFinance = await caller.ai.enqueueHmsFolioRead({
             threadId: context.threadId,

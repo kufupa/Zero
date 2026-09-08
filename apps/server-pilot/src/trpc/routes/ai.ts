@@ -80,7 +80,11 @@ async function activeFindAdmission() {
       message: 'HMS_READ_RELEASE_UNAVAILABLE',
     });
   }
-  return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
+  return {
+    releaseId: hmsRelease.releaseId,
+    requestBranchId: branch.id,
+    manifestSha256: branch.manifestSha256,
+  };
 }
 
 async function activeQuoteAdmission() {
@@ -109,7 +113,11 @@ async function activeQuoteAdmission() {
       message: 'HMS_QUOTE_RELEASE_UNAVAILABLE',
     });
   }
-  return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
+  return {
+    releaseId: hmsRelease.releaseId,
+    requestBranchId: branch.id,
+    manifestSha256: branch.manifestSha256,
+  };
 }
 
 async function activeFolioAdmission(sections: readonly string[]) {
@@ -139,7 +147,11 @@ async function activeFolioAdmission(sections: readonly string[]) {
       message: 'HMS_FOLIO_READ_RELEASE_UNAVAILABLE',
     });
   }
-  return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
+  return {
+    releaseId: hmsRelease.releaseId,
+    requestBranchId: branch.id,
+    manifestSha256: branch.manifestSha256,
+  };
 }
 
 function readRouteNotFound(): TRPCError {

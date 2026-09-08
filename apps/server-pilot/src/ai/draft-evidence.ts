@@ -17,6 +17,11 @@ export type HmsEvidenceRef = {
   /** All finalized branch artifacts joined by one typed result. */
   artifactRefs?: string[];
   scopeVerified?: boolean;
+  /** Exact reviewed branch manifest and finance scope joins, when present. */
+  manifestSha256?: string;
+  /** Every reviewed branch exercised by one normal finance result. */
+  manifestSha256ByBranch?: Record<string, string>;
+  scopeHash?: string;
 };
 
 export type MailEvidenceRef = {
@@ -88,6 +93,9 @@ export const HmsEvidenceRefSchema = z
     artifactRef: z.string().min(1).optional(),
     artifactRefs: z.array(z.string().min(1)).min(1).optional(),
     scopeVerified: z.boolean().optional(),
+    manifestSha256: sha256Hex.optional(),
+    manifestSha256ByBranch: z.record(sha256Hex).optional(),
+    scopeHash: sha256Hex.optional(),
   })
   .strict();
 

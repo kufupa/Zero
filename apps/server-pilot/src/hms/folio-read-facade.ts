@@ -29,8 +29,12 @@ export interface FolioReadFacade {
   openDepositLedgerDetail(scope: DepositLedgerDetailScope): Promise<string>;
 }
 
-export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade {
+export function createFolioReadFacade(
+  session: HmsReadSession,
+  options: { expectedPropertyCode?: string } = {},
+): FolioReadFacade {
   const page = session.page;
+  const expectedPropertyCode = options.expectedPropertyCode ?? 'HRCEN';
   return {
     async openOsressAndSearch(candidate) {
       await page
@@ -57,10 +61,7 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'folio OSRESS.search correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'folio OSRESS.search correlation failed');
       }
       return post.value || (await page.content());
     },
@@ -93,15 +94,18 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'deposit OSLEDG.LST correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'deposit OSLEDG.LST correlation failed');
       }
       return post.value || (await page.content());
     },
 
     async openDepositLedgerDetail(scope) {
+      if (scope.property.toUpperCase() !== expectedPropertyCode.toUpperCase()) {
+        throw new HmsRuntimeError(
+          'PROPERTY_MISMATCH',
+          'deposit ledger detail property does not match the verified session property',
+        );
+      }
       const correlation = page.waitForCorrelatedResponse
         ? page.waitForCorrelatedResponse(LIVE_DEPOSIT_LEDGER_DETAIL_PATH)
         : Promise.resolve();
@@ -117,10 +121,7 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'deposit OSLEDG.DLD correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'deposit OSLEDG.DLD correlation failed');
       }
       return post.value || (await page.content());
     },

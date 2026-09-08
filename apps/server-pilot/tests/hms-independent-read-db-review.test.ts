@@ -40,6 +40,7 @@ const reachable = await probeTestDb();
 const observedAt = '2026-09-07T12:00:00.000Z';
 const expiresAt = '2026-09-07T12:05:00.000Z';
 const REQUESTER_AUTHORIZATION_ID = `access-${CENTURION_USER_ID}-${TRANSPORT_ID}`;
+const READ_MANIFEST_SHA256 = 'a'.repeat(64);
 
 const typedReadResult = {
   toolId: 'hms_find_reservation' as const,
@@ -241,6 +242,7 @@ async function readRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: readResultRef,
   });
   return {
@@ -277,6 +279,7 @@ async function contextReadRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: parentRef,
   });
   const parent = await enqueueAiRun(
@@ -312,6 +315,7 @@ async function contextReadRunInput(
     detail: 'summary',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: readResultRef,
   });
   return {
@@ -442,7 +446,7 @@ function installActiveFindReleaseForTests(): void {
           releaseId: 'release-red',
           toolId: 'hms_find_reservation',
           evidenceKind: 'hms',
-          requestBranches: [{ id: 'guest_stay_search' }],
+          requestBranches: [{ id: 'guest_stay_search', manifestSha256: READ_MANIFEST_SHA256 }],
         },
       ],
     ]),
@@ -656,7 +660,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
                 releaseId: 'release-red',
                 toolId: 'hms_find_reservation',
                 evidenceKind: 'hms',
-                requestBranches: [{ id: 'guest_stay_search' }],
+                requestBranches: [
+                  { id: 'guest_stay_search', manifestSha256: READ_MANIFEST_SHA256 },
+                ],
               },
             ],
           ]),

@@ -60,6 +60,8 @@ export type FolioBalanceKernelResult = {
   observedAt?: string;
   reservationScopeProven?: boolean;
   scopeVerified?: boolean;
+  manifestSha256?: string;
+  scopeHash?: string;
   artifactRef?: string;
   finalizedReceipt?: FinalizedFolioReceipt;
 };
@@ -78,6 +80,8 @@ export type DepositSummaryKernelResult = {
   unmappedActivities?: readonly string[];
   reservationScopeProven?: boolean;
   scopeVerified?: boolean;
+  manifestSha256?: string;
+  scopeHash?: string;
   artifactRef?: string;
   finalizedReceipt?: FinalizedFolioReceipt;
 };
@@ -92,6 +96,7 @@ export type FinalizedFolioReceipt = Pick<
   | 'inputClass'
   | 'requestBranchId'
   | 'operationOutcome'
+  | 'expiresAt'
 > & { requestBranchId: string };
 
 export type TrustedFolioDisclosure = {
@@ -112,8 +117,10 @@ export type FolioEvidenceBinding = {
   releaseId: string;
   requestBranchIds: readonly ('folio_summary' | 'deposit_ledger_summary')[];
   captureBindingRef: string;
-  propertyCode: 'HRCEN';
+  propertyCode: string;
   confirmationToken: string;
+  manifestSha256ByBranch: Partial<Record<'folio_summary' | 'deposit_ledger_summary', string>>;
+  scopeHash: string;
 };
 
 function sha256Hex(input: string): string {
@@ -394,6 +401,7 @@ export type DepositLedgerDateScopeExtraction = {
   scopes: DepositLedgerDateScope[];
   truncated: boolean;
   rowsObserved: number;
+  propertyMismatch?: boolean;
 };
 
 /**
@@ -403,6 +411,7 @@ export type DepositLedgerDateScopeExtraction = {
 export function extractDepositLedgerDateScopes(
   text: string,
   maxDates = DEPOSIT_LEDGER_MAX_DETAIL_DATES,
+  expectedPropertyCode?: string,
 ): DepositLedgerDateScopeExtraction {
   const pageData = parsePageData(text);
   if (!pageData) return { scopes: [], truncated: false, rowsObserved: 0 };
@@ -412,25 +421,31 @@ export function extractDepositLedgerDateScopes(
   const out: DepositLedgerDateScope[] = [];
   const seen = new Set<string>();
   let truncated = rows.length > boundedRows.length;
+  let propertyMismatch = false;
   for (const row of boundedRows) {
     const closingdate =
       strOrEmpty(row.closingdate) || strOrEmpty(row.hoteldate) || strOrEmpty(row.closing_date);
     const property = strOrEmpty(row.property);
     if (!closingdate || !property) continue;
     if (!/^[A-Z0-9]{2,16}$/i.test(property)) continue;
-    const key = `${property}|${closingdate}`;
+    const normalizedProperty = property.toUpperCase();
+    if (expectedPropertyCode && normalizedProperty !== expectedPropertyCode.toUpperCase()) {
+      propertyMismatch = true;
+      continue;
+    }
+    const key = `${normalizedProperty}|${closingdate}`;
     if (seen.has(key)) continue;
     seen.add(key);
     if (out.length < dateLimit) {
       out.push({
         closingdate,
-        property: property.toUpperCase(),
+        property: normalizedProperty,
       });
     } else {
       truncated = true;
     }
   }
-  return { scopes: out, truncated, rowsObserved: rows.length };
+  return { scopes: out, truncated, rowsObserved: rows.length, propertyMismatch };
 }
 
 function depositCardLeak(text: string): boolean {
@@ -685,6 +700,7 @@ function assertFolioAuth(
   child: ReadCandidateChild,
   allowedBranches: ReadonlySet<string>,
   discoveryOperationId: string,
+  expectedPropertyCode: string,
 ): void {
   if (authorization.toolId !== 'hms_read_folio') {
     throw new HmsRuntimeError(
@@ -716,7 +732,7 @@ function assertFolioAuth(
   if (Date.parse(child.expiresAt) <= Date.now()) {
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'candidate child expired');
   }
-  if (child.propertyCode !== 'HRCEN') {
+  if (child.propertyCode !== expectedPropertyCode) {
     throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'child propertyCode denied');
   }
 }
@@ -744,7 +760,9 @@ function finalizedFolioReceipt(
     receipt.executionClass !== auditSpec.executionClass ||
     receipt.inputClass !== auditSpec.inputClass ||
     receipt.requestBranchId !== requestBranchId ||
-    receipt.operationOutcome !== 'succeeded'
+    receipt.operationOutcome !== 'succeeded' ||
+    !Number.isFinite(Date.parse(receipt.expiresAt)) ||
+    Date.parse(receipt.expiresAt) <= Date.now()
   ) {
     return null;
   }
@@ -757,6 +775,7 @@ function finalizedFolioReceipt(
     inputClass: receipt.inputClass,
     requestBranchId,
     operationOutcome: receipt.operationOutcome,
+    expiresAt: receipt.expiresAt,
   };
 }
 
@@ -942,14 +961,23 @@ export function mergeFolioEvidence(
         binding.captureBindingRef,
         binding.propertyCode,
         binding.confirmationToken,
+        binding.scopeHash,
       ]
     : [];
-  const bindingValid =
-    !binding ||
-    (bindingFields.every((field) => typeof field === 'string' && field.trim().length > 0) &&
-      Array.isArray(binding.requestBranchIds) &&
-      binding.requestBranchIds.length > 0 &&
-      binding.captureBindingRef === binding.readResultRef);
+  const bindingValid = (() => {
+    if (!binding) return true;
+    if (
+      !bindingFields.every((field) => typeof field === 'string' && field.trim().length > 0) ||
+      binding.requestBranchIds.length === 0 ||
+      binding.captureBindingRef !== binding.readResultRef
+    ) {
+      return false;
+    }
+    return binding.requestBranchIds.every((branchId) => {
+      const digest = binding.manifestSha256ByBranch[branchId];
+      return typeof digest === 'string' && /^[a-f0-9]{64}$/i.test(digest);
+    });
+  })();
   const receiptBound = (step: FolioBalanceKernelResult | DepositSummaryKernelResult): boolean => {
     if (!binding || step.status !== 'ok') return true;
     const receipt = step.finalizedReceipt;
@@ -967,7 +995,11 @@ export function mergeFolioEvidence(
       receipt.inputClass === 'authorized_exact' &&
       receipt.requestBranchId === expectedBranch &&
       binding.requestBranchIds.includes(expectedBranch) &&
-      receipt.operationOutcome === 'succeeded'
+      receipt.operationOutcome === 'succeeded' &&
+      Number.isFinite(Date.parse(receipt.expiresAt)) &&
+      Date.parse(receipt.expiresAt) > Date.now() &&
+      step.manifestSha256 === binding.manifestSha256ByBranch[expectedBranch] &&
+      step.scopeHash === binding.scopeHash
     );
   };
   if (binding && (!bindingValid || successfulSteps.some((step) => !receiptBound(step)))) {
@@ -991,6 +1023,14 @@ export function mergeFolioEvidence(
   );
 
   const requested = requestedSections.length > 0 ? requestedSections : ['balance', 'deposits'];
+  const manifestSha256ByBranch = binding
+    ? Object.fromEntries(
+        binding.requestBranchIds.flatMap((branchId) => {
+          const digest = binding.manifestSha256ByBranch[branchId];
+          return digest ? [[branchId, digest] as const] : [];
+        }),
+      )
+    : undefined;
   const wantsBalance = requested.includes('balance');
   const wantsDeposits = requested.includes('deposits');
   const wantsTransactions = requested.includes('transactions');
@@ -1144,6 +1184,8 @@ export function mergeFolioEvidence(
               evidenceId: step.evidenceId,
               blocker: step.blocker,
               scopeVerified: step.scopeVerified ?? false,
+              manifestSha256: step.manifestSha256 ?? null,
+              scopeHash: step.scopeHash ?? null,
               artifactRef: step.artifactRef ?? null,
               finalizedReceipt: step.finalizedReceipt ?? null,
               completeness: 'completeness' in step ? (step.completeness ?? null) : null,
@@ -1158,6 +1200,11 @@ export function mergeFolioEvidence(
         ...(binding && successfulSteps.length > 0
           ? { scopeVerified: successfulSteps.every((step) => step.scopeVerified === true) }
           : {}),
+        ...(binding && successfulSteps.length === 1 && successfulSteps[0]?.manifestSha256
+          ? { manifestSha256: successfulSteps[0].manifestSha256 }
+          : {}),
+        ...(manifestSha256ByBranch ? { manifestSha256ByBranch } : {}),
+        ...(binding ? { scopeHash: binding.scopeHash } : {}),
       },
     };
   } catch {
@@ -1188,18 +1235,25 @@ export type LiveFolioReadDriverInput = {
   runtime: HmsRuntime;
   transportId: string;
   expectedConfirmationToken: string;
+  expectedPropertyCode?: string;
   auditSpecFor?: (input: {
     branchId: 'folio_summary' | 'deposit_ledger_summary';
   }) => HmsBrowserAuditSpec | undefined;
 };
 
 export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
-  const { runtime, transportId, expectedConfirmationToken } = input;
+  const { runtime, transportId, expectedConfirmationToken, expectedPropertyCode = 'HRCEN' } = input;
 
   return {
     async observeFolioBalance(authorization, child, signal) {
       assertNotAborted(signal);
-      assertFolioAuth(authorization, child, new Set(['folio_summary']), 'folio_summary');
+      assertFolioAuth(
+        authorization,
+        child,
+        new Set(['folio_summary']),
+        'folio_summary',
+        expectedPropertyCode,
+      );
 
       const observedAt = new Date();
       const started = observedAt.getTime();
@@ -1220,7 +1274,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
       try {
         assertNotAborted(signal);
-        const facade = createFolioReadFacade(session);
+        const facade = createFolioReadFacade(session, { expectedPropertyCode });
         const candidate: ExactReservationCandidate = {
           id: child.id,
           kind: 'confirmation',
@@ -1333,6 +1387,8 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           rowsScanned: Math.max(parsed.rowsScanned, 1),
           reservationScopeProven: true,
           scopeVerified: true,
+          manifestSha256: authorization.manifestSha256,
+          scopeHash: child.scopeHash,
           ...(finalizedReceipt
             ? { artifactRef: finalizedReceipt.artifactId, finalizedReceipt }
             : {}),
@@ -1349,6 +1405,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         child,
         new Set(['deposit_ledger_summary']),
         'deposit_ledger_summary',
+        expectedPropertyCode,
       );
 
       const observedAt = new Date();
@@ -1370,7 +1427,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
       try {
         assertNotAborted(signal);
-        const facade = createFolioReadFacade(session);
+        const facade = createFolioReadFacade(session, { expectedPropertyCode });
         const lstText = await facade.openDepositLedgerList();
         if (session.terminal() || session.violation()) {
           return {
@@ -1387,7 +1444,26 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         }
 
         assertNotAborted(signal);
-        const scopeExtraction = extractDepositLedgerDateScopes(lstText);
+        const scopeExtraction = extractDepositLedgerDateScopes(
+          lstText,
+          DEPOSIT_LEDGER_MAX_DETAIL_DATES,
+          expectedPropertyCode,
+        );
+        if (scopeExtraction.propertyMismatch) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            depositSummary: null,
+            evidenceId: null,
+            blocker: 'DEPOSIT_LEDGER_PROPERTY_SCOPE_MISMATCH',
+            observedAt: observedAt.toISOString(),
+            durationMs: Date.now() - started,
+            bytesObserved: Buffer.byteLength(lstText),
+            rowsScanned: scopeExtraction.rowsObserved,
+            reservationScopeProven: false,
+            scopeVerified: false,
+          };
+        }
         const scopes = scopeExtraction.scopes;
         const detailTexts: string[] = [];
         if (scopes.length > 0) {
@@ -1524,6 +1600,8 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           unmappedActivities,
           reservationScopeProven: true,
           scopeVerified: true,
+          manifestSha256: authorization.manifestSha256,
+          scopeHash: child.scopeHash,
           ...(finalizedReceipt
             ? { artifactRef: finalizedReceipt.artifactId, finalizedReceipt }
             : {}),

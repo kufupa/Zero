@@ -4,6 +4,11 @@ import {
   issueReadAdmissionFromMailbox,
 } from '../src/hms/read-admission-issuer.js';
 import {
+  __setCachedActiveReadRuntimeForTests,
+  clearCachedActiveReadRuntimeForTests,
+  getCachedActiveReadRuntime,
+} from '../src/hms/active-read-runtime.js';
+import {
   claimNextAiRun,
   enqueueAiRun,
   NOT_APPLICABLE_MODEL_ID,
@@ -14,10 +19,6 @@ import {
   syntheticQuoteReferenceAuthority,
   syntheticQuoteReferenceAuthorityLoader,
 } from './helpers/quote-reference-authority.js';
-import {
-  __setCachedActiveReadRuntimeForTests,
-  clearCachedActiveReadRuntimeForTests,
-} from '../src/hms/active-read-runtime.js';
 import {
   normalizeQuoteRequest,
   type QuoteReferenceAuthorityLoadResult,
@@ -136,6 +137,7 @@ function runtimeFixture() {
         toolId: auditSpec.toolId ?? 'hms_quote_stay',
         toolVersion: auditSpec.toolVersion ?? '2.0.0',
         requestBranchId: auditSpec.requestBranchId ?? null,
+        expiresAt: '2099-09-08T12:05:00.000Z',
         executionClass: 'normal',
         inputClass: 'authorized_exact',
         artifactState: 'complete',
@@ -304,6 +306,11 @@ async function issueAndEnqueueQuote(
   suffix: string,
 ) {
   const readResultRef = `u7-quote-db-${suffix}-${randomUUID()}`;
+  const manifestSha256 = getCachedActiveReadRuntime()
+    ?.releases.get('hms_quote_stay')
+    ?.requestBranches.find((branch) => branch.id === 'quote_availability_search')?.manifestSha256;
+  if (!manifestSha256)
+    throw new Error('quote fixture release is missing its branch manifest digest');
   const issued = await issueReadAdmissionFromMailbox(
     {
       db,
@@ -313,6 +320,7 @@ async function issueAndEnqueueQuote(
       toolId: 'hms_quote_stay',
       releaseId,
       requestBranchId: 'quote_availability_search',
+      manifestSha256,
       detail: 'detail',
       captureBindingRef: readResultRef,
     },
@@ -386,6 +394,8 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
         readAdmission: {
           releaseId: activeReadState.releases.get('hms_quote_stay')!.releaseId,
           requestBranchId: 'quote_availability_search',
+          manifestSha256:
+            activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
           requesterAuthorizationId: 'access-u7-quote',
           inputDigest: '0'.repeat(64),
           captureRequired: true,
@@ -512,7 +522,11 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
           expect(
             (
               stored?.readResult as {
-                evidence?: Array<{ artifactRef?: string | null; scopeVerified?: boolean }>;
+                evidence?: Array<{
+                  artifactRef?: string | null;
+                  scopeVerified?: boolean;
+                  manifestSha256?: string;
+                }>;
               } | null
             )?.evidence?.[0]?.artifactRef,
           ).toMatch(/^u7-quote-artifact-/);
@@ -527,6 +541,12 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               } | null
             )?.evidence?.[0]?.sourceHash,
           ).toMatch(/^[a-f0-9]{64}$/);
+          expect(
+            (stored?.readResult as { evidence?: Array<{ manifestSha256?: string }> } | null)
+              ?.evidence?.[0]?.manifestSha256,
+          ).toBe(
+            activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
+          );
           const receipt = await readAiRunReceipt(
             {
               readResultRef,
@@ -560,6 +580,12 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               } | null
             )?.evidence?.[0]?.sourceHash,
           ).toMatch(/^[a-f0-9]{64}$/);
+          expect(
+            (receipt?.result as { evidence?: Array<{ manifestSha256?: string }> } | null)
+              ?.evidence?.[0]?.manifestSha256,
+          ).toBe(
+            activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
+          );
         } finally {
           __clearQuoteReferenceAuthorityLoaderForTests();
           clearCachedActiveReadRuntimeForTests();
@@ -799,6 +825,8 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               toolId: 'hms_quote_stay',
               releaseId,
               requestBranchId: 'quote_availability_search',
+              manifestSha256:
+                activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
               detail: 'detail',
               captureBindingRef: `u7-quote-db-second-${randomUUID()}`,
             },

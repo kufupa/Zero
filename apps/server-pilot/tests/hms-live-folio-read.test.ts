@@ -27,6 +27,7 @@ import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runti
 import type { HmsBrowserArtifactReceiptV1 } from '../src/hms/browser-artifacts.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
 import type { ReadCandidateChild } from '../src/hms/candidate-graph.js';
+import { evaluateObservedRequest } from '../src/hms/request-policy.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
@@ -90,7 +91,10 @@ function child(overrides: Partial<ReadCandidateChild> = {}): ReadCandidateChild 
   };
 }
 
-function mockRuntime(htmlOrBody: string | ((path: string) => string)) {
+function mockRuntime(
+  htmlOrBody: string | ((path: string) => string),
+  receiptPatch: Partial<HmsBrowserArtifactReceiptV1> = {},
+) {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
   let latestAuditSpec:
     | {
@@ -140,6 +144,8 @@ function mockRuntime(htmlOrBody: string | ((path: string) => string)) {
             requestBranchId: latestAuditSpec.requestBranchId ?? 'folio_summary',
             operationOutcome: 'succeeded',
             artifactState: 'complete',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            ...receiptPatch,
           } as HmsBrowserArtifactReceiptV1)
         : null,
   };
@@ -392,6 +398,7 @@ describe('live folio driver binding + denied actions', () => {
       runtime,
       transportId: 't1',
       expectedConfirmationToken: CONFIRM,
+      expectedPropertyCode: 'HRCEN',
       auditSpecFor: ({ branchId }) => ({
         operationId: 'folio-audit-operation',
         toolId: 'hms_read_folio',
@@ -515,6 +522,62 @@ describe('live folio driver binding + denied actions', () => {
     expect(result.blocker).toBe('FOLIO_FINALIZED_RECEIPT_INVALID');
   });
 
+  it('rejects stale finalized receipts on both balance and deposit normal branches', async () => {
+    const staleReceipt = { expiresAt: '2000-01-01T00:00:00.000Z' };
+    const cases = [
+      {
+        branch: 'folio_summary' as const,
+        body: folioEnvelope([
+          { confirmationnumber: CONFIRM, foliobalance: '12.00', propertycurrency: 'ZAR' },
+        ]),
+      },
+      {
+        branch: 'deposit_ledger_summary' as const,
+        body: folioEnvelope([
+          {
+            confirmationnumber: CONFIRM,
+            currency: 'ZAR',
+            newdeposits: '10.00',
+            refunds: '0.00',
+            forfeits: '0.00',
+            toguestledger: '0.00',
+          },
+        ]),
+      },
+    ];
+    for (const testCase of cases) {
+      const { runtime } = mockRuntime(testCase.body, staleReceipt);
+      const driver = createLiveFolioReadDriver({
+        runtime,
+        transportId: 't1',
+        expectedConfirmationToken: CONFIRM,
+        auditSpecFor: ({ branchId }) => ({
+          operationId: 'folio-stale-receipt-operation',
+          toolId: 'hms_read_folio',
+          toolVersion: '1.0.0',
+          dependencyRevision: 'playwright-1.52.0-chromium-1169',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+          requestBranchId: branchId,
+        }),
+      });
+      const result =
+        testCase.branch === 'folio_summary'
+          ? await driver.observeFolioBalance(
+              auth({ requestBranchId: testCase.branch }),
+              child({ requestBranchId: testCase.branch }),
+              new AbortController().signal,
+            )
+          : await driver.observeDepositSummary(
+              auth({ requestBranchId: testCase.branch }),
+              child({ requestBranchId: testCase.branch }),
+              new AbortController().signal,
+            );
+      expect(result.status).toBe('manual_required');
+      expect(result.blocker).toBe('FOLIO_FINALIZED_RECEIPT_INVALID');
+    }
+  });
+
   it('deposit live LST without confirmation → reservation scope blocker', async () => {
     const body = folioEnvelope([
       {
@@ -606,6 +669,45 @@ describe('live folio driver binding + denied actions', () => {
     ).toBe(true);
   });
 
+  it('rejects an LST property mismatch before any DLD request', async () => {
+    const lst = folioEnvelope([{ closingdate: '06-AUG-2026', property: 'OTHER' }]);
+    const dld = folioEnvelope([
+      {
+        confirmationnumber: CONFIRM,
+        currency: 'ZAR',
+        amount: '25.00',
+        activitytype_display: 'Deposit Payment',
+      },
+    ]);
+    const { runtime, posts } = mockRuntime((path) => (path.includes('OSLEDG.DLD') ? dld : lst));
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+      expectedPropertyCode: 'HRCEN',
+    });
+    const result = await driver.observeDepositSummary(
+      auth({ requestBranchId: 'deposit_ledger_summary' }),
+      child({ requestBranchId: 'deposit_ledger_summary' }),
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('manual_required');
+    expect(result.blocker).toBe('DEPOSIT_LEDGER_PROPERTY_SCOPE_MISMATCH');
+    expect(posts.some((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toBe(false);
+  });
+
+  it('makes the reviewed deposit firewall reject a different property', () => {
+    const decision = evaluateObservedRequest(buildLiveDepositLedgerManifest(ORIGIN), {
+      url: `${ORIGIN}${LIVE_DEPOSIT_LEDGER_DETAIL_PATH}`,
+      method: 'POST',
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData:
+        'SYSTEM_FUNCTION_NAME=OSLEDG&USER_FUNCTION_NAME=OSLEDG&CURRENT_TAB_NAME=DLD&closingdate=06-AUG-2026&property=OTHER',
+    });
+    expect(decision.action).toBe('block');
+  });
+
   it('keeps unknown normal-observer activity incomplete through merge', async () => {
     const unknownActivity = folioEnvelope([
       {
@@ -664,6 +766,11 @@ describe('live folio driver binding + denied actions', () => {
       requesterAuthorizationId: 'authorization-1',
       releaseId: 'release-1',
       requestBranchIds: ['folio_summary', 'deposit_ledger_summary'],
+      manifestSha256ByBranch: {
+        folio_summary: 'c'.repeat(64),
+        deposit_ledger_summary: 'd'.repeat(64),
+      },
+      scopeHash: SCOPE,
       captureBindingRef: 'read-result-1',
       propertyCode: 'HRCEN',
       confirmationToken: CONFIRM,
@@ -675,6 +782,8 @@ describe('live folio driver binding + denied actions', () => {
       evidenceId: 'balance-evidence',
       blocker: null,
       scopeVerified: true,
+      manifestSha256: 'c'.repeat(64),
+      scopeHash: SCOPE,
       artifactRef: 'balance-artifact',
       finalizedReceipt: {
         artifactId: 'balance-artifact',
@@ -685,6 +794,7 @@ describe('live folio driver binding + denied actions', () => {
         inputClass: 'authorized_exact',
         requestBranchId: 'folio_summary',
         operationOutcome: 'succeeded',
+        expiresAt: '2099-01-01T00:00:00.000Z',
       },
       observedAt: NOW,
       rowsScanned: 1,
@@ -726,6 +836,61 @@ describe('live folio driver binding + denied actions', () => {
       expect(merged.evidence.artifactRefs).toEqual(['balance-artifact']);
       expect(merged.evidence.scopeVerified).toBe(true);
     }
+  });
+
+  it('rejects finance evidence whose reviewed branch manifest or scope digest is missing/tampered', () => {
+    const binding: FolioEvidenceBinding = {
+      runId: 'run-binding-negative',
+      readResultRef: 'read-result-binding-negative',
+      transportId: 'transport-binding-negative',
+      threadId: 'thread-binding-negative',
+      triggerMessageId: 'message-binding-negative',
+      candidateId: 'candidate-binding-negative',
+      reservationRef: 'reservation-binding-negative',
+      inputDigest: 'a'.repeat(64),
+      requesterAuthorizationId: 'authorization-binding-negative',
+      releaseId: 'release-binding-negative',
+      requestBranchIds: ['folio_summary'],
+      manifestSha256ByBranch: { folio_summary: 'c'.repeat(64) },
+      scopeHash: SCOPE,
+      captureBindingRef: 'read-result-binding-negative',
+      propertyCode: 'HRCEN',
+      confirmationToken: CONFIRM,
+    };
+    const balance: FolioBalanceKernelResult = {
+      status: 'ok',
+      currency: 'ZAR',
+      totalBalance: '12.00',
+      evidenceId: 'balance-binding-negative',
+      blocker: null,
+      scopeVerified: true,
+      manifestSha256: '0'.repeat(64),
+      scopeHash: '1'.repeat(64),
+      artifactRef: 'balance-binding-negative-artifact',
+      finalizedReceipt: {
+        artifactId: 'balance-binding-negative-artifact',
+        operationId: binding.runId,
+        toolId: 'hms_read_folio',
+        toolVersion: '1.0.0',
+        executionClass: 'normal',
+        inputClass: 'authorized_exact',
+        requestBranchId: 'folio_summary',
+        operationOutcome: 'succeeded',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+      observedAt: NOW,
+      rowsScanned: 1,
+      bytesObserved: 100,
+      durationMs: 10,
+    };
+    const result = mergeFolioEvidence(
+      [balance],
+      { recipientClass: 'reservation_guest', inquiryClass: 'labelled_narrow_status' },
+      ['balance'],
+      binding,
+    );
+    expect(result.status).toBe('manual_required');
+    expect(result.unresolvedFields).toContain('FOLIO_FINALIZED_RECEIPT_REQUIRED');
   });
 
   it('aggregates every bounded detail page before reporting a complete ledger', async () => {

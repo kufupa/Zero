@@ -7,6 +7,7 @@ import {
   readInputDigest,
   readReservationRef,
   readTimestampSchema,
+  readDigestSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
   quoteStayReadRequestSchema,
@@ -88,6 +89,8 @@ export type ReadAdmissionSource = {
   triggerMessageId: string;
   releaseId: string;
   requestBranchId: string;
+  /** Independently reviewed manifest digest for the exact release branch. */
+  manifestSha256?: string;
   /** Private read-result reference that the browser artifact must join. */
   captureBindingRef?: string;
 };
@@ -118,6 +121,7 @@ export type ReadAdmissionIssuer = ReadAdmissionIssuerMarker & {
   readonly reservationRefIssuedAt: string | null;
   readonly reservationRefExpiresAt: string | null;
   readonly inputDigest: string;
+  readonly manifestSha256: string | null;
 };
 
 export const persistedReadAdmissionIssuerSchema = z
@@ -135,6 +139,7 @@ export const persistedReadAdmissionIssuerSchema = z
     reservationRefIssuedAt: readTimestampSchema.nullable(),
     reservationRefExpiresAt: readTimestampSchema.nullable(),
     inputDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    manifestSha256: readDigestSchema.nullable(),
   })
   .strict();
 export type PersistedReadAdmissionIssuer = z.infer<typeof persistedReadAdmissionIssuerSchema>;
@@ -198,6 +203,7 @@ function createIssuerTicket(input: {
   reservationRef: string | null;
   reservationRefIssuedAt: string | null;
   reservationRefExpiresAt: string | null;
+  manifestSha256: string | null;
 }): ReadAdmissionIssuer {
   const source = input.source;
   const ticket = {
@@ -214,6 +220,7 @@ function createIssuerTicket(input: {
     reservationRefIssuedAt: input.reservationRefIssuedAt,
     reservationRefExpiresAt: input.reservationRefExpiresAt,
     inputDigest: input.inputDigest,
+    manifestSha256: input.manifestSha256,
   };
   Object.defineProperty(ticket, READ_ADMISSION_ISSUER_MARKER, {
     value: true,
@@ -249,6 +256,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   const captureBindingRef = captureRequired
     ? requiredRef(source.captureBindingRef ?? '', 'captureBindingRef')
     : null;
+  const manifestSha256 = captureRequired ? readDigestSchema.parse(source.manifestSha256) : null;
   let candidateId: string | null;
   if (
     input.toolId === 'documents_list_existing' ||
@@ -343,6 +351,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     reservationRef,
     reservationRefIssuedAt,
     reservationRefExpiresAt,
+    manifestSha256,
   });
   const issuer = createIssuerTicket({
     source,
@@ -352,6 +361,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     reservationRef,
     reservationRefIssuedAt,
     reservationRefExpiresAt,
+    manifestSha256,
   });
   return {
     admission,
@@ -378,6 +388,7 @@ export function persistReadAdmissionIssuer(
     reservationRefIssuedAt: issuer.reservationRefIssuedAt,
     reservationRefExpiresAt: issuer.reservationRefExpiresAt,
     inputDigest: issuer.inputDigest,
+    manifestSha256: issuer.manifestSha256,
   });
 }
 
@@ -419,7 +430,8 @@ export function assertPersistedReadAdmissionIssuer(input: {
     data.mailboxAccessId !== input.expectedMailboxAccessId ||
     admission.data.requesterAuthorizationId !== input.expectedMailboxAccessId ||
     data.inputDigest !== admission.data.inputDigest ||
-    data.inputDigest !== readInputDigest(closedRequest)
+    data.inputDigest !== readInputDigest(closedRequest) ||
+    data.manifestSha256 !== (admission.data.manifestSha256 ?? null)
   ) {
     throw new Error('read admission issuer provenance does not bind the exact request scope');
   }
@@ -470,7 +482,8 @@ export function assertReadAdmissionIssuer(input: {
     persisted.triggerMessageId !== input.triggerMessageId ||
     persisted.mailboxAccessId !== admission.requesterAuthorizationId ||
     persisted.inputDigest !== admission.inputDigest ||
-    persisted.inputDigest !== readInputDigest(closedRequest)
+    persisted.inputDigest !== readInputDigest(closedRequest) ||
+    persisted.manifestSha256 !== (admission.manifestSha256 ?? null)
   ) {
     throw new Error('read_tool admission issuer does not bind the exact mail request');
   }

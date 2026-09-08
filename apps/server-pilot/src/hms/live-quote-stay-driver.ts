@@ -450,18 +450,26 @@ function attachFinalizedQuoteReceipt(
   result: ToolResult<QuoteStayReadData>,
   session: import('./runtime.js').HmsReadSession,
   auditSpec: HmsBrowserAuditSpec | undefined,
+  manifestSha256: string,
 ): ToolResult<QuoteStayReadData> {
   if (!auditSpec || result.evidence.kind !== 'hms') return result;
   const receipt = typeof session.lastReceipt === 'function' ? session.lastReceipt() : null;
+  const expectedBranch = auditSpec.requestBranchId ?? 'quote_availability_search';
+  const receiptExpiry = receipt ? Date.parse(receipt.expiresAt) : Number.NaN;
   const receiptMatches = Boolean(
     receipt &&
       receipt.artifactState === 'complete' &&
+      typeof receipt.artifactId === 'string' &&
+      receipt.artifactId.trim().length > 0 &&
       receipt.toolId === auditSpec.toolId &&
+      receipt.toolVersion === auditSpec.toolVersion &&
       receipt.operationId === auditSpec.operationId &&
       receipt.executionClass === auditSpec.executionClass &&
       receipt.inputClass === auditSpec.inputClass &&
       receipt.operationOutcome === 'succeeded' &&
-      (!auditSpec.requestBranchId || receipt.requestBranchId === auditSpec.requestBranchId),
+      receipt.requestBranchId === expectedBranch &&
+      Number.isFinite(receiptExpiry) &&
+      receiptExpiry > Date.now(),
   );
   if (!receiptMatches) {
     return {
@@ -471,9 +479,30 @@ function attachFinalizedQuoteReceipt(
       unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture_receipt'])],
     };
   }
+  const artifactId = receipt!.artifactId;
   return {
     ...result,
-    evidence: { ...result.evidence, artifactRef: receipt!.artifactId },
+    evidence: {
+      ...result.evidence,
+      artifactRef: artifactId,
+      sourceHash: sha256Hex(
+        canonicalJson({
+          sourceHash: result.evidence.sourceHash,
+          manifestSha256,
+          artifactId,
+          receipt: {
+            operationId: receipt!.operationId,
+            toolId: receipt!.toolId,
+            toolVersion: receipt!.toolVersion,
+            executionClass: receipt!.executionClass,
+            inputClass: receipt!.inputClass,
+            requestBranchId: receipt!.requestBranchId,
+            operationOutcome: receipt!.operationOutcome,
+            expiresAt: receipt!.expiresAt,
+          },
+        }),
+      ),
+    },
   };
 }
 
@@ -552,7 +581,7 @@ export function createLiveQuoteStayDriver(input: {
       } finally {
         await session.close();
       }
-      return attachFinalizedQuoteReceipt(result, session, auditSpec);
+      return attachFinalizedQuoteReceipt(result, session, auditSpec, authorization.manifestSha256);
     },
   };
 }
