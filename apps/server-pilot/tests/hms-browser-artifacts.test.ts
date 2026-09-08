@@ -305,13 +305,36 @@ describe('hms browser artifacts store', () => {
     expect(quoteReceipt.mutationRequests).toBe(0);
     expect(Date.parse(quoteReceipt.expiresAt)).toBeGreaterThan(Date.now());
 
-    await expect(
-      store.beginCapture(
-        baseSpec({
-          toolId: 'hms_read_folio',
-        }),
-      ),
-    ).rejects.toBeInstanceOf(HmsBrowserArtifactError);
+    const folioHandle = await store.beginCapture(
+      baseSpec({
+        toolId: 'hms_read_folio',
+        requestBranchId: 'folio_summary',
+      }),
+    );
+    await writeFile(
+      join(folioHandle.stagingDir, 'trace.zip'),
+      traceZip({
+        'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+        'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+      }),
+    );
+    const folioReceipt = await folioHandle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'folio-source',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [{ ruleId: 'folio-read-post', count: 1 }],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    expect(folioReceipt.toolId).toBe('hms_read_folio');
+    expect(folioReceipt.requestBranchId).toBe('folio_summary');
     await expect(
       store.beginCapture(
         baseSpec({

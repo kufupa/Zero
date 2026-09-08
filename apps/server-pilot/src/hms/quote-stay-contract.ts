@@ -131,6 +131,9 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
     for (const date of missingNights) unresolved.add(`missing_night:${date}`);
   }
   if (currencies.size > 1) unresolved.add('mixed_currency');
+  if (input.currency && rows.some((row) => row.currency !== input.currency)) {
+    unresolved.add('currency_mismatch');
+  }
   if (rows.some((row) => row.availableCount < 0)) {
     unresolved.add('negative_observed_overbooking');
   }
@@ -141,10 +144,35 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
   unresolved.add('taxes_packages_unresolved');
   unresolved.add('bookability_unproven');
 
+  const rowCountByNight = new Map<string, number>();
+  for (const row of rows) {
+    rowCountByNight.set(row.date, (rowCountByNight.get(row.date) ?? 0) + 1);
+  }
+  const exactNightCoverage =
+    expectedNights.length > 0 &&
+    missingNights.length === 0 &&
+    rows.length === expectedNights.length &&
+    rows.every((row) => expectedNights.includes(row.date)) &&
+    expectedNights.every((date) => rowCountByNight.get(date) === 1);
+  const hasAmbiguousNight = [...unresolved].some(
+    (value) => value.includes('.ambiguous') || value === 'ambiguous',
+  );
+  const requestedCurrencyMatches = Boolean(
+    input.currency && currencies.size === 1 && currencies.has(input.currency),
+  );
+  const quantity =
+    input.rooms?.reduce((sum, room) => sum + room.quantity, 0) ?? input.requestedRooms;
+  const sumEligible =
+    currency &&
+    currencies.size === 1 &&
+    exactNightCoverage &&
+    requestedCurrencyMatches &&
+    !hasAmbiguousNight &&
+    !input.roomMoveRequired &&
+    quantity > 0;
+
   let displayRateSum: QuoteMoney | null = null;
-  if (currency && currencies.size <= 1 && rows.length > 0) {
-    const quantity =
-      input.rooms?.reduce((sum, room) => sum + room.quantity, 0) ?? input.requestedRooms;
+  if (sumEligible) {
     const total = rows.reduce((sum, row) => {
       const value = cents(row.displayedAmount);
       return value === null ? Number.NaN : sum + value * quantity;
@@ -159,6 +187,8 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
     } else {
       unresolved.add('display_rate_unparseable');
     }
+  } else if (rows.length > 0) {
+    unresolved.add('display_rate_sum_unavailable');
   }
   if (!currency) unresolved.add('currency_unresolved');
 

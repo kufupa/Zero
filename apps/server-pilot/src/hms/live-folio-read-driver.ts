@@ -18,6 +18,7 @@ import { knownFact, readIssue, unknownFact } from './read-service-contracts.js';
 import type { ExactReservationCandidate } from './live-read-manifest.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createFolioReadFacade } from './folio-read-facade.js';
 import type { ReadCandidateChild } from './candidate-graph.js';
@@ -971,6 +972,9 @@ export type LiveFolioReadDriverInput = {
   runtime: HmsRuntime;
   transportId: string;
   expectedConfirmationToken: string;
+  auditSpecFor?: (input: {
+    branchId: 'folio_summary' | 'deposit_ledger_summary';
+  }) => HmsBrowserAuditSpec | undefined;
 };
 
 export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
@@ -987,6 +991,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         transportId,
         signal,
         allowUnstarted: true,
+        auditSpec: input.auditSpecFor?.({ branchId: 'folio_summary' }),
         sessionAuthorization: authorization,
       });
 
@@ -1091,6 +1096,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         transportId,
         signal,
         allowUnstarted: true,
+        auditSpec: input.auditSpecFor?.({ branchId: 'deposit_ledger_summary' }),
         sessionAuthorization: authorization,
       });
 

@@ -49,14 +49,17 @@ export type HmsBrowserAuditSpec = {
   inputClass: 'authorized_exact' | 'synthetic_not_found';
   roleProofSha256?: string;
   roleProofExpiresAt?: string;
+  /** Closed branch identity for multi-branch audited readers. */
+  requestBranchId?: string;
 };
 
-// V1 capture receipts are emitted by the two normal browser read drivers that
+// V1 capture receipts are emitted by the registered normal browser read drivers that
 // currently supply an audit spec. Keep this closed to the registered read
 // shapes; a typed HmsReadToolId alone must not widen capture to other tools.
 const HMS_BROWSER_V1_CAPTURE_TOOL_IDS = [
   'hms_find_reservation',
   'hms_quote_stay',
+  'hms_read_folio',
 ] as const satisfies readonly HmsReadToolId[];
 type HmsBrowserV1CaptureToolId = (typeof HMS_BROWSER_V1_CAPTURE_TOOL_IDS)[number];
 
@@ -79,6 +82,7 @@ export type HmsBrowserArtifactReceiptBaseV1 = {
   credentialMode: 'view_only';
   roleProofSha256: string | null;
   roleProofExpiresAt: string | null;
+  requestBranchId?: string | null;
   operationOutcome:
     | 'succeeded'
     | 'unverified_negative'
@@ -1171,6 +1175,7 @@ export async function createHmsBrowserArtifactStore(input: {
             credentialMode: 'view_only',
             roleProofSha256: spec.roleProofSha256 ?? null,
             roleProofExpiresAt: spec.roleProofExpiresAt ?? null,
+            requestBranchId: spec.requestBranchId ?? null,
             operationOutcome: input.outcome,
             requestRules: input.requestRules,
             blockedRequests: input.blockedRequests,

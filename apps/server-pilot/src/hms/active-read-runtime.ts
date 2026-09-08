@@ -214,7 +214,6 @@ export function buildHmsFindSessionAuthorization(input: {
   const computedManifestSha = createHash('sha256')
     .update(JSON.stringify(input.manifest))
     .digest('hex');
-
   return {
     operationId: input.operationId,
     toolId: 'hms_find_reservation',
@@ -262,6 +261,9 @@ export function buildHmsQuoteSessionAuthorization(input: {
   const computedManifestSha = createHash('sha256')
     .update(JSON.stringify(input.manifest))
     .digest('hex');
+  if (branch && branch.manifestSha256 !== computedManifestSha) {
+    throw new Error('quote branch manifest digest mismatch');
+  }
 
   return {
     operationId: input.operationId,
@@ -270,7 +272,7 @@ export function buildHmsQuoteSessionAuthorization(input: {
     releaseId: release?.releaseId ?? randomUUID(),
     requestBranchId: branch?.id ?? 'quote_availability_search',
     manifest: input.manifest,
-    manifestSha256: branch?.manifestSha256 ?? computedManifestSha,
+    manifestSha256: computedManifestSha,
     roleProofPath: input.roleProofPath,
     roleProofSha256: release?.roleProofSha256 ?? input.roleProofSha256,
     credentialVersionHmacSha256:

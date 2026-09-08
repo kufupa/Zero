@@ -331,6 +331,15 @@ describe('live folio driver binding + denied actions', () => {
       runtime,
       transportId: 't1',
       expectedConfirmationToken: CONFIRM,
+      auditSpecFor: ({ branchId }) => ({
+        operationId: 'folio-audit-operation',
+        toolId: 'hms_read_folio',
+        toolVersion: '1.0.0',
+        dependencyRevision: 'playwright-1.52.0-chromium-1169',
+        executionClass: 'normal',
+        inputClass: 'authorized_exact',
+        requestBranchId: branchId,
+      }),
     });
     const a = auth();
     const c = child({
@@ -340,6 +349,12 @@ describe('live folio driver binding + denied actions', () => {
     const result = await driver.observeFolioBalance(a, c, new AbortController().signal);
     expect(result.status).toBe('ok');
     expect(result.totalBalance).toBe('12.00');
+    expect(
+      (runtime.openReadSession as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].auditSpec,
+    ).toMatchObject({
+      toolId: 'hms_read_folio',
+      requestBranchId: 'folio_summary',
+    });
     expect(posts.some((p) => p.path === LIVE_GUEST_STAY_SEARCH_PATH)).toBe(true);
     expect(
       posts.every((p) => !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path)),
@@ -429,6 +444,15 @@ describe('live folio driver binding + denied actions', () => {
       runtime,
       transportId: 't1',
       expectedConfirmationToken: CONFIRM,
+      auditSpecFor: ({ branchId }) => ({
+        operationId: 'deposit-audit-operation',
+        toolId: 'hms_read_folio',
+        toolVersion: '1.0.0',
+        dependencyRevision: 'playwright-1.52.0-chromium-1169',
+        executionClass: 'normal',
+        inputClass: 'authorized_exact',
+        requestBranchId: branchId,
+      }),
     });
     const a = auth({ requestBranchId: 'deposit_ledger_summary' });
     const c = child({
@@ -438,6 +462,12 @@ describe('live folio driver binding + denied actions', () => {
     const result = await driver.observeDepositSummary(a, c, new AbortController().signal);
     expect(result.status).toBe('manual_required');
     expect(result.blocker).toBe(DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER);
+    expect(
+      (runtime.openReadSession as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].auditSpec,
+    ).toMatchObject({
+      toolId: 'hms_read_folio',
+      requestBranchId: 'deposit_ledger_summary',
+    });
     expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(true);
   });
 

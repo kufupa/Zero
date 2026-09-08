@@ -1,12 +1,3 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import {
-  requestPolicyManifestSchema,
-  requestRuleSchema,
-} from '../src/hms/contracts.js';
 import {
   createFetchBrowserFactory,
   createHmsLiveProofRuntime,
@@ -15,12 +6,18 @@ import {
   HmsRuntimeError,
   type HmsSecret,
 } from '../src/hms/runtime.js';
-import type { HmsBrowserArtifactStore } from '../src/hms/browser-artifacts.js';
 import {
   FIXTURE_IDS,
   startHmsFixtureServer,
   type HmsFixtureServer,
 } from './helpers/hms-fixture-server.js';
+import { requestPolicyManifestSchema, requestRuleSchema } from '../src/hms/contracts.js';
+import type { HmsBrowserArtifactStore } from '../src/hms/browser-artifacts.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 function fixtureManifest(origin: string) {
   return requestPolicyManifestSchema.parse({
@@ -76,7 +73,7 @@ function fixtureManifest(origin: string) {
         },
         variableBody: {
           confirmationNumber: { pattern: '[A-Z0-9-]{1,32}', maxLength: 32 },
-          surname: { pattern: ".{0,40}", maxLength: 40 },
+          surname: { pattern: '.{0,40}', maxLength: 40 },
         },
         redirectPolicy: 'same-reviewed-chain',
       }),
@@ -182,9 +179,7 @@ describe('HMS runtime', () => {
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(server.origin),
       secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
-      loadSecret:
-        opts.loadSecret ??
-        (async () => secret),
+      loadSecret: opts.loadSecret ?? (async () => secret),
       browserFactory: opts.browserFactory ?? createFetchBrowserFactory(),
       circuitCooldownMs: opts.circuitCooldownMs ?? 50,
       healthStatusPath: opts.healthStatusPath,
@@ -285,11 +280,8 @@ describe('HMS runtime', () => {
   });
 
   it('rejects session waiters that exceed maxWaitMs', async () => {
-    const {
-      CAPACITY_REJECTED,
-      HMS_SESSION_WAITER_CAP_CODE,
-      createBoundedSessionLock,
-    } = await import('../src/hms/runtime.js');
+    const { CAPACITY_REJECTED, HMS_SESSION_WAITER_CAP_CODE, createBoundedSessionLock } =
+      await import('../src/hms/runtime.js');
     const lock = createBoundedSessionLock({ waiterCap: 2, maxWaitMs: 30 });
     const release = await lock.acquire(new AbortController().signal);
     const waiting = lock.acquire(new AbortController().signal);
@@ -354,9 +346,7 @@ describe('HMS runtime', () => {
         throw new Error('boom password=should-not-leak');
       },
     });
-    await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toBeInstanceOf(
-      HmsRuntimeError,
-    );
+    await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toBeInstanceOf(HmsRuntimeError);
     expect(runtime.health().state).toBe('degraded');
     expect(JSON.stringify(runtime.health())).not.toMatch(/password=/);
   });
@@ -437,9 +427,7 @@ describe('HMS runtime', () => {
     });
 
     const beforeHits = server.state.mutationHits;
-    await expect(
-      session.page.goto(`${server.origin}/reservation/save`),
-    ).rejects.toMatchObject({
+    await expect(session.page.goto(`${server.origin}/reservation/save`)).rejects.toMatchObject({
       code: expect.stringMatching(/unknown_path|unmatched|mutation/i),
     });
 
@@ -471,9 +459,7 @@ describe('HMS runtime', () => {
       (r) => r.method === 'POST' && r.path === '/web/reservation/search',
     );
     expect(searchPosts.length).toBeGreaterThanOrEqual(1);
-    expect(searchPosts.some((r) => r.body.includes('NOTFOUND-CANARY'))).toBe(
-      true,
-    );
+    expect(searchPosts.some((r) => r.body.includes('NOTFOUND-CANARY'))).toBe(true);
   });
 
   it('credential mode mismatch rejects non-view_only', async () => {
@@ -545,28 +531,22 @@ describe('HMS runtime', () => {
   });
 });
 describe('Playwright Chromium (optional)', () => {
-  it(
-    'skips when chromium unavailable; documents injectable factory path',
-    async () => {
-      const { tryCreatePlaywrightBrowserFactory } = await import(
-        '../src/hms/runtime.js'
-      );
-      const factory = await tryCreatePlaywrightBrowserFactory();
-      if (!factory) {
-        expect(factory).toBeNull();
-        return;
-      }
-      try {
-        const browser = await factory({});
-        await browser.close();
-        expect(true).toBe(true);
-      } catch (err) {
-        // Windows CI without browser binaries — fixture/unit path remains green
-        expect(String(err)).toMatch(/Executable doesn't exist|browser|chromium/i);
-      }
-    },
-    30_000,
-  );
+  it('skips when chromium unavailable; documents injectable factory path', async () => {
+    const { tryCreatePlaywrightBrowserFactory } = await import('../src/hms/runtime.js');
+    const factory = await tryCreatePlaywrightBrowserFactory();
+    if (!factory) {
+      expect(factory).toBeNull();
+      return;
+    }
+    try {
+      const browser = await factory({});
+      await browser.close();
+      expect(true).toBe(true);
+    } catch (err) {
+      // Windows CI without browser binaries — fixture/unit path remains green
+      expect(String(err)).toMatch(/Executable doesn't exist|browser|chromium/i);
+    }
+  }, 30_000);
 });
 
 describe('Task 2 production composition + browser guards', () => {
@@ -579,10 +559,7 @@ describe('Task 2 production composition + browser guards', () => {
     const mod = await import('../src/hms/production-runtime.js');
     expect(typeof mod.createProductionHmsRuntime).toBe('function');
     const src = await import('node:fs/promises').then((fs) =>
-      fs.readFile(
-        new URL('../src/hms/production-runtime.ts', import.meta.url),
-        'utf8',
-      ),
+      fs.readFile(new URL('../src/hms/production-runtime.ts', import.meta.url), 'utf8'),
     );
     expect(src).toMatch(/createPlaywrightBrowserFactory/);
     const runtimeSource = await import('node:fs/promises').then((fs) =>
@@ -602,13 +579,9 @@ describe('Task 2 production composition + browser guards', () => {
       source.indexOf('/** Required Playwright factory'),
     );
     expect(close).toMatch(/HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS/);
-    expect(close).toMatch(
-      /activeTeardown[\s\S]*new Promise<never>[\s\S]*TRACE_FINALIZE_FAILED/,
-    );
+    expect(close).toMatch(/activeTeardown[\s\S]*new Promise<never>[\s\S]*TRACE_FINALIZE_FAILED/);
     expect(source).toMatch(/async function poisonAfterFinalizeTimeout/);
-    expect(source).toMatch(
-      /timedOut = true[\s\S]*await poisonAfterFinalizeTimeout\(\)/,
-    );
+    expect(source).toMatch(/timedOut = true[\s\S]*await poisonAfterFinalizeTimeout\(\)/);
     expect(source).toMatch(
       /poisonAfterFinalizeTimeout[\s\S]*closing = true[\s\S]*failedBrowser\.close\(\)/,
     );
@@ -618,8 +591,7 @@ describe('Task 2 production composition + browser guards', () => {
     const origin = 'http://127.0.0.1:17888';
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(origin),
-      secretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => {
         throw new Error('secret load must not run');
       },
@@ -638,8 +610,7 @@ describe('Task 2 production composition + browser guards', () => {
           operationId: randomUUID(),
           toolId: 'hms_find_reservation',
           toolVersion: '1.2.0',
-          dependencyRevision:
-            'playwright-1.52.0-chromium-1169',
+          dependencyRevision: 'playwright-1.52.0-chromium-1169',
           executionClass: 'normal',
           inputClass: 'authorized_exact',
         },
@@ -758,8 +729,7 @@ describe('Task 2 production composition + browser guards', () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
     const secret = fixtureSecret(server.origin);
-    let emitPopup: ((page: import('../src/hms/runtime.js').HmsPage) => void) | null =
-      null;
+    let emitPopup: ((page: import('../src/hms/runtime.js').HmsPage) => void) | null = null;
     const factory = createFetchBrowserFactory();
     const wrapped: typeof factory = async (input) => {
       const browser = await factory(input);
@@ -835,9 +805,7 @@ describe('Task 2 production composition + browser guards', () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
     const secret = fixtureSecret(server.origin);
-    let emitDownload:
-      | ((d: { cancel(): Promise<void> }) => void)
-      | null = null;
+    let emitDownload: ((d: { cancel(): Promise<void> }) => void) | null = null;
     const factory = createFetchBrowserFactory();
     const wrapped: typeof factory = async (input) => {
       const browser = await factory(input);
@@ -885,9 +853,7 @@ describe('Task 2 production composition + browser guards', () => {
   });
 
   it('unreviewed redirect blocks before continue', async () => {
-    const { evaluateObservedRequest, BLOCK_CODES } = await import(
-      '../src/hms/request-policy.js'
-    );
+    const { evaluateObservedRequest, BLOCK_CODES } = await import('../src/hms/request-policy.js');
     const decision = evaluateObservedRequest(fixtureManifest('http://127.0.0.1:1'), {
       url: 'http://127.0.0.1:1/unreviewed',
       method: 'GET',
@@ -940,9 +906,7 @@ describe('Task 2 production composition + browser guards', () => {
       roleProofPath: proofPath,
       loadRoleProof: async (path) => {
         proofChecks += 1;
-        const { loadHmsReadRoleProof } = await import(
-          '../src/hms/production-runtime.js'
-        );
+        const { loadHmsReadRoleProof } = await import('../src/hms/production-runtime.js');
         return loadHmsReadRoleProof(path);
       },
     });
@@ -951,10 +915,12 @@ describe('Task 2 production composition + browser guards', () => {
     // canary + start path
     expect(proofChecks).toBeGreaterThanOrEqual(1);
     const before = proofChecks;
-    await runtime.openReadSession({
-      transportId: secret.mailboxTransportId,
-      signal: AbortSignal.timeout(15_000),
-    }).then((s) => s.close());
+    await runtime
+      .openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+      })
+      .then((s) => s.close());
     expect(proofChecks).toBeGreaterThan(before);
   });
 
@@ -1030,9 +996,7 @@ describe('Task 2 production composition + browser guards', () => {
       }),
       { mode: 0o600 },
     );
-    const { loadHmsReadRoleProof } = await import(
-      '../src/hms/production-runtime.js'
-    );
+    const { loadHmsReadRoleProof } = await import('../src/hms/production-runtime.js');
 
     await expect(loadHmsReadRoleProof(proofPath, now)).rejects.toMatchObject({
       code: 'ROLE_SCOPE_INVALID',
@@ -1040,9 +1004,7 @@ describe('Task 2 production composition + browser guards', () => {
   });
 
   it('requires receipts to bind a concrete source revision', async () => {
-    const { resolveHmsSourceRevision } = await import(
-      '../src/hms/production-runtime.js'
-    );
+    const { resolveHmsSourceRevision } = await import('../src/hms/production-runtime.js');
     expect(
       resolveHmsSourceRevision(undefined, {
         NAVA_BUILD_COMMIT: '0123456789abcdef0123456789abcdef01234567',
@@ -1051,9 +1013,9 @@ describe('Task 2 production composition + browser guards', () => {
     expect(() => resolveHmsSourceRevision(undefined, {})).toThrowError(
       expect.objectContaining({ code: 'AUDIT_CAPTURE' }),
     );
-    expect(() =>
-      resolveHmsSourceRevision('production', {}),
-    ).toThrowError(expect.objectContaining({ code: 'AUDIT_CAPTURE' }));
+    expect(() => resolveHmsSourceRevision('production', {})).toThrowError(
+      expect.objectContaining({ code: 'AUDIT_CAPTURE' }),
+    );
   });
 
   it('one Chromium process serves sequential fresh contexts', async () => {
@@ -1205,12 +1167,8 @@ describe('Task 2 production composition + browser guards', () => {
       scenario: 'reservation-not-found',
     });
     cleanup.push(server.close);
-    const { createLiveGuestStayDriver } = await import(
-      '../src/hms/live-guest-stay-driver.js'
-    );
-    const { buildLiveGuestStayReadManifest } = await import(
-      '../src/hms/live-read-manifest.js'
-    );
+    const { createLiveGuestStayDriver } = await import('../src/hms/live-guest-stay-driver.js');
+    const { buildLiveGuestStayReadManifest } = await import('../src/hms/live-read-manifest.js');
     const secret: HmsSecret = {
       loginUrl: `${server.origin}/web/base/logindisp?tenant=HMS_LEGACY`,
       username: 'fixture-user',
@@ -1255,9 +1213,7 @@ describe('Task 2 production composition + browser guards', () => {
       buildLiveGuestStayReadManifest,
       LIVE_GUEST_STAY_SEARCH_PATH,
     } = await import('../src/hms/live-read-manifest.js');
-    const { createLiveGuestStayDriver } = await import(
-      '../src/hms/live-guest-stay-driver.js'
-    );
+    const { createLiveGuestStayDriver } = await import('../src/hms/live-guest-stay-driver.js');
     const { BLOCK_CODES } = await import('../src/hms/request-policy.js');
     const secret: HmsSecret = {
       loginUrl: `${server.origin}/web/base/logindisp?tenant=HMS_LEGACY`,
@@ -1302,10 +1258,7 @@ describe('Task 2 production composition + browser guards', () => {
       },
     });
 
-    const result = await driver.searchExact(
-      candidate,
-      AbortSignal.timeout(15_000),
-    );
+    const result = await driver.searchExact(candidate, AbortSignal.timeout(15_000));
     expect(result.outcome).toBe('not_found');
     expect(capturedPost).not.toBeNull();
     expect(capturedPost!.MADDON_FILTER_VALUE_3).toBe(candidate.value);
@@ -1319,32 +1272,29 @@ describe('Task 2 production composition + browser guards', () => {
       allowUnstarted: true,
     });
     try {
-      const alteredBefore = server.requests.filter((r) =>
-        r.body.includes('OTHER-VAL'),
-      ).length;
+      const alteredBefore = server.requests.filter((r) => r.body.includes('OTHER-VAL')).length;
       await expect(
         session.page.postForm(`${server.origin}${LIVE_GUEST_STAY_SEARCH_PATH}`, {
           ...expectedBody,
           MADDON_FILTER_VALUE_3: 'OTHER-VAL',
         }),
       ).rejects.toMatchObject({ code: BLOCK_CODES.CHANGED_FIXED_BODY });
-      expect(
-        server.requests.filter((r) => r.body.includes('OTHER-VAL')).length,
-      ).toBe(alteredBefore);
+      expect(server.requests.filter((r) => r.body.includes('OTHER-VAL')).length).toBe(
+        alteredBefore,
+      );
     } finally {
       await session.close();
     }
   });
 });
 
-describe("HMS browser audit capture order", () => {
-  it("withholds a successful session when capture finalizes incomplete", async () => {
-    const { randomUUID } = await import("node:crypto");
-    const { rm } = await import("node:fs/promises");
-    const {
-      createHmsBrowserArtifactStore,
-      ensureHmsBrowserArtifactRoot,
-    } = await import("../src/hms/browser-artifacts.js");
+describe('HMS browser audit capture order', () => {
+  it('withholds a successful session when capture finalizes incomplete', async () => {
+    const { randomUUID } = await import('node:crypto');
+    const { rm } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
     const server = await startHmsFixtureServer();
     const root = join(tmpdir(), `hms-cap-incomplete-${randomUUID()}`);
     await ensureHmsBrowserArtifactRoot(root);
@@ -1359,15 +1309,14 @@ describe("HMS browser audit capture order", () => {
     const secret = fixtureSecret(server.origin);
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(server.origin),
-      secretArn:
-        "arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test",
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => secret,
       browserFactory: createFetchBrowserFactory(),
       requireViewOnly: true,
       runStartupCanary: false,
       artifactStore: store,
       requireAuditCapture: true,
-      sourceRevision: "test-source",
+      sourceRevision: 'test-source',
     });
     try {
       const session = await runtime.openReadSession({
@@ -1376,31 +1325,115 @@ describe("HMS browser audit capture order", () => {
         allowUnstarted: true,
         auditSpec: {
           operationId: randomUUID(),
-          toolId: "hms_find_reservation",
-          toolVersion: "1.2.0",
-          dependencyRevision: "test-dependency",
-          executionClass: "normal",
-          inputClass: "authorized_exact",
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'test-dependency',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
         },
       });
       await expect(session.close()).rejects.toMatchObject({
-        code: "AUDIT_CAPTURE",
+        code: 'AUDIT_CAPTURE',
       });
       const unhandled: unknown[] = [];
       const recordUnhandled = (error: unknown) => {
         unhandled.push(error);
       };
-      process.on("unhandledRejection", recordUnhandled);
+      process.on('unhandledRejection', recordUnhandled);
       await new Promise((resolve) => setTimeout(resolve, 10));
-      process.off("unhandledRejection", recordUnhandled);
+      process.off('unhandledRejection', recordUnhandled);
       expect(unhandled).toEqual([]);
-      expect(session.lastReceipt()?.artifactState).toBe("incomplete");
-      expect(runtime.health().state).toBe("degraded");
+      expect(session.lastReceipt()?.artifactState).toBe('incomplete');
+      expect(runtime.health().state).toBe('degraded');
       await expect(runtime.close()).rejects.toMatchObject({
-        code: "AUDIT_CAPTURE",
+        code: 'AUDIT_CAPTURE',
       });
-      expect(runtime.health().state).toBe("stopped");
+      expect(runtime.health().state).toBe('stopped');
     } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('composes a normal finance capture through the runtime and durable store', async () => {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-folio-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const stop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            await stop(traceOptions);
+            if (traceOptions?.path) {
+              await writeFile(
+                traceOptions.path,
+                Buffer.concat([
+                  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+                  Buffer.alloc(26),
+                  Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+                  Buffer.alloc(18),
+                ]),
+              );
+            }
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    try {
+      for (const requestBranchId of ['folio_summary', 'deposit_ledger_summary'] as const) {
+        const operationId = randomUUID();
+        const session = await runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+          allowUnstarted: true,
+          auditSpec: {
+            operationId,
+            toolId: 'hms_read_folio',
+            toolVersion: '1.0.0',
+            dependencyRevision: 'test-dependency',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+            requestBranchId,
+          },
+        });
+        await session.close();
+        expect(session.lastReceipt()).toMatchObject({
+          artifactState: 'complete',
+          operationId,
+          toolId: 'hms_read_folio',
+          requestBranchId,
+          operationOutcome: 'succeeded',
+        });
+      }
+    } finally {
+      await runtime.close().catch(() => undefined);
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
@@ -1408,10 +1441,9 @@ describe("HMS browser audit capture order", () => {
 
   it('preserves login and audit-finalization failures together', async () => {
     const { rm } = await import('node:fs/promises');
-    const {
-      createHmsBrowserArtifactStore,
-      ensureHmsBrowserArtifactRoot,
-    } = await import('../src/hms/browser-artifacts.js');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
     const server = await startHmsFixtureServer();
     const root = join(tmpdir(), `hms-cap-login-fail-${randomUUID()}`);
     await ensureHmsBrowserArtifactRoot(root);
@@ -1425,8 +1457,7 @@ describe("HMS browser audit capture order", () => {
     });
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(server.origin),
-      secretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => secret,
       browserFactory: createFetchBrowserFactory(),
       requireViewOnly: true,
@@ -1467,10 +1498,9 @@ describe("HMS browser audit capture order", () => {
 
   it('runtime omits normal video and starts proof tracing before page creation', async () => {
     const { rm, writeFile } = await import('node:fs/promises');
-    const {
-      createHmsBrowserArtifactStore,
-      ensureHmsBrowserArtifactRoot,
-    } = await import('../src/hms/browser-artifacts.js');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
     const server = await startHmsFixtureServer();
     const root = join(tmpdir(), `hms-cap-order-${randomUUID()}`);
     await ensureHmsBrowserArtifactRoot(root);
@@ -1487,9 +1517,7 @@ describe("HMS browser audit capture order", () => {
       return {
         async newContext(opts) {
           events.push(
-            opts.recordVideo
-              ? `context:video:${opts.recordVideo.dir}`
-              : 'context:no-video',
+            opts.recordVideo ? `context:video:${opts.recordVideo.dir}` : 'context:no-video',
           );
           const context = await browser.newContext(opts);
           const start = context.tracing.start.bind(context.tracing);
@@ -1525,8 +1553,7 @@ describe("HMS browser audit capture order", () => {
     const secret = fixtureSecret(server.origin);
     const runtime = createHmsLiveProofRuntime({
       manifest: fixtureManifest(server.origin),
-      secretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => secret,
       browserFactory: factory,
       requireViewOnly: true,
@@ -1571,12 +1598,8 @@ describe("HMS browser audit capture order", () => {
 
       expect(events[0]).toBe('launch:tracesDir');
       expect(events).toContain('context:no-video');
-      expect(events.some((event) => event.startsWith('context:video:'))).toBe(
-        true,
-      );
-      const proofContext = events.findIndex((event) =>
-        event.startsWith('context:video:'),
-      );
+      expect(events.some((event) => event.startsWith('context:video:'))).toBe(true);
+      const proofContext = events.findIndex((event) => event.startsWith('context:video:'));
       const proofTrace = events.indexOf('trace:start', proofContext);
       const proofPage = events.indexOf('page:new', proofContext);
       expect(proofTrace).toBeGreaterThan(proofContext);
@@ -1589,16 +1612,14 @@ describe("HMS browser audit capture order", () => {
   });
 
   it('revalidates evidence bindings before context; rejects non-AWSCURRENT', async () => {
-    const {
-      credentialVersionHmacSha256,
-      runtimeFingerprintSha256,
-    } = await import('../src/hms/evidence-runtime.js');
+    const { credentialVersionHmacSha256, runtimeFingerprintSha256 } = await import(
+      '../src/hms/evidence-runtime.js'
+    );
     const server = await startHmsFixtureServer();
     const secret = fixtureSecret(server.origin);
     const key = Buffer.alloc(32, 9);
     const keyVersion = 'evidence-key-v1';
-    const secretArn =
-      'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test';
+    const secretArn = 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test';
     const versionId = 'version-current-1';
     const credentialHmac = credentialVersionHmacSha256({
       evidenceKey: key,
@@ -1626,8 +1647,7 @@ describe("HMS browser audit capture order", () => {
       chromiumRevision: '1169',
       evidenceBindings: {
         evidence: {
-          secretArn:
-            'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+          secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
           keyVersion,
           key,
         },
@@ -1658,8 +1678,7 @@ describe("HMS browser audit capture order", () => {
         chromiumRevision: '1169',
         evidenceBindings: {
           evidence: {
-            secretArn:
-              'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+            secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
             keyVersion,
             key,
           },
@@ -1672,9 +1691,9 @@ describe("HMS browser audit capture order", () => {
         },
       });
       try {
-        await expect(
-          stale.start(AbortSignal.timeout(15_000)),
-        ).rejects.toMatchObject({ code: 'CREDENTIAL_VERSION_STALE' });
+        await expect(stale.start(AbortSignal.timeout(15_000))).rejects.toMatchObject({
+          code: 'CREDENTIAL_VERSION_STALE',
+        });
       } finally {
         await stale.close().catch(() => undefined);
       }
@@ -1685,9 +1704,7 @@ describe("HMS browser audit capture order", () => {
   });
 
   it('loadProductionRoleProof accepts v1 and v2 path shapes', async () => {
-    const { loadProductionRoleProof } = await import(
-      '../src/hms/production-runtime.js'
-    );
+    const { loadProductionRoleProof } = await import('../src/hms/production-runtime.js');
     const { roleProofV2Path } = await import('../src/hms/release-kernel.js');
     const { writeFile, mkdir, rm } = await import('node:fs/promises');
     const dir = await mkdtemp(join(tmpdir(), 'hms-role-dual-'));
@@ -1745,9 +1762,7 @@ describe("HMS browser audit capture order", () => {
           currency: 'ZAR',
           credentialMode: 'view_only',
           allowedSurfaces: [
-            ...new Set(
-              tool.requestBranches.flatMap((b) => [...b.requiredRoleSurfaces]),
-            ),
+            ...new Set(tool.requestBranches.flatMap((b) => [...b.requiredRoleSurfaces])),
           ],
           deniedActions: [...tool.deniedActions],
           issuedAt: new Date(now - 60_000).toISOString(),
@@ -1814,8 +1829,7 @@ describe("HMS browser audit capture order", () => {
       credentialMode: 'view_only' as const,
     };
     const baseConfig = {
-      secretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
       chromiumExecutablePath: '/opt/nava/chromium/chrome',
       roleProofPath: proofPath,
       healthPath: join(dir, 'health.json'),
@@ -1824,8 +1838,7 @@ describe("HMS browser audit capture order", () => {
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 15_000,
       circuitCooldownMs: 1_000,
-      evidenceHmacSecretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+      evidenceHmacSecretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
       evidenceHmacKeyVersion: 'evidence-key-v1',
     };
     const loadSecret = async () => ({
@@ -1868,11 +1881,8 @@ describe("HMS browser audit capture order", () => {
   });
 
   it('does not invent AWSCURRENT; fail-closed when evidence required and VersionStages missing', async () => {
-    const {
-      createProductionHmsRuntime,
-      normalizeLoadedSecret,
-      CENTURION_HMS_PRODUCTION_ORIGIN,
-    } = await import('../src/hms/production-runtime.js');
+    const { createProductionHmsRuntime, normalizeLoadedSecret, CENTURION_HMS_PRODUCTION_ORIGIN } =
+      await import('../src/hms/production-runtime.js');
     const { writeFile, mkdir, rm } = await import('node:fs/promises');
 
     // Missing stages must stay empty — never fake AWSCURRENT.
@@ -1926,8 +1936,7 @@ describe("HMS browser audit capture order", () => {
     };
     const key = Buffer.alloc(32, 9);
     const config = {
-      secretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
       chromiumExecutablePath: '/opt/nava/chromium/chrome',
       roleProofPath: proofPath,
       healthPath: join(dir, 'health.json'),
@@ -1936,8 +1945,7 @@ describe("HMS browser audit capture order", () => {
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 15_000,
       circuitCooldownMs: 1_000,
-      evidenceHmacSecretArn:
-        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+      evidenceHmacSecretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
       evidenceHmacKeyVersion: 'evidence-key-v1',
     };
 
@@ -1959,9 +1967,7 @@ describe("HMS browser audit capture order", () => {
         },
       }),
     ).rejects.toMatchObject({
-      code: expect.stringMatching(
-        /CREDENTIAL_VERSION_STALE|CREDENTIAL_VERSION_STAGES_MISSING/,
-      ),
+      code: expect.stringMatching(/CREDENTIAL_VERSION_STALE|CREDENTIAL_VERSION_STAGES_MISSING/),
     });
 
     await expect(
@@ -1983,10 +1989,7 @@ describe("HMS browser audit capture order", () => {
 
     // Source documents create-time VersionStages snapshot (no mid-session SM re-fetch).
     const src = await import('node:fs/promises').then((fs) =>
-      fs.readFile(
-        new URL('../src/hms/production-runtime.ts', import.meta.url),
-        'utf8',
-      ),
+      fs.readFile(new URL('../src/hms/production-runtime.ts', import.meta.url), 'utf8'),
     );
     expect(src).toMatch(/create-time.*VersionStages|VersionStages.*create-time/i);
     expect(src).not.toMatch(/VersionStages \?\? \['AWSCURRENT'\]/);
@@ -2010,8 +2013,7 @@ describe("HMS browser audit capture order", () => {
       const secret = fixtureSecret(server.origin);
       const runtime = createHmsRuntime({
         manifest: fixtureManifest(server.origin),
-        secretArn:
-          'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+        secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
         loadSecret: async () => secret,
         browserFactory: createFetchBrowserFactory(),
         requireSessionAuthorization: true,
@@ -2061,10 +2063,7 @@ describe("HMS browser audit capture order", () => {
 
   it('Task 13: live-guest-stay-driver passes sessionAuthorization into openReadSession', async () => {
     const src = await import('node:fs/promises').then((fs) =>
-      fs.readFile(
-        new URL('../src/hms/live-guest-stay-driver.ts', import.meta.url),
-        'utf8',
-      ),
+      fs.readFile(new URL('../src/hms/live-guest-stay-driver.ts', import.meta.url), 'utf8'),
     );
     expect(src).toMatch(/sessionAuthorizationFor/);
     expect(src).toMatch(/sessionAuthorization,/);

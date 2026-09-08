@@ -16,7 +16,7 @@ import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createQuoteStayFacade } from './quote-stay-facade.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
   'roomTypeCode',
@@ -34,6 +34,16 @@ export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
 
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
 }
 
 function assertNotAborted(signal: AbortSignal): void {
@@ -276,7 +286,8 @@ function quoteToolResult(input: {
   data: QuoteStayReadData;
   unresolvedFields: string[];
   observedAt: Date;
-  sourceSeed: string;
+  sourceSeed: unknown;
+  candidate: QuoteStayCandidate;
   draftReady: boolean;
   propertyCode?: string;
 }): ToolResult<QuoteStayReadData> {
@@ -297,15 +308,165 @@ function quoteToolResult(input: {
     unresolvedFields: input.unresolvedFields,
     evidence: {
       kind: 'hms',
-      id: '00000000-0000-4000-8000-000000000014',
+      id: randomUUID(),
       toolId: 'hms_quote_stay',
       toolVersion: '2.0.0',
       propertyCode: input.propertyCode ?? 'HRCEN',
       observedAt: input.observedAt.toISOString(),
       expiresAt: new Date(input.observedAt.getTime() + 15 * 60_000).toISOString(),
       claimKeys,
-      sourceHash: sha256Hex(input.sourceSeed),
+      sourceHash: sha256Hex(
+        canonicalJson({
+          candidate: input.candidate,
+          data: input.data,
+          propertyCode: input.propertyCode ?? 'HRCEN',
+          sourceSeed: input.sourceSeed,
+          unresolvedFields: input.unresolvedFields,
+        }),
+      ),
     },
+  };
+}
+
+async function observeQuoteWithinSession(input: {
+  session: import('./runtime.js').HmsReadSession;
+  candidate: QuoteStayCandidate;
+  signal: AbortSignal;
+  observedAt: Date;
+}): Promise<ToolResult<QuoteStayReadData>> {
+  const { session, candidate, signal, observedAt } = input;
+  assertNotAborted(signal);
+  const facade = createQuoteStayFacade(session);
+  await facade.navigate();
+  const chrome = await facade.collectChromeDefaults();
+  const text = await facade.searchExact(candidate, chrome);
+  if (session.terminal() || session.violation()) {
+    return quoteToolResult({
+      candidate,
+      status: 'manual_required',
+      data: emptyQuoteData(candidate, ['request_policy']),
+      unresolvedFields: ['request_policy'],
+      observedAt,
+      sourceSeed: { stage: 'request_policy' },
+      draftReady: false,
+    });
+  }
+
+  assertNotAborted(signal);
+  const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
+  if (!parsed.envelopeRecognized) {
+    return quoteToolResult({
+      candidate,
+      status: 'manual_required',
+      data: emptyQuoteData(candidate, parsed.unresolvedFields),
+      unresolvedFields: parsed.unresolvedFields,
+      observedAt,
+      sourceSeed: { stage: 'quote_envelope_unrecognized' },
+      draftReady: false,
+    });
+  }
+
+  const nights = quoteStayNightDates(candidate);
+  const nightSet = new Set(nights);
+  const inWindow = parsed.rows.filter((row) => nightSet.has(row.date));
+  if (
+    inWindow.length === 0 &&
+    parsed.unresolvedFields.length === 0 &&
+    !parsed.unresolvedFields.includes('quote_search_error')
+  ) {
+    return quoteToolResult({
+      candidate,
+      status: 'unverified_negative',
+      data: emptyQuoteData(candidate, ['unverified_negative']),
+      unresolvedFields: ['unverified_negative'],
+      observedAt,
+      sourceSeed: { stage: 'quote_empty_unverified' },
+      draftReady: false,
+    });
+  }
+
+  const unresolved = [...parsed.unresolvedFields];
+  if (parsed.rows.some((row) => !nightSet.has(row.date))) {
+    unresolved.push('nightly.out_of_window');
+  }
+  const byNight = new Map<string, QuoteNightObservation[]>();
+  for (const row of inWindow) {
+    const matches = byNight.get(row.date) ?? [];
+    matches.push(row);
+    byNight.set(row.date, matches);
+  }
+  for (const night of nights) {
+    const rows = byNight.get(night) ?? [];
+    if (rows.length === 0) unresolved.push(`nightly.${night}`);
+    if (rows.length > 1) unresolved.push(`nightly.${night}.ambiguous`);
+  }
+
+  // Prefer rows matching authored room/rate when multiple; ambiguity remains
+  // explicit and no alternate row is silently selected.
+  const filtered = inWindow.filter(
+    (row) =>
+      row.roomType.toUpperCase() === candidate.roomType.toUpperCase() &&
+      row.ratePlan.toUpperCase() === candidate.ratePlan.toUpperCase(),
+  );
+  const useRows = filtered;
+  if (inWindow.length > 0 && filtered.length === 0) {
+    unresolved.push('room_rate_scope_mismatch');
+  }
+  const uniqueUnresolved = [...new Set(unresolved)];
+  const draftReady = uniqueUnresolved.length === 0 && useRows.length === nights.length;
+  const data = buildQuoteStayReadData({
+    nightlyObservations: useRows,
+    requestedRooms: candidate.rooms,
+    requestRef: candidate.quoteRequestRef,
+    arrival: candidate.arrivalDate,
+    departure: candidate.departureDate,
+    rooms: candidate.normalizedRooms,
+    currency: candidate.currency ?? parsed.currency ?? undefined,
+    unresolvedInputs: uniqueUnresolved,
+  });
+  return quoteToolResult({
+    candidate,
+    status: draftReady ? 'ok' : 'manual_required',
+    data,
+    unresolvedFields: uniqueUnresolved,
+    observedAt,
+    sourceSeed: {
+      stage: 'quote_live',
+      requestRef: candidate.quoteRequestRef ?? null,
+      rows: useRows,
+    },
+    draftReady,
+  });
+}
+
+function attachFinalizedQuoteReceipt(
+  result: ToolResult<QuoteStayReadData>,
+  session: import('./runtime.js').HmsReadSession,
+  auditSpec: HmsBrowserAuditSpec | undefined,
+): ToolResult<QuoteStayReadData> {
+  if (!auditSpec || result.evidence.kind !== 'hms') return result;
+  const receipt = typeof session.lastReceipt === 'function' ? session.lastReceipt() : null;
+  const receiptMatches = Boolean(
+    receipt &&
+      receipt.artifactState === 'complete' &&
+      receipt.toolId === auditSpec.toolId &&
+      receipt.operationId === auditSpec.operationId &&
+      receipt.executionClass === auditSpec.executionClass &&
+      receipt.inputClass === auditSpec.inputClass &&
+      receipt.operationOutcome === 'succeeded' &&
+      (!auditSpec.requestBranchId || receipt.requestBranchId === auditSpec.requestBranchId),
+  );
+  if (!receiptMatches) {
+    return {
+      ...result,
+      status: 'manual_required',
+      draftReady: false,
+      unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture_receipt'])],
+    };
+  }
+  return {
+    ...result,
+    evidence: { ...result.evidence, artifactRef: receipt!.artifactId },
   };
 }
 
@@ -355,6 +516,7 @@ export function createLiveQuoteStayDriver(input: {
       const nights = quoteStayNightDates(candidate);
       if (nights.length === 0) {
         return quoteToolResult({
+          candidate,
           status: 'manual_required',
           data: emptyQuoteData(candidate, ['quote_input']),
           unresolvedFields: ['quote_input'],
@@ -372,102 +534,18 @@ export function createLiveQuoteStayDriver(input: {
         sessionAuthorization: authorization,
       });
 
+      let result: ToolResult<QuoteStayReadData>;
       try {
-        assertNotAborted(signal);
-        const facade = createQuoteStayFacade(session);
-        await facade.navigate();
-        const chrome = await facade.collectChromeDefaults();
-        const text = await facade.searchExact(candidate, chrome);
-        if (session.terminal() || session.violation()) {
-          return quoteToolResult({
-            status: 'manual_required',
-            data: emptyQuoteData(candidate, ['request_policy']),
-            unresolvedFields: ['request_policy'],
-            observedAt,
-            sourceSeed: 'policy-quote-search',
-            draftReady: false,
-          });
-        }
-
-        assertNotAborted(signal);
-        const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
-        if (!parsed.envelopeRecognized) {
-          return quoteToolResult({
-            status: 'manual_required',
-            data: emptyQuoteData(candidate, parsed.unresolvedFields),
-            unresolvedFields: parsed.unresolvedFields,
-            observedAt,
-            sourceSeed: 'quote-envelope-unrecognized',
-            draftReady: false,
-          });
-        }
-
-        const nightSet = new Set(nights);
-        const inWindow = parsed.rows.filter((row) => nightSet.has(row.date));
-        if (
-          inWindow.length === 0 &&
-          parsed.unresolvedFields.length === 0 &&
-          !parsed.unresolvedFields.includes('quote_search_error')
-        ) {
-          return quoteToolResult({
-            status: 'unverified_negative',
-            data: emptyQuoteData(candidate, ['unverified_negative']),
-            unresolvedFields: ['unverified_negative'],
-            observedAt,
-            sourceSeed: 'quote-empty-unverified',
-            draftReady: false,
-          });
-        }
-
-        const unresolved = [...parsed.unresolvedFields];
-        if (parsed.rows.some((row) => !nightSet.has(row.date))) {
-          unresolved.push('nightly.out_of_window');
-        }
-        const byNight = new Map<string, QuoteNightObservation[]>();
-        for (const row of inWindow) {
-          const matches = byNight.get(row.date) ?? [];
-          matches.push(row);
-          byNight.set(row.date, matches);
-        }
-        for (const night of nights) {
-          const rows = byNight.get(night) ?? [];
-          if (rows.length === 0) unresolved.push(`nightly.${night}`);
-          if (rows.length > 1) unresolved.push(`nightly.${night}.ambiguous`);
-        }
-
-        // Prefer rows matching authored room/rate when multiple.
-        const filtered = inWindow.filter(
-          (row) =>
-            row.roomType.toUpperCase() === candidate.roomType.toUpperCase() &&
-            row.ratePlan.toUpperCase() === candidate.ratePlan.toUpperCase(),
-        );
-        const useRows = filtered;
-        if (inWindow.length > 0 && filtered.length === 0) {
-          unresolved.push('room_rate_scope_mismatch');
-        }
-        const uniqueUnresolved = [...new Set(unresolved)];
-        const draftReady = uniqueUnresolved.length === 0 && useRows.length === nights.length;
-        const data = buildQuoteStayReadData({
-          nightlyObservations: useRows,
-          requestedRooms: candidate.rooms,
-          requestRef: candidate.quoteRequestRef,
-          arrival: candidate.arrivalDate,
-          departure: candidate.departureDate,
-          rooms: candidate.normalizedRooms,
-          currency: candidate.currency ?? parsed.currency ?? undefined,
-          unresolvedInputs: uniqueUnresolved,
-        });
-        return quoteToolResult({
-          status: draftReady ? 'ok' : 'manual_required',
-          data,
-          unresolvedFields: uniqueUnresolved,
+        result = await observeQuoteWithinSession({
+          session,
+          candidate,
+          signal,
           observedAt,
-          sourceSeed: `quote-live:${candidate.arrivalDate}:${useRows.length}`,
-          draftReady,
         });
       } finally {
         await session.close();
       }
+      return attachFinalizedQuoteReceipt(result, session, auditSpec);
     },
   };
 }

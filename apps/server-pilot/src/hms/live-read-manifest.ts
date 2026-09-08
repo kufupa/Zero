@@ -14,10 +14,7 @@ import {
   type RequestPolicyManifest,
   type RequestRule,
 } from './contracts.js';
-import {
-  isoDateToHmsDisplay,
-  type QuoteStayCandidate,
-} from './quote-stay-candidate.js';
+import { isoDateToHmsDisplay, type QuoteStayCandidate } from './quote-stay-candidate.js';
 
 /** Guest Stay quick-search endpoint (not OSRESV). */
 export const LIVE_GUEST_STAY_SEARCH_PATH = '/web/base/OSRESS.search';
@@ -36,14 +33,7 @@ function getStaticRule(
   id: string,
   path: string,
   resourceTypes: Array<
-    | 'stylesheet'
-    | 'script'
-    | 'image'
-    | 'font'
-    | 'document'
-    | 'other'
-    | 'xhr'
-    | 'fetch'
+    'stylesheet' | 'script' | 'image' | 'font' | 'document' | 'other' | 'xhr' | 'fetch'
   >,
 ): RequestRule {
   return {
@@ -67,9 +57,7 @@ function getStaticRule(
  */
 export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] {
   return [
-    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
-      'stylesheet',
-    ]),
+    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', ['stylesheet']),
     getStaticRule(
       origin,
       'live-login-jquery',
@@ -95,12 +83,9 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/error-solid.svg',
       ['image'],
     ),
-    getStaticRule(
-      origin,
-      'live-login-logo-svg',
-      '/web/resources/inforhms/images/shared/logo.svg',
-      ['image'],
-    ),
+    getStaticRule(origin, 'live-login-logo-svg', '/web/resources/inforhms/images/shared/logo.svg', [
+      'image',
+    ]),
     // Live login also fetches shared/images/logo.svg typed as Playwright "other".
     {
       id: 'live-login-shared-logo-svg',
@@ -158,12 +143,9 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
       ['script'],
     ),
-    getStaticRule(
-      origin,
-      'live-common-aes',
-      '/web/resources/shared/scripts/cryptojs/aes.js',
-      ['script'],
-    ),
+    getStaticRule(origin, 'live-common-aes', '/web/resources/shared/scripts/cryptojs/aes.js', [
+      'script',
+    ]),
     getStaticRule(
       origin,
       'live-common-pbkdf2',
@@ -182,9 +164,7 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/shared/scripts/cryptojs/sha256-min.js',
       ['script'],
     ),
-    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
-      'script',
-    ]),
+    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', ['script']),
     getStaticRule(
       origin,
       'live-toolbar-dropdown',
@@ -198,24 +178,18 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       ['image'],
     ),
     // Soft-capture COMMON chrome GETs only (2026-08-03). Never mutation POSTs.
-    getStaticRule(
-      origin,
-      'live-toolbar-user',
-      '/web/resources/inforhms/images/toolbar/user.svg',
-      ['image', 'other'],
-    ),
-    getStaticRule(
-      origin,
-      'live-toolbar-help',
-      '/web/resources/inforhms/images/toolbar/help.svg',
-      ['image', 'other'],
-    ),
-    getStaticRule(
-      origin,
-      'live-toolbar-info',
-      '/web/resources/inforhms/images/toolbar/info.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-toolbar-user', '/web/resources/inforhms/images/toolbar/user.svg', [
+      'image',
+      'other',
+    ]),
+    getStaticRule(origin, 'live-toolbar-help', '/web/resources/inforhms/images/toolbar/help.svg', [
+      'image',
+      'other',
+    ]),
+    getStaticRule(origin, 'live-toolbar-info', '/web/resources/inforhms/images/toolbar/info.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-toolbar-logout',
@@ -288,12 +262,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/tree/caret-down.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-tree-folder',
-      '/web/resources/inforhms/images/tree/folder.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-tree-folder', '/web/resources/inforhms/images/tree/folder.svg', [
+      'image',
+      'other',
+    ]),
     // Soft-capture Front Desk expand (2026-08-03).
     getStaticRule(
       origin,
@@ -301,12 +273,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/tree/open-folder.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-tree-dot',
-      '/web/resources/inforhms/images/tree/dot.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-tree-dot', '/web/resources/inforhms/images/tree/dot.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-tree-plusminus-folder-closed',
@@ -338,12 +308,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/next-page.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-toolbar-copy',
-      '/web/resources/inforhms/images/toolbar/copy.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-toolbar-copy', '/web/resources/inforhms/images/toolbar/copy.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-toolbar-reset',
@@ -482,12 +450,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/filter-selected-notselected.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-slider-bg',
-      '/web/resources/inforhms/images/slider/slider-bg.png',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-slider-bg', '/web/resources/inforhms/images/slider/slider-bg.png', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-slider-thumb',
@@ -721,9 +687,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
 }
 
 /** Request-policy-only manifest for unit tests / production live sessions. */
-export function buildLiveGuestStayReadManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveGuestStayReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -770,8 +734,7 @@ export function buildExactOsressSearchBody(
   const isCanary = v === LIVE_NOTFOUND_CANARY;
   const unused = OSRESS_OR_UNUSED_TOKEN;
   const confVal = isCanary || candidate.kind === 'confirmation' ? v : unused;
-  const extVal =
-    isCanary || candidate.kind === 'external_reference' ? v : unused;
+  const extVal = isCanary || candidate.kind === 'external_reference' ? v : unused;
   const otherOr = isCanary ? v : unused;
   // Canary stays tight (±30). Real lookups widen so future-dated stays resolve.
   const departWindow = isCanary ? '-30' : '-365';
@@ -896,12 +859,15 @@ export function buildExactOsrravSearchBody(
   chrome: Record<string, string> = {},
 ): Record<string, string> {
   const start = isoDateToHmsDisplay(candidate.arrivalDate);
+  const requestedCurrency = candidate.currency ?? chrome.currency ?? 'ZAR';
+  const property = chrome.property || 'HRCEN';
+  const salesstrategy = chrome.salesstrategy || 'TRANSI';
   return {
     extId: chrome.extId ?? '',
-    property: chrome.property ?? '',
+    property,
     roomtypes: candidate.roomType,
     rateplans: candidate.ratePlan,
-    salesstrategy: chrome.salesstrategy ?? '',
+    salesstrategy,
     showunavailable: chrome.showunavailable ?? '0',
     ratetype: chrome.ratetype ?? '',
     adults: String(candidate.adults),
@@ -909,7 +875,7 @@ export function buildExactOsrravSearchBody(
     showavailableforsale: chrome.showavailableforsale ?? 'on',
     children: String(candidate.children),
     startdate: start,
-    currency: chrome.currency ?? 'ZAR',
+    currency: requestedCurrency,
     rowpagesize: chrome.rowpagesize ?? '14',
     pravailable: '',
     prsold: '',
@@ -933,12 +899,11 @@ export function buildExactOsrravSearchBody(
     rtoutofinv: '',
     rtoverbookinglimit: '',
     rtphysicalinv: '',
-    salesstrategy_display:
-      chrome.salesstrategy_display ?? chrome.salesstrategy ?? '',
+    salesstrategy_display: chrome.salesstrategy_display || salesstrategy,
     ratetype_display: chrome.ratetype_display ?? '',
     adults_display: String(candidate.adults),
     children_display: String(candidate.children),
-    currency_display: chrome.currency_display ?? '',
+    currency_display: requestedCurrency,
     hoteldate: chrome.hoteldate ?? '',
     firstcolumndate: chrome.firstcolumndate ?? start,
     propertylabel: '',
@@ -964,10 +929,28 @@ export function buildExactOsrravSearchRule(
   candidate: QuoteStayCandidate,
   chrome: Record<string, string> = {},
 ): RequestRule {
-  const body = buildExactOsrravSearchBody(candidate, chrome);
+  // The release binds this reviewed template, while the trusted producer
+  // binds candidate values in the request body. Candidate fields remain
+  // bounded variables; property and read-only chrome invariants stay fixed.
+  void chrome;
+  const body = buildExactOsrravSearchBody(candidate, {});
+  const variableBody: Record<string, { pattern: string; maxLength: number }> = {
+    extId: { pattern: '[A-Za-z0-9._:-]{0,64}', maxLength: 64 },
+    roomtypes: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
+    rateplans: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
+    adults: { pattern: '[1-9][0-9]?', maxLength: 2 },
+    children: { pattern: '[0-9]{1,2}', maxLength: 2 },
+    startdate: { pattern: '[0-9]{2}-[A-Z]{3}-[0-9]{4}', maxLength: 11 },
+    currency: { pattern: '[A-Z]{3}', maxLength: 3 },
+    adults_display: { pattern: '[1-9][0-9]?', maxLength: 2 },
+    children_display: { pattern: '[0-9]{1,2}', maxLength: 2 },
+    currency_display: { pattern: '[A-Z]{3}', maxLength: 3 },
+    hoteldate: { pattern: '(?:|[0-9]{2}-[A-Z]{3}-[0-9]{4})', maxLength: 11 },
+    firstcolumndate: { pattern: '[0-9]{2}-[A-Z]{3}-[0-9]{4}', maxLength: 11 },
+  };
   const fixedBody: Record<string, string> = {};
   for (const [key, value] of Object.entries(body)) {
-    fixedBody[key] = value;
+    if (!variableBody[key]) fixedBody[key] = value;
   }
   return {
     id: 'live-osrrav-search-exact',
@@ -979,7 +962,7 @@ export function buildExactOsrravSearchRule(
     fixedQuery: {},
     variableQuery: {},
     fixedBody,
-    variableBody: {},
+    variableBody,
     maxBodyBytes: 16_384,
     redirectPolicy: 'same-reviewed-chain',
   };
@@ -1195,9 +1178,7 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
 }
 
 /** Session manifest for Sent Email list (shared by audit + sent-document branches). */
-export function buildLiveSentEmailListManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveSentEmailListManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -1317,14 +1298,9 @@ export function buildLiveFolioFunctionalRules(origin: string): RequestRule[] {
   ];
 }
 
-export function buildLiveFolioReadManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveFolioReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
-    rules: [
-      ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveFolioFunctionalRules(origin),
-    ],
+    rules: [...buildLiveGuestStayChromeGetRules(origin), ...buildLiveFolioFunctionalRules(origin)],
   });
 }
 
@@ -1334,9 +1310,7 @@ export function buildLiveFolioReadManifest(
  * DLD soft-capture body keys: CURRENT_TAB_NAME, SYSTEM/USER_FUNCTION_NAME,
  * closingdate, property (2026-08-07 Property Ledger → Deposit Ledger row activate).
  */
-export function buildLiveDepositLedgerFunctionalRules(
-  origin: string,
-): RequestRule[] {
+export function buildLiveDepositLedgerFunctionalRules(origin: string): RequestRule[] {
   return [
     {
       id: 'live-osledg-open',
@@ -1404,9 +1378,7 @@ export function buildLiveDepositLedgerFunctionalRules(
   ];
 }
 
-export function buildLiveDepositLedgerManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveDepositLedgerManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -1425,9 +1397,7 @@ export const LIVE_GROUP_BLOCK_LIST_PATH = '/web/base/GSGRPB.LST';
  * Group block functional POSTs: GSGRPB open + GSGRPB.LST only.
  * BLK/HDR detail, save, create, assign, rooming, focus/input absent.
  */
-export function buildLiveGroupBlockFunctionalRules(
-  origin: string,
-): RequestRule[] {
+export function buildLiveGroupBlockFunctionalRules(origin: string): RequestRule[] {
   return [
     {
       id: 'live-gsgrpb-open',
@@ -1476,9 +1446,7 @@ export function buildLiveGroupBlockFunctionalRules(
   ];
 }
 
-export function buildLiveGroupBlockListManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveGroupBlockListManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -1486,5 +1454,3 @@ export function buildLiveGroupBlockListManifest(
     ],
   });
 }
-
-

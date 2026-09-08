@@ -1,9 +1,6 @@
-import { z } from 'zod';
-import type {
-  QuarantinedNegative,
-  ValidatedBusinessNotFound,
-} from '../hms/negative-result.js';
+import type { QuarantinedNegative, ValidatedBusinessNotFound } from '../hms/negative-result.js';
 import { toBusinessNotFoundToolStatus } from '../hms/negative-result.js';
+import { z } from 'zod';
 
 export type HmsEvidenceRef = {
   kind: 'hms';
@@ -15,6 +12,8 @@ export type HmsEvidenceRef = {
   expiresAt: string;
   claimKeys: string[];
   sourceHash: string;
+  /** Private durable join to the finalized browser capture, when audited. */
+  artifactRef?: string;
 };
 
 export type MailEvidenceRef = {
@@ -29,13 +28,7 @@ export type MailEvidenceRef = {
 };
 
 export type ToolResult<T> = {
-  status:
-    | 'ok'
-    | 'partial'
-    | 'not_found'
-    | 'unverified_negative'
-    | 'ambiguous'
-    | 'manual_required';
+  status: 'ok' | 'partial' | 'not_found' | 'unverified_negative' | 'ambiguous' | 'manual_required';
   draftReady: boolean;
   data: T;
   unresolvedFields: string[];
@@ -89,6 +82,7 @@ export const HmsEvidenceRefSchema = z
     expiresAt: z.string().min(1),
     claimKeys: z.array(z.string().min(1)).max(64),
     sourceHash: sha256Hex,
+    artifactRef: z.string().min(1).optional(),
   })
   .strict();
 
@@ -278,9 +272,7 @@ export function renderClaim(claim: EvidenceClaim): string {
       const rendered = rows
         .map((row) => {
           const item = asRecord(row);
-          const restrictions = Array.isArray(item.restrictions)
-            ? item.restrictions.join(', ')
-            : '';
+          const restrictions = Array.isArray(item.restrictions) ? item.restrictions.join(', ') : '';
           return `${String(item.date)} ${String(item.roomTypeClass)}: CON ${String(item.con)}, BLK ${String(item.blk)}, pickup ${String(item.pickup)}, remaining ${String(item.remaining)}, restrictions ${restrictions || 'none'}`;
         })
         .join('; ');
@@ -372,17 +364,13 @@ export function renderSalutation(salutation: 'first_name' | 'generic'): string {
   return salutation === 'first_name' ? 'Hi,' : 'Hello,';
 }
 
-export function renderOpening(
-  opening: 'acknowledge_request' | 'thanks_for_details',
-): string {
+export function renderOpening(opening: 'acknowledge_request' | 'thanks_for_details'): string {
   return opening === 'acknowledge_request'
     ? 'Thank you for your request. Here is what we can confirm from our records:'
     : 'Thank you for the details. Based on the information on file:';
 }
 
-export function renderClosing(
-  closing: 'invite_questions' | 'await_confirmation',
-): string {
+export function renderClosing(closing: 'invite_questions' | 'await_confirmation'): string {
   return closing === 'invite_questions'
     ? 'Please let us know if you have any questions.\n\nBest regards,\nFront Office'
     : 'We await your confirmation to proceed.\n\nBest regards,\nFront Office';
@@ -397,11 +385,7 @@ export function renderClarificationQuestions(questionCodes: readonly string[]): 
 /** Escape + paragraphize; model never supplies HTML. */
 export function textToSafeHtml(text: string): string {
   const escape = (s: string) =>
-    s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return text
     .split(/\n\n+/)
     .filter((p) => p.length > 0)
@@ -430,9 +414,7 @@ export function renderCandidate(
   | { outcome: 'candidate'; textBody: string; htmlBody: string; plan: CandidateDraftPlan } {
   if (plan.outcome !== 'candidate') return plan;
 
-  const factualLines = plan.selectedClaimIds.map((id) =>
-    renderClaim(requireClaim(claims, id)),
-  );
+  const factualLines = plan.selectedClaimIds.map((id) => renderClaim(requireClaim(claims, id)));
   const textBody = [
     renderSalutation(plan.salutation),
     renderOpening(plan.openingTemplate),
@@ -452,10 +434,7 @@ export function renderCandidate(
  * Square-bracket placeholder for facts we must not invent.
  * Prefer naming the read tool or a named blocker over vague "unknown".
  */
-export function formatMissingBracket(input: {
-  need: string;
-  acquisition: string;
-}): string {
+export function formatMissingBracket(input: { need: string; acquisition: string }): string {
   const need = input.need.trim();
   const acquisition = input.acquisition.trim();
   if (!need) throw new Error('missing bracket need required');
@@ -466,9 +445,7 @@ export function formatMissingBracket(input: {
 export function listMissingBrackets(
   fields: ReadonlyArray<{ field: string; acquisition: string }>,
 ): string[] {
-  return fields.map((f) =>
-    formatMissingBracket({ need: f.field, acquisition: f.acquisition }),
-  );
+  return fields.map((f) => formatMissingBracket({ need: f.field, acquisition: f.acquisition }));
 }
 
 /** Money / ISO date / confirmation-like tokens that must come from claims. */

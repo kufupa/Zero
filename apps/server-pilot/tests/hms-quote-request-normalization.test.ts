@@ -2,8 +2,19 @@ import {
   normalizeQuoteRequest,
   normalizeQuoteRequestFromAuthoredSegment,
   quoteRequestSchema,
+  type QuoteReferenceAuthority,
 } from '../src/hms/quote-request-normalization.js';
 import { describe, expect, it } from 'vitest';
+
+const commercialReferenceAuthority: QuoteReferenceAuthority = {
+  propertyCode: 'HRCEN',
+  roomTypeRefs: ['STD', 'DLX'],
+  ratePlanRefs: ['BAR', 'BAR2'],
+  currencyCodes: ['ZAR', 'USD'],
+  organizationRefs: ['org-centurion'],
+  agencyRefs: ['agency-7'],
+  groupRefs: ['group-42'],
+};
 
 describe('trusted quote request normalization', () => {
   it('clarifies conflicting date aliases instead of choosing one silently', () => {
@@ -42,8 +53,12 @@ describe('trusted quote request normalization', () => {
       groupRef: 'group-42',
     };
 
-    const first = normalizeQuoteRequest(input);
-    const second = normalizeQuoteRequest(input);
+    const first = normalizeQuoteRequest(input, {
+      referenceAuthority: commercialReferenceAuthority,
+    });
+    const second = normalizeQuoteRequest(input, {
+      referenceAuthority: commercialReferenceAuthority,
+    });
 
     expect(first.status).toBe('ready');
     expect(second).toEqual(first);
@@ -89,6 +104,48 @@ describe('trusted quote request normalization', () => {
     if (result.status !== 'clarification') return;
     expect(result.unresolvedInputs).toEqual(expect.arrayContaining(['currency', 'child_age:0:0']));
     expect(result.request).toBeNull();
+  });
+
+  it('clarifies arbitrary room/rate references without current configured eligibility', () => {
+    const result = normalizeQuoteRequest({
+      arrival: '2026-09-10',
+      departure: '2026-09-12',
+      rooms: [
+        {
+          quantity: 1,
+          adultsPerRoom: 2,
+          childAges: [],
+          roomTypeRef: 'NOT_CONFIGURED',
+          ratePlanRef: 'NOT_CONFIGURED',
+        },
+      ],
+      currency: 'ZAR',
+    });
+    expect(result.status).toBe('clarification');
+    if (result.status !== 'clarification') return;
+    expect(result.unresolvedInputs).toEqual(
+      expect.arrayContaining(['room_reference_configuration', 'rate_reference_configuration']),
+    );
+  });
+
+  it('does not floor aggregate adults or duplicate child ages across rooms', () => {
+    const adults = normalizeQuoteRequestFromAuthoredSegment(
+      'Please quote arrival 2026-09-10, departure 2026-09-12, 3 adults, 0 children, 2 rooms, room type STD, rate plan BAR, currency ZAR.',
+      { referenceAuthority: commercialReferenceAuthority },
+    );
+    expect(adults.status).toBe('clarification');
+    if (adults.status === 'clarification') {
+      expect(adults.unresolvedInputs).toContain('adult_distribution');
+    }
+
+    const children = normalizeQuoteRequestFromAuthoredSegment(
+      'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 1 child, 2 rooms, child age 4, room type STD, rate plan BAR, currency ZAR.',
+      { referenceAuthority: commercialReferenceAuthority },
+    );
+    expect(children.status).toBe('clarification');
+    if (children.status === 'clarification') {
+      expect(children.unresolvedInputs).toContain('child_distribution');
+    }
   });
 
   it.each([
@@ -145,9 +202,56 @@ describe('trusted quote request normalization', () => {
     expect(result.request.roomMoveRequired).toBe(false);
   });
 
+  it('fails closed when an explicit segment changes currency or leaves the requested date window', () => {
+    const result = normalizeQuoteRequest({
+      arrival: '2026-09-10',
+      departure: '2026-09-12',
+      currency: 'ZAR',
+      rooms: [
+        { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
+      ],
+      segments: [
+        {
+          arrival: '2026-09-10',
+          departure: '2026-09-11',
+          currency: 'ZAR',
+          rooms: [
+            {
+              quantity: 1,
+              adultsPerRoom: 2,
+              childAges: [],
+              roomTypeRef: 'STD',
+              ratePlanRef: 'BAR',
+            },
+          ],
+        },
+        {
+          arrival: '2026-09-11',
+          departure: '2026-09-13',
+          currency: 'USD',
+          rooms: [
+            {
+              quantity: 1,
+              adultsPerRoom: 2,
+              childAges: [],
+              roomTypeRef: 'STD',
+              ratePlanRef: 'BAR',
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.status).toBe('clarification');
+    if (result.status !== 'clarification') return;
+    expect(result.unresolvedInputs).toEqual(
+      expect.arrayContaining(['segment_currency_mismatch', 'segment_date_mismatch']),
+    );
+  });
+
   it('mints only from an explicit authored quote tuple with currency', () => {
     const result = normalizeQuoteRequestFromAuthoredSegment(
       'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.',
+      { referenceAuthority: commercialReferenceAuthority },
     );
     expect(result.status).toBe('ready');
     if (result.status !== 'ready') return;

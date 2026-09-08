@@ -49,6 +49,10 @@ export const quoteRequestSchema = z
     missingNights: z.array(isoDateSchema).max(QUOTE_STAY_MAX_NIGHTS),
     continuousStay: z.boolean(),
     roomMoveRequired: z.boolean(),
+    referenceAuthoritySha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
   .strict();
 
@@ -57,6 +61,32 @@ export type QuoteRequest = z.infer<typeof quoteRequestSchema>;
 export type QuoteRequestNormalization =
   | { status: 'ready'; request: QuoteRequest }
   | { status: 'clarification'; request: null; unresolvedInputs: string[] };
+
+/** Server-owned current quote reference/eligibility snapshot. */
+export type QuoteReferenceAuthority = {
+  propertyCode: string;
+  roomTypeRefs: readonly string[];
+  ratePlanRefs: readonly string[];
+  currencyCodes: readonly string[];
+  organizationRefs?: readonly string[];
+  agencyRefs?: readonly string[];
+  groupRefs?: readonly string[];
+};
+
+/** The only reviewed local quote catalog; live activation must replace this with current data. */
+export const DEFAULT_QUOTE_REFERENCE_AUTHORITY: QuoteReferenceAuthority = {
+  propertyCode: 'HRCEN',
+  roomTypeRefs: ['STD'],
+  ratePlanRefs: ['BAR'],
+  currencyCodes: ['ZAR'],
+  organizationRefs: [],
+  agencyRefs: [],
+  groupRefs: [],
+};
+
+export type QuoteRequestNormalizationOptions = {
+  referenceAuthority?: QuoteReferenceAuthority;
+};
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -91,10 +121,37 @@ function sameRoomShape(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function authorityDigest(authority: QuoteReferenceAuthority): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        propertyCode: authority.propertyCode,
+        roomTypeRefs: [...authority.roomTypeRefs].sort(),
+        ratePlanRefs: [...authority.ratePlanRefs].sort(),
+        currencyCodes: [...authority.currencyCodes].sort(),
+        organizationRefs: [...(authority.organizationRefs ?? [])].sort(),
+        agencyRefs: [...(authority.agencyRefs ?? [])].sort(),
+        groupRefs: [...(authority.groupRefs ?? [])].sort(),
+      }),
+    )
+    .digest('hex');
+}
+
+function checkConfiguredRef(
+  value: string | null,
+  configured: readonly string[] | undefined,
+  unresolved: string[],
+  code: string,
+): void {
+  if (value === null) return;
+  if (!configured?.includes(value)) unresolved.push(code);
+}
+
 function normalizeRooms(
   value: unknown,
   prefix: string,
   unresolved: string[],
+  authority: QuoteReferenceAuthority,
 ): NormalizedQuoteRoom[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > QUOTE_STAY_MAX_ROOMS) {
     unresolved.push(`${prefix}.rooms`);
@@ -121,6 +178,18 @@ function normalizeRooms(
       roomTypeRef: room.roomTypeRef ?? null,
       ratePlanRef: room.ratePlanRef ?? null,
     });
+    checkConfiguredRef(
+      room.roomTypeRef ?? null,
+      authority.roomTypeRefs,
+      unresolved,
+      'room_reference_configuration',
+    );
+    checkConfiguredRef(
+      room.ratePlanRef ?? null,
+      authority.ratePlanRefs,
+      unresolved,
+      'rate_reference_configuration',
+    );
   }
   if (rooms.length !== value.length) return null;
   const guestCount = rooms.reduce(
@@ -166,6 +235,7 @@ function normalizeSegment(
   index: number,
   fallbackCurrency: string,
   unresolved: string[],
+  authority: QuoteReferenceAuthority,
 ): z.infer<typeof quoteSegmentSchema> | null {
   if (!isRecord(value)) {
     unresolved.push(`segments:${index}`);
@@ -177,7 +247,7 @@ function normalizeSegment(
   const end = calendarDate(departure);
   if (start === null) unresolved.push(`segments:${index}.arrival`);
   if (end === null) unresolved.push(`segments:${index}.departure`);
-  const rooms = normalizeRooms(value.rooms, `segments:${index}`, unresolved);
+  const rooms = normalizeRooms(value.rooms, `segments:${index}`, unresolved, authority);
   const currency = normalizeCurrency(
     value.currency ?? fallbackCurrency,
     unresolved,
@@ -199,8 +269,12 @@ function normalizeSegment(
  * does not infer locale dates, occupancy, currency, room/rate references, or
  * authorization scope from prose.
  */
-export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization {
+export function normalizeQuoteRequest(
+  input: unknown,
+  options: QuoteRequestNormalizationOptions = {},
+): QuoteRequestNormalization {
   const unresolved: string[] = [];
+  const authority = options.referenceAuthority ?? DEFAULT_QUOTE_REFERENCE_AUTHORITY;
   if (!isRecord(input)) {
     return { status: 'clarification', request: null, unresolvedInputs: ['request'] };
   }
@@ -233,8 +307,14 @@ export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization
     unresolved.push('stay_length');
   }
 
+  if (input.propertyCode !== undefined && input.propertyCode !== authority.propertyCode) {
+    unresolved.push('property_scope_mismatch');
+  }
   const currency = normalizeCurrency(input.currency, unresolved, 'currency');
-  const rooms = normalizeRooms(input.rooms, 'request', unresolved);
+  if (currency && !authority.currencyCodes.includes(currency)) {
+    unresolved.push('currency_configuration');
+  }
+  const rooms = normalizeRooms(input.rooms, 'request', unresolved, authority);
   const segmentsRaw = input.segments;
   const segments: z.infer<typeof quoteSegmentSchema>[] = [];
   if (segmentsRaw === undefined) {
@@ -245,7 +325,7 @@ export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization
     unresolved.push('segments');
   } else {
     for (const [index, segment] of segmentsRaw.entries()) {
-      const normalized = normalizeSegment(segment, index, currency ?? '', unresolved);
+      const normalized = normalizeSegment(segment, index, currency ?? '', unresolved, authority);
       if (normalized) segments.push(normalized);
     }
   }
@@ -266,6 +346,39 @@ export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization
       }
     }
   }
+
+  if (currency) {
+    for (const [index, segment] of segments.entries()) {
+      if (segment.currency !== currency) unresolved.push(`segment_currency_mismatch`);
+      const segmentDates = nightDates(segment.arrival, segment.departure);
+      if (segmentDates.some((date) => !dates.includes(date))) {
+        unresolved.push('segment_date_mismatch');
+      }
+      if (index === 0 && segment.arrival !== arrival) unresolved.push('segment_date_mismatch');
+      if (index === segments.length - 1 && segment.departure !== departure) {
+        unresolved.push('segment_date_mismatch');
+      }
+    }
+  }
+
+  checkConfiguredRef(
+    normalizedRef(input.organizationRef, unresolved, 'organizationRef'),
+    authority.organizationRefs,
+    unresolved,
+    'organization_reference_configuration',
+  );
+  checkConfiguredRef(
+    normalizedRef(input.agencyRef, unresolved, 'agencyRef'),
+    authority.agencyRefs,
+    unresolved,
+    'agency_reference_configuration',
+  );
+  checkConfiguredRef(
+    normalizedRef(input.groupRef, unresolved, 'groupRef'),
+    authority.groupRefs,
+    unresolved,
+    'group_reference_configuration',
+  );
 
   const organizationRef = normalizedRef(input.organizationRef, unresolved, 'organizationRef');
   const agencyRef = normalizedRef(input.agencyRef, unresolved, 'agencyRef');
@@ -300,6 +413,7 @@ export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization
     roomMoveRequired: segments.some(
       (segment, index) => index > 0 && !sameRoomShape(segment.rooms, segments[index - 1]!.rooms),
     ),
+    referenceAuthoritySha256: authorityDigest(authority),
   };
   const request = quoteRequestSchema.parse({
     ...canonical,
@@ -315,6 +429,7 @@ export function normalizeQuoteRequest(input: unknown): QuoteRequestNormalization
  */
 export function normalizeQuoteRequestFromAuthoredSegment(
   authoredSegment: string,
+  options: QuoteRequestNormalizationOptions = {},
 ): QuoteRequestNormalization {
   const candidate = parseQuoteStayCandidateFromAuthoredSegment(authoredSegment);
   if (!candidate) {
@@ -345,19 +460,36 @@ export function normalizeQuoteRequestFromAuthoredSegment(
       ),
     };
   }
-  return normalizeQuoteRequest({
-    arrival: candidate.arrivalDate,
-    departure: candidate.departureDate,
-    rooms: [
-      {
-        quantity: candidate.rooms,
-        adultsPerRoom: Math.floor(candidate.adults / candidate.rooms),
-        children: candidate.children,
-        childAges,
-        roomTypeRef: candidate.roomType,
-        ratePlanRef: candidate.ratePlan,
-      },
-    ],
-    currency: currencies[0]![1]!.toUpperCase(),
-  });
+  if (candidate.adults % candidate.rooms !== 0) {
+    return {
+      status: 'clarification',
+      request: null,
+      unresolvedInputs: ['adult_distribution'],
+    };
+  }
+  if (candidate.children > 0 && candidate.rooms > 1) {
+    return {
+      status: 'clarification',
+      request: null,
+      unresolvedInputs: ['child_distribution'],
+    };
+  }
+  return normalizeQuoteRequest(
+    {
+      arrival: candidate.arrivalDate,
+      departure: candidate.departureDate,
+      rooms: [
+        {
+          quantity: candidate.rooms,
+          adultsPerRoom: Math.floor(candidate.adults / candidate.rooms),
+          children: candidate.children,
+          childAges,
+          roomTypeRef: candidate.roomType,
+          ratePlanRef: candidate.ratePlan,
+        },
+      ],
+      currency: currencies[0]![1]!.toUpperCase(),
+    },
+    options,
+  );
 }

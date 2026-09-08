@@ -11,12 +11,7 @@
     "soft_capture_abort_crs_and_mutations",
     "live_osrrav_search_success_envelope_2026-08-06"
   ],
-  "deniedActions": [
-    "crs_check_availability",
-    "click_result_row",
-    "paging",
-    "save"
-  ],
+  "deniedActions": ["crs_check_availability", "click_result_row", "paging", "save"],
   "valuesCaptured": false,
   "manifest": {
     "rules": [
@@ -25,9 +20,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/HMS-min.css",
-        "resourceTypes": [
-          "stylesheet"
-        ],
+        "resourceTypes": ["stylesheet"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -40,9 +33,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/jquery-3.6.0.min.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -55,9 +46,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/jquery.json-2.3.min.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -70,9 +59,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/infor-companyon-client.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -85,9 +72,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/base/login-all.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -100,9 +85,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/error-solid.svg",
-        "resourceTypes": [
-          "image"
-        ],
+        "resourceTypes": ["image"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -115,9 +98,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/shared/logo.svg",
-        "resourceTypes": [
-          "image"
-        ],
+        "resourceTypes": ["image"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -130,10 +111,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/images/logo.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -146,9 +124,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf",
-        "resourceTypes": [
-          "font"
-        ],
+        "resourceTypes": ["font"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -161,9 +137,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf",
-        "resourceTypes": [
-          "font"
-        ],
+        "resourceTypes": ["font"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -176,9 +150,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf",
-        "resourceTypes": [
-          "font"
-        ],
+        "resourceTypes": ["font"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -191,9 +163,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Black.ttf",
-        "resourceTypes": [
-          "font"
-        ],
+        "resourceTypes": ["font"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -206,9 +176,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/",
-        "resourceTypes": [
-          "document"
-        ],
+        "resourceTypes": ["document"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -221,9 +189,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/vaultUtility.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -236,9 +202,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/parentFacade.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -251,9 +215,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/parentFacadeImpl.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -266,9 +228,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/aes.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -281,9 +241,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/pbkdf2.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -296,9 +254,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/AesUtil.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -311,9 +267,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/sha256-min.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -326,9 +280,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/base/all-classes.js",
-        "resourceTypes": [
-          "script"
-        ],
+        "resourceTypes": ["script"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -341,9 +293,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/dropdown.svg",
-        "resourceTypes": [
-          "image"
-        ],
+        "resourceTypes": ["image"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -356,9 +306,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/new-document.svg",
-        "resourceTypes": [
-          "image"
-        ],
+        "resourceTypes": ["image"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -371,10 +319,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/user.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -387,10 +332,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/help.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -403,10 +345,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/info.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -419,10 +358,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/logout.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -435,10 +371,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/overlay-line.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -451,10 +384,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/settings.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -467,10 +397,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/save.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -483,10 +410,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/refresh.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -499,10 +423,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/quick-access.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -515,10 +436,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/caret-down.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -531,10 +449,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/send-submit.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -547,10 +462,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/bullet-list.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -563,10 +475,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-app-tray.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -579,10 +488,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/grid/grid3-hd-btn.png",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -595,10 +501,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/caret-down.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -611,10 +514,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/folder.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -627,10 +527,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/open-folder.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -643,10 +540,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/dot.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -659,10 +553,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/plusminus-folder-closed.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -675,10 +566,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/left-arrow.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -691,10 +579,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/delete.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -707,10 +592,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/previous-page.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -723,10 +605,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/next-page.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -739,10 +618,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/copy.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -755,10 +631,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/reset.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -771,10 +644,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/print.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -787,10 +657,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/print-preview.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -803,10 +670,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-left.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -819,10 +683,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/split-view.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -835,10 +696,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-right.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -851,10 +709,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-rate-availability.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -867,10 +722,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-type-availability.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -883,10 +735,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/money.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -899,10 +748,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-availability.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -915,10 +761,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/inventory.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -931,10 +774,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/employee-directory.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -947,10 +787,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/interface-status.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -963,10 +800,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/interface-error.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -979,10 +813,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-contains.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -995,10 +826,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1011,10 +839,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/no-filter.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1027,10 +852,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/export-spreadsheet.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1043,10 +865,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/util/splitter/drag.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1059,10 +878,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/close.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1075,10 +891,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/button/s-arrow-noline.png",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1091,10 +904,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-equals.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1107,10 +917,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-selected-notselected.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1123,10 +930,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/slider/slider-bg.png",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1139,10 +943,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/slider/slider-thumb.png",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1155,11 +956,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/jsp/interfaceStatusAlert.jsp",
-        "resourceTypes": [
-          "xhr",
-          "fetch",
-          "document"
-        ],
+        "resourceTypes": ["xhr", "fetch", "document"],
         "fixedQuery": {},
         "variableQuery": {
           "_dc": {
@@ -1177,10 +974,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/mingle-share.svg",
-        "resourceTypes": [
-          "image",
-          "other"
-        ],
+        "resourceTypes": ["image", "other"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1193,9 +987,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf",
-        "resourceTypes": [
-          "font"
-        ],
+        "resourceTypes": ["font"],
         "fixedQuery": {},
         "variableQuery": {},
         "fixedBody": {},
@@ -1208,10 +1000,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "POST",
         "path": "/web/base/OSRRAV",
-        "resourceTypes": [
-          "xhr",
-          "fetch"
-        ],
+        "resourceTypes": ["xhr", "fetch"],
         "fixedQuery": {},
         "variableQuery": {
           "USER_FUNCTION_NAME": {
@@ -1241,10 +1030,7 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "POST",
         "path": "/web/base/OSRRAV.HDR",
-        "resourceTypes": [
-          "xhr",
-          "fetch"
-        ],
+        "resourceTypes": ["xhr", "fetch"],
         "fixedQuery": {},
         "variableQuery": {},
         "contentType": "application/x-www-form-urlencoded",
@@ -1262,27 +1048,17 @@
         "origin": "https://appsrv-1.legacyhotels.co.za",
         "method": "POST",
         "path": "/web/base/OSRRAV.HDR.search",
-        "resourceTypes": [
-          "xhr",
-          "fetch"
-        ],
+        "resourceTypes": ["xhr", "fetch"],
         "fixedQuery": {},
         "variableQuery": {},
         "contentType": "application/x-www-form-urlencoded",
         "fixedBody": {
-          "extId": "",
           "property": "HRCEN",
-          "roomtypes": "STD",
-          "rateplans": "BAR",
           "salesstrategy": "TRANSI",
           "showunavailable": "0",
           "ratetype": "",
-          "adults": "2",
           "showexclusiverates": "0",
           "showavailableforsale": "on",
-          "children": "0",
-          "startdate": "10-SEP-2099",
-          "currency": "ZAR",
           "rowpagesize": "14",
           "pravailable": "",
           "prsold": "",
@@ -1308,11 +1084,6 @@
           "rtphysicalinv": "",
           "salesstrategy_display": "TRANSI",
           "ratetype_display": "",
-          "adults_display": "2",
-          "children_display": "0",
-          "currency_display": "",
-          "hoteldate": "06-AUG-2026",
-          "firstcolumndate": "10-SEP-2099",
           "propertylabel": "",
           "roomtypelabel": "",
           "isPopup": "",
@@ -1329,7 +1100,56 @@
           "SYSTEM_FUNCTION_NAME": "OSRRAV",
           "CURRENT_TAB_NAME": "HDR"
         },
-        "variableBody": {},
+        "variableBody": {
+          "extId": {
+            "pattern": "[A-Za-z0-9._:-]{0,64}",
+            "maxLength": 64
+          },
+          "roomtypes": {
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]{0,31}",
+            "maxLength": 32
+          },
+          "rateplans": {
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]{0,31}",
+            "maxLength": 32
+          },
+          "adults": {
+            "pattern": "[1-9][0-9]?",
+            "maxLength": 2
+          },
+          "children": {
+            "pattern": "[0-9]{1,2}",
+            "maxLength": 2
+          },
+          "startdate": {
+            "pattern": "[0-9]{2}-[A-Z]{3}-[0-9]{4}",
+            "maxLength": 11
+          },
+          "currency": {
+            "pattern": "[A-Z]{3}",
+            "maxLength": 3
+          },
+          "adults_display": {
+            "pattern": "[1-9][0-9]?",
+            "maxLength": 2
+          },
+          "children_display": {
+            "pattern": "[0-9]{1,2}",
+            "maxLength": 2
+          },
+          "currency_display": {
+            "pattern": "[A-Z]{3}",
+            "maxLength": 3
+          },
+          "hoteldate": {
+            "pattern": "(?:|[0-9]{2}-[A-Z]{3}-[0-9]{4})",
+            "maxLength": 11
+          },
+          "firstcolumndate": {
+            "pattern": "[0-9]{2}-[A-Z]{3}-[0-9]{4}",
+            "maxLength": 11
+          }
+        },
         "maxBodyBytes": 16384,
         "redirectPolicy": "same-reviewed-chain"
       }

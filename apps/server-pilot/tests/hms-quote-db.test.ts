@@ -71,6 +71,9 @@ function liveEnvelope(): string {
 
 function runtimeFixture() {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
+  let latestAuditSpec:
+    | { operationId?: string; toolId?: string; toolVersion?: string; requestBranchId?: string }
+    | undefined;
   const page: Partial<HmsPage> = {
     async goto() {},
     async content() {
@@ -109,10 +112,29 @@ function runtimeFixture() {
     page: page as HmsPage,
     violation: () => null,
     terminal: () => false,
+    lastReceipt: vi.fn(() => {
+      const auditSpec = latestAuditSpec;
+      if (!auditSpec) return null;
+      return {
+        artifactId: `u7-quote-artifact-${auditSpec.operationId ?? 'unknown'}`,
+        operationId: auditSpec.operationId ?? 'unknown',
+        toolId: auditSpec.toolId ?? 'hms_quote_stay',
+        toolVersion: auditSpec.toolVersion ?? '2.0.0',
+        requestBranchId: auditSpec.requestBranchId ?? null,
+        executionClass: 'normal',
+        inputClass: 'authorized_exact',
+        artifactState: 'complete',
+        operationOutcome: 'succeeded',
+      } as Record<string, unknown>;
+    }),
     close: vi.fn(async () => undefined),
   };
+  const openReadSession = vi.fn(async (input?: unknown) => {
+    latestAuditSpec = (input as { auditSpec?: typeof latestAuditSpec } | undefined)?.auditSpec;
+    return session;
+  });
   const runtime = {
-    openReadSession: vi.fn(async () => session),
+    openReadSession,
   } as unknown as HmsRuntime;
   return { runtime, posts, session };
 }
@@ -459,6 +481,10 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               occupancyPriced: false,
             },
           });
+          expect(
+            (stored?.readResult as { evidence?: Array<{ artifactRef?: string | null }> } | null)
+              ?.evidence?.[0]?.artifactRef,
+          ).toMatch(/^u7-quote-artifact-/);
           const receipt = await readAiRunReceipt(
             {
               readResultRef,
@@ -474,6 +500,10 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             toolId: 'hms_quote_stay',
             scopeRef: normalized.request.quoteRequestRef,
           });
+          expect(
+            (receipt?.result as { evidence?: Array<{ artifactRef?: string | null }> } | null)
+              ?.evidence?.[0]?.artifactRef,
+          ).toMatch(/^u7-quote-artifact-/);
         } finally {
           clearCachedActiveReadRuntimeForTests();
         }

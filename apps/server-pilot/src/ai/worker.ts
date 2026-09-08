@@ -656,6 +656,7 @@ export function createLiveHmsCandidateSessionFactory(
             dependencyRevision: 'playwright-1.52.0-chromium-1169',
             executionClass: 'normal',
             inputClass: 'authorized_exact',
+            requestBranchId: 'quote_availability_search',
           }),
         })
       : undefined;
@@ -694,6 +695,15 @@ export function createLiveHmsCandidateSessionFactory(
               runtime,
               transportId: input.transportId,
               expectedConfirmationToken: candidate.value,
+              auditSpecFor: ({ branchId }) => ({
+                operationId,
+                toolId: 'hms_read_folio',
+                toolVersion: '1.0.0',
+                dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                executionClass: 'normal',
+                inputClass: 'authorized_exact',
+                requestBranchId: branchId,
+              }),
             });
             const steps: Array<
               | Awaited<ReturnType<typeof driver.observeFolioBalance>>
@@ -1763,7 +1773,7 @@ async function executeProductionReadTool(input: {
                   sourceUpdatedAt: null,
                   expiresAt: legacy.evidence.expiresAt,
                   scopeVerified: true,
-                  artifactRef: null,
+                  artifactRef: legacy.evidence.artifactRef ?? null,
                 },
               ]
             : [],
@@ -1800,14 +1810,21 @@ async function executeProductionReadTool(input: {
         unresolvedFields: ['room_or_rate_reference_required'],
         evidence: {
           kind: 'hms',
-          id: '00000000-0000-4000-8000-000000000014',
+          id: randomUUID(),
           toolId: 'hms_quote_stay',
           toolVersion: '2.0.0',
           propertyCode: 'HRCEN',
           observedAt: new Date().toISOString(),
           expiresAt: input.fence.deadlineAt.toISOString(),
           claimKeys: [],
-          sourceHash: createHash('sha256').update('quote-input-incomplete').digest('hex'),
+          sourceHash: createHash('sha256')
+            .update(
+              JSON.stringify({
+                quoteRequest: request.quoteRequest,
+                unresolved: ['room_or_rate_reference_required'],
+              }),
+            )
+            .digest('hex'),
         },
       });
     const readContext: ReadExecutionContext = {
@@ -2182,7 +2199,7 @@ async function executeProductionReadTool(input: {
           sourceUpdatedAt: null,
           expiresAt: legacy.evidence.expiresAt,
           scopeVerified: true,
-          artifactRef: null,
+          artifactRef: legacy.evidence.artifactRef ?? null,
         },
       ],
       page: null,
