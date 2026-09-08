@@ -1,14 +1,11 @@
 import type { AdminDashboardMetrics, MetricResult } from '@/lib/admin-dashboard/types';
-
 type DashboardInput = {
   cohortId: 'centurion' | 'research';
   window: '7d' | '28d';
   observationCutoff?: string;
 };
 
-type DashboardInputResult =
-  | { ok: true; input: DashboardInput }
-  | { ok: false; reason: string };
+type DashboardInputResult = { ok: true; input: DashboardInput } | { ok: false; reason: string };
 
 declare global {
   interface Window {
@@ -16,11 +13,15 @@ declare global {
       method: string;
       path: string;
       status: number;
-      query?: DashboardInput | null;
+      query?: DashboardInput | DocumentQueryAudit | null;
     }>;
     __reservationToolsPilotFetchHandler?: typeof fetch;
   }
 }
+
+type DocumentQueryAudit = {
+  toolId: 'documents_list_existing' | 'documents_read_existing';
+};
 
 const FIXTURE_CUTOFF = '2026-09-07T12:00:00.000Z';
 const FIXTURE_ORIGIN = 'http://127.0.0.1:4179';
@@ -120,7 +121,10 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
   }
   const hasObservationCutoff = Object.hasOwn(input, 'observationCutoff');
   const hasMeta = Object.hasOwn(envelope, 'meta');
-  if (hasMeta && (!isUndefinedObservationCutoffMeta(envelope.meta) || input.observationCutoff !== null)) {
+  if (
+    hasMeta &&
+    (!isUndefinedObservationCutoffMeta(envelope.meta) || input.observationCutoff !== null)
+  ) {
     return { ok: false, reason: 'invalid_trpc_metadata' };
   }
   if (!hasObservationCutoff) return { ok: false, reason: 'missing_observation_cutoff' };
@@ -145,9 +149,7 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
     input: {
       cohortId: input.cohortId,
       window: input.window,
-      ...(observationCutoff === undefined
-        ? {}
-        : { observationCutoff }),
+      ...(observationCutoff === undefined ? {} : { observationCutoff }),
     },
   };
 }
@@ -168,28 +170,59 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
   const outbound = cohortId === 'research' ? 1 : preset === '28d' ? 7 : 4;
   const conversations = cohortId === 'research' ? 1 : preset === '28d' ? 5 : 3;
   const daily = [
-    { period: '2026-09-01', inbound: cohortId === 'research' ? 1 : 2, outbound: 1, byTransport: {} },
+    {
+      period: '2026-09-01',
+      inbound: cohortId === 'research' ? 1 : 2,
+      outbound: 1,
+      byTransport: {},
+    },
     { period: '2026-09-02', inbound: 0, outbound: 0, byTransport: {} },
-    { period: '2026-09-03', inbound: inbound - (cohortId === 'research' ? 1 : 2), outbound: outbound - 1, byTransport: {} },
+    {
+      period: '2026-09-03',
+      inbound: inbound - (cohortId === 'research' ? 1 : 2),
+      outbound: outbound - 1,
+      byTransport: {},
+    },
   ];
-  const unavailableFolders = unavailable<NonNullable<AdminDashboardMetrics['folders']>['mix']['value']>(
-    'conversations by folder',
-    cutoff,
-    'classification_snapshot_unavailable',
-  );
-  const unavailableMetric = <T>(unit: string, reason: string) => unavailable<T>(unit, cutoff, reason);
+  const unavailableFolders = unavailable<
+    NonNullable<AdminDashboardMetrics['folders']>['mix']['value']
+  >('conversations by folder', cutoff, 'classification_snapshot_unavailable');
+  const unavailableMetric = <T>(unit: string, reason: string) =>
+    unavailable<T>(unit, cutoff, reason);
   const folders = historical
     ? {
         mix: unavailableFolders,
-        urgent: unavailable<number>('urgent conversations', cutoff, 'classification_snapshot_unavailable'),
+        urgent: unavailable<number>(
+          'urgent conversations',
+          cutoff,
+          'classification_snapshot_unavailable',
+        ),
         exclusions: {},
       }
     : {
         mix: metric(
           [
-            { folder: 'bookings', label: 'Bookings', count: conversations - 1, urgentCount: 1, classification: 'primary' },
-            { folder: 'groups-events', label: 'Groups & Events', count: 1, urgentCount: 0, classification: 'primary' },
-            { folder: 'unknown-review', label: 'Unknown / Needs Review', count: 0, urgentCount: 0, classification: 'unclassified' },
+            {
+              folder: 'bookings',
+              label: 'Bookings',
+              count: conversations - 1,
+              urgentCount: 1,
+              classification: 'primary',
+            },
+            {
+              folder: 'groups-events',
+              label: 'Groups & Events',
+              count: 1,
+              urgentCount: 0,
+              classification: 'primary',
+            },
+            {
+              folder: 'unknown-review',
+              label: 'Unknown / Needs Review',
+              count: 0,
+              urgentCount: 0,
+              classification: 'unclassified',
+            },
           ],
           'conversations by folder',
           conversations,
@@ -212,15 +245,40 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
       inbound: metric(inbound, 'messages', inbound, cutoff),
       outbound: metric(outbound, 'messages', outbound, cutoff),
       daily: metric(daily, 'messages per day', inbound + outbound, cutoff),
-      comparableWindowChangePercent: metric(cohortId === 'research' ? 10 : 20, 'percent', inbound, cutoff),
+      comparableWindowChangePercent: metric(
+        cohortId === 'research' ? 10 : 20,
+        'percent',
+        inbound,
+        cutoff,
+      ),
     },
     activity: {
       activeConversations: metric(conversations, 'conversations', conversations, cutoff),
-      newlyObservedConversations: metric(Math.max(1, conversations - 1), 'conversations', conversations, cutoff),
+      newlyObservedConversations: metric(
+        Math.max(1, conversations - 1),
+        'conversations',
+        conversations,
+        cutoff,
+      ),
       continuingConversations: metric(1, 'conversations', conversations, cutoff),
-      distinctExternalSenderAddresses: metric(cohortId === 'research' ? 2 : 4, 'email addresses', inbound, cutoff),
-      weekdayArrivals: metric({ Monday: Math.max(1, inbound - 2), Wednesday: 2 }, 'arrivals by weekday', inbound, cutoff),
-      hourArrivals: metric({ '09': Math.max(1, inbound - 3), '14': 3 }, 'arrivals by hour', inbound, cutoff),
+      distinctExternalSenderAddresses: metric(
+        cohortId === 'research' ? 2 : 4,
+        'email addresses',
+        inbound,
+        cutoff,
+      ),
+      weekdayArrivals: metric(
+        { Monday: Math.max(1, inbound - 2), Wednesday: 2 },
+        'arrivals by weekday',
+        inbound,
+        cutoff,
+      ),
+      hourArrivals: metric(
+        { '09': Math.max(1, inbound - 3), '14': 3 },
+        'arrivals by hour',
+        inbound,
+        cutoff,
+      ),
     },
     folders,
     correspondents: {
@@ -351,6 +409,39 @@ function trpcResponse(data: unknown): Response {
   return response([{ result: { data: { json: data } } }]);
 }
 
+function proxyDocumentRequest(url: URL, init: RequestInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    if (url.origin !== FIXTURE_ORIGIN) {
+      reject(new Error(`fixture document bridge refused non-loopback origin ${url.origin}`));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open(init.method ?? 'GET', url.href);
+    const headers = new Headers(init.headers);
+    headers.forEach((value, key) => xhr.setRequestHeader(key, value));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status > 599) {
+        reject(new Error(`fixture document bridge network status ${xhr.status}`));
+        return;
+      }
+      resolve(
+        new Response(xhr.responseText, {
+          status: xhr.status,
+          headers: {
+            'content-type': xhr.getResponseHeader('content-type') ?? 'application/json',
+          },
+        }),
+      );
+    };
+    xhr.onerror = () => reject(new Error('fixture document bridge network failure'));
+    if (init.body !== undefined && typeof init.body !== 'string') {
+      reject(new Error('fixture document bridge only accepts serialized JSON bodies'));
+      return;
+    }
+    xhr.send(typeof init.body === 'string' ? init.body : null);
+  });
+}
+
 export function installReservationToolsPilotTransport(): void {
   window.__reservationToolsPilotFetchHandler = async (input, init) => {
     const requestUrl =
@@ -358,7 +449,7 @@ export function installReservationToolsPilotTransport(): void {
     const url = new URL(requestUrl, window.location.href);
     const requestLog = (window.__reservationToolsPilotRequests ??= []);
     const method = init?.method ?? 'GET';
-    const record = (status: number, query?: DashboardInput | null) => {
+    const record = (status: number, query?: DashboardInput | DocumentQueryAudit | null) => {
       requestLog.push({
         method,
         path: url.pathname,
@@ -371,7 +462,10 @@ export function installReservationToolsPilotTransport(): void {
       throw new Error(`fixture transport refused non-loopback origin ${url.origin}`);
     }
 
-    if (url.pathname.endsWith('/api/auth/get-session') || url.pathname.endsWith('/settings/undefined')) {
+    if (
+      url.pathname.endsWith('/api/auth/get-session') ||
+      url.pathname.endsWith('/settings/undefined')
+    ) {
       if (method !== 'GET') {
         record(405, null);
         return response({ error: { message: 'fixture route requires GET' } }, 405);
@@ -380,8 +474,14 @@ export function installReservationToolsPilotTransport(): void {
       record(200);
       return response(
         unauthorized
-          ? { user: { id: 'fixture-denied', email: 'denied@example.org' }, session: { id: 'fixture-session' } }
-          : { user: { id: 'fixture-viewer', email: 'navaai@legacyhotels.co.za' }, session: { id: 'fixture-session' } },
+          ? {
+              user: { id: 'fixture-denied', email: 'denied@example.org' },
+              session: { id: 'fixture-session' },
+            }
+          : {
+              user: { id: 'fixture-viewer', email: 'navaai@legacyhotels.co.za' },
+              session: { id: 'fixture-session' },
+            },
       );
     }
 
@@ -390,7 +490,9 @@ export function installReservationToolsPilotTransport(): void {
         record(405, null);
         return response({ error: { message: 'fixture dashboard route requires POST' } }, 405);
       }
-      const parsedInput = parseDashboardInput(typeof init?.body === 'string' ? init.body : undefined);
+      const parsedInput = parseDashboardInput(
+        typeof init?.body === 'string' ? init.body : undefined,
+      );
       if (!parsedInput.ok) {
         record(400, null);
         return response(
@@ -425,6 +527,24 @@ export function installReservationToolsPilotTransport(): void {
       }
       record(200, input);
       return trpcResponse(dashboardPayload(input));
+    }
+
+    if (
+      url.pathname.endsWith('/documents.listExisting') ||
+      url.pathname.endsWith('/documents.readExisting')
+    ) {
+      if (method !== 'POST') {
+        record(405, null);
+        return response({ error: { message: 'fixture document route requires POST' } }, 405);
+      }
+      const isList = url.pathname.endsWith('/documents.listExisting');
+      const audit: DocumentQueryAudit = isList
+        ? { toolId: 'documents_list_existing' }
+        : { toolId: 'documents_read_existing' };
+      return proxyDocumentRequest(url, { ...init, method }).then((proxiedResponse) => {
+        record(proxiedResponse.status, audit);
+        return proxiedResponse;
+      });
     }
 
     if (url.pathname.endsWith('/connections.getDefault')) {

@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 type Outcome =
   | 'match'
@@ -99,11 +99,7 @@ async function loadGateLib() {
   return import('../scripts/reservation-pilot-gate-lib.mjs');
 }
 
-function runGate(
-  mode: string,
-  slice: string,
-  overrides: Record<string, string | undefined> = {},
-) {
+function runGate(mode: string, slice: string, overrides: Record<string, string | undefined> = {}) {
   const env = { ...process.env, ...overrides };
   for (const key of Object.keys(overrides)) {
     if (overrides[key] === undefined) delete env[key];
@@ -425,9 +421,10 @@ describe('reservation pilot runtime validators', () => {
       } as const;
       export default defineConfig({ envDir: '/dev/null', server: { host: '127.0.0.1', port: 4179 } });
     `;
-    expect(
-      gate.validateFixtureConfigSource(valid, ['http://127.0.0.1:4179']),
-    ).toMatchObject({ envFiles: false, externalSockets: false });
+    expect(gate.validateFixtureConfigSource(valid, ['http://127.0.0.1:4179'])).toMatchObject({
+      envFiles: false,
+      externalSockets: false,
+    });
 
     const commentOnly = `// envFiles: false, externalSockets: false\nexport default {};`;
     expect(() => gate.validateFixtureConfigSource(commentOnly, ['http://127.0.0.1:4179'])).toThrow(
@@ -472,6 +469,98 @@ describe('reservation pilot runtime validators', () => {
     expect(() => gate.validateFixtureConfigSource(proxyDefault, ['http://127.0.0.1:4179'])).toThrow(
       /proxy|endpoint|external/i,
     );
+  });
+
+  it('allows only the reviewed local document fixture plugin in the explicit second slot', async () => {
+    const gate = await loadGateLib();
+    const contract = `
+      export const pilotFixtureContract = {
+        mode: 'fixture', envFiles: false, liveBindings: false,
+        externalSockets: false, networkPolicy: 'loopback-only', transport: 'fake',
+        allowedOrigins: ['http://127.0.0.1:4179'], publicOrigin: 'http://127.0.0.1:4179',
+      } as const;
+    `;
+    const prefix = `
+      import { defineConfig } from 'vite';
+      import tailwindcss from '@tailwindcss/vite';
+      ${contract}
+    `;
+    const config = (
+      plugins: string,
+      declaration = "function documentServiceFixturePlugin() { return { name: 'fixture' }; }",
+      extra = '',
+    ) => `
+      ${prefix}
+      ${declaration}
+      export default defineConfig({
+        envDir: '/dev/null', server: { host: '127.0.0.1', port: 4179 },
+        plugins: ${plugins},
+        ${extra}
+      });
+    `;
+
+    expect(
+      gate.validateFixtureConfigSource(config('[tailwindcss()]'), ['http://127.0.0.1:4179']),
+    ).toMatchObject({ transport: 'fake' });
+    expect(
+      gate.validateFixtureConfigSource(config('[tailwindcss(), documentServiceFixturePlugin()]'), [
+        'http://127.0.0.1:4179',
+      ]),
+    ).toMatchObject({ transport: 'fake' });
+
+    expect(() =>
+      gate.validateFixtureConfigSource(config('[documentServiceFixturePlugin(), tailwindcss()]'), [
+        'http://127.0.0.1:4179',
+      ]),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config('[tailwindcss(), documentServiceFixturePlugin({})]'),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config('[tailwindcss(), documentServiceFixturePlugin(), tailwindcss()]'),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config(
+          '[tailwindcss(), pluginAlias()]',
+          'const pluginAlias = documentServiceFixturePlugin;',
+        ),
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config(
+          '[tailwindcss(), documentServiceFixturePlugin()]',
+          "import documentServiceFixturePlugin from './document-service-fixture.js';",
+        ),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config(
+          '[tailwindcss(), documentServiceFixturePlugin()]',
+          "const documentServiceFixturePlugin = () => ({ name: 'fixture' });",
+        ),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config(
+          '[tailwindcss(), documentServiceFixturePlugin()]',
+          "function documentServiceFixturePlugin() { return { name: 'fixture' }; }",
+          'root: resolveRoot(),',
+        ),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/literal/i);
   });
 
   it('requires an actual browser egress boundary before a Chromium child', async () => {
@@ -531,7 +620,11 @@ describe('reservation pilot runtime validators', () => {
     });
     expect(() =>
       gate.validatePlaywrightReport(
-        { suites: [{ title: '', specs: [{ title: 'reservation-tools-pilot/dashboard', tests: [] }] }] },
+        {
+          suites: [
+            { title: '', specs: [{ title: 'reservation-tools-pilot/dashboard', tests: [] }] },
+          ],
+        },
         'reservation-tools-pilot/dashboard',
       ),
     ).toThrow(/zero tests|selected no tests/i);

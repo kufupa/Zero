@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import path from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import * as ts from 'typescript';
+import path from 'node:path';
 
 const ALLOWED_MODES = new Set(['current-state', 'historical-replay', 'future-shadow']);
 const ALLOWED_OUTCOMES = new Set([
@@ -30,8 +30,7 @@ const DB_PROFILES = Object.freeze({
     port: '15432',
     major: '17',
     receipt: '.private/centurion-dashboard-tools-execution/disposable-postgres-receipt.txt',
-    connection:
-      '.private/centurion-dashboard-tools-execution/disposable-postgres-connection.env',
+    connection: '.private/centurion-dashboard-tools-execution/disposable-postgres-connection.env',
     sentinelTable: 'centurion_u1_setup_sentinel',
     sentinelMarker: '20260907-u1setup',
     requiredLabels: {
@@ -45,8 +44,7 @@ const DB_PROFILES = Object.freeze({
     runLabel: '20260907-pg16-u1setup',
     port: '15433',
     major: '16',
-    receipt:
-      '.private/centurion-dashboard-tools-execution/pg16/disposable-postgres-receipt.txt',
+    receipt: '.private/centurion-dashboard-tools-execution/pg16/disposable-postgres-receipt.txt',
     connection:
       '.private/centurion-dashboard-tools-execution/pg16/disposable-postgres-connection.env',
     sentinelTable: 'centurion_u1_pg16_setup_sentinel',
@@ -375,10 +373,12 @@ export function assertManifestContract(manifest) {
   const ids = new Set();
   const splitByConversation = new Map();
   for (const pilotCase of manifest.cases) {
-    if (!pilotCase.id || ids.has(pilotCase.id)) throw new Error('duplicate or missing case identifier');
+    if (!pilotCase.id || ids.has(pilotCase.id))
+      throw new Error('duplicate or missing case identifier');
     ids.add(pilotCase.id);
     if (!ALLOWED_MODES.has(pilotCase.evaluationMode)) throw new Error('unknown evaluation mode');
-    if (!['development', 'holdout'].includes(pilotCase.split)) throw new Error('unknown case split');
+    if (!['development', 'holdout'].includes(pilotCase.split))
+      throw new Error('unknown case split');
     if (!['runnable', 'not-runnable', 'unscorable'].includes(pilotCase.selectionStatus)) {
       throw new Error('unknown case selection status');
     }
@@ -390,7 +390,8 @@ export function assertManifestContract(manifest) {
     }
     assertNoForbiddenToolInput(pilotCase.toolInput, `${pilotCase.id}.toolInput`);
     for (const outcome of Object.values(pilotCase.fieldOutcomes ?? {})) {
-      if (!ALLOWED_OUTCOMES.has(outcome)) throw new Error(`unknown field outcome for ${pilotCase.id}`);
+      if (!ALLOWED_OUTCOMES.has(outcome))
+        throw new Error(`unknown field outcome for ${pilotCase.id}`);
     }
     const previousSplit = splitByConversation.get(pilotCase.conversationId);
     if (previousSplit && previousSplit !== pilotCase.split) {
@@ -548,9 +549,7 @@ export function createEvaluationSession(manifest) {
       };
       current = {
         ...current,
-        cases: current.cases.map((candidate) =>
-          candidate.id === caseId ? retired : candidate,
-        ),
+        cases: current.cases.map((candidate) => (candidate.id === caseId ? retired : candidate)),
       };
       return clone(retired);
     },
@@ -708,10 +707,94 @@ function unwrapExpression(expression) {
   return current;
 }
 
-function literalValue(expression) {
+const DOCUMENT_SERVICE_FIXTURE_PLUGIN = 'documentServiceFixturePlugin';
+
+function namedZeroArgCall(expression, name) {
   const current = unwrapExpression(expression);
+  return (
+    ts.isCallExpression(current) &&
+    ts.isIdentifier(current.expression) &&
+    current.expression.text === name &&
+    current.arguments.length === 0
+  );
+}
+
+function importedLocallyAs(sourceFile, name) {
+  return sourceFile.statements.some((statement) => {
+    if (!ts.isImportDeclaration(statement)) return false;
+    const clause = statement.importClause;
+    if (!clause) return false;
+    if (clause.name?.text === name) return true;
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      return clause.namedBindings.name.text === name;
+    }
+    return Boolean(
+      clause.namedBindings?.elements.some(
+        (element) => (element.name?.text ?? element.propertyName?.text) === name,
+      ),
+    );
+  });
+}
+
+function assertExplicitFixturePluginShape(sourceFile, configExpression) {
+  const config = unwrapExpression(configExpression);
+  if (!ts.isObjectLiteralExpression(config)) return;
+  const pluginProperties = config.properties.filter(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      ts.isIdentifier(property.name) &&
+      property.name.text === 'plugins',
+  );
+  if (pluginProperties.length > 1) {
+    throw new Error('fixture config may define only one top-level plugins property');
+  }
+  const pluginProperty = pluginProperties[0];
+  if (!pluginProperty || !ts.isPropertyAssignment(pluginProperty)) return;
+  const plugins = unwrapExpression(pluginProperty.initializer);
+  if (!ts.isArrayLiteralExpression(plugins)) return;
+  const serviceCalls = plugins.elements.filter((element) => {
+    const current = unwrapExpression(element);
+    return (
+      ts.isCallExpression(current) &&
+      ts.isIdentifier(current.expression) &&
+      current.expression.text === DOCUMENT_SERVICE_FIXTURE_PLUGIN
+    );
+  });
+  if (!serviceCalls.length) return;
+
+  const declarations = sourceFile.statements.filter(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === DOCUMENT_SERVICE_FIXTURE_PLUGIN,
+  );
+  if (
+    declarations.length !== 1 ||
+    declarations[0].parameters.length !== 0 ||
+    importedLocallyAs(sourceFile, DOCUMENT_SERVICE_FIXTURE_PLUGIN)
+  ) {
+    throw new Error('document fixture plugin must be one local zero-argument function declaration');
+  }
+  if (
+    plugins.elements.length !== 2 ||
+    !namedZeroArgCall(plugins.elements[0], 'tailwindcss') ||
+    !namedZeroArgCall(plugins.elements[1], DOCUMENT_SERVICE_FIXTURE_PLUGIN)
+  ) {
+    throw new Error(
+      'document fixture plugin must be the second element in the exact two-plugin shape',
+    );
+  }
+}
+
+function literalValue(expression, options = {}) {
+  const current = unwrapExpression(expression);
+  if (
+    options.allowDocumentServicePlugin === true &&
+    namedZeroArgCall(current, DOCUMENT_SERVICE_FIXTURE_PLUGIN)
+  ) {
+    return '__approved_local_document_service_fixture_plugin__';
+  }
   // The fixture may use the installed production Tailwind Vite plugin so its
-  // real theme compiles. Keep this as the only executable config exception;
+  // real theme compiles. Keep these two reviewed executable config exceptions;
   // all safety-contract fields remain literal and are still inspected below.
   if (
     ts.isCallExpression(current) &&
@@ -727,15 +810,26 @@ function literalValue(expression) {
   if (current.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (current.kind === ts.SyntaxKind.FalseKeyword) return false;
   if (ts.isNumericLiteral(current)) return Number(current.text);
-  if (ts.isArrayLiteralExpression(current)) return current.elements.map(literalValue);
+  if (ts.isArrayLiteralExpression(current)) {
+    return current.elements.map((element, index) => {
+      if (options.allowDocumentServicePlugin === true && index === 1) {
+        return literalValue(element, { allowDocumentServicePlugin: true });
+      }
+      return literalValue(element);
+    });
+  }
   if (ts.isObjectLiteralExpression(current)) {
     const result = {};
     for (const property of current.properties) {
-      if (!ts.isPropertyAssignment(property)) throw new Error('fixture config must use literal properties');
+      if (!ts.isPropertyAssignment(property))
+        throw new Error('fixture config must use literal properties');
       const name = property.name;
       const key = ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
       if (!key) throw new Error('fixture config has a non-literal property name');
-      result[key] = literalValue(property.initializer);
+      result[key] = literalValue(property.initializer, {
+        allowDocumentServicePlugin:
+          options.allowDocumentServicePlugin === true && key === 'plugins',
+      });
     }
     return result;
   }
@@ -782,7 +876,8 @@ function findDefaultDefineConfigLiteral(sourceFile) {
   if (calls.length !== 1 || !defaultCall || calls[0] !== defaultCall) {
     throw new Error('fixture config must have exactly one default defineConfig export');
   }
-  return literalValue(defaultCall.arguments[0]);
+  assertExplicitFixturePluginShape(sourceFile, defaultCall.arguments[0]);
+  return literalValue(defaultCall.arguments[0], { allowDocumentServicePlugin: true });
 }
 
 function assertNoUnsupportedBrowserConfig(value, pathName = 'config') {
@@ -799,7 +894,11 @@ function assertNoUnsupportedBrowserConfig(value, pathName = 'config') {
     ) {
       throw new Error(`fixture config contains unsupported live browser entry ${pathName}.${key}`);
     }
-    if (typeof nested === 'string' && /^https?:\/\//i.test(nested) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/?$/i.test(nested)) {
+    if (
+      typeof nested === 'string' &&
+      /^https?:\/\//i.test(nested) &&
+      !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/?$/i.test(nested)
+    ) {
       throw new Error(`fixture config contains external endpoint ${pathName}.${key}`);
     }
     assertNoUnsupportedBrowserConfig(nested, `${pathName}.${key}`);
@@ -821,7 +920,11 @@ export function validateFixtureConfigSource(source, expectedOrigins) {
         throw new Error('fixture config imports live environment bindings');
       }
     }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'loadEnv') {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'loadEnv'
+    ) {
       throw new Error('fixture config cannot call loadEnv');
     }
     if (
@@ -880,7 +983,9 @@ export function validateFixtureConfigSource(source, expectedOrigins) {
   }
   visitTailwindPlugin(sourceFile);
   if (usesTailwindPluginCall && !hasApprovedTailwindImport) {
-    throw new Error('fixture Tailwind plugin must come from the installed @tailwindcss/vite package');
+    throw new Error(
+      'fixture Tailwind plugin must come from the installed @tailwindcss/vite package',
+    );
   }
   const contract = findLiteralExport(sourceFile, 'pilotFixtureContract');
   const config = findDefaultDefineConfigLiteral(sourceFile);
@@ -942,7 +1047,8 @@ export function validatePlaywrightReport(report, expectedTitle) {
   const matching = collectPlaywrightSpecs(report.suites).filter((spec) =>
     spec.fullTitle.includes(expectedTitle),
   );
-  if (!matching.length) throw new Error(`required browser title did not select tests: ${expectedTitle}`);
+  if (!matching.length)
+    throw new Error(`required browser title did not select tests: ${expectedTitle}`);
   let testCount = 0;
   let skipped = 0;
   let failed = 0;
@@ -956,10 +1062,7 @@ export function validatePlaywrightReport(report, expectedTitle) {
         statuses.length === 0
       ) {
         skipped += 1;
-      } else if (
-        test.status &&
-        !['expected', 'passed'].includes(test.status)
-      ) {
+      } else if (test.status && !['expected', 'passed'].includes(test.status)) {
         failed += 1;
       } else if (statuses.some((status) => status !== 'passed')) {
         failed += 1;
@@ -967,7 +1070,8 @@ export function validatePlaywrightReport(report, expectedTitle) {
     }
   }
   if (testCount < 1) throw new Error(`required browser title selected no tests: ${expectedTitle}`);
-  if (skipped || failed) throw new Error(`required browser title has skipped/failed tests: ${expectedTitle}`);
+  if (skipped || failed)
+    throw new Error(`required browser title has skipped/failed tests: ${expectedTitle}`);
   return { testCount, skipped, failed };
 }
 
@@ -996,7 +1100,11 @@ export function assertBrowserNetworkBoundary() {
       timeout: 3000,
     },
   );
-  if (probe.error || probe.status !== 0 || !probe.stdout.includes('browser-network-namespace-ready')) {
+  if (
+    probe.error ||
+    probe.status !== 0 ||
+    !probe.stdout.includes('browser-network-namespace-ready')
+  ) {
     throw new Error('actual browser egress isolation is unavailable');
   }
   return true;
@@ -1016,7 +1124,7 @@ function runChild(argv) {
   const environment = buildChildEnvironment(process.env, { kind, guardPath });
   const child = spawn(command[0], command.slice(1), { cwd, env: environment, stdio: 'inherit' });
   child.on('error', () => process.exit(1));
-  child.on('exit', (code, signal) => process.exit(signal ? 1 : code ?? 1));
+  child.on('exit', (code, signal) => process.exit(signal ? 1 : (code ?? 1)));
 }
 
 function readJsonFile(filePath, description) {
@@ -1049,7 +1157,8 @@ function runCli(argv) {
     return;
   }
   if (command === 'validate-browser-config') {
-    if (argv.length !== 3) throw new Error('validate-browser-config requires config and manifest paths');
+    if (argv.length !== 3)
+      throw new Error('validate-browser-config requires config and manifest paths');
     const manifest = readJsonFile(argv[2], 'manifest');
     assertManifestContract(manifest);
     assertFixtureConfigFile(argv[1], manifest.browserSafety.allowedOrigins);
@@ -1110,7 +1219,9 @@ if (process.argv[2]) {
   try {
     runCli(process.argv.slice(2));
   } catch (error) {
-    console.error(`reservation-pilot-gate helper: ${error instanceof Error ? error.message : error}`);
+    console.error(
+      `reservation-pilot-gate helper: ${error instanceof Error ? error.message : error}`,
+    );
     process.exitCode = 1;
   }
 }

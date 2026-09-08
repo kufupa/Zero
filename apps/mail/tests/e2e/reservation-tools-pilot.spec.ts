@@ -10,15 +10,26 @@ type DashboardQueryMetadata = {
   observationCutoff?: string;
 };
 
+type DocumentQueryMetadata = {
+  toolId: 'documents_list_existing' | 'documents_read_existing';
+  source?: 'mail_attachment' | 'hms_sent_attachment' | 'hms_finalized_document';
+  format?: 'text' | 'artifact';
+  scopeRef?: string;
+};
+
 type RecordedFixtureRequest = {
   method: string;
   path: string;
   status?: number;
-  query?: DashboardQueryMetadata | null;
+  query?: DashboardQueryMetadata | DocumentQueryMetadata | null;
 };
 
 function dashboardUrl(mode = 'default'): string {
   return `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=${mode}`;
+}
+
+function documentsUrl(): string {
+  return `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=documents`;
 }
 
 async function expectDashboardReady(page: Page) {
@@ -75,9 +86,7 @@ function touchTargetFailures(
 ): string[] {
   if (boxes.length === 0) return [`${label}: no target elements`];
   return boxes.flatMap(({ width, height }, index) =>
-    width >= 44 && height >= 44
-      ? []
-      : [`${label}[${index}] is ${width}x${height}px`],
+    width >= 44 && height >= 44 ? [] : [`${label}[${index}] is ${width}x${height}px`],
   );
 }
 
@@ -96,26 +105,39 @@ async function expectProductLayout(page: Page, viewport: 'desktop' | 'mobile') {
   const boxes = await cards.evaluateAll((elements) =>
     elements.map((element) => {
       const rect = element.getBoundingClientRect();
-      return { x: Math.round(rect.x), width: Math.round(rect.width), height: Math.round(rect.height) };
+      return {
+        x: Math.round(rect.x),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
     }),
   );
   expect(boxes, `${viewport} traffic cards`).toHaveLength(4);
   expect(boxes.every(({ width, height }) => width >= 140 && height >= 90)).toBe(true);
   const columns = new Set(boxes.map(({ x }) => x));
   expect(columns.size, `${viewport} traffic card columns`).toBe(viewport === 'desktop' ? 4 : 1);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
 }
 
 async function assertLoopbackAndReadOnly(page: Page) {
   const requests: string[] = [];
   const forbidden: string[] = [];
+  const allowedProcedurePaths = new Set([
+    '/api/trpc/adminDashboard.getMetrics',
+    '/api/trpc/documents.listExisting',
+    '/api/trpc/documents.readExisting',
+  ]);
   page.on('request', (request) => {
     const url = new URL(request.url());
     requests.push(url.href);
     if (url.hostname !== '127.0.0.1' || url.port !== '4179') {
       forbidden.push(`${url.hostname}:${url.port}`);
     }
-    if (/\/api\/trpc\/(?!adminDashboard\.getMetrics)/.test(url.pathname)) {
+    if (url.pathname.startsWith('/api/trpc/') && !allowedProcedurePaths.has(url.pathname)) {
       forbidden.push(url.pathname);
     }
   });
@@ -128,21 +150,34 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
   await expectDashboardReady(page);
   await expectProductLayout(page, 'desktop');
-  const desktopControlBoxes = await readTouchTargetBoxes(page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'));
+  const desktopControlBoxes = await readTouchTargetBoxes(
+    page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'),
+  );
   const desktopDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
   await page.screenshot({ path: testInfo.outputPath('dashboard-desktop.png'), fullPage: true });
 
   await expect(page.getByRole('combobox', { name: 'Cohort' })).toBeVisible();
   await expect(page.locator('#dashboard-cohort')).toContainText('Centurion');
-  await expect(page.locator('#dashboard-cohort')).toHaveAttribute('aria-describedby', 'dashboard-cohort-help');
-  await expect(page.getByText('Current eleven-folder workflow taxonomy; ambiguous and legacy labels remain explicit.')).toBeVisible();
+  await expect(page.locator('#dashboard-cohort')).toHaveAttribute(
+    'aria-describedby',
+    'dashboard-cohort-help',
+  );
+  await expect(
+    page.getByText(
+      'Current eleven-folder workflow taxonomy; ambiguous and legacy labels remain explicit.',
+    ),
+  ).toBeVisible();
   await expect(page.getByText('classificationAsOf:', { exact: false })).toBeVisible();
   await expect(page.getByText('First observed human reply', { exact: true })).toBeVisible();
-  await expect(page.getByText('Unavailable: reply evidence unavailable', { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByText('Unavailable: reply evidence unavailable', { exact: true }).first(),
+  ).toBeVisible();
 
   await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
   await expect(page.getByText('research', { exact: true })).toBeVisible();
-  await expect(page.locator('section[aria-labelledby="traffic-heading"] p[aria-live="polite"]').first()).toHaveText('2');
+  await expect(
+    page.locator('section[aria-labelledby="traffic-heading"] p[aria-live="polite"]').first(),
+  ).toHaveText('2');
   await page.keyboard.press('Tab');
   await expect(page.locator('#dashboard-window')).toBeFocused();
 
@@ -153,13 +188,22 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await expect(desktopCutoff).toBeFocused();
   await toggleDisclosureKeyboard(page, page.locator('summary').first());
   await expect(
-    page.getByRole('region', { name: 'Business breakdown' }).getByText('classification snapshot unavailable', { exact: true }).first(),
+    page
+      .getByRole('region', { name: 'Business breakdown' })
+      .getByText('classification snapshot unavailable', { exact: true })
+      .first(),
   ).toBeVisible();
   await expect(
-    page.locator('dt').filter({ hasText: 'Observation cutoff' }).first().locator('xpath=following-sibling::dd[1]'),
+    page
+      .locator('dt')
+      .filter({ hasText: 'Observation cutoff' })
+      .first()
+      .locator('xpath=following-sibling::dd[1]'),
   ).toContainText('01 Sept 2026');
 
-  await page.evaluate(() => window.history.replaceState({}, '', `${location.pathname}?fixture=error`));
+  await page.evaluate(() =>
+    window.history.replaceState({}, '', `${location.pathname}?fixture=error`),
+  );
   await selectOptionKeyboard(page, 'Window', '28 days');
   await expect(page.getByRole('alert')).toContainText('selected query');
   await expect(page.getByRole('alert')).toContainText('showing the observed snapshot');
@@ -174,8 +218,12 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
   await expectDashboardReady(page);
   await expectProductLayout(page, 'mobile');
-  const mobileControlBoxes = await readTouchTargetBoxes(page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'));
-  const mobileLatestBoxes = await readTouchTargetBoxes(page.getByRole('button', { name: 'Latest observed', exact: true }));
+  const mobileControlBoxes = await readTouchTargetBoxes(
+    page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'),
+  );
+  const mobileLatestBoxes = await readTouchTargetBoxes(
+    page.getByRole('button', { name: 'Latest observed', exact: true }),
+  );
   const mobileDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
   await page.screenshot({ path: testInfo.outputPath('dashboard-mobile.png'), fullPage: true });
   await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
@@ -185,7 +233,9 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await mobileCutoff.fill('2026-09-01');
   await expect(page.getByText('Folder classification unavailable', { exact: true })).toBeVisible();
   await expect(mobileCutoff).toBeFocused();
-  await page.evaluate(() => window.history.replaceState({}, '', `${location.pathname}?fixture=error`));
+  await page.evaluate(() =>
+    window.history.replaceState({}, '', `${location.pathname}?fixture=error`),
+  );
   await selectOptionKeyboard(page, 'Window', '28 days');
   await expect(page.getByRole('alert')).toContainText('showing the observed snapshot');
   await expect(page.locator('#dashboard-window')).toBeFocused();
@@ -238,7 +288,9 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   );
   expect(dashboardRequests.length).toBeGreaterThan(0);
   expect(dashboardRequests.every((request) => request.method === 'POST')).toBe(true);
-  expect(dashboardRequests.filter((request) => request.status === 400)).toHaveLength(malformedBodies.length);
+  expect(dashboardRequests.filter((request) => request.status === 400)).toHaveLength(
+    malformedBodies.length,
+  );
   expect(
     dashboardRequests
       .filter((request) => request.status === 400)
@@ -276,7 +328,9 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await authPage.goto(dashboardUrl('unauthorized'), { waitUntil: 'domcontentloaded' });
   await expect(authPage).toHaveURL(/\/settings\/general/);
   const deniedRequests = await authRequests();
-  expect(deniedRequests.some((request) => request.path.endsWith('/api/trpc/adminDashboard.getMetrics'))).toBe(false);
+  expect(
+    deniedRequests.some((request) => request.path.endsWith('/api/trpc/adminDashboard.getMetrics')),
+  ).toBe(false);
   await context.close();
 
   expectTouchTargetBoxes([
@@ -287,4 +341,78 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
     { label: 'mobile definition/data-table disclosures', boxes: mobileDisclosureBoxes },
     { label: 'mobile cohort options', boxes: mobileOptionBoxes },
   ]);
+});
+
+test('reservation-tools-pilot/documents', async ({ page }, testInfo: TestInfo) => {
+  const audit = await assertLoopbackAndReadOnly(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(documentsUrl(), { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByRole('heading', { name: 'Existing documents' })).toBeVisible();
+  const documentSelect = page.getByRole('combobox', { name: 'Document' });
+  await expect(documentSelect).toBeVisible();
+  await expect(documentSelect.locator('option')).toHaveCount(3);
+  await expect(page.getByText('Source: mail_attachment', { exact: true })).toBeVisible();
+  await expect(page.getByText('retrievable: true', { exact: true })).toBeVisible();
+  await expect(page.getByText('Artifact mode: unsupported', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Read text' }).click();
+  await expect(page.getByRole('region', { name: 'Document result' })).toContainText(
+    'Authorized fixture invoice — synthetic bytes only.',
+  );
+  await expect(page.getByTestId('document-status')).toHaveText('ok');
+  await expect(page.getByTestId('document-validation')).toContainText('identity: match');
+  await expect(page.getByTestId('document-validation')).toContainText('stayDates: match');
+  await expect(page.getByTestId('document-validation')).toContainText('payer: match');
+  await expect(page.getByTestId('document-validation')).toContainText('kind: match');
+  await expect(page.getByTestId('document-validation')).toContainText('version: current');
+  await expect(page.getByTestId('document-validation')).toContainText('priceVisibility: allowed');
+  await expect(page.getByText('Validated text result', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: /download/i })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /send/i })).toHaveCount(0);
+
+  await documentSelect.selectOption({ label: 'Identity review document' });
+  await page.getByRole('button', { name: 'Read text' }).click();
+  const review = page.getByRole('region', { name: 'Document result' });
+  await expect(review).toContainText('Review-only fixture text — identity remains unverified.');
+  await expect(page.getByTestId('document-status')).toHaveText('manual_required');
+  await expect(page.getByText('Manual review required', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('document-validation')).toContainText('identity: mismatch');
+  await expect(
+    page.getByText('Not validated, downloadable, or sendable', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('link', { name: /download/i })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /send/i })).toHaveCount(0);
+
+  await documentSelect.selectOption({ label: 'Authorized fixture invoice' });
+  await page.getByRole('button', { name: 'Request artifact' }).click();
+  await expect(page.getByTestId('document-status')).toHaveText('manual_required');
+  await expect(page.getByText('Artifact mode: unsupported', { exact: true })).toBeVisible();
+  await expect(page.getByText('artifactRef: null', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: /download/i })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Check unavailable PMS source' }).click();
+  await expect(page.getByRole('status')).toContainText('PMS finalized document source unavailable');
+  await expect(page.getByRole('status')).toContainText('SURFACE_UNPROVEN');
+  await expect(page.getByRole('status')).toContainText('retrievable: false');
+
+  await page.getByRole('button', { name: 'Check denied scope' }).click();
+  await expect(page.getByRole('status')).toContainText('Access denied');
+  await expect(page.getByRole('status')).toContainText('SCOPE_DENIED');
+
+  const requests = (await page.evaluate(
+    () => window.__reservationToolsPilotRequests ?? [],
+  )) as RecordedFixtureRequest[];
+  const allowedPaths = new Set([
+    '/api/trpc/documents.listExisting',
+    '/api/trpc/documents.readExisting',
+  ]);
+  expect(audit.forbidden).toEqual([]);
+  expect(requests.filter((request) => request.path.startsWith('/api/trpc/'))).not.toHaveLength(0);
+  expect(requests.every((request) => allowedPaths.has(request.path))).toBe(true);
+  expect(requests.every((request) => request.method === 'POST')).toBe(true);
+  expect(requests.every((request) => typeof request.status === 'number')).toBe(true);
+  expect(requests.some((request) => request.path.endsWith('/documents.listExisting'))).toBe(true);
+  expect(requests.some((request) => request.path.endsWith('/documents.readExisting'))).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('documents.png'), fullPage: true });
 });
