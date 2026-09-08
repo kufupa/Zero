@@ -484,21 +484,9 @@ export const readToolResultIdSchema = z.enum([
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
-const readResultDataSchema = z
-  .unknown()
-  .nullable()
-  .refine((value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
-    const record = value as Record<string, unknown>;
-    const looksLikeFolio =
-      'reservationBinding' in record ||
-      'totalBalance' in record ||
-      'depositSummary' in record ||
-      'disclosure' in record;
-    return !looksLikeFolio || readFolioDataSchema.safeParse(value).success;
-  }, 'hms_read_folio result data is not a closed finance payload');
+const readResultDataSchema = z.unknown().nullable();
 
-export const readResultSchema = z
+const readResultSchemaBase = z
   .object({
     toolId: readToolResultIdSchema,
     schemaVersion: z.string().min(1),
@@ -514,6 +502,26 @@ export const readResultSchema = z
     issues: z.array(readIssueSchema),
   })
   .strict();
+
+const readResultSchemaBoundary = readResultSchemaBase.superRefine((value, context) => {
+  if (value.toolId !== 'hms_read_folio' || value.data === null) return;
+  if (!readFolioDataSchema.safeParse(value.data).success) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['data'],
+      message: 'hms_read_folio result data is not a closed finance payload',
+    });
+  }
+});
+
+/**
+ * Reservation result schemas extend the shared object shape and replace its
+ * data branch. Keep that object API while applying the finance discriminator
+ * whenever the generic boundary itself parses a result.
+ */
+export const readResultSchema = Object.assign(readResultSchemaBoundary, {
+  extend: readResultSchemaBase.extend.bind(readResultSchemaBase),
+});
 export type ReadResult<T> = Omit<z.infer<typeof readResultSchema>, 'data'> & { data: T | null };
 
 export const readMoneySchema = z

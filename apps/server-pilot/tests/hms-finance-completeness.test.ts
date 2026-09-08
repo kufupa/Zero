@@ -351,20 +351,27 @@ describe('U17 finance completeness RED contracts', () => {
   });
 
   it('closes the typed finance result instead of accepting generic data', () => {
-    expect(() =>
-      readResultSchema.parse({
-        toolId: 'hms_read_folio',
-        schemaVersion: 'hms-folio/1',
-        status: 'ok',
-        data: { currency: 'ZAR', totalBalance: 'not-a-money-fact' },
-        completeness: 'complete',
-        unavailableSections: [],
-        scopeRef: 'reservation-u17',
-        evidence: [],
-        page: null,
-        issues: [],
-      }),
-    ).toThrow();
+    const receipt = (data: unknown) => ({
+      toolId: 'hms_read_folio' as const,
+      schemaVersion: 'hms-folio/1',
+      status: 'ok' as const,
+      data,
+      completeness: 'complete' as const,
+      unavailableSections: [],
+      scopeRef: 'reservation-u17',
+      evidence: [],
+      page: null,
+      issues: [],
+    });
+
+    for (const data of [
+      { foo: 'bar' },
+      {},
+      { foo: 'bar', extraFinanceField: 'unexpected' },
+      { currency: 'ZAR', totalBalance: 'not-a-money-fact' },
+    ]) {
+      expect(() => readResultSchema.parse(receipt(data))).toThrow();
+    }
   });
 
   it('keeps generated evidence within the five-minute source-age window', () => {

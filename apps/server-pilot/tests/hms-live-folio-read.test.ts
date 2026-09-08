@@ -202,7 +202,8 @@ describe('folio / deposit transport parsers', () => {
         },
       ]),
     );
-    expect(scopes).toEqual([{ closingdate: '06-AUG-2026', property: 'HRCEN' }]);
+    expect(scopes.scopes).toEqual([{ closingdate: '06-AUG-2026', property: 'HRCEN' }]);
+    expect(scopes.truncated).toBe(false);
 
     const dld = parseDepositLedgerTransport(
       folioEnvelope([
@@ -575,6 +576,116 @@ describe('live folio driver binding + denied actions', () => {
     expect(result.depositSummary?.paid.amount).toBe('60.00');
     expect(result.rowsScanned).toBe(2);
     expect(posts.filter((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toHaveLength(2);
+  });
+
+  it('marks the bounded date window partial while preserving the seven valid detail facts', async () => {
+    const lst = folioEnvelope(
+      Array.from({ length: 8 }, (_, index) => ({
+        closingdate: `0${index + 1}-AUG-2026`,
+        property: 'HRCEN',
+      })),
+    );
+    const dld = folioEnvelope([
+      {
+        confirmationnumber: CONFIRM,
+        currency: 'ZAR',
+        amount: '10.00',
+        activitytype_display: 'Deposit Payment',
+      },
+    ]);
+    const { runtime, posts } = mockRuntime((path) =>
+      path.includes(LIVE_DEPOSIT_LEDGER_DETAIL_PATH) ? dld : lst,
+    );
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+    });
+
+    const result = await driver.observeDepositSummary(
+      auth({ requestBranchId: 'deposit_ledger_summary' }),
+      child({ requestBranchId: 'deposit_ledger_summary' }),
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.completeness).toBe('partial');
+    expect(result.unmappedActivities).toContain('DEPOSIT_LEDGER_DATE_SCOPE_TRUNCATED');
+    expect(result.depositSummary?.paid.amount).toBe('70.00');
+    expect(posts.filter((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toHaveLength(7);
+  });
+
+  it('keeps valid pages and marks a malformed middle page partial instead of using the last page', async () => {
+    const lst = folioEnvelope([
+      { closingdate: '06-AUG-2026', property: 'HRCEN' },
+      { closingdate: '05-AUG-2026', property: 'HRCEN' },
+      { closingdate: '04-AUG-2026', property: 'HRCEN' },
+    ]);
+    const detailPages = [
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '25.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+      '<malformed-dld-page>',
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '35.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+    ];
+    let detailIndex = 0;
+    const { runtime, posts } = mockRuntime((path) =>
+      path.includes(LIVE_DEPOSIT_LEDGER_DETAIL_PATH) ? detailPages[detailIndex++]! : lst,
+    );
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+    });
+
+    const result = await driver.observeDepositSummary(
+      auth({ requestBranchId: 'deposit_ledger_summary' }),
+      child({ requestBranchId: 'deposit_ledger_summary' }),
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.completeness).toBe('partial');
+    expect(result.unmappedActivities).toContain('DEPOSIT_LEDGER_PAGE_UNAVAILABLE');
+    expect(result.depositSummary?.paid.amount).toBe('60.00');
+    expect(result.rowsScanned).toBe(2);
+    expect(posts.filter((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toHaveLength(3);
+
+    const merged = mergeFolioEvidence(
+      [
+        {
+          status: 'ok',
+          currency: 'ZAR',
+          totalBalance: '75.00',
+          evidenceId: randomUUID(),
+          blocker: null,
+          observedAt: NOW,
+          rowsScanned: 1,
+          bytesObserved: 100,
+          durationMs: 10,
+        },
+        result,
+      ],
+      {
+        recipientClass: 'reservation_guest',
+        inquiryClass: 'labelled_narrow_status',
+      },
+    );
+    expect(merged.status).toBe('partial');
+    expect(merged.data.deposits).toMatchObject({ state: 'partial' });
+    expect(merged.data.deposits.data?.items[0]?.paid.value.amount).toBe('60.00');
   });
 
   it('registry denies post/transfer/settle/refund/advance_deposit', () => {

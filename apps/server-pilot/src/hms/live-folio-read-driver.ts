@@ -312,6 +312,12 @@ export type DepositLedgerDateScope = {
   property: string;
 };
 
+export type DepositLedgerDateScopeExtraction = {
+  scopes: DepositLedgerDateScope[];
+  truncated: boolean;
+  rowsObserved: number;
+};
+
 /**
  * Extract closingdate + property from OSLEDG.LST date rows (keys for DLD only).
  * Values stay in-memory for the read session — not logged by this helper.
@@ -319,12 +325,16 @@ export type DepositLedgerDateScope = {
 export function extractDepositLedgerDateScopes(
   text: string,
   maxDates = DEPOSIT_LEDGER_MAX_DETAIL_DATES,
-): DepositLedgerDateScope[] {
+): DepositLedgerDateScopeExtraction {
   const pageData = parsePageData(text);
-  if (!pageData) return [];
+  if (!pageData) return { scopes: [], truncated: false, rowsObserved: 0 };
+  const rows = gridDataRows(pageData);
+  const boundedRows = rows.slice(0, FOLIO_READ_MAX_ROWS);
+  const dateLimit = Math.max(0, Math.floor(maxDates));
   const out: DepositLedgerDateScope[] = [];
   const seen = new Set<string>();
-  for (const row of gridDataRows(pageData).slice(0, FOLIO_READ_MAX_ROWS)) {
+  let truncated = rows.length > boundedRows.length;
+  for (const row of boundedRows) {
     const closingdate =
       strOrEmpty(row.closingdate) || strOrEmpty(row.hoteldate) || strOrEmpty(row.closing_date);
     const property = strOrEmpty(row.property);
@@ -333,13 +343,16 @@ export function extractDepositLedgerDateScopes(
     const key = `${property}|${closingdate}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({
-      closingdate,
-      property: property.toUpperCase(),
-    });
-    if (out.length >= maxDates) break;
+    if (out.length < dateLimit) {
+      out.push({
+        closingdate,
+        property: property.toUpperCase(),
+      });
+    } else {
+      truncated = true;
+    }
   }
-  return out;
+  return { scopes: out, truncated, rowsObserved: rows.length };
 }
 
 function depositCardLeak(text: string): boolean {
@@ -535,16 +548,38 @@ function parseDepositLedgerPages(
   expectedConfirmationToken: string,
 ): ReturnType<typeof parseDepositLedgerTransport> {
   const rows: Record<string, unknown>[] = [];
+  let unavailablePageCount = 0;
+  let validPageCount = 0;
   for (const text of texts) {
     const pageData = parsePageData(text);
-    if (!pageData) {
-      return parseDepositLedgerTransport(texts[texts.length - 1] ?? '', expectedConfirmationToken);
+    const grid = pageData?.grid;
+    const gridResult =
+      grid && typeof grid === 'object' ? (grid as Record<string, unknown>).GRIDRESULT : null;
+    const inner =
+      gridResult && typeof gridResult === 'object'
+        ? (gridResult as Record<string, unknown>).GRID
+        : null;
+    const data =
+      inner && typeof inner === 'object' ? (inner as Record<string, unknown>).DATA : null;
+    if (!pageData || !Array.isArray(data)) {
+      unavailablePageCount += 1;
+      continue;
     }
+    validPageCount += 1;
     rows.push(...gridDataRows(pageData));
   }
-  if (rows.length === 0) {
-    return parseDepositLedgerTransport(texts[texts.length - 1] ?? '', expectedConfirmationToken);
+
+  if (validPageCount === 0) {
+    const empty = parseDepositLedgerTransport('', expectedConfirmationToken);
+    return {
+      ...empty,
+      bytesObserved: texts.reduce((total, text) => total + Buffer.byteLength(text), 0),
+      hasCardLeak: texts.some(depositCardLeak),
+      unmappedActivities:
+        unavailablePageCount > 0 ? ['DEPOSIT_LEDGER_PAGE_UNAVAILABLE'] : empty.unmappedActivities,
+    };
   }
+
   const combined = JSON.stringify({
     pageData: {
       success: true,
@@ -556,7 +591,15 @@ function parseDepositLedgerPages(
       },
     },
   });
-  return parseDepositLedgerTransport(combined, expectedConfirmationToken);
+  const parsed = parseDepositLedgerTransport(combined, expectedConfirmationToken);
+  if (unavailablePageCount === 0) return parsed;
+  return {
+    ...parsed,
+    bytesObserved: texts.reduce((total, text) => total + Buffer.byteLength(text), 0),
+    hasCardLeak: texts.some(depositCardLeak),
+    completeness: 'partial',
+    unmappedActivities: [...parsed.unmappedActivities, 'DEPOSIT_LEDGER_PAGE_UNAVAILABLE'],
+  };
 }
 
 function assertFolioAuth(
@@ -689,7 +732,7 @@ function richDepositSection(
   expiresAt: string,
   complete: boolean,
 ) {
-  if (!complete || !deposit || deposit.status !== 'ok' || deposit.depositSummary == null) {
+  if (!deposit || deposit.status !== 'ok' || deposit.depositSummary == null) {
     return unknownSection('SOURCE_UNAVAILABLE');
   }
   const summary = deposit.depositSummary;
@@ -702,7 +745,7 @@ function richDepositSection(
   const fact = (amount: string) =>
     moneyFact(amount, currency, evidenceRef, observedAt, expiresAt, 'ledger_movement');
   return {
-    state: 'available' as const,
+    state: complete ? ('available' as const) : ('partial' as const),
     data: {
       items: [
         {
@@ -718,8 +761,8 @@ function richDepositSection(
         },
       ],
     },
-    completeness: 'complete' as const,
-    issues: [],
+    completeness: complete ? ('complete' as const) : ('partial' as const),
+    issues: complete ? [] : [readIssue('PARTIAL_WINDOW')],
   };
 }
 
@@ -785,7 +828,7 @@ export function mergeFolioEvidence(
   if (wantsTransactions) unresolved.push('TRANSACTIONS_UNAVAILABLE');
   if (wantsAuthorization) unresolved.push('AUTHORIZATION_UNAVAILABLE');
 
-  const anyRequestedFact = (wantsBalance && balanceOk) || (wantsDeposits && depositComplete);
+  const anyRequestedFact = (wantsBalance && balanceOk) || (wantsDeposits && depositOk);
   const requestedComplete =
     (!wantsBalance || balanceOk) &&
     (!wantsDeposits || depositComplete) &&
@@ -1070,7 +1113,8 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         }
 
         assertNotAborted(signal);
-        const scopes = extractDepositLedgerDateScopes(lstText);
+        const scopeExtraction = extractDepositLedgerDateScopes(lstText);
+        const scopes = scopeExtraction.scopes;
         const detailTexts: string[] = [];
         if (scopes.length > 0) {
           for (const scope of scopes) {
@@ -1164,6 +1208,11 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           };
         }
 
+        const completeness = scopeExtraction.truncated ? 'partial' : parsed.completeness;
+        const unmappedActivities = scopeExtraction.truncated
+          ? [...parsed.unmappedActivities, 'DEPOSIT_LEDGER_DATE_SCOPE_TRUNCATED']
+          : parsed.unmappedActivities;
+
         return {
           status: 'ok',
           currency: parsed.currency,
@@ -1174,8 +1223,8 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           durationMs,
           bytesObserved: totalBytesObserved,
           rowsScanned: parsed.rowsScanned,
-          completeness: parsed.completeness,
-          unmappedActivities: parsed.unmappedActivities,
+          completeness,
+          unmappedActivities,
         };
       } finally {
         await session.close();
