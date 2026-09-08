@@ -729,6 +729,7 @@ type MailDocumentAuthority = {
   authorizedAttachmentIds: ReadonlySet<string>;
   listHasMore: boolean;
   listBlocker: string | null;
+  listWindowTruncated: boolean;
 };
 
 function readAdmissionAuthorizationId(request: Record<string, unknown>): string | null {
@@ -922,9 +923,11 @@ async function loadMailDocumentAuthority(input: {
   const rows = listRequest
     ? await sourceQuery.limit(requestedCursor ? DOCUMENT_LIST_MAX_ROWS + 1 : requestedLimit + 1)
     : await sourceQuery.limit(DOCUMENT_LIST_MAX_ROWS + 1);
-  const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
+  const listWindowTruncated = listRequest && rows.length > DOCUMENT_LIST_MAX_ROWS;
+  const materializedRows = listRequest ? rows.slice(0, DOCUMENT_LIST_MAX_ROWS) : rows;
+  const authorizedAttachmentIds = new Set(materializedRows.map((row) => row.id));
   const locators = new Map<string, AttachmentLocator>(
-    rows.map((row) => [
+    materializedRows.map((row) => [
       row.id,
       {
         s3Key: row.s3Key,
@@ -934,7 +937,7 @@ async function loadMailDocumentAuthority(input: {
       },
     ]),
   );
-  const records = rows.map((row) =>
+  const records = materializedRows.map((row) =>
     mailAttachmentRecord({
       scope,
       source: row.direction === 'outbound' ? 'hms_sent_attachment' : 'mail_attachment',
@@ -960,6 +963,7 @@ async function loadMailDocumentAuthority(input: {
       authorizedAttachmentIds,
       listHasMore: false,
       listBlocker: null,
+      listWindowTruncated: false,
     };
   }
 
@@ -1031,7 +1035,10 @@ async function loadMailDocumentAuthority(input: {
     }
   }
 
-  const listHasMore = listBlocker !== null || pageStart + requestedLimit < sourceIndices.length;
+  const listHasMore =
+    listBlocker !== null ||
+    pageStart + requestedLimit < sourceIndices.length ||
+    listWindowTruncated;
   return {
     scope,
     records,
@@ -1039,6 +1046,7 @@ async function loadMailDocumentAuthority(input: {
     authorizedAttachmentIds,
     listHasMore,
     listBlocker,
+    listWindowTruncated,
   };
 }
 
@@ -1136,6 +1144,7 @@ function createMailDocumentService(input: {
       }
       const pageLimit = Math.min(Math.max(Math.trunc(limit), 1), DOCUMENT_LIST_MAX_ROWS);
       let start = 0;
+      let pageBlocker = current.listBlocker ?? undefined;
       if (cursor) {
         start = records.findIndex((record) => existingDocumentRefForRecord(record) === cursor);
         if (start < 0) {
@@ -1146,14 +1155,24 @@ function createMailDocumentService(input: {
             blocker: 'LIST_CURSOR_UNRESOLVED',
           };
         }
+        if (
+          pageBlocker === undefined &&
+          current.listWindowTruncated &&
+          start + pageLimit >= records.length
+        ) {
+          pageBlocker = 'LIST_ROW_LIMIT';
+        }
       }
       const pageRecords = records.slice(start, start + pageLimit + 1);
-      const hasMore = current.listHasMore || start + pageRecords.length < records.length;
+      const hasMore =
+        pageBlocker === 'LIST_ROW_LIMIT'
+          ? false
+          : current.listHasMore || start + pageRecords.length < records.length;
       return {
         records: pageRecords,
-        inventoryComplete: current.listBlocker === null && !hasMore,
+        inventoryComplete: pageBlocker === undefined && !hasMore,
         hasMore,
-        blocker: current.listBlocker ?? undefined,
+        blocker: pageBlocker,
       };
     },
   });

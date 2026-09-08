@@ -896,7 +896,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
       withSeededTestDb(async (db) => {
         __setDbForTests({ db, conn: null as never });
         const fixture = await seedDocumentMailbox(db);
-        for (let index = 0; index < 50; index += 1) {
+        for (let index = 0; index < 51; index += 1) {
           await addDocumentMessageWithAttachment(db, {
             threadId: fixture.threadId,
             messageId: `u9-large-message-${index}-${randomUUID()}`,
@@ -992,6 +992,44 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
           expect(query.sql).toMatch(/order by/i);
           expect(query.sql).not.toMatch(/text_body|html_body|subject/i);
         }
+
+        const capCaller = await authenticatedDocumentCaller(db);
+        const capPage = await executeDocumentList(db, capCaller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          limit: 50,
+        });
+        expect(capPage.result.status).toBe('ok');
+        expect(capPage.result.data?.documents).toHaveLength(50);
+        expect(capPage.result.data?.page.hasMore).toBe(true);
+        const boundaryRef = capPage.result.data?.page.nextCursor;
+        expect(boundaryRef).toMatch(/^doc:/);
+
+        const boundaryReadCaller = await authenticatedDocumentCaller(db);
+        const boundaryRead = await executeDocumentRead(db, boundaryReadCaller, {
+          threadId: fixture.threadId,
+          documentRef: boundaryRef!,
+          format: 'text',
+        });
+        expect(boundaryRead.result.status).toBe('manual_required');
+        expect(boundaryRead.result.data?.document?.documentRef).toBe(boundaryRef);
+        expect(boundaryRead.result.data?.text).toBe(DOCUMENT_BYTES.toString('utf8').trim());
+
+        const capNextCaller = await authenticatedDocumentCaller(db);
+        const capNextPage = await executeDocumentList(db, capNextCaller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          limit: 50,
+          cursor: boundaryRef!,
+        });
+        expect(capNextPage.result.status).toBe('partial');
+        expect(capNextPage.result.data?.documents ?? []).toHaveLength(0);
+        expect(capNextPage.result.data?.page.hasMore).toBe(false);
+        expect(capNextPage.result.data?.page.nextCursor).toBeNull();
+        expect(capNextPage.result.data?.sourceOutcomes?.[0]).toMatchObject({
+          status: 'partial',
+          issues: [{ code: 'LIST_ROW_LIMIT' }],
+        });
         observed.restore();
       }),
     );
