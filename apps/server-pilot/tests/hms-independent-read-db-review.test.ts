@@ -11,14 +11,20 @@ import {
 import {
   claimNextAiRun,
   enqueueAiRun,
+  markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
   READ_TOOL_PROMPT_VERSION,
   readAiRunReceipt,
 } from '../src/ai/run-ledger.js';
-import { executeAiRun, runAiWorkerOnce } from '../src/ai/worker.js';
+import {
+  executeAiRun,
+  runAiWorkerOnce,
+  type CandidateSessionFactory,
+} from '../src/ai/worker.js';
 import * as mastraModule from '../src/ai/mastra.js';
+import type { CandidateToolSession } from '../src/ai/candidate-draft-agent.js';
 import { createPostgresPropertyReadLock } from '../src/hms/property-read-lock.js';
-import { readInputDigest } from '../src/hms/read-service-contracts.js';
+import { readInputDigest, readReservationRef } from '../src/hms/read-service-contracts.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
@@ -150,6 +156,7 @@ function readRunInput(context: Awaited<ReturnType<typeof seededMailContext>>, su
         inputDigest: readInputDigest(closedRequest),
         captureRequired: false,
         captureBindingRef: null,
+        reservationRef: null,
       },
     },
     readResultRef: `receipt-red-${suffix}`,
@@ -159,11 +166,18 @@ function readRunInput(context: Awaited<ReturnType<typeof seededMailContext>>, su
 function contextReadRunInput(
   context: Awaited<ReturnType<typeof seededMailContext>>,
   suffix: string,
+  overrides: { reservationRef?: string; candidateId?: string } = {},
 ) {
+  const candidateId = overrides.candidateId ?? '61029cf2ae474e6a';
   const closedRequest = {
     toolId: 'hms_read_reservation' as const,
-    reservationRef: 'resref-red-context',
-    candidateId: '61029cf2ae474e6a',
+    reservationRef: overrides.reservationRef ?? readReservationRef({
+      transportId: context.transportId,
+      threadId: context.threadId,
+      triggerMessageId: context.triggerMessageId,
+      candidateId,
+    }),
+    candidateId,
     sections: ['core', 'stay'] as const,
     detail: 'summary' as const,
   };
@@ -183,10 +197,92 @@ function contextReadRunInput(
         inputDigest: readInputDigest(closedRequest),
         captureRequired: false,
         captureBindingRef: null,
+        reservationRef: closedRequest.reservationRef,
       },
     },
     readResultRef: `receipt-red-${suffix}`,
   };
+}
+
+async function seedReceiptRow(
+  db: DB,
+  suffix: string,
+  overrides: {
+    state?: 'queued' | 'succeeded';
+    readResult?: unknown;
+    readResultExpiresAt?: Date;
+  } = {},
+) {
+  const context = await seededMailContext(db);
+  const run = await enqueueAiRun(readRunInput(context, `receipt-${suffix}`), db);
+  const readResultRef = `receipt-red-${suffix}`;
+  await db
+    .update(aiWorkflowRun)
+    .set({
+      state: overrides.state ?? 'succeeded',
+      readResultRef,
+      readResult: overrides.readResult ?? typedReadResult,
+      readResultExpiresAt: overrides.readResultExpiresAt ?? new Date('2099-09-07T12:05:00.000Z'),
+    })
+    .where(eq(aiWorkflowRun.id, run.id));
+  return { context, run, readResultRef };
+}
+
+type SyntheticReservationRead = Awaited<ReturnType<CandidateToolSession['findReservation']>>;
+
+function syntheticMatchedRead(
+  evidenceId: string,
+  resultExpiresAt: string,
+): SyntheticReservationRead {
+  return {
+    status: 'ok',
+    draftReady: false,
+    data: {
+      matches: [{
+        confirmationNumber: 'CONF-RED',
+        externalReference: null,
+        guestName: null,
+        reservationStatus: 'Confirmed',
+        arrivalDate: '2026-09-10',
+        departureDate: '2026-09-12',
+        roomType: 'STD',
+        ratePlan: null,
+      }],
+      matchCount: 1,
+      capped: false,
+    },
+    unresolvedFields: [],
+    evidence: {
+      kind: 'hms',
+      id: evidenceId,
+      toolId: 'hms_find_reservation',
+      toolVersion: '1.2.0',
+      propertyCode: 'HRCEN',
+      observedAt,
+      expiresAt: resultExpiresAt,
+      claimKeys: [],
+      sourceHash: 'c'.repeat(64),
+    },
+  };
+}
+
+function syntheticReadSessionFactory(
+  findReservation: CandidateToolSession['findReservation'],
+): CandidateSessionFactory {
+  return async ({ lookupCandidates }) => ({
+    findReservation,
+    quoteStay: async () => { throw new Error('not used'); },
+    readArtifact: async () => { throw new Error('not used'); },
+    lookupCandidates: new Map(lookupCandidates.map((candidate) => [candidate.id, candidate])),
+    authorizedAttachmentIds: new Set(),
+    propertyReadLock: {
+      key: '1',
+      withLock: async (callback) => callback({
+        query: async () => [],
+        close: async () => undefined,
+      }),
+    },
+  });
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED contracts', () => {
@@ -232,6 +328,135 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           now: new Date('2026-09-07T12:00:00.000Z'),
         }, db);
         expect(receipt?.result).toEqual(typedReadResult);
+      });
+    });
+  });
+
+  it('rejects a read_tool enqueue without trusted admission', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const input = readRunInput(context, 'missing-admission');
+      const { admission: _admission, ...closedRequest } = input.readRequest;
+
+      await expect(enqueueAiRun({ ...input, readRequest: closedRequest }, db)).rejects.toThrow(/admission/i);
+    });
+  });
+
+  it('requires a succeeded state before returning a durable receipt', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'nonterminal', { state: 'queued' });
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+      }, db)).resolves.toBeNull();
+    });
+  });
+
+  it('rejects a receipt with the wrong mail scope', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'wrong-scope');
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: 'foreign-transport',
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+      }, db)).resolves.toBeNull();
+    });
+  });
+
+  it('rejects a receipt for the wrong trusted requester', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'wrong-requester');
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-foreign',
+      }, db)).resolves.toBeNull();
+    });
+  });
+
+  it('rejects an expired receipt', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'expired', {
+        readResultExpiresAt: new Date('2026-09-07T12:00:00.000Z'),
+      });
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+        now: new Date('2026-09-07T12:00:00.000Z'),
+      }, db)).resolves.toBeNull();
+    });
+  });
+
+  it('rejects a replayed or foreign receipt reference', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'replay');
+      await expect(readAiRunReceipt({
+        readResultRef: `${readResultRef}-foreign`,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+      }, db)).resolves.toBeNull();
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: context.transportId,
+        threadId: 'foreign-thread',
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+      }, db)).resolves.toBeNull();
+    });
+  });
+
+  it('rejects a malformed durable receipt body', async () => {
+    await withWorkerDb(async (db) => {
+      const { context, readResultRef } = await seedReceiptRow(db, 'malformed', { readResult: {} });
+      await expect(readAiRunReceipt({
+        readResultRef,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        triggerMessageId: context.triggerMessageId,
+        requesterAuthorizationId: 'auth-red',
+      }, db)).rejects.toThrow();
+    });
+  });
+
+  it('does not overwrite a receipt when the durable success fence is stale', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(readRunInput(context, 'stale-fence'), db);
+        const claimed = await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db });
+        expect(claimed?.id).toBe(run.id);
+        const originalRef = 'receipt-red-stale-original';
+        await db.update(aiWorkflowRun).set({
+          readResultRef: originalRef,
+          readResult: typedReadResult,
+          readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+        }).where(eq(aiWorkflowRun.id, run.id));
+
+        const staleWrite = await markAiRunSucceeded({
+          runId: run.id,
+          claimOwner: 'stale-owner',
+          claimToken: 'stale-token',
+          expectedStates: ['running'],
+          readResultRef: 'receipt-red-stale-overwrite',
+          readResult: { ...typedReadResult, status: 'not_found' },
+          readResultExpiresAt: new Date('2099-09-07T12:06:00.000Z'),
+        }, db);
+        expect(staleWrite).toBeNull();
+        const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+        expect(stored?.readResultRef).toBe(originalRef);
+        expect(stored?.readResult).toEqual(typedReadResult);
       });
     });
   });
@@ -393,6 +618,92 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           toolId: 'hms_read_reservation',
           status: 'ok',
         });
+      });
+    });
+  });
+
+  it('rejects an unminted resolved-context reference before opening the session', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(
+          contextReadRunInput(context, 'unminted', { reservationRef: 'model-invented-ref' }),
+          db,
+        );
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(async () =>
+          syntheticMatchedRead('evidence-red-unminted', '2099-09-07T12:05:00.000Z')));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it('rejects a replayed reference from a foreign candidate scope', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(
+          contextReadRunInput(context, 'foreign-candidate', {
+            candidateId: 'foreign-candidate',
+            reservationRef: 'foreign-candidate',
+          }),
+          db,
+        );
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(async () =>
+          syntheticMatchedRead('evidence-red-foreign', '2099-09-07T12:05:00.000Z')));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it('rejects a reservation reference replayed into another thread scope', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const originalContext = await seededMailContext(db);
+        const replayContext = await seededMailContext(db);
+        expect(originalContext.threadId).not.toBe(replayContext.threadId);
+        const run = await enqueueAiRun(
+          contextReadRunInput(replayContext, 'replayed-thread-ref', {
+            reservationRef: '61029cf2ae474e6a',
+          }),
+          db,
+        );
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(async () =>
+          syntheticMatchedRead('evidence-red-replayed-thread', '2099-09-07T12:05:00.000Z')));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it('rejects a resolved context whose matched evidence is expired', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(contextReadRunInput(context, 'expired-context'), db);
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-red-expired-context', '2026-09-07T12:00:00.000Z'));
+
+        const result = await executeAiRun(run.id, {
+          candidateSessionFactory: syntheticReadSessionFactory(externalBoundary),
+        });
+
+        expect(result.state).toBe('dead_letter');
+        expect(externalBoundary).toHaveBeenCalledOnce();
       });
     });
   });

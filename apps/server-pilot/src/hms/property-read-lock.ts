@@ -13,6 +13,16 @@ export interface PropertyReadConnection {
   close(): Promise<void>;
 }
 
+const activePropertyReadConnections = new WeakMap<PropertyReadConnection, string>();
+
+/** Internal ownership proof for the connection currently inside withLock. */
+export function isPropertyReadConnectionHeld(
+  connection: PropertyReadConnection,
+  key: string,
+): boolean {
+  return activePropertyReadConnections.get(connection) === key;
+}
+
 export interface PropertyReadLockOptions {
   tenantId: string;
   propertyCode: string;
@@ -59,9 +69,14 @@ export function createPropertyReadLock(options: PropertyReadLockOptions) {
         throw lockError(cause);
       }
       try {
-        result = await callback(connection);
-      } catch (cause) {
-        callbackError = cause;
+        activePropertyReadConnections.set(connection, key);
+        try {
+          result = await callback(connection);
+        } catch (cause) {
+          callbackError = cause;
+        }
+      } finally {
+        activePropertyReadConnections.delete(connection);
       }
 
       let releaseError: Error & { code: string; cause?: unknown } | undefined;

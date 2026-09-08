@@ -5,7 +5,11 @@ import {
 } from '../src/hms/reservation-context-contract.js';
 import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import { requireHmsReadRuntimeConfig } from '../src/env.js';
-import { mapProductionReservationRead } from '../src/ai/worker.js';
+import {
+  assertReadAdmissionPlanBinding,
+  mapProductionReservationRead,
+} from '../src/ai/worker.js';
+import { buildHmsFindSessionAuthorization } from '../src/hms/active-read-runtime.js';
 import { executeRead, type ReadExecutionContext } from '../src/hms/read-service.js';
 import { createReservationContextFacade } from '../src/hms/reservation-context-facade.js';
 import { readInputDigest } from '../src/hms/read-service-contracts.js';
@@ -71,6 +75,7 @@ function admittedRequest(overrides: Record<string, unknown> = {}) {
       inputDigest: readInputDigest(admittedClosedRequest),
       captureRequired: false,
       captureBindingRef: null,
+      reservationRef: null,
       ...overrides,
     },
   };
@@ -213,6 +218,98 @@ describe('U8 independent review RED contracts', () => {
     expect(unverified).toMatchObject({ status: 'unverified_negative' });
   });
 
+  it('rejects partial and manual-required production outcomes before minting a match ref', () => {
+    const evidence = {
+      kind: 'hms' as const,
+      id: 'evidence-red-status',
+      observedAt,
+      expiresAt,
+    };
+    const row = {
+      confirmationNumber: 'CONF-RED',
+      externalReference: null,
+      guestName: null,
+      reservationStatus: 'Confirmed',
+      arrivalDate: '2026-09-10',
+      departureDate: '2026-09-12',
+      roomType: 'STD',
+      ratePlan: null,
+    };
+    expect(() => mapProductionReservationRead({ status: 'partial', data: { matches: [row] }, evidence })).toThrow();
+    expect(() => mapProductionReservationRead({ status: 'manual_required', data: { matches: [row] }, evidence })).toThrow();
+  });
+
+  it('does not treat a forged lock connection as proof that dispatch owns the lock', async () => {
+    const context = admittedReadContext(admittedRequest().admission);
+    let lockCalls = 0;
+    context.propertyReadLock = {
+      key: '1',
+      withLock: async (callback) => {
+        lockCalls += 1;
+        return callback({ query: async () => [], close: async () => undefined });
+      },
+    };
+    context.propertyReadLockConnection = {
+      query: async () => [],
+      close: async () => undefined,
+    };
+
+    await executeRead(context, admittedRequest());
+    expect(lockCalls).toBe(1);
+  });
+
+  it('binds live session authorization to the requested release branch', () => {
+    const release = {
+      evidenceKind: 'hms' as const,
+      releaseId: 'release-red',
+      requestBranches: [
+        {
+          id: 'guest_stay_search',
+          discoveryOperationId: 'guest_stay_search' as const,
+          manifestSha256: 'a'.repeat(64),
+        },
+        {
+          id: 'requested_branch',
+          discoveryOperationId: 'guest_stay_search' as const,
+          manifestSha256: 'b'.repeat(64),
+        },
+      ],
+      roleProofSha256: 'a'.repeat(64),
+      credentialVersionHmacSha256: 'a'.repeat(64),
+      privateDigestKeyVersion: 'v1',
+      runtimeFingerprintSha256: 'a'.repeat(64),
+      sourceRevision: 'source-red',
+    } as never;
+    const authorizationInput = {
+      operationId: 'operation-red',
+      manifest: {} as never,
+      roleProofPath: '/private/red-role-proof.json',
+      roleProofSha256: 'a'.repeat(64),
+      credentialVersionHmacSha256: 'a'.repeat(64),
+      runtimeFingerprintSha256: 'a'.repeat(64),
+      privateDigestKeyVersion: 'v1',
+      sourceRevision: 'source-red',
+      release,
+    } as never;
+    const authorization = buildHmsFindSessionAuthorization({
+      ...authorizationInput,
+      requestBranchId: 'requested_branch',
+    });
+
+    expect(authorization.requestBranchId).toBe('requested_branch');
+    expect(() => buildHmsFindSessionAuthorization({
+      ...authorizationInput,
+      requestBranchId: 'not-enabled',
+    })).toThrow(/request branch/i);
+  });
+
+  it('rejects a requester admission that does not match the trusted plan authorization', () => {
+    expect(() => assertReadAdmissionPlanBinding({
+      readAdmission: admittedRequest().admission as never,
+      requesterAuthorizationId: 'trusted-plan-auth',
+    })).toThrow(/trusted plan authorization/);
+  });
+
   it('admits a model-free read runtime while drafting remains off', () => {
     expect(
       requireHmsReadRuntimeConfig({
@@ -301,6 +398,52 @@ describe('U8 independent review RED contracts', () => {
     expect(result.toolId).toBe('hms_read_reservation');
     expect(result.status).toBe('ok');
     expect(result.data?.core.state).toBe('available');
+  });
+
+  it('rejects an unminted reservation reference instead of binding the caller label', async () => {
+    const facade = createReservationContextFacade({
+      now: () => new Date(observedAt),
+      lookup: async () => ({
+        status: 'matched' as const,
+        row: {
+          confirmationNumber: 'CONF-RED',
+          externalReference: null,
+          guestName: null,
+          arrivalDate: '2026-09-10',
+          departureDate: '2026-09-12',
+          reservationStatus: 'Confirmed',
+          roomType: 'STD',
+          ratePlan: null,
+        },
+        evidenceRef: 'evidence-context-unminted',
+        observedAt,
+        expiresAt,
+      }),
+      readContext: async () => ({}),
+    });
+
+    const lookup = {
+      transportId: 'transport-red',
+      mailboxId: 'mailbox-red',
+      threadId: 'thread-red',
+      triggerMessageId: 'message-red',
+      parentRef: 'parent-red',
+      branchId: 'guest_stay_search',
+      propertyCode: 'HRCEN',
+      candidateId: 'candidate-red',
+      referenceKind: 'confirmation' as const,
+      value: 'CONF-RED',
+      observedAt,
+      expiresAt,
+    };
+    const found = await facade.findReservation(lookup);
+    expect(found.data?.matches[0]?.reservationRef).toEqual(expect.any(String));
+    await expect(facade.readReservation({
+      ...lookup,
+      reservationRef: 'model-invented-ref',
+      sections: ['core'],
+      detail: 'summary',
+    })).rejects.toMatchObject({ code: 'RESERVATION_REF_NOT_FOUND' });
   });
 
   it('rejects a read admission whose release binding is stale', async () => {

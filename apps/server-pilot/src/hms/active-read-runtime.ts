@@ -192,6 +192,7 @@ export async function loadWorkerActiveReadSet(input: {
 
 export function buildHmsFindSessionAuthorization(input: {
   operationId: string;
+  requestBranchId: string;
   manifest: RequestPolicyManifest;
   roleProofPath: string;
   roleProofSha256: string;
@@ -206,10 +207,10 @@ export function buildHmsFindSessionAuthorization(input: {
     input.release && input.release.evidenceKind === 'hms'
       ? input.release
       : null;
-  const branch =
-    release?.requestBranches.find((b) => b.id === 'guest_stay_search') ??
-    release?.requestBranches[0] ??
-    null;
+  const branch = release?.requestBranches.find((b) => b.id === input.requestBranchId) ?? null;
+  if (release && !branch) {
+    throw new Error(`request branch is not enabled on release: ${input.requestBranchId}`);
+  }
   const computedManifestSha = createHash('sha256')
     .update(JSON.stringify(input.manifest))
     .digest('hex');

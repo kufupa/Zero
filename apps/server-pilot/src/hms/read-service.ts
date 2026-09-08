@@ -18,7 +18,11 @@ import {
   readResultSchema,
   type ReadResult,
 } from './read-service-contracts.js';
-import type { PropertyReadLock } from './property-read-lock.js';
+import {
+  isPropertyReadConnectionHeld,
+  type PropertyReadConnection,
+  type PropertyReadLock,
+} from './property-read-lock.js';
 import { assertReadRequesterScope } from './requester-authorization.js';
 
 export const readRequestSchema = z.union([
@@ -77,10 +81,10 @@ export interface ReadExecutionContext {
   reservationFacade?: ReturnType<typeof createReservationContextFacade>;
   /** Optional property lock; live worker/proof callers must provide it. */
   propertyReadLock?: PropertyReadLock;
+  /** Internal connection proof while the owning lock callback is active. */
+  propertyReadLockConnection?: PropertyReadConnection;
   /** Production worker paths must carry a trusted release/input/capture bind. */
   requireAdmissionBinding?: boolean;
-  /** Internal marker when the caller already owns the dedicated lock. */
-  propertyReadLockHeld?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -103,8 +107,8 @@ const executionKeys = new Set([
   'handlers',
   'reservationFacade',
   'propertyReadLock',
+  'propertyReadLockConnection',
   'requireAdmissionBinding',
-  'propertyReadLockHeld',
 ]);
 
 function validExecutionContext(value: unknown): value is ReadExecutionContext {
@@ -123,7 +127,10 @@ function validExecutionContext(value: unknown): value is ReadExecutionContext {
     !!value.signal && typeof (value.signal as AbortSignal).aborted === 'boolean' &&
     typeof value.now === 'function' &&
     (value.requireAdmissionBinding === undefined || typeof value.requireAdmissionBinding === 'boolean') &&
-    (value.propertyReadLockHeld === undefined || typeof value.propertyReadLockHeld === 'boolean');
+    (value.propertyReadLockConnection === undefined ||
+      (isRecord(value.propertyReadLockConnection) &&
+        typeof value.propertyReadLockConnection.query === 'function' &&
+        typeof value.propertyReadLockConnection.close === 'function'));
 }
 
 // A custom schema is used because an execution context intentionally carries
@@ -217,6 +224,10 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
     if (parsed.captureRequired && parsed.captureBindingRef !== context.parentRef) {
       throw codedError('READ_CAPTURE_BINDING_MISMATCH', 'read capture binding mismatch');
     }
+    const expectedReservationRef = request.toolId === 'hms_read_reservation' ? request.reservationRef : null;
+    if (parsed.reservationRef !== expectedReservationRef) {
+      throw codedError('READ_RESERVATION_REF_BINDING_MISMATCH', 'read reservation reference binding mismatch');
+    }
   }
   context.budget.total += 1;
 }
@@ -264,8 +275,14 @@ export async function executeRead(
   // A lock is held around the complete typed dispatch, including any driver
   // admission.  PropertyReadLock itself owns a dedicated connection and
   // closes it on both success and failure.
-  if (context.propertyReadLock && !context.propertyReadLockHeld) {
-    return context.propertyReadLock.withLock(() => dispatchRead(context, parsed));
+  const lockHeld =
+    !!context.propertyReadLock &&
+    !!context.propertyReadLockConnection &&
+    isPropertyReadConnectionHeld(context.propertyReadLockConnection, context.propertyReadLock.key);
+  if (context.propertyReadLock && !lockHeld) {
+    return context.propertyReadLock.withLock((connection) =>
+      dispatchRead({ ...context, propertyReadLockConnection: connection }, parsed),
+    );
   }
   return dispatchRead(context, parsed);
 }

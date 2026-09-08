@@ -53,7 +53,7 @@ import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
-import type { ReadResult } from '../hms/read-service-contracts.js';
+import { readReservationRef, type ReadResult } from '../hms/read-service-contracts.js';
 import {
   executeReadToolRun,
   readRequestSchema,
@@ -340,6 +340,27 @@ async function failAiRun(
   return { runId: run.id, state: 'retry_wait' };
 }
 
+export type ReadAdmissionBinding = {
+  releaseId: string;
+  requestBranchId: string;
+  requesterAuthorizationId: string;
+  inputDigest: string;
+  captureRequired: boolean;
+  captureBindingRef: string | null;
+  reservationRef: string | null;
+};
+
+export function assertReadAdmissionPlanBinding(input: {
+  readAdmission: ReadAdmissionBinding;
+  requesterAuthorizationId: string;
+}): void {
+  if (input.readAdmission.requesterAuthorizationId !== input.requesterAuthorizationId) {
+    throw Object.assign(new Error('read admission requester is not the trusted plan authorization'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+}
+
 export type CandidateSessionInput = {
   transportId: string;
   threadId: string;
@@ -353,14 +374,7 @@ export type CandidateSessionInput = {
   /** The independent read adapter wraps the complete dispatch in this lock. */
   readOnly?: boolean;
   /** Trusted release/input/capture admission for the production read path. */
-  readAdmission?: {
-    releaseId: string;
-    requestBranchId: string;
-    requesterAuthorizationId: string;
-    inputDigest: string;
-    captureRequired: boolean;
-    captureBindingRef: string | null;
-  };
+  readAdmission?: ReadAdmissionBinding;
   /** Authored quote candidates when hms_quote_stay is active. */
   quoteCandidates?: ReadonlyMap<
     string,
@@ -478,6 +492,15 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const quoteReleaseRaw = active?.releases.get('hms_quote_stay') ?? null;
     const quoteRelease =
       quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms' ? quoteReleaseRaw : null;
+    const exact = filterExactReservationCandidates(input.lookupCandidates);
+    const operationId = input.runId ?? `hms-live-${Date.now()}`;
+    const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
+    const candidates = new Map(exact.map((c) => [c.id, c]));
+    const planGate = resolvePlanScopedDraftGate({
+      activeReleases: active?.releases,
+      lookupCandidates: candidates,
+      operationId,
+    });
     if (input.readOnly) {
       const readAdmission = input.readAdmission;
       if (!findRelease || active?.handlerPathActive !== true) {
@@ -503,9 +526,16 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
           failureClass: 'AUTH' as const,
         });
       }
+      if (!planGate?.requesterAuthorization) {
+        throw Object.assign(new Error('trusted plan requester authorization is required for read admission'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      assertReadAdmissionPlanBinding({
+        readAdmission,
+        requesterAuthorizationId: planGate.requesterAuthorization.authorizationId,
+      });
     }
-    const exact = filterExactReservationCandidates(input.lookupCandidates);
-    const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: input.transportId,
@@ -528,6 +558,7 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         void liveNotFoundCanaryCandidate;
         const auth = buildHmsFindSessionAuthorization({
           operationId,
+          requestBranchId: input.readOnly ? input.readAdmission!.requestBranchId : 'guest_stay_search',
           manifest,
           roleProofPath: config.roleProofPath,
           roleProofSha256: findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
@@ -556,13 +587,6 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
-    const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
-    const candidates = new Map(exact.map((c) => [c.id, c]));
-    const planGate = resolvePlanScopedDraftGate({
-      activeReleases: active?.releases,
-      lookupCandidates: candidates,
-      operationId,
-    });
     return createReservationCandidateSession({
       driver,
       candidates,
@@ -625,10 +649,15 @@ export function mapProductionReservationRead(
     observedAt: legacy.evidence.observedAt,
     expiresAt: legacy.evidence.expiresAt,
   };
+  if (legacy.status === 'partial' || legacy.status === 'manual_required') {
+    throw Object.assign(new Error(`unsupported non-terminal reservation read status: ${legacy.status}`), {
+      failureClass: 'SCHEMA_DRIFT' as const,
+    });
+  }
+
   if (
     legacy.status === 'not_found' ||
     legacy.status === 'unverified_negative' ||
-    legacy.status === 'manual_required' ||
     !legacy.data ||
     legacy.data.matches.length === 0
   ) {
@@ -723,10 +752,32 @@ async function executeProductionReadTool(input: {
   const candidateId =
     request.toolId === 'hms_find_reservation'
       ? request.candidateId
-      : request.candidateId ?? request.reservationRef;
+      : request.candidateId;
+  if (!candidateId) {
+    throw Object.assign(new Error('resolved reservation reads require a server-bound candidateId'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
   const candidate = context.lookupCandidates.find((item) => item.id === candidateId);
   if (!candidate || (candidate.kind !== 'confirmation' && candidate.kind !== 'external_reference')) {
     throw Object.assign(new Error('opaque read candidate is not present in the trigger thread'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  const trustedReservationRef = request.toolId === 'hms_read_reservation' ? admission.reservationRef : null;
+  const expectedReservationRef = readReservationRef({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    candidateId,
+  });
+  if (
+    request.toolId === 'hms_read_reservation' &&
+    (!trustedReservationRef ||
+      trustedReservationRef !== request.reservationRef ||
+      trustedReservationRef !== expectedReservationRef)
+  ) {
+    throw Object.assign(new Error('resolved reservation reference is not server-bound to the exact candidate'), {
       failureClass: 'AUTH' as const,
     });
   }
@@ -788,7 +839,7 @@ async function executeProductionReadTool(input: {
     request.toolId === 'hms_read_reservation'
       ? createReservationContextFacade({
           now: () => new Date(),
-          reservationRefFor: () => request.reservationRef,
+          reservationRefFor: () => trustedReservationRef!,
           lookup: mapSessionResult,
           readContext: async () => ({
             rates: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
@@ -819,7 +870,6 @@ async function executeProductionReadTool(input: {
     now: () => new Date(),
     requireAdmissionBinding: true,
     propertyReadLock,
-    propertyReadLockHeld: true,
     reservationFacade,
     handlers: {
       findReservation: async () => {
@@ -829,11 +879,18 @@ async function executeProductionReadTool(input: {
     },
   };
   try {
-    const receipt = await propertyReadLock.withLock(async () => {
+    const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) => {
+      const lockedReadContext = { ...readContext, propertyReadLockConnection };
       if (reservationFacade) {
         const resolved = await reservationFacade.findReservation(toLookup(candidateId));
         if (resolved.status !== 'ok' || !resolved.data?.matches[0]?.reservationRef) {
           throw Object.assign(new Error('reservation context could not resolve an entitled exact match'), {
+            failureClass: 'AUTH' as const,
+          });
+        }
+        const expiresAt = Date.parse(resolved.evidence[0]?.expiresAt ?? '');
+        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+          throw Object.assign(new Error('reservation context reference is expired'), {
             failureClass: 'AUTH' as const,
           });
         }
@@ -843,7 +900,7 @@ async function executeProductionReadTool(input: {
         executorLane: input.run.executorLane,
         draftingEnabled: false,
         request,
-        context: readContext,
+        context: lockedReadContext,
         resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
       });
     });

@@ -25,6 +25,8 @@ export const readAdmissionSchema = z
     inputDigest: readDigestSchema,
     captureRequired: z.boolean(),
     captureBindingRef: readRefSchema.nullable(),
+    /** Server-minted reservation reference for resolved-context reads. */
+    reservationRef: readRefSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -53,6 +55,33 @@ export function readInputDigest(value: unknown): string {
   return createHash('sha256')
     .update(JSON.stringify(sortDigestValue(value)), 'utf8')
     .digest('hex');
+}
+
+/**
+ * Derive the server-owned context reference from the exact mail scope and
+ * opaque candidate. A candidate can recur in another thread; the scope bind
+ * prevents that otherwise-valid reference from being replayed there.
+ */
+export function readReservationRef(input: {
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  candidateId: string;
+}): ReadRef {
+  return readRefSchema.parse(
+    createHash('sha256')
+      .update(
+        JSON.stringify([
+          'hms-read-reservation/v1',
+          input.transportId,
+          input.threadId,
+          input.triggerMessageId,
+          input.candidateId,
+        ]),
+        'utf8',
+      )
+      .digest('hex'),
+  );
 }
 
 export const readTimestampSchema = z.string().datetime({ offset: true });

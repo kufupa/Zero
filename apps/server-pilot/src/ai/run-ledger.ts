@@ -340,7 +340,16 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     }
     if (!input.readRequest || typeof input.readRequest !== 'object') throw new Error('read_tool runs require a closed readRequest');
     if (!input.readResultRef) throw new Error('read_tool runs require a private readResultRef');
-    input.readRequest = readRequestSchema.parse(input.readRequest);
+    const parsedReadRequest = readRequestSchema.parse(input.readRequest);
+    const admission = 'admission' in parsedReadRequest ? parsedReadRequest.admission : undefined;
+    if (!admission) throw new Error('read_tool runs require trusted admission');
+    if (
+      (parsedReadRequest.toolId === 'hms_find_reservation' && admission.reservationRef !== null) ||
+      (parsedReadRequest.toolId === 'hms_read_reservation' && admission.reservationRef !== parsedReadRequest.reservationRef)
+    ) {
+      throw new Error('read_tool reservation reference is not bound to trusted admission');
+    }
+    input.readRequest = parsedReadRequest;
     input.readResultRef = readRefSchema.parse(input.readResultRef);
   }
   const now = new Date();
@@ -625,6 +634,7 @@ export async function readAiRunReceipt(
   if (
     !run ||
     run.runKind !== 'read_tool' ||
+    run.state !== 'succeeded' ||
     run.transportId !== input.transportId ||
     run.threadId !== input.threadId ||
     run.triggerMessageId !== input.triggerMessageId ||
