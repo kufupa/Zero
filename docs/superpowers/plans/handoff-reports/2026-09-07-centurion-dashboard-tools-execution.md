@@ -4,7 +4,7 @@
 
 - Started: 2026-09-07, following the user's explicit instruction to execute.
 - Canonical plan: [Centurion implementation plan](../2026-09-06-reservation-revenue-triage-drafting-plan.md).
-- Accepted plan SHA256: `925ea259fb28dd97e9657705fb852df0ae7753bbc8afeff2578b63b2cc9eb1bb`.
+- Initial accepted plan SHA256 (historical): `925ea259fb28dd97e9657705fb852df0ae7753bbc8afeff2578b63b2cc9eb1bb`. Current owner-policy amendment SHA256: `ace4b5f9cb799461b5825a984034e74e988baaf73628cf913c502a167d09cbc5`, committed in `8a408d5d`.
 - Worktree: `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools`.
 - Branch: `feat/centurion-dashboard-tools`.
 - Initial HEAD: `97f40e72a79973520cc469f79c2d15bd12cfa589`.
@@ -20,6 +20,7 @@
 - Each coding task needs intended RED, GREEN, scoped verification, and a separate specification/quality review. An unreviewed implementation is not complete.
 - Never run a test runner against pilot/production RDS. Use synthetic inputs and independently owned disposable databases; clear ambient database and production-model credentials.
 - Runtime capability/processing evidence is separate from implementation tests. Unavailable evidence cannot become a release pass.
+- Owner policy as of2026-09-08: all current authorized pilot application users have all-tool/configured-pilot-data access. No separate staff/finance/tool roles or routine permission pauses; record assumptions for handoff double-check. Preserve actual login/current access, record/provenance, read-only and no-auto-send safeguards.
 - Private task briefs/reports: `.superpowers/sdd/centurion-dashboard-tools-20260907/`. Private runtime artifacts: `.private/centurion-dashboard-tools-execution/`.
 
 ## Task state
@@ -31,18 +32,18 @@
 | U10 | Executive dashboard | Complete for initial local implementation/proof | Final slice `08721bd7` independently spec/quality PASS; real production-style desktop/mobile journey, unit/owned-DB/build evidence. No deployment/live-data claim |
 | U12 | Measurement start and lean diagnostics | Complete for initial local implementation/proof | Pure contracts, bounded backend integration and client display reviewed; initial U11-A proof approved. No real T0/feed value invented; later ask-aware work remains U2 |
 | U8 | Independent audited reads and reservation context | Complete for local implementation; reviewed | Final `2015b6d3` independent specification/quality PASS; actual authenticated route and50 owned-DB tests/0 skips. Current live Phase2B capability/release proof remains pending |
-| U9 | Existing documents and mail artifacts | Backend review fixes: genuine negative tests first | At `e2bc8c60`, independent spec/quality FAIL: source/finality, horizon/direction, hash, artifact, pre-byte revocation and classification gaps; prior negatives insufficient. Luna repair RED stage underway; browser/full U9/live proof pending |
-| U17 | Finance and deposit evidence | Pending | U8; after useful document slice |
-| U7 | All-night availability/rate evidence | Pending | U8 |
+| U9 | Existing documents and mail artifacts | Complete for local implementation; reviewed | Backend `2a2fde12` and actual browser/validator `9c90d717` each independently spec/quality PASS; archived screenshot/video/trace retained. Unsupported download artifacts remain explicit/manual; current live/Phase2B proof pending |
+| U17 | Finance and deposit evidence | In progress: review repairs and real release-path proof | Initial `e4da0950` failed independent review; domain repairs preserved. Owner approved all-tool access in `8a408d5d`; minimal current-app-access integration and genuine release/handler regression work resumed. Not accepted/live |
+| U7 | All-night availability/rate evidence | Pending; preparation brief ready | U8 accepted. Read-only preparation paused after provider throttling so U17 runs serially; no U7 implementation/test claim |
 | U15 | Company/group/event/notes context | Pending | U8; U9/U17 for requested sections |
 | U16 | Approved property knowledge | Pending | U1; shared read/artifact interfaces |
 | U5 | Safe drafting and approved model adapter | Pending | Useful read milestone; each consumed capability gated |
 | U2 | Ask-aware service projection | Pending | U12/U5 |
 | U13 | Private predictions and factual evaluation | Pending | U2/U5 and released capabilities |
 | U6 | Human-reviewed visible assistance | Pending | U5/U13 and family-quality gates |
-| U11 | Slice journeys, runbook and final verification | U11-A complete; later slices pending | Final initial-dashboard verdict at `08721bd7`: spec/quality PASS. Later read-tool, drafting and whole-branch proof remains pending |
+| U11 | Slice journeys, runbook and final verification | Dashboard and U9 document journeys complete locally; integrated final slice pending | Initial dashboard `08721bd7` and document browser/validator `9c90d717` spec/quality PASS. Phase2B, remaining tools, drafting and whole-branch proof remain pending |
 
-## Verification and claims
+## Verification and claims (chronological; current status is above)
 
 - U1 implementation is complete and independently reviewed. Local checkpoints are `86d38cec` (initial), `f1fa5e18` (first repairs) and `227432c0` (second repairs); all Critical/Important review findings are resolved. This is safe-entry/fixture implementation completion, not a dashboard, live-tool or drafting milestone.
 - Root fresh repair verification at 16:22 UTC: exact U1 test file, 19 passed / 0 skipped; dedicated `unit gate` passed with an allowlisted environment. Shell syntax, both Node helper syntax checks and diff check passed. Commit hook initially rejected one style warning; Luna corrected it, reran 19 tests, and the final commit-scoped oxlint check passed with zero warnings/errors. Shell executable mode is recorded as 100755 despite the repository's `core.filemode=false`.
@@ -222,6 +223,8 @@
 - Execution resumes from preserved U17 domain repairs on `feat/centurion-dashboard-tools`, base candidate `e4da0950`; setup, accepted U8/U9/dashboard work and existing disposable migrations are not repeated. Remaining work is minimal server-owned current-app-access integration, genuine release/handler proof, independent U17 re-review, then U7/U15/U16/U5/U2/U13/U6/final-U11.
 - Handoff double-check: all pilot users are intentionally trusted for all released tools/configured pilot data; app provisioning/removal remains the access boundary. Routine equivalent security/permission assumptions will be recorded here rather than pausing. Login/current-access verification, configured data/record binding, read-only side-effect/release checks, no automatic guest send, safe test databases and approved model processing remain enforced. No deployment, push, merge, new tenant access or PMS write is inferred.
 - Routing remains explicit GPT-5.6 Luna Max for implementation/testing/review with CodeGraph-first worktree navigation. Root performs dispatch, policy/ledger reconciliation and fresh completion gate summaries. Token usage is unavailable; no measured 90% routing/cost claim is made.
+- One same-model finance resume hit a provider rate limit; read-only U7 preparation was interrupted and finance resumed serially without model fallback. The saved domain work was preserved. Writer now reports exact unit finance, guarded owned-PG16 finance and server build PASS after the policy/release repair: genuine server-issued current-app-access proof permits finance with no caller claim list, forged/plain claims are rejected, and the normal default session path uses a real temporary immutable registry plus lower-runtime-only substitution. Actual release/branch/manifest/runtime binding and wrong-fingerprint/implementation/manifest rejection are exercised. These are local writer results, not current live proof or acceptance. Final affected-reader regression/static checks and fresh independent review remain in progress; root has not adopted a cleaned JSON file as a retained count receipt.
+- U17 final writer repair verification passes post-format exact unit finance/reads/documents/gate, sequential guarded PG16 DB finance/reads/documents, server build/type, all-nine-changed-TS installed Oxlint/Prettier, shell/Node syntax and diff. A flaky card-leak assertion matched random UUID text `4111`; it was narrowed to forbidden card-field names while the parser's deterministic actual-PAN test remains. Root then freshly reran exact unit finance and guarded DB finance, both PASS, and diff check PASS. Their success-cleaned JSON paths are not retained-count artifacts. No code change followed these checks; the nine-file repair is ready for an immutable candidate commit and fresh independent specification/quality review, not yet accepted and not live proof.
 
 ## Minor findings / follow-ups
 

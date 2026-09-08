@@ -22,6 +22,11 @@ import {
   type ReservationLookupResult,
   type ReservationRow,
 } from './reservation-context-facade.js';
+import {
+  assertCurrentAppAccessProof,
+  assertReadRequesterScope,
+  type CurrentAppAccessProof,
+} from './requester-authorization.js';
 import type {
   ExistingDocumentListResult,
   ExistingDocumentReadResult,
@@ -32,7 +37,6 @@ import {
   type PropertyReadLock,
 } from './property-read-lock.js';
 import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
-import { assertReadRequesterScope } from './requester-authorization.js';
 import { z } from 'zod';
 
 export const readRequestSchema = z.union([
@@ -114,6 +118,9 @@ export interface ReadExecutionContext {
   propertyReadLockConnection?: PropertyReadConnection;
   /** Production worker paths must carry a trusted release/input/capture bind. */
   requireAdmissionBinding?: boolean;
+  /** Production worker paths must carry server-authenticated current app access. */
+  requireCurrentAppAccess?: boolean;
+  currentAppAccessProof?: CurrentAppAccessProof;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,6 +146,8 @@ const executionKeys = new Set([
   'propertyReadLock',
   'propertyReadLockConnection',
   'requireAdmissionBinding',
+  'requireCurrentAppAccess',
+  'currentAppAccessProof',
 ]);
 
 function validExecutionContext(value: unknown): value is ReadExecutionContext {
@@ -170,6 +179,8 @@ function validExecutionContext(value: unknown): value is ReadExecutionContext {
     typeof value.now === 'function' &&
     (value.requireAdmissionBinding === undefined ||
       typeof value.requireAdmissionBinding === 'boolean') &&
+    (value.requireCurrentAppAccess === undefined ||
+      typeof value.requireCurrentAppAccess === 'boolean') &&
     (value.existingDocumentService === undefined ||
       (isRecord(value.existingDocumentService) &&
         typeof value.existingDocumentService.documents_list_existing === 'function' &&
@@ -270,6 +281,15 @@ function assertDocumentRequesterScope(context: ReadExecutionContext): void {
       'READ_AUTHORIZATION_SCOPE_MISMATCH',
       'read authorization scope does not match request',
     );
+  }
+  if (context.requireCurrentAppAccess) {
+    assertCurrentAppAccessProof({
+      proof: context.currentAppAccessProof,
+      requesterAuthorizationId: context.requester.authorizationId,
+      context,
+      now: context.now(),
+    });
+    return;
   }
   if (!context.requester.allowedClaimKinds.includes('document_metadata')) {
     throw codedError('READ_CLAIM_NOT_ALLOWED', 'requester is not entitled to document reads');
@@ -421,6 +441,8 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
       now,
       requiredClaimKind:
         request.toolId === 'hms_read_folio' ? 'folio_deposit_summary' : 'reservation_summary',
+      currentAppAccessProof: context.currentAppAccessProof,
+      requireCurrentAppAccess: context.requireCurrentAppAccess,
     });
   }
   if (context.signal.aborted) throw codedError('READ_ABORTED', 'read was aborted');

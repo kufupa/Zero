@@ -1,5 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
 import {
   buildDepositSummary,
   classifyDepositActivity,
@@ -19,15 +17,17 @@ import {
   LIVE_DEPOSIT_LEDGER_LIST_PATH,
   LIVE_GUEST_STAY_SEARCH_PATH,
 } from '../src/hms/live-read-manifest.js';
-import type { ReadCandidateChild } from '../src/hms/candidate-graph.js';
-import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
-import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
-import { READ_TOOLS } from '../src/hms/read-tools.js';
 import {
   FOLIO_READ_MAX_BYTES,
   FOLIO_READ_MAX_DURATION_MS,
   FOLIO_READ_PRIVACY_POLICY,
 } from '../src/hms/folio-read-contract.js';
+import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
+import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
+import type { ReadCandidateChild } from '../src/hms/candidate-graph.js';
+import { READ_TOOLS } from '../src/hms/read-tools.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
 
 const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
 const NOW = '2026-08-06T12:00:00.000Z';
@@ -48,9 +48,7 @@ function folioEnvelope(rows: Array<Record<string, unknown>>): string {
   });
 }
 
-function auth(
-  overrides: Partial<HmsSessionAuthorization> = {},
-): HmsSessionAuthorization {
+function auth(overrides: Partial<HmsSessionAuthorization> = {}): HmsSessionAuthorization {
   const branch = overrides.requestBranchId ?? 'folio_summary';
   const manifest =
     branch === 'deposit_ledger_summary'
@@ -60,15 +58,11 @@ function auth(
     operationId: randomUUID(),
     toolId: 'hms_read_folio',
     discoveryOperationId:
-      branch === 'deposit_ledger_summary'
-        ? 'deposit_ledger_summary'
-        : 'folio_summary',
+      branch === 'deposit_ledger_summary' ? 'deposit_ledger_summary' : 'folio_summary',
     releaseId: randomUUID(),
     requestBranchId: branch,
     manifest,
-    manifestSha256: createHash('sha256')
-      .update(JSON.stringify(manifest))
-      .digest('hex'),
+    manifestSha256: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
     roleProofPath: '/tmp/role-proof-folio.v2.json',
     roleProofSha256: 'b'.repeat(64),
     credentialVersionHmacSha256: 'c'.repeat(64),
@@ -80,9 +74,7 @@ function auth(
   };
 }
 
-function child(
-  overrides: Partial<ReadCandidateChild> = {},
-): ReadCandidateChild {
+function child(overrides: Partial<ReadCandidateChild> = {}): ReadCandidateChild {
   return {
     id: randomUUID(),
     sessionId: randomUUID(),
@@ -96,17 +88,13 @@ function child(
   };
 }
 
-function mockRuntime(
-  htmlOrBody: string | ((path: string) => string),
-) {
+function mockRuntime(htmlOrBody: string | ((path: string) => string)) {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
   const resolve = (path: string) =>
     typeof htmlOrBody === 'function' ? htmlOrBody(path) : htmlOrBody;
   const page: Partial<HmsPage> = {
     async content() {
-      return typeof htmlOrBody === 'function'
-        ? htmlOrBody('')
-        : htmlOrBody;
+      return typeof htmlOrBody === 'function' ? htmlOrBody('') : htmlOrBody;
     },
     async click() {},
     async evaluate() {
@@ -136,16 +124,14 @@ function mockRuntime(
 describe('folio / deposit transport parsers', () => {
   it('parses foliobalance + currency and rejects fixture HTML', () => {
     const parsed = parseFolioBalanceTransport(
-      folioEnvelope([
-        { foliobalance: '75.50', propertycurrency: 'ZAR', cardnumber: '****' },
-      ]),
+      folioEnvelope([{ foliobalance: '75.50', propertycurrency: 'ZAR', cardnumber: '****' }]),
     );
     expect(parsed.envelopeRecognized).toBe(true);
     expect(parsed.totalBalance).toBe('75.50');
     expect(parsed.currency).toBe('ZAR');
-    expect(() =>
-      parseFolioBalanceTransport('<div data-testid="folio-row"></div>'),
-    ).toThrow(HmsRuntimeError);
+    expect(() => parseFolioBalanceTransport('<div data-testid="folio-row"></div>')).toThrow(
+      HmsRuntimeError,
+    );
   });
 
   it('suppresses card-like money and flags card leak', () => {
@@ -203,9 +189,7 @@ describe('folio / deposit transport parsers', () => {
   it('parses OSLEDG.DLD activity rows by confirmationnumber; flags PAN leak', () => {
     expect(classifyDepositActivity('Deposit Payment')).toBe('paid');
     expect(classifyDepositActivity('Amount Refunded')).toBe('refunded');
-    expect(classifyDepositActivity('Transfer to Guest Ledger')).toBe(
-      'transferred',
-    );
+    expect(classifyDepositActivity('Transfer to Guest Ledger')).toBe('transferred');
 
     const scopes = extractDepositLedgerDateScopes(
       folioEnvelope([
@@ -218,9 +202,7 @@ describe('folio / deposit transport parsers', () => {
         },
       ]),
     );
-    expect(scopes).toEqual([
-      { closingdate: '06-AUG-2026', property: 'HRCEN' },
-    ]);
+    expect(scopes).toEqual([{ closingdate: '06-AUG-2026', property: 'HRCEN' }]);
 
     const dld = parseDepositLedgerTransport(
       folioEnvelope([
@@ -290,9 +272,7 @@ describe('mergeFolioEvidence', () => {
     };
     const merged = mergeFolioEvidence([balance]);
     expect(merged.status).toBe('manual_required');
-    expect(merged.unresolvedFields).toContain(
-      'FOLIO_TRUSTED_DISCLOSURE_REQUIRED',
-    );
+    expect(merged.unresolvedFields).toContain('FOLIO_TRUSTED_DISCLOSURE_REQUIRED');
   });
 
   it('two-step merge ok; one branch yields explicitly partial', () => {
@@ -338,17 +318,13 @@ describe('mergeFolioEvidence', () => {
       disclosure,
     );
     expect(currencyMismatch.status).toBe('manual_required');
-    expect(currencyMismatch.unresolvedFields).toContain(
-      'FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT',
-    );
+    expect(currencyMismatch.unresolvedFields).toContain('FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT');
   });
 });
 
 describe('live folio driver binding + denied actions', () => {
   it('binds parent authorization + child and posts OSRESS.search only for folio branch', async () => {
-    const body = folioEnvelope([
-      { foliobalance: '12.00', propertycurrency: 'ZAR' },
-    ]);
+    const body = folioEnvelope([{ foliobalance: '12.00', propertycurrency: 'ZAR' }]);
     const { runtime, posts } = mockRuntime(body);
     const driver = createLiveFolioReadDriver({
       runtime,
@@ -360,21 +336,12 @@ describe('live folio driver binding + denied actions', () => {
       toolId: a.toolId,
       requestBranchId: a.requestBranchId,
     });
-    const result = await driver.observeFolioBalance(
-      a,
-      c,
-      new AbortController().signal,
-    );
+    const result = await driver.observeFolioBalance(a, c, new AbortController().signal);
     expect(result.status).toBe('ok');
     expect(result.totalBalance).toBe('12.00');
-    expect(posts.some((p) => p.path === LIVE_GUEST_STAY_SEARCH_PATH)).toBe(
-      true,
-    );
+    expect(posts.some((p) => p.path === LIVE_GUEST_STAY_SEARCH_PATH)).toBe(true);
     expect(
-      posts.every(
-        (p) =>
-          !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path),
-      ),
+      posts.every((p) => !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path)),
     ).toBe(true);
     expect(JSON.stringify(result)).not.toContain('recipientClass');
     expect(JSON.stringify(result)).not.toContain('inquiryClass');
@@ -414,11 +381,7 @@ describe('live folio driver binding + denied actions', () => {
     ).rejects.toBeInstanceOf(HmsRuntimeError);
 
     await expect(
-      driver.observeFolioBalance(
-        auth(),
-        child({ propertyCode: 'OTHER' }),
-        signal,
-      ),
+      driver.observeFolioBalance(auth(), child({ propertyCode: 'OTHER' }), signal),
     ).rejects.toBeInstanceOf(HmsRuntimeError);
   });
 
@@ -471,16 +434,10 @@ describe('live folio driver binding + denied actions', () => {
       toolId: a.toolId,
       requestBranchId: a.requestBranchId,
     });
-    const result = await driver.observeDepositSummary(
-      a,
-      c,
-      new AbortController().signal,
-    );
+    const result = await driver.observeDepositSummary(a, c, new AbortController().signal);
     expect(result.status).toBe('manual_required');
     expect(result.blocker).toBe(DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER);
-    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(
-      true,
-    );
+    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(true);
   });
 
   it('deposit LST→DLD with confirmationnumber → ok; no card/name leakage', async () => {
@@ -502,9 +459,7 @@ describe('live folio driver binding + denied actions', () => {
         paymentcardnumber: '****',
       },
     ]);
-    const { runtime, posts } = mockRuntime((path) =>
-      path.includes('OSLEDG.DLD') ? dld : lst,
-    );
+    const { runtime, posts } = mockRuntime((path) => (path.includes('OSLEDG.DLD') ? dld : lst));
     const driver = createLiveFolioReadDriver({
       runtime,
       transportId: 't1',
@@ -515,39 +470,117 @@ describe('live folio driver binding + denied actions', () => {
       toolId: a.toolId,
       requestBranchId: a.requestBranchId,
     });
-    const result = await driver.observeDepositSummary(
-      a,
-      c,
-      new AbortController().signal,
-    );
+    const result = await driver.observeDepositSummary(a, c, new AbortController().signal);
     expect(result.status).toBe('ok');
     expect(result.depositSummary?.paid.amount).toBe('25.00');
-    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(
-      true,
-    );
-    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toBe(
-      true,
-    );
+    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(true);
+    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toBe(true);
     const dldPost = posts.find((p) => p.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH);
     expect(dldPost?.fields.closingdate).toBe('06-AUG-2026');
     expect(dldPost?.fields.property).toBe('HRCEN');
     expect(dldPost?.fields.CURRENT_TAB_NAME).toBe('DLD');
     expect(JSON.stringify(result)).not.toContain('REDACTED');
-    expect(JSON.stringify(result)).not.toMatch(/4111/);
+    expect(JSON.stringify(result)).not.toMatch(
+      /(?:cardnumber|paymentcardnumber|virtualcardnumber)/i,
+    );
     expect(
-      posts.every(
-        (p) =>
-          !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path),
-      ),
+      posts.every((p) => !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path)),
     ).toBe(true);
+  });
+
+  it('keeps unknown normal-observer activity incomplete through merge', async () => {
+    const unknownActivity = folioEnvelope([
+      {
+        confirmationnumber: CONFIRM,
+        currency: 'ZAR',
+        amount: '20.00',
+        activitytype_display: 'Manual Reconciliation Adjustment',
+      },
+    ]);
+    const { runtime } = mockRuntime(unknownActivity);
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+    });
+    const deposit = await driver.observeDepositSummary(
+      auth({ requestBranchId: 'deposit_ledger_summary' }),
+      child({ requestBranchId: 'deposit_ledger_summary' }),
+      new AbortController().signal,
+    );
+    const merged = mergeFolioEvidence(
+      [
+        {
+          status: 'ok',
+          currency: 'ZAR',
+          totalBalance: '75.00',
+          evidenceId: randomUUID(),
+          blocker: null,
+          observedAt: NOW,
+          rowsScanned: 1,
+          bytesObserved: 100,
+          durationMs: 10,
+        },
+        deposit,
+      ],
+      {
+        recipientClass: 'reservation_guest',
+        inquiryClass: 'labelled_narrow_status',
+      },
+    );
+
+    expect(merged.status).toBe('partial');
+    expect(merged.data.deposits.state).not.toBe('available');
+  });
+
+  it('aggregates every bounded detail page before reporting a complete ledger', async () => {
+    const lst = folioEnvelope([
+      { closingdate: '06-AUG-2026', property: 'HRCEN' },
+      { closingdate: '05-AUG-2026', property: 'HRCEN' },
+    ]);
+    const detailPages = [
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '25.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '35.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+    ];
+    let detailIndex = 0;
+    const { runtime, posts } = mockRuntime((path) =>
+      path.includes(LIVE_DEPOSIT_LEDGER_DETAIL_PATH) ? detailPages[detailIndex++]! : lst,
+    );
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+    });
+    const result = await driver.observeDepositSummary(
+      auth({ requestBranchId: 'deposit_ledger_summary' }),
+      child({ requestBranchId: 'deposit_ledger_summary' }),
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.depositSummary?.paid.amount).toBe('60.00');
+    expect(result.rowsScanned).toBe(2);
+    expect(posts.filter((post) => post.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toHaveLength(2);
   });
 
   it('registry denies post/transfer/settle/refund/advance_deposit', () => {
     for (const action of FOLIO_READ_PRIVACY_POLICY.deniedActions) {
       expect(
-        READ_TOOLS.hms_read_folio.deniedActions.some((a) =>
-          a.includes(action.split('_')[0]!),
-        ) ||
+        READ_TOOLS.hms_read_folio.deniedActions.some((a) => a.includes(action.split('_')[0]!)) ||
           FOLIO_READ_PRIVACY_POLICY.deniedActions.includes(action),
       ).toBe(true);
     }
@@ -565,16 +598,12 @@ describe('live folio driver binding + denied actions', () => {
 
   it('deterministic branch ids folio_summary vs deposit_ledger_summary', () => {
     const branches = READ_TOOLS.hms_read_folio.requestBranches;
-    expect(branches.map((b) => b.id).sort()).toEqual([
-      'deposit_ledger_summary',
+    expect(branches.map((b) => b.id).sort()).toEqual(['deposit_ledger_summary', 'folio_summary']);
+    expect(branches.find((b) => b.id === 'folio_summary')?.discoveryOperationId).toBe(
       'folio_summary',
-    ]);
-    expect(
-      branches.find((b) => b.id === 'folio_summary')?.discoveryOperationId,
-    ).toBe('folio_summary');
-    expect(
-      branches.find((b) => b.id === 'deposit_ledger_summary')
-        ?.discoveryOperationId,
-    ).toBe('deposit_ledger_summary');
+    );
+    expect(branches.find((b) => b.id === 'deposit_ledger_summary')?.discoveryOperationId).toBe(
+      'deposit_ledger_summary',
+    );
   });
 });

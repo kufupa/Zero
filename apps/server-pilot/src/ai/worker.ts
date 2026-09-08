@@ -69,6 +69,10 @@ import {
   type ThreadSignals,
   type WorkflowTriageOutput,
 } from './triage.js';
+import {
+  issueCurrentAppAccessProof,
+  type CurrentAppAccessProof,
+} from '../hms/requester-authorization.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
@@ -420,6 +424,16 @@ export type CandidateSessionFactory = (
   input: CandidateSessionInput,
 ) => Promise<import('./candidate-draft-agent.js').CandidateToolSession>;
 
+/**
+ * Lower-edge substitution for normal runtime proof.  The active release set
+ * remains loaded and validated by the real registry/handler path; tests may
+ * replace only the browser/PMS runtime opened by the live drivers.
+ */
+export type LiveHmsCandidateSessionFactoryOptions = {
+  runtime?: import('../hms/runtime.js').HmsRuntime;
+  activeReadState?: import('../hms/active-read-runtime.js').ActiveReadRuntimeState;
+};
+
 /** Singleton production HMS runtime — one Chromium process per HMS worker. */
 let productionHmsRuntime: import('../hms/runtime.js').HmsRuntime | null | undefined;
 
@@ -476,10 +490,13 @@ export async function closeProductionHmsRuntimeForTests(): Promise<void> {
   if (rt) await rt.close();
 }
 
-export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory {
+export function createLiveHmsCandidateSessionFactory(
+  options: LiveHmsCandidateSessionFactoryOptions = {},
+): CandidateSessionFactory {
   return async (input) => {
-    const runtime = await getOrCreateProductionHmsRuntime();
+    const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
     const active =
+      options.activeReadState ??
       productionActiveReadState ??
       (await import('../hms/active-read-runtime.js')).getCachedActiveReadRuntime() ??
       null;
@@ -637,7 +654,12 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
                 failureClass: 'AUTH' as const,
               });
             }
-            const sections = input.folioSections ?? ['balance', 'deposits'];
+            const sections = (input.folioSections ?? ['balance', 'deposits']) as readonly (
+              | 'balance'
+              | 'deposits'
+              | 'transactions'
+              | 'authorization'
+            )[];
             const operationId = input.runId ?? `hms-folio-${Date.now()}`;
             const scopeHash = createHash('sha256')
               .update(
@@ -713,10 +735,10 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
             }
             if (steps.length === 0) {
               return {
-                status: 'manual_required',
+                status: 'partial',
                 draftReady: false,
                 data: null,
-                unresolvedFields: ['SOURCE_UNAVAILABLE'],
+                unresolvedFields: sections.map((section) => `${section.toUpperCase()}_UNAVAILABLE`),
                 evidence: {
                   kind: 'hms' as const,
                   id: randomUUID(),
@@ -730,10 +752,14 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
                 },
               };
             }
-            return mergeFolioEvidence(steps, {
-              recipientClass: 'unknown',
-              inquiryClass: 'other',
-            });
+            return mergeFolioEvidence(
+              steps,
+              {
+                recipientClass: 'unknown',
+                inquiryClass: 'other',
+              },
+              sections,
+            );
           }
         : undefined;
     // openReadSession already authenticates + verifies property; do not open a
@@ -1377,7 +1403,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
   request: Record<string, unknown>;
   admission: ReadAdmissionBinding;
   now: Date;
-}): Promise<void> {
+}): Promise<CurrentAppAccessProof> {
   const metrics =
     input.run.metrics && typeof input.run.metrics === 'object'
       ? (input.run.metrics as Record<string, unknown>)
@@ -1439,6 +1465,17 @@ async function assertCurrentReadAdmissionAuthority(input: {
     );
   }
 
+  const issueCurrentAccess = () =>
+    issueCurrentAppAccessProof({
+      userId: issuerData.userId,
+      mailboxAccessId: issuerData.mailboxAccessId,
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      expiresAt: input.run.deadlineAt ?? new Date(input.now.getTime() + 5 * 60_000),
+      now: input.now,
+    });
+
   if (
     input.request.toolId !== 'hms_read_reservation' &&
     input.request.toolId !== 'hms_read_folio'
@@ -1446,7 +1483,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
     if (issuerData.parentReadResultRef !== null || issuerData.evidenceExpiresAt !== null) {
       throw readAdmissionAuthError('find admission unexpectedly carries a parent receipt');
     }
-    return;
+    return issueCurrentAccess();
   }
 
   if (!issuerData.parentReadResultRef || !issuerData.evidenceExpiresAt) {
@@ -1533,6 +1570,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
       'resolved read admission candidate is not bound to the parent receipt',
     );
   }
+  return issueCurrentAccess();
 }
 
 /**
@@ -1547,6 +1585,8 @@ async function executeProductionReadTool(input: {
   signal: AbortSignal;
   /** Tests may replace only the PMS/session boundary, not the executor. */
   sessionFactory?: CandidateSessionFactory;
+  /** Lower browser/PMS edge substitution; registry and handler proof stay real. */
+  runtime?: import('../hms/runtime.js').HmsRuntime;
 }): Promise<{ result: ReadResult<unknown>; readResultRef: string }> {
   const request = readRequestSchema.parse(input.run.readRequest);
   const admission = 'admission' in request ? request.admission : undefined;
@@ -1555,7 +1595,7 @@ async function executeProductionReadTool(input: {
       failureClass: 'AUTH' as const,
     });
   }
-  await assertCurrentReadAdmissionAuthority({
+  const currentAppAccessProof = await assertCurrentReadAdmissionAuthority({
     run: input.run,
     request: request as unknown as Record<string, unknown>,
     admission,
@@ -1605,6 +1645,8 @@ async function executeProductionReadTool(input: {
       requireAdmissionBinding: true,
       propertyReadLock: mailReadLock,
       existingDocumentService: service,
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
     };
     const receipt = await mailReadLock.withLock(async (propertyReadLockConnection) =>
       executeReadToolRun({
@@ -1767,7 +1809,9 @@ async function executeProductionReadTool(input: {
     );
   }
 
-  const sessionFactory = input.sessionFactory ?? createLiveHmsCandidateSessionFactory();
+  const sessionFactory =
+    input.sessionFactory ??
+    createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
   const session = await sessionFactory({
     transportId: input.run.transportId,
     threadId: input.run.threadId,
@@ -1854,7 +1898,8 @@ async function executeProductionReadTool(input: {
             }
             return null;
           })();
-    const unavailableSections = folioRequest.sections.flatMap((section) => {
+    const sectionValues = new Map<string, unknown>();
+    for (const section of folioRequest.sections) {
       const sectionValue =
         parsedData && section === 'balance'
           ? parsedData.balance
@@ -1862,17 +1907,47 @@ async function executeProductionReadTool(input: {
             ? parsedData.deposits
             : parsedData && section === 'transactions'
               ? parsedData.transactions
-              : null;
-      if (!sectionValue || sectionValue.state === 'available' || sectionValue.state === 'partial') {
+              : parsedData && section === 'authorization'
+                ? parsedData.authorization
+                : null;
+      sectionValues.set(section, sectionValue);
+    }
+    const unavailableSections = folioRequest.sections.flatMap((section) => {
+      const sectionValue = sectionValues.get(section) as
+        | { state?: string; reasonCode?: string }
+        | null
+        | undefined;
+      const available =
+        section === 'authorization'
+          ? sectionValue?.state === 'known'
+          : sectionValue?.state === 'available' || sectionValue?.state === 'partial';
+      if (available) {
         return [];
       }
+      const reasonCode = sectionValue?.reasonCode;
       return [
         {
           section,
-          reasonCode: 'reasonCode' in sectionValue ? sectionValue.reasonCode : 'SOURCE_UNAVAILABLE',
+          reasonCode: reasonCode ?? 'SOURCE_UNAVAILABLE',
         },
       ];
     });
+    const hasPartialRequestedSection = folioRequest.sections.some((section) => {
+      const value = sectionValues.get(section) as
+        | { state?: string; completeness?: string }
+        | null
+        | undefined;
+      return value?.state === 'partial' || value?.completeness === 'partial';
+    });
+    const requestedCompleteness =
+      unavailableSections.length === 0 && !hasPartialRequestedSection
+        ? ('complete' as const)
+        : legacy.status === 'unverified_negative' &&
+            folioRequest.sections.every((section) =>
+              unavailableSections.some((item) => item.section === section),
+            )
+          ? ('unknown' as const)
+          : ('partial' as const);
     const issueCode =
       legacy.status === 'partial'
         ? 'PARTIAL_WINDOW'
@@ -1891,12 +1966,7 @@ async function executeProductionReadTool(input: {
             ? 'unverified_negative'
             : 'manual_required',
       data: parsedData,
-      completeness:
-        legacy.status === 'ok'
-          ? ('complete' as const)
-          : legacy.status === 'partial'
-            ? ('partial' as const)
-            : ('unknown' as const),
+      completeness: requestedCompleteness,
       unavailableSections,
       scopeRef: folioRequest.reservationRef,
       evidence: [
@@ -1961,6 +2031,8 @@ async function executeProductionReadTool(input: {
     budget: { total: 0, limit: 3 },
     now: () => new Date(),
     requireAdmissionBinding: true,
+    requireCurrentAppAccess: true,
+    currentAppAccessProof,
     propertyReadLock,
     reservationFacade,
     handlers: {
@@ -2021,6 +2093,8 @@ export async function executeAiRun(
       fence: AiRunFence;
       signal: AbortSignal;
     }) => Promise<{ result: ReadResult<unknown>; readResultRef: string }>;
+    /** Lower browser/PMS edge substitution for normal release-bound proof. */
+    hmsRuntime?: import('../hms/runtime.js').HmsRuntime;
   } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
@@ -2102,6 +2176,7 @@ export async function executeAiRun(
           executeProductionReadTool({
             ...args,
             sessionFactory: options.candidateSessionFactory,
+            runtime: options.hmsRuntime,
           }));
       const read = await executor({ run, fence, signal });
       const readResultRef = run.readResultRef ?? read.readResultRef;

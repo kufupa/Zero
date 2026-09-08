@@ -1,6 +1,6 @@
 import {
   readFactSchema,
-  readSectionSchema,
+  readFolioSectionSchema,
   type ReadFact,
   type ReadSection,
 } from './read-service-contracts.js';
@@ -127,9 +127,9 @@ export const folioReadDataSchema = z
     currency: currencyCode,
     totalBalance: signedMoney.optional(),
     depositSummary: legacyDepositSummarySchema.optional(),
-    balance: readSectionSchema.optional(),
-    deposits: readSectionSchema.optional(),
-    transactions: readSectionSchema.optional(),
+    balance: readFolioSectionSchema.optional(),
+    deposits: readFolioSectionSchema.optional(),
+    transactions: readFolioSectionSchema.optional(),
     liabilityLocation: readFactSchema.optional(),
     authorization: readFactSchema.optional(),
     disclosure: z

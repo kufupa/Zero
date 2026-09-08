@@ -11,6 +11,8 @@ import {
   type ReadExecutionContext,
 } from '../src/hms/read-service.js';
 import { FOLIO_READ_MAX_BYTES, FOLIO_READ_MAX_ROWS } from '../src/hms/folio-read-contract.js';
+import { issueCurrentAppAccessProof } from '../src/hms/requester-authorization.js';
+import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const OBSERVED_AT = '2026-09-07T12:00:00.000Z';
@@ -126,6 +128,118 @@ describe('U17 finance completeness RED contracts', () => {
     expect(reservationHandler).not.toHaveBeenCalled();
   });
 
+  it('does not let a plain mailbox claim authorize finance disclosure', async () => {
+    const readFolio = vi.fn(async () => ({
+      toolId: 'hms_read_folio' as const,
+      schemaVersion: 'hms-folio/1',
+      status: 'ok' as const,
+      data: {},
+      completeness: 'complete' as const,
+      unavailableSections: [],
+      scopeRef: 'reservation-u17',
+      evidence: [],
+      page: null,
+      issues: [],
+    }));
+
+    await expect(
+      executeRead(
+        {
+          transportId: 'transport-u17',
+          mailboxId: 'mailbox-u17',
+          threadId: 'thread-u17',
+          triggerMessageId: 'trigger-u17',
+          propertyCode: 'HRCEN',
+          parentRef: 'parent-u17',
+          branchId: 'folio_summary',
+          releaseId: 'release-u17',
+          signal: new AbortController().signal,
+          budget: { total: 0, limit: 3 },
+          now: () => new Date('2026-09-07T12:00:00.000Z'),
+          requester: {
+            authorizationId: 'access-u17',
+            transportId: 'transport-u17',
+            threadId: 'thread-u17',
+            triggerMessageId: 'trigger-u17',
+            // This generic claim list is not a signed TrustedRequesterAuthorization.
+            allowedClaimKinds: ['folio_deposit_summary'],
+            expiresAt: '2099-09-07T12:00:00.000Z',
+          },
+          handlers: { readFolio },
+          requireCurrentAppAccess: true,
+        },
+        {
+          toolId: 'hms_read_folio',
+          reservationRef: 'reservation-u17',
+          candidateId: 'candidate-u17',
+          sections: ['balance'],
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'READ_CURRENT_APP_ACCESS_REQUIRED' });
+    expect(readFolio).not.toHaveBeenCalled();
+  });
+
+  it('accepts every released finance tool for a server-issued current app access proof', async () => {
+    const now = new Date('2026-09-07T12:00:00.000Z');
+    const readFolio = vi.fn(async () => ({
+      toolId: 'hms_read_folio' as const,
+      schemaVersion: 'hms-folio/1',
+      status: 'manual_required' as const,
+      data: null,
+      completeness: 'unknown' as const,
+      unavailableSections: [{ section: 'balance', reasonCode: 'SOURCE_UNAVAILABLE' as const }],
+      scopeRef: 'reservation-u17',
+      evidence: [],
+      page: null,
+      issues: [],
+    }));
+
+    const result = await executeRead(
+      {
+        transportId: 'transport-u17',
+        mailboxId: 'mailbox-u17',
+        threadId: 'thread-u17',
+        triggerMessageId: 'trigger-u17',
+        propertyCode: 'HRCEN',
+        parentRef: 'parent-u17',
+        branchId: 'folio_summary',
+        releaseId: 'release-u17',
+        signal: new AbortController().signal,
+        budget: { total: 0, limit: 3 },
+        now: () => now,
+        requester: {
+          authorizationId: 'access-u17',
+          transportId: 'transport-u17',
+          threadId: 'thread-u17',
+          triggerMessageId: 'trigger-u17',
+          // Caller claims do not grant the tool; current app access does.
+          allowedClaimKinds: [],
+          expiresAt: '2099-09-07T12:00:00.000Z',
+        },
+        handlers: { readFolio },
+        requireCurrentAppAccess: true,
+        currentAppAccessProof: issueCurrentAppAccessProof({
+          userId: 'user-u17',
+          mailboxAccessId: 'access-u17',
+          transportId: 'transport-u17',
+          threadId: 'thread-u17',
+          triggerMessageId: 'trigger-u17',
+          expiresAt: '2099-09-07T12:05:00.000Z',
+          now,
+        }),
+      },
+      {
+        toolId: 'hms_read_folio',
+        reservationRef: 'reservation-u17',
+        candidateId: 'candidate-u17',
+        sections: ['balance'],
+      },
+    );
+
+    expect(result).toMatchObject({ toolId: 'hms_read_folio', status: 'manual_required' });
+    expect(readFolio).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a known balance useful while unavailable finance stays typed unknown', () => {
     const result = mergeFolioEvidence([balanceKernel()], trustedDisclosure());
     const data = result.data as unknown as Record<string, any>;
@@ -159,6 +273,44 @@ describe('U17 finance completeness RED contracts', () => {
 
     expect(parsed.depositSummary?.paid.amount).toBe('0.00');
     expect((parsed as unknown as { completeness?: string }).completeness).toBe('partial');
+  });
+
+  it('does not fold mixed currencies or signed postings into a complete total', () => {
+    const mixed = parseDepositLedgerTransport(
+      envelope([
+        {
+          confirmationnumber: CONFIRMATION,
+          currency: 'ZAR',
+          amount: '10.00',
+          activitytype_display: 'Deposit Payment',
+        },
+        {
+          confirmationnumber: CONFIRMATION,
+          currency: 'USD',
+          amount: '20.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+      CONFIRMATION,
+    );
+    expect(mixed.completeness).not.toBe('complete');
+    expect(mixed.depositSummary).toBeNull();
+  });
+
+  it('does not discard a signed posting and claim a complete total', () => {
+    const signed = parseDepositLedgerTransport(
+      envelope([
+        {
+          confirmationnumber: CONFIRMATION,
+          currency: 'ZAR',
+          amount: '-10.00',
+          activitytype_display: 'Amount Refunded',
+        },
+      ]),
+      CONFIRMATION,
+    );
+    expect(signed.completeness).not.toBe('complete');
+    expect(signed.unmappedActivities.length).toBeGreaterThan(0);
   });
 
   it('counts a transferred posting once when the same posting is repeated', () => {
@@ -196,5 +348,29 @@ describe('U17 finance completeness RED contracts', () => {
     );
 
     expect(parsed.bytesObserved).toBeGreaterThan(FOLIO_READ_MAX_BYTES);
+  });
+
+  it('closes the typed finance result instead of accepting generic data', () => {
+    expect(() =>
+      readResultSchema.parse({
+        toolId: 'hms_read_folio',
+        schemaVersion: 'hms-folio/1',
+        status: 'ok',
+        data: { currency: 'ZAR', totalBalance: 'not-a-money-fact' },
+        completeness: 'complete',
+        unavailableSections: [],
+        scopeRef: 'reservation-u17',
+        evidence: [],
+        page: null,
+        issues: [],
+      }),
+    ).toThrow();
+  });
+
+  it('keeps generated evidence within the five-minute source-age window', () => {
+    const merged = mergeFolioEvidence([balanceKernel()], trustedDisclosure());
+    const observedAt = Date.parse(merged.evidence.observedAt);
+    const expiresAt = Date.parse(merged.evidence.expiresAt);
+    expect(expiresAt - observedAt).toBeLessThanOrEqual(5 * 60_000);
   });
 });

@@ -58,6 +58,103 @@ export type TrustedRequesterSourceState = z.infer<typeof trustedRequesterSourceS
 
 type PrivateDigestKey = string | Buffer;
 
+const CURRENT_APP_ACCESS_PROOF_MARKER = Symbol('current-app-access-proof');
+
+export type CurrentAppAccessProof = {
+  readonly userId: string;
+  readonly mailboxAccessId: string;
+  readonly transportId: string;
+  readonly threadId: string;
+  readonly triggerMessageId: string;
+  readonly expiresAt: string;
+  readonly [CURRENT_APP_ACCESS_PROOF_MARKER]: true;
+};
+
+/**
+ * Server-owned proof minted only after the authenticated worker revalidates
+ * the current mailbox grant and scoped inbound trigger.  The private marker
+ * prevents a JSON/requester claim from being treated as current app access.
+ */
+export function issueCurrentAppAccessProof(input: {
+  userId: string;
+  mailboxAccessId: string;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  expiresAt: Date | string;
+  now: Date;
+}): CurrentAppAccessProof {
+  const values = [
+    input.userId,
+    input.mailboxAccessId,
+    input.transportId,
+    input.threadId,
+    input.triggerMessageId,
+  ];
+  const expiresAt =
+    input.expiresAt instanceof Date
+      ? input.expiresAt.toISOString()
+      : new Date(input.expiresAt).toISOString();
+  if (
+    values.some((value) => !value.trim()) ||
+    !Number.isFinite(input.now.getTime()) ||
+    !Number.isFinite(Date.parse(expiresAt)) ||
+    Date.parse(expiresAt) <= input.now.getTime()
+  ) {
+    throw Object.assign(new Error('current app access proof is invalid or expired'), {
+      code: 'READ_CURRENT_APP_ACCESS_REQUIRED',
+    });
+  }
+  const proof = {
+    userId: input.userId,
+    mailboxAccessId: input.mailboxAccessId,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    expiresAt,
+  } as CurrentAppAccessProof;
+  Object.defineProperty(proof, CURRENT_APP_ACCESS_PROOF_MARKER, {
+    value: true,
+    enumerable: false,
+    writable: false,
+  });
+  return proof;
+}
+
+export function assertCurrentAppAccessProof(input: {
+  proof: unknown;
+  requesterAuthorizationId: string;
+  context: {
+    transportId: string;
+    threadId: string;
+    triggerMessageId: string;
+  };
+  now: Date;
+}): void {
+  const proof = input.proof as Partial<CurrentAppAccessProof> | null;
+  if (!proof || proof[CURRENT_APP_ACCESS_PROOF_MARKER] !== true) {
+    throw Object.assign(new Error('current authenticated app access is required'), {
+      code: 'READ_CURRENT_APP_ACCESS_REQUIRED',
+    });
+  }
+  const expiresAtMs = Date.parse(proof.expiresAt ?? '');
+  if (!Number.isFinite(expiresAtMs) || input.now.getTime() >= expiresAtMs) {
+    throw Object.assign(new Error('current authenticated app access has expired'), {
+      code: 'READ_CURRENT_APP_ACCESS_EXPIRED',
+    });
+  }
+  if (
+    proof.mailboxAccessId !== input.requesterAuthorizationId ||
+    proof.transportId !== input.context.transportId ||
+    proof.threadId !== input.context.threadId ||
+    proof.triggerMessageId !== input.context.triggerMessageId
+  ) {
+    throw Object.assign(new Error('current authenticated app access scope does not match read'), {
+      code: 'READ_CURRENT_APP_ACCESS_SCOPE_MISMATCH',
+    });
+  }
+}
+
 export type IssueTrustedRequesterAuthorizationOptions = {
   key: PrivateDigestKey;
   keyVersion: string;
@@ -273,6 +370,8 @@ export function assertReadRequesterScope(input: {
     triggerMessageId: string;
   };
   now: Date;
+  currentAppAccessProof?: CurrentAppAccessProof;
+  requireCurrentAppAccess?: boolean;
 }): void {
   const expiry = Date.parse(input.requester.expiresAt);
   if (
@@ -293,6 +392,15 @@ export function assertReadRequesterScope(input: {
     throw Object.assign(new Error('read authorization scope does not match request'), {
       code: 'READ_AUTHORIZATION_SCOPE_MISMATCH',
     });
+  }
+  if (input.requireCurrentAppAccess) {
+    assertCurrentAppAccessProof({
+      proof: input.currentAppAccessProof,
+      requesterAuthorizationId: input.requester.authorizationId,
+      context: input.context,
+      now: input.now,
+    });
+    return;
   }
   const requiredClaimKind = input.requiredClaimKind ?? 'reservation_summary';
   if (!input.requester.allowedClaimKinds.includes(requiredClaimKind)) {

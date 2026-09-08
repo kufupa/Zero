@@ -318,6 +318,153 @@ export type ReadSection<T> =
       issues: ReadIssue[];
     };
 
+const readFolioMoneyValueSchema = z
+  .object({
+    amount: z.string().regex(/^-?\d+(?:\.\d+)?$/),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    basis: z.enum(['ledger_balance', 'ledger_movement']),
+    taxTreatment: z.literal('unknown'),
+  })
+  .strict();
+
+const readFolioMoneyFactSchema = z.union([
+  z
+    .object({
+      state: z.literal('known'),
+      value: readFolioMoneyValueSchema,
+      data: readFolioMoneyValueSchema,
+      evidenceRef: readRefSchema,
+      observedAt: readTimestampSchema,
+      sourceUpdatedAt: readTimestampSchema.nullable(),
+      expiresAt: readTimestampSchema,
+    })
+    .strict(),
+  readFactUnknownSchema,
+]);
+
+const readFolioBalanceDataSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          folioRef: readFactSchema,
+          folioType: readFactSchema,
+          balance: readFolioMoneyFactSchema,
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const readFolioDepositDataSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          due: readFolioMoneyFactSchema,
+          paid: readFolioMoneyFactSchema,
+          refunded: readFolioMoneyFactSchema,
+          forfeited: readFolioMoneyFactSchema,
+          transferred: readFolioMoneyFactSchema,
+          untransferred: readFolioMoneyFactSchema,
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const readFolioSectionDataSchema = z.union([
+  readFolioBalanceDataSchema,
+  readFolioDepositDataSchema,
+]);
+
+/** Finance sections are closed at the receipt boundary, not merely top-level objects. */
+export const readFolioSectionSchema = z.union([
+  z
+    .object({
+      state: z.enum(['available', 'partial']),
+      data: readFolioSectionDataSchema,
+      completeness: z.enum(['complete', 'partial', 'unknown']),
+      issues: z.array(readIssueSchema),
+    })
+    .strict(),
+  readSectionUnavailableSchema,
+]);
+
+const readFolioCurrencySchema = z.string().regex(/^[A-Z]{3}$/);
+const readFolioSignedMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/);
+const readFolioUnsignedMoneySchema = z.string().regex(/^(?:0|[1-9]\d*)\.\d{2}$/);
+const readFolioDepositAmountSchema = z
+  .object({
+    amount: readFolioUnsignedMoneySchema,
+    status: z.enum([
+      'due',
+      'none_due',
+      'paid',
+      'none_paid',
+      'refunded',
+      'none_refunded',
+      'forfeited',
+      'none_forfeited',
+      'transferred',
+      'none_transferred',
+    ]),
+  })
+  .strict();
+const readFolioDepositSummarySchema = z
+  .object({
+    total: readFolioUnsignedMoneySchema,
+    due: readFolioDepositAmountSchema,
+    paid: readFolioDepositAmountSchema,
+    refunded: readFolioDepositAmountSchema,
+    forfeited: readFolioDepositAmountSchema,
+    transferred: readFolioDepositAmountSchema,
+  })
+  .strict();
+
+/** Closed finance payload used by the outer receipt schema for hms_read_folio. */
+export const readFolioDataSchema = z
+  .object({
+    reservationBinding: z.literal('exact_parent_redacted'),
+    guestPrivacy: z.literal('identity_redacted'),
+    currency: readFolioCurrencySchema,
+    totalBalance: readFolioSignedMoneySchema.optional(),
+    depositSummary: readFolioDepositSummarySchema.optional(),
+    balance: readFolioSectionSchema.optional(),
+    deposits: readFolioSectionSchema.optional(),
+    transactions: readFolioSectionSchema.optional(),
+    liabilityLocation: readFactSchema.optional(),
+    authorization: readFactSchema.optional(),
+    disclosure: z
+      .object({
+        recipientClass: z.enum([
+          'reservation_guest',
+          'authorized_booking_contact',
+          'internal_finance',
+          'third_party',
+          'unknown',
+        ]),
+        inquiryClass: z.enum([
+          'labelled_narrow_status',
+          'refund_request',
+          'settlement_request',
+          'invoice_request',
+          'other',
+        ]),
+        claimEligibility: z.enum(['full', 'partial', 'blocked']),
+      })
+      .strict(),
+    rowsScanned: z.number().int().min(0).max(50),
+    bytesObserved: z
+      .number()
+      .int()
+      .min(0)
+      .max(64 * 1024),
+    durationMs: z.number().int().min(0).max(5_000),
+    observedAt: readTimestampSchema,
+  })
+  .strict();
+
 export const readStatusSchema = z.enum([
   'ok',
   'partial',
@@ -337,12 +484,26 @@ export const readToolResultIdSchema = z.enum([
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
+const readResultDataSchema = z
+  .unknown()
+  .nullable()
+  .refine((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
+    const record = value as Record<string, unknown>;
+    const looksLikeFolio =
+      'reservationBinding' in record ||
+      'totalBalance' in record ||
+      'depositSummary' in record ||
+      'disclosure' in record;
+    return !looksLikeFolio || readFolioDataSchema.safeParse(value).success;
+  }, 'hms_read_folio result data is not a closed finance payload');
+
 export const readResultSchema = z
   .object({
     toolId: readToolResultIdSchema,
     schemaVersion: z.string().min(1),
     status: readStatusSchema,
-    data: z.unknown().nullable(),
+    data: readResultDataSchema,
     completeness: z.enum(['complete', 'partial', 'unknown']),
     unavailableSections: z.array(
       z.object({ section: z.string().min(1), reasonCode: readReasonCodeSchema }).strict(),

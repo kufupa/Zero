@@ -9,6 +9,7 @@ import {
   FOLIO_READ_MAX_BYTES,
   FOLIO_READ_MAX_DURATION_MS,
   FOLIO_READ_MAX_ROWS,
+  FOLIO_READ_MAX_SOURCE_AGE_MS,
   folioClaimEligibility,
   folioReadDataSchema,
   type FolioReadData,
@@ -66,6 +67,8 @@ export type DepositSummaryKernelResult = {
   bytesObserved?: number;
   durationMs?: number;
   observedAt?: string;
+  completeness?: 'complete' | 'partial' | 'unknown';
+  unmappedActivities?: readonly string[];
 };
 
 export type TrustedFolioDisclosure = {
@@ -225,6 +228,7 @@ export function parseFolioBalanceTransport(text: string): {
   let currency: string | null = null;
   let totalBalance: string | null = null;
   let rowsScanned = 0;
+  const currencies = new Set<string>();
 
   for (const row of rows) {
     rowsScanned += 1;
@@ -235,7 +239,10 @@ export function parseFolioBalanceTransport(text: string): {
       normalizeMoney(row.totalbalance);
     const cur = normalizeCurrency(row.propertycurrency) ?? normalizeCurrency(row.currency);
     if (bal != null) totalBalance = bal;
-    if (cur != null) currency = cur;
+    if (cur != null) {
+      currencies.add(cur);
+      currency = cur;
+    }
   }
 
   if (totalBalance == null) {
@@ -249,6 +256,17 @@ export function parseFolioBalanceTransport(text: string): {
     const f = fields as Record<string, unknown>;
     if (totalBalance == null) totalBalance = normalizeMoney(f.foliobalance);
     if (currency == null) currency = normalizeCurrency(f.propertycurrency);
+  }
+
+  if (currencies.size > 1) {
+    return {
+      envelopeRecognized: true,
+      currency: null,
+      totalBalance: null,
+      rowsScanned: Math.max(rowsScanned, totalBalance != null ? 1 : 0),
+      bytesObserved,
+      hasCardLeak,
+    };
   }
 
   return {
@@ -379,7 +397,7 @@ export function parseDepositLedgerTransport(
   let hasConfirmationColumn = false;
   const matched: Record<string, unknown>[] = [];
 
-  for (const row of rows.slice(0, FOLIO_READ_MAX_ROWS)) {
+  for (const row of rows) {
     if ('confirmationnumber' in row || 'confirmation' in row) {
       hasConfirmationColumn = true;
     }
@@ -420,17 +438,30 @@ export function parseDepositLedgerTransport(
   let transferred = '0.00';
   let due = '0.00';
   const unmappedActivities: string[] = [];
+  const currencies = new Set<string>();
 
   if (lstStyle && matched.length === 1) {
-    currency = normalizeCurrency(first.currency);
-    paid = normalizeMoney(first.newdeposits, { unsigned: true }) ?? '0.00';
-    refunded = normalizeMoney(first.refunds, { unsigned: true }) ?? '0.00';
-    forfeited = normalizeMoney(first.forfeits, { unsigned: true }) ?? '0.00';
-    transferred =
-      normalizeMoney(first.toguestledger, { unsigned: true }) ??
-      normalizeMoney(first.fromdeposit, { unsigned: true }) ??
-      '0.00';
-    due = normalizeMoney(first.due, { unsigned: true }) ?? '0.00';
+    const rowCurrency = normalizeCurrency(first.currency);
+    if (rowCurrency) {
+      currencies.add(rowCurrency);
+      currency = rowCurrency;
+    }
+    const unsignedAmount = (raw: unknown, field: string): string => {
+      if (raw == null || raw === '') return '0.00';
+      const normalized = normalizeMoney(raw);
+      if (normalized == null || normalized.startsWith('-')) {
+        unmappedActivities.push(field);
+        return '0.00';
+      }
+      return normalized;
+    };
+    paid = unsignedAmount(first.newdeposits, 'newdeposits');
+    refunded = unsignedAmount(first.refunds, 'refunds');
+    forfeited = unsignedAmount(first.forfeits, 'forfeits');
+    const toGuest = unsignedAmount(first.toguestledger, 'toguestledger');
+    const fromDeposit = unsignedAmount(first.fromdeposit, 'fromdeposit');
+    transferred = toGuest !== '0.00' ? toGuest : fromDeposit;
+    due = unsignedAmount(first.due, 'due');
   } else {
     // DLD transaction rows: sum amount by activitytype_display.
     const seenPostingRefs = new Set<string>();
@@ -445,9 +476,17 @@ export function parseDepositLedgerTransport(
         if (seenPostingRefs.has(postingRef)) continue;
         seenPostingRefs.add(postingRef);
       }
-      currency = currency ?? normalizeCurrency(row.currency);
-      const amt = normalizeMoney(row.amount, { unsigned: true });
-      if (amt == null) continue;
+      const rowCurrency = normalizeCurrency(row.currency);
+      if (rowCurrency) {
+        currencies.add(rowCurrency);
+        currency = currency ?? rowCurrency;
+      }
+      const normalizedAmount = normalizeMoney(row.amount);
+      if (normalizedAmount == null || normalizedAmount.startsWith('-')) {
+        unmappedActivities.push(strOrEmpty(row.activitytype_display) || 'unknown');
+        continue;
+      }
+      const amt = normalizedAmount;
       const bucket = classifyDepositActivity(row.activitytype_display);
       if (bucket === 'paid') paid = addMoney(paid, amt);
       else if (bucket === 'refunded') refunded = addMoney(refunded, amt);
@@ -456,6 +495,20 @@ export function parseDepositLedgerTransport(
       else if (bucket === 'due') due = addMoney(due, amt);
       else unmappedActivities.push(strOrEmpty(row.activitytype_display) || 'unknown');
     }
+  }
+
+  if (currencies.size > 1) {
+    return {
+      envelopeRecognized: true,
+      reservationScopeProven: true,
+      currency: null,
+      depositSummary: null,
+      rowsScanned: rows.length,
+      bytesObserved,
+      hasCardLeak,
+      completeness: 'partial',
+      unmappedActivities: ['MIXED_CURRENCY', ...unmappedActivities],
+    };
   }
 
   return {
@@ -475,6 +528,35 @@ export function parseDepositLedgerTransport(
     completeness: unmappedActivities.length > 0 ? 'partial' : 'complete',
     unmappedActivities,
   };
+}
+
+function parseDepositLedgerPages(
+  texts: readonly string[],
+  expectedConfirmationToken: string,
+): ReturnType<typeof parseDepositLedgerTransport> {
+  const rows: Record<string, unknown>[] = [];
+  for (const text of texts) {
+    const pageData = parsePageData(text);
+    if (!pageData) {
+      return parseDepositLedgerTransport(texts[texts.length - 1] ?? '', expectedConfirmationToken);
+    }
+    rows.push(...gridDataRows(pageData));
+  }
+  if (rows.length === 0) {
+    return parseDepositLedgerTransport(texts[texts.length - 1] ?? '', expectedConfirmationToken);
+  }
+  const combined = JSON.stringify({
+    pageData: {
+      success: true,
+      grid: {
+        GRIDRESULT: {
+          type: 'LIST.DATA_ONLY.STORED',
+          GRID: { DATA: rows },
+        },
+      },
+    },
+  });
+  return parseDepositLedgerTransport(combined, expectedConfirmationToken);
 }
 
 function assertFolioAuth(
@@ -529,7 +611,7 @@ function emptyEvidence(
     toolVersion: '1.0.0',
     propertyCode: 'HRCEN',
     observedAt,
-    expiresAt: new Date(Date.parse(observedAt) + 60 * 60 * 1000).toISOString(),
+    expiresAt: new Date(Date.parse(observedAt) + FOLIO_READ_MAX_SOURCE_AGE_MS).toISOString(),
     claimKeys: [],
     sourceHash: sha256Hex(sourceSeed),
   };
@@ -605,8 +687,9 @@ function richDepositSection(
   evidenceRef: string,
   observedAt: string,
   expiresAt: string,
+  complete: boolean,
 ) {
-  if (!deposit || deposit.status !== 'ok' || deposit.depositSummary == null) {
+  if (!complete || !deposit || deposit.status !== 'ok' || deposit.depositSummary == null) {
     return unknownSection('SOURCE_UNAVAILABLE');
   }
   const summary = deposit.depositSummary;
@@ -647,6 +730,10 @@ function richDepositSection(
 export function mergeFolioEvidence(
   steps: readonly (FolioBalanceKernelResult | DepositSummaryKernelResult)[],
   trustedDisclosure?: TrustedFolioDisclosure,
+  requestedSections: readonly ('balance' | 'deposits' | 'transactions' | 'authorization')[] = [
+    'balance',
+    'deposits',
+  ],
 ): ToolResult<FolioReadData> {
   const observedAt = steps.find((s) => s.observedAt)?.observedAt ?? new Date().toISOString();
   const evidence = emptyEvidence(observedAt, JSON.stringify(steps.map((s) => s.evidenceId)));
@@ -668,21 +755,44 @@ export function mergeFolioEvidence(
     Object.prototype.hasOwnProperty.call(s, 'depositSummary'),
   );
 
+  const requested = requestedSections.length > 0 ? requestedSections : ['balance', 'deposits'];
+  const wantsBalance = requested.includes('balance');
+  const wantsDeposits = requested.includes('deposits');
+  const wantsTransactions = requested.includes('transactions');
+  const wantsAuthorization = requested.includes('authorization');
+
   const unresolved: string[] = [];
 
   const balanceOk =
     balance?.status === 'ok' && balance.totalBalance != null && balance.currency != null;
   const depositOk =
     deposit?.status === 'ok' && deposit.depositSummary != null && deposit.currency != null;
+  const depositComplete =
+    depositOk &&
+    (deposit?.completeness ?? 'complete') === 'complete' &&
+    (deposit?.unmappedActivities?.length ?? 0) === 0;
 
-  if (!balanceOk) {
+  if (wantsBalance && !balanceOk) {
     unresolved.push(balance?.blocker ?? 'FOLIO_BALANCE_UNAVAILABLE');
   }
-  if (!depositOk) {
-    unresolved.push(deposit?.blocker ?? 'DEPOSIT_SUMMARY_UNAVAILABLE');
+  if (wantsDeposits && !depositComplete) {
+    unresolved.push(
+      depositOk
+        ? 'DEPOSIT_SUMMARY_INCOMPLETE'
+        : (deposit?.blocker ?? 'DEPOSIT_SUMMARY_UNAVAILABLE'),
+    );
   }
+  if (wantsTransactions) unresolved.push('TRANSACTIONS_UNAVAILABLE');
+  if (wantsAuthorization) unresolved.push('AUTHORIZATION_UNAVAILABLE');
 
-  if (!balanceOk && !depositOk) {
+  const anyRequestedFact = (wantsBalance && balanceOk) || (wantsDeposits && depositComplete);
+  const requestedComplete =
+    (!wantsBalance || balanceOk) &&
+    (!wantsDeposits || depositComplete) &&
+    !wantsTransactions &&
+    !wantsAuthorization;
+
+  if (!anyRequestedFact) {
     return {
       status: 'manual_required',
       draftReady: false,
@@ -692,7 +802,13 @@ export function mergeFolioEvidence(
     };
   }
 
-  if (balanceOk && depositOk && balance!.currency !== deposit!.currency) {
+  if (
+    wantsBalance &&
+    wantsDeposits &&
+    balanceOk &&
+    depositOk &&
+    balance!.currency !== deposit!.currency
+  ) {
     return {
       status: 'manual_required',
       draftReady: false,
@@ -703,7 +819,7 @@ export function mergeFolioEvidence(
   }
 
   const currency = (balanceOk ? balance!.currency : deposit!.currency)!;
-  const partial = !(balanceOk && depositOk);
+  const partial = !requestedComplete;
   const rowsScanned = (balance?.rowsScanned ?? 0) + (deposit?.rowsScanned ?? 0);
   const bytesObserved = (balance?.bytesObserved ?? 0) + (deposit?.bytesObserved ?? 0);
   const durationMs = Math.max(balance?.durationMs ?? 0, deposit?.durationMs ?? 0);
@@ -729,22 +845,36 @@ export function mergeFolioEvidence(
     evidenceRef,
     observedAt,
     expiresAt,
-    !partial,
+    balanceOk && requestedComplete,
   );
-  const richDeposits = richDepositSection(deposit, currency, evidenceRef, observedAt, expiresAt);
+  const richDeposits = richDepositSection(
+    deposit,
+    currency,
+    evidenceRef,
+    observedAt,
+    expiresAt,
+    depositComplete,
+  );
+  const balanceSection = wantsBalance ? richBalance : unknownSection('NOT_REQUESTED');
+  const depositSection = wantsDeposits ? richDeposits : unknownSection('NOT_REQUESTED');
+  const transactionsSection = wantsTransactions
+    ? unknownSection('SOURCE_UNAVAILABLE')
+    : unknownSection('NOT_REQUESTED');
 
   try {
     const data = folioReadDataSchema.parse({
       reservationBinding: 'exact_parent_redacted',
       guestPrivacy: 'identity_redacted',
       currency,
-      ...(balanceOk ? { totalBalance: balance!.totalBalance } : {}),
-      ...(depositOk ? { depositSummary: deposit!.depositSummary } : {}),
-      balance: richBalance,
-      deposits: richDeposits,
-      transactions: unknownSection('NOT_REQUESTED'),
+      ...(wantsBalance && balanceOk ? { totalBalance: balance!.totalBalance } : {}),
+      ...(wantsDeposits && depositComplete ? { depositSummary: deposit!.depositSummary } : {}),
+      balance: balanceSection,
+      deposits: depositSection,
+      transactions: transactionsSection,
       liabilityLocation: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
-      authorization: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+      authorization: unknownFact({
+        reasonCode: wantsAuthorization ? 'SOURCE_UNAVAILABLE' : 'NOT_REQUESTED',
+      }),
       disclosure: {
         recipientClass: trustedDisclosure.recipientClass,
         inquiryClass: trustedDisclosure.inquiryClass,
@@ -941,11 +1071,12 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
         assertNotAborted(signal);
         const scopes = extractDepositLedgerDateScopes(lstText);
-        let text = lstText;
+        const detailTexts: string[] = [];
         if (scopes.length > 0) {
           for (const scope of scopes) {
             assertNotAborted(signal);
-            text = await facade.openDepositLedgerDetail(scope);
+            const detailText = await facade.openDepositLedgerDetail(scope);
+            detailTexts.push(detailText);
             if (session.terminal() || session.violation()) {
               return {
                 status: 'manual_required',
@@ -959,18 +1090,20 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
                 rowsScanned: 0,
               };
             }
-            const probe = parseDepositLedgerTransport(text, expectedConfirmationToken);
-            if (probe.reservationScopeProven || /"confirmationnumber"\s*:/i.test(text)) {
-              break;
-            }
           }
         }
 
-        const parsed = parseDepositLedgerTransport(text, expectedConfirmationToken);
+        const parsed =
+          detailTexts.length > 0
+            ? parseDepositLedgerPages(detailTexts, expectedConfirmationToken)
+            : parseDepositLedgerTransport(lstText, expectedConfirmationToken);
+        const totalBytesObserved =
+          Buffer.byteLength(lstText) +
+          detailTexts.reduce((total, detailText) => total + Buffer.byteLength(detailText), 0);
         const durationMs = Date.now() - started;
 
         if (
-          parsed.bytesObserved > FOLIO_READ_MAX_BYTES ||
+          totalBytesObserved > FOLIO_READ_MAX_BYTES ||
           parsed.rowsScanned > FOLIO_READ_MAX_ROWS ||
           durationMs > FOLIO_READ_MAX_DURATION_MS
         ) {
@@ -982,7 +1115,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             blocker: 'FOLIO_BOUNDS_EXCEEDED',
             observedAt: observedAt.toISOString(),
             durationMs,
-            bytesObserved: parsed.bytesObserved,
+            bytesObserved: totalBytesObserved,
             rowsScanned: parsed.rowsScanned,
           };
         }
@@ -996,7 +1129,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             blocker: DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER,
             observedAt: observedAt.toISOString(),
             durationMs,
-            bytesObserved: parsed.bytesObserved,
+            bytesObserved: totalBytesObserved,
             rowsScanned: parsed.rowsScanned,
           };
         }
@@ -1009,7 +1142,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             blocker: 'DEPOSIT_CARD_FIELD_LEAK',
             observedAt: observedAt.toISOString(),
             durationMs,
-            bytesObserved: parsed.bytesObserved,
+            bytesObserved: totalBytesObserved,
             rowsScanned: parsed.rowsScanned,
           };
         }
@@ -1026,7 +1159,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             blocker: 'UNVERIFIED_NEGATIVE',
             observedAt: observedAt.toISOString(),
             durationMs,
-            bytesObserved: parsed.bytesObserved,
+            bytesObserved: totalBytesObserved,
             rowsScanned: parsed.rowsScanned,
           };
         }
@@ -1039,8 +1172,10 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           blocker: null,
           observedAt: observedAt.toISOString(),
           durationMs,
-          bytesObserved: parsed.bytesObserved,
+          bytesObserved: totalBytesObserved,
           rowsScanned: parsed.rowsScanned,
+          completeness: parsed.completeness,
+          unmappedActivities: parsed.unmappedActivities,
         };
       } finally {
         await session.close();
