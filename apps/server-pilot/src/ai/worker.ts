@@ -22,6 +22,14 @@ import {
   type CandidateReadPlanKind,
 } from './run-ledger.js';
 import {
+  existingDocumentRefForRecord,
+  existingDocumentScopeRef,
+  mailAttachmentRecord,
+  parseMailDocumentHints,
+  createExistingDocumentService,
+  type ExistingDocumentRecord,
+} from '../mail/artifacts/existing-document-service.js';
+import {
   parseEnv,
   requireHmsEvidenceHmacChildKey,
   requireHmsReadRuntimeConfig,
@@ -40,6 +48,11 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
+  readAuthorizedArtifact,
+  readAuthorizedArtifactBytes,
+  type AttachmentLocator,
+} from '../mail/artifacts/read-artifact.js';
+import {
   readReservationBindingSchema,
   readReservationRef,
   type ReadResult,
@@ -56,6 +69,7 @@ import {
 } from './triage.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
+import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
@@ -68,6 +82,7 @@ import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
+import { getS3Storage } from '../storage/s3.js';
 import { createHash } from 'node:crypto';
 
 function resolveWorkerLane(): AiExecutorLane {
@@ -704,6 +719,236 @@ function readAdmissionAuthError(messageText: string): Error & { failureClass: 'A
   return Object.assign(new Error(messageText), { failureClass: 'AUTH' as const });
 }
 
+type MailDocumentAuthority = {
+  scope: ExistingDocumentScope;
+  records: ExistingDocumentRecord[];
+  locators: Map<string, AttachmentLocator>;
+  authorizedAttachmentIds: ReadonlySet<string>;
+};
+
+/**
+ * Resolve the mail source from current DB rows. The worker creates this for
+ * every queued execution; no process-local document-ref map is authoritative.
+ */
+async function loadMailDocumentAuthority(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  requestedKind?:
+    | 'reservation_confirmation'
+    | 'tax_invoice'
+    | 'pro_forma'
+    | 'folio'
+    | 'statement'
+    | 'contract'
+    | 'supplier_compliance'
+    | 'property_information'
+    | 'other_existing';
+  requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+}): Promise<MailDocumentAuthority> {
+  const db = getDb();
+  const [trigger] = await db
+    .select({
+      id: message.id,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      direction: message.direction,
+    })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.run.triggerMessageId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  if (!trigger) throw readAdmissionAuthError('document trigger is no longer in scope');
+
+  const triggerText = [trigger.subject?.trim() ?? '', trigger.textBody ?? trigger.htmlBody ?? '']
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 16_384);
+  const triggerHints = parseMailDocumentHints({ filename: 'message.txt', text: triggerText });
+  const scope: ExistingDocumentScope = {
+    scopeRef: existingDocumentScopeRef({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+    }),
+    propertyRef: triggerHints.propertyRef ?? input.run.transportId,
+    guestRef: triggerHints.guestRef,
+    stayStart: triggerHints.stayStart,
+    stayEnd: triggerHints.stayEnd,
+    payerRef: triggerHints.payerRef,
+    requestedKind: input.requestedKind ?? null,
+    requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
+  };
+
+  const rows = await db
+    .select({
+      id: attachment.id,
+      messageId: attachment.messageId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      s3Key: attachment.s3Key,
+      direction: message.direction,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      observedAt: message.receivedAt,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(
+      and(eq(message.threadId, input.run.threadId), eq(message.transportId, input.run.transportId)),
+    );
+  const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
+  const locators = new Map<string, AttachmentLocator>(
+    rows.map((row) => [
+      row.id,
+      {
+        s3Key: row.s3Key,
+        mimeType: row.mimeType,
+        sizeBytes: row.sizeBytes,
+        messageId: row.messageId,
+      },
+    ]),
+  );
+  const records = rows.map((row) =>
+    mailAttachmentRecord({
+      scope,
+      source: row.direction === 'outbound' ? 'hms_sent_attachment' : 'mail_attachment',
+      attachmentId: row.id,
+      authorizedAttachmentIds,
+      messageId: row.messageId,
+      filename: row.filename,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      s3Key: row.s3Key,
+      text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
+        .filter(Boolean)
+        .join('\n'),
+      observedAt: row.observedAt?.toISOString() ?? null,
+    }),
+  );
+  return { scope, records, locators, authorizedAttachmentIds };
+}
+
+function createMailDocumentService(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  signal: AbortSignal;
+  request: Record<string, unknown>;
+}) {
+  const requestedKind =
+    input.request.toolId === 'documents_list_existing' &&
+    Array.isArray(input.request.kinds) &&
+    input.request.kinds.length === 1
+      ? (input.request.kinds[0] as Parameters<typeof loadMailDocumentAuthority>[0]['requestedKind'])
+      : undefined;
+  const requestedPriceVisibility =
+    input.request.toolId === 'documents_list_existing'
+      ? (input.request.requestedPriceVisibility as 'allowed' | 'forbidden' | 'unknown' | undefined)
+      : 'allowed';
+  let authorityPromise: Promise<MailDocumentAuthority> | undefined;
+  const authority = () =>
+    (authorityPromise ??= loadMailDocumentAuthority({
+      run: input.run,
+      requestedKind,
+      requestedPriceVisibility,
+    }));
+
+  const resolveCurrentLocator = async (attachmentId: string): Promise<AttachmentLocator | null> => {
+    const rows = await getDb()
+      .select({
+        id: attachment.id,
+        messageId: attachment.messageId,
+        s3Key: attachment.s3Key,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+      })
+      .from(attachment)
+      .innerJoin(message, eq(message.id, attachment.messageId))
+      .where(
+        and(
+          eq(attachment.id, attachmentId),
+          eq(message.threadId, input.run.threadId),
+          eq(message.transportId, input.run.transportId),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    return row
+      ? {
+          s3Key: row.s3Key,
+          mimeType: row.mimeType,
+          sizeBytes: row.sizeBytes,
+          messageId: row.messageId,
+        }
+      : null;
+  };
+
+  const source = (sourceId: 'mail_attachment' | 'hms_sent_attachment') => ({
+    source: sourceId,
+    async list({ scope }: { scope: ExistingDocumentScope }) {
+      const current = await authority();
+      if (current.scope.scopeRef !== scope.scopeRef) {
+        return { records: [], inventoryComplete: true, blocker: 'SCOPE_DENIED' };
+      }
+      // Sent-log metadata is intentionally non-retrievable. Keep the source
+      // outcome explicit even when the underlying thread has only inbound
+      // attachment rows.
+      const records =
+        sourceId === 'mail_attachment'
+          ? current.records.filter((record) => record.source === 'mail_attachment')
+          : current.records.map((record) => ({ ...record, source: sourceId }));
+      return { records, inventoryComplete: true };
+    },
+  });
+
+  return createExistingDocumentService({
+    now: () => new Date(),
+    resolveScope: async (scopeRef) => {
+      const current = await authority();
+      return current.scope.scopeRef === scopeRef ? current.scope : null;
+    },
+    resolveDocument: async (documentRef) => {
+      const current = await authority();
+      for (const record of current.records) {
+        for (const candidate of [record, { ...record, source: 'hms_sent_attachment' as const }]) {
+          if (existingDocumentRefForRecord(candidate) === documentRef) {
+            return { record: candidate, scope: current.scope };
+          }
+        }
+      }
+      return null;
+    },
+    sources: {
+      mail_attachment: source('mail_attachment'),
+      hms_sent_attachment: source('hms_sent_attachment'),
+    },
+    readArtifact: async (attachmentValue) =>
+      readAuthorizedArtifact({
+        attachmentId: attachmentValue.attachmentId,
+        authorizedAttachmentIds: (await authority()).authorizedAttachmentIds,
+        s3: getS3Storage(),
+        signal: input.signal,
+        resolveLocator: resolveCurrentLocator,
+      }),
+    readBytes: async (attachmentValue) =>
+      readAuthorizedArtifactBytes({
+        attachmentId: attachmentValue.attachmentId,
+        authorizedAttachmentIds: (await authority()).authorizedAttachmentIds,
+        s3: getS3Storage(),
+        signal: input.signal,
+        resolveLocator: resolveCurrentLocator,
+      }),
+  });
+}
+
 /**
  * Revalidate the issuer's authority from current DB state before any session or
  * PMS boundary. The persisted JSON is evidence to check, never authority by
@@ -723,7 +968,12 @@ async function assertCurrentReadAdmissionAuthority(input: {
   let issuerData: ReturnType<typeof assertPersistedReadAdmissionIssuer>;
   try {
     const expectedToolId = input.request.toolId;
-    if (expectedToolId !== 'hms_find_reservation' && expectedToolId !== 'hms_read_reservation') {
+    if (
+      expectedToolId !== 'hms_find_reservation' &&
+      expectedToolId !== 'hms_read_reservation' &&
+      expectedToolId !== 'documents_list_existing' &&
+      expectedToolId !== 'documents_read_existing'
+    ) {
       throw new Error('read admission request tool is not supported');
     }
     issuerData = assertPersistedReadAdmissionIssuer({
@@ -884,6 +1134,76 @@ async function executeProductionReadTool(input: {
       failureClass: 'AUTH' as const,
     });
   }
+  await assertCurrentReadAdmissionAuthority({
+    run: input.run,
+    request: request as unknown as Record<string, unknown>,
+    admission,
+    now: new Date(),
+  });
+
+  // Mail-document reads revalidate through the DB-backed source adapter and
+  // never construct a PMS candidate/session. The lock is an executor-bound
+  // no-op serialization boundary because this branch has no PMS connection;
+  // DB mailbox/attachment authority is rechecked by the adapter itself.
+  if (
+    request.toolId === 'documents_list_existing' ||
+    request.toolId === 'documents_read_existing'
+  ) {
+    const service = createMailDocumentService({
+      run: input.run,
+      signal: input.signal,
+      request: request as unknown as Record<string, unknown>,
+    });
+    const mailReadLock = {
+      key: `mail-document:${input.run.transportId}`,
+      withLock: async <T>(
+        callback: (connection: {
+          query: <R = unknown>(statement: string) => Promise<R>;
+          close: () => Promise<void>;
+        }) => Promise<T>,
+      ) =>
+        callback({
+          query: async <R = unknown>(_statement: string) => [] as unknown as R,
+          close: async () => undefined,
+        }),
+    };
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: 'MAIL',
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds: ['document_metadata'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      propertyReadLock: mailReadLock,
+      existingDocumentService: service,
+    };
+    const receipt = await mailReadLock.withLock(async () =>
+      executeReadToolRun({
+        runKind: input.run.runKind,
+        executorLane: input.run.executorLane,
+        draftingEnabled: false,
+        request,
+        context: readContext,
+        resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+      }),
+    );
+    return { result: receipt.result, readResultRef: receipt.readResultRef };
+  }
+
   const candidateId = request.candidateId;
   if (!candidateId) {
     throw Object.assign(
@@ -893,12 +1213,6 @@ async function executeProductionReadTool(input: {
       },
     );
   }
-  await assertCurrentReadAdmissionAuthority({
-    run: input.run,
-    request: request as unknown as Record<string, unknown>,
-    admission,
-    now: new Date(),
-  });
   if (request.toolId === 'hms_read_reservation') {
     const reservationRef = admission.reservationRef;
     const reservationRefIssuedAt = admission.reservationRefIssuedAt;

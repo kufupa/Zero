@@ -7,6 +7,10 @@ import {
   readInputDigest,
   readReservationRef,
   readTimestampSchema,
+  documentsListReadRequestSchema,
+  documentsReadReadRequestSchema,
+  type DocumentsListReadRequest,
+  type DocumentsReadReadRequest,
   type ReadAdmission,
 } from './read-service-contracts.js';
 import { HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS } from './browser-artifacts.js';
@@ -137,7 +141,7 @@ export type IssuedReadAdmission = {
   issuer: ReadAdmissionIssuer;
 };
 
-type IssueReadAdmissionInput = {
+type ReservationIssueReadAdmissionInput = {
   source: ReadAdmissionSource;
   now?: Date;
   candidateId: string;
@@ -147,6 +151,17 @@ type IssueReadAdmissionInput = {
   parentReadResultRef?: string;
   evidenceExpiresAt?: Date | string;
 };
+
+type DocumentIssueReadAdmissionInput = {
+  source: ReadAdmissionSource;
+  now?: Date;
+  toolId: 'documents_list_existing' | 'documents_read_existing';
+  request:
+    | Omit<DocumentsListReadRequest, 'toolId' | 'admission'>
+    | Omit<DocumentsReadReadRequest, 'toolId' | 'admission'>;
+};
+
+type IssueReadAdmissionInput = ReservationIssueReadAdmissionInput | DocumentIssueReadAdmissionInput;
 
 function requiredRef(value: string, label: string): string {
   const parsed = readIssuerRefSchema.safeParse(value);
@@ -211,7 +226,13 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   requiredRef(source.triggerMessageId, 'triggerMessageId');
   requiredRef(source.releaseId, 'releaseId');
   requiredRef(source.requestBranchId, 'requestBranchId');
-  const candidateId = requiredRef(input.candidateId, 'candidateId');
+  let candidateId: string | null;
+  if (input.toolId === 'documents_list_existing' || input.toolId === 'documents_read_existing') {
+    candidateId = null;
+  } else {
+    const reservationInput = input as ReservationIssueReadAdmissionInput;
+    candidateId = requiredRef(reservationInput.candidateId, 'candidateId');
+  }
 
   let reservationRef: string | null = null;
   let reservationRefIssuedAt: string | null = null;
@@ -220,6 +241,9 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   let parentReadResultRef: string | null = null;
 
   if (input.toolId === 'hms_read_reservation') {
+    if (candidateId === null) {
+      throw new Error('reservation admission requires a candidate reference');
+    }
     parentReadResultRef = requiredRef(input.parentReadResultRef ?? '', 'parentReadResultRef');
     if (input.evidenceExpiresAt === undefined) {
       throw new Error('resolved read admission requires verified evidence expiry');
@@ -242,16 +266,30 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     });
   }
 
-  const closedRequest: Record<string, unknown> =
-    input.toolId === 'hms_find_reservation'
-      ? { toolId: input.toolId, candidateId }
-      : {
-          toolId: input.toolId,
-          reservationRef,
-          candidateId,
-          sections: [...(input.sections ?? ['core', 'stay'])],
-          detail: input.detail ?? 'summary',
-        };
+  let closedRequest: Record<string, unknown>;
+  if (input.toolId === 'documents_list_existing' || input.toolId === 'documents_read_existing') {
+    if ('admission' in input.request) {
+      throw new Error('document admission request must not carry a caller-authored admission');
+    }
+    const candidateRequest = { toolId: input.toolId, ...input.request };
+    const parsedRequest =
+      input.toolId === 'documents_list_existing'
+        ? documentsListReadRequestSchema.omit({ admission: true }).parse(candidateRequest)
+        : documentsReadReadRequestSchema.omit({ admission: true }).parse(candidateRequest);
+    closedRequest = parsedRequest;
+  } else {
+    const reservationInput = input as ReservationIssueReadAdmissionInput;
+    closedRequest =
+      input.toolId === 'hms_find_reservation'
+        ? { toolId: input.toolId, candidateId: candidateId! }
+        : {
+            toolId: input.toolId,
+            reservationRef,
+            candidateId: candidateId!,
+            sections: [...(reservationInput.sections ?? ['core', 'stay'])],
+            detail: reservationInput.detail ?? 'summary',
+          };
+  }
   const inputDigest = readInputDigest(closedRequest);
   const admission = readAdmissionSchema.parse({
     releaseId: source.releaseId,
@@ -312,7 +350,11 @@ export function assertPersistedReadAdmissionIssuer(input: {
   run: { transportId: string; threadId: string; triggerMessageId: string };
   expectedUserId?: string;
   expectedMailboxAccessId: string;
-  expectedToolId: 'hms_find_reservation' | 'hms_read_reservation';
+  expectedToolId:
+    | 'hms_find_reservation'
+    | 'hms_read_reservation'
+    | 'documents_list_existing'
+    | 'documents_read_existing';
 }): PersistedReadAdmissionIssuer {
   const issuer = persistedReadAdmissionIssuerSchema.safeParse(input.issuer);
   if (!issuer.success) {
@@ -337,7 +379,11 @@ export function assertPersistedReadAdmissionIssuer(input: {
   ) {
     throw new Error('read admission issuer provenance does not bind the exact request scope');
   }
-  if (input.expectedToolId === 'hms_find_reservation') {
+  if (
+    input.expectedToolId === 'hms_find_reservation' ||
+    input.expectedToolId === 'documents_list_existing' ||
+    input.expectedToolId === 'documents_read_existing'
+  ) {
     if (
       data.parentReadResultRef !== null ||
       data.evidenceExpiresAt !== null ||

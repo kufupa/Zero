@@ -90,6 +90,11 @@ export type ExistingDocumentServiceInput = {
   sources: Partial<Record<DocumentSource, ExistingDocumentSource>>;
   readArtifact?: (attachment: ExistingDocumentAttachment) => Promise<ArtifactReadResult>;
   readBytes?: (attachment: ExistingDocumentAttachment) => Promise<AuthorizedArtifactBytes | null>;
+  /** Resolve a durable opaque ref when list/read use different workers. */
+  resolveDocument?: (documentRef: string) => Promise<{
+    record: ExistingDocumentRecord;
+    scope: ExistingDocumentScope;
+  } | null>;
   artifactTtlMs?: number;
 };
 
@@ -116,6 +121,7 @@ function hash(value: string): string {
 }
 
 function opaqueDocumentRef(record: ExistingDocumentRecord): string {
+  const locator = record.attachment?.locator;
   return `doc:${hash(
     [
       'existing-document/v1',
@@ -124,8 +130,141 @@ function opaqueDocumentRef(record: ExistingDocumentRecord): string {
       record.sourceRecordId,
       record.version,
       record.sha256 ?? '',
+      locator?.s3Key ?? '',
+      locator?.messageId ?? '',
+      locator?.sizeBytes ?? '',
     ].join('|'),
   )}`;
+}
+
+/** Stable server-owned scope reference for one authenticated mail thread. */
+export function existingDocumentScopeRef(input: {
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+}): string {
+  return hash(
+    JSON.stringify([
+      'existing-document-scope/v1',
+      input.transportId,
+      input.threadId,
+      input.triggerMessageId,
+    ]),
+  );
+}
+
+/**
+ * Exported for the DB-backed caller/worker adapters. The returned ref stays
+ * opaque; its digest binds source, scope, version, locator and content hash.
+ */
+export function existingDocumentRefForRecord(record: ExistingDocumentRecord): string {
+  return opaqueDocumentRef(record);
+}
+
+export type MailDocumentHints = {
+  propertyRef: string | null;
+  guestRef: string | null;
+  payerRef: string | null;
+  stayStart: string | null;
+  stayEnd: string | null;
+  version: string | null;
+  priceVisibility: DocumentMetadata['priceVisibility'];
+  kind: DocumentKind;
+};
+
+const SAFE_HINT = '[A-Za-z0-9][A-Za-z0-9._:-]{0,255}';
+
+function mailHint(text: string, label: string): string | null {
+  const match = text.match(new RegExp(`\\b${label}\\s+(${SAFE_HINT})`, 'i'));
+  return match?.[1] ?? null;
+}
+
+/** Parse only bounded, explicitly labelled metadata from an authorized message. */
+export function parseMailDocumentHints(input: {
+  filename: string;
+  text: string;
+}): MailDocumentHints {
+  const text = input.text.slice(0, 16_384);
+  const lowerName = input.filename.toLowerCase();
+  const lowerText = text.toLowerCase();
+  const kind: DocumentKind =
+    lowerName.includes('invoice') || lowerText.includes('tax invoice')
+      ? 'tax_invoice'
+      : lowerName.includes('confirm')
+        ? 'reservation_confirmation'
+        : lowerName.includes('proforma') || lowerName.includes('pro-forma')
+          ? 'pro_forma'
+          : lowerName.includes('contract')
+            ? 'contract'
+            : 'other_existing';
+  const stay = text.match(/\bStay\s+(\d{4}-\d{2}-\d{2})\s+through\s+(\d{4}-\d{2}-\d{2})\b/i);
+  const priceVisibility = /\bprices?\s+(?:are\s+)?visible\b/i.test(text)
+    ? 'visible'
+    : /\bprices?\s+(?:are\s+)?hidden\b/i.test(text)
+      ? 'hidden'
+      : 'unknown';
+  return {
+    propertyRef: mailHint(text, 'Property'),
+    guestRef: mailHint(text, 'Guest'),
+    payerRef: mailHint(text, 'Payer'),
+    stayStart: stay?.[1] ?? null,
+    stayEnd: stay?.[2] ?? null,
+    version: mailHint(text, 'Version'),
+    priceVisibility,
+    kind,
+  };
+}
+
+export type MailDocumentRecordInput = {
+  scope: ExistingDocumentScope;
+  source: DocumentSource;
+  attachmentId: string;
+  authorizedAttachmentIds: ReadonlySet<string>;
+  messageId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  s3Key: string;
+  text: string;
+  observedAt: string | null;
+};
+
+/** Convert a DB attachment row into the private source-adapter shape. */
+export function mailAttachmentRecord(input: MailDocumentRecordInput): ExistingDocumentRecord {
+  const hints = parseMailDocumentHints({ filename: input.filename, text: input.text });
+  const parentRef = hash(JSON.stringify(['existing-document-parent/v1', input.messageId]));
+  const version = hints.version ?? input.observedAt ?? 'unknown';
+  return {
+    sourceRecordId: input.attachmentId,
+    scopeRef: input.scope.scopeRef,
+    source: input.source,
+    kind: hints.kind,
+    version,
+    issuedAt: input.observedAt,
+    status: 'final',
+    parentRef,
+    payerRef: hints.payerRef ?? input.scope.payerRef ?? null,
+    displayName: input.filename,
+    mime: input.mimeType,
+    sizeBytes: input.sizeBytes,
+    sha256: null,
+    priceVisibility: hints.priceVisibility,
+    propertyRef: hints.propertyRef ?? input.scope.propertyRef,
+    guestRef: hints.guestRef ?? input.scope.guestRef ?? null,
+    stayStart: hints.stayStart ?? input.scope.stayStart ?? null,
+    stayEnd: hints.stayEnd ?? input.scope.stayEnd ?? null,
+    currentVersion: true,
+    attachment: {
+      attachmentId: input.attachmentId,
+      authorizedAttachmentIds: input.authorizedAttachmentIds,
+      locator: {
+        s3Key: input.s3Key,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        messageId: input.messageId,
+      },
+    },
+  };
 }
 
 function safeDisplayName(value: string | null): string | null {
@@ -464,7 +603,36 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
       return manualRead({ format: 'text', blocker: 'INVALID_DOCUMENT_REQUEST' });
     }
     const request = parsed.data;
-    const entry = refs.get(request.documentRef);
+    let entry = refs.get(request.documentRef);
+    if (!entry && input.resolveDocument) {
+      try {
+        const resolved = await input.resolveDocument(request.documentRef);
+        if (resolved) {
+          const sourceBlocker = sourceDefaultBlocker(resolved.record.source);
+          const ref = opaqueDocumentRef(resolved.record);
+          // A changed locator/version/hash produces a different ref. Do not
+          // silently rebind an old caller ref to a new source record.
+          if (ref === request.documentRef) {
+            const built = makeMetadata(
+              resolved.record,
+              normalizeScope(resolved.scope),
+              ref,
+              sourceBlocker,
+            );
+            entry = {
+              record: resolved.record,
+              scope: normalizeScope(resolved.scope),
+              metadata: built.metadata,
+              fingerprint: recordFingerprint(resolved.record),
+              sourceBlocker,
+            };
+            refs.set(ref, entry);
+          }
+        }
+      } catch {
+        // Treat resolver failures as an opaque scope miss; no source I/O.
+      }
+    }
     if (!entry) return manualRead({ format: request.format, blocker: 'SCOPE_DENIED' });
 
     if (recordFingerprint(entry.record) !== entry.fingerprint) {
@@ -621,6 +789,9 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
   return {
     documents_list_existing: listExistingDocuments,
     documents_read_existing: readExistingDocument,
+    scopeRefFor(documentRef: string): string | null {
+      return refs.get(documentRef)?.scope.scopeRef ?? null;
+    },
     listExistingDocuments,
     readExistingDocument,
   };

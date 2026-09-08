@@ -1,4 +1,11 @@
 import {
+  existingDocumentRefForRecord,
+  existingDocumentScopeRef,
+  mailAttachmentRecord,
+  parseMailDocumentHints,
+  type ExistingDocumentRecord,
+} from '../mail/artifacts/existing-document-service.js';
+import {
   assertPersistedReadAdmissionIssuer,
   issueReadAdmission,
   type IssuedReadAdmission,
@@ -6,11 +13,17 @@ import {
 } from './read-admission.js';
 import {
   aiWorkflowRun,
+  attachment,
   mailboxAccess,
   mailboxTransport,
   mailThread,
   message,
 } from '../db/schema/mail.js';
+import type {
+  DocumentSource,
+  DocumentKind,
+  ExistingDocumentScope,
+} from '../mail/artifacts/existing-document-contracts.js';
 import {
   reservationFindResultSchema,
   type ReservationFindResult,
@@ -32,17 +45,26 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   userId: string;
   transportId: string;
   threadId: string;
-  toolId: 'hms_find_reservation' | 'hms_read_reservation';
+  toolId:
+    | 'hms_find_reservation'
+    | 'hms_read_reservation'
+    | 'documents_list_existing'
+    | 'documents_read_existing';
   now?: Date;
   sections?: readonly string[];
   detail?: 'summary' | 'detail';
   parentReadResultRef?: string;
+  source?: DocumentSource;
+  kind?: DocumentKind;
+  requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+  documentRef?: string;
+  format?: 'text' | 'artifact';
 };
 
 export type IssuedMailboxReadAdmission = IssuedReadAdmission & {
   accessId: string;
   triggerMessageId: string;
-  candidateId: string;
+  candidateId: string | null;
 };
 
 function authError(code: string, messageText: string): Error & { code: string } {
@@ -100,13 +122,143 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
     .filter(Boolean)
     .join('\n');
   const exact = filterExactReservationCandidates(extractLookupCandidates(triggerText));
-  if (exact.length !== 1) {
+  if (
+    exact.length !== 1 &&
+    input.toolId !== 'documents_list_existing' &&
+    input.toolId !== 'documents_read_existing'
+  ) {
     throw authError(
       'READ_CANDIDATE_NOT_EXACT',
       'read admission requires one exact trigger candidate',
     );
   }
-  return { triggerMessageId: trigger.id, candidateId: exact[0]!.id };
+  return {
+    triggerMessageId: trigger.id,
+    candidateId: exact.length === 1 ? exact[0]!.id : null,
+    text: triggerText,
+    observedAt: trigger.receivedAt ?? trigger.sentAt,
+  };
+}
+
+type DocumentScopeAuthority = {
+  scope: ExistingDocumentScope;
+  records: ExistingDocumentRecord[];
+};
+
+async function loadDocumentScopeAuthority(input: {
+  db: DB;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  requestedKind?: DocumentKind;
+  requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+}): Promise<DocumentScopeAuthority> {
+  const [trigger] = await input.db
+    .select({
+      id: message.id,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+    })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.triggerMessageId),
+        eq(message.threadId, input.threadId),
+        eq(message.transportId, input.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  if (!trigger)
+    throw authError('READ_TRIGGER_MISSING', 'document trigger is not in the active mailbox');
+
+  const text = [trigger.subject?.trim() ?? '', trigger.textBody ?? trigger.htmlBody ?? '']
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 16_384);
+  const hints = parseMailDocumentHints({ filename: 'message.txt', text });
+  const scopeRef = existingDocumentScopeRef({
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+  });
+  const scope: ExistingDocumentScope = {
+    scopeRef,
+    // These identity/stay values are server-derived from the authorized
+    // trigger context. They are never accepted from the route input.
+    propertyRef: hints.propertyRef ?? input.transportId,
+    guestRef: hints.guestRef,
+    stayStart: hints.stayStart,
+    stayEnd: hints.stayEnd,
+    payerRef: hints.payerRef,
+    requestedKind: input.requestedKind ?? null,
+    requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
+  };
+
+  const rows = await input.db
+    .select({
+      id: attachment.id,
+      messageId: attachment.messageId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      s3Key: attachment.s3Key,
+      messageDirection: message.direction,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      observedAt: message.receivedAt,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)));
+  const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
+  const records = rows.map((row) =>
+    mailAttachmentRecord({
+      scope,
+      source: row.messageDirection === 'outbound' ? 'hms_sent_attachment' : 'mail_attachment',
+      attachmentId: row.id,
+      authorizedAttachmentIds,
+      messageId: row.messageId,
+      filename: row.filename,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      s3Key: row.s3Key,
+      text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
+        .filter(Boolean)
+        .join('\n'),
+      observedAt: row.observedAt?.toISOString() ?? null,
+    }),
+  );
+  return { scope, records };
+}
+
+async function assertDocumentRefInCurrentScope(input: {
+  db: DB;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  documentRef: string;
+}): Promise<void> {
+  const authority = await loadDocumentScopeAuthority({
+    db: input.db,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    requestedPriceVisibility: 'allowed',
+  });
+  const found = authority.records.some(
+    (record) => existingDocumentRefForRecord(record) === input.documentRef,
+  );
+  if (!found) {
+    throw authError(
+      'DOCUMENT_REF_SCOPE_DENIED',
+      'document reference is not current and authorized for this mailbox thread',
+    );
+  }
 }
 
 function positiveFindEvidence(input: { result: ReservationFindResult; now: Date }): string {
@@ -235,32 +387,83 @@ export async function issueReadAdmissionFromMailbox(
     releaseId: input.releaseId,
     requestBranchId: input.requestBranchId,
   };
-  let evidenceExpiresAt: string | undefined;
-  if (input.toolId === 'hms_read_reservation') {
-    if (!input.parentReadResultRef) {
+  let issued: IssuedReadAdmission;
+  if (input.toolId === 'documents_list_existing') {
+    const documentSource = input.source ?? 'mail_attachment';
+    const authority = await loadDocumentScopeAuthority({
+      db,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: trigger.triggerMessageId,
+      requestedKind: input.kind,
+      requestedPriceVisibility: input.requestedPriceVisibility,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: 'documents_list_existing',
+      request: {
+        scopeRef: authority.scope.scopeRef,
+        source: documentSource,
+        ...(input.kind ? { kinds: [input.kind] } : {}),
+        limit: 20,
+        requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
+      },
+    });
+  } else if (input.toolId === 'documents_read_existing') {
+    if (!input.documentRef || !input.format) {
+      throw authError('DOCUMENT_REQUEST_INVALID', 'document read requires ref and format');
+    }
+    await assertDocumentRefInCurrentScope({
+      db,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: trigger.triggerMessageId,
+      documentRef: input.documentRef,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: 'documents_read_existing',
+      request: {
+        documentRef: input.documentRef,
+        format: input.format,
+      },
+    });
+  } else {
+    if (!trigger.candidateId) {
       throw authError(
-        'READ_PARENT_RECEIPT_REQUIRED',
-        'context read requires a succeeded find receipt',
+        'READ_CANDIDATE_NOT_EXACT',
+        'read admission requires one exact trigger candidate',
       );
     }
-    evidenceExpiresAt = await loadParentFind({
+    let evidenceExpiresAt: Date | string | undefined;
+    if (input.toolId === 'hms_read_reservation') {
+      if (!input.parentReadResultRef) {
+        throw authError(
+          'READ_PARENT_RECEIPT_REQUIRED',
+          'context read requires a succeeded find receipt',
+        );
+      }
+      evidenceExpiresAt = await loadParentFind({
+        source,
+        parentReadResultRef: input.parentReadResultRef,
+        candidateId: trigger.candidateId,
+        now,
+        db,
+      });
+    }
+    issued = issueReadAdmission({
       source,
-      parentReadResultRef: input.parentReadResultRef,
-      candidateId: trigger.candidateId,
       now,
-      db,
+      candidateId: trigger.candidateId,
+      toolId: input.toolId,
+      sections: input.sections,
+      detail: input.detail,
+      parentReadResultRef: input.parentReadResultRef,
+      evidenceExpiresAt,
     });
   }
-  const issued = issueReadAdmission({
-    source,
-    now,
-    candidateId: trigger.candidateId,
-    toolId: input.toolId,
-    sections: input.sections,
-    detail: input.detail,
-    parentReadResultRef: input.parentReadResultRef,
-    evidenceExpiresAt,
-  });
   return {
     ...issued,
     accessId: grant.accessId,

@@ -6,6 +6,10 @@ import {
   type ReadResult,
 } from '../hms/read-service-contracts.js';
 import {
+  existingDocumentListDataSchema,
+  existingDocumentReadDataSchema,
+} from '../mail/artifacts/existing-document-contracts.js';
+import {
   assertReadAdmissionIssuer,
   READ_CLEANUP_RESERVE_MS,
   type ReadAdmissionIssuer,
@@ -690,10 +694,18 @@ export async function readAiRunReceipt(
   const now = input.now ?? new Date();
   if (run.readResultExpiresAt.getTime() <= now.getTime()) return null;
   const result = readResultSchema.parse(run.readResult);
-  const concrete =
-    result.toolId === 'hms_find_reservation'
-      ? reservationFindResultSchema.parse(result)
-      : reservationContextReadResultSchema.parse(result);
+  let concrete: unknown;
+  if (result.toolId === 'hms_find_reservation') {
+    concrete = reservationFindResultSchema.parse(result);
+  } else if (result.toolId === 'hms_read_reservation') {
+    concrete = reservationContextReadResultSchema.parse(result);
+  } else if (result.toolId === 'documents_list_existing') {
+    if (result.data !== null) existingDocumentListDataSchema.parse(result.data);
+    concrete = result;
+  } else {
+    if (result.data !== null) existingDocumentReadDataSchema.parse(result.data);
+    concrete = result;
+  }
   return {
     readResultRef: ref,
     result: concrete as ReadResult<unknown>,

@@ -3,6 +3,10 @@
  * proof/receipt callers.  Browser locators, URLs and credentials deliberately
  * do not have a representation in these schemas.
  */
+import {
+  documentsListExistingInputSchema,
+  documentsReadExistingInputSchema,
+} from '../mail/artifacts/existing-document-contracts.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -65,6 +69,23 @@ export const readAdmissionSchema = z
     }
   });
 export type ReadAdmission = z.infer<typeof readAdmissionSchema>;
+
+/** Closed normal-executor request branches for existing documents. */
+export const documentsListReadRequestSchema = documentsListExistingInputSchema
+  .extend({
+    toolId: z.literal('documents_list_existing'),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type DocumentsListReadRequest = z.infer<typeof documentsListReadRequestSchema>;
+
+export const documentsReadReadRequestSchema = documentsReadExistingInputSchema
+  .extend({
+    toolId: z.literal('documents_read_existing'),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type DocumentsReadReadRequest = z.infer<typeof documentsReadReadRequestSchema>;
 
 /** Persisted server-side proof that a context admission was issued for this scope. */
 export const readReservationBindingSchema = z
@@ -202,13 +223,7 @@ export const readFactKnownSchema = z
 
 export const readFactUnknownSchema = z
   .object({
-    state: z.enum([
-      'unknown',
-      'not_authorized',
-      'not_applicable',
-      'not_requested',
-      'stale',
-    ]),
+    state: z.enum(['unknown', 'not_authorized', 'not_applicable', 'not_requested', 'stale']),
     value: z.null(),
     data: z.null().optional(),
     reasonCode: readReasonCodeSchema,
@@ -290,6 +305,8 @@ export type ReadStatus = z.infer<typeof readStatusSchema>;
 export const readToolResultIdSchema = z.enum([
   'hms_find_reservation',
   'hms_read_reservation',
+  'documents_list_existing',
+  'documents_read_existing',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
@@ -301,9 +318,7 @@ export const readResultSchema = z
     data: z.unknown().nullable(),
     completeness: z.enum(['complete', 'partial', 'unknown']),
     unavailableSections: z.array(
-      z
-        .object({ section: z.string().min(1), reasonCode: readReasonCodeSchema })
-        .strict(),
+      z.object({ section: z.string().min(1), reasonCode: readReasonCodeSchema }).strict(),
     ),
     scopeRef: readRefSchema,
     evidence: z.array(readEvidenceSchema),

@@ -27,6 +27,33 @@ import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
+const EXISTING_DOCUMENT_RELEASE_ID = 'mail-existing-documents-v1';
+const EXISTING_DOCUMENT_BRANCH_ID = 'mail_attachment_authorized';
+const existingDocumentSourceSchema = z.enum([
+  'mail_attachment',
+  'hms_sent_attachment',
+  'hms_finalized_document',
+  'approved_property_document',
+]);
+const existingDocumentKindSchema = z.enum([
+  'reservation_confirmation',
+  'tax_invoice',
+  'pro_forma',
+  'folio',
+  'statement',
+  'contract',
+  'supplier_compliance',
+  'property_information',
+  'other_existing',
+]);
+
+function existingDocumentAdmissionRelease() {
+  return {
+    releaseId: EXISTING_DOCUMENT_RELEASE_ID,
+    requestBranchId: EXISTING_DOCUMENT_BRANCH_ID,
+  };
+}
+
 async function activeFindAdmission() {
   let active = getCachedActiveReadRuntime();
   if (!active) {
@@ -250,6 +277,103 @@ export const aiRouter = tRouter({
         candidateId: issued.candidateId,
         reservationRef: issued.admission.reservationRef,
         reservationRefExpiresAt: issued.admission.reservationRefExpiresAt,
+      };
+    }),
+
+  /**
+   * Authenticated, model-free mail-document list. Scope, source records and
+   * attachment authority are derived by the DB issuer; callers cannot supply
+   * a storage key, URL, attachment ID or document scope.
+   */
+  enqueueExistingDocumentList: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        source: existingDocumentSourceSchema.default('mail_attachment'),
+        kind: existingDocumentKindSchema.optional(),
+        requestedPriceVisibility: z.enum(['allowed', 'forbidden', 'unknown']).default('allowed'),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'documents_list_existing',
+        source: input.source,
+        kind: input.kind,
+        requestedPriceVisibility: input.requestedPriceVisibility,
+        ...existingDocumentAdmissionRelease(),
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-doc-list:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${input.source}:${input.kind ?? ''}:${input.requestedPriceVisibility}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+      };
+    }),
+
+  /** Authenticated queued read of one previously issued opaque document ref. */
+  enqueueExistingDocumentRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        documentRef: readRefSchema,
+        format: z.enum(['text', 'artifact']),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'documents_read_existing',
+        source: 'mail_attachment',
+        documentRef: input.documentRef,
+        format: input.format,
+        ...existingDocumentAdmissionRelease(),
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-doc-read:${ctx.activeTransportId}:${input.threadId}:${input.documentRef}:${input.format}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
       };
     }),
 

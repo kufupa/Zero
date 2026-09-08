@@ -229,6 +229,7 @@ export const documentsListExistingInputSchema = z
     kinds: z.array(documentKindSchema).max(documentKindSchema.options.length).optional(),
     limit: z.number().int().min(1).max(EXISTING_DOCUMENT_MAX_LIMIT).optional(),
     cursor: existingDocumentRefSchema.optional(),
+    requestedPriceVisibility: z.enum(['allowed', 'forbidden', 'unknown']).optional(),
   })
   .strict();
 

@@ -1,4 +1,14 @@
-import { z } from 'zod';
+import {
+  readAdmissionSchema,
+  readInputDigest,
+  readRefSchema,
+  readReasonCodeSchema,
+  readResultSchema,
+  documentsListReadRequestSchema,
+  documentsReadReadRequestSchema,
+  type ReadReasonCode,
+  type ReadResult,
+} from './read-service-contracts.js';
 import {
   reservationContextRequestSchema,
   reservationFindRequestSchema,
@@ -11,25 +21,30 @@ import {
   type ReservationLookupResult,
   type ReservationRow,
 } from './reservation-context-facade.js';
-import {
-  readAdmissionSchema,
-  readInputDigest,
-  readRefSchema,
-  readResultSchema,
-  type ReadResult,
-} from './read-service-contracts.js';
+import type {
+  ExistingDocumentListResult,
+  ExistingDocumentReadResult,
+} from '../mail/artifacts/existing-document-contracts.js';
 import {
   isPropertyReadConnectionHeld,
   type PropertyReadConnection,
   type PropertyReadLock,
 } from './property-read-lock.js';
+import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
 import { assertReadRequesterScope } from './requester-authorization.js';
+import { z } from 'zod';
 
 export const readRequestSchema = z.union([
   reservationFindRequestSchema,
   reservationContextRequestSchema,
+  documentsListReadRequestSchema,
+  documentsReadReadRequestSchema,
 ]);
-export type ReadRequest = ReservationFindRequest | ReservationContextRequest;
+export type ReadRequest =
+  | ReservationFindRequest
+  | ReservationContextRequest
+  | z.infer<typeof documentsListReadRequestSchema>
+  | z.infer<typeof documentsReadReadRequestSchema>;
 
 export type ReadHandlerResult =
   | ReservationLookupResult
@@ -53,7 +68,11 @@ export type ReadHandlerResult =
 export interface ReadHandlers {
   findReservation?: (input: ReservationContextLookup) => Promise<ReadHandlerResult>;
   readReservation?: (
-    input: ReservationContextLookup & { reservationRef: string; sections: readonly string[]; detail?: 'summary' | 'detail' },
+    input: ReservationContextLookup & {
+      reservationRef: string;
+      sections: readonly string[];
+      detail?: 'summary' | 'detail';
+    },
   ) => Promise<unknown>;
 }
 
@@ -79,6 +98,8 @@ export interface ReadExecutionContext {
   now: () => Date;
   handlers?: ReadHandlers;
   reservationFacade?: ReturnType<typeof createReservationContextFacade>;
+  /** Mail-first existing-document source; no PMS session is implied. */
+  existingDocumentService?: ExistingDocumentService;
   /** Optional property lock; live worker/proof callers must provide it. */
   propertyReadLock?: PropertyReadLock;
   /** Internal connection proof while the owning lock callback is active. */
@@ -106,6 +127,7 @@ const executionKeys = new Set([
   'now',
   'handlers',
   'reservationFacade',
+  'existingDocumentService',
   'propertyReadLock',
   'propertyReadLockConnection',
   'requireAdmissionBinding',
@@ -114,8 +136,17 @@ const executionKeys = new Set([
 function validExecutionContext(value: unknown): value is ReadExecutionContext {
   if (!isRecord(value)) return false;
   for (const key of Object.keys(value)) if (!executionKeys.has(key)) return false;
-  return ['transportId', 'mailboxId', 'threadId', 'triggerMessageId', 'propertyCode', 'parentRef', 'branchId', 'releaseId']
-    .every((key) => typeof value[key] === 'string' && value[key] !== '') &&
+  return (
+    [
+      'transportId',
+      'mailboxId',
+      'threadId',
+      'triggerMessageId',
+      'propertyCode',
+      'parentRef',
+      'branchId',
+      'releaseId',
+    ].every((key) => typeof value[key] === 'string' && value[key] !== '') &&
     isRecord(value.requester) &&
     typeof value.requester.authorizationId === 'string' &&
     typeof value.requester.transportId === 'string' &&
@@ -123,14 +154,23 @@ function validExecutionContext(value: unknown): value is ReadExecutionContext {
     typeof value.requester.triggerMessageId === 'string' &&
     Array.isArray(value.requester.allowedClaimKinds) &&
     typeof value.requester.expiresAt === 'string' &&
-    isRecord(value.budget) && typeof value.budget.total === 'number' && typeof value.budget.limit === 'number' &&
-    !!value.signal && typeof (value.signal as AbortSignal).aborted === 'boolean' &&
+    isRecord(value.budget) &&
+    typeof value.budget.total === 'number' &&
+    typeof value.budget.limit === 'number' &&
+    !!value.signal &&
+    typeof (value.signal as AbortSignal).aborted === 'boolean' &&
     typeof value.now === 'function' &&
-    (value.requireAdmissionBinding === undefined || typeof value.requireAdmissionBinding === 'boolean') &&
+    (value.requireAdmissionBinding === undefined ||
+      typeof value.requireAdmissionBinding === 'boolean') &&
+    (value.existingDocumentService === undefined ||
+      (isRecord(value.existingDocumentService) &&
+        typeof value.existingDocumentService.documents_list_existing === 'function' &&
+        typeof value.existingDocumentService.documents_read_existing === 'function')) &&
     (value.propertyReadLockConnection === undefined ||
       (isRecord(value.propertyReadLockConnection) &&
         typeof value.propertyReadLockConnection.query === 'function' &&
-        typeof value.propertyReadLockConnection.close === 'function'));
+        typeof value.propertyReadLockConnection.close === 'function'))
+  );
 }
 
 // A custom schema is used because an execution context intentionally carries
@@ -193,18 +233,195 @@ function normalizeHandlerResult(result: ReadHandlerResult): ReservationLookupRes
   } as ReservationLookupResult;
 }
 
+type ExistingDocumentReadRequest =
+  | z.infer<typeof documentsListReadRequestSchema>
+  | z.infer<typeof documentsReadReadRequestSchema>;
+type ExistingDocumentOperationResult = ExistingDocumentListResult | ExistingDocumentReadResult;
+
+function isExistingDocumentRequest(request: ReadRequest): request is ExistingDocumentReadRequest {
+  return (
+    request.toolId === 'documents_list_existing' || request.toolId === 'documents_read_existing'
+  );
+}
+
+function assertDocumentRequesterScope(context: ReadExecutionContext): void {
+  const expiry = Date.parse(context.requester.expiresAt);
+  if (
+    !context.requester.authorizationId ||
+    !Number.isFinite(expiry) ||
+    context.now().getTime() >= expiry
+  ) {
+    throw codedError('READ_AUTHORIZATION_EXPIRED', 'read authorization is expired');
+  }
+  if (
+    context.requester.transportId !== context.transportId ||
+    context.requester.threadId !== context.threadId ||
+    context.requester.triggerMessageId !== context.triggerMessageId
+  ) {
+    throw codedError(
+      'READ_AUTHORIZATION_SCOPE_MISMATCH',
+      'read authorization scope does not match request',
+    );
+  }
+  if (!context.requester.allowedClaimKinds.includes('document_metadata')) {
+    throw codedError('READ_CLAIM_NOT_ALLOWED', 'requester is not entitled to document reads');
+  }
+}
+
+const DOCUMENT_REASON_CODES: Record<string, ReadReasonCode> = {
+  INVALID_DOCUMENT_REQUEST: 'INVALID_INPUT',
+  SCOPE_DENIED: 'SCOPE_DENIED',
+  SOURCE_UNAVAILABLE: 'SOURCE_UNAVAILABLE',
+  INVENTORY_INCOMPLETE: 'UNVERIFIED_NEGATIVE',
+  CURSOR_INVALID: 'INVALID_INPUT',
+  SURFACE_UNPROVEN: 'SURFACE_UNPROVEN',
+  METADATA_ONLY: 'SURFACE_UNPROVEN',
+  MISSING_AUTHORIZED_BYTES: 'SOURCE_UNAVAILABLE',
+  DOCUMENT_NOT_RETRIEVABLE: 'SOURCE_UNAVAILABLE',
+  DOCUMENT_CHANGED: 'DOCUMENT_CHANGED',
+  UNSUPPORTED_FORMAT: 'UNSUPPORTED_FORMAT',
+  ENCRYPTED_ARTIFACT: 'UNSUPPORTED_FORMAT',
+  NO_EMBEDDED_TEXT: 'SOURCE_UNAVAILABLE',
+  ARTIFACT_TOO_LARGE: 'SIZE_LIMIT',
+  ARTIFACT_TOO_MANY_PAGES: 'SIZE_LIMIT',
+  ARTIFACT_READ_TIMEOUT: 'TIMEOUT',
+  MALFORMED_ARTIFACT: 'UNSUPPORTED_FORMAT',
+  ARTIFACT_READ_FAILED: 'SOURCE_UNAVAILABLE',
+  DOCUMENT_IDENTITY_MISMATCH: 'AMBIGUOUS_IDENTITY',
+  DOCUMENT_STAY_DATES_MISMATCH: 'PARTIAL_WINDOW',
+  DOCUMENT_PAYER_MISMATCH: 'AMBIGUOUS_IDENTITY',
+  DOCUMENT_KIND_MISMATCH: 'INVALID_INPUT',
+  DOCUMENT_VERSION_SUPERSEDED: 'STALE_EVIDENCE',
+  PRICE_VISIBILITY_FORBIDDEN: 'POLICY_UNAPPROVED',
+  DOCUMENT_VALIDATION_INCOMPLETE: 'INPUT_MISSING',
+};
+
+function documentReasonCode(value: string | null | undefined): ReadReasonCode {
+  const mapped = value ? DOCUMENT_REASON_CODES[value] : undefined;
+  if (mapped) return mapped;
+  return readReasonCodeSchema.safeParse(value).success
+    ? (value as ReadReasonCode)
+    : 'SOURCE_UNAVAILABLE';
+}
+
+function documentSourceSystem(
+  source: string | undefined,
+): 'hms' | 'mail' | 'approved_property_document' {
+  if (source === 'approved_property_document') return source;
+  if (source?.startsWith('hms_')) return 'hms';
+  return 'mail';
+}
+
+function documentSourceUpdatedAt(value: string | null | undefined): string | null {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+function toExistingDocumentReadResult(input: {
+  toolId: ExistingDocumentReadRequest['toolId'];
+  scopeRef: string;
+  requestBranchId: string;
+  now: Date;
+  result: ExistingDocumentOperationResult;
+}): ReadResult<unknown> {
+  const data = input.result.data;
+  const listData =
+    data && 'documents' in data
+      ? (data as {
+          documents: Array<{ documentRef: string; source: string; issuedAt: string | null }>;
+          page: ReadResult<unknown>['page'];
+        })
+      : null;
+  const readData =
+    data && 'document' in data
+      ? (data as {
+          document: { documentRef: string | null; source: string; issuedAt: string | null };
+          artifactRef: string | null;
+        })
+      : null;
+  const evidenceRef =
+    listData?.documents[0]?.documentRef ??
+    readData?.document.documentRef ??
+    `document-observation:${readInputDigest({ toolId: input.toolId, scopeRef: input.scopeRef })}`;
+  const source = listData?.documents[0]?.source ?? readData?.document.source;
+  const now = input.now.toISOString();
+  const expiresAt = new Date(input.now.getTime() + 5 * 60_000).toISOString();
+  const reasonCode = documentReasonCode(input.result.blocker ?? input.result.issues[0]?.code);
+  const issues = input.result.issues.map((item) => {
+    const code = documentReasonCode(item.code);
+    return {
+      code,
+      retryable: code === 'TIMEOUT' || code === 'SOURCE_UNAVAILABLE',
+      safeNextAction:
+        code === 'INVALID_INPUT' || code === 'SCOPE_DENIED'
+          ? ('request_input' as const)
+          : code === 'TIMEOUT'
+            ? ('retry_same_read' as const)
+            : ('manual_review' as const),
+    };
+  });
+  if (issues.length === 0 && input.result.blocker) {
+    issues.push({
+      code: reasonCode,
+      retryable: reasonCode === 'TIMEOUT' || reasonCode === 'SOURCE_UNAVAILABLE',
+      safeNextAction:
+        reasonCode === 'SCOPE_DENIED' ? ('request_input' as const) : ('manual_review' as const),
+    });
+  }
+  return readResultSchema.parse({
+    toolId: input.toolId,
+    schemaVersion: 'existing-documents/1',
+    status: input.result.status,
+    data,
+    completeness:
+      input.result.status === 'ok'
+        ? 'complete'
+        : input.result.status === 'partial'
+          ? 'partial'
+          : 'unknown',
+    unavailableSections: issues.length > 0 ? [{ section: 'documents', reasonCode }] : [],
+    scopeRef: input.scopeRef,
+    evidence: [
+      {
+        evidenceRef,
+        sourceSystem: documentSourceSystem(source),
+        sourceSurface: source ?? 'existing_document',
+        requestBranchId: input.requestBranchId,
+        observedAt: now,
+        sourceUpdatedAt: documentSourceUpdatedAt(
+          listData?.documents[0]?.issuedAt ?? readData?.document.issuedAt,
+        ),
+        expiresAt,
+        scopeVerified: reasonCode !== 'SCOPE_DENIED',
+        artifactRef: readData?.artifactRef ?? null,
+      },
+    ],
+    page: listData?.page ?? null,
+    issues,
+  }) as ReadResult<unknown>;
+}
+
 function assertContext(context: ReadExecutionContext, request: ReadRequest) {
   readExecutionContextSchema.parse(context);
   const now = context.now();
-  assertReadRequesterScope({ requester: context.requester, context, now });
+  if (isExistingDocumentRequest(request)) {
+    assertDocumentRequesterScope(context);
+  } else {
+    assertReadRequesterScope({ requester: context.requester, context, now });
+  }
   if (context.signal.aborted) throw codedError('READ_ABORTED', 'read was aborted');
-  if (context.budget.total >= context.budget.limit) throw codedError('READ_BUDGET_EXCEEDED', 'read budget exhausted');
+  if (context.budget.total >= context.budget.limit)
+    throw codedError('READ_BUDGET_EXCEEDED', 'read budget exhausted');
   if (context.requireAdmissionBinding) {
     if (!context.propertyReadLock) {
-      throw codedError('READ_PROPERTY_LOCK_REQUIRED', 'property read lock is required for admitted dispatch');
+      throw codedError(
+        'READ_PROPERTY_LOCK_REQUIRED',
+        'property read lock is required for admitted dispatch',
+      );
     }
     const admission = 'admission' in request ? request.admission : undefined;
-    if (!admission) throw codedError('READ_ADMISSION_MISSING', 'trusted read admission is required');
+    if (!admission)
+      throw codedError('READ_ADMISSION_MISSING', 'trusted read admission is required');
     const parsed = readAdmissionSchema.parse(admission);
     const { admission: _ignored, ...closedRequest } = request as typeof request & {
       admission?: unknown;
@@ -224,9 +441,13 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
     if (parsed.captureRequired && parsed.captureBindingRef !== context.parentRef) {
       throw codedError('READ_CAPTURE_BINDING_MISMATCH', 'read capture binding mismatch');
     }
-    const expectedReservationRef = request.toolId === 'hms_read_reservation' ? request.reservationRef : null;
+    const expectedReservationRef =
+      request.toolId === 'hms_read_reservation' ? request.reservationRef : null;
     if (parsed.reservationRef !== expectedReservationRef) {
-      throw codedError('READ_RESERVATION_REF_BINDING_MISMATCH', 'read reservation reference binding mismatch');
+      throw codedError(
+        'READ_RESERVATION_REF_BINDING_MISMATCH',
+        'read reservation reference binding mismatch',
+      );
     }
   }
   context.budget.total += 1;
@@ -238,17 +459,51 @@ async function dispatchRead(
 ): Promise<ReadResult<unknown>> {
   const parsed = readRequestSchema.parse(request);
 
+  if (isExistingDocumentRequest(parsed)) {
+    const service = context.existingDocumentService;
+    if (!service) {
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'existing-document service is unavailable');
+    }
+    if (parsed.toolId === 'documents_list_existing') {
+      const { toolId: _toolId, admission: _admission, ...listRequest } = parsed;
+      const result = await service.documents_list_existing(listRequest);
+      return toExistingDocumentReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.scopeRef,
+        requestBranchId: context.branchId,
+        now: context.now(),
+        result,
+      });
+    }
+    const { toolId: _toolId, admission: _admission, ...readRequest } = parsed;
+    const result = await service.documents_read_existing(readRequest);
+    return toExistingDocumentReadResult({
+      toolId: parsed.toolId,
+      scopeRef: service.scopeRefFor(parsed.documentRef) ?? context.parentRef,
+      requestBranchId: context.branchId,
+      now: context.now(),
+      result,
+    });
+  }
+
   if (parsed.toolId === 'hms_find_reservation') {
     const handler = context.handlers?.findReservation;
-    if (!handler) throw codedError('READ_HANDLER_UNAVAILABLE', 'typed reservation lookup is unavailable');
+    if (!handler)
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed reservation lookup is unavailable');
     const lookupInput = toLookup(context, parsed.candidateId);
     const facade = createReservationContextFacade({
       now: context.now,
       lookup: async (input) => normalizeHandlerResult(await handler(input)),
       readContext: async (input, row) => {
-        if (!context.handlers?.readReservation) return { core: { status: 'available', confirmation: row.confirmationNumber }, stay: { status: 'available', arrival: row.arrivalDate, departure: row.departureDate } };
+        if (!context.handlers?.readReservation)
+          return {
+            core: { status: 'available', confirmation: row.confirmationNumber },
+            stay: { status: 'available', arrival: row.arrivalDate, departure: row.departureDate },
+          };
         const value = await context.handlers.readReservation(input);
-        return (isRecord(value) ? value : {}) as Partial<Record<'core' | 'stay' | 'rates' | 'policies' | 'operations', unknown>>;
+        return (isRecord(value) ? value : {}) as Partial<
+          Record<'core' | 'stay' | 'rates' | 'policies' | 'operations', unknown>
+        >;
       },
     });
     return (await facade.findReservation(lookupInput)) as ReadResult<unknown>;
@@ -303,9 +558,12 @@ export async function executeReadToolRun(input: ReadToolRunInput): Promise<{
   readResultRef: string;
   result: ReadResult<unknown>;
 }> {
-  if (input.runKind !== 'read_tool') throw codedError('READ_RUN_KIND_INVALID', 'run is not a read_tool run');
-  if (input.executorLane !== 'hms') throw codedError('READ_EXECUTOR_LANE_INVALID', 'read_tool must run on the HMS lane');
-  if (input.draftingEnabled) throw codedError('READ_DRAFTING_DEPENDENCY', 'read_tool cannot depend on drafting');
+  if (input.runKind !== 'read_tool')
+    throw codedError('READ_RUN_KIND_INVALID', 'run is not a read_tool run');
+  if (input.executorLane !== 'hms')
+    throw codedError('READ_EXECUTOR_LANE_INVALID', 'read_tool must run on the HMS lane');
+  if (input.draftingEnabled)
+    throw codedError('READ_DRAFTING_DEPENDENCY', 'read_tool cannot depend on drafting');
   const result = await executeRead(input.context, input.request);
   return {
     modelId: NOT_APPLICABLE_MODEL_ID,
