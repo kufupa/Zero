@@ -48,6 +48,11 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
+  quoteRequestAuthorityIssues,
+  unavailableQuoteReferenceAuthority,
+  type QuoteReferenceAuthorityLoader,
+} from '../hms/quote-request-normalization.js';
+import {
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
   type ArtifactData,
@@ -402,6 +407,8 @@ export type CandidateSessionInput = {
   transportId: string;
   threadId: string;
   triggerMessageId?: string;
+  /** Server-owned property scope bound by the normalized quote authority. */
+  propertyCode?: string;
   lookupCandidates: readonly import('./thread-context.js').LookupCandidate[];
   signal: AbortSignal;
   /** AI run UUID — becomes HMS browser audit operationId when capture is enabled. */
@@ -499,6 +506,14 @@ export function createLiveHmsCandidateSessionFactory(
   options: LiveHmsCandidateSessionFactoryOptions = {},
 ): CandidateSessionFactory {
   return async (input) => {
+    const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+    const propertyCode = input.propertyCode ?? config.expectedPropertyCode;
+    if (propertyCode !== config.expectedPropertyCode) {
+      throw Object.assign(
+        new Error('quote authority property does not match the configured live property'),
+        { failureClass: 'AUTH' as const },
+      );
+    }
     const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
     const active =
       options.activeReadState ??
@@ -537,7 +552,6 @@ export function createLiveHmsCandidateSessionFactory(
       '../hms/production-runtime.js'
     );
     const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
-    const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
     const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
     const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
     const propertyReadLock = createPostgresPropertyReadLock({
@@ -819,6 +833,7 @@ export function createLiveHmsCandidateSessionFactory(
       driver,
       candidates,
       close: async () => undefined,
+      propertyCode,
       runId: input.runId,
       readFence: input.readFence,
       readPlanKind: input.readPlanKind ?? 'reservation',
@@ -1639,6 +1654,8 @@ async function executeProductionReadTool(input: {
   sessionFactory?: CandidateSessionFactory;
   /** Lower browser/PMS edge substitution; registry and handler proof stay real. */
   runtime?: import('../hms/runtime.js').HmsRuntime;
+  /** Internal server-owned source seam; absent production source fails closed. */
+  quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
 }): Promise<{ result: ReadResult<unknown>; readResultRef: string }> {
   const request = readRequestSchema.parse(input.run.readRequest);
   const admission = 'admission' in request ? request.admission : undefined;
@@ -1722,6 +1739,30 @@ async function executeProductionReadTool(input: {
   }
 
   if (request.toolId === 'hms_quote_stay') {
+    const authorityResult = await (
+      input.quoteReferenceAuthorityLoader ?? unavailableQuoteReferenceAuthority
+    )({
+      now: new Date(),
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+    });
+    if (authorityResult.status !== 'ready') {
+      throw Object.assign(new Error(`quote reference authority is ${authorityResult.reason}`), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+    const authorityIssues = quoteRequestAuthorityIssues(
+      request.quoteRequest,
+      authorityResult.authority,
+      new Date(),
+    );
+    if (authorityIssues.length > 0) {
+      throw Object.assign(
+        new Error(`quote reference authority changed or is stale: ${authorityIssues.join(', ')}`),
+        { failureClass: 'AUTH' as const },
+      );
+    }
     const quoteCandidate = quoteStayCandidateFromRequest(request.quoteRequest);
     const sessionFactory =
       input.sessionFactory ??
@@ -1730,6 +1771,7 @@ async function executeProductionReadTool(input: {
       transportId: input.run.transportId,
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
+      propertyCode: request.quoteRequest.propertyCode,
       lookupCandidates: [],
       signal: input.signal,
       runId: input.run.id,
@@ -1853,7 +1895,7 @@ async function executeProductionReadTool(input: {
           id: randomUUID(),
           toolId: 'hms_quote_stay',
           toolVersion: '2.0.0',
-          propertyCode: 'HRCEN',
+          propertyCode: request.quoteRequest.propertyCode,
           observedAt: new Date().toISOString(),
           expiresAt: input.fence.deadlineAt.toISOString(),
           claimKeys: [],
@@ -1872,7 +1914,7 @@ async function executeProductionReadTool(input: {
       mailboxId: input.run.transportId,
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
-      propertyCode: 'HRCEN',
+      propertyCode: request.quoteRequest.propertyCode,
       parentRef: input.run.id,
       branchId: admission.requestBranchId,
       releaseId: admission.releaseId,
@@ -2361,6 +2403,8 @@ export async function executeAiRun(
     }) => Promise<{ result: ReadResult<unknown>; readResultRef: string }>;
     /** Lower browser/PMS edge substitution for normal release-bound proof. */
     hmsRuntime?: import('../hms/runtime.js').HmsRuntime;
+    /** Internal server-owned current quote authority; absent source fails closed. */
+    quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
   } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
@@ -2443,6 +2487,7 @@ export async function executeAiRun(
             ...args,
             sessionFactory: options.candidateSessionFactory,
             runtime: options.hmsRuntime,
+            quoteReferenceAuthorityLoader: options.quoteReferenceAuthorityLoader,
           }));
       const read = await executor({ run, fence, signal });
       const readResultRef = run.readResultRef ?? read.readResultRef;

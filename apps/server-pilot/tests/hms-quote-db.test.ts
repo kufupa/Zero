@@ -1,4 +1,9 @@
 import {
+  __clearQuoteReferenceAuthorityLoaderForTests,
+  __setQuoteReferenceAuthorityLoaderForTests,
+  issueReadAdmissionFromMailbox,
+} from '../src/hms/read-admission-issuer.js';
+import {
   claimNextAiRun,
   enqueueAiRun,
   NOT_APPLICABLE_MODEL_ID,
@@ -6,9 +11,17 @@ import {
   readAiRunReceipt,
 } from '../src/ai/run-ledger.js';
 import {
+  syntheticQuoteReferenceAuthority,
+  syntheticQuoteReferenceAuthorityLoader,
+} from './helpers/quote-reference-authority.js';
+import {
   __setCachedActiveReadRuntimeForTests,
   clearCachedActiveReadRuntimeForTests,
 } from '../src/hms/active-read-runtime.js';
+import {
+  normalizeQuoteRequest,
+  type QuoteReferenceAuthorityLoadResult,
+} from '../src/hms/quote-request-normalization.js';
 import {
   HMS_RUNTIME_ABI_VERSION,
   hmsPortfolioToolReleaseV2Schema,
@@ -16,9 +29,7 @@ import {
 } from '../src/hms/release-kernel.js';
 import { aiWorkflowRun, mailboxAccess, mailThread, message } from '../src/db/schema/mail.js';
 import { createLiveHmsCandidateSessionFactory, executeAiRun } from '../src/ai/worker.js';
-import { issueReadAdmissionFromMailbox } from '../src/hms/read-admission-issuer.js';
 import { quoteStayCandidateFromRequest } from '../src/hms/quote-stay-candidate.js';
-import { normalizeQuoteRequest } from '../src/hms/quote-request-normalization.js';
 import { buildExactOsrravSearchManifest } from '../src/hms/live-read-manifest.js';
 import type { ActiveReadRuntimeState } from '../src/hms/active-read-runtime.js';
 import { readInputDigest } from '../src/hms/read-service-contracts.js';
@@ -36,6 +47,10 @@ const reachable = await probeTestDb();
 const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
 const DEFAULT_QUOTE_TEXT =
   'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.';
+
+function normalizeFixtureQuoteRequest(input: unknown) {
+  return normalizeQuoteRequest(input, { referenceAuthority: syntheticQuoteReferenceAuthority });
+}
 
 function liveEnvelope(): string {
   return JSON.stringify({
@@ -289,17 +304,22 @@ async function issueAndEnqueueQuote(
   suffix: string,
 ) {
   const readResultRef = `u7-quote-db-${suffix}-${randomUUID()}`;
-  const issued = await issueReadAdmissionFromMailbox({
-    db,
-    userId: CENTURION_USER_ID,
-    transportId: context.transportId,
-    threadId: context.threadId,
-    toolId: 'hms_quote_stay',
-    releaseId,
-    requestBranchId: 'quote_availability_search',
-    detail: 'detail',
-    captureBindingRef: readResultRef,
-  });
+  const issued = await issueReadAdmissionFromMailbox(
+    {
+      db,
+      userId: CENTURION_USER_ID,
+      transportId: context.transportId,
+      threadId: context.threadId,
+      toolId: 'hms_quote_stay',
+      releaseId,
+      requestBranchId: 'quote_availability_search',
+      detail: 'detail',
+      captureBindingRef: readResultRef,
+    },
+    {
+      quoteReferenceAuthorityLoader: syntheticQuoteReferenceAuthorityLoader(),
+    },
+  );
   const run = await enqueueAiRun(
     {
       ...context,
@@ -333,7 +353,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
   it('uses the default session factory, release handler binding, property lock and live driver', async () => {
     if (!reachable) throw new Error('owned disposable PG16 DB probe unexpectedly unavailable');
     await withReadOnlyWorkerEnv(async () => {
-      const normalized = normalizeQuoteRequest({
+      const normalized = normalizeFixtureQuoteRequest({
         arrival: '2026-09-10',
         departure: '2026-09-12',
         rooms: [
@@ -403,7 +423,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
     await withWorkerDb(async (db) => {
       await withReadOnlyWorkerEnv(async () => {
         const context = await seedQuoteMailContext(db, 'queue');
-        const normalized = normalizeQuoteRequest({
+        const normalized = normalizeFixtureQuoteRequest({
           arrival: '2026-09-10',
           departure: '2026-09-12',
           rooms: [
@@ -424,6 +444,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
         if (!candidate) return;
         const activeReadState = installQuoteRelease(candidate);
         __setCachedActiveReadRuntimeForTests(activeReadState);
+        __setQuoteReferenceAuthorityLoaderForTests(syntheticQuoteReferenceAuthorityLoader());
         try {
           const caller = createInjectedQuoteCaller(context.transportId);
           const enqueued = await caller.ai.enqueueHmsRead({
@@ -461,7 +482,10 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
           expect(claimed?.id).toBe(run.id);
 
           const fixture = runtimeFixture();
-          const execution = await executeAiRun(run.id, { hmsRuntime: fixture.runtime });
+          const execution = await executeAiRun(run.id, {
+            hmsRuntime: fixture.runtime,
+            quoteReferenceAuthorityLoader: syntheticQuoteReferenceAuthorityLoader(),
+          });
           expect(execution.state).toBe('succeeded');
           expect(fixture.runtime.openReadSession).toHaveBeenCalledTimes(1);
           expect(fixture.runtime.openReadSession.mock.calls[0]?.[0].auditSpec).toMatchObject({
@@ -537,6 +561,146 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             )?.evidence?.[0]?.sourceHash,
           ).toMatch(/^[a-f0-9]{64}$/);
         } finally {
+          __clearQuoteReferenceAuthorityLoaderForTests();
+          clearCachedActiveReadRuntimeForTests();
+        }
+      });
+    });
+  });
+
+  it('refuses a normal issuer when no current commercial authority source is configured', async () => {
+    if (!reachable) throw new Error('owned disposable PG16 DB probe unexpectedly unavailable');
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seedQuoteMailContext(db, 'authority-missing');
+        await expect(
+          issueReadAdmissionFromMailbox({
+            db,
+            userId: CENTURION_USER_ID,
+            transportId: context.transportId,
+            threadId: context.threadId,
+            toolId: 'hms_quote_stay',
+            releaseId: 'u7-authority-missing-release',
+            requestBranchId: 'quote_availability_search',
+            detail: 'detail',
+            captureBindingRef: `u7-authority-missing-${randomUUID()}`,
+          }),
+        ).rejects.toMatchObject({ code: 'READ_QUOTE_AUTHORITY_UNAVAILABLE' });
+      });
+    });
+  });
+
+  it('rejects a queued quote when current authority changes before execution', async () => {
+    if (!reachable) throw new Error('owned disposable PG16 DB probe unexpectedly unavailable');
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seedQuoteMailContext(db, 'authority-changed');
+        const normalized = normalizeFixtureQuoteRequest({
+          arrival: '2026-09-10',
+          departure: '2026-09-12',
+          rooms: [
+            {
+              quantity: 1,
+              adultsPerRoom: 2,
+              childAges: [],
+              roomTypeRef: 'STD',
+              ratePlanRef: 'BAR',
+            },
+          ],
+          currency: 'ZAR',
+        });
+        expect(normalized.status).toBe('ready');
+        if (normalized.status !== 'ready') return;
+        const candidate = quoteStayCandidateFromRequest(normalized.request);
+        if (!candidate) throw new Error('quote candidate fixture failed to normalize');
+        const activeReadState = installQuoteRelease(candidate);
+        __setCachedActiveReadRuntimeForTests(activeReadState);
+        let currentAuthority = syntheticQuoteReferenceAuthority;
+        const loader = async () => ({ status: 'ready' as const, authority: currentAuthority });
+        __setQuoteReferenceAuthorityLoaderForTests(loader);
+        try {
+          const releaseId = activeReadState.releases.get('hms_quote_stay')!.releaseId;
+          const { run } = await issueAndEnqueueQuote(db, context, releaseId, 'authority-changed');
+          currentAuthority = {
+            ...syntheticQuoteReferenceAuthority,
+            version: 'fixture-v2',
+            ratePlanRefs: ['BAR2'],
+          };
+          expect(
+            await claimNextAiRun({
+              ownerId: 'u7-quote-db-authority-changed-worker',
+              lane: 'hms',
+              runKind: 'read_tool',
+              db,
+            }),
+          ).toMatchObject({ id: run.id });
+          const fixture = runtimeFixture();
+          const execution = await executeAiRun(run.id, {
+            hmsRuntime: fixture.runtime,
+            quoteReferenceAuthorityLoader: loader,
+          });
+          expect(execution.state).toBe('dead_letter');
+          expect(fixture.runtime.openReadSession).not.toHaveBeenCalled();
+        } finally {
+          __clearQuoteReferenceAuthorityLoaderForTests();
+          clearCachedActiveReadRuntimeForTests();
+        }
+      });
+    });
+  });
+
+  it('rejects a queued quote when current authority is revoked before execution', async () => {
+    if (!reachable) throw new Error('owned disposable PG16 DB probe unexpectedly unavailable');
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seedQuoteMailContext(db, 'authority-revoked');
+        const normalized = normalizeFixtureQuoteRequest({
+          arrival: '2026-09-10',
+          departure: '2026-09-12',
+          rooms: [
+            {
+              quantity: 1,
+              adultsPerRoom: 2,
+              childAges: [],
+              roomTypeRef: 'STD',
+              ratePlanRef: 'BAR',
+            },
+          ],
+          currency: 'ZAR',
+        });
+        expect(normalized.status).toBe('ready');
+        if (normalized.status !== 'ready') return;
+        const candidate = quoteStayCandidateFromRequest(normalized.request);
+        if (!candidate) throw new Error('quote candidate fixture failed to normalize');
+        const activeReadState = installQuoteRelease(candidate);
+        __setCachedActiveReadRuntimeForTests(activeReadState);
+        let currentResult: QuoteReferenceAuthorityLoadResult = {
+          status: 'ready' as const,
+          authority: syntheticQuoteReferenceAuthority,
+        };
+        const loader = async () => currentResult;
+        __setQuoteReferenceAuthorityLoaderForTests(loader);
+        try {
+          const releaseId = activeReadState.releases.get('hms_quote_stay')!.releaseId;
+          const { run } = await issueAndEnqueueQuote(db, context, releaseId, 'authority-revoked');
+          currentResult = { status: 'unavailable', reason: 'stale' };
+          expect(
+            await claimNextAiRun({
+              ownerId: 'u7-quote-db-authority-revoked-worker',
+              lane: 'hms',
+              runKind: 'read_tool',
+              db,
+            }),
+          ).toMatchObject({ id: run.id });
+          const fixture = runtimeFixture();
+          const execution = await executeAiRun(run.id, {
+            hmsRuntime: fixture.runtime,
+            quoteReferenceAuthorityLoader: loader,
+          });
+          expect(execution.state).toBe('dead_letter');
+          expect(fixture.runtime.openReadSession).not.toHaveBeenCalled();
+        } finally {
+          __clearQuoteReferenceAuthorityLoaderForTests();
           clearCachedActiveReadRuntimeForTests();
         }
       });
@@ -548,7 +712,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
     await withWorkerDb(async (db) => {
       await withReadOnlyWorkerEnv(async () => {
         const context = await seedQuoteMailContext(db, 'revoked');
-        const normalized = normalizeQuoteRequest({
+        const normalized = normalizeFixtureQuoteRequest({
           arrival: '2026-09-10',
           departure: '2026-09-12',
           rooms: [
@@ -603,7 +767,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
           'ref-second',
           'Please quote arrival 2026-09-13, departure 2026-09-15, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.',
         );
-        const normalized = normalizeQuoteRequest({
+        const normalized = normalizeFixtureQuoteRequest({
           arrival: '2026-09-10',
           departure: '2026-09-12',
           rooms: [
@@ -626,17 +790,22 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
         try {
           const releaseId = activeReadState.releases.get('hms_quote_stay')!.releaseId;
           const first = await issueAndEnqueueQuote(db, firstContext, releaseId, 'ref-first');
-          const second = await issueReadAdmissionFromMailbox({
-            db,
-            userId: CENTURION_USER_ID,
-            transportId: secondContext.transportId,
-            threadId: secondContext.threadId,
-            toolId: 'hms_quote_stay',
-            releaseId,
-            requestBranchId: 'quote_availability_search',
-            detail: 'detail',
-            captureBindingRef: `u7-quote-db-second-${randomUUID()}`,
-          });
+          const second = await issueReadAdmissionFromMailbox(
+            {
+              db,
+              userId: CENTURION_USER_ID,
+              transportId: secondContext.transportId,
+              threadId: secondContext.threadId,
+              toolId: 'hms_quote_stay',
+              releaseId,
+              requestBranchId: 'quote_availability_search',
+              detail: 'detail',
+              captureBindingRef: `u7-quote-db-second-${randomUUID()}`,
+            },
+            {
+              quoteReferenceAuthorityLoader: syntheticQuoteReferenceAuthorityLoader(),
+            },
+          );
           expect(second.quoteRequestRef).not.toBe(first.issued.quoteRequestRef);
           const { admission: _secondAdmission, ...secondClosedRequest } = second.readRequest;
           const tamperedRequest = {
@@ -671,7 +840,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
     await withWorkerDb(async (db) => {
       await withReadOnlyWorkerEnv(async () => {
         const context = await seedQuoteMailContext(db, 'expired');
-        const normalized = normalizeQuoteRequest({
+        const normalized = normalizeFixtureQuoteRequest({
           arrival: '2026-09-10',
           departure: '2026-09-12',
           rooms: [

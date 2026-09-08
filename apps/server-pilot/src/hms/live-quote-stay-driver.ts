@@ -196,6 +196,7 @@ export function parseLiveQuoteAvailability(
     : [];
   const rows: QuoteNightObservation[] = [];
   const unresolvedFields: string[] = [];
+  const rowCurrencies = new Set<string>();
   const observedAtIso = observedAt.toISOString();
 
   for (const [rti, rt] of roomTypes.entries()) {
@@ -217,8 +218,7 @@ export function parseLiveQuoteAvailability(
     }
     for (const [rpi, rp] of ratePlans.entries()) {
       const ratePlan = String(rp.ratePlanCode ?? '').trim();
-      const rateCurrency =
-        typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc) ? rp.uoc : currency;
+      const rateCurrency = typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc) ? rp.uoc : null;
       const daily = Array.isArray(rp.ratePlanDailyInvArray)
         ? (rp.ratePlanDailyInvArray as Record<string, unknown>[])
         : [];
@@ -241,6 +241,7 @@ export function parseLiveQuoteAvailability(
         if (!amount) unresolvedFields.push(`${prefix}.displayedAmount`);
         if (!rateCurrency) unresolvedFields.push(`${prefix}.currency`);
         if (date && roomType && ratePlan && amount && rateCurrency && availableCount !== null) {
+          rowCurrencies.add(rateCurrency);
           rows.push({
             date,
             roomType,
@@ -255,6 +256,11 @@ export function parseLiveQuoteAvailability(
         }
       }
     }
+  }
+
+  if (!currency) unresolvedFields.push('source_currency_unresolved');
+  if (currency && [...rowCurrencies].some((rowCurrency) => rowCurrency !== currency)) {
+    unresolvedFields.push('source_currency_mismatch');
   }
 
   return {
@@ -422,6 +428,7 @@ async function observeQuoteWithinSession(input: {
     departure: candidate.departureDate,
     rooms: candidate.normalizedRooms,
     currency: candidate.currency ?? parsed.currency ?? undefined,
+    sourceCurrency: parsed.currency,
     unresolvedInputs: uniqueUnresolved,
   });
   return quoteToolResult({

@@ -37,6 +37,7 @@ const quoteSegmentSchema = z
 export const quoteRequestSchema = z
   .object({
     quoteRequestRef: refSchema,
+    propertyCode: refSchema,
     arrival: isoDateSchema,
     departure: isoDateSchema,
     rooms: z.array(normalizedQuoteRoomSchema).min(1).max(QUOTE_STAY_MAX_ROOMS),
@@ -49,10 +50,11 @@ export const quoteRequestSchema = z
     missingNights: z.array(isoDateSchema).max(QUOTE_STAY_MAX_NIGHTS),
     continuousStay: z.boolean(),
     roomMoveRequired: z.boolean(),
-    referenceAuthoritySha256: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .optional(),
+    referenceAuthoritySourceRef: refSchema,
+    referenceAuthorityVersion: refSchema,
+    referenceAuthorityObservedAt: z.string().datetime(),
+    referenceAuthorityExpiresAt: z.string().datetime(),
+    referenceAuthoritySha256: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
 
@@ -68,24 +70,55 @@ export type QuoteReferenceAuthority = {
   roomTypeRefs: readonly string[];
   ratePlanRefs: readonly string[];
   currencyCodes: readonly string[];
+  /** Server-owned source identity; fixture tests must label their source explicitly. */
+  sourceRef: string;
+  version: string;
+  observedAt: string;
+  expiresAt: string;
   organizationRefs?: readonly string[];
   agencyRefs?: readonly string[];
   groupRefs?: readonly string[];
 };
 
-/** The only reviewed local quote catalog; live activation must replace this with current data. */
-export const DEFAULT_QUOTE_REFERENCE_AUTHORITY: QuoteReferenceAuthority = {
-  propertyCode: 'HRCEN',
-  roomTypeRefs: ['STD'],
-  ratePlanRefs: ['BAR'],
-  currencyCodes: ['ZAR'],
+export type QuoteRequestNormalizationOptions = {
+  /** Explicit fixture edge only; production issuer obtains this from its source boundary. */
+  referenceAuthority?: QuoteReferenceAuthority;
+  now?: Date;
+};
+
+export type QuoteReferenceAuthorityLoadInput = {
+  now: Date;
+  transportId?: string;
+  threadId?: string;
+  triggerMessageId?: string;
+};
+
+export type QuoteReferenceAuthorityLoadResult =
+  | { status: 'ready'; authority: QuoteReferenceAuthority }
+  | { status: 'unavailable'; reason: 'missing' | 'stale' | 'invalid' };
+
+export type QuoteReferenceAuthorityLoader = (
+  input: QuoteReferenceAuthorityLoadInput,
+) => Promise<QuoteReferenceAuthorityLoadResult>;
+
+/** No production commercial source is configured in this checkout. */
+export const unavailableQuoteReferenceAuthority: QuoteReferenceAuthorityLoader = async () => ({
+  status: 'unavailable',
+  reason: 'missing',
+});
+
+const unavailableAuthority: QuoteReferenceAuthority = {
+  propertyCode: '',
+  roomTypeRefs: [],
+  ratePlanRefs: [],
+  currencyCodes: [],
+  sourceRef: '',
+  version: '',
+  observedAt: '',
+  expiresAt: '',
   organizationRefs: [],
   agencyRefs: [],
   groupRefs: [],
-};
-
-export type QuoteRequestNormalizationOptions = {
-  referenceAuthority?: QuoteReferenceAuthority;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -129,12 +162,87 @@ function authorityDigest(authority: QuoteReferenceAuthority): string {
         roomTypeRefs: [...authority.roomTypeRefs].sort(),
         ratePlanRefs: [...authority.ratePlanRefs].sort(),
         currencyCodes: [...authority.currencyCodes].sort(),
+        sourceRef: authority.sourceRef,
+        version: authority.version,
+        observedAt: authority.observedAt,
+        expiresAt: authority.expiresAt,
         organizationRefs: [...(authority.organizationRefs ?? [])].sort(),
         agencyRefs: [...(authority.agencyRefs ?? [])].sort(),
         groupRefs: [...(authority.groupRefs ?? [])].sort(),
       }),
     )
     .digest('hex');
+}
+
+function authorityValidityIssues(authority: QuoteReferenceAuthority, now: Date): string[] {
+  const unresolved: string[] = [];
+  if (!refSchema.safeParse(authority.propertyCode).success) {
+    unresolved.push('quote_reference_authority_property');
+  }
+  if (!refSchema.safeParse(authority.sourceRef).success) {
+    unresolved.push('quote_reference_authority_source');
+  }
+  if (!refSchema.safeParse(authority.version).success) {
+    unresolved.push('quote_reference_authority_version');
+  }
+  if (
+    !Array.isArray(authority.roomTypeRefs) ||
+    authority.roomTypeRefs.some((value) => !refSchema.safeParse(value).success) ||
+    !Array.isArray(authority.ratePlanRefs) ||
+    authority.ratePlanRefs.some((value) => !refSchema.safeParse(value).success) ||
+    !Array.isArray(authority.currencyCodes) ||
+    authority.currencyCodes.some((value) => !currencySchema.safeParse(value).success) ||
+    !Array.isArray(authority.organizationRefs ?? []) ||
+    (authority.organizationRefs ?? []).some((value) => !refSchema.safeParse(value).success) ||
+    !Array.isArray(authority.agencyRefs ?? []) ||
+    (authority.agencyRefs ?? []).some((value) => !refSchema.safeParse(value).success) ||
+    !Array.isArray(authority.groupRefs ?? []) ||
+    (authority.groupRefs ?? []).some((value) => !refSchema.safeParse(value).success)
+  ) {
+    unresolved.push('quote_reference_authority_configuration');
+  }
+  const observedAt = Date.parse(authority.observedAt);
+  const expiresAt = Date.parse(authority.expiresAt);
+  if (!Number.isFinite(observedAt) || !Number.isFinite(expiresAt) || expiresAt <= observedAt) {
+    unresolved.push('quote_reference_authority_currentness');
+  } else {
+    if (observedAt > now.getTime()) unresolved.push('quote_reference_authority_future');
+    if (expiresAt <= now.getTime()) unresolved.push('quote_reference_authority_stale');
+  }
+  return unresolved;
+}
+
+export function quoteReferenceAuthorityDigest(authority: QuoteReferenceAuthority): string {
+  return authorityDigest(authority);
+}
+
+/** Compare a queued request with the current server-owned authority snapshot. */
+export function quoteRequestAuthorityIssues(
+  request: QuoteRequest,
+  authority: QuoteReferenceAuthority,
+  now: Date,
+): string[] {
+  const unresolved = authorityValidityIssues(authority, now);
+  if (unresolved.length > 0) return [...new Set(unresolved)];
+  if (request.propertyCode !== authority.propertyCode) {
+    unresolved.push('quote_reference_authority_property_mismatch');
+  }
+  if (request.referenceAuthoritySha256 !== authorityDigest(authority)) {
+    unresolved.push('quote_reference_authority_changed');
+  }
+  if (request.referenceAuthoritySourceRef !== authority.sourceRef) {
+    unresolved.push('quote_reference_authority_source_mismatch');
+  }
+  if (request.referenceAuthorityVersion !== authority.version) {
+    unresolved.push('quote_reference_authority_version_mismatch');
+  }
+  if (request.referenceAuthorityObservedAt !== authority.observedAt) {
+    unresolved.push('quote_reference_authority_observed_at_mismatch');
+  }
+  if (request.referenceAuthorityExpiresAt !== authority.expiresAt) {
+    unresolved.push('quote_reference_authority_expires_at_mismatch');
+  }
+  return [...new Set(unresolved)];
 }
 
 function checkConfiguredRef(
@@ -274,7 +382,9 @@ export function normalizeQuoteRequest(
   options: QuoteRequestNormalizationOptions = {},
 ): QuoteRequestNormalization {
   const unresolved: string[] = [];
-  const authority = options.referenceAuthority ?? DEFAULT_QUOTE_REFERENCE_AUTHORITY;
+  const authority = options.referenceAuthority ?? unavailableAuthority;
+  if (!options.referenceAuthority) unresolved.push('quote_reference_authority');
+  unresolved.push(...authorityValidityIssues(authority, options.now ?? new Date()));
   if (!isRecord(input)) {
     return { status: 'clarification', request: null, unresolvedInputs: ['request'] };
   }
@@ -328,6 +438,14 @@ export function normalizeQuoteRequest(
       const normalized = normalizeSegment(segment, index, currency ?? '', unresolved, authority);
       if (normalized) segments.push(normalized);
     }
+  }
+
+  // The current executor performs one search from the top-level room shape.
+  // Every explicit segment must therefore carry the exact same allocation;
+  // otherwise occupancy, quantity, ages, or room/rate eligibility would be
+  // silently discarded when the candidate is adapted for execution.
+  if (rooms && segments.some((segment) => !sameRoomShape(segment.rooms, rooms))) {
+    unresolved.push('segment_room_shape_mismatch');
   }
 
   if (start !== null && end !== null && segments.length > 0) {
@@ -399,6 +517,7 @@ export function normalizeQuoteRequest(
   }
 
   const canonical: Omit<QuoteRequest, 'quoteRequestRef'> = {
+    propertyCode: authority.propertyCode,
     arrival: arrival as string,
     departure: departure as string,
     rooms,
@@ -413,6 +532,10 @@ export function normalizeQuoteRequest(
     roomMoveRequired: segments.some(
       (segment, index) => index > 0 && !sameRoomShape(segment.rooms, segments[index - 1]!.rooms),
     ),
+    referenceAuthoritySourceRef: authority.sourceRef,
+    referenceAuthorityVersion: authority.version,
+    referenceAuthorityObservedAt: authority.observedAt,
+    referenceAuthorityExpiresAt: authority.expiresAt,
     referenceAuthoritySha256: authorityDigest(authority),
   };
   const request = quoteRequestSchema.parse({

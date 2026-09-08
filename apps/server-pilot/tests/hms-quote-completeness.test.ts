@@ -3,6 +3,7 @@ import {
   issueReadAdmission,
   persistReadAdmissionIssuer,
 } from '../src/hms/read-admission.js';
+import { syntheticQuoteReferenceAuthority } from './helpers/quote-reference-authority.js';
 import { readRequestSchema, executeReadToolRun } from '../src/hms/read-service.js';
 import { normalizeQuoteRequest } from '../src/hms/quote-request-normalization.js';
 import { quoteStayReadDataSchema } from '../src/hms/quote-stay-contract.js';
@@ -76,14 +77,17 @@ describe('trusted quote completeness contract', () => {
   });
 
   it('binds a normalized producer request to the typed read receipt without a model', async () => {
-    const normalized = normalizeQuoteRequest({
-      arrival: '2026-09-10',
-      departure: '2026-09-12',
-      rooms: [
-        { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
-      ],
-      currency: 'ZAR',
-    });
+    const normalized = normalizeQuoteRequest(
+      {
+        arrival: '2026-09-10',
+        departure: '2026-09-12',
+        rooms: [
+          { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
+        ],
+        currency: 'ZAR',
+      },
+      { referenceAuthority: syntheticQuoteReferenceAuthority },
+    );
     expect(normalized.status).toBe('ready');
     if (normalized.status !== 'ready') return;
 
@@ -169,14 +173,17 @@ describe('trusted quote completeness contract', () => {
   });
 
   it('mints a quote-only admission and preserves the exact request digest through issuer proof', () => {
-    const normalized = normalizeQuoteRequest({
-      arrival: '2026-09-10',
-      departure: '2026-09-12',
-      rooms: [
-        { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
-      ],
-      currency: 'ZAR',
-    });
+    const normalized = normalizeQuoteRequest(
+      {
+        arrival: '2026-09-10',
+        departure: '2026-09-12',
+        rooms: [
+          { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
+        ],
+        currency: 'ZAR',
+      },
+      { referenceAuthority: syntheticQuoteReferenceAuthority },
+    );
     expect(normalized.status).toBe('ready');
     if (normalized.status !== 'ready') return;
     const issued = issueReadAdmission({

@@ -6,6 +6,11 @@ import {
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
 import {
+  normalizeQuoteRequestFromAuthoredSegment,
+  unavailableQuoteReferenceAuthority,
+  type QuoteReferenceAuthorityLoader,
+} from './quote-request-normalization.js';
+import {
   assertPersistedReadAdmissionIssuer,
   issueReadAdmission,
   type IssuedReadAdmission,
@@ -29,7 +34,6 @@ import {
   type ReservationFindResult,
 } from './reservation-context-contract.js';
 import { extractLookupCandidates, filterExactReservationCandidates } from '../ai/thread-context.js';
-import { normalizeQuoteRequestFromAuthoredSegment } from './quote-request-normalization.js';
 import { DOCUMENT_LIST_MAX_ROWS } from './document-list-contract.js';
 import { normalizeMessageText } from '../ai/thread-context.js';
 import { and, asc, desc, eq, lte, or } from 'drizzle-orm';
@@ -76,6 +80,25 @@ export type IssuedMailboxReadAdmission = IssuedReadAdmission & {
   quoteRequestRef: string | null;
 };
 
+export type ReadAdmissionDependencies = {
+  /** Internal source seam; production composition must provide real current data. */
+  quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
+};
+
+let configuredQuoteReferenceAuthorityLoader: QuoteReferenceAuthorityLoader =
+  unavailableQuoteReferenceAuthority;
+
+/** Test-only composition seam; normal route composition remains unavailable until real source wiring. */
+export function __setQuoteReferenceAuthorityLoaderForTests(
+  loader: QuoteReferenceAuthorityLoader,
+): void {
+  configuredQuoteReferenceAuthorityLoader = loader;
+}
+
+export function __clearQuoteReferenceAuthorityLoaderForTests(): void {
+  configuredQuoteReferenceAuthorityLoader = unavailableQuoteReferenceAuthority;
+}
+
 function authError(code: string, messageText: string): Error & { code: string } {
   return Object.assign(new Error(messageText), { code });
 }
@@ -100,7 +123,11 @@ export async function loadReadMailboxGrant(input: { db: DB; userId: string; tran
   return grant;
 }
 
-async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
+async function loadTrigger(
+  input: IssueMailboxReadAdmissionInput,
+  db: DB,
+  dependencies: ReadAdmissionDependencies,
+) {
   const [thread] = await db
     .select({ id: mailThread.id, transportId: mailThread.transportId })
     .from(mailThread)
@@ -131,7 +158,24 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
     .filter(Boolean)
     .join('\n');
   if (input.toolId === 'hms_quote_stay') {
-    const normalized = normalizeQuoteRequestFromAuthoredSegment(triggerText);
+    const authorityResult = await (
+      dependencies.quoteReferenceAuthorityLoader ?? configuredQuoteReferenceAuthorityLoader
+    )({
+      now: input.now ?? new Date(),
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: trigger.id,
+    });
+    if (authorityResult.status !== 'ready') {
+      throw authError(
+        'READ_QUOTE_AUTHORITY_UNAVAILABLE',
+        `quote reference authority is ${authorityResult.reason}`,
+      );
+    }
+    const normalized = normalizeQuoteRequestFromAuthoredSegment(triggerText, {
+      referenceAuthority: authorityResult.authority,
+      now: input.now ?? new Date(),
+    });
     if (normalized.status !== 'ready') {
       throw authError(
         'READ_QUOTE_INPUT_CLARIFICATION',
@@ -417,6 +461,7 @@ async function loadParentFind(input: {
  */
 export async function issueReadAdmissionFromMailbox(
   input: IssueMailboxReadAdmissionInput,
+  dependencies: ReadAdmissionDependencies = {},
 ): Promise<IssuedMailboxReadAdmission> {
   const now = input.now ?? new Date();
   const db = input.db;
@@ -425,7 +470,7 @@ export async function issueReadAdmissionFromMailbox(
     userId: input.userId,
     transportId: input.transportId,
   });
-  const trigger = await loadTrigger(input, db);
+  const trigger = await loadTrigger(input, db, dependencies);
   const source: ReadAdmissionSource = {
     userId: grant.userId,
     mailboxAccessId: grant.accessId,

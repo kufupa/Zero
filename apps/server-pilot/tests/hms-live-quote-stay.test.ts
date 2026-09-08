@@ -13,6 +13,7 @@ import {
   parseLiveQuoteAvailability,
 } from '../src/hms/live-quote-stay-driver.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../src/hms/quote-stay-contract.js';
+import { syntheticQuoteReferenceAuthority } from './helpers/quote-reference-authority.js';
 import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
 import { normalizeQuoteRequest } from '../src/hms/quote-request-normalization.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
@@ -143,14 +144,17 @@ function mockRuntime(htmlOrBody: string, receipt: Record<string, unknown> | null
 
 describe('live quote stay parser', () => {
   it('accepts a producer-normalized request and preserves signed observed availability', async () => {
-    const normalized = normalizeQuoteRequest({
-      arrival: '2026-09-10',
-      departure: '2026-09-12',
-      rooms: [
-        { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
-      ],
-      currency: 'ZAR',
-    });
+    const normalized = normalizeQuoteRequest(
+      {
+        arrival: '2026-09-10',
+        departure: '2026-09-12',
+        rooms: [
+          { quantity: 1, adultsPerRoom: 2, childAges: [], roomTypeRef: 'STD', ratePlanRef: 'BAR' },
+        ],
+        currency: 'ZAR',
+      },
+      { referenceAuthority: syntheticQuoteReferenceAuthority },
+    );
     expect(normalized.status).toBe('ready');
     if (normalized.status !== 'ready') return;
     const converted = quoteStayCandidateFromRequest(normalized.request);
@@ -222,18 +226,12 @@ describe('live quote stay parser', () => {
         ],
       },
       {
-        referenceAuthority: {
-          propertyCode: 'HRCEN',
-          roomTypeRefs: ['STD', 'DLX'],
-          ratePlanRefs: ['BAR', 'BAR2'],
-          currencyCodes: ['ZAR'],
-        },
+        referenceAuthority: syntheticQuoteReferenceAuthority,
       },
     );
-    expect(normalized.status).toBe('ready');
-    if (normalized.status !== 'ready') return;
-    expect(normalized.request.roomMoveRequired).toBe(true);
-    expect(quoteStayCandidateFromRequest(normalized.request)).toBeNull();
+    expect(normalized.status).toBe('clarification');
+    if (normalized.status !== 'clarification') return;
+    expect(normalized.unresolvedInputs).toContain('segment_room_shape_mismatch');
   });
 
   it('maps availabilitydata nights with currency/basis/restrictions', () => {
@@ -349,6 +347,61 @@ describe('live quote stay parser', () => {
     expect(data.unresolvedInputs).toContain('currency_mismatch');
   });
 
+  it('retains page currency and rejects a page/source currency mismatch before arithmetic', () => {
+    const c = { ...candidate(), currency: 'USD' };
+    const parsed = parseLiveQuoteAvailability(
+      liveEnvelope([
+        { date: '2026-09-10', rate: 100, avail: 1 },
+        { date: '2026-09-11', rate: 110, avail: 1 },
+      ]).replace('"uoc":"ZAR","ratePlanDailyInvArray"', '"uoc":"USD","ratePlanDailyInvArray"'),
+      c,
+      new Date('2026-08-06T00:00:00.000Z'),
+    );
+    expect(parsed.currency).toBe('ZAR');
+    expect(parsed.rows[0]?.currency).toBe('USD');
+    expect(parsed.unresolvedFields).toContain('source_currency_mismatch');
+    const data = buildQuoteStayReadData({
+      nightlyObservations: parsed.rows,
+      requestedRooms: 1,
+      requestRef: c.quoteRequestRef,
+      arrival: c.arrivalDate,
+      departure: c.departureDate,
+      rooms: c.normalizedRooms,
+      currency: c.currency,
+      sourceCurrency: parsed.currency,
+      unresolvedInputs: parsed.unresolvedFields,
+    });
+    expect(data.sourceCurrency).toBe('ZAR');
+    expect(data.displayRateSum).toBeNull();
+    expect(data.unresolvedInputs).toContain('source_currency_mismatch');
+  });
+
+  it('keeps source currency unknown when the page and rate rows omit currency', () => {
+    const c = candidate();
+    const parsed = parseLiveQuoteAvailability(
+      liveEnvelope([
+        { date: '2026-09-10', rate: 100, avail: 1 },
+        { date: '2026-09-11', rate: 110, avail: 1 },
+      ]).replaceAll('"uoc":"ZAR"', '"uoc":null'),
+      c,
+      new Date('2026-08-06T00:00:00.000Z'),
+    );
+    expect(parsed.currency).toBeNull();
+    expect(parsed.unresolvedFields).toContain('source_currency_unresolved');
+    const data = buildQuoteStayReadData({
+      nightlyObservations: parsed.rows,
+      requestedRooms: 1,
+      arrival: c.arrivalDate,
+      departure: c.departureDate,
+      rooms: c.normalizedRooms,
+      currency: c.currency,
+      sourceCurrency: parsed.currency,
+      unresolvedInputs: parsed.unresolvedFields,
+    });
+    expect(data.sourceCurrency).toBeNull();
+    expect(data.displayRateSum).toBeNull();
+  });
+
   it('does not emit display arithmetic for duplicate selected nights', () => {
     const c = candidate();
     const rows = parseLiveQuoteAvailability(
@@ -393,6 +446,22 @@ describe('live quote stay driver', () => {
     expect(posts[0]?.fields.roomtypes).toBe('STD');
     expect(posts[0]?.fields.rateplans).toBe('BAR');
     expect(posts[0]?.fields.startdate).toBe('10-SEP-2026');
+  });
+
+  it('propagates page-versus-rate currency mismatch into the durable observer result', async () => {
+    const c = { ...candidate(), currency: 'USD' };
+    const { runtime } = mockRuntime(
+      liveEnvelope([
+        { date: '2026-09-10', rate: 100, avail: 1 },
+        { date: '2026-09-11', rate: 110, avail: 1 },
+      ]).replace('"uoc":"ZAR","ratePlanDailyInvArray"', '"uoc":"USD","ratePlanDailyInvArray"'),
+    );
+    const driver = createLiveQuoteStayDriver({ runtime, transportId: 'transport-centurion' });
+    const result = await driver.observeExactQuote(auth(), c, new AbortController().signal);
+    expect(result.status).toBe('manual_required');
+    expect(result.data.sourceCurrency).toBe('ZAR');
+    expect(result.data.displayRateSum).toBeNull();
+    expect(result.data.unresolvedInputs).toContain('source_currency_mismatch');
   });
 
   it('passes the normal audited execution spec into the live session', async () => {

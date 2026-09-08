@@ -60,6 +60,12 @@ export const quoteStayReadDataSchema = z
       .string()
       .regex(/^[A-Z]{3}$/)
       .optional(),
+    /** Currency reported by the availability page/source, kept separate from the request. */
+    sourceCurrency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .nullable()
+      .optional(),
     coveredNights: z.array(isoDateSchema).max(30).optional(),
     missingNights: z.array(isoDateSchema).max(30).optional(),
     continuousStay: z.boolean().optional(),
@@ -84,6 +90,7 @@ export type QuoteObservationSummaryInput = {
   departure?: string;
   rooms?: readonly NormalizedQuoteRoom[];
   currency?: string;
+  sourceCurrency?: string | null;
   roomMoveRequired?: boolean;
   unresolvedInputs?: readonly string[];
 };
@@ -126,6 +133,7 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
   const missingNights = expectedNights.filter((date) => !observedNights.has(date));
   const currencies = new Set(rows.map((row) => row.currency));
   const currency = input.currency ?? (currencies.size === 1 ? rows[0]?.currency : undefined);
+  const sourceCurrency = input.sourceCurrency ?? null;
   const unresolved = new Set(input.unresolvedInputs ?? []);
   if (missingNights.length > 0) {
     for (const date of missingNights) unresolved.add(`missing_night:${date}`);
@@ -133,6 +141,13 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
   if (currencies.size > 1) unresolved.add('mixed_currency');
   if (input.currency && rows.some((row) => row.currency !== input.currency)) {
     unresolved.add('currency_mismatch');
+  }
+  if (!sourceCurrency) unresolved.add('source_currency_unresolved');
+  if (sourceCurrency && rows.some((row) => row.currency !== sourceCurrency)) {
+    unresolved.add('source_currency_mismatch');
+  }
+  if (sourceCurrency && input.currency && sourceCurrency !== input.currency) {
+    unresolved.add('source_currency_mismatch');
   }
   if (rows.some((row) => row.availableCount < 0)) {
     unresolved.add('negative_observed_overbooking');
@@ -164,7 +179,9 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
     input.rooms?.reduce((sum, room) => sum + room.quantity, 0) ?? input.requestedRooms;
   const sumEligible =
     currency &&
+    sourceCurrency &&
     currencies.size === 1 &&
+    sourceCurrency === currency &&
     exactNightCoverage &&
     requestedCurrencyMatches &&
     !hasAmbiguousNight &&
@@ -199,6 +216,7 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
     departure: input.departure,
     rooms: input.rooms ? [...input.rooms] : undefined,
     currency,
+    sourceCurrency,
     coveredNights: expectedNights.filter((date) => observedNights.has(date)),
     missingNights,
     continuousStay: missingNights.length === 0,
