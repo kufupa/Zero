@@ -24,6 +24,7 @@ import type {
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
 import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
+import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
@@ -361,12 +362,16 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     });
     if (
       (parsedReadRequest.toolId === 'hms_find_reservation' && admission.reservationRef !== null) ||
-      (parsedReadRequest.toolId === 'hms_read_reservation' &&
+      ((parsedReadRequest.toolId === 'hms_read_reservation' ||
+        parsedReadRequest.toolId === 'hms_read_folio') &&
         admission.reservationRef !== parsedReadRequest.reservationRef)
     ) {
       throw new Error('read_tool reservation reference is not bound to trusted admission');
     }
-    if (parsedReadRequest.toolId === 'hms_read_reservation') {
+    if (
+      parsedReadRequest.toolId === 'hms_read_reservation' ||
+      parsedReadRequest.toolId === 'hms_read_folio'
+    ) {
       if (!parsedReadRequest.candidateId) {
         throw new Error('resolved read_tool runs require a server-bound candidateId');
       }
@@ -701,6 +706,9 @@ export async function readAiRunReceipt(
     concrete = reservationContextReadResultSchema.parse(result);
   } else if (result.toolId === 'documents_list_existing') {
     if (result.data !== null) existingDocumentListDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_read_folio') {
+    if (result.data !== null) folioReadDataSchema.parse(result.data);
     concrete = result;
   } else {
     if (result.data !== null) existingDocumentReadDataSchema.parse(result.data);

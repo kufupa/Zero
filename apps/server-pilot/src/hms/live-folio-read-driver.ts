@@ -5,9 +5,6 @@
  * Observations never emit recipientClass/inquiryClass, card PAN, or guest names.
  * paymentcardnumber on DLD is detected for leak flag only — never parsed into claims.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import type { ToolResult } from '../ai/draft-evidence.js';
-import type { ReadCandidateChild } from './candidate-graph.js';
 import {
   FOLIO_READ_MAX_BYTES,
   FOLIO_READ_MAX_DURATION_MS,
@@ -16,19 +13,20 @@ import {
   folioReadDataSchema,
   type FolioReadData,
 } from './folio-read-contract.js';
-import { extractOsressPageData } from './live-guest-stay-driver.js';
-import { createFolioReadFacade } from './folio-read-facade.js';
+import { knownFact, readIssue, unknownFact } from './read-service-contracts.js';
 import type { ExactReservationCandidate } from './live-read-manifest.js';
+import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import { createFolioReadFacade } from './folio-read-facade.js';
+import type { ReadCandidateChild } from './candidate-graph.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER =
   'BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN';
 
-export const LIVE_FOLIO_BALANCE_ALIAS_KEYS = [
-  'foliobalance',
-  'propertycurrency',
-] as const;
+export const LIVE_FOLIO_BALANCE_ALIAS_KEYS = ['foliobalance', 'propertycurrency'] as const;
 
 export const LIVE_DEPOSIT_LEDGER_ALIAS_KEYS = [
   'currency',
@@ -93,10 +91,7 @@ function strOrEmpty(raw: unknown): string {
   return '';
 }
 
-export function normalizeMoney(
-  raw: unknown,
-  opts?: { unsigned?: boolean },
-): string | null {
+export function normalizeMoney(raw: unknown, opts?: { unsigned?: boolean }): string | null {
   if (raw == null || raw === '') return null;
   let s = String(raw).trim().replace(/,/g, '');
   if (!s) return null;
@@ -153,9 +148,7 @@ function parsePageData(text: string): Record<string, unknown> | null {
   }
 }
 
-function gridDataRows(
-  pageData: Record<string, unknown>,
-): Record<string, unknown>[] {
+function gridDataRows(pageData: Record<string, unknown>): Record<string, unknown>[] {
   const gridWrap = pageData.grid;
   if (gridWrap == null || typeof gridWrap !== 'object') return [];
   const gridResult = (gridWrap as Record<string, unknown>).GRIDRESULT;
@@ -164,10 +157,7 @@ function gridDataRows(
   if (inner == null || typeof inner !== 'object') return [];
   const data = (inner as Record<string, unknown>).DATA;
   if (!Array.isArray(data)) return [];
-  return data.filter((r) => r && typeof r === 'object') as Record<
-    string,
-    unknown
-  >[];
+  return data.filter((r) => r && typeof r === 'object') as Record<string, unknown>[];
 }
 
 export function buildDepositSummary(raw: {
@@ -176,7 +166,7 @@ export function buildDepositSummary(raw: {
   refunded: string;
   forfeited: string;
   transferred: string;
-}): FolioReadData['depositSummary'] {
+}): NonNullable<FolioReadData['depositSummary']> {
   const totalCents =
     cents(raw.due) +
     cents(raw.paid) +
@@ -209,7 +199,7 @@ export function parseFolioBalanceTransport(text: string): {
   bytesObserved: number;
   hasCardLeak: boolean;
 } {
-  const bytesObserved = Math.min(Buffer.byteLength(text), FOLIO_READ_MAX_BYTES);
+  const bytesObserved = Buffer.byteLength(text);
   if (/data-testid\s*=\s*["']folio-/i.test(text)) {
     throw new HmsRuntimeError(
       'SCHEMA_DRIFT',
@@ -236,15 +226,14 @@ export function parseFolioBalanceTransport(text: string): {
   let totalBalance: string | null = null;
   let rowsScanned = 0;
 
-  for (const row of rows.slice(0, FOLIO_READ_MAX_ROWS)) {
+  for (const row of rows) {
     rowsScanned += 1;
+    if (rowsScanned > FOLIO_READ_MAX_ROWS) break;
     const bal =
       normalizeMoney(row.foliobalance) ??
       normalizeMoney(row.balance) ??
       normalizeMoney(row.totalbalance);
-    const cur =
-      normalizeCurrency(row.propertycurrency) ??
-      normalizeCurrency(row.currency);
+    const cur = normalizeCurrency(row.propertycurrency) ?? normalizeCurrency(row.currency);
     if (bal != null) totalBalance = bal;
     if (cur != null) currency = cur;
   }
@@ -253,9 +242,7 @@ export function parseFolioBalanceTransport(text: string): {
     totalBalance = normalizeMoney(pageData.foliobalance);
   }
   if (currency == null) {
-    currency =
-      normalizeCurrency(pageData.propertycurrency) ??
-      normalizeCurrency(pageData.currency);
+    currency = normalizeCurrency(pageData.propertycurrency) ?? normalizeCurrency(pageData.currency);
   }
   const fields = pageData.fields;
   if (fields && typeof fields === 'object') {
@@ -283,23 +270,23 @@ function addMoney(a: string, b: string): string {
   return `${neg ? '-' : ''}${whole}.${String(frac).padStart(2, '0')}`;
 }
 
-/**
- * Classify DLD activitytype_display into deposit summary buckets.
- * Unknown deposit-like activity → paid (fail closed on card/name only).
- */
+/** Classify only reviewed source activity labels; unknown never becomes paid. */
 export function classifyDepositActivity(
   activityRaw: unknown,
-): 'paid' | 'refunded' | 'forfeited' | 'transferred' | 'due' {
+): 'paid' | 'refunded' | 'forfeited' | 'transferred' | 'due' | 'unknown' {
   const a = String(activityRaw ?? '')
     .trim()
     .toLowerCase();
+  if (/deposit\s*(payment|received|posted)|payment\s*received/.test(a)) {
+    return 'paid';
+  }
   if (/refund/.test(a)) return 'refunded';
   if (/forfeit/.test(a)) return 'forfeited';
   if (/transfer|guest\s*ledger|to\s*guest|to\s*a\/?r/.test(a)) {
     return 'transferred';
   }
   if (/due|outstanding|balance/.test(a) && !/deposit/.test(a)) return 'due';
-  return 'paid';
+  return 'unknown';
 }
 
 export type DepositLedgerDateScope = {
@@ -321,9 +308,7 @@ export function extractDepositLedgerDateScopes(
   const seen = new Set<string>();
   for (const row of gridDataRows(pageData).slice(0, FOLIO_READ_MAX_ROWS)) {
     const closingdate =
-      strOrEmpty(row.closingdate) ||
-      strOrEmpty(row.hoteldate) ||
-      strOrEmpty(row.closing_date);
+      strOrEmpty(row.closingdate) || strOrEmpty(row.hoteldate) || strOrEmpty(row.closing_date);
     const property = strOrEmpty(row.property);
     if (!closingdate || !property) continue;
     if (!/^[A-Z0-9]{2,16}$/i.test(property)) continue;
@@ -363,8 +348,10 @@ export function parseDepositLedgerTransport(
   rowsScanned: number;
   bytesObserved: number;
   hasCardLeak: boolean;
+  completeness: 'complete' | 'partial' | 'unknown';
+  unmappedActivities: string[];
 } {
-  const bytesObserved = Math.min(Buffer.byteLength(text), FOLIO_READ_MAX_BYTES);
+  const bytesObserved = Buffer.byteLength(text);
   if (/data-testid\s*=\s*["']deposit-/i.test(text)) {
     throw new HmsRuntimeError(
       'SCHEMA_DRIFT',
@@ -382,6 +369,8 @@ export function parseDepositLedgerTransport(
       rowsScanned: 0,
       bytesObserved,
       hasCardLeak,
+      completeness: 'unknown',
+      unmappedActivities: [],
     };
   }
 
@@ -394,8 +383,7 @@ export function parseDepositLedgerTransport(
     if ('confirmationnumber' in row || 'confirmation' in row) {
       hasConfirmationColumn = true;
     }
-    const conf =
-      strOrEmpty(row.confirmationnumber) || strOrEmpty(row.confirmation);
+    const conf = strOrEmpty(row.confirmationnumber) || strOrEmpty(row.confirmation);
     if (token && conf && conf === token) {
       matched.push(row);
     }
@@ -410,6 +398,8 @@ export function parseDepositLedgerTransport(
       rowsScanned: rows.length,
       bytesObserved,
       hasCardLeak,
+      completeness: 'unknown',
+      unmappedActivities: [],
     };
   }
 
@@ -429,6 +419,7 @@ export function parseDepositLedgerTransport(
   let forfeited = '0.00';
   let transferred = '0.00';
   let due = '0.00';
+  const unmappedActivities: string[] = [];
 
   if (lstStyle && matched.length === 1) {
     currency = normalizeCurrency(first.currency);
@@ -442,7 +433,18 @@ export function parseDepositLedgerTransport(
     due = normalizeMoney(first.due, { unsigned: true }) ?? '0.00';
   } else {
     // DLD transaction rows: sum amount by activitytype_display.
+    const seenPostingRefs = new Set<string>();
     for (const row of matched) {
+      const postingRef =
+        strOrEmpty(row.postingref) ||
+        strOrEmpty(row.posting_ref) ||
+        strOrEmpty(row.postingreference) ||
+        strOrEmpty(row.transactionid) ||
+        strOrEmpty(row.transactionnumber);
+      if (postingRef) {
+        if (seenPostingRefs.has(postingRef)) continue;
+        seenPostingRefs.add(postingRef);
+      }
       currency = currency ?? normalizeCurrency(row.currency);
       const amt = normalizeMoney(row.amount, { unsigned: true });
       if (amt == null) continue;
@@ -451,7 +453,8 @@ export function parseDepositLedgerTransport(
       else if (bucket === 'refunded') refunded = addMoney(refunded, amt);
       else if (bucket === 'forfeited') forfeited = addMoney(forfeited, amt);
       else if (bucket === 'transferred') transferred = addMoney(transferred, amt);
-      else due = addMoney(due, amt);
+      else if (bucket === 'due') due = addMoney(due, amt);
+      else unmappedActivities.push(strOrEmpty(row.activitytype_display) || 'unknown');
     }
   }
 
@@ -469,6 +472,8 @@ export function parseDepositLedgerTransport(
     rowsScanned: rows.length,
     bytesObserved,
     hasCardLeak,
+    completeness: unmappedActivities.length > 0 ? 'partial' : 'complete',
+    unmappedActivities,
   };
 }
 
@@ -485,10 +490,7 @@ function assertFolioAuth(
     );
   }
   if (authorization.discoveryOperationId !== discoveryOperationId) {
-    throw new HmsRuntimeError(
-      'ROLE_SCOPE_INVALID',
-      'authorization discoveryOperationId mismatch',
-    );
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'authorization discoveryOperationId mismatch');
   }
   if (!allowedBranches.has(authorization.requestBranchId)) {
     throw new HmsRuntimeError(
@@ -500,10 +502,7 @@ function assertFolioAuth(
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'authorization expired');
   }
   if (child.toolId !== authorization.toolId) {
-    throw new HmsRuntimeError(
-      'ROLE_SCOPE_INVALID',
-      'child toolId does not match authorization',
-    );
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'child toolId does not match authorization');
   }
   if (child.requestBranchId !== authorization.requestBranchId) {
     throw new HmsRuntimeError(
@@ -515,17 +514,14 @@ function assertFolioAuth(
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'candidate child expired');
   }
   if (child.propertyCode !== 'HRCEN') {
-    throw new HmsRuntimeError(
-      'ROLE_SCOPE_INVALID',
-      'child propertyCode denied',
-    );
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'child propertyCode denied');
   }
 }
 
 function emptyEvidence(
   observedAt: string,
   sourceSeed: string,
-): ToolResult<FolioReadData>['evidence'] {
+): Extract<ToolResult<FolioReadData>['evidence'], { kind: 'hms' }> {
   return {
     kind: 'hms',
     id: randomUUID(),
@@ -539,6 +535,111 @@ function emptyEvidence(
   };
 }
 
+function moneyFact(
+  amount: string,
+  currency: string,
+  evidenceRef: string,
+  observedAt: string,
+  expiresAt: string,
+  basis: 'ledger_balance' | 'ledger_movement',
+) {
+  return knownFact({
+    value: {
+      amount,
+      currency,
+      basis,
+      taxTreatment: 'unknown' as const,
+    },
+    evidenceRef,
+    observedAt,
+    expiresAt,
+  });
+}
+
+function unknownSection(reasonCode: 'SOURCE_UNAVAILABLE' | 'NOT_REQUESTED') {
+  return {
+    state: 'unavailable' as const,
+    data: null,
+    reasonCode,
+    issues: [readIssue(reasonCode)],
+  };
+}
+
+function richBalanceSection(
+  balance: FolioBalanceKernelResult | undefined,
+  currency: string,
+  evidenceRef: string,
+  observedAt: string,
+  expiresAt: string,
+  complete: boolean,
+) {
+  if (!balance || balance.status !== 'ok' || balance.totalBalance == null) {
+    return unknownSection('SOURCE_UNAVAILABLE');
+  }
+  return {
+    state: complete ? ('available' as const) : ('partial' as const),
+    data: {
+      items: [
+        {
+          folioRef: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+          folioType: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+          balance: moneyFact(
+            balance.totalBalance,
+            currency,
+            evidenceRef,
+            observedAt,
+            expiresAt,
+            'ledger_balance',
+          ),
+        },
+      ],
+    },
+    completeness: complete ? ('complete' as const) : ('partial' as const),
+    issues: complete ? [] : [readIssue('PARTIAL_WINDOW')],
+  };
+}
+
+function richDepositSection(
+  deposit: DepositSummaryKernelResult | undefined,
+  currency: string,
+  evidenceRef: string,
+  observedAt: string,
+  expiresAt: string,
+) {
+  if (!deposit || deposit.status !== 'ok' || deposit.depositSummary == null) {
+    return unknownSection('SOURCE_UNAVAILABLE');
+  }
+  const summary = deposit.depositSummary;
+  const paidCents = cents(summary.paid.amount);
+  const transferredCents = cents(summary.transferred.amount);
+  const untransferred =
+    paidCents >= transferredCents
+      ? addMoney(summary.paid.amount, `-${summary.transferred.amount}`)
+      : null;
+  const fact = (amount: string) =>
+    moneyFact(amount, currency, evidenceRef, observedAt, expiresAt, 'ledger_movement');
+  return {
+    state: 'available' as const,
+    data: {
+      items: [
+        {
+          due: fact(summary.due.amount),
+          paid: fact(summary.paid.amount),
+          refunded: fact(summary.refunded.amount),
+          forfeited: fact(summary.forfeited.amount),
+          transferred: fact(summary.transferred.amount),
+          untransferred:
+            untransferred == null
+              ? unknownFact({ reasonCode: 'SOURCE_UNAVAILABLE' })
+              : fact(untransferred),
+        },
+      ],
+    },
+    completeness: 'complete' as const,
+    issues: [],
+  };
+}
+
 /**
  * Merge Folio + Deposit kernel results. Disclosure must come from trusted
  * requester authorization — never from HMS observations.
@@ -547,12 +648,8 @@ export function mergeFolioEvidence(
   steps: readonly (FolioBalanceKernelResult | DepositSummaryKernelResult)[],
   trustedDisclosure?: TrustedFolioDisclosure,
 ): ToolResult<FolioReadData> {
-  const observedAt =
-    steps.find((s) => s.observedAt)?.observedAt ?? new Date().toISOString();
-  const evidence = emptyEvidence(
-    observedAt,
-    JSON.stringify(steps.map((s) => s.evidenceId)),
-  );
+  const observedAt = steps.find((s) => s.observedAt)?.observedAt ?? new Date().toISOString();
+  const evidence = emptyEvidence(observedAt, JSON.stringify(steps.map((s) => s.evidenceId)));
 
   if (!trustedDisclosure) {
     return {
@@ -564,25 +661,19 @@ export function mergeFolioEvidence(
     };
   }
 
-  const balance = steps.find(
-    (s): s is FolioBalanceKernelResult =>
-      Object.prototype.hasOwnProperty.call(s, 'totalBalance'),
+  const balance = steps.find((s): s is FolioBalanceKernelResult =>
+    Object.prototype.hasOwnProperty.call(s, 'totalBalance'),
   );
-  const deposit = steps.find(
-    (s): s is DepositSummaryKernelResult =>
-      Object.prototype.hasOwnProperty.call(s, 'depositSummary'),
+  const deposit = steps.find((s): s is DepositSummaryKernelResult =>
+    Object.prototype.hasOwnProperty.call(s, 'depositSummary'),
   );
 
   const unresolved: string[] = [];
 
   const balanceOk =
-    balance?.status === 'ok' &&
-    balance.totalBalance != null &&
-    balance.currency != null;
+    balance?.status === 'ok' && balance.totalBalance != null && balance.currency != null;
   const depositOk =
-    deposit?.status === 'ok' &&
-    deposit.depositSummary != null &&
-    deposit.currency != null;
+    deposit?.status === 'ok' && deposit.depositSummary != null && deposit.currency != null;
 
   if (!balanceOk) {
     unresolved.push(balance?.blocker ?? 'FOLIO_BALANCE_UNAVAILABLE');
@@ -612,37 +703,48 @@ export function mergeFolioEvidence(
   }
 
   const currency = (balanceOk ? balance!.currency : deposit!.currency)!;
-  const totalBalance = balanceOk ? balance!.totalBalance! : '0.00';
-  const depositSummary = depositOk
-    ? deposit!.depositSummary!
-    : buildDepositSummary({
-        due: '0.00',
-        paid: '0.00',
-        refunded: '0.00',
-        forfeited: '0.00',
-        transferred: '0.00',
-      });
+  const partial = !(balanceOk && depositOk);
+  const rowsScanned = (balance?.rowsScanned ?? 0) + (deposit?.rowsScanned ?? 0);
+  const bytesObserved = (balance?.bytesObserved ?? 0) + (deposit?.bytesObserved ?? 0);
+  const durationMs = Math.max(balance?.durationMs ?? 0, deposit?.durationMs ?? 0);
+  if (
+    rowsScanned > FOLIO_READ_MAX_ROWS ||
+    bytesObserved > FOLIO_READ_MAX_BYTES ||
+    durationMs > FOLIO_READ_MAX_DURATION_MS
+  ) {
+    return {
+      status: 'manual_required',
+      draftReady: false,
+      data: {} as FolioReadData,
+      unresolvedFields: ['FOLIO_BOUNDS_EXCEEDED'],
+      evidence,
+    };
+  }
 
-  const rowsScanned = Math.min(
-    FOLIO_READ_MAX_ROWS,
-    (balance?.rowsScanned ?? 0) + (deposit?.rowsScanned ?? 0),
+  const evidenceRef = balance?.evidenceId ?? deposit?.evidenceId ?? evidence.id;
+  const expiresAt = evidence.expiresAt;
+  const richBalance = richBalanceSection(
+    balance,
+    currency,
+    evidenceRef,
+    observedAt,
+    expiresAt,
+    !partial,
   );
-  const bytesObserved = Math.min(
-    FOLIO_READ_MAX_BYTES,
-    (balance?.bytesObserved ?? 0) + (deposit?.bytesObserved ?? 0),
-  );
-  const durationMs = Math.min(
-    FOLIO_READ_MAX_DURATION_MS,
-    Math.max(balance?.durationMs ?? 0, deposit?.durationMs ?? 0),
-  );
+  const richDeposits = richDepositSection(deposit, currency, evidenceRef, observedAt, expiresAt);
 
   try {
     const data = folioReadDataSchema.parse({
       reservationBinding: 'exact_parent_redacted',
       guestPrivacy: 'identity_redacted',
       currency,
-      totalBalance,
-      depositSummary,
+      ...(balanceOk ? { totalBalance: balance!.totalBalance } : {}),
+      ...(depositOk ? { depositSummary: deposit!.depositSummary } : {}),
+      balance: richBalance,
+      deposits: richDeposits,
+      transactions: unknownSection('NOT_REQUESTED'),
+      liabilityLocation: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+      authorization: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
       disclosure: {
         recipientClass: trustedDisclosure.recipientClass,
         inquiryClass: trustedDisclosure.inquiryClass,
@@ -657,7 +759,6 @@ export function mergeFolioEvidence(
       observedAt,
     });
 
-    const partial = !(balanceOk && depositOk);
     return {
       status: partial ? 'partial' : 'ok',
       draftReady: !partial,
@@ -699,20 +800,13 @@ export type LiveFolioReadDriverInput = {
   expectedConfirmationToken: string;
 };
 
-export function createLiveFolioReadDriver(
-  input: LiveFolioReadDriverInput,
-): LiveFolioReadDriver {
+export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
   const { runtime, transportId, expectedConfirmationToken } = input;
 
   return {
     async observeFolioBalance(authorization, child, signal) {
       assertNotAborted(signal);
-      assertFolioAuth(
-        authorization,
-        child,
-        new Set(['folio_summary']),
-        'folio_summary',
-      );
+      assertFolioAuth(authorization, child, new Set(['folio_summary']), 'folio_summary');
 
       const observedAt = new Date();
       const started = observedAt.getTime();
@@ -748,10 +842,7 @@ export function createLiveFolioReadDriver(
 
         assertNotAborted(signal);
         const parsed = parseFolioBalanceTransport(text);
-        const durationMs = Math.min(
-          Date.now() - started,
-          FOLIO_READ_MAX_DURATION_MS,
-        );
+        const durationMs = Date.now() - started;
         if (parsed.hasCardLeak) {
           return {
             status: 'manual_required',
@@ -765,11 +856,7 @@ export function createLiveFolioReadDriver(
             rowsScanned: parsed.rowsScanned,
           };
         }
-        if (
-          !parsed.envelopeRecognized ||
-          parsed.totalBalance == null ||
-          parsed.currency == null
-        ) {
+        if (!parsed.envelopeRecognized || parsed.totalBalance == null || parsed.currency == null) {
           return {
             status: 'unverified_negative',
             currency: parsed.currency,
@@ -872,27 +959,33 @@ export function createLiveFolioReadDriver(
                 rowsScanned: 0,
               };
             }
-            const probe = parseDepositLedgerTransport(
-              text,
-              expectedConfirmationToken,
-            );
-            if (
-              probe.reservationScopeProven ||
-              /"confirmationnumber"\s*:/i.test(text)
-            ) {
+            const probe = parseDepositLedgerTransport(text, expectedConfirmationToken);
+            if (probe.reservationScopeProven || /"confirmationnumber"\s*:/i.test(text)) {
               break;
             }
           }
         }
 
-        const parsed = parseDepositLedgerTransport(
-          text,
-          expectedConfirmationToken,
-        );
-        const durationMs = Math.min(
-          Date.now() - started,
-          FOLIO_READ_MAX_DURATION_MS,
-        );
+        const parsed = parseDepositLedgerTransport(text, expectedConfirmationToken);
+        const durationMs = Date.now() - started;
+
+        if (
+          parsed.bytesObserved > FOLIO_READ_MAX_BYTES ||
+          parsed.rowsScanned > FOLIO_READ_MAX_ROWS ||
+          durationMs > FOLIO_READ_MAX_DURATION_MS
+        ) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            depositSummary: null,
+            evidenceId: null,
+            blocker: 'FOLIO_BOUNDS_EXCEEDED',
+            observedAt: observedAt.toISOString(),
+            durationMs,
+            bytesObserved: parsed.bytesObserved,
+            rowsScanned: parsed.rowsScanned,
+          };
+        }
 
         if (!parsed.reservationScopeProven) {
           return {

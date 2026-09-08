@@ -569,6 +569,9 @@ case "${MODE}:${SLICE}" in
       "tests/existing-document-validation.test.ts" \
       "tests/existing-document-db.test.ts"
     ;;
+  db:finance)
+    run_db_slice "tests/hms-finance-db.test.ts"
+    ;;
   db:baseline)
     run_db_slice "tests/mail-baseline-projection.test.ts"
     ;;

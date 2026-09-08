@@ -11,12 +11,12 @@ import {
   getCachedActiveReadRuntime,
   loadWorkerActiveReadSet,
 } from '../../hms/active-read-runtime.js';
+import { folioReadSectionIdSchema, readRefSchema } from '../../hms/read-service-contracts.js';
 import { router as tRouter, privateProcedure, mailboxProcedure } from '../trpc.js';
 import { persistedReadAdmissionIssuerSchema } from '../../hms/read-admission.js';
 import { enqueueHmsCandidateRefresh, loadHmsCandidateState } from './drafts.js';
 import { resolveHmsSourceRevision } from '../../hms/production-runtime.js';
 import { runtimeFingerprintSha256 } from '../../hms/evidence-runtime.js';
-import { readRefSchema } from '../../hms/read-service-contracts.js';
 import { aiWorkflowRun, message } from '../../db/schema/mail.js';
 import { readRequestSchema } from '../../hms/read-service.js';
 import { requireThreadForTransport } from './mail-helpers.js';
@@ -78,6 +78,36 @@ async function activeFindAdmission() {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'HMS_READ_RELEASE_UNAVAILABLE',
+    });
+  }
+  return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
+}
+
+async function activeFolioAdmission(sections: readonly string[]) {
+  let active = getCachedActiveReadRuntime();
+  if (!active) {
+    active = await loadWorkerActiveReadSet({
+      registryPath:
+        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+        '/opt/nava/shared/hms-active-registry/active.json',
+      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
+      runtimeFingerprintSha256: runtimeFingerprintSha256({
+        sourceRevision: resolveHmsSourceRevision(),
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+      }),
+    });
+  }
+  const release = active.releases.get('hms_read_folio');
+  const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
+  const branchId = sections.some((section) => ['deposits', 'transactions'].includes(section))
+    ? 'deposit_ledger_summary'
+    : 'folio_summary';
+  const branch = hmsRelease?.requestBranches.find((candidate) => candidate.id === branchId);
+  if (!hmsRelease || !branch || active.handlerPathActive !== true) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'HMS_FOLIO_READ_RELEASE_UNAVAILABLE',
     });
   }
   return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
@@ -260,6 +290,60 @@ export const aiRouter = tRouter({
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
           idempotencyKey: `hms-read-context:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}:${input.detail}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+        triggerMessageId: issued.triggerMessageId,
+        candidateId: issued.candidateId,
+        reservationRef: issued.admission.reservationRef,
+        reservationRefExpiresAt: issued.admission.reservationRefExpiresAt,
+      };
+    }),
+
+  /** Authenticated, parent-bound folio/deposit read; no model or write path. */
+  enqueueHmsFolioRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        findResultRef: readRefSchema,
+        sections: z
+          .array(folioReadSectionIdSchema)
+          .min(1)
+          .max(4)
+          .refine((sections) => new Set(sections).size === sections.length),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const release = await activeFolioAdmission(input.sections);
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'hms_read_folio',
+        parentReadResultRef: input.findResultRef,
+        sections: input.sections,
+        ...release,
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-folio:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',

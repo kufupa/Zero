@@ -6,6 +6,7 @@ import {
   readResultSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  folioReadRequestSchema,
   type ReadReasonCode,
   type ReadResult,
 } from './read-service-contracts.js';
@@ -39,12 +40,14 @@ export const readRequestSchema = z.union([
   reservationContextRequestSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  folioReadRequestSchema,
 ]);
 export type ReadRequest =
   | ReservationFindRequest
   | ReservationContextRequest
   | z.infer<typeof documentsListReadRequestSchema>
-  | z.infer<typeof documentsReadReadRequestSchema>;
+  | z.infer<typeof documentsReadReadRequestSchema>
+  | z.infer<typeof folioReadRequestSchema>;
 
 export type ReadHandlerResult =
   | ReservationLookupResult
@@ -74,6 +77,11 @@ export interface ReadHandlers {
       detail?: 'summary' | 'detail';
     },
   ) => Promise<unknown>;
+  readFolio?: (input: {
+    candidateId: string;
+    reservationRef: string;
+    sections: readonly string[];
+  }) => Promise<ReadResult<unknown>>;
 }
 
 export interface ReadExecutionContext {
@@ -407,7 +415,13 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
   if (isExistingDocumentRequest(request)) {
     assertDocumentRequesterScope(context);
   } else {
-    assertReadRequesterScope({ requester: context.requester, context, now });
+    assertReadRequesterScope({
+      requester: context.requester,
+      context,
+      now,
+      requiredClaimKind:
+        request.toolId === 'hms_read_folio' ? 'folio_deposit_summary' : 'reservation_summary',
+    });
   }
   if (context.signal.aborted) throw codedError('READ_ABORTED', 'read was aborted');
   if (context.budget.total >= context.budget.limit)
@@ -442,7 +456,9 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
       throw codedError('READ_CAPTURE_BINDING_MISMATCH', 'read capture binding mismatch');
     }
     const expectedReservationRef =
-      request.toolId === 'hms_read_reservation' ? request.reservationRef : null;
+      request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
+        ? request.reservationRef
+        : null;
     if (parsed.reservationRef !== expectedReservationRef) {
       throw codedError(
         'READ_RESERVATION_REF_BINDING_MISMATCH',
@@ -507,6 +523,20 @@ async function dispatchRead(
       },
     });
     return (await facade.findReservation(lookupInput)) as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_read_folio') {
+    const handler = context.handlers?.readFolio;
+    if (!handler) {
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed folio finance handler is unavailable');
+    }
+    return readResultSchema.parse(
+      await handler({
+        candidateId: parsed.candidateId,
+        reservationRef: parsed.reservationRef,
+        sections: parsed.sections,
+      }),
+    ) as ReadResult<unknown>;
   }
 
   const facade = context.reservationFacade;

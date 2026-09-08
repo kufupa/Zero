@@ -6,16 +6,6 @@
  * Live I/O still goes through LiveGuestStayDriver; createReadToolHandler proves
  * release/auth binding when a find release is active.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import type { LookupCandidate } from '../ai/thread-context.js';
-import type { ToolResult } from '../ai/draft-evidence.js';
-import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
-import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
-import {
-  reservationReadDataSchema,
-  type ReservationObservation,
-  type ReservationReadData,
-} from './contracts.js';
 import {
   HMS_FIND_RESERVATION_TOOL_ID,
   HMS_FIND_RESERVATION_TOOL_VERSION,
@@ -26,30 +16,28 @@ import type {
   GuestStaySearchResult,
   LiveGuestStayDriver,
 } from './live-guest-stay-driver.js';
+import {
+  reservationReadDataSchema,
+  type ReservationObservation,
+  type ReservationReadData,
+} from './contracts.js';
+import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
+import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
 import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
-import type { QuoteStayCandidate } from './quote-stay-candidate.js';
-import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
-import type { ReadToolId } from './read-tools.js';
-import { createReadToolHandler } from './read-handler-index.js';
-import type { HmsSessionAuthorization } from './release-kernel.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import type { CandidateToolId } from '../ai/candidate-draft-agent.js';
+import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
+import type { QuoteStayCandidate } from './quote-stay-candidate.js';
+import { quoteStayReadDataSchema } from './quote-stay-contract.js';
+import type { HmsSessionAuthorization } from './release-kernel.js';
+import { createReadToolHandler } from './read-handler-index.js';
+import type { LookupCandidate } from '../ai/thread-context.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
+import type { ReadToolId } from './read-tools.js';
 
-const ACTIVE_STATUSES = new Set([
-  'reserved',
-  'confirmed',
-  'inhouse',
-  'in-house',
-  'arrived',
-]);
+const ACTIVE_STATUSES = new Set(['reserved', 'confirmed', 'inhouse', 'in-house', 'arrived']);
 
-const CANCELED_STATUSES = new Set([
-  'canceled',
-  'cancelled',
-  'no-show',
-  'noshow',
-  'no_show',
-]);
+const CANCELED_STATUSES = new Set(['canceled', 'cancelled', 'no-show', 'noshow', 'no_show']);
 
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -74,8 +62,7 @@ function reservationResult(args: {
   propertyCode?: string;
 }): ToolResult<ReservationReadData> {
   const draftReady =
-    args.draftReady ??
-    (args.status === 'ok' && args.unresolvedFields.length === 0);
+    args.draftReady ?? (args.status === 'ok' && args.unresolvedFields.length === 0);
   return {
     status: args.status,
     draftReady,
@@ -88,9 +75,7 @@ function reservationResult(args: {
       toolVersion: HMS_FIND_RESERVATION_TOOL_VERSION,
       propertyCode: args.propertyCode ?? 'HRCEN',
       observedAt: args.observedAt.toISOString(),
-      expiresAt: new Date(
-        args.observedAt.getTime() + RESERVATION_EVIDENCE_TTL_MS,
-      ).toISOString(),
+      expiresAt: new Date(args.observedAt.getTime() + RESERVATION_EVIDENCE_TTL_MS).toISOString(),
       claimKeys: args.claimKeys,
       sourceHash: sha256Hex(args.sourceSeed),
     },
@@ -125,11 +110,7 @@ function mapMatchedRow(
     status = 'partial';
   }
 
-  const draftReady =
-    status === 'ok' &&
-    unresolvedFields.length === 0 &&
-    !canceled &&
-    active;
+  const draftReady = status === 'ok' && unresolvedFields.length === 0 && !canceled && active;
 
   return reservationResult({
     status,
@@ -210,26 +191,21 @@ export type CreateReservationCandidateSessionInput = {
   /** True when worker loaded registry through createReadToolHandler index. */
   handlerPathActive?: boolean;
   /** Plan-scoped gate inputs — set when activeReleases non-empty. */
-  candidateBindings?: ReadonlyMap<
-    string,
-    import('./candidate-read-plan.js').CandidateBinding
-  >;
+  candidateBindings?: ReadonlyMap<string, import('./candidate-read-plan.js').CandidateBinding>;
   requesterAuthorization?: import('./contracts.js').TrustedRequesterAuthorizationV1;
   /**
    * Optional: bind find release via handler index before browser I/O.
    * Live path supplies this after building HmsSessionAuthorization.
    */
-  bindFindAuthorization?: (
-    authorization: HmsSessionAuthorization,
-  ) => void;
+  bindFindAuthorization?: (authorization: HmsSessionAuthorization) => void;
   /** When hms_quote_stay is active — live OSRRAV driver. */
   quoteDriver?: LiveQuoteStayDriver;
   /** Opaque id → authored quote candidate (room+rate scoped). */
   quoteCandidates?: ReadonlyMap<string, QuoteStayCandidate>;
   /** Build per-call quote authorization (release-bound). */
-  buildQuoteAuthorization?: (
-    candidate: QuoteStayCandidate,
-  ) => HmsSessionAuthorization;
+  buildQuoteAuthorization?: (candidate: QuoteStayCandidate) => HmsSessionAuthorization;
+  /** Finance read adapter; the worker still owns the admission/lock boundary. */
+  folioRead?: CandidateToolSession['readFolio'];
   /** Exposed only so the U8 read adapter can fence the full dispatch. */
   propertyReadLock?: import('./property-read-lock.js').PropertyReadLock;
 };
@@ -265,6 +241,7 @@ export function createReservationCandidateSession(
   if (quoteRelease && input.quoteDriver) {
     activeToolIds.add('hms_quote_stay');
   }
+  if (input.folioRead) activeToolIds.add('hms_read_folio');
 
   return {
     activeToolIds,
@@ -344,9 +321,7 @@ export function createReservationCandidateSession(
             observedAt: observedAt.toISOString(),
             expiresAt: new Date(observedAt.getTime() + 15 * 60_000).toISOString(),
             claimKeys: [],
-            sourceHash: createHash('sha256')
-              .update(`missing-quote:${candidateId}`)
-              .digest('hex'),
+            sourceHash: createHash('sha256').update(`missing-quote:${candidateId}`).digest('hex'),
           },
         };
       }
@@ -354,15 +329,12 @@ export function createReservationCandidateSession(
         void createReadToolHandler;
       }
       const authorization = input.buildQuoteAuthorization(quoteCand);
-      return input.quoteDriver.observeExactQuote(
-        authorization,
-        quoteCand,
-        signal,
-      );
+      return input.quoteDriver.observeExactQuote(authorization, quoteCand, signal);
     },
     readArtifact: async () => {
       throw new Error('mail_read_artifact not active in reservation session');
     },
+    ...(input.folioRead ? { readFolio: input.folioRead } : {}),
     close: input.close,
   };
 }

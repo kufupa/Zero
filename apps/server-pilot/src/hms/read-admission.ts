@@ -145,7 +145,7 @@ type ReservationIssueReadAdmissionInput = {
   source: ReadAdmissionSource;
   now?: Date;
   candidateId: string;
-  toolId: 'hms_find_reservation' | 'hms_read_reservation';
+  toolId: 'hms_find_reservation' | 'hms_read_reservation' | 'hms_read_folio';
   sections?: readonly string[];
   detail?: 'summary' | 'detail';
   parentReadResultRef?: string;
@@ -240,7 +240,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   let evidenceExpiresAt: string | null = null;
   let parentReadResultRef: string | null = null;
 
-  if (input.toolId === 'hms_read_reservation') {
+  if (input.toolId === 'hms_read_reservation' || input.toolId === 'hms_read_folio') {
     if (candidateId === null) {
       throw new Error('reservation admission requires a candidate reference');
     }
@@ -282,13 +282,20 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     closedRequest =
       input.toolId === 'hms_find_reservation'
         ? { toolId: input.toolId, candidateId: candidateId! }
-        : {
-            toolId: input.toolId,
-            reservationRef,
-            candidateId: candidateId!,
-            sections: [...(reservationInput.sections ?? ['core', 'stay'])],
-            detail: reservationInput.detail ?? 'summary',
-          };
+        : input.toolId === 'hms_read_folio'
+          ? {
+              toolId: input.toolId,
+              reservationRef,
+              candidateId: candidateId!,
+              sections: [...(reservationInput.sections ?? ['balance', 'deposits'])],
+            }
+          : {
+              toolId: input.toolId,
+              reservationRef,
+              candidateId: candidateId!,
+              sections: [...(reservationInput.sections ?? ['core', 'stay'])],
+              detail: reservationInput.detail ?? 'summary',
+            };
   }
   const inputDigest = readInputDigest(closedRequest);
   const admission = readAdmissionSchema.parse({
@@ -353,6 +360,7 @@ export function assertPersistedReadAdmissionIssuer(input: {
   expectedToolId:
     | 'hms_find_reservation'
     | 'hms_read_reservation'
+    | 'hms_read_folio'
     | 'documents_list_existing'
     | 'documents_read_existing';
 }): PersistedReadAdmissionIssuer {
@@ -436,7 +444,11 @@ export function assertReadAdmissionIssuer(input: {
   ) {
     throw new Error('read_tool admission issuer window is not bound to the request');
   }
-  if (input.request.toolId === 'hms_read_reservation' && !persisted.parentReadResultRef) {
+  if (
+    (input.request.toolId === 'hms_read_reservation' ||
+      input.request.toolId === 'hms_read_folio') &&
+    !persisted.parentReadResultRef
+  ) {
     throw new Error('resolved read_tool admission requires a parent typed receipt');
   }
   return persisted;

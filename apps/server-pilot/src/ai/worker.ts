@@ -54,6 +54,7 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
+  readResultSchema,
   readReservationBindingSchema,
   readReservationRef,
   type ReadResult,
@@ -77,16 +78,17 @@ import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
+import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import type { ToolResult } from './draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
-import { createHash } from 'node:crypto';
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
@@ -404,6 +406,9 @@ export type CandidateSessionInput = {
   readOnly?: boolean;
   /** Trusted release/input/capture admission for the production read path. */
   readAdmission?: ReadAdmissionBinding;
+  readToolId?: import('../hms/read-tools.js').ReadToolId | 'hms_read_reservation';
+  /** Closed finance section selection for the optional folio adapter. */
+  folioSections?: readonly string[];
   /** Authored quote candidates when hms_quote_stay is active. */
   quoteCandidates?: ReadonlyMap<
     string,
@@ -497,6 +502,14 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       liveNotFoundCanaryCandidate,
     } = await import('../hms/live-read-manifest.js');
     const { createLiveQuoteStayDriver } = await import('../hms/live-quote-stay-driver.js');
+    const { createLiveFolioReadDriver, mergeFolioEvidence } = await import(
+      '../hms/live-folio-read-driver.js'
+    );
+    const { mintReadCandidateChildren } = await import('../hms/candidate-graph.js');
+    const { buildLiveFolioReadManifest, buildLiveDepositLedgerManifest } = await import(
+      '../hms/live-read-manifest.js'
+    );
+    const { createReadToolHandler } = await import('../hms/read-handler-index.js');
     const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } = await import(
       '../hms/production-runtime.js'
     );
@@ -521,6 +534,9 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const quoteReleaseRaw = active?.releases.get('hms_quote_stay') ?? null;
     const quoteRelease =
       quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms' ? quoteReleaseRaw : null;
+    const folioReleaseRaw = active?.releases.get('hms_read_folio') ?? null;
+    const folioRelease =
+      folioReleaseRaw && folioReleaseRaw.evidenceKind === 'hms' ? folioReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
@@ -534,21 +550,21 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         });
     if (input.readOnly) {
       const readAdmission = input.readAdmission;
-      if (!findRelease || active?.handlerPathActive !== true) {
-        throw Object.assign(
-          new Error('active hms_find_reservation release is required for read admission'),
-          {
-            failureClass: 'AUTH' as const,
-          },
-        );
+      const admittedRelease = input.readToolId === 'hms_read_folio' ? folioRelease : findRelease;
+      if (!admittedRelease || active?.handlerPathActive !== true) {
+        throw Object.assign(new Error('active read release is required for read admission'), {
+          failureClass: 'AUTH' as const,
+        });
       }
-      if (!readAdmission || readAdmission.releaseId !== findRelease.releaseId) {
+      if (!readAdmission || readAdmission.releaseId !== admittedRelease.releaseId) {
         throw Object.assign(new Error('read release admission does not match the active release'), {
           failureClass: 'AUTH' as const,
         });
       }
       if (
-        !findRelease.requestBranches.some((branch) => branch.id === readAdmission.requestBranchId)
+        !admittedRelease.requestBranches.some(
+          (branch) => branch.id === readAdmission.requestBranchId,
+        )
       ) {
         throw Object.assign(new Error('read request branch is not enabled on the active release'), {
           failureClass: 'AUTH' as const,
@@ -611,6 +627,115 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
           transportId: input.transportId,
         })
       : undefined;
+    const folioRead =
+      input.readOnly && folioRelease
+        ? async (candidateId: string, signal: AbortSignal): Promise<ToolResult<unknown>> => {
+            const readAdmission = input.readAdmission;
+            const candidate = candidates.get(candidateId);
+            if (!readAdmission || !candidate || candidate.kind !== 'confirmation') {
+              throw Object.assign(new Error('folio read candidate is not an exact reservation'), {
+                failureClass: 'AUTH' as const,
+              });
+            }
+            const sections = input.folioSections ?? ['balance', 'deposits'];
+            const operationId = input.runId ?? `hms-folio-${Date.now()}`;
+            const scopeHash = createHash('sha256')
+              .update(
+                JSON.stringify([
+                  input.transportId,
+                  input.threadId,
+                  input.runId ?? null,
+                  candidateId,
+                  readAdmission.reservationRef,
+                ]),
+              )
+              .digest('hex');
+            const sessionId = randomUUID();
+            const parentEvidenceId = randomUUID();
+            const expiresAt = input.readFence?.deadlineAt ?? new Date(Date.now() + 15 * 60_000);
+            const driver = createLiveFolioReadDriver({
+              runtime,
+              transportId: input.transportId,
+              expectedConfirmationToken: candidate.value,
+            });
+            const steps: Array<
+              | Awaited<ReturnType<typeof driver.observeFolioBalance>>
+              | Awaited<ReturnType<typeof driver.observeDepositSummary>>
+            > = [];
+
+            const observe = async (branchId: 'folio_summary' | 'deposit_ledger_summary') => {
+              const branch = folioRelease.requestBranches.find((item) => item.id === branchId);
+              if (!branch) {
+                throw Object.assign(
+                  new Error(`active folio release has no ${branchId} request branch`),
+                  { failureClass: 'AUTH' as const },
+                );
+              }
+              const child = mintReadCandidateChildren({
+                sessionId,
+                parentEvidenceId,
+                tools: [{ toolId: 'hms_read_folio', requestBranchId: branch.id }],
+                propertyCode: 'HRCEN',
+                scopeHash,
+                expiresAt,
+              })[0]!;
+              const manifest =
+                branchId === 'folio_summary'
+                  ? buildLiveFolioReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
+                  : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN);
+              const authorization = {
+                operationId,
+                toolId: 'hms_read_folio' as const,
+                discoveryOperationId: branch.discoveryOperationId,
+                releaseId: folioRelease.releaseId,
+                requestBranchId: branch.id,
+                manifest,
+                manifestSha256: branch.manifestSha256,
+                roleProofPath: config.roleProofPath,
+                roleProofSha256: folioRelease.roleProofSha256 ?? placeholderDigest('folio-role'),
+                credentialVersionHmacSha256:
+                  folioRelease.credentialVersionHmacSha256 ?? placeholderDigest('folio-credential'),
+                runtimeFingerprintSha256: folioRelease.runtimeFingerprintSha256 ?? runtimeFp,
+                privateDigestKeyVersion: folioRelease.privateDigestKeyVersion ?? 'v1',
+                sourceRevision: folioRelease.sourceRevision ?? sourceRevision,
+                expiresAt: expiresAt.toISOString(),
+              };
+              createReadToolHandler(folioRelease, authorization);
+              if (branchId === 'folio_summary') {
+                return driver.observeFolioBalance(authorization, child, signal);
+              }
+              return driver.observeDepositSummary(authorization, child, signal);
+            };
+
+            if (sections.includes('balance')) steps.push(await observe('folio_summary'));
+            if (sections.includes('deposits') || sections.includes('transactions')) {
+              steps.push(await observe('deposit_ledger_summary'));
+            }
+            if (steps.length === 0) {
+              return {
+                status: 'manual_required',
+                draftReady: false,
+                data: null,
+                unresolvedFields: ['SOURCE_UNAVAILABLE'],
+                evidence: {
+                  kind: 'hms' as const,
+                  id: randomUUID(),
+                  toolId: 'hms_read_folio' as const,
+                  toolVersion: '1.0.0',
+                  propertyCode: 'HRCEN',
+                  observedAt: new Date().toISOString(),
+                  expiresAt: expiresAt.toISOString(),
+                  claimKeys: [],
+                  sourceHash: createHash('sha256').update('folio-empty').digest('hex'),
+                },
+              };
+            }
+            return mergeFolioEvidence(steps, {
+              recipientClass: 'unknown',
+              inquiryClass: 'other',
+            });
+          }
+        : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
     return createReservationCandidateSession({
@@ -626,6 +751,7 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       requesterAuthorization: input.readOnly ? undefined : planGate?.requesterAuthorization,
       quoteDriver,
       quoteCandidates: input.quoteCandidates,
+      folioRead,
       propertyReadLock: input.readOnly ? propertyReadLock : undefined,
       buildQuoteAuthorization: quoteRelease
         ? (quoteCand) => {
@@ -1262,6 +1388,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
     if (
       expectedToolId !== 'hms_find_reservation' &&
       expectedToolId !== 'hms_read_reservation' &&
+      expectedToolId !== 'hms_read_folio' &&
       expectedToolId !== 'documents_list_existing' &&
       expectedToolId !== 'documents_read_existing'
     ) {
@@ -1312,7 +1439,10 @@ async function assertCurrentReadAdmissionAuthority(input: {
     );
   }
 
-  if (input.request.toolId !== 'hms_read_reservation') {
+  if (
+    input.request.toolId !== 'hms_read_reservation' &&
+    input.request.toolId !== 'hms_read_folio'
+  ) {
     if (issuerData.parentReadResultRef !== null || issuerData.evidenceExpiresAt !== null) {
       throw readAdmissionAuthError('find admission unexpectedly carries a parent receipt');
     }
@@ -1498,7 +1628,7 @@ async function executeProductionReadTool(input: {
       },
     );
   }
-  if (request.toolId === 'hms_read_reservation') {
+  if (request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio') {
     const reservationRef = admission.reservationRef;
     const reservationRefIssuedAt = admission.reservationRefIssuedAt;
     const reservationRefExpiresAt = admission.reservationRefExpiresAt;
@@ -1610,9 +1740,11 @@ async function executeProductionReadTool(input: {
     });
   }
   const trustedReservationRef =
-    request.toolId === 'hms_read_reservation' ? admission.reservationRef : null;
+    request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
+      ? admission.reservationRef
+      : null;
   const expectedReservationRef =
-    request.toolId === 'hms_read_reservation'
+    request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
       ? readReservationRef({
           transportId: input.run.transportId,
           threadId: input.run.threadId,
@@ -1622,7 +1754,7 @@ async function executeProductionReadTool(input: {
         })
       : null;
   if (
-    request.toolId === 'hms_read_reservation' &&
+    (request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio') &&
     (!trustedReservationRef ||
       trustedReservationRef !== request.reservationRef ||
       trustedReservationRef !== expectedReservationRef)
@@ -1646,6 +1778,8 @@ async function executeProductionReadTool(input: {
     readPlanKind: 'reservation',
     readOnly: true,
     readAdmission: admission,
+    readToolId: request.toolId,
+    ...(request.toolId === 'hms_read_folio' ? { folioSections: request.sections } : {}),
   });
   const propertyReadLock = session.propertyReadLock;
   if (!propertyReadLock) {
@@ -1689,6 +1823,108 @@ async function executeProductionReadTool(input: {
       },
     });
   };
+  const mapFolioSessionResult = async (): Promise<ReadResult<unknown>> => {
+    if (request.toolId !== 'hms_read_folio') {
+      throw Object.assign(new Error('folio result mapper called for a non-folio request'), {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      });
+    }
+    const folioRequest = request;
+    if (!session.readFolio) {
+      throw Object.assign(new Error('active folio session handler is unavailable'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const legacy = await session.readFolio(candidateId, input.signal);
+    if (legacy.evidence.kind !== 'hms') {
+      throw Object.assign(new Error('folio read returned a non-HMS evidence kind'), {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      });
+    }
+    const parsedData =
+      legacy.data == null
+        ? null
+        : (() => {
+            const parsed = folioReadDataSchema.safeParse(legacy.data);
+            if (parsed.success) return parsed.data;
+            if (legacy.status === 'ok' || legacy.status === 'partial') {
+              throw Object.assign(new Error('folio read returned malformed typed data'), {
+                failureClass: 'SCHEMA_DRIFT' as const,
+              });
+            }
+            return null;
+          })();
+    const unavailableSections = folioRequest.sections.flatMap((section) => {
+      const sectionValue =
+        parsedData && section === 'balance'
+          ? parsedData.balance
+          : parsedData && section === 'deposits'
+            ? parsedData.deposits
+            : parsedData && section === 'transactions'
+              ? parsedData.transactions
+              : null;
+      if (!sectionValue || sectionValue.state === 'available' || sectionValue.state === 'partial') {
+        return [];
+      }
+      return [
+        {
+          section,
+          reasonCode: 'reasonCode' in sectionValue ? sectionValue.reasonCode : 'SOURCE_UNAVAILABLE',
+        },
+      ];
+    });
+    const issueCode =
+      legacy.status === 'partial'
+        ? 'PARTIAL_WINDOW'
+        : legacy.status === 'manual_required'
+          ? 'SOURCE_UNAVAILABLE'
+          : legacy.status === 'unverified_negative'
+            ? 'UNVERIFIED_NEGATIVE'
+            : null;
+    const result = {
+      toolId: 'hms_read_folio' as const,
+      schemaVersion: 'hms-folio/1',
+      status:
+        legacy.status === 'ok' || legacy.status === 'partial'
+          ? legacy.status
+          : legacy.status === 'unverified_negative'
+            ? 'unverified_negative'
+            : 'manual_required',
+      data: parsedData,
+      completeness:
+        legacy.status === 'ok'
+          ? ('complete' as const)
+          : legacy.status === 'partial'
+            ? ('partial' as const)
+            : ('unknown' as const),
+      unavailableSections,
+      scopeRef: folioRequest.reservationRef,
+      evidence: [
+        {
+          evidenceRef: legacy.evidence.id,
+          sourceSystem: 'hms' as const,
+          sourceSurface: 'folio',
+          requestBranchId: admission.requestBranchId,
+          observedAt: legacy.evidence.observedAt,
+          sourceUpdatedAt: null,
+          expiresAt: legacy.evidence.expiresAt,
+          scopeVerified: true,
+          artifactRef: null,
+        },
+      ],
+      page: null,
+      issues: issueCode
+        ? [
+            {
+              code: issueCode,
+              retryable: false,
+              safeNextAction: 'manual_review' as const,
+            },
+          ]
+        : [],
+    };
+    return readResultSchema.parse(result) as ReadResult<unknown>;
+  };
   const { createReservationContextFacade } = await import('../hms/reservation-context-facade.js');
   const reservationFacade =
     request.toolId === 'hms_read_reservation'
@@ -1717,7 +1953,8 @@ async function executeProductionReadTool(input: {
       transportId: input.run.transportId,
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
-      allowedClaimKinds: ['reservation_summary'],
+      allowedClaimKinds:
+        request.toolId === 'hms_read_folio' ? ['folio_deposit_summary'] : ['reservation_summary'],
       expiresAt: input.fence.deadlineAt.toISOString(),
     },
     signal: input.signal,
@@ -1731,6 +1968,9 @@ async function executeProductionReadTool(input: {
         const mapped = await mapSessionResult(toLookup(candidateId));
         return mapped;
       },
+      ...(request.toolId === 'hms_read_folio'
+        ? { readFolio: async () => mapFolioSessionResult() }
+        : {}),
     },
   };
   try {

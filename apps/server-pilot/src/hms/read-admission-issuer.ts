@@ -49,6 +49,7 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   toolId:
     | 'hms_find_reservation'
     | 'hms_read_reservation'
+    | 'hms_read_folio'
     | 'documents_list_existing'
     | 'documents_read_existing';
   now?: Date;
@@ -465,7 +466,7 @@ export async function issueReadAdmissionFromMailbox(
       );
     }
     let evidenceExpiresAt: Date | string | undefined;
-    if (input.toolId === 'hms_read_reservation') {
+    if (input.toolId === 'hms_read_reservation' || input.toolId === 'hms_read_folio') {
       if (!input.parentReadResultRef) {
         throw authError(
           'READ_PARENT_RECEIPT_REQUIRED',

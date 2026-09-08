@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import {
   inquiryClassSchema,
   requesterClassSchema,
@@ -7,10 +6,8 @@ import {
   type TrustedRequesterAuthorizationV1,
   type TrustedRequesterClaimKind,
 } from './contracts.js';
-import {
-  equalDigestHex,
-  hmacSha256PrivateValue,
-} from './private-digests.js';
+import { equalDigestHex, hmacSha256PrivateValue } from './private-digests.js';
+import { z } from 'zod';
 
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -33,10 +30,7 @@ const requesterStateSchema = z
   })
   .strict()
   .superRefine((requester, context) => {
-    if (
-      new Set(requester.allowedClaimKinds).size !==
-      requester.allowedClaimKinds.length
-    ) {
+    if (new Set(requester.allowedClaimKinds).size !== requester.allowedClaimKinds.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['allowedClaimKinds'],
@@ -60,9 +54,7 @@ export const trustedRequesterSourceStateSchema = z
   })
   .strict();
 
-export type TrustedRequesterSourceState = z.infer<
-  typeof trustedRequesterSourceStateSchema
->;
+export type TrustedRequesterSourceState = z.infer<typeof trustedRequesterSourceStateSchema>;
 
 type PrivateDigestKey = string | Buffer;
 
@@ -104,8 +96,7 @@ function authorizationMacPayload(
     mailboxGrantSha256: authorization.mailboxGrantSha256,
     threadIdHmacSha256: authorization.threadIdHmacSha256,
     threadStateVersion: authorization.threadStateVersion,
-    requesterIdentityHmacSha256:
-      authorization.requesterIdentityHmacSha256,
+    requesterIdentityHmacSha256: authorization.requesterIdentityHmacSha256,
     requesterClass: authorization.requesterClass,
     inquiryClass: authorization.inquiryClass,
     allowedClaimKinds: authorization.allowedClaimKinds,
@@ -121,11 +112,7 @@ function buildAuthorization(
 ): TrustedRequesterAuthorizationV1 | null {
   const issuedAtMs = options.issuedAt.getTime();
   const expiresAtMs = options.expiresAt.getTime();
-  if (
-    !Number.isFinite(issuedAtMs) ||
-    !Number.isFinite(expiresAtMs) ||
-    expiresAtMs <= issuedAtMs
-  ) {
+  if (!Number.isFinite(issuedAtMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= issuedAtMs) {
     return null;
   }
   const keyVersion = options.keyVersion.trim();
@@ -151,10 +138,7 @@ function buildAuthorization(
     }),
   }).hmacSha256;
 
-  const unsigned: Omit<
-    TrustedRequesterAuthorizationV1,
-    'authorizationId'
-  > = {
+  const unsigned: Omit<TrustedRequesterAuthorizationV1, 'authorizationId'> = {
     schemaVersion: 1,
     operationId: state.operationId,
     mailboxGrantSha256: state.mailboxGrant.sha256,
@@ -163,9 +147,7 @@ function buildAuthorization(
     requesterIdentityHmacSha256,
     requesterClass: state.requester.requesterClass,
     inquiryClass: state.requester.inquiryClass,
-    allowedClaimKinds: sortedClaimKinds(
-      state.requester.allowedClaimKinds,
-    ),
+    allowedClaimKinds: sortedClaimKinds(state.requester.allowedClaimKinds),
     privateDigestKeyVersion: keyVersion,
     issuedAt: options.issuedAt.toISOString(),
     expiresAt: options.expiresAt.toISOString(),
@@ -184,8 +166,7 @@ function buildAuthorization(
     mailboxGrantSha256: unsigned.mailboxGrantSha256,
     threadIdHmacSha256: unsigned.threadIdHmacSha256,
     threadStateVersion: unsigned.threadStateVersion,
-    requesterIdentityHmacSha256:
-      unsigned.requesterIdentityHmacSha256,
+    requesterIdentityHmacSha256: unsigned.requesterIdentityHmacSha256,
     requesterClass: unsigned.requesterClass,
     inquiryClass: unsigned.inquiryClass,
     allowedClaimKinds: unsigned.allowedClaimKinds,
@@ -228,15 +209,9 @@ export type ValidateTrustedRequesterAuthorizationInput = {
 export function validateTrustedRequesterAuthorization(
   input: ValidateTrustedRequesterAuthorizationInput,
 ): TrustedRequesterAuthorizationV1 | null {
-  const authorization = trustedRequesterAuthorizationV1Schema.safeParse(
-    input.authorization,
-  );
-  const state = trustedRequesterSourceStateSchema.safeParse(
-    input.currentState,
-  );
-  const requiredClaimKind = trustedRequesterClaimKindSchema.safeParse(
-    input.requiredClaimKind,
-  );
+  const authorization = trustedRequesterAuthorizationV1Schema.safeParse(input.authorization);
+  const state = trustedRequesterSourceStateSchema.safeParse(input.currentState);
+  const requiredClaimKind = trustedRequesterClaimKindSchema.safeParse(input.requiredClaimKind);
   if (!authorization.success || !state.success || !requiredClaimKind.success) {
     return null;
   }
@@ -245,16 +220,11 @@ export function validateTrustedRequesterAuthorization(
   const nowMs = input.now.getTime();
   const issuedAtMs = Date.parse(authorization.data.issuedAt);
   const expiresAtMs = Date.parse(authorization.data.expiresAt);
-  if (
-    !Number.isFinite(nowMs) ||
-    nowMs < issuedAtMs ||
-    nowMs >= expiresAtMs
-  ) {
+  if (!Number.isFinite(nowMs) || nowMs < issuedAtMs || nowMs >= expiresAtMs) {
     return null;
   }
   if (
-    authorization.data.privateDigestKeyVersion !==
-      input.expectedPrivateDigestKeyVersion ||
+    authorization.data.privateDigestKeyVersion !== input.expectedPrivateDigestKeyVersion ||
     !authorization.data.allowedClaimKinds.includes(requiredClaimKind.data)
   ) {
     return null;
@@ -269,10 +239,7 @@ export function validateTrustedRequesterAuthorization(
     });
     if (
       !expected ||
-      !equalDigestHex(
-        authorization.data.authorizationId,
-        expected.authorizationId,
-      ) ||
+      !equalDigestHex(authorization.data.authorizationId, expected.authorizationId) ||
       JSON.stringify(authorization.data) !== JSON.stringify(expected)
     ) {
       return null;
@@ -298,6 +265,8 @@ export function assertReadRequesterScope(input: {
     allowedClaimKinds: readonly string[];
     expiresAt: string;
   };
+  /** Claim class required by the closed read tool (reservation by default). */
+  requiredClaimKind?: string;
   context: {
     transportId: string;
     threadId: string;
@@ -306,7 +275,12 @@ export function assertReadRequesterScope(input: {
   now: Date;
 }): void {
   const expiry = Date.parse(input.requester.expiresAt);
-  if (!input.requester.authorizationId || !Number.isFinite(expiry) || !Number.isFinite(input.now.getTime()) || input.now.getTime() >= expiry) {
+  if (
+    !input.requester.authorizationId ||
+    !Number.isFinite(expiry) ||
+    !Number.isFinite(input.now.getTime()) ||
+    input.now.getTime() >= expiry
+  ) {
     throw Object.assign(new Error('read authorization is expired'), {
       code: 'READ_AUTHORIZATION_EXPIRED',
     });
@@ -320,8 +294,9 @@ export function assertReadRequesterScope(input: {
       code: 'READ_AUTHORIZATION_SCOPE_MISMATCH',
     });
   }
-  if (!input.requester.allowedClaimKinds.includes('reservation_summary')) {
-    throw Object.assign(new Error('requester is not entitled to reservation reads'), {
+  const requiredClaimKind = input.requiredClaimKind ?? 'reservation_summary';
+  if (!input.requester.allowedClaimKinds.includes(requiredClaimKind)) {
+    throw Object.assign(new Error(`requester is not entitled to ${requiredClaimKind} reads`), {
       code: 'READ_CLAIM_NOT_ALLOWED',
     });
   }

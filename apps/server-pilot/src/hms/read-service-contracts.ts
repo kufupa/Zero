@@ -87,6 +87,32 @@ export const documentsReadReadRequestSchema = documentsReadExistingInputSchema
   .strict();
 export type DocumentsReadReadRequest = z.infer<typeof documentsReadReadRequestSchema>;
 
+/** Closed finance sections; selectors never expose PMS URLs or locators. */
+export const folioReadSectionIdSchema = z.enum([
+  'balance',
+  'deposits',
+  'transactions',
+  'authorization',
+]);
+
+export const folioReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_read_folio'),
+    reservationRef: readRefSchema,
+    candidateId: readRefSchema,
+    sections: z
+      .array(folioReadSectionIdSchema)
+      .min(1)
+      .max(4)
+      .default(['balance', 'deposits'])
+      .refine((sections) => new Set(sections).size === sections.length, {
+        message: 'folio sections must be unique',
+      }),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type FolioReadRequest = z.infer<typeof folioReadRequestSchema>;
+
 /** Persisted server-side proof that a context admission was issued for this scope. */
 export const readReservationBindingSchema = z
   .object({
@@ -307,6 +333,7 @@ export const readToolResultIdSchema = z.enum([
   'hms_read_reservation',
   'documents_list_existing',
   'documents_read_existing',
+  'hms_read_folio',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
