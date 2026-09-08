@@ -2,6 +2,8 @@
  * Quote stay candidate: one authored segment with dates, occupancy, room type, rate plan.
  * Live OSRRAV requires roomtypes+rateplans filters (unscoped search → result-limit error).
  */
+import type { QuoteRequest } from './quote-request-normalization.js';
+import { normalizedQuoteRoomSchema } from './quote-stay-contract.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -10,9 +12,7 @@ export const QUOTE_STAY_MAX_ROOMS = 4;
 export const QUOTE_STAY_MAX_GUESTS = 16;
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const codeToken = z
-  .string()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,31}$/, 'expected room/rate code');
+const codeToken = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,31}$/, 'expected room/rate code');
 
 export const quoteStayCandidateSchema = z
   .object({
@@ -25,6 +25,16 @@ export const quoteStayCandidateSchema = z
     rooms: z.number().int().min(1).max(QUOTE_STAY_MAX_ROOMS),
     roomType: codeToken,
     ratePlan: codeToken,
+    childAges: z.array(z.number().int().min(0).max(17)).max(16).optional(),
+    currency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .optional(),
+    quoteRequestRef: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/)
+      .optional(),
+    normalizedRooms: z.array(normalizedQuoteRoomSchema).max(QUOTE_STAY_MAX_ROOMS).optional(),
   })
   .strict()
   .superRefine((candidate, context) => {
@@ -48,20 +58,57 @@ export const quoteStayCandidateSchema = z
 
 export type QuoteStayCandidate = z.infer<typeof quoteStayCandidateSchema>;
 
+/**
+ * Adapt only a trusted normalized producer request to the legacy exact-search
+ * driver shape.  Missing room/rate references remain a clarification rather
+ * than receiving a default from the locale or the driver.
+ */
+export function quoteStayCandidateFromRequest(request: QuoteRequest): QuoteStayCandidate | null {
+  if (request.segments.length === 0 || request.roomMoveRequired) return null;
+  const room = request.rooms[0];
+  if (!room?.roomTypeRef || !room.ratePlanRef) return null;
+  if (
+    request.rooms.some(
+      (item) => item.roomTypeRef !== room.roomTypeRef || item.ratePlanRef !== room.ratePlanRef,
+    )
+  ) {
+    return null;
+  }
+  const rooms = request.rooms.reduce((sum, item) => sum + item.quantity, 0);
+  const adults = request.rooms.reduce((sum, item) => sum + item.quantity * item.adultsPerRoom, 0);
+  const children = request.rooms.reduce(
+    (sum, item) => sum + item.quantity * item.childAges.length,
+    0,
+  );
+  const candidate = {
+    id: createHash('sha256')
+      .update(`quote_stay:${request.quoteRequestRef}`)
+      .digest('hex')
+      .slice(0, 32),
+    kind: 'quote_stay' as const,
+    arrivalDate: request.arrival,
+    departureDate: request.departure,
+    adults,
+    children,
+    rooms,
+    roomType: room.roomTypeRef,
+    ratePlan: room.ratePlanRef,
+    childAges: [...room.childAges],
+    currency: request.currency,
+    quoteRequestRef: request.quoteRequestRef,
+    normalizedRooms: request.rooms,
+  };
+  return quoteStayCandidateSchema.safeParse(candidate).data ?? null;
+}
+
 function parseCalendarDate(value: string): number | null {
   if (!isoDate.safeParse(value).success) return null;
   const timestamp = Date.parse(`${value}T00:00:00.000Z`);
   if (!Number.isFinite(timestamp)) return null;
-  return new Date(timestamp).toISOString().slice(0, 10) === value
-    ? timestamp
-    : null;
+  return new Date(timestamp).toISOString().slice(0, 10) === value ? timestamp : null;
 }
 
-function captureAll(
-  segment: string,
-  pattern: RegExp,
-  indexes: readonly number[],
-): string[][] {
+function captureAll(segment: string, pattern: RegExp, indexes: readonly number[]): string[][] {
   pattern.lastIndex = 0;
   const captures: string[][] = [];
   let match: RegExpExecArray | null;
@@ -124,10 +171,7 @@ export function parseQuoteStayCandidateFromAuthoredSegment(
   ].join('|');
   return (
     quoteStayCandidateSchema.safeParse({
-      id: createHash('sha256')
-        .update(`quote_stay:${canonical}`)
-        .digest('hex')
-        .slice(0, 32),
+      id: createHash('sha256').update(`quote_stay:${canonical}`).digest('hex').slice(0, 32),
       kind: 'quote_stay',
       arrivalDate,
       departureDate,

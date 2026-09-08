@@ -7,6 +7,7 @@ import {
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
   folioReadRequestSchema,
+  quoteStayReadRequestSchema,
   type ReadReasonCode,
   type ReadResult,
 } from './read-service-contracts.js';
@@ -37,6 +38,8 @@ import {
   type PropertyReadLock,
 } from './property-read-lock.js';
 import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
+import type { QuoteStayReadRequest } from './read-service-contracts.js';
+import type { QuoteRequest } from './quote-request-normalization.js';
 import { z } from 'zod';
 
 export const readRequestSchema = z.union([
@@ -45,13 +48,15 @@ export const readRequestSchema = z.union([
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
   folioReadRequestSchema,
+  quoteStayReadRequestSchema,
 ]);
 export type ReadRequest =
   | ReservationFindRequest
   | ReservationContextRequest
   | z.infer<typeof documentsListReadRequestSchema>
   | z.infer<typeof documentsReadReadRequestSchema>
-  | z.infer<typeof folioReadRequestSchema>;
+  | z.infer<typeof folioReadRequestSchema>
+  | QuoteStayReadRequest;
 
 export type ReadHandlerResult =
   | ReservationLookupResult
@@ -85,6 +90,11 @@ export interface ReadHandlers {
     candidateId: string;
     reservationRef: string;
     sections: readonly string[];
+  }) => Promise<ReadResult<unknown>>;
+  quoteStay?: (input: {
+    quoteRequestRef: string;
+    quoteRequest: QuoteStayReadRequest['quoteRequest'];
+    detail: 'summary' | 'detail';
   }) => Promise<ReadResult<unknown>>;
 }
 
@@ -121,6 +131,8 @@ export interface ReadExecutionContext {
   /** Production worker paths must carry server-authenticated current app access. */
   requireCurrentAppAccess?: boolean;
   currentAppAccessProof?: CurrentAppAccessProof;
+  /** Trusted producer requests available to the opaque quote tool facade. */
+  quoteRequests?: ReadonlyMap<string, QuoteRequest>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -148,6 +160,7 @@ const executionKeys = new Set([
   'requireAdmissionBinding',
   'requireCurrentAppAccess',
   'currentAppAccessProof',
+  'quoteRequests',
 ]);
 
 function validExecutionContext(value: unknown): value is ReadExecutionContext {
@@ -440,7 +453,11 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
       context,
       now,
       requiredClaimKind:
-        request.toolId === 'hms_read_folio' ? 'folio_deposit_summary' : 'reservation_summary',
+        request.toolId === 'hms_read_folio'
+          ? 'folio_deposit_summary'
+          : request.toolId === 'hms_quote_stay'
+            ? 'quote_stay_summary'
+            : 'reservation_summary',
       currentAppAccessProof: context.currentAppAccessProof,
       requireCurrentAppAccess: context.requireCurrentAppAccess,
     });
@@ -557,6 +574,20 @@ async function dispatchRead(
         candidateId: parsed.candidateId,
         reservationRef: parsed.reservationRef,
         sections: parsed.sections,
+      }),
+    ) as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_quote_stay') {
+    const handler = context.handlers?.quoteStay;
+    if (!handler) {
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed quote stay handler is unavailable');
+    }
+    return readResultSchema.parse(
+      await handler({
+        quoteRequestRef: parsed.quoteRequestRef,
+        quoteRequest: parsed.quoteRequest,
+        detail: parsed.detail,
       }),
     ) as ReadResult<unknown>;
   }

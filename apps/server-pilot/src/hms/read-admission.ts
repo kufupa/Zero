@@ -9,11 +9,13 @@ import {
   readTimestampSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  quoteStayReadRequestSchema,
   type DocumentsListReadRequest,
   type DocumentsReadReadRequest,
   type ReadAdmission,
 } from './read-service-contracts.js';
 import { HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS } from './browser-artifacts.js';
+import type { QuoteRequest } from './quote-request-normalization.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -152,6 +154,14 @@ type ReservationIssueReadAdmissionInput = {
   evidenceExpiresAt?: Date | string;
 };
 
+type QuoteIssueReadAdmissionInput = {
+  source: ReadAdmissionSource;
+  now?: Date;
+  toolId: 'hms_quote_stay';
+  quoteRequest: QuoteRequest;
+  detail?: 'summary' | 'detail';
+};
+
 type DocumentIssueReadAdmissionInput = {
   source: ReadAdmissionSource;
   now?: Date;
@@ -161,7 +171,10 @@ type DocumentIssueReadAdmissionInput = {
     | Omit<DocumentsReadReadRequest, 'toolId' | 'admission'>;
 };
 
-type IssueReadAdmissionInput = ReservationIssueReadAdmissionInput | DocumentIssueReadAdmissionInput;
+type IssueReadAdmissionInput =
+  | ReservationIssueReadAdmissionInput
+  | QuoteIssueReadAdmissionInput
+  | DocumentIssueReadAdmissionInput;
 
 function requiredRef(value: string, label: string): string {
   const parsed = readIssuerRefSchema.safeParse(value);
@@ -227,7 +240,11 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   requiredRef(source.releaseId, 'releaseId');
   requiredRef(source.requestBranchId, 'requestBranchId');
   let candidateId: string | null;
-  if (input.toolId === 'documents_list_existing' || input.toolId === 'documents_read_existing') {
+  if (
+    input.toolId === 'documents_list_existing' ||
+    input.toolId === 'documents_read_existing' ||
+    input.toolId === 'hms_quote_stay'
+  ) {
     candidateId = null;
   } else {
     const reservationInput = input as ReservationIssueReadAdmissionInput;
@@ -276,6 +293,14 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
       input.toolId === 'documents_list_existing'
         ? documentsListReadRequestSchema.omit({ admission: true }).parse(candidateRequest)
         : documentsReadReadRequestSchema.omit({ admission: true }).parse(candidateRequest);
+    closedRequest = parsedRequest;
+  } else if (input.toolId === 'hms_quote_stay') {
+    const parsedRequest = quoteStayReadRequestSchema.parse({
+      toolId: input.toolId,
+      quoteRequestRef: input.quoteRequest.quoteRequestRef,
+      quoteRequest: input.quoteRequest,
+      detail: input.detail ?? 'summary',
+    });
     closedRequest = parsedRequest;
   } else {
     const reservationInput = input as ReservationIssueReadAdmissionInput;
@@ -361,6 +386,7 @@ export function assertPersistedReadAdmissionIssuer(input: {
     | 'hms_find_reservation'
     | 'hms_read_reservation'
     | 'hms_read_folio'
+    | 'hms_quote_stay'
     | 'documents_list_existing'
     | 'documents_read_existing';
 }): PersistedReadAdmissionIssuer {
@@ -389,6 +415,7 @@ export function assertPersistedReadAdmissionIssuer(input: {
   }
   if (
     input.expectedToolId === 'hms_find_reservation' ||
+    input.expectedToolId === 'hms_quote_stay' ||
     input.expectedToolId === 'documents_list_existing' ||
     input.expectedToolId === 'documents_read_existing'
   ) {

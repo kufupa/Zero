@@ -83,6 +83,35 @@ async function activeFindAdmission() {
   return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
 }
 
+async function activeQuoteAdmission() {
+  let active = getCachedActiveReadRuntime();
+  if (!active) {
+    active = await loadWorkerActiveReadSet({
+      registryPath:
+        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+        '/opt/nava/shared/hms-active-registry/active.json',
+      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
+      runtimeFingerprintSha256: runtimeFingerprintSha256({
+        sourceRevision: resolveHmsSourceRevision(),
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+      }),
+    });
+  }
+  const release = active.releases.get('hms_quote_stay');
+  const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
+  const branch = hmsRelease?.requestBranches.find(
+    (candidate) => candidate.id === 'quote_availability_search',
+  );
+  if (!hmsRelease || !branch || active.handlerPathActive !== true) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'HMS_QUOTE_RELEASE_UNAVAILABLE',
+    });
+  }
+  return { releaseId: hmsRelease.releaseId, requestBranchId: branch.id };
+}
+
 async function activeFolioAdmission(sections: readonly string[]) {
   let active = getCachedActiveReadRuntime();
   if (!active) {
@@ -213,16 +242,25 @@ export const aiRouter = tRouter({
    * candidate from the scoped thread; callers receive only an opaque receipt.
    */
   enqueueHmsRead: mailboxProcedure
-    .input(z.object({ threadId: z.string().min(1) }))
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        toolId: z.enum(['hms_find_reservation', 'hms_quote_stay']).default('hms_find_reservation'),
+        quoteRequestRef: readRefSchema.optional(),
+        detail: z.enum(['summary', 'detail']).default('summary'),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      const release = await activeFindAdmission();
+      const isQuote = input.toolId === 'hms_quote_stay';
+      const release = isQuote ? await activeQuoteAdmission() : await activeFindAdmission();
       const issued = await issueReadAdmissionFromMailbox({
         db,
         userId: ctx.sessionUser.id,
         transportId: ctx.activeTransportId,
         threadId: input.threadId,
-        toolId: 'hms_find_reservation',
+        toolId: input.toolId,
+        ...(isQuote ? { quoteRequestRef: input.quoteRequestRef, detail: input.detail } : {}),
         ...release,
       });
       const readResultRef = `hms-read-${randomUUID()}`;
@@ -232,7 +270,9 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-find:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.candidateId}`,
+          idempotencyKey: isQuote
+            ? `hms-read-quote:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.quoteRequestRef}`
+            : `hms-read-find:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.candidateId}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -248,6 +288,7 @@ export const aiRouter = tRouter({
         readResultRef: run.readResultRef ?? readResultRef,
         triggerMessageId: issued.triggerMessageId,
         candidateId: issued.candidateId,
+        quoteRequestRef: issued.quoteRequestRef,
       };
     }),
 

@@ -7,6 +7,8 @@ import {
   documentsListExistingInputSchema,
   documentsReadExistingInputSchema,
 } from '../mail/artifacts/existing-document-contracts.js';
+import { quoteRequestSchema } from './quote-request-normalization.js';
+import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -112,6 +114,27 @@ export const folioReadRequestSchema = z
   })
   .strict();
 export type FolioReadRequest = z.infer<typeof folioReadRequestSchema>;
+
+/** Closed quote request issued by the trusted producer before queueing. */
+export const quoteStayReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_quote_stay'),
+    quoteRequestRef: readRefSchema,
+    quoteRequest: quoteRequestSchema,
+    detail: z.enum(['summary', 'detail']).default('summary'),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.quoteRequest.quoteRequestRef !== value.quoteRequestRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['quoteRequestRef'],
+        message: 'quote request reference must match the normalized request',
+      });
+    }
+  });
+export type QuoteStayReadRequest = z.infer<typeof quoteStayReadRequestSchema>;
 
 /** Persisted server-side proof that a context admission was issued for this scope. */
 export const readReservationBindingSchema = z
@@ -481,6 +504,7 @@ export const readToolResultIdSchema = z.enum([
   'documents_list_existing',
   'documents_read_existing',
   'hms_read_folio',
+  'hms_quote_stay',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
@@ -504,13 +528,25 @@ const readResultSchemaBase = z
   .strict();
 
 const readResultSchemaBoundary = readResultSchemaBase.superRefine((value, context) => {
-  if (value.toolId !== 'hms_read_folio' || value.data === null) return;
-  if (!readFolioDataSchema.safeParse(value.data).success) {
+  if (
+    value.toolId === 'hms_read_folio' &&
+    value.data !== null &&
+    !readFolioDataSchema.safeParse(value.data).success
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['data'],
       message: 'hms_read_folio result data is not a closed finance payload',
     });
+  }
+  if (value.toolId === 'hms_quote_stay' && value.data !== null) {
+    if (!quoteStayReadDataSchema.safeParse(value.data).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['data'],
+        message: 'hms_quote_stay result data is not a closed quote payload',
+      });
+    }
   }
 });
 

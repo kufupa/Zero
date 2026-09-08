@@ -27,8 +27,8 @@ import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
 import type { CandidateToolId } from '../ai/candidate-draft-agent.js';
 import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
 import type { QuoteStayCandidate } from './quote-stay-candidate.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { buildQuoteStayReadData } from './quote-stay-contract.js';
 import { createReadToolHandler } from './read-handler-index.js';
 import type { LookupCandidate } from '../ai/thread-context.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
@@ -304,12 +304,10 @@ export function createReservationCandidateSession(
         return {
           status: 'manual_required' as const,
           draftReady: false,
-          data: quoteStayReadDataSchema.parse({
+          data: buildQuoteStayReadData({
             nightlyObservations: [],
-            bookable: false as const,
-            stayTotal: null,
-            occupancyPriced: false as const,
             requestedRooms: 1,
+            unresolvedInputs: ['quote_candidate'],
           }),
           unresolvedFields: ['quote_candidate'],
           evidence: {

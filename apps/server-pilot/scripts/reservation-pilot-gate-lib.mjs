@@ -196,6 +196,7 @@ const SLICE_PLANS = {
     reads: {
       server: ['tests/hms-read-service.test.ts', 'tests/hms-normal-runtime-read-service.test.ts'],
     },
+    quotes: { server: ['tests/hms-quote-db.test.ts'] },
     finance: { server: ['tests/hms-finance-db.test.ts'] },
     documents: { server: ['tests/existing-document-validation.test.ts'] },
     baseline: { server: ['tests/mail-baseline-projection.test.ts'] },

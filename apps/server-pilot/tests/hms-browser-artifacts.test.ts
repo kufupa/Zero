@@ -1,17 +1,3 @@
-import { describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  readFile,
-  rm,
-  stat,
-  symlink,
-  truncate,
-  utimes,
-  writeFile,
-} from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   createHmsBrowserArtifactStore as createRawHmsBrowserArtifactStore,
   ensureHmsBrowserArtifactRoot,
@@ -23,6 +9,11 @@ import {
   validateWebmFile,
   type HmsBrowserAuditSpec,
 } from '../src/hms/browser-artifacts.js';
+import { mkdir, readFile, rm, stat, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const createHmsBrowserArtifactStore = (
   input: Parameters<typeof createRawHmsBrowserArtifactStore>[0],
@@ -34,17 +25,12 @@ const createHmsBrowserArtifactStore = (
   });
 
 async function tempRoot(): Promise<string> {
-  const root = join(
-    tmpdir(),
-    `hms-browser-artifacts-${randomUUID()}`,
-  );
+  const root = join(tmpdir(), `hms-browser-artifacts-${randomUUID()}`);
   await ensureHmsBrowserArtifactRoot(root);
   return root;
 }
 
-function baseSpec(
-  overrides: Partial<HmsBrowserAuditSpec> = {},
-): HmsBrowserAuditSpec {
+function baseSpec(overrides: Partial<HmsBrowserAuditSpec> = {}): HmsBrowserAuditSpec {
   return {
     operationId: randomUUID(),
     toolId: 'hms_find_reservation',
@@ -125,9 +111,7 @@ const ebmlElement = (id: number[], payload: Buffer) => {
   return Buffer.concat([Buffer.from(id), size, payload]);
 };
 
-const validWebm = (
-  options: { includeCues?: boolean; unknownSegmentSize?: boolean } = {},
-) => {
+const validWebm = (options: { includeCues?: boolean; unknownSegmentSize?: boolean } = {}) => {
   const header = ebmlElement(
     [0x1a, 0x45, 0xdf, 0xa3],
     ebmlElement([0x42, 0x82], Buffer.from('webm')),
@@ -161,13 +145,7 @@ const validWebm = (
     [0x1f, 0x43, 0xb6, 0x75],
     Buffer.concat([
       ebmlElement([0xe7], Buffer.from([0x00])),
-      ebmlElement(
-        [0xa3],
-        Buffer.concat([
-          Buffer.from([0x81, 0x00, 0x00, 0x80]),
-          vp8Keyframe,
-        ]),
-      ),
+      ebmlElement([0xa3], Buffer.concat([Buffer.from([0x81, 0x00, 0x00, 0x80]), vp8Keyframe])),
       ebmlElement(
         [0xa3],
         Buffer.concat([
@@ -221,10 +199,7 @@ describe('hms browser artifacts store', () => {
     await writeFile(path, traceZip({ 'trace.trace': trace, 'trace.network': '' }));
     await expect(validatePlaywrightTraceFile(path)).resolves.toBe(false);
 
-    await writeFile(
-      path,
-      traceZip({ 'trace.trace': trace, 'trace.network': '{not-json}\n' }),
-    );
+    await writeFile(path, traceZip({ 'trace.trace': trace, 'trace.network': '{not-json}\n' }));
     await expect(validatePlaywrightTraceFile(path)).resolves.toBe(false);
     await rm(root, { recursive: true, force: true });
   });
@@ -238,8 +213,8 @@ describe('hms browser artifacts store', () => {
     await writeFile(
       path,
       Buffer.from([
-        0x1a, 0x45, 0xdf, 0xa3, 0x18, 0x53, 0x80, 0x67, 0x16, 0x54, 0xae,
-        0x6b, 0x1f, 0x43, 0xb6, 0x75, 0xa3,
+        0x1a, 0x45, 0xdf, 0xa3, 0x18, 0x53, 0x80, 0x67, 0x16, 0x54, 0xae, 0x6b, 0x1f, 0x43, 0xb6,
+        0x75, 0xa3,
       ]),
     );
     await expect(validateWebmFile(path)).resolves.toBe(false);
@@ -262,9 +237,9 @@ describe('hms browser artifacts store', () => {
       await rm(real, { recursive: true, force: true });
       return;
     }
-    await expect(createHmsBrowserArtifactStore({ root: link })).rejects.toMatchObject(
-      { code: 'TRACE_STORAGE_UNAVAILABLE' },
-    );
+    await expect(createHmsBrowserArtifactStore({ root: link })).rejects.toMatchObject({
+      code: 'TRACE_STORAGE_UNAVAILABLE',
+    });
     await rm(real, { recursive: true, force: true });
     await rm(link, { recursive: true, force: true });
   });
@@ -289,16 +264,65 @@ describe('hms browser artifacts store', () => {
     await rm(base, { recursive: true, force: true });
   });
 
-  it('rejects non-uuid operationId and unknown toolId', async () => {
+  it('accepts the registered quote audit shape and rejects invalid/write shapes', async () => {
     const root = await tempRoot();
-    const store = await createHmsBrowserArtifactStore({ root });
+    const store = await createRawHmsBrowserArtifactStore({ root });
     await expect(
       store.beginCapture(baseSpec({ operationId: 'not-a-uuid' })),
+    ).rejects.toBeInstanceOf(HmsBrowserArtifactError);
+
+    const quoteHandle = await store.beginCapture(
+      baseSpec({
+        toolId: 'hms_quote_stay' as HmsBrowserAuditSpec['toolId'],
+        toolVersion: '2.0.0',
+      }),
+    );
+    await writeFile(
+      join(quoteHandle.stagingDir, 'trace.zip'),
+      traceZip({
+        'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+        'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+      }),
+    );
+    const quoteReceipt = await quoteHandle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'quote-source',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [{ ruleId: 'quote-read-post', count: 1 }],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    expect(quoteReceipt.toolId).toBe('hms_quote_stay');
+    expect(quoteReceipt.credentialMode).toBe('view_only');
+    expect(quoteReceipt.inputClass).toBe('authorized_exact');
+    expect(quoteReceipt.mutationRequests).toBe(0);
+    expect(Date.parse(quoteReceipt.expiresAt)).toBeGreaterThan(Date.now());
+
+    await expect(
+      store.beginCapture(
+        baseSpec({
+          toolId: 'hms_read_folio',
+        }),
+      ),
     ).rejects.toBeInstanceOf(HmsBrowserArtifactError);
     await expect(
       store.beginCapture(
         baseSpec({
-          toolId: 'hms_quote_stay' as HmsBrowserAuditSpec['toolId'],
+          toolId: 'hms_write_reservation' as HmsBrowserAuditSpec['toolId'],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(HmsBrowserArtifactError);
+    await expect(
+      store.beginCapture(
+        baseSpec({
+          executionClass: 'write' as HmsBrowserAuditSpec['executionClass'],
         }),
       ),
     ).rejects.toBeInstanceOf(HmsBrowserArtifactError);
@@ -388,9 +412,7 @@ describe('hms browser artifacts store', () => {
     expect(receipt.trace.bytes).toBe(zip.byteLength);
     expect(receipt.trace.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt.video).toBeNull();
-    expect(receipt.milestones.traceStartedAt).toBe(
-      '2026-08-05T00:00:00.000Z',
-    );
+    expect(receipt.milestones.traceStartedAt).toBe('2026-08-05T00:00:00.000Z');
 
     const finalReceipt = JSON.parse(
       await readFile(join(root, handle.artifactId, 'receipt.v1.json'), 'utf8'),
@@ -405,14 +427,9 @@ describe('hms browser artifacts store', () => {
   it('live_proof requires video for complete receipt', async () => {
     const root = await tempRoot();
     const store = await createHmsBrowserArtifactStore({ root });
-    const handle = await store.beginCapture(
-      baseSpec({ executionClass: 'live_proof' }),
-    );
+    const handle = await store.beginCapture(baseSpec({ executionClass: 'live_proof' }));
     expect(handle.videoDir).toContain('video-raw');
-    await writeFile(
-      join(handle.stagingDir, 'trace.zip'),
-      validTraceZip(),
-    );
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
 
     await expect(
       handle.finalize({
@@ -432,10 +449,7 @@ describe('hms browser artifacts store', () => {
       }),
     ).rejects.toMatchObject({ code: 'VIDEO_FINALIZE_FAILED' });
 
-    await writeFile(
-      join(handle.stagingDir, 'video.webm'),
-      validWebm(),
-    );
+    await writeFile(join(handle.stagingDir, 'video.webm'), validWebm());
     const receipt = await handle.finalize({
       outcome: 'succeeded',
       terminalCode: 'OK',
@@ -461,13 +475,8 @@ describe('hms browser artifacts store', () => {
     for (const bytes of [Buffer.alloc(0), Buffer.from('not-webm')]) {
       const root = await tempRoot();
       const store = await createHmsBrowserArtifactStore({ root });
-      const handle = await store.beginCapture(
-        baseSpec({ executionClass: 'live_proof' }),
-      );
-      await writeFile(
-        join(handle.stagingDir, 'trace.zip'),
-        validTraceZip(),
-      );
+      const handle = await store.beginCapture(baseSpec({ executionClass: 'live_proof' }));
+      await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
       await writeFile(join(handle.stagingDir, 'video.webm'), bytes);
       await expect(
         handle.finalize({
@@ -497,10 +506,7 @@ describe('hms browser artifacts store', () => {
       validateTraceFile: async () => false,
     });
     const traceHandle = await traceStore.beginCapture(baseSpec());
-    await writeFile(
-      join(traceHandle.stagingDir, 'trace.zip'),
-      validTraceZip(),
-    );
+    await writeFile(join(traceHandle.stagingDir, 'trace.zip'), validTraceZip());
     await expect(
       traceHandle.finalize({
         outcome: 'succeeded',
@@ -525,17 +531,9 @@ describe('hms browser artifacts store', () => {
       root: videoRoot,
       validateVideoFile: async () => false,
     });
-    const videoHandle = await videoStore.beginCapture(
-      baseSpec({ executionClass: 'live_proof' }),
-    );
-    await writeFile(
-      join(videoHandle.stagingDir, 'trace.zip'),
-      validTraceZip(),
-    );
-    await writeFile(
-      join(videoHandle.stagingDir, 'video.webm'),
-      validWebm(),
-    );
+    const videoHandle = await videoStore.beginCapture(baseSpec({ executionClass: 'live_proof' }));
+    await writeFile(join(videoHandle.stagingDir, 'trace.zip'), validTraceZip());
+    await writeFile(join(videoHandle.stagingDir, 'video.webm'), validWebm());
     await expect(
       videoHandle.finalize({
         outcome: 'succeeded',
@@ -594,10 +592,7 @@ describe('hms browser artifacts store', () => {
 
     expect(await handle.observeStagedBytes()).toBe(4);
 
-    await writeFile(
-      join(store.intermediateDir, 'current.trace'),
-      Buffer.from('1234567'),
-    );
+    await writeFile(join(store.intermediateDir, 'current.trace'), Buffer.from('1234567'));
     expect(await handle.observeStagedBytes()).toBe(11);
     await rm(root, { recursive: true, force: true });
   });
@@ -609,10 +604,7 @@ describe('hms browser artifacts store', () => {
     await writeFile(stale, Buffer.alloc(20, 1));
     const handle = await store.beginCapture(baseSpec());
     await rm(stale);
-    await writeFile(
-      join(store.intermediateDir, 'current.trace'),
-      Buffer.alloc(12, 2),
-    );
+    await writeFile(join(store.intermediateDir, 'current.trace'), Buffer.alloc(12, 2));
     expect(await handle.observeStagedBytes()).toBe(12);
     await rm(root, { recursive: true, force: true });
   });
@@ -646,10 +638,7 @@ describe('hms browser artifacts store', () => {
     const root = await tempRoot();
     const store = await createHmsBrowserArtifactStore({ root });
     const handle = await store.beginCapture(baseSpec());
-    await writeFile(
-      join(handle.stagingDir, 'trace.zip'),
-      validTraceZip(),
-    );
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
     await handle.finalize({
       outcome: 'succeeded',
       terminalCode: 'OK',
@@ -692,9 +681,7 @@ describe('hms browser artifacts store', () => {
     await utimes(oldIncomplete, old, old);
     await utimes(oldIntermediate, old, old);
 
-    const removed = await store.purgeExpired(
-      new Date('2026-08-05T00:00:00Z'),
-    );
+    const removed = await store.purgeExpired(new Date('2026-08-05T00:00:00Z'));
     expect(removed).toBe(3);
     await expect(readFile(oldIntermediate)).rejects.toThrow();
     await expect(stat(oldPartial)).rejects.toThrow();
@@ -713,9 +700,7 @@ describe('hms browser artifacts store', () => {
     await utimes(join(artifact, 'receipt.v1.json'), old, old);
     await utimes(artifact, old, old);
 
-    const removed = await store.purgeExpired(
-      new Date('2026-08-05T00:00:00Z'),
-    );
+    const removed = await store.purgeExpired(new Date('2026-08-05T00:00:00Z'));
     expect(removed).toBe(1);
     await expect(stat(artifact)).rejects.toThrow();
     await rm(root, { recursive: true, force: true });
@@ -733,10 +718,7 @@ describe('hms browser artifacts store', () => {
     await utimes(join(artifact, 'receipt.v1.json'), old, old);
     await utimes(artifact, old, old);
 
-    const removed = await purgeExpiredHmsBrowserArtifacts(
-      root,
-      new Date('2026-08-05T00:00:00Z'),
-    );
+    const removed = await purgeExpiredHmsBrowserArtifacts(root, new Date('2026-08-05T00:00:00Z'));
     expect(removed).toBe(1);
     await expect(stat(artifact)).rejects.toThrow();
     await rm(root, { recursive: true, force: true });
@@ -774,10 +756,7 @@ describe('hms browser artifacts store', () => {
     );
 
     await expect(
-      purgeExpiredHmsBrowserArtifacts(
-        root,
-        new Date('2026-08-05T00:00:00.000Z'),
-      ),
+      purgeExpiredHmsBrowserArtifacts(root, new Date('2026-08-05T00:00:00.000Z')),
     ).resolves.toBe(1);
     await expect(stat(artifact)).rejects.toThrow();
     await rm(root, { recursive: true, force: true });
@@ -792,11 +771,8 @@ describe('hms browser artifacts store', () => {
   });
 
   it('builds discovery|proof receipt v2 helpers without breaking find v1 writers', async () => {
-    const {
-      buildDiscoveryReceiptV2,
-      buildProofReceiptV2,
-      writeBrowserArtifactReceiptV2,
-    } = await import('../src/hms/browser-artifacts.js');
+    const { buildDiscoveryReceiptV2, buildProofReceiptV2, writeBrowserArtifactReceiptV2 } =
+      await import('../src/hms/browser-artifacts.js');
     const { loadExclusiveReceipt } = await import('../src/hms/artifact-index.js');
     const h = (c: string) => c.repeat(64);
     const common = {
@@ -869,11 +845,10 @@ describe('hms browser artifacts store', () => {
   });
 
   it('writeBrowserArtifactReceiptV2 refuses when v1 receipt already present', async () => {
-    const { writeBrowserArtifactReceiptV2, buildDiscoveryReceiptV2 } =
-      await import('../src/hms/browser-artifacts.js');
-    const { ExclusiveReceiptError } = await import(
-      '../src/hms/receipt-exclusivity.js'
+    const { writeBrowserArtifactReceiptV2, buildDiscoveryReceiptV2 } = await import(
+      '../src/hms/browser-artifacts.js'
     );
+    const { ExclusiveReceiptError } = await import('../src/hms/receipt-exclusivity.js');
     const h = (c: string) => c.repeat(64);
     const root = await tempRoot();
     const artifact = join(root, randomUUID());
@@ -901,12 +876,12 @@ describe('hms browser artifacts store', () => {
       candidateSnapshotSha256: null,
     });
 
-    await expect(
-      writeBrowserArtifactReceiptV2(artifact, discovery),
-    ).rejects.toBeInstanceOf(ExclusiveReceiptError);
-    await expect(
-      writeBrowserArtifactReceiptV2(artifact, discovery),
-    ).rejects.toMatchObject({ reason: 'dual' });
+    await expect(writeBrowserArtifactReceiptV2(artifact, discovery)).rejects.toBeInstanceOf(
+      ExclusiveReceiptError,
+    );
+    await expect(writeBrowserArtifactReceiptV2(artifact, discovery)).rejects.toMatchObject({
+      reason: 'dual',
+    });
     await expect(stat(join(artifact, 'receipt.v2.json'))).rejects.toThrow();
     await rm(root, { recursive: true, force: true });
   });

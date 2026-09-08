@@ -362,6 +362,7 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     });
     if (
       (parsedReadRequest.toolId === 'hms_find_reservation' && admission.reservationRef !== null) ||
+      (parsedReadRequest.toolId === 'hms_quote_stay' && admission.reservationRef !== null) ||
       ((parsedReadRequest.toolId === 'hms_read_reservation' ||
         parsedReadRequest.toolId === 'hms_read_folio') &&
         admission.reservationRef !== parsedReadRequest.reservationRef)
@@ -709,6 +710,8 @@ export async function readAiRunReceipt(
     concrete = result;
   } else if (result.toolId === 'hms_read_folio') {
     if (result.data !== null) folioReadDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_quote_stay') {
     concrete = result;
   } else {
     if (result.data !== null) existingDocumentReadDataSchema.parse(result.data);

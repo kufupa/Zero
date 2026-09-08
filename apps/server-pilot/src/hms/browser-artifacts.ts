@@ -2,9 +2,6 @@
  * Private Playwright HMS capture spool: traces always, video for live_proof only.
  * Credential-grade — digests/paths only in receipts; never guest/mail/credential values.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { createReadStream } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -20,23 +17,16 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {
-  dirname,
-  isAbsolute,
-  join,
-  parse,
-  relative,
-  sep,
-} from 'node:path';
-import { platform } from 'node:os';
-import {
-  ExclusiveReceiptError,
-  resolveExclusiveReceiptFile,
-} from './receipt-exclusivity.js';
-import {
   hmsBrowserArtifactReceiptV2Schema,
   type HmsBrowserArtifactReceiptV2,
 } from './release-kernel.js';
+import { ExclusiveReceiptError, resolveExclusiveReceiptFile } from './receipt-exclusivity.js';
+import { dirname, isAbsolute, join, parse, relative, sep } from 'node:path';
 import type { DiscoveryOperationId, HmsReadToolId } from './read-tools.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import { platform } from 'node:os';
 
 export const HMS_BROWSER_ARTIFACT_TTL_MS = 24 * 60 * 60 * 1000;
 export const HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS = 30_000;
@@ -46,8 +36,7 @@ export const HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES = 2 * 1024 ** 3;
 export const HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES = 1 * 1024 ** 3;
 export const HMS_BROWSER_CAPACITY_WATCHDOG_MS = 2_000;
 
-export const CENTURION_HMS_PRODUCTION_ORIGIN =
-  'https://appsrv-1.legacyhotels.co.za' as const;
+export const CENTURION_HMS_PRODUCTION_ORIGIN = 'https://appsrv-1.legacyhotels.co.za' as const;
 
 export type HmsExecutionClass = 'normal' | 'live_proof';
 
@@ -62,12 +51,25 @@ export type HmsBrowserAuditSpec = {
   roleProofExpiresAt?: string;
 };
 
+// V1 capture receipts are emitted by the two normal browser read drivers that
+// currently supply an audit spec. Keep this closed to the registered read
+// shapes; a typed HmsReadToolId alone must not widen capture to other tools.
+const HMS_BROWSER_V1_CAPTURE_TOOL_IDS = [
+  'hms_find_reservation',
+  'hms_quote_stay',
+] as const satisfies readonly HmsReadToolId[];
+type HmsBrowserV1CaptureToolId = (typeof HMS_BROWSER_V1_CAPTURE_TOOL_IDS)[number];
+
+function isSupportedHmsBrowserV1Tool(toolId: HmsReadToolId): toolId is HmsBrowserV1CaptureToolId {
+  return (HMS_BROWSER_V1_CAPTURE_TOOL_IDS as readonly string[]).includes(toolId);
+}
+
 export type HmsBrowserArtifactReceiptBaseV1 = {
   schemaVersion: 1;
   artifactId: string;
   operationId: string;
   sourceRevision: string;
-  toolId: 'hms_find_reservation';
+  toolId: HmsBrowserV1CaptureToolId;
   toolVersion: string;
   dependencyRevision: string;
   playwrightRevision: string;
@@ -270,18 +272,14 @@ export class HmsBrowserArtifactError extends Error {
     | 'CAPTURE_CAPACITY_EXCEEDED'
     | 'PRODUCTION_ORIGIN_MISMATCH';
 
-  constructor(
-    code: HmsBrowserArtifactError['code'],
-    message?: string,
-  ) {
+  constructor(code: HmsBrowserArtifactError['code'], message?: string) {
     super(message ?? code);
     this.name = 'HmsBrowserArtifactError';
     this.code = code;
   }
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const FORBIDDEN_RECEIPT_KEYS = new Set([
   'username',
@@ -311,10 +309,7 @@ export type HmsBrowserCaptureHandle = {
   stagingDir: string;
   videoDir: string | null;
   tracesDir: string;
-  markMilestone(
-    key: keyof HmsBrowserArtifactReceiptBaseV1['milestones'],
-    at?: Date,
-  ): void;
+  markMilestone(key: keyof HmsBrowserArtifactReceiptBaseV1['milestones'], at?: Date): void;
   observeStagedBytes(): Promise<number>;
   observeFreeBytes(): Promise<number>;
   finalize(input: {
@@ -337,10 +332,7 @@ export type HmsBrowserCaptureHandle = {
 
 function assertUuid(value: string, label: string): void {
   if (!UUID_RE.test(value)) {
-    throw new HmsBrowserArtifactError(
-      'TRACE_STORAGE_UNAVAILABLE',
-      `invalid ${label}`,
-    );
+    throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', `invalid ${label}`);
   }
 }
 
@@ -388,22 +380,13 @@ async function assertSafeRoot(root: string): Promise<string> {
   try {
     st = await lstat(root);
   } catch {
-    throw new HmsBrowserArtifactError(
-      'TRACE_STORAGE_UNAVAILABLE',
-      'artifact root missing',
-    );
+    throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', 'artifact root missing');
   }
   if (st.isSymbolicLink()) {
-    throw new HmsBrowserArtifactError(
-      'TRACE_STORAGE_UNAVAILABLE',
-      'artifact root is symlink',
-    );
+    throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', 'artifact root is symlink');
   }
   if (!st.isDirectory()) {
-    throw new HmsBrowserArtifactError(
-      'TRACE_STORAGE_UNAVAILABLE',
-      'artifact root not directory',
-    );
+    throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', 'artifact root not directory');
   }
   const resolved = await realpath(root);
   if (platform() !== 'win32') {
@@ -412,29 +395,17 @@ async function assertSafeRoot(root: string): Promise<string> {
     while (true) {
       const currentStat = await lstat(current);
       if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
-        throw new HmsBrowserArtifactError(
-          'TRACE_STORAGE_UNAVAILABLE',
-          'unsafe artifact ancestor',
-        );
+        throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', 'unsafe artifact ancestor');
       }
-      if (
-        currentUid != null &&
-        currentStat.uid !== currentUid &&
-        currentStat.uid !== 0
-      ) {
+      if (currentUid != null && currentStat.uid !== currentUid && currentStat.uid !== 0) {
         throw new HmsBrowserArtifactError(
           'TRACE_STORAGE_UNAVAILABLE',
           'artifact ancestor owner mismatch',
         );
       }
       const ancestorMode = currentStat.mode & 0o7777;
-      const trustedSticky =
-        (ancestorMode & 0o1000) !== 0 && currentStat.uid === 0;
-      if (
-        current !== resolved &&
-        (ancestorMode & 0o022) !== 0 &&
-        !trustedSticky
-      ) {
+      const trustedSticky = (ancestorMode & 0o1000) !== 0 && currentStat.uid === 0;
+      if (current !== resolved && (ancestorMode & 0o022) !== 0 && !trustedSticky) {
         throw new HmsBrowserArtifactError(
           'TRACE_STORAGE_UNAVAILABLE',
           'artifact ancestor is group/world writable',
@@ -621,10 +592,8 @@ function parseVp8Block(
     bytes[frameStart + 4] === 0x01 &&
     bytes[frameStart + 5] === 0x2a;
   if (keyframe) {
-    const width =
-      (bytes[frameStart + 6]! | (bytes[frameStart + 7]! << 8)) & 0x3fff;
-    const height =
-      (bytes[frameStart + 8]! | (bytes[frameStart + 9]! << 8)) & 0x3fff;
+    const width = (bytes[frameStart + 6]! | (bytes[frameStart + 7]! << 8)) & 0x3fff;
+    const height = (bytes[frameStart + 8]! | (bytes[frameStart + 9]! << 8)) & 0x3fff;
     if (width === 0 || height === 0) return null;
   }
   return {
@@ -647,63 +616,39 @@ export async function validateWebmFile(path: string): Promise<boolean> {
   const fh = await open(path, 'r');
   try {
     const info = await fh.stat();
-    if (
-      info.size < 64 ||
-      info.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES
-    ) {
+    if (info.size < 64 || info.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) {
       return false;
     }
     const media = await readFile(path);
     if (media.length !== info.size) return false;
     const header = readEbmlElement(media, 0);
     if (!header?.complete || header.id !== 0x1a45dfa3) return false;
-    const headerChildren = parseEbmlChildren(
-      media,
-      header.dataStart,
-      header.dataEnd,
-    );
+    const headerChildren = parseEbmlChildren(media, header.dataStart, header.dataEnd);
     if (!headerChildren.complete) return false;
     const docType = headerChildren.elements.find(
       (element) => element.id === 0x4282 && element.complete,
     );
     if (
       !docType ||
-      media
-        .subarray(docType.dataStart, docType.dataEnd)
-        .toString('ascii')
-        .toLowerCase() !== 'webm'
+      media.subarray(docType.dataStart, docType.dataEnd).toString('ascii').toLowerCase() !== 'webm'
     ) {
       return false;
     }
 
     const topLevel = parseEbmlChildren(media, header.declaredEnd, media.length);
     if (!topLevel.complete) return false;
-    const segment = topLevel.elements.find(
-      (element) => element.id === 0x18538067,
-    );
-    if (
-      !segment?.complete ||
-      segment.unknownSize ||
-      segment.declaredEnd !== media.length
-    ) {
+    const segment = topLevel.elements.find((element) => element.id === 0x18538067);
+    if (!segment?.complete || segment.unknownSize || segment.declaredEnd !== media.length) {
       return false;
     }
-    const parsedSegment = parseEbmlChildren(
-      media,
-      segment.dataStart,
-      segment.dataEnd,
-    );
+    const parsedSegment = parseEbmlChildren(media, segment.dataStart, segment.dataEnd);
     if (!parsedSegment.complete) return false;
     const segmentChildren = parsedSegment.elements;
     const infoElement = segmentChildren.find(
       (element) => element.id === 0x1549a966 && element.complete,
     );
-    const tracks = segmentChildren.find(
-      (element) => element.id === 0x1654ae6b && element.complete,
-    );
-    const clusters = segmentChildren.filter(
-      (element) => element.id === 0x1f43b675,
-    );
+    const tracks = segmentChildren.find((element) => element.id === 0x1654ae6b && element.complete);
+    const clusters = segmentChildren.filter((element) => element.id === 0x1f43b675);
     const cues = segmentChildren.at(-1);
     if (
       !infoElement ||
@@ -720,11 +665,7 @@ export async function validateWebmFile(path: string): Promise<boolean> {
       !parsedCues.complete ||
       !parsedCues.elements.some((element) => {
         if (element.id !== 0xbb || !element.complete) return false;
-        const cuePoint = parseEbmlChildren(
-          media,
-          element.dataStart,
-          element.dataEnd,
-        );
+        const cuePoint = parseEbmlChildren(media, element.dataStart, element.dataEnd);
         return (
           cuePoint.complete &&
           cuePoint.elements.some((child) => child.id === 0xb3) &&
@@ -735,11 +676,7 @@ export async function validateWebmFile(path: string): Promise<boolean> {
       return false;
     }
 
-    const parsedTracks = parseEbmlChildren(
-      media,
-      tracks.dataStart,
-      tracks.dataEnd,
-    );
+    const parsedTracks = parseEbmlChildren(media, tracks.dataStart, tracks.dataEnd);
     if (!parsedTracks.complete) return false;
     const trackEntries = parsedTracks.elements.filter(
       (element) => element.id === 0xae && element.complete,
@@ -749,9 +686,7 @@ export async function validateWebmFile(path: string): Promise<boolean> {
         (element) =>
           element.id === 0x86 &&
           element.complete &&
-          media
-            .subarray(element.dataStart, element.dataEnd)
-            .toString('ascii') === 'V_VP8',
+          media.subarray(element.dataStart, element.dataEnd).toString('ascii') === 'V_VP8',
       ),
     );
     if (!hasVp8Track) return false;
@@ -761,15 +696,9 @@ export async function validateWebmFile(path: string): Promise<boolean> {
     let firstTimecode = Number.POSITIVE_INFINITY;
     let lastTimecode = Number.NEGATIVE_INFINITY;
     for (const cluster of clusters) {
-      const parsedCluster = parseEbmlChildren(
-        media,
-        cluster.dataStart,
-        cluster.dataEnd,
-      );
+      const parsedCluster = parseEbmlChildren(media, cluster.dataStart, cluster.dataEnd);
       if (!parsedCluster.complete) return false;
-      const clusterTimecodeElement = parsedCluster.elements.find(
-        (element) => element.id === 0xe7,
-      );
+      const clusterTimecodeElement = parsedCluster.elements.find((element) => element.id === 0xe7);
       const clusterTimecode = clusterTimecodeElement
         ? readEbmlUnsigned(media, clusterTimecodeElement)
         : 0;
@@ -777,20 +706,14 @@ export async function validateWebmFile(path: string): Promise<boolean> {
       for (const child of parsedCluster.elements) {
         let block = child.id === 0xa3 ? child : null;
         if (child.id === 0xa0 && child.complete) {
-          const parsedGroup = parseEbmlChildren(
-            media,
-            child.dataStart,
-            child.dataEnd,
-          );
+          const parsedGroup = parseEbmlChildren(media, child.dataStart, child.dataEnd);
           if (!parsedGroup.complete) return false;
-          block =
-            parsedGroup.elements.find((element) => element.id === 0xa1) ?? null;
+          block = parsedGroup.elements.find((element) => element.id === 0xa1) ?? null;
         }
         if (!block) continue;
         const parsedBlock = parseVp8Block(media, block);
         if (!parsedBlock) return false;
-        const absoluteTimecode =
-          clusterTimecode + parsedBlock.relativeTimecode;
+        const absoluteTimecode = clusterTimecode + parsedBlock.relativeTimecode;
         blockCount += 1;
         hasKeyframe ||= parsedBlock.keyframe;
         firstTimecode = Math.min(firstTimecode, absoluteTimecode);
@@ -808,10 +731,7 @@ export async function validateWebmFile(path: string): Promise<boolean> {
   }
 }
 
-function commandSucceeds(
-  command: string,
-  args: readonly string[],
-): Promise<boolean> {
+function commandSucceeds(command: string, args: readonly string[]): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (ok: boolean) => {
@@ -830,10 +750,7 @@ function commandSucceeds(
   });
 }
 
-function commandOutput(
-  command: string,
-  args: readonly string[],
-): Promise<string | null> {
+function commandOutput(command: string, args: readonly string[]): Promise<string | null> {
   return new Promise((resolveOutput) => {
     let settled = false;
     let stdout = '';
@@ -925,9 +842,7 @@ function validateTraceJsonLines(
   });
 }
 
-export async function validatePlaywrightTraceFile(
-  path: string,
-): Promise<boolean> {
+export async function validatePlaywrightTraceFile(path: string): Promise<boolean> {
   const unzip = process.env.HMS_UNZIP_EXECUTABLE_PATH?.trim() || 'unzip';
   if (!(await commandSucceeds(unzip, ['-tqq', path]))) return false;
   const listing = await commandOutput(unzip, ['-Z1', path]);
@@ -961,10 +876,7 @@ function assertNoForbiddenKeys(value: unknown, path = ''): void {
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const next = path ? `${path}.${key}` : key;
     if (FORBIDDEN_RECEIPT_KEYS.has(key)) {
-      throw new HmsBrowserArtifactError(
-        'TRACE_FINALIZE_FAILED',
-        `forbidden receipt key: ${next}`,
-      );
+      throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED', `forbidden receipt key: ${next}`);
     }
     assertNoForbiddenKeys(child, next);
   }
@@ -996,10 +908,7 @@ export async function purgeExpiredHmsBrowserArtifacts(
       }
       continue;
     }
-    if (
-      entry.name.startsWith('.partial-') ||
-      entry.name.startsWith('.incomplete-')
-    ) {
+    if (entry.name.startsWith('.partial-') || entry.name.startsWith('.incomplete-')) {
       const info = await lstat(dir).catch(() => null);
       if (info && !info.isSymbolicLink() && info.mtimeMs <= staleBefore) {
         await rm(dir, { recursive: true, force: true });
@@ -1057,8 +966,7 @@ export async function createHmsBrowserArtifactStore(input: {
 }): Promise<HmsBrowserArtifactStore> {
   const root = await assertSafeRoot(input.root);
   const getFreeBytes = input.getFreeBytes ?? defaultGetFreeBytes;
-  const validateTraceFile =
-    input.validateTraceFile ?? validatePlaywrightTraceFile;
+  const validateTraceFile = input.validateTraceFile ?? validatePlaywrightTraceFile;
   const validateVideoFile = input.validateVideoFile ?? validateWebmFile;
   if ((await getFreeBytes(root)) < HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES) {
     throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
@@ -1119,16 +1027,11 @@ export async function createHmsBrowserArtifactStore(input: {
     async beginCapture(spec) {
       await assertCaptureStorageReady();
       assertUuid(spec.operationId, 'operationId');
-      if (spec.toolId !== 'hms_find_reservation') {
-        throw new HmsBrowserArtifactError(
-          'TRACE_STORAGE_UNAVAILABLE',
-          'unsupported toolId',
-        );
+      if (!isSupportedHmsBrowserV1Tool(spec.toolId)) {
+        throw new HmsBrowserArtifactError('TRACE_STORAGE_UNAVAILABLE', 'unsupported toolId');
       }
-      if (
-        spec.executionClass !== 'normal' &&
-        spec.executionClass !== 'live_proof'
-      ) {
+      const captureToolId = spec.toolId;
+      if (spec.executionClass !== 'normal' && spec.executionClass !== 'live_proof') {
         throw new HmsBrowserArtifactError(
           'TRACE_STORAGE_UNAVAILABLE',
           'unsupported executionClass',
@@ -1161,10 +1064,7 @@ export async function createHmsBrowserArtifactStore(input: {
         { mode: 0o600 },
       );
 
-      const videoDir =
-        spec.executionClass === 'live_proof'
-          ? join(stagingDir, 'video-raw')
-          : null;
+      const videoDir = spec.executionClass === 'live_proof' ? join(stagingDir, 'video-raw') : null;
       if (videoDir) {
         await mkdir(videoDir, { recursive: true, mode: 0o700 });
         if (platform() !== 'win32') {
@@ -1173,8 +1073,7 @@ export async function createHmsBrowserArtifactStore(input: {
       }
       // Playwright's launch-level tracesDir is shared across serialized
       // sessions. Old raw traces are not part of this capture's capacity.
-      const intermediateFilesAtStart =
-        await directoryFileSizes(intermediateDir);
+      const intermediateFilesAtStart = await directoryFileSizes(intermediateDir);
 
       const milestones: HmsBrowserArtifactReceiptBaseV1['milestones'] = {};
 
@@ -1202,9 +1101,7 @@ export async function createHmsBrowserArtifactStore(input: {
         },
 
         async finalize(input) {
-          const expiresAt = new Date(
-            Date.now() + HMS_BROWSER_ARTIFACT_TTL_MS,
-          ).toISOString();
+          const expiresAt = new Date(Date.now() + HMS_BROWSER_ARTIFACT_TTL_MS).toISOString();
 
           let traceDigest: { sha256: string; bytes: number } | null = null;
           let videoDigest: { sha256: string; bytes: number } | null = null;
@@ -1212,16 +1109,13 @@ export async function createHmsBrowserArtifactStore(input: {
           const tracePath = join(stagingDir, 'trace.zip');
           try {
             const traceInfo = await stat(tracePath);
-            if (
-              traceInfo.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES
-            ) {
+            if (traceInfo.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) {
               throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
             }
             traceDigest = await fileDigest(tracePath);
             if (
               input.complete &&
-              (!(await isTraceZip(tracePath)) ||
-                !(await validateTraceFile(tracePath)))
+              (!(await isTraceZip(tracePath)) || !(await validateTraceFile(tracePath)))
             ) {
               throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
             }
@@ -1248,8 +1142,7 @@ export async function createHmsBrowserArtifactStore(input: {
             if (
               spec.executionClass === 'live_proof' &&
               input.complete &&
-              (!(await validateWebmFile(videoPath)) ||
-                !(await validateVideoFile(videoPath)))
+              (!(await validateWebmFile(videoPath)) || !(await validateVideoFile(videoPath)))
             ) {
               throw new HmsBrowserArtifactError('VIDEO_FINALIZE_FAILED');
             }
@@ -1268,7 +1161,7 @@ export async function createHmsBrowserArtifactStore(input: {
             artifactId,
             operationId: spec.operationId,
             sourceRevision: input.sourceRevision,
-            toolId: 'hms_find_reservation',
+            toolId: captureToolId,
             toolVersion: spec.toolVersion,
             dependencyRevision: spec.dependencyRevision,
             playwrightRevision: input.playwrightRevision,
@@ -1296,8 +1189,7 @@ export async function createHmsBrowserArtifactStore(input: {
                 ...base,
                 artifactState: 'complete',
                 trace: traceDigest!,
-                video:
-                  spec.executionClass === 'live_proof' ? videoDigest : null,
+                video: spec.executionClass === 'live_proof' ? videoDigest : null,
               }
             : {
                 ...base,
@@ -1335,9 +1227,7 @@ export async function createHmsBrowserArtifactStore(input: {
           try {
             await rename(stagingDir, incomplete);
           } catch {
-            await rm(stagingDir, { recursive: true, force: true }).catch(
-              () => undefined,
-            );
+            await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
           }
         },
       };
@@ -1348,9 +1238,7 @@ export async function createHmsBrowserArtifactStore(input: {
 }
 
 /** Test helper: create root with required mode when platform supports it. */
-export async function ensureHmsBrowserArtifactRoot(
-  root: string,
-): Promise<string> {
+export async function ensureHmsBrowserArtifactRoot(root: string): Promise<string> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   if (platform() !== 'win32') {
     await chmod(root, 0o700);

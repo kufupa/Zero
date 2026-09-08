@@ -3,44 +3,32 @@
  * Disclosure gate runs before claim creation; extra fields rejected.
  * Requester trust comes only from separately issued TrustedRequesterAuthorizationV1.
  */
-import { createHash } from 'node:crypto';
-import { z } from 'zod';
-import type { EvidenceClaim } from '../ai/draft-evidence.js';
 import {
   type TrustedRequesterAuthorizationV1,
   type TrustedRequesterClaimKind,
   reservationReadDataSchema,
 } from './contracts.js';
 import {
+  validateTrustedRequesterAuthorization,
+  type TrustedRequesterSourceState,
+} from './requester-authorization.js';
+import {
   mapCompanyBillingClaim,
   companyAccountReadDataSchema,
 } from './company-account-read-contract.js';
 import {
-  mapDocumentMetadataClaim,
-  documentListReadDataSchema,
-} from './document-list-contract.js';
-import {
-  mapEventSummaryClaim,
-  eventReadDataSchema,
-} from './event-read-contract.js';
-import {
-  mapFolioDepositClaim,
-  folioReadDataSchema,
-} from './folio-read-contract.js';
-import {
-  mapGroupBlockClaim,
-  groupBlockReadDataSchema,
-} from './group-block-read-contract.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
-import {
   mapSentEmailAuditClaim,
   sentEmailAuditReadDataSchema,
 } from './sent-email-audit-contract.js';
+import { mapDocumentMetadataClaim, documentListReadDataSchema } from './document-list-contract.js';
+import { mapGroupBlockClaim, groupBlockReadDataSchema } from './group-block-read-contract.js';
+import { mapFolioDepositClaim, folioReadDataSchema } from './folio-read-contract.js';
+import { mapEventSummaryClaim, eventReadDataSchema } from './event-read-contract.js';
+import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { READ_TOOL_IDS, type ReadToolId } from './read-tools.js';
-import {
-  validateTrustedRequesterAuthorization,
-  type TrustedRequesterSourceState,
-} from './requester-authorization.js';
+import type { EvidenceClaim } from '../ai/draft-evidence.js';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 
 const claimableToolIds = [
   'hms_find_reservation',
@@ -63,9 +51,7 @@ const EVIDENCE_KIND_TO_TRUSTED_CLAIM = {
   company_billing_summary: 'company_billing',
   group_block_summary: 'group_status',
   event_summary: 'event_status',
-} as const satisfies Partial<
-  Record<EvidenceClaim['kind'], TrustedRequesterClaimKind>
->;
+} as const satisfies Partial<Record<EvidenceClaim['kind'], TrustedRequesterClaimKind>>;
 
 export type MapEnvelopeRequesterAuthorization = {
   authorization: unknown;
@@ -123,10 +109,7 @@ function disclosureBlocksClaim(data: unknown): boolean {
   return false;
 }
 
-function withEvidenceIds(
-  claim: EvidenceClaim,
-  evidenceId: string,
-): EvidenceClaim {
+function withEvidenceIds(claim: EvidenceClaim, evidenceId: string): EvidenceClaim {
   return {
     ...claim,
     evidenceId,
@@ -164,9 +147,7 @@ function authorizeClaimKind(
 ): TrustedRequesterAuthorizationV1 | null {
   if (auth === null || auth === undefined) return null;
   const required =
-    EVIDENCE_KIND_TO_TRUSTED_CLAIM[
-      claimKind as keyof typeof EVIDENCE_KIND_TO_TRUSTED_CLAIM
-    ];
+    EVIDENCE_KIND_TO_TRUSTED_CLAIM[claimKind as keyof typeof EVIDENCE_KIND_TO_TRUSTED_CLAIM];
   if (!required) return null;
   return validateTrustedRequesterAuthorization({
     authorization: auth.authorization,
@@ -267,6 +248,11 @@ export function mapEnvelopeToClaims(
           id: claimId(`${evidenceId}:quote_stay_summary`),
           kind: 'quote_stay_summary',
           value: {
+            requestRef: data.data.requestRef ?? null,
+            coveredNights: data.data.coveredNights ?? observations.map((row) => row.date),
+            missingNights: data.data.missingNights ?? [],
+            displayRateSum: data.data.displayRateSum ?? null,
+            unresolvedInputs: data.data.unresolvedInputs ?? [],
             nights: observations.map((row) => ({
               date: row.date,
               roomType: row.roomType,
@@ -275,9 +261,7 @@ export function mapEnvelopeToClaims(
               displayedAmount: row.displayedAmount,
               currency: row.currency,
               rateBasis: row.rateBasis,
-              restrictions: Array.isArray(row.restrictions)
-                ? row.restrictions.join(', ')
-                : '',
+              restrictions: Array.isArray(row.restrictions) ? row.restrictions.join(', ') : '',
             })),
             bookable: false,
             stayTotal: null,

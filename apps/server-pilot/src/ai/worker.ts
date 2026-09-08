@@ -75,10 +75,12 @@ import {
 } from '../hms/requester-authorization.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
+import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
+import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
@@ -567,7 +569,12 @@ export function createLiveHmsCandidateSessionFactory(
         });
     if (input.readOnly) {
       const readAdmission = input.readAdmission;
-      const admittedRelease = input.readToolId === 'hms_read_folio' ? folioRelease : findRelease;
+      const admittedRelease =
+        input.readToolId === 'hms_read_folio'
+          ? folioRelease
+          : input.readToolId === 'hms_quote_stay'
+            ? quoteRelease
+            : findRelease;
       if (!admittedRelease || active?.handlerPathActive !== true) {
         throw Object.assign(new Error('active read release is required for read admission'), {
           failureClass: 'AUTH' as const,
@@ -642,6 +649,14 @@ export function createLiveHmsCandidateSessionFactory(
       ? createLiveQuoteStayDriver({
           runtime,
           transportId: input.transportId,
+          auditSpecFor: () => ({
+            operationId,
+            toolId: 'hms_quote_stay',
+            toolVersion: '2.0.0',
+            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+          }),
         })
       : undefined;
     const folioRead =
@@ -1413,6 +1428,7 @@ async function assertCurrentReadAdmissionAuthority(input: {
     const expectedToolId = input.request.toolId;
     if (
       expectedToolId !== 'hms_find_reservation' &&
+      expectedToolId !== 'hms_quote_stay' &&
       expectedToolId !== 'hms_read_reservation' &&
       expectedToolId !== 'hms_read_folio' &&
       expectedToolId !== 'documents_list_existing' &&
@@ -1659,6 +1675,193 @@ async function executeProductionReadTool(input: {
       }),
     );
     return { result: receipt.result, readResultRef: receipt.readResultRef };
+  }
+
+  if (request.toolId === 'hms_quote_stay') {
+    const quoteCandidate = quoteStayCandidateFromRequest(request.quoteRequest);
+    const sessionFactory =
+      input.sessionFactory ??
+      createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
+    const session = await sessionFactory({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      lookupCandidates: [],
+      signal: input.signal,
+      runId: input.run.id,
+      readFence: input.fence,
+      readPlanKind: 'reservation',
+      readOnly: true,
+      readAdmission: admission,
+      readToolId: 'hms_quote_stay',
+      quoteCandidates: quoteCandidate
+        ? new Map([[request.quoteRequestRef, quoteCandidate]])
+        : new Map(),
+    });
+    const propertyReadLock = session.propertyReadLock;
+    if (!propertyReadLock) {
+      throw Object.assign(new Error('property read lock is required for quote dispatch'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const mapQuoteSessionResult = (legacy: ToolResult<unknown>): ReadResult<unknown> => {
+      const parsedData =
+        legacy.data == null
+          ? null
+          : (() => {
+              const parsed = quoteStayReadDataSchema.safeParse(legacy.data);
+              if (parsed.success) return parsed.data;
+              if (legacy.status === 'ok' || legacy.status === 'partial') {
+                throw Object.assign(new Error('quote read returned malformed typed data'), {
+                  failureClass: 'SCHEMA_DRIFT' as const,
+                });
+              }
+              return null;
+            })();
+      const unresolved = new Set([
+        ...legacy.unresolvedFields,
+        ...(parsedData?.unresolvedInputs ?? []),
+      ]);
+      const status = legacy.status === 'ok' && unresolved.size > 0 ? 'partial' : legacy.status;
+      const reasonCode =
+        status === 'unverified_negative'
+          ? 'UNVERIFIED_NEGATIVE'
+          : unresolved.size > 0 || status !== 'ok'
+            ? 'INCOMPLETE_QUOTE'
+            : null;
+      const unavailableSections: Array<{
+        section: string;
+        reasonCode: 'PARTIAL_WINDOW' | 'INCOMPLETE_QUOTE' | 'UNVERIFIED_NEGATIVE';
+      }> =
+        parsedData && parsedData.missingNights && parsedData.missingNights.length > 0
+          ? [{ section: 'nightly_coverage', reasonCode: 'PARTIAL_WINDOW' as const }]
+          : [];
+      if (reasonCode && unavailableSections.length === 0) {
+        unavailableSections.push({ section: 'quote_pricing', reasonCode });
+      }
+      return readResultSchema.parse({
+        toolId: 'hms_quote_stay',
+        schemaVersion: 'hms-quote/1',
+        status,
+        data: parsedData,
+        completeness:
+          parsedData && unresolved.size === 0 && parsedData.stayTotal !== null
+            ? 'complete'
+            : parsedData
+              ? 'partial'
+              : 'unknown',
+        unavailableSections,
+        scopeRef: request.quoteRequestRef,
+        evidence:
+          legacy.evidence.kind === 'hms'
+            ? [
+                {
+                  evidenceRef: legacy.evidence.id,
+                  sourceSystem: 'hms' as const,
+                  sourceSurface: 'room_type_rate_availability',
+                  requestBranchId: admission.requestBranchId,
+                  observedAt: legacy.evidence.observedAt,
+                  sourceUpdatedAt: null,
+                  expiresAt: legacy.evidence.expiresAt,
+                  scopeVerified: true,
+                  artifactRef: null,
+                },
+              ]
+            : [],
+        page: null,
+        issues: reasonCode
+          ? [
+              {
+                code: reasonCode,
+                retryable: false,
+                safeNextAction:
+                  reasonCode === 'INCOMPLETE_QUOTE'
+                    ? ('request_input' as const)
+                    : ('manual_review' as const),
+              },
+            ]
+          : [],
+      }) as ReadResult<unknown>;
+    };
+    const fallbackResult = (): ReadResult<unknown> =>
+      mapQuoteSessionResult({
+        status: 'manual_required',
+        draftReady: false,
+        data: buildQuoteStayReadData({
+          nightlyObservations: [],
+          requestedRooms: request.quoteRequest.rooms.reduce((sum, room) => sum + room.quantity, 0),
+          requestRef: request.quoteRequest.quoteRequestRef,
+          arrival: request.quoteRequest.arrival,
+          departure: request.quoteRequest.departure,
+          rooms: request.quoteRequest.rooms,
+          currency: request.quoteRequest.currency,
+          roomMoveRequired: request.quoteRequest.roomMoveRequired,
+          unresolvedInputs: ['room_or_rate_reference_required'],
+        }),
+        unresolvedFields: ['room_or_rate_reference_required'],
+        evidence: {
+          kind: 'hms',
+          id: '00000000-0000-4000-8000-000000000014',
+          toolId: 'hms_quote_stay',
+          toolVersion: '2.0.0',
+          propertyCode: 'HRCEN',
+          observedAt: new Date().toISOString(),
+          expiresAt: input.fence.deadlineAt.toISOString(),
+          claimKeys: [],
+          sourceHash: createHash('sha256').update('quote-input-incomplete').digest('hex'),
+        },
+      });
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: 'HRCEN',
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds: ['quote_stay_summary'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
+      propertyReadLock,
+      handlers: {
+        quoteStay: async () => {
+          if (!quoteCandidate) return fallbackResult();
+          const legacy = await session.quoteStay(request.quoteRequestRef, input.signal);
+          if (legacy.evidence.kind !== 'hms') {
+            throw Object.assign(new Error('quote read returned a non-HMS evidence kind'), {
+              failureClass: 'SCHEMA_DRIFT' as const,
+            });
+          }
+          return mapQuoteSessionResult(legacy);
+        },
+      },
+    };
+    try {
+      const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) =>
+        executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: { ...readContext, propertyReadLockConnection },
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        }),
+      );
+      return { result: receipt.result, readResultRef: receipt.readResultRef };
+    } finally {
+      await session.close?.();
+    }
   }
 
   const candidateId = request.candidateId;

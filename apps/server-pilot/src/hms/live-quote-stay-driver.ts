@@ -3,19 +3,20 @@
  * One exact search; never CRS / result-click / paging / save.
  * Production rejects fixture HTML data-testid fallback.
  */
-import { createHash } from 'node:crypto';
-import type { ToolResult } from '../ai/draft-evidence.js';
-import type { QuoteNightObservation, QuoteStayReadData } from './quote-stay-contract.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import {
   isoDateToHmsDisplay,
   quoteStayNightDates,
   type QuoteStayCandidate,
 } from './quote-stay-candidate.js';
-import type { HmsSessionAuthorization } from './release-kernel.js';
-import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import type { QuoteNightObservation, QuoteStayReadData } from './quote-stay-contract.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
+import type { HmsSessionAuthorization } from './release-kernel.js';
+import { buildQuoteStayReadData } from './quote-stay-contract.js';
+import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
+import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createQuoteStayFacade } from './quote-stay-facade.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
+import { createHash } from 'node:crypto';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
   'roomTypeCode',
@@ -44,9 +45,7 @@ function assertNotAborted(signal: AbortSignal): void {
 }
 
 /** Parse Infor mixed object-literal / JSON search envelopes. */
-export function parseOsrravSearchEnvelope(
-  text: string,
-): Record<string, unknown> | null {
+export function parseOsrravSearchEnvelope(text: string): Record<string, unknown> | null {
   const fromPageData = extractOsressPageData(text);
   if (fromPageData) return fromPageData;
   try {
@@ -149,18 +148,12 @@ export function parseLiveQuoteAvailability(
   if (pageData.success === false) {
     const messages = Array.isArray(pageData.messages) ? pageData.messages : [];
     const types = messages
-      .map((m) =>
-        m && typeof m === 'object'
-          ? String((m as { type?: unknown }).type ?? '')
-          : '',
-      )
+      .map((m) => (m && typeof m === 'object' ? String((m as { type?: unknown }).type ?? '') : ''))
       .filter(Boolean);
     return {
       envelopeRecognized: true,
       rows: [],
-      unresolvedFields: types.includes('error')
-        ? ['quote_search_error']
-        : ['quote_search_failed'],
+      unresolvedFields: types.includes('error') ? ['quote_search_error'] : ['quote_search_failed'],
       currency: null,
     };
   }
@@ -186,9 +179,7 @@ export function parseLiveQuoteAvailability(
   const ad = availability as Record<string, unknown>;
   const currencyRaw = ad.uoc;
   const currency =
-    typeof currencyRaw === 'string' && /^[A-Z]{3}$/.test(currencyRaw)
-      ? currencyRaw
-      : null;
+    typeof currencyRaw === 'string' && /^[A-Z]{3}$/.test(currencyRaw) ? currencyRaw : null;
 
   const roomTypes = Array.isArray(ad.roomTypeInvArray)
     ? (ad.roomTypeInvArray as Record<string, unknown>[])
@@ -210,16 +201,14 @@ export function parseLiveQuoteAvailability(
       const date = isoFromHmsDate(day.date);
       if (!date) continue;
       const n = day.numOfAvailable;
-      if (typeof n === 'number' && Number.isInteger(n) && n >= 0) {
+      if (typeof n === 'number' && Number.isInteger(n)) {
         availByDate.set(date, n);
       }
     }
     for (const [rpi, rp] of ratePlans.entries()) {
       const ratePlan = String(rp.ratePlanCode ?? '').trim();
       const rateCurrency =
-        typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc)
-          ? rp.uoc
-          : currency;
+        typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc) ? rp.uoc : currency;
       const daily = Array.isArray(rp.ratePlanDailyInvArray)
         ? (rp.ratePlanDailyInvArray as Record<string, unknown>[])
         : [];
@@ -228,8 +217,7 @@ export function parseLiveQuoteAvailability(
         const date = isoFromHmsDate(day.date);
         const amount = amountString(day.roomRate);
         const availableCount =
-          typeof day.combNumOfAvailable === 'number' &&
-          Number.isInteger(day.combNumOfAvailable)
+          typeof day.combNumOfAvailable === 'number' && Number.isInteger(day.combNumOfAvailable)
             ? day.combNumOfAvailable
             : date
               ? (availByDate.get(date) ?? null)
@@ -242,14 +230,7 @@ export function parseLiveQuoteAvailability(
         if (!ratePlan) unresolvedFields.push(`${prefix}.ratePlan`);
         if (!amount) unresolvedFields.push(`${prefix}.displayedAmount`);
         if (!rateCurrency) unresolvedFields.push(`${prefix}.currency`);
-        if (
-          date &&
-          roomType &&
-          ratePlan &&
-          amount &&
-          rateCurrency &&
-          availableCount !== null
-        ) {
+        if (date && roomType && ratePlan && amount && rateCurrency && availableCount !== null) {
           rows.push({
             date,
             roomType,
@@ -274,13 +255,19 @@ export function parseLiveQuoteAvailability(
   };
 }
 
-function emptyQuoteData(rooms: number): QuoteStayReadData {
-  return quoteStayReadDataSchema.parse({
+function emptyQuoteData(
+  candidate: QuoteStayCandidate,
+  unresolvedInputs: readonly string[] = [],
+): QuoteStayReadData {
+  return buildQuoteStayReadData({
     nightlyObservations: [],
-    bookable: false as const,
-    stayTotal: null,
-    occupancyPriced: false as const,
-    requestedRooms: rooms,
+    requestedRooms: candidate.rooms,
+    requestRef: candidate.quoteRequestRef,
+    arrival: candidate.arrivalDate,
+    departure: candidate.departureDate,
+    rooms: candidate.normalizedRooms,
+    currency: candidate.currency,
+    unresolvedInputs,
   });
 }
 
@@ -333,6 +320,8 @@ export type LiveQuoteStayDriver = {
 export function createLiveQuoteStayDriver(input: {
   runtime: HmsRuntime;
   transportId: string;
+  /** Normal read sessions require the same audited execution seam as find. */
+  auditSpecFor?: (input: { candidate: QuoteStayCandidate }) => HmsBrowserAuditSpec | undefined;
 }): LiveQuoteStayDriver {
   const { runtime, transportId } = input;
 
@@ -362,11 +351,12 @@ export function createLiveQuoteStayDriver(input: {
       }
 
       const observedAt = new Date();
+      const auditSpec = input.auditSpecFor?.({ candidate });
       const nights = quoteStayNightDates(candidate);
       if (nights.length === 0) {
         return quoteToolResult({
           status: 'manual_required',
-          data: emptyQuoteData(candidate.rooms),
+          data: emptyQuoteData(candidate, ['quote_input']),
           unresolvedFields: ['quote_input'],
           observedAt,
           sourceSeed: 'invalid-quote-nights',
@@ -378,6 +368,7 @@ export function createLiveQuoteStayDriver(input: {
         transportId,
         signal,
         allowUnstarted: true,
+        auditSpec,
         sessionAuthorization: authorization,
       });
 
@@ -390,7 +381,7 @@ export function createLiveQuoteStayDriver(input: {
         if (session.terminal() || session.violation()) {
           return quoteToolResult({
             status: 'manual_required',
-            data: emptyQuoteData(candidate.rooms),
+            data: emptyQuoteData(candidate, ['request_policy']),
             unresolvedFields: ['request_policy'],
             observedAt,
             sourceSeed: 'policy-quote-search',
@@ -403,7 +394,7 @@ export function createLiveQuoteStayDriver(input: {
         if (!parsed.envelopeRecognized) {
           return quoteToolResult({
             status: 'manual_required',
-            data: emptyQuoteData(candidate.rooms),
+            data: emptyQuoteData(candidate, parsed.unresolvedFields),
             unresolvedFields: parsed.unresolvedFields,
             observedAt,
             sourceSeed: 'quote-envelope-unrecognized',
@@ -420,8 +411,8 @@ export function createLiveQuoteStayDriver(input: {
         ) {
           return quoteToolResult({
             status: 'unverified_negative',
-            data: emptyQuoteData(candidate.rooms),
-            unresolvedFields: [],
+            data: emptyQuoteData(candidate, ['unverified_negative']),
+            unresolvedFields: ['unverified_negative'],
             observedAt,
             sourceSeed: 'quote-empty-unverified',
             draftReady: false,
@@ -450,15 +441,21 @@ export function createLiveQuoteStayDriver(input: {
             row.roomType.toUpperCase() === candidate.roomType.toUpperCase() &&
             row.ratePlan.toUpperCase() === candidate.ratePlan.toUpperCase(),
         );
-        const useRows = filtered.length > 0 ? filtered : inWindow;
+        const useRows = filtered;
+        if (inWindow.length > 0 && filtered.length === 0) {
+          unresolved.push('room_rate_scope_mismatch');
+        }
         const uniqueUnresolved = [...new Set(unresolved)];
         const draftReady = uniqueUnresolved.length === 0 && useRows.length === nights.length;
-        const data = quoteStayReadDataSchema.parse({
+        const data = buildQuoteStayReadData({
           nightlyObservations: useRows,
-          bookable: false as const,
-          stayTotal: null,
-          occupancyPriced: false as const,
           requestedRooms: candidate.rooms,
+          requestRef: candidate.quoteRequestRef,
+          arrival: candidate.arrivalDate,
+          departure: candidate.departureDate,
+          rooms: candidate.normalizedRooms,
+          currency: candidate.currency ?? parsed.currency ?? undefined,
+          unresolvedInputs: uniqueUnresolved,
         });
         return quoteToolResult({
           status: draftReady ? 'ok' : 'manual_required',

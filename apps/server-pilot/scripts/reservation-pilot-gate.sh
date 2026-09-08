@@ -564,6 +564,9 @@ case "${MODE}:${SLICE}" in
       "tests/hms-normal-runtime-read-service.test.ts" \
       "tests/hms-independent-read-db-review.test.ts"
     ;;
+  db:quotes)
+    run_db_slice "tests/hms-quote-db.test.ts"
+    ;;
   db:documents)
     run_db_slice \
       "tests/existing-document-validation.test.ts" \

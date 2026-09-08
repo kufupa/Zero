@@ -29,6 +29,7 @@ import {
   type ReservationFindResult,
 } from './reservation-context-contract.js';
 import { extractLookupCandidates, filterExactReservationCandidates } from '../ai/thread-context.js';
+import { normalizeQuoteRequestFromAuthoredSegment } from './quote-request-normalization.js';
 import { DOCUMENT_LIST_MAX_ROWS } from './document-list-contract.js';
 import { normalizeMessageText } from '../ai/thread-context.js';
 import { and, asc, desc, eq, lte, or } from 'drizzle-orm';
@@ -50,6 +51,7 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
     | 'hms_find_reservation'
     | 'hms_read_reservation'
     | 'hms_read_folio'
+    | 'hms_quote_stay'
     | 'documents_list_existing'
     | 'documents_read_existing';
   now?: Date;
@@ -63,12 +65,14 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
   documentRef?: string;
   format?: 'text' | 'artifact';
+  quoteRequestRef?: string;
 };
 
 export type IssuedMailboxReadAdmission = IssuedReadAdmission & {
   accessId: string;
   triggerMessageId: string;
   candidateId: string | null;
+  quoteRequestRef: string | null;
 };
 
 function authError(code: string, messageText: string): Error & { code: string } {
@@ -125,6 +129,22 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
   ]
     .filter(Boolean)
     .join('\n');
+  if (input.toolId === 'hms_quote_stay') {
+    const normalized = normalizeQuoteRequestFromAuthoredSegment(triggerText);
+    if (normalized.status !== 'ready') {
+      throw authError(
+        'READ_QUOTE_INPUT_CLARIFICATION',
+        `quote request needs clarification: ${normalized.unresolvedInputs.join(', ')}`,
+      );
+    }
+    return {
+      triggerMessageId: trigger.id,
+      candidateId: null,
+      quoteRequest: normalized.request,
+      text: triggerText,
+      observedAt: trigger.receivedAt ?? trigger.createdAt,
+    };
+  }
   const exact = filterExactReservationCandidates(extractLookupCandidates(triggerText));
   if (
     exact.length !== 1 &&
@@ -141,6 +161,7 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
     candidateId: exact.length === 1 ? exact[0]!.id : null,
     text: triggerText,
     observedAt: trigger.receivedAt ?? trigger.createdAt,
+    quoteRequest: null,
   };
 }
 
@@ -458,6 +479,23 @@ export async function issueReadAdmissionFromMailbox(
         format: input.format,
       },
     });
+  } else if (input.toolId === 'hms_quote_stay') {
+    if (!trigger.quoteRequest) {
+      throw authError('READ_QUOTE_INPUT_CLARIFICATION', 'quote request needs clarification');
+    }
+    if (
+      input.quoteRequestRef !== undefined &&
+      input.quoteRequestRef !== trigger.quoteRequest.quoteRequestRef
+    ) {
+      throw authError('READ_QUOTE_SCOPE_MISMATCH', 'quote request reference is not current');
+    }
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: 'hms_quote_stay',
+      quoteRequest: trigger.quoteRequest,
+      detail: input.detail,
+    });
   } else {
     if (!trigger.candidateId) {
       throw authError(
@@ -497,6 +535,7 @@ export async function issueReadAdmissionFromMailbox(
     accessId: grant.accessId,
     triggerMessageId: trigger.triggerMessageId,
     candidateId: trigger.candidateId,
+    quoteRequestRef: trigger.quoteRequest?.quoteRequestRef ?? null,
   };
 }
 
