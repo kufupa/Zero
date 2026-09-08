@@ -206,6 +206,11 @@ export type CreateReservationCandidateSessionInput = {
   buildQuoteAuthorization?: (candidate: QuoteStayCandidate) => HmsSessionAuthorization;
   /** Finance read adapter; the worker still owns the admission/lock boundary. */
   folioRead?: CandidateToolSession['readFolio'];
+  /** Linked-context adapters; the worker still owns admission/lock/receipt. */
+  companyAccountRead?: CandidateToolSession['readCompanyAccount'];
+  groupBlockRead?: CandidateToolSession['readGroupBlock'];
+  eventRead?: CandidateToolSession['readEvent'];
+  notesTracesRead?: CandidateToolSession['readNotesTraces'];
   /** Exposed only so the U8 read adapter can fence the full dispatch. */
   propertyReadLock?: import('./property-read-lock.js').PropertyReadLock;
 };
@@ -333,6 +338,10 @@ export function createReservationCandidateSession(
       throw new Error('mail_read_artifact not active in reservation session');
     },
     ...(input.folioRead ? { readFolio: input.folioRead } : {}),
+    ...(input.companyAccountRead ? { readCompanyAccount: input.companyAccountRead } : {}),
+    ...(input.groupBlockRead ? { readGroupBlock: input.groupBlockRead } : {}),
+    ...(input.eventRead ? { readEvent: input.eventRead } : {}),
+    ...(input.notesTracesRead ? { readNotesTraces: input.notesTracesRead } : {}),
     close: input.close,
   };
 }

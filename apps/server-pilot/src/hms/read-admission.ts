@@ -11,6 +11,10 @@ import {
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
   quoteStayReadRequestSchema,
+  companyAccountReadRequestSchema,
+  groupBlockReadRequestSchema,
+  eventReadRequestSchema,
+  notesTracesReadRequestSchema,
   type DocumentsListReadRequest,
   type DocumentsReadReadRequest,
   type ReadAdmission,
@@ -169,6 +173,28 @@ type QuoteIssueReadAdmissionInput = {
   detail?: 'summary' | 'detail';
 };
 
+type ContextIssueReadAdmissionInput = {
+  source: ReadAdmissionSource;
+  now?: Date;
+  candidateId: string;
+  toolId:
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces';
+  reservationRef?: string;
+  groupRef?: string;
+  eventRef?: string;
+  resourceRef?: string;
+  sections?: readonly string[];
+  states?: readonly string[];
+  limit?: number;
+  cursor?: string;
+  audience?: 'staff' | 'customer';
+  parentReadResultRef?: string;
+  evidenceExpiresAt?: Date | string;
+};
+
 type DocumentIssueReadAdmissionInput = {
   source: ReadAdmissionSource;
   now?: Date;
@@ -181,6 +207,7 @@ type DocumentIssueReadAdmissionInput = {
 type IssueReadAdmissionInput =
   | ReservationIssueReadAdmissionInput
   | QuoteIssueReadAdmissionInput
+  | ContextIssueReadAdmissionInput
   | DocumentIssueReadAdmissionInput;
 
 function requiredRef(value: string, label: string): string {
@@ -252,7 +279,11 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     input.toolId === 'hms_find_reservation' ||
     input.toolId === 'hms_read_reservation' ||
     input.toolId === 'hms_read_folio' ||
-    input.toolId === 'hms_quote_stay';
+    input.toolId === 'hms_quote_stay' ||
+    input.toolId === 'hms_company_account_read' ||
+    input.toolId === 'hms_group_block_read' ||
+    input.toolId === 'hms_event_read' ||
+    input.toolId === 'hms_read_notes_traces';
   const captureBindingRef = captureRequired
     ? requiredRef(source.captureBindingRef ?? '', 'captureBindingRef')
     : null;
@@ -299,6 +330,38 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
       candidateId,
       reservationRefExpiresAt,
     });
+  } else if (
+    input.toolId === 'hms_company_account_read' ||
+    input.toolId === 'hms_group_block_read' ||
+    input.toolId === 'hms_event_read' ||
+    input.toolId === 'hms_read_notes_traces'
+  ) {
+    const contextInput = input as ContextIssueReadAdmissionInput;
+    parentReadResultRef = requiredRef(
+      contextInput.parentReadResultRef ?? '',
+      'parentReadResultRef',
+    );
+    if (contextInput.evidenceExpiresAt === undefined) {
+      throw new Error('linked context admission requires verified evidence expiry');
+    }
+    evidenceExpiresAt = toIso(contextInput.evidenceExpiresAt, 'evidence expiry');
+    const evidenceExpiryMs = Date.parse(evidenceExpiresAt);
+    const policyExpiryMs = issuedAtMs + READ_ADMISSION_POLICY_TTL_MS;
+    const expiresAtMs = Math.min(policyExpiryMs, evidenceExpiryMs);
+    if (!Number.isFinite(evidenceExpiryMs) || expiresAtMs <= issuedAtMs) {
+      throw new Error('linked context admission evidence is expired');
+    }
+    reservationRefIssuedAt = now.toISOString();
+    reservationRefExpiresAt = new Date(expiresAtMs).toISOString();
+    const contextRef =
+      contextInput.toolId === 'hms_company_account_read'
+        ? contextInput.reservationRef
+        : contextInput.toolId === 'hms_group_block_read'
+          ? contextInput.groupRef
+          : contextInput.toolId === 'hms_event_read'
+            ? contextInput.eventRef
+            : contextInput.resourceRef;
+    reservationRef = requiredRef(contextRef ?? '', 'context reference');
   }
 
   let closedRequest: Record<string, unknown>;
@@ -320,6 +383,38 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
       detail: input.detail ?? 'summary',
     });
     closedRequest = parsedRequest;
+  } else if (input.toolId === 'hms_company_account_read') {
+    const contextInput = input as ContextIssueReadAdmissionInput;
+    closedRequest = companyAccountReadRequestSchema.omit({ admission: true }).parse({
+      toolId: input.toolId,
+      reservationRef: requiredRef(contextInput.reservationRef ?? '', 'reservationRef'),
+    });
+  } else if (input.toolId === 'hms_group_block_read') {
+    const contextInput = input as ContextIssueReadAdmissionInput;
+    closedRequest = groupBlockReadRequestSchema.omit({ admission: true }).parse({
+      toolId: input.toolId,
+      groupRef: requiredRef(contextInput.groupRef ?? '', 'groupRef'),
+      sections: [...(contextInput.sections ?? ['summary'])],
+    });
+  } else if (input.toolId === 'hms_event_read') {
+    const contextInput = input as ContextIssueReadAdmissionInput;
+    closedRequest = eventReadRequestSchema.omit({ admission: true }).parse({
+      toolId: input.toolId,
+      eventRef: requiredRef(contextInput.eventRef ?? '', 'eventRef'),
+    });
+  } else if (input.toolId === 'hms_read_notes_traces') {
+    const contextInput = input as ContextIssueReadAdmissionInput;
+    closedRequest = notesTracesReadRequestSchema
+      .innerType()
+      .omit({ admission: true })
+      .parse({
+        toolId: input.toolId,
+        resourceRef: requiredRef(contextInput.resourceRef ?? '', 'resourceRef'),
+        states: [...(contextInput.states ?? ['open'])],
+        limit: contextInput.limit ?? 20,
+        ...(contextInput.cursor ? { cursor: contextInput.cursor } : {}),
+        audience: contextInput.audience ?? 'staff',
+      });
   } else {
     const reservationInput = input as ReservationIssueReadAdmissionInput;
     closedRequest =
@@ -408,6 +503,10 @@ export function assertPersistedReadAdmissionIssuer(input: {
     | 'hms_read_reservation'
     | 'hms_read_folio'
     | 'hms_quote_stay'
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces'
     | 'documents_list_existing'
     | 'documents_read_existing';
 }): PersistedReadAdmissionIssuer {
@@ -496,7 +595,11 @@ export function assertReadAdmissionIssuer(input: {
   }
   if (
     (input.request.toolId === 'hms_read_reservation' ||
-      input.request.toolId === 'hms_read_folio') &&
+      input.request.toolId === 'hms_read_folio' ||
+      input.request.toolId === 'hms_company_account_read' ||
+      input.request.toolId === 'hms_group_block_read' ||
+      input.request.toolId === 'hms_event_read' ||
+      input.request.toolId === 'hms_read_notes_traces') &&
     !persisted.parentReadResultRef
   ) {
     throw new Error('resolved read_tool admission requires a parent typed receipt');

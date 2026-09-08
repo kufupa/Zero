@@ -50,6 +50,12 @@ export const LIST_DOCUMENTS_IMPL_V1 = seedImplementationDigest('hms_list_documen
 
 export const FOLIO_READ_IMPL_V1 = seedImplementationDigest('hms_read_folio', '1.0.0:v1');
 
+/** U15 group list reader binding; source I/O remains in the existing worker driver. */
+export const GROUP_BLOCK_READ_IMPL_V1 = seedImplementationDigest(
+  'hms_group_block_read',
+  '1.0.0:v1',
+);
+
 function stubResult(
   toolId: ReadToolId,
   status: ToolResult<unknown>['status'] = 'manual_required',
@@ -191,6 +197,10 @@ const HANDLER_INDEX: ReadonlyMap<string, ReadHandlerFactory> = new Map([
     makeFactory('hms_list_documents', LIST_DOCUMENTS_IMPL_V1),
   ],
   [`hms_read_folio:${FOLIO_READ_IMPL_V1}`, makeFactory('hms_read_folio', FOLIO_READ_IMPL_V1)],
+  [
+    `hms_group_block_read:${GROUP_BLOCK_READ_IMPL_V1}`,
+    makeFactory('hms_group_block_read', GROUP_BLOCK_READ_IMPL_V1),
+  ],
 ]);
 
 export function handlerIndexKey(toolId: ReadToolId, implementationSha256: string): string {

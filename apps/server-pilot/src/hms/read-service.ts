@@ -8,9 +8,20 @@ import {
   documentsReadReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
+  companyAccountReadRequestSchema,
+  groupBlockReadRequestSchema,
+  eventReadRequestSchema,
+  notesTracesReadRequestSchema,
   type ReadReasonCode,
   type ReadResult,
 } from './read-service-contracts.js';
+import {
+  companyAccountContextDataSchema,
+  eventContextDataSchema,
+  filterNotesForAudience,
+  groupBlockContextDataSchema,
+  notesTracesContextDataSchema,
+} from './context-read-contracts.js';
 import {
   reservationContextRequestSchema,
   reservationFindRequestSchema,
@@ -49,6 +60,10 @@ export const readRequestSchema = z.union([
   documentsReadReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
+  companyAccountReadRequestSchema,
+  groupBlockReadRequestSchema,
+  eventReadRequestSchema,
+  notesTracesReadRequestSchema,
 ]);
 export type ReadRequest =
   | ReservationFindRequest
@@ -56,7 +71,11 @@ export type ReadRequest =
   | z.infer<typeof documentsListReadRequestSchema>
   | z.infer<typeof documentsReadReadRequestSchema>
   | z.infer<typeof folioReadRequestSchema>
-  | QuoteStayReadRequest;
+  | QuoteStayReadRequest
+  | z.infer<typeof companyAccountReadRequestSchema>
+  | z.infer<typeof groupBlockReadRequestSchema>
+  | z.infer<typeof eventReadRequestSchema>
+  | z.infer<typeof notesTracesReadRequestSchema>;
 
 export type ReadHandlerResult =
   | ReservationLookupResult
@@ -95,6 +114,19 @@ export interface ReadHandlers {
     quoteRequestRef: string;
     quoteRequest: QuoteStayReadRequest['quoteRequest'];
     detail: 'summary' | 'detail';
+  }) => Promise<ReadResult<unknown>>;
+  readCompanyAccount?: (input: { reservationRef: string }) => Promise<ReadResult<unknown>>;
+  readGroupBlock?: (input: {
+    groupRef: string;
+    sections: readonly string[];
+  }) => Promise<ReadResult<unknown>>;
+  readEvent?: (input: { eventRef: string }) => Promise<ReadResult<unknown>>;
+  readNotesTraces?: (input: {
+    resourceRef: string;
+    states: readonly string[];
+    limit: number;
+    cursor: string | undefined;
+    audience: 'staff' | 'customer';
   }) => Promise<ReadResult<unknown>>;
 }
 
@@ -461,7 +493,15 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
           ? 'folio_deposit_summary'
           : request.toolId === 'hms_quote_stay'
             ? 'quote_stay_summary'
-            : 'reservation_summary',
+            : request.toolId === 'hms_company_account_read'
+              ? 'company_billing_summary'
+              : request.toolId === 'hms_group_block_read'
+                ? 'group_status'
+                : request.toolId === 'hms_event_read'
+                  ? 'event_status'
+                  : request.toolId === 'hms_read_notes_traces'
+                    ? 'notes_trace_observation'
+                    : 'reservation_summary',
       currentAppAccessProof: context.currentAppAccessProof,
       requireCurrentAppAccess: context.requireCurrentAppAccess,
     });
@@ -504,7 +544,15 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
     const expectedReservationRef =
       request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
         ? request.reservationRef
-        : null;
+        : request.toolId === 'hms_company_account_read'
+          ? request.reservationRef
+          : request.toolId === 'hms_group_block_read'
+            ? request.groupRef
+            : request.toolId === 'hms_event_read'
+              ? request.eventRef
+              : request.toolId === 'hms_read_notes_traces'
+                ? request.resourceRef
+                : null;
     if (parsed.reservationRef !== expectedReservationRef) {
       throw codedError(
         'READ_RESERVATION_REF_BINDING_MISMATCH',
@@ -597,6 +645,65 @@ async function dispatchRead(
         detail: parsed.detail,
       }),
     ) as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_company_account_read') {
+    const handler = context.handlers?.readCompanyAccount;
+    if (!handler) {
+      throw codedError(
+        'READ_HANDLER_UNAVAILABLE',
+        'typed company account context handler is unavailable',
+      );
+    }
+    const result = readResultSchema.parse(await handler({ reservationRef: parsed.reservationRef }));
+    if (result.data !== null) companyAccountContextDataSchema.parse(result.data);
+    return result as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_group_block_read') {
+    const handler = context.handlers?.readGroupBlock;
+    if (!handler) {
+      throw codedError(
+        'READ_HANDLER_UNAVAILABLE',
+        'typed group block context handler is unavailable',
+      );
+    }
+    const result = readResultSchema.parse(
+      await handler({ groupRef: parsed.groupRef, sections: parsed.sections }),
+    );
+    if (result.data !== null) groupBlockContextDataSchema.parse(result.data);
+    return result as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_event_read') {
+    const handler = context.handlers?.readEvent;
+    if (!handler) {
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed event context handler is unavailable');
+    }
+    const result = readResultSchema.parse(await handler({ eventRef: parsed.eventRef }));
+    if (result.data !== null) eventContextDataSchema.parse(result.data);
+    return result as ReadResult<unknown>;
+  }
+
+  if (parsed.toolId === 'hms_read_notes_traces') {
+    const handler = context.handlers?.readNotesTraces;
+    if (!handler) {
+      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed notes trace handler is unavailable');
+    }
+    const result = readResultSchema.parse(
+      await handler({
+        resourceRef: parsed.resourceRef,
+        states: parsed.states,
+        limit: parsed.limit,
+        cursor: parsed.cursor,
+        audience: parsed.audience,
+      }),
+    );
+    if (result.data !== null) {
+      const data = notesTracesContextDataSchema.parse(result.data);
+      result.data = filterNotesForAudience(data, parsed.audience);
+    }
+    return result as ReadResult<unknown>;
   }
 
   const facade = context.reservationFacade;

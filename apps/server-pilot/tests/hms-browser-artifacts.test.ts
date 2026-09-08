@@ -335,6 +335,37 @@ describe('hms browser artifacts store', () => {
     });
     expect(folioReceipt.toolId).toBe('hms_read_folio');
     expect(folioReceipt.requestBranchId).toBe('folio_summary');
+    const groupHandle = await store.beginCapture(
+      baseSpec({
+        toolId: 'hms_group_block_read',
+        toolVersion: '1.0.0',
+        requestBranchId: 'group_block_list',
+      }),
+    );
+    await writeFile(
+      join(groupHandle.stagingDir, 'trace.zip'),
+      traceZip({
+        'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+        'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+      }),
+    );
+    const groupReceipt = await groupHandle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'test-source',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    expect(groupReceipt.toolId).toBe('hms_group_block_read');
+    expect(groupReceipt.requestBranchId).toBe('group_block_list');
     await expect(
       store.beginCapture(
         baseSpec({

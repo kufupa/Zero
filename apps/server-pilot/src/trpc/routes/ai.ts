@@ -154,6 +154,46 @@ async function activeFolioAdmission(sections: readonly string[]) {
   };
 }
 
+async function activeLinkedContextAdmission(input: {
+  toolId:
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces';
+  branchId:
+    | 'reservation_linked_company_billing'
+    | 'group_block_list'
+    | 'event_list'
+    | 'notes_traces_list';
+  unavailableMessage: string;
+}) {
+  let active = getCachedActiveReadRuntime();
+  if (!active) {
+    active = await loadWorkerActiveReadSet({
+      registryPath:
+        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+        '/opt/nava/shared/hms-active-registry/active.json',
+      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
+      runtimeFingerprintSha256: runtimeFingerprintSha256({
+        sourceRevision: resolveHmsSourceRevision(),
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+      }),
+    });
+  }
+  const release = active.releases.get(input.toolId as never);
+  const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
+  const branch = hmsRelease?.requestBranches.find((candidate) => candidate.id === input.branchId);
+  if (!hmsRelease || !branch || active.handlerPathActive !== true) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: input.unavailableMessage });
+  }
+  return {
+    releaseId: hmsRelease.releaseId,
+    requestBranchId: branch.id,
+    manifestSha256: branch.manifestSha256,
+  };
+}
+
 function readRouteNotFound(): TRPCError {
   return new TRPCError({ code: 'NOT_FOUND', message: 'READ_RECEIPT_NOT_FOUND' });
 }
@@ -417,6 +457,232 @@ export const aiRouter = tRouter({
         candidateId: issued.candidateId,
         reservationRef: issued.admission.reservationRef,
         reservationRefExpiresAt: issued.admission.reservationRefExpiresAt,
+      };
+    }),
+
+  /** Parent-bound linked company context; source capability stays release-gated. */
+  enqueueHmsCompanyRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        findResultRef: readRefSchema,
+        reservationRef: readRefSchema,
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const release = await activeLinkedContextAdmission({
+        toolId: 'hms_company_account_read',
+        branchId: 'reservation_linked_company_billing',
+        unavailableMessage: 'HMS_COMPANY_CONTEXT_RELEASE_UNAVAILABLE',
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'hms_company_account_read',
+        reservationRef: input.reservationRef,
+        parentReadResultRef: input.findResultRef,
+        captureBindingRef: readResultRef,
+        ...release,
+      });
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-company:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.reservationRef}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+        triggerMessageId: issued.triggerMessageId,
+      };
+    }),
+
+  /** Parent-bound group summary/block/delegate context; no rooming-list writes. */
+  enqueueHmsGroupRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        findResultRef: readRefSchema,
+        groupRef: readRefSchema,
+        sections: z
+          .array(z.enum(['summary', 'blocks', 'delegates']))
+          .min(1)
+          .max(3)
+          .refine((sections) => new Set(sections).size === sections.length),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const release = await activeLinkedContextAdmission({
+        toolId: 'hms_group_block_read',
+        branchId: 'group_block_list',
+        unavailableMessage: 'HMS_GROUP_CONTEXT_RELEASE_UNAVAILABLE',
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'hms_group_block_read',
+        groupRef: input.groupRef,
+        sections: input.sections,
+        parentReadResultRef: input.findResultRef,
+        captureBindingRef: readResultRef,
+        ...release,
+      });
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-group:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.groupRef}:${input.sections.join(',')}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+        triggerMessageId: issued.triggerMessageId,
+      };
+    }),
+
+  /** Parent-bound HMS event facts; SCS/event-corpus records are out of scope. */
+  enqueueHmsEventRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        findResultRef: readRefSchema,
+        eventRef: readRefSchema,
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const release = await activeLinkedContextAdmission({
+        toolId: 'hms_event_read',
+        branchId: 'event_list',
+        unavailableMessage: 'HMS_EVENT_CONTEXT_RELEASE_UNAVAILABLE',
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'hms_event_read',
+        eventRef: input.eventRef,
+        parentReadResultRef: input.findResultRef,
+        captureBindingRef: readResultRef,
+        ...release,
+      });
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-event:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.eventRef}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+        triggerMessageId: issued.triggerMessageId,
+      };
+    }),
+
+  /** Bounded audience-filtered notes/traces observations; no note actions. */
+  enqueueHmsNotesRead: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string().min(1),
+        findResultRef: readRefSchema,
+        resourceRef: readRefSchema,
+        states: z
+          .array(z.enum(['open', 'completed']))
+          .min(1)
+          .max(2)
+          .default(['open']),
+        limit: z.number().int().min(1).max(50).default(20),
+        cursor: readRefSchema.optional(),
+        audience: z.enum(['staff', 'customer']).default('staff'),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const release = await activeLinkedContextAdmission({
+        toolId: 'hms_read_notes_traces',
+        branchId: 'notes_traces_list',
+        unavailableMessage: 'HMS_NOTES_CONTEXT_RELEASE_UNAVAILABLE',
+      });
+      const readResultRef = `hms-read-${randomUUID()}`;
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: ctx.sessionUser.id,
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        toolId: 'hms_read_notes_traces',
+        resourceRef: input.resourceRef,
+        states: input.states,
+        limit: input.limit,
+        cursor: input.cursor,
+        audience: input.audience,
+        parentReadResultRef: input.findResultRef,
+        captureBindingRef: readResultRef,
+        ...release,
+      });
+      const run = await enqueueAiRun(
+        {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+          triggerMessageId: issued.triggerMessageId,
+          runKind: 'read_tool',
+          idempotencyKey: `hms-read-notes:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.resourceRef}:${input.states.join(',')}:${input.limit}:${input.cursor ?? ''}:${input.audience}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: READ_TOOL_PROMPT_VERSION,
+          executorLane: 'hms',
+          readRequest: issued.readRequest,
+          readResultRef,
+          readAdmissionIssuer: issued.issuer,
+        },
+        db,
+      );
+      return {
+        runId: run.id,
+        runState: run.state,
+        readResultRef: run.readResultRef ?? readResultRef,
+        triggerMessageId: issued.triggerMessageId,
       };
     }),
 

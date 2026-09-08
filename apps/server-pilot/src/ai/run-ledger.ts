@@ -1,4 +1,10 @@
 import {
+  companyAccountContextDataSchema,
+  eventContextDataSchema,
+  groupBlockContextDataSchema,
+  notesTracesContextDataSchema,
+} from '../hms/context-read-contracts.js';
+import {
   readRefSchema,
   readReservationBindingSchema,
   readResultSchema,
@@ -365,7 +371,15 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
       (parsedReadRequest.toolId === 'hms_quote_stay' && admission.reservationRef !== null) ||
       ((parsedReadRequest.toolId === 'hms_read_reservation' ||
         parsedReadRequest.toolId === 'hms_read_folio') &&
-        admission.reservationRef !== parsedReadRequest.reservationRef)
+        admission.reservationRef !== parsedReadRequest.reservationRef) ||
+      (parsedReadRequest.toolId === 'hms_company_account_read' &&
+        admission.reservationRef !== parsedReadRequest.reservationRef) ||
+      (parsedReadRequest.toolId === 'hms_group_block_read' &&
+        admission.reservationRef !== parsedReadRequest.groupRef) ||
+      (parsedReadRequest.toolId === 'hms_event_read' &&
+        admission.reservationRef !== parsedReadRequest.eventRef) ||
+      (parsedReadRequest.toolId === 'hms_read_notes_traces' &&
+        admission.reservationRef !== parsedReadRequest.resourceRef)
     ) {
       throw new Error('read_tool reservation reference is not bound to trusted admission');
     }
@@ -712,6 +726,18 @@ export async function readAiRunReceipt(
     if (result.data !== null) folioReadDataSchema.parse(result.data);
     concrete = result;
   } else if (result.toolId === 'hms_quote_stay') {
+    concrete = result;
+  } else if (result.toolId === 'hms_company_account_read') {
+    if (result.data !== null) companyAccountContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_group_block_read') {
+    if (result.data !== null) groupBlockContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_event_read') {
+    if (result.data !== null) eventContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_read_notes_traces') {
+    if (result.data !== null) notesTracesContextDataSchema.parse(result.data);
     concrete = result;
   } else {
     if (result.data !== null) existingDocumentReadDataSchema.parse(result.data);

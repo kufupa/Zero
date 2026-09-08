@@ -38,6 +38,12 @@ import {
   type EnvInput,
 } from '../env.js';
 import {
+  companyAccountContextDataSchema,
+  eventContextDataSchema,
+  groupBlockContextDataSchema,
+  notesTracesContextDataSchema,
+} from '../hms/context-read-contracts.js';
+import {
   aiWorkflowRun,
   attachment,
   aiDraftGeneration,
@@ -53,17 +59,18 @@ import {
   type QuoteReferenceAuthorityLoader,
 } from '../hms/quote-request-normalization.js';
 import {
+  readResultSchema,
+  readReservationBindingSchema,
+  readReservationRef,
+  unknownFact,
+  type ReadResult,
+} from '../hms/read-service-contracts.js';
+import {
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
   type ArtifactData,
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
-import {
-  readResultSchema,
-  readReservationBindingSchema,
-  readReservationRef,
-  type ReadResult,
-} from '../hms/read-service-contracts.js';
 import {
   executeReadToolRun,
   readRequestSchema,
@@ -87,6 +94,8 @@ import { reservationFindResultSchema } from '../hms/reservation-context-contract
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
+import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
+import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
@@ -380,7 +389,8 @@ async function failAiRun(
 export type ReadAdmissionBinding = {
   releaseId: string;
   requestBranchId: string;
-  manifestSha256?: string;
+  /** Non-browser existing-document reads carry null; PMS reads carry a digest. */
+  manifestSha256?: string | null;
   requesterAuthorizationId: string;
   inputDigest: string;
   captureRequired: boolean;
@@ -423,7 +433,10 @@ export type CandidateSessionInput = {
   readOnly?: boolean;
   /** Trusted release/input/capture admission for the production read path. */
   readAdmission?: ReadAdmissionBinding;
-  readToolId?: import('../hms/read-tools.js').ReadToolId | 'hms_read_reservation';
+  readToolId?:
+    | import('../hms/read-tools.js').ReadToolId
+    | 'hms_read_reservation'
+    | 'hms_read_notes_traces';
   /** Closed finance section selection for the optional folio adapter. */
   folioSections?: readonly string[];
   /** Authored quote candidates when hms_quote_stay is active. */
@@ -538,12 +551,19 @@ export function createLiveHmsCandidateSessionFactory(
       buildExactOsressSearchManifest,
       buildLiveGuestStayReadManifest,
       buildExactOsrravSearchManifest,
+      buildLiveGroupBlockListManifest,
       liveNotFoundCanaryCandidate,
     } = await import('../hms/live-read-manifest.js');
     const { createLiveQuoteStayDriver } = await import('../hms/live-quote-stay-driver.js');
     const { createLiveFolioReadDriver, mergeFolioEvidence } = await import(
       '../hms/live-folio-read-driver.js'
     );
+    const { createLiveCompanyAccountReadDriver } = await import(
+      '../hms/live-company-account-read-driver.js'
+    );
+    const { createLiveGroupBlockDriver } = await import('../hms/live-group-block-driver.js');
+    const { createLiveEventReadDriver } = await import('../hms/live-event-read-driver.js');
+    const { observeNotesTraces } = await import('../hms/live-notes-traces-read-driver.js');
     const { mintReadCandidateChildren } = await import('../hms/candidate-graph.js');
     const { buildLiveFolioReadManifest, buildLiveDepositLedgerManifest } = await import(
       '../hms/live-read-manifest.js'
@@ -575,6 +595,18 @@ export function createLiveHmsCandidateSessionFactory(
     const folioReleaseRaw = active?.releases.get('hms_read_folio') ?? null;
     const folioRelease =
       folioReleaseRaw && folioReleaseRaw.evidenceKind === 'hms' ? folioReleaseRaw : null;
+    const companyReleaseRaw = active?.releases.get('hms_company_account_read') ?? null;
+    const companyRelease =
+      companyReleaseRaw && companyReleaseRaw.evidenceKind === 'hms' ? companyReleaseRaw : null;
+    const groupReleaseRaw = active?.releases.get('hms_group_block_read') ?? null;
+    const groupRelease =
+      groupReleaseRaw && groupReleaseRaw.evidenceKind === 'hms' ? groupReleaseRaw : null;
+    const eventReleaseRaw = active?.releases.get('hms_event_read') ?? null;
+    const eventRelease =
+      eventReleaseRaw && eventReleaseRaw.evidenceKind === 'hms' ? eventReleaseRaw : null;
+    const notesReleaseRaw = active?.releases.get('hms_read_notes_traces' as never) ?? null;
+    const notesRelease =
+      notesReleaseRaw && notesReleaseRaw.evidenceKind === 'hms' ? notesReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
@@ -593,7 +625,15 @@ export function createLiveHmsCandidateSessionFactory(
           ? folioRelease
           : input.readToolId === 'hms_quote_stay'
             ? quoteRelease
-            : findRelease;
+            : input.readToolId === 'hms_company_account_read'
+              ? companyRelease
+              : input.readToolId === 'hms_group_block_read'
+                ? groupRelease
+                : input.readToolId === 'hms_event_read'
+                  ? eventRelease
+                  : input.readToolId === 'hms_read_notes_traces'
+                    ? notesRelease
+                    : findRelease;
       if (!admittedRelease || active?.handlerPathActive !== true) {
         throw Object.assign(new Error('active read release is required for read admission'), {
           failureClass: 'AUTH' as const,
@@ -847,6 +887,230 @@ export function createLiveHmsCandidateSessionFactory(
             );
           }
         : undefined;
+
+    const contextAuthorization = (inputData: {
+      toolId: 'hms_company_account_read' | 'hms_group_block_read' | 'hms_event_read';
+      discoveryOperationId:
+        | 'reservation_linked_company_billing'
+        | 'group_block_list'
+        | 'event_list';
+      release: NonNullable<typeof companyRelease>;
+      branchId: string;
+    }) => {
+      const branch = inputData.release.requestBranches.find(
+        (candidate) => candidate.id === inputData.branchId,
+      );
+      if (!branch) {
+        throw Object.assign(new Error('linked context release branch is unavailable'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      return {
+        operationId,
+        toolId: inputData.toolId,
+        discoveryOperationId: inputData.discoveryOperationId,
+        releaseId: inputData.release.releaseId,
+        requestBranchId: branch.id,
+        manifest:
+          inputData.toolId === 'hms_group_block_read'
+            ? buildLiveGroupBlockListManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
+            : buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+        manifestSha256: branch.manifestSha256,
+        roleProofPath: config.roleProofPath,
+        roleProofSha256: inputData.release.roleProofSha256 ?? placeholderDigest('u15-role'),
+        credentialVersionHmacSha256:
+          inputData.release.credentialVersionHmacSha256 ?? placeholderDigest('u15-credential'),
+        runtimeFingerprintSha256: inputData.release.runtimeFingerprintSha256 ?? runtimeFp,
+        privateDigestKeyVersion: inputData.release.privateDigestKeyVersion ?? 'v1',
+        sourceRevision: inputData.release.sourceRevision ?? sourceRevision,
+        expiresAt:
+          input.readFence?.deadlineAt.toISOString() ?? new Date(Date.now() + 60_000).toISOString(),
+      } as const;
+    };
+
+    const companyAccountRead =
+      input.readOnly && companyRelease
+        ? async (reservationRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const branch = companyRelease.requestBranches.find(
+              (candidate) => candidate.id === 'reservation_linked_company_billing',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_company_account_read',
+                scopeRef: reservationRef,
+                requestBranchId: 'reservation_linked_company_billing',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const child = mintReadCandidateChildren({
+              sessionId: randomUUID(),
+              parentEvidenceId: randomUUID(),
+              tools: [{ toolId: 'hms_company_account_read', requestBranchId: branch.id }],
+              propertyCode,
+              scopeHash: createHash('sha256').update(reservationRef).digest('hex'),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            })[0]!;
+            const authorization = contextAuthorization({
+              toolId: 'hms_company_account_read',
+              discoveryOperationId: 'reservation_linked_company_billing',
+              release: companyRelease,
+              branchId: branch.id,
+            });
+            await createLiveCompanyAccountReadDriver().observeReservationLinkedBilling(
+              authorization,
+              child,
+              signal,
+            );
+            return unavailableU15Result({
+              toolId: 'hms_company_account_read',
+              scopeRef: reservationRef,
+              requestBranchId: branch.id,
+              observedAt: new Date(),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            });
+          }
+        : undefined;
+
+    const groupBlockRead =
+      input.readOnly && groupRelease
+        ? async (
+            groupRef: string,
+            _sections: readonly string[],
+            signal: AbortSignal,
+          ): Promise<ReadResult<unknown>> => {
+            const branch = groupRelease.requestBranches.find(
+              (candidate) => candidate.id === 'group_block_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_group_block_read',
+                scopeRef: groupRef,
+                requestBranchId: 'group_block_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const startDate = new Date();
+            const endDate = new Date(startDate.getTime() + 31 * 86_400_000);
+            const candidate: GroupReadCandidate = {
+              id: createHash('sha256').update(`u15-group:${groupRef}`).digest('hex').slice(0, 32),
+              kind: 'group_block',
+              exactGroupReference: groupRef,
+              exactGroupReferenceHash: createHash('sha256')
+                .update(`group_ref:${groupRef}`)
+                .digest('hex'),
+              startDate: startDate.toISOString().slice(0, 10),
+              endDate: endDate.toISOString().slice(0, 10),
+            };
+            const authorization = contextAuthorization({
+              toolId: 'hms_group_block_read',
+              discoveryOperationId: 'group_block_list',
+              release: groupRelease as NonNullable<typeof companyRelease>,
+              branchId: branch.id,
+            });
+            createReadToolHandler(groupRelease, authorization);
+            return createLiveGroupBlockDriver({
+              runtime,
+              transportId: input.transportId,
+              auditSpec: input.runId
+                ? {
+                    operationId,
+                    toolId: 'hms_group_block_read',
+                    toolVersion: '1.0.0',
+                    dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                    executionClass: 'normal',
+                    inputClass: 'authorized_exact',
+                    requestBranchId: branch.id,
+                    roleProofSha256: authorization.roleProofSha256,
+                    roleProofExpiresAt: authorization.expiresAt,
+                  }
+                : undefined,
+            }).observeGroupBlockContext(authorization, candidate, signal);
+          }
+        : undefined;
+
+    const eventRead =
+      input.readOnly && eventRelease
+        ? async (eventRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const branch = eventRelease.requestBranches.find(
+              (candidate) => candidate.id === 'event_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_event_read',
+                scopeRef: eventRef,
+                requestBranchId: 'event_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const candidate: EventReadCandidate = {
+              id: createHash('sha256').update(`u15-event:${eventRef}`).digest('hex').slice(0, 32),
+              kind: 'event_summary',
+              exactEventReference: eventRef,
+              exactEventReferenceHash: createHash('sha256')
+                .update(`event_ref:${eventRef}`)
+                .digest('hex'),
+            };
+            const authorization = contextAuthorization({
+              toolId: 'hms_event_read',
+              discoveryOperationId: 'event_list',
+              release: eventRelease as NonNullable<typeof companyRelease>,
+              branchId: branch.id,
+            });
+            await createLiveEventReadDriver().observeEventListSummary(
+              authorization,
+              candidate,
+              signal,
+            );
+            return unavailableU15Result({
+              toolId: 'hms_event_read',
+              scopeRef: eventRef,
+              requestBranchId: branch.id,
+              observedAt: new Date(),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            });
+          }
+        : undefined;
+
+    const notesTracesRead =
+      input.readOnly && notesRelease
+        ? async (notesInput: {
+            resourceRef: string;
+            states: readonly string[];
+            limit: number;
+            cursor?: string;
+            audience: 'staff' | 'customer';
+            signal: AbortSignal;
+          }): Promise<ReadResult<unknown>> => {
+            const branch = notesRelease.requestBranches.find(
+              (candidate) => candidate.id === 'notes_traces_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_read_notes_traces',
+                scopeRef: notesInput.resourceRef,
+                requestBranchId: 'notes_traces_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const authorization = contextAuthorization({
+              toolId: 'hms_event_read',
+              discoveryOperationId: 'event_list',
+              release: notesRelease as NonNullable<typeof companyRelease>,
+              branchId: branch.id,
+            }) as unknown as Parameters<typeof observeNotesTraces>[0];
+            const { signal: notesSignal, ...notesRequest } = notesInput;
+            return observeNotesTraces(
+              {
+                ...authorization,
+                toolId: 'hms_read_notes_traces',
+                discoveryOperationId: 'notes_traces_list',
+                requestBranchId: branch.id,
+              },
+              { ...notesRequest, states: [...notesInput.states] as ('open' | 'completed')[] },
+              notesSignal,
+            );
+          }
+        : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
     return createReservationCandidateSession({
@@ -864,6 +1128,10 @@ export function createLiveHmsCandidateSessionFactory(
       quoteDriver,
       quoteCandidates: input.quoteCandidates,
       folioRead,
+      companyAccountRead,
+      groupBlockRead,
+      eventRead,
+      notesTracesRead,
       propertyReadLock: input.readOnly ? propertyReadLock : undefined,
       buildQuoteAuthorization: quoteRelease
         ? (quoteCand) => {
@@ -1505,6 +1773,10 @@ async function assertCurrentReadAdmissionAuthority(input: {
       expectedToolId !== 'hms_quote_stay' &&
       expectedToolId !== 'hms_read_reservation' &&
       expectedToolId !== 'hms_read_folio' &&
+      expectedToolId !== 'hms_company_account_read' &&
+      expectedToolId !== 'hms_group_block_read' &&
+      expectedToolId !== 'hms_event_read' &&
+      expectedToolId !== 'hms_read_notes_traces' &&
       expectedToolId !== 'documents_list_existing' &&
       expectedToolId !== 'documents_read_existing'
     ) {
@@ -1568,7 +1840,11 @@ async function assertCurrentReadAdmissionAuthority(input: {
 
   if (
     input.request.toolId !== 'hms_read_reservation' &&
-    input.request.toolId !== 'hms_read_folio'
+    input.request.toolId !== 'hms_read_folio' &&
+    input.request.toolId !== 'hms_company_account_read' &&
+    input.request.toolId !== 'hms_group_block_read' &&
+    input.request.toolId !== 'hms_event_read' &&
+    input.request.toolId !== 'hms_read_notes_traces'
   ) {
     if (issuerData.parentReadResultRef !== null || issuerData.evidenceExpiresAt !== null) {
       throw readAdmissionAuthError('find admission unexpectedly carries a parent receipt');
@@ -1655,12 +1931,151 @@ async function assertCurrentReadAdmissionAuthority(input: {
       'resolved read admission evidence expiry was refreshed or tampered',
     );
   }
-  if (parentRequest.data.candidateId !== input.request.candidateId) {
+  if (
+    (input.request.toolId === 'hms_read_reservation' ||
+      input.request.toolId === 'hms_read_folio') &&
+    parentRequest.data.candidateId !== input.request.candidateId
+  ) {
     throw readAdmissionAuthError(
       'resolved read admission candidate is not bound to the parent receipt',
     );
   }
   return issueCurrentAccess();
+}
+
+function unavailableU15Result(input: {
+  toolId:
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces';
+  scopeRef: string;
+  requestBranchId: string;
+  observedAt: Date;
+  expiresAt: Date;
+}): ReadResult<unknown> {
+  const evidenceRef = `u15-${input.toolId}-${input.observedAt.getTime()}`;
+  const expiresAt = input.expiresAt.toISOString();
+  const observedAt = input.observedAt.toISOString();
+  const unknownField = () =>
+    unknownFact({
+      reasonCode: 'SOURCE_UNAVAILABLE',
+      evidenceRef,
+      observedAt,
+      expiresAt,
+    });
+  const unavailableSection = (reasonCode: 'SOURCE_UNAVAILABLE' | 'SURFACE_UNPROVEN') => ({
+    state: 'unavailable' as const,
+    data: null,
+    reasonCode,
+    issues: [
+      {
+        code: reasonCode,
+        retryable: false,
+        safeNextAction: 'manual_review' as const,
+      },
+    ],
+  });
+  let data: unknown;
+  let unavailableSections: Array<{
+    section: string;
+    reasonCode: 'SOURCE_UNAVAILABLE' | 'SURFACE_UNPROVEN';
+  }>;
+  if (input.toolId === 'hms_company_account_read') {
+    data = {
+      companyRef: unknownField(),
+      billingMode: unknownField(),
+      paymentTerms: unknownField(),
+      requiredPaperwork: unknownField(),
+      billingReference: unknownField(),
+      arAccountRef: unknownField(),
+      organizationRef: unknownField(),
+      agencyRef: unknownField(),
+      negotiatedRateRefs: unknownField(),
+      restrictions: unknownField(),
+      audience: unknownField(),
+    };
+    unavailableSections = [{ section: 'company', reasonCode: 'SOURCE_UNAVAILABLE' }];
+    companyAccountContextDataSchema.parse(data);
+  } else if (input.toolId === 'hms_group_block_read') {
+    data = {
+      summary: {
+        state: 'available' as const,
+        data: {
+          groupRef: unknownField(),
+          status: unknownField(),
+          startDate: unknownField(),
+          endDate: unknownField(),
+          releasePolicy: unknownField(),
+          billingRef: unknownField(),
+        },
+        completeness: 'unknown' as const,
+        issues: [],
+      },
+      blocks: unavailableSection('SURFACE_UNPROVEN'),
+      delegates: unavailableSection('SOURCE_UNAVAILABLE'),
+    };
+    unavailableSections = [
+      { section: 'blocks', reasonCode: 'SURFACE_UNPROVEN' },
+      { section: 'delegates', reasonCode: 'SOURCE_UNAVAILABLE' },
+    ];
+    groupBlockContextDataSchema.parse(data);
+  } else if (input.toolId === 'hms_event_read') {
+    data = {
+      eventRef: unknownField(),
+      source: unknownField(),
+      masterRef: unknownField(),
+      status: unknownField(),
+      startAt: unknownField(),
+      endAt: unknownField(),
+      layout: unknownField(),
+      persons: unknownField(),
+      setup: unknownField(),
+      lines: unavailableSection('SURFACE_UNPROVEN'),
+      quotedAmount: unknownField(),
+      contractedAmount: unknownField(),
+      depositAmount: unknownField(),
+      depositReceived: unknownField(),
+      depositDueDate: unknownField(),
+      linkedRefs: unknownField(),
+    };
+    unavailableSections = [{ section: 'event', reasonCode: 'SURFACE_UNPROVEN' }];
+    eventContextDataSchema.parse(data);
+  } else {
+    data = { notes: unavailableSection('SOURCE_UNAVAILABLE') };
+    unavailableSections = [{ section: 'notes', reasonCode: 'SOURCE_UNAVAILABLE' }];
+    notesTracesContextDataSchema.parse(data);
+  }
+  return readResultSchema.parse({
+    toolId: input.toolId,
+    schemaVersion: 'hms-u15-context/1',
+    status: 'manual_required',
+    data,
+    completeness: 'unknown',
+    unavailableSections,
+    scopeRef: input.scopeRef,
+    evidence: [
+      {
+        evidenceRef,
+        sourceSystem: 'hms' as const,
+        sourceSurface: input.toolId,
+        requestBranchId: input.requestBranchId,
+        observedAt,
+        sourceUpdatedAt: null,
+        expiresAt,
+        scopeVerified: true,
+        artifactRef: null,
+      },
+    ],
+    page: null,
+    issues: [
+      {
+        code: 'SOURCE_UNAVAILABLE' as const,
+        retryable: false,
+        safeNextAction: 'manual_review' as const,
+      },
+    ],
+  }) as ReadResult<unknown>;
 }
 
 /**
@@ -1695,7 +2110,12 @@ async function executeProductionReadTool(input: {
     });
   }
   if (
-    (request.toolId === 'hms_quote_stay' || request.toolId === 'hms_read_folio') &&
+    (request.toolId === 'hms_quote_stay' ||
+      request.toolId === 'hms_read_folio' ||
+      request.toolId === 'hms_company_account_read' ||
+      request.toolId === 'hms_group_block_read' ||
+      request.toolId === 'hms_event_read' ||
+      request.toolId === 'hms_read_notes_traces') &&
     !admission.manifestSha256
   ) {
     throw Object.assign(new Error('read branch manifest admission is missing'), {
@@ -1987,6 +2407,157 @@ async function executeProductionReadTool(input: {
           }
           return mapQuoteSessionResult(legacy);
         },
+      },
+    };
+    try {
+      const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) =>
+        executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: { ...readContext, propertyReadLockConnection },
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        }),
+      );
+      return { result: receipt.result, readResultRef: receipt.readResultRef };
+    } finally {
+      await session.close?.();
+    }
+  }
+
+  if (
+    request.toolId === 'hms_company_account_read' ||
+    request.toolId === 'hms_group_block_read' ||
+    request.toolId === 'hms_event_read' ||
+    request.toolId === 'hms_read_notes_traces'
+  ) {
+    const sessionFactory =
+      input.sessionFactory ??
+      createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
+    const session = await sessionFactory({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      lookupCandidates: [],
+      signal: input.signal,
+      runId: input.run.id,
+      readResultRef: input.run.readResultRef ?? undefined,
+      readFence: input.fence,
+      readPlanKind: 'reservation',
+      readOnly: true,
+      readAdmission: admission,
+      readToolId: request.toolId,
+    });
+    const propertyReadLock = session.propertyReadLock;
+    if (!propertyReadLock) {
+      throw Object.assign(new Error('property read lock is required for linked context dispatch'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const fallback = () =>
+      unavailableU15Result({
+        toolId: request.toolId,
+        scopeRef:
+          request.toolId === 'hms_company_account_read'
+            ? request.reservationRef
+            : request.toolId === 'hms_group_block_read'
+              ? request.groupRef
+              : request.toolId === 'hms_event_read'
+                ? request.eventRef
+                : request.resourceRef,
+        requestBranchId: admission.requestBranchId,
+        observedAt: new Date(),
+        expiresAt: input.fence.deadlineAt,
+      });
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: expectedPropertyCode,
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds:
+          request.toolId === 'hms_company_account_read'
+            ? ['company_billing_summary']
+            : request.toolId === 'hms_group_block_read'
+              ? ['group_status']
+              : request.toolId === 'hms_event_read'
+                ? ['event_status']
+                : ['notes_trace_observation'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      readResultRef: input.run.readResultRef ?? '',
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
+      propertyReadLock,
+      handlers: {
+        ...(request.toolId === 'hms_company_account_read'
+          ? {
+              readCompanyAccount: async ({ reservationRef }: { reservationRef: string }) =>
+                session.readCompanyAccount
+                  ? session.readCompanyAccount(reservationRef, input.signal)
+                  : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_group_block_read'
+          ? {
+              readGroupBlock: async ({
+                groupRef,
+                sections,
+              }: {
+                groupRef: string;
+                sections: readonly string[];
+              }) =>
+                session.readGroupBlock
+                  ? session.readGroupBlock(groupRef, sections, input.signal)
+                  : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_event_read'
+          ? {
+              readEvent: async ({ eventRef }: { eventRef: string }) =>
+                session.readEvent ? session.readEvent(eventRef, input.signal) : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_read_notes_traces'
+          ? {
+              readNotesTraces: async ({
+                resourceRef,
+                states,
+                limit,
+                cursor,
+                audience,
+              }: {
+                resourceRef: string;
+                states: readonly string[];
+                limit: number;
+                cursor: string | undefined;
+                audience: 'staff' | 'customer';
+              }) =>
+                session.readNotesTraces
+                  ? session.readNotesTraces({
+                      resourceRef,
+                      states,
+                      limit,
+                      cursor,
+                      audience,
+                      signal: input.signal,
+                    })
+                  : fallback(),
+            }
+          : {}),
       },
     };
     try {

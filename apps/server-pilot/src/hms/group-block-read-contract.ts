@@ -38,8 +38,7 @@ export const GROUP_BLOCK_READ_PRIVACY_POLICY = {
  * con/blk/pickup/remaining/restriction rows; BLK tab empty without detail load.
  * Observed 2026-08-06 (Task 17 discovery phases 4–6).
  */
-export const GROUP_BLOCK_AGGREGATE_COUNTS_BLOCKER =
-  'BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN';
+export const GROUP_BLOCK_AGGREGATE_COUNTS_BLOCKER = 'BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN';
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -58,13 +57,7 @@ const inquiryClassSchema = z.enum([
   'allocation_action',
   'other',
 ]);
-const groupStatusSchema = z.enum([
-  'inquiry',
-  'tentative',
-  'definite',
-  'cancelled',
-  'closed',
-]);
+const groupStatusSchema = z.enum(['inquiry', 'tentative', 'definite', 'cancelled', 'closed']);
 const restrictionSchema = z.enum([
   'closed_to_arrival',
   'closed_to_departure',
@@ -77,10 +70,7 @@ export function groupBlockClaimEligibility(
   recipientClass: z.infer<typeof recipientClassSchema>,
   inquiryClass: z.infer<typeof inquiryClassSchema>,
 ): 'full' | 'partial' | 'blocked' {
-  if (
-    recipientClass === 'third_party' ||
-    recipientClass === 'unknown'
-  ) {
+  if (recipientClass === 'third_party' || recipientClass === 'unknown') {
     return 'blocked';
   }
   return inquiryClass === 'existing_group_status' ? 'full' : 'partial';
@@ -117,6 +107,16 @@ export const groupBlockReadDataSchema = z
   .strict();
 
 export type GroupBlockReadData = z.infer<typeof groupBlockReadDataSchema>;
+
+// Normal executor payload: summary, blocks, and delegates remain independent
+// sections with field-level known/unknown evidence.
+export {
+  groupBlockContextDataSchema,
+  groupBlockRowsDataSchema,
+  groupBlockSummaryDataSchema,
+  groupDelegatesDataSchema,
+  type GroupBlockContextData,
+} from './context-read-contracts.js';
 
 const privateFieldsSchema = z
   .object({
@@ -173,9 +173,7 @@ export const groupBlockReadFixtureInputSchema = z
   })
   .strict();
 
-export type GroupBlockReadFixtureInput = z.input<
-  typeof groupBlockReadFixtureInputSchema
->;
+export type GroupBlockReadFixtureInput = z.input<typeof groupBlockReadFixtureInputSchema>;
 
 export type GroupBlockReadKernelResult = {
   status: 'ok' | 'unverified_negative' | 'manual_required';
@@ -198,21 +196,14 @@ export function parseGroupBlockReadFixture(
   if (!parsed.success) return fail('GROUP_BLOCK_CONTRACT_OR_SCHEMA_DRIFT');
   const input = parsed.data;
 
-  if (
-    input.candidate.exactGroupReferenceHash !==
-    input.candidate.observedGroupReferenceHash
-  ) {
+  if (input.candidate.exactGroupReferenceHash !== input.candidate.observedGroupReferenceHash) {
     return fail('GROUP_BLOCK_EXACT_REFERENCE_MISMATCH');
   }
 
   const start = dayNumber(input.candidate.startDate);
   const end = dayNumber(input.candidate.endDate);
   const days = (end - start) / 86_400_000;
-  if (
-    !Number.isInteger(days) ||
-    days < 0 ||
-    days > GROUP_BLOCK_READ_MAX_DAYS
-  ) {
+  if (!Number.isInteger(days) || days < 0 || days > GROUP_BLOCK_READ_MAX_DAYS) {
     return fail('GROUP_BLOCK_DATE_WINDOW_INVALID');
   }
 
@@ -220,11 +211,11 @@ export function parseGroupBlockReadFixture(
   const observedAt = Date.parse(input.observedAt);
   const roleIssuedAt = Date.parse(input.roleProof.issuedAt);
   const roleExpiresAt = Date.parse(input.roleProof.expiresAt);
-  const surfacesProven = GROUP_BLOCK_READ_PRIVACY_POLICY.allowedSurfaces.every(
-    (surface) => input.roleProof.allowedSurfaces.includes(surface),
+  const surfacesProven = GROUP_BLOCK_READ_PRIVACY_POLICY.allowedSurfaces.every((surface) =>
+    input.roleProof.allowedSurfaces.includes(surface),
   );
-  const actionsDenied = GROUP_BLOCK_READ_PRIVACY_POLICY.deniedActions.every(
-    (action) => input.roleProof.deniedActions.includes(action),
+  const actionsDenied = GROUP_BLOCK_READ_PRIVACY_POLICY.deniedActions.every((action) =>
+    input.roleProof.deniedActions.includes(action),
   );
   if (
     input.roleProof.credentialMode !== 'view_only' ||
@@ -277,11 +268,7 @@ export function parseGroupBlockReadFixture(
     if (rowDate < start || rowDate > end) {
       return fail('GROUP_BLOCK_ROW_OUTSIDE_DATE_WINDOW');
     }
-    if (
-      row.blk > row.con ||
-      row.pickup > row.blk ||
-      row.remaining !== row.blk - row.pickup
-    ) {
+    if (row.blk > row.con || row.pickup > row.blk || row.remaining !== row.blk - row.pickup) {
       return fail('GROUP_BLOCK_COUNT_INCONSISTENT');
     }
   }
@@ -295,10 +282,7 @@ export function parseGroupBlockReadFixture(
     disclosure: {
       recipientClass: input.recipientClass,
       inquiryClass: input.inquiryClass,
-      claimEligibility: groupBlockClaimEligibility(
-        input.recipientClass,
-        input.inquiryClass,
-      ),
+      claimEligibility: groupBlockClaimEligibility(input.recipientClass, input.inquiryClass),
     },
     observedAt: input.observedAt,
   });
@@ -311,21 +295,14 @@ export const groupBlockClaimValueSchema = z
     startDate: isoDate,
     endDate: isoDate,
     rows: z.array(groupBlockRowSchema).min(1).max(GROUP_BLOCK_READ_MAX_ROWS),
-    responseCredit: z.enum([
-      'full_existing_group_status',
-      'partial_status_only',
-    ]),
+    responseCredit: z.enum(['full_existing_group_status', 'partial_status_only']),
     observedAt: isoTimestamp,
   })
   .strict();
 
-export type GroupBlockClaimValue = z.infer<
-  typeof groupBlockClaimValueSchema
->;
+export type GroupBlockClaimValue = z.infer<typeof groupBlockClaimValueSchema>;
 
-export function mapGroupBlockClaim(
-  data: GroupBlockReadData,
-): GroupBlockClaimValue | null {
+export function mapGroupBlockClaim(data: GroupBlockReadData): GroupBlockClaimValue | null {
   const parsed = groupBlockReadDataSchema.parse(data);
   const eligibility = groupBlockClaimEligibility(
     parsed.disclosure.recipientClass,
@@ -337,10 +314,7 @@ export function mapGroupBlockClaim(
     startDate: parsed.startDate,
     endDate: parsed.endDate,
     rows: parsed.rows,
-    responseCredit:
-      eligibility === 'full'
-        ? 'full_existing_group_status'
-        : 'partial_status_only',
+    responseCredit: eligibility === 'full' ? 'full_existing_group_status' : 'partial_status_only',
     observedAt: parsed.observedAt,
   });
 }

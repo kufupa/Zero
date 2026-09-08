@@ -60,6 +60,7 @@ const HMS_BROWSER_V1_CAPTURE_TOOL_IDS = [
   'hms_find_reservation',
   'hms_quote_stay',
   'hms_read_folio',
+  'hms_group_block_read',
 ] as const satisfies readonly HmsReadToolId[];
 type HmsBrowserV1CaptureToolId = (typeof HMS_BROWSER_V1_CAPTURE_TOOL_IDS)[number];
 

@@ -12,6 +12,11 @@ import {
   type ActiveReadRuntimeState,
 } from '../src/hms/active-read-runtime.js';
 import {
+  createHmsBrowserArtifactStore,
+  ensureHmsBrowserArtifactRoot,
+  HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES,
+} from '../src/hms/browser-artifacts.js';
+import {
   aiWorkflowRun,
   mailboxAccess,
   mailboxTransport,
@@ -26,21 +31,147 @@ import { executeAiRun, runAiWorkerOnce, type CandidateSessionFactory } from '../
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { issueReadAdmissionFromMailbox } from '../src/hms/read-admission-issuer.js';
 import { CENTURION_USER_ID, MARTHA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { buildLiveGroupBlockListManifest } from '../src/hms/live-read-manifest.js';
 import { createPostgresPropertyReadLock } from '../src/hms/property-read-lock.js';
 import type { CandidateToolSession } from '../src/ai/candidate-draft-agent.js';
+import { GROUP_BLOCK_READ_IMPL_V1 } from '../src/hms/read-handler-index.js';
 import { __setDbForTests, getDb, type DB } from '../src/db/client.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import * as mastraModule from '../src/ai/mastra.js';
 import { appRouter } from '../src/trpc/router.js';
-import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const reachable = await probeTestDb();
 const observedAt = '2026-09-07T12:00:00.000Z';
 const expiresAt = '2026-09-07T12:05:00.000Z';
 const REQUESTER_AUTHORIZATION_ID = `access-${CENTURION_USER_ID}-${TRANSPORT_ID}`;
 const READ_MANIFEST_SHA256 = 'a'.repeat(64);
+const GROUP_MANIFEST_SHA256 = createHash('sha256')
+  .update(JSON.stringify(buildLiveGroupBlockListManifest('https://appsrv-1.legacyhotels.co.za')))
+  .digest('hex');
+
+function crc32(input: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of input) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function syntheticTraceZip(): Buffer {
+  const entries = [
+    ['trace.trace', '{"type":"context-created"}\n'],
+    ['trace.network', '{"type":"request"}\n'],
+  ] as const;
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of entries) {
+    const nameBytes = Buffer.from(name);
+    const body = Buffer.from(text);
+    const checksum = crc32(body);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(body.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    locals.push(local, nameBytes, body);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(body.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, nameBytes);
+    offset += local.length + nameBytes.length + body.length;
+  }
+  const centralBody = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBody.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBody, end]);
+}
+
+async function createAuditedGroupRuntime(transport: string): Promise<{
+  runtime: unknown;
+  cleanup: () => Promise<void>;
+}> {
+  const root = await mkdtemp(join(tmpdir(), 'u15-group-runtime-'));
+  await ensureHmsBrowserArtifactRoot(root);
+  const store = await createHmsBrowserArtifactStore({
+    root,
+    getFreeBytes: async () => HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES,
+  });
+  const runtime = {
+    openReadSession: async (input: {
+      transportId: string;
+      signal: AbortSignal;
+      auditSpec?: Parameters<typeof store.beginCapture>[0];
+    }) => {
+      if (!input.auditSpec) throw new Error('synthetic group audit spec missing');
+      const handle = await store.beginCapture(input.auditSpec);
+      await writeFile(join(handle.stagingDir, 'trace.zip'), syntheticTraceZip());
+      let receipt: unknown = null;
+      let closed = false;
+      return {
+        id: 'synthetic-group-session',
+        origin: 'https://appsrv-1.legacyhotels.co.za',
+        page: {
+          postForm: async (url: string) => (url.endsWith('GSGRPB.LST') ? transport : ''),
+          waitForCorrelatedResponse: async () => undefined,
+          content: async () => transport,
+        },
+        terminal: () => false,
+        violation: () => null,
+        lastReceipt: () => receipt,
+        close: async (options?: {
+          outcome?: 'succeeded' | 'unverified_negative' | 'failed';
+          terminalCode?: 'OK' | 'UNVERIFIED_NEGATIVE' | 'TOOL_ERROR';
+          complete?: boolean;
+        }) => {
+          if (closed) return;
+          closed = true;
+          receipt = await handle.finalize({
+            outcome: options?.outcome ?? 'failed',
+            terminalCode: options?.terminalCode ?? 'TOOL_ERROR',
+            terminalStage: 'tool',
+            sourceRevision: 'u15-db-synthetic',
+            playwrightRevision: '1.52.0',
+            chromiumRevision: '1169',
+            requestRules: [],
+            blockedRequests: 0,
+            mutationRequests: 0,
+            popupCount: 0,
+            downloadCount: 0,
+            webSocketCount: 0,
+            complete: options?.complete ?? false,
+          });
+        },
+      };
+    },
+  };
+  return {
+    runtime,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
 
 const typedReadResult = {
   toolId: 'hms_find_reservation' as const,
@@ -119,6 +250,16 @@ async function withReadOnlyWorkerEnv<T>(callback: () => Promise<T>): Promise<T> 
     'HMS_READ_SERVICE_ENABLED',
     'HMS_DRAFT_ENRICHMENT_MODE',
     'HMS_RUN_DEADLINE_MS',
+    'HMS_EXPECTED_PROPERTY_CODE',
+    'HMS_EXPECTED_TENANT',
+    'HMS_EXPECTED_TRANSPORT_ID',
+    'HMS_READ_SECRET_ARN',
+    'HMS_CHROMIUM_EXECUTABLE_PATH',
+    'HMS_READ_ROLE_PROOF_PATH',
+    'HMS_EVIDENCE_HMAC_SECRET_ARN',
+    'HMS_EVIDENCE_HMAC_KEY_VERSION',
+    'HMS_HEALTH_STATUS_PATH',
+    'NAVA_BUILD_COMMIT',
   ] as const;
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
   process.env.PORT = '3000';
@@ -130,6 +271,16 @@ async function withReadOnlyWorkerEnv<T>(callback: () => Promise<T>): Promise<T> 
   process.env.HMS_READ_SERVICE_ENABLED = 'true';
   process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
   process.env.HMS_RUN_DEADLINE_MS = '150000';
+  process.env.HMS_EXPECTED_PROPERTY_CODE = 'HRCEN';
+  process.env.HMS_EXPECTED_TENANT = 'u8-review-tenant';
+  process.env.HMS_EXPECTED_TRANSPORT_ID = TRANSPORT_ID;
+  process.env.HMS_READ_SECRET_ARN = 'u8-review-secret';
+  process.env.HMS_CHROMIUM_EXECUTABLE_PATH = '/bin/false';
+  process.env.HMS_READ_ROLE_PROOF_PATH = '/tmp/u8-review-role-proof.json';
+  process.env.HMS_EVIDENCE_HMAC_SECRET_ARN = 'u8-review-evidence-secret';
+  process.env.HMS_EVIDENCE_HMAC_KEY_VERSION = 'u8-v1';
+  process.env.HMS_HEALTH_STATUS_PATH = '/tmp/u8-review-health.json';
+  process.env.NAVA_BUILD_COMMIT = 'u8-review-source';
   try {
     return await callback();
   } finally {
@@ -751,6 +902,269 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           toolId: 'hms_read_reservation',
           status: expect.any(String),
         });
+      });
+    });
+  });
+
+  it('runs all four U15 branches through the default session, queue, worker, and typed receipts', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const mailbox = await resolveMailboxContext(CENTURION_USER_ID, TRANSPORT_ID, db);
+        __setCachedActiveReadRuntimeForTests({
+          releases: new Map([
+            [
+              'hms_find_reservation',
+              {
+                releaseId: 'release-red',
+                toolId: 'hms_find_reservation',
+                evidenceKind: 'hms',
+                requestBranches: [
+                  { id: 'guest_stay_search', manifestSha256: READ_MANIFEST_SHA256 },
+                ],
+              },
+            ],
+            [
+              'hms_company_account_read',
+              {
+                releaseId: 'u15-company-release',
+                toolId: 'hms_company_account_read',
+                evidenceKind: 'hms',
+                requestBranches: [
+                  {
+                    id: 'reservation_linked_company_billing',
+                    manifestSha256: 'b'.repeat(64),
+                  },
+                ],
+              },
+            ],
+            [
+              'hms_group_block_read',
+              {
+                releaseId: 'u15-group-release',
+                toolId: 'hms_group_block_read',
+                evidenceKind: 'hms',
+                toolVersion: '1.0.0',
+                implementationSha256: GROUP_BLOCK_READ_IMPL_V1,
+                runtimeFingerprintSha256: 'f'.repeat(64),
+                privateDigestKeyVersion: 'v1',
+                sourceRevision: 'u15-db',
+                credentialVersionHmacSha256: 'g'.repeat(64),
+                roleProofSha256: 'h'.repeat(64),
+                requestBranches: [
+                  {
+                    id: 'group_block_list',
+                    discoveryOperationId: 'group_block_list',
+                    manifestSha256: GROUP_MANIFEST_SHA256,
+                  },
+                ],
+              },
+            ],
+            [
+              'hms_event_read',
+              {
+                releaseId: 'u15-event-release',
+                toolId: 'hms_event_read',
+                evidenceKind: 'hms',
+                requestBranches: [{ id: 'event_list', manifestSha256: 'd'.repeat(64) }],
+              },
+            ],
+            [
+              'hms_read_notes_traces',
+              {
+                releaseId: 'u15-notes-release',
+                toolId: 'hms_read_notes_traces',
+                evidenceKind: 'hms',
+                requestBranches: [{ id: 'notes_traces_list', manifestSha256: 'e'.repeat(64) }],
+              },
+            ],
+          ]),
+          predecessors: new Map(),
+          toolIds: new Set([
+            'hms_find_reservation',
+            'hms_company_account_read',
+            'hms_group_block_read',
+            'hms_event_read',
+            'hms_read_notes_traces',
+          ]),
+          registry: null,
+          handlerPathActive: true,
+          cutoverComplete: false,
+        } as unknown as ActiveReadRuntimeState);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          c: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: CENTURION_USER_ID, email: '', name: null },
+          ...mailbox,
+        });
+        const [routeCandidate] = filterExactReservationCandidates(
+          extractLookupCandidates('U8 review fixture confirmation CONF-RED'),
+        );
+        const find = await caller.ai.enqueueHmsRead({ threadId: context.threadId });
+        expect(find.candidateId).toBe(routeCandidate?.id);
+        await claimNextAiRun({
+          ownerId: 'u15-review-worker',
+          lane: 'hms',
+          runKind: 'read_tool',
+          db,
+        });
+        expect(
+          await executeAiRun(find.runId, {
+            candidateSessionFactory: syntheticReadSessionFactory(async () =>
+              syntheticMatchedRead('u15-parent-evidence', '2099-09-07T12:05:00.000Z'),
+            ),
+          }),
+        ).toMatchObject({ state: 'succeeded' });
+
+        const syntheticGroupTransport = JSON.stringify({
+          pageData: {
+            grid: {
+              GRIDRESULT: {
+                GRID: {
+                  DATA: [
+                    {
+                      groupbookingreferencenumber: 'GROUP-U15',
+                      status: 'Tentative',
+                      startdate: '01-SEP-2026',
+                      enddate: '03-SEP-2026',
+                      con: 11,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        });
+        const auditedGroup = await createAuditedGroupRuntime(syntheticGroupTransport);
+        const dispatches = [
+          {
+            toolId: 'hms_company_account_read' as const,
+            run: await caller.ai.enqueueHmsCompanyRead({
+              threadId: context.threadId,
+              findResultRef: find.readResultRef,
+              reservationRef: 'CONF-RED',
+            }),
+            expected: {
+              status: 'manual_required',
+              data: {
+                organizationRef: { state: 'unknown' },
+                billingMode: { state: 'unknown' },
+              },
+            },
+          },
+          {
+            toolId: 'hms_group_block_read' as const,
+            run: await caller.ai.enqueueHmsGroupRead({
+              threadId: context.threadId,
+              findResultRef: find.readResultRef,
+              groupRef: 'GROUP-U15',
+              sections: ['summary', 'blocks', 'delegates'],
+            }),
+            expected: {
+              status: 'partial',
+              data: {
+                summary: {
+                  state: 'available',
+                  data: {
+                    groupRef: { state: 'known', value: 'GROUP-U15' },
+                    status: { state: 'known', value: 'tentative' },
+                    startDate: { state: 'known', value: '2026-09-01' },
+                    endDate: { state: 'known', value: '2026-09-03' },
+                    releasePolicy: { state: 'unknown', reasonCode: 'SURFACE_UNPROVEN' },
+                    billingRef: { state: 'unknown', reasonCode: 'SURFACE_UNPROVEN' },
+                  },
+                },
+                blocks: { state: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                delegates: { state: 'unavailable', reasonCode: 'SOURCE_UNAVAILABLE' },
+              },
+            },
+          },
+          {
+            toolId: 'hms_event_read' as const,
+            run: await caller.ai.enqueueHmsEventRead({
+              threadId: context.threadId,
+              findResultRef: find.readResultRef,
+              eventRef: 'EVENT-U15',
+            }),
+            expected: {
+              status: 'manual_required',
+              data: {
+                source: { state: 'unknown' },
+                depositAmount: { state: 'unknown' },
+                depositReceived: { state: 'unknown' },
+                depositDueDate: { state: 'unknown' },
+              },
+            },
+          },
+          {
+            toolId: 'hms_read_notes_traces' as const,
+            run: await caller.ai.enqueueHmsNotesRead({
+              threadId: context.threadId,
+              findResultRef: find.readResultRef,
+              resourceRef: 'RESOURCE-U15',
+              states: ['open', 'completed'],
+              limit: 20,
+              audience: 'customer',
+            }),
+            expected: {
+              status: 'manual_required',
+              data: {
+                notes: { state: 'unavailable', reasonCode: 'SOURCE_UNAVAILABLE' },
+              },
+            },
+          },
+        ];
+
+        try {
+          for (const dispatch of dispatches) {
+            expect(dispatch.run.runState).toBe('queued');
+            expect(
+              await claimNextAiRun({
+                ownerId: 'u15-review-worker',
+                lane: 'hms',
+                runKind: 'read_tool',
+                db,
+              }),
+            ).toMatchObject({ id: dispatch.run.runId });
+            const execution = await executeAiRun(dispatch.run.runId, {
+              hmsRuntime:
+                dispatch.toolId === 'hms_group_block_read' ? auditedGroup.runtime : ({} as never),
+            });
+            expect(execution.state, dispatch.toolId).toBe('succeeded');
+            const receipt = await caller.ai.readHmsReceipt({
+              threadId: context.threadId,
+              readResultRef: dispatch.run.readResultRef,
+            });
+            expect(receipt.result).toMatchObject({
+              toolId: dispatch.toolId,
+              ...dispatch.expected,
+            });
+            if (dispatch.toolId === 'hms_group_block_read') {
+              const evidence = receipt.result.evidence[0];
+              expect(evidence).toMatchObject({
+                sourceSystem: 'hms',
+                sourceSurface: 'GSGRPB.LST',
+                requestBranchId: 'group_block_list',
+                scopeVerified: true,
+                artifactRef: expect.any(String),
+                manifestSha256: GROUP_MANIFEST_SHA256,
+                sourceHash: expect.any(String),
+              });
+              expect(Date.parse(evidence.expiresAt)).toBeGreaterThan(Date.now());
+            }
+          }
+        } finally {
+          await auditedGroup.cleanup();
+        }
+
+        await expect(
+          caller.ai.enqueueHmsEventRead({
+            threadId: context.threadId,
+            findResultRef: 'foreign-find-result',
+            eventRef: 'EVENT-FOREIGN',
+          }),
+        ).rejects.toThrow(/parent|receipt|scope|provenance/i);
       });
     });
   });

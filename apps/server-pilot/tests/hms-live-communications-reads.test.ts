@@ -33,10 +33,10 @@ import {
   buildLiveSentEmailListManifest,
   LIVE_SENT_EMAIL_LIST_PATH,
 } from '../src/hms/live-read-manifest.js';
+import { readAdmissionSchema, readResultSchema } from '../src/hms/read-service-contracts.js';
 import { executeReadToolRun, type ReadExecutionContext } from '../src/hms/read-service.js';
 import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
-import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import type { ReadCandidateChild } from '../src/hms/candidate-graph.js';
 import { issueReadAdmission } from '../src/hms/read-admission.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
@@ -548,6 +548,26 @@ describe('live observer binding + denied actions', () => {
 });
 
 describe('normal model-free existing-document read path', () => {
+  it('keeps non-capture document manifest null while rejecting null for capture-required reads', () => {
+    const issued = issueDocumentAdmission({
+      toolId: 'documents_list_existing',
+      request: { scopeRef: DOCUMENT_SCOPE, source: 'mail_attachment' },
+    });
+
+    expect(readAdmissionSchema.parse(issued.admission)).toMatchObject({
+      captureRequired: false,
+      captureBindingRef: null,
+      manifestSha256: null,
+    });
+    expect(() =>
+      readAdmissionSchema.parse({
+        ...issued.admission,
+        captureRequired: true,
+        captureBindingRef: 'capture-required-ref',
+      }),
+    ).toThrow(/manifest digest/i);
+  });
+
   it('binds issuer → executor → typed receipt for list and validated text read', async () => {
     const s3 = new FakeS3Storage('normal-document-test');
     await s3.putObject({

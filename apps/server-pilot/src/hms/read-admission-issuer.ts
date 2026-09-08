@@ -57,6 +57,10 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
     | 'hms_read_reservation'
     | 'hms_read_folio'
     | 'hms_quote_stay'
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces'
     | 'documents_list_existing'
     | 'documents_read_existing';
   now?: Date;
@@ -71,6 +75,12 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   documentRef?: string;
   format?: 'text' | 'artifact';
   quoteRequestRef?: string;
+  reservationRef?: string;
+  groupRef?: string;
+  eventRef?: string;
+  resourceRef?: string;
+  states?: readonly string[];
+  audience?: 'staff' | 'customer';
   captureBindingRef?: string;
 };
 
@@ -544,6 +554,103 @@ export async function issueReadAdmissionFromMailbox(
       toolId: 'hms_quote_stay',
       quoteRequest: trigger.quoteRequest,
       detail: input.detail,
+    });
+  } else if (input.toolId === 'hms_company_account_read') {
+    if (!trigger.candidateId || !input.reservationRef || !input.parentReadResultRef) {
+      throw authError(
+        'READ_PARENT_RECEIPT_REQUIRED',
+        'company context read requires an exact candidate, linked reference, and find receipt',
+      );
+    }
+    const evidenceExpiresAt = await loadParentFind({
+      source,
+      parentReadResultRef: input.parentReadResultRef,
+      candidateId: trigger.candidateId,
+      now,
+      db,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: input.toolId,
+      candidateId: trigger.candidateId,
+      reservationRef: input.reservationRef,
+      parentReadResultRef: input.parentReadResultRef,
+      evidenceExpiresAt,
+    });
+  } else if (input.toolId === 'hms_group_block_read') {
+    if (!trigger.candidateId || !input.groupRef || !input.parentReadResultRef) {
+      throw authError(
+        'READ_PARENT_RECEIPT_REQUIRED',
+        'group context read requires an exact candidate, linked reference, and find receipt',
+      );
+    }
+    const evidenceExpiresAt = await loadParentFind({
+      source,
+      parentReadResultRef: input.parentReadResultRef,
+      candidateId: trigger.candidateId,
+      now,
+      db,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: input.toolId,
+      candidateId: trigger.candidateId,
+      groupRef: input.groupRef,
+      sections: input.sections,
+      parentReadResultRef: input.parentReadResultRef,
+      evidenceExpiresAt,
+    });
+  } else if (input.toolId === 'hms_event_read') {
+    if (!trigger.candidateId || !input.eventRef || !input.parentReadResultRef) {
+      throw authError(
+        'READ_PARENT_RECEIPT_REQUIRED',
+        'event context read requires an exact candidate, linked reference, and find receipt',
+      );
+    }
+    const evidenceExpiresAt = await loadParentFind({
+      source,
+      parentReadResultRef: input.parentReadResultRef,
+      candidateId: trigger.candidateId,
+      now,
+      db,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: input.toolId,
+      candidateId: trigger.candidateId,
+      eventRef: input.eventRef,
+      parentReadResultRef: input.parentReadResultRef,
+      evidenceExpiresAt,
+    });
+  } else if (input.toolId === 'hms_read_notes_traces') {
+    if (!trigger.candidateId || !input.resourceRef || !input.parentReadResultRef) {
+      throw authError(
+        'READ_PARENT_RECEIPT_REQUIRED',
+        'notes context read requires an exact candidate, linked reference, and find receipt',
+      );
+    }
+    const evidenceExpiresAt = await loadParentFind({
+      source,
+      parentReadResultRef: input.parentReadResultRef,
+      candidateId: trigger.candidateId,
+      now,
+      db,
+    });
+    issued = issueReadAdmission({
+      source,
+      now,
+      toolId: input.toolId,
+      candidateId: trigger.candidateId,
+      resourceRef: input.resourceRef,
+      states: input.states,
+      limit: input.limit,
+      cursor: input.cursor,
+      audience: input.audience,
+      parentReadResultRef: input.parentReadResultRef,
+      evidenceExpiresAt,
     });
   } else {
     if (!trigger.candidateId) {

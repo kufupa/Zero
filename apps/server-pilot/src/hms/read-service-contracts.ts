@@ -30,7 +30,8 @@ export const readAdmissionSchema = z
     releaseId: readRefSchema,
     requestBranchId: z.string().min(1).max(128),
     /** Independently reviewed manifest digest for this exact request branch. */
-    manifestSha256: readDigestSchema.optional(),
+    /** Browser/PMS reads require a reviewed digest; mail/document reads use null. */
+    manifestSha256: readDigestSchema.nullable().optional(),
     requesterAuthorizationId: readRefSchema,
     inputDigest: readDigestSchema,
     captureRequired: z.boolean(),
@@ -43,6 +44,24 @@ export const readAdmissionSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.captureRequired && value.manifestSha256 == null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['manifestSha256'],
+        message: 'capture-required reads must carry an exact manifest digest',
+      });
+    }
+    if (
+      !value.captureRequired &&
+      value.manifestSha256 !== undefined &&
+      value.manifestSha256 !== null
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['manifestSha256'],
+        message: 'manifest digest is not applicable to non-capture reads',
+      });
+    }
     if (value.captureRequired && value.captureBindingRef === null) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -137,6 +156,69 @@ export const quoteStayReadRequestSchema = z
     }
   });
 export type QuoteStayReadRequest = z.infer<typeof quoteStayReadRequestSchema>;
+
+/** Closed U15 linked-context request branches. */
+export const companyAccountReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_company_account_read'),
+    reservationRef: readRefSchema,
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type CompanyAccountReadRequest = z.infer<typeof companyAccountReadRequestSchema>;
+
+export const groupBlockReadSectionIdSchema = z.enum(['summary', 'blocks', 'delegates']);
+export const groupBlockReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_group_block_read'),
+    groupRef: readRefSchema,
+    sections: z
+      .array(groupBlockReadSectionIdSchema)
+      .min(1)
+      .max(3)
+      .default(['summary'])
+      .refine((sections) => new Set(sections).size === sections.length, {
+        message: 'group sections must be unique',
+      }),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type GroupBlockReadRequest = z.infer<typeof groupBlockReadRequestSchema>;
+
+export const eventReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_event_read'),
+    eventRef: readRefSchema,
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type EventReadRequest = z.infer<typeof eventReadRequestSchema>;
+
+export const notesTracesReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_read_notes_traces'),
+    resourceRef: readRefSchema,
+    states: z
+      .array(z.enum(['open', 'completed']))
+      .min(1)
+      .max(2)
+      .default(['open']),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: readRefSchema.optional(),
+    audience: z.enum(['staff', 'customer']).default('staff'),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.states).size !== value.states.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['states'],
+        message: 'note states must be unique',
+      });
+    }
+  });
+export type NotesTracesReadRequest = z.infer<typeof notesTracesReadRequestSchema>;
 
 /** Persisted server-side proof that a context admission was issued for this scope. */
 export const readReservationBindingSchema = z
@@ -515,6 +597,10 @@ export const readToolResultIdSchema = z.enum([
   'documents_read_existing',
   'hms_read_folio',
   'hms_quote_stay',
+  'hms_company_account_read',
+  'hms_group_block_read',
+  'hms_event_read',
+  'hms_read_notes_traces',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 

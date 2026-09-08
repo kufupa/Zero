@@ -2,11 +2,6 @@
  * Claim-safe HMS candidate draft generation.
  * Tools are read-only; claims are code-owned; model picks templates + claim IDs only.
  */
-import { randomUUID } from 'node:crypto';
-import { createTool } from '@mastra/core/tools';
-import { z } from 'zod';
-import type { LookupCandidate } from './thread-context.js';
-import { detectDirectReadPlanRefs } from './thread-context.js';
 import {
   CandidateDraftPlanSchema,
   ToolResultSchema,
@@ -18,11 +13,6 @@ import {
   type EvidenceClaim,
   type ToolResult,
 } from './draft-evidence.js';
-import type { ReservationReadData, StayOptionReadData } from '../hms/contracts.js';
-import {
-  mapEnvelopeToClaims,
-  toolResultToClaimEnvelope,
-} from '../hms/claim-envelope.js';
 import {
   buildWorkflowSummaryClaim,
   canScoreFull,
@@ -33,17 +23,25 @@ import {
   type CandidateReadPlan,
   type ExecutableReadPlanResult,
 } from '../hms/candidate-read-plan.js';
-import type { TrustedRequesterAuthorizationV1 } from '../hms/contracts.js';
-import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
-import { createModelAdapter } from './bedrock/factory.js';
-import { validateStructuredJsonOutput } from './security/policy.js';
 import {
   RunDeadlineError,
   reserveReadAttempt,
   type AiRunFence,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
+import { mapEnvelopeToClaims, toolResultToClaimEnvelope } from '../hms/claim-envelope.js';
+import type { ReservationReadData, StayOptionReadData } from '../hms/contracts.js';
+import type { TrustedRequesterAuthorizationV1 } from '../hms/contracts.js';
+import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
+import { validateStructuredJsonOutput } from './security/policy.js';
+import type { ReadResult } from '../hms/read-service-contracts.js';
+import { detectDirectReadPlanRefs } from './thread-context.js';
 import { admitReadBranch } from '../hms/read-admission.js';
+import type { LookupCandidate } from './thread-context.js';
+import { createModelAdapter } from './bedrock/factory.js';
+import { createTool } from '@mastra/core/tools';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
 export const CANDIDATE_TOOL_BUDGET = 6;
 
@@ -96,27 +94,31 @@ export type CandidateToolSession = {
     candidateId: string,
     signal: AbortSignal,
   ) => Promise<ToolResult<ReservationReadData>>;
-  quoteStay: (
-    candidateId: string,
-    signal: AbortSignal,
-  ) => Promise<ToolResult<StayOptionReadData>>;
-  readArtifact: (
-    attachmentId: string,
-    signal: AbortSignal,
-  ) => Promise<ToolResult<ArtifactData>>;
+  quoteStay: (candidateId: string, signal: AbortSignal) => Promise<ToolResult<StayOptionReadData>>;
+  readArtifact: (attachmentId: string, signal: AbortSignal) => Promise<ToolResult<ArtifactData>>;
   /** Optional Phase B finance/comms reads — only when activeToolIds includes them. */
-  readFolio?: (
-    candidateId: string,
+  readFolio?: (candidateId: string, signal: AbortSignal) => Promise<ToolResult<unknown>>;
+  readSentEmailAudit?: (candidateId: string, signal: AbortSignal) => Promise<ToolResult<unknown>>;
+  listDocuments?: (candidateId: string, signal: AbortSignal) => Promise<ToolResult<unknown>>;
+  /** U15 typed linked-context reads; worker maps these into durable receipts. */
+  readCompanyAccount?: (
+    reservationRef: string,
     signal: AbortSignal,
-  ) => Promise<ToolResult<unknown>>;
-  readSentEmailAudit?: (
-    candidateId: string,
+  ) => Promise<ReadResult<unknown>>;
+  readGroupBlock?: (
+    groupRef: string,
+    sections: readonly string[],
     signal: AbortSignal,
-  ) => Promise<ToolResult<unknown>>;
-  listDocuments?: (
-    candidateId: string,
-    signal: AbortSignal,
-  ) => Promise<ToolResult<unknown>>;
+  ) => Promise<ReadResult<unknown>>;
+  readEvent?: (eventRef: string, signal: AbortSignal) => Promise<ReadResult<unknown>>;
+  readNotesTraces?: (input: {
+    resourceRef: string;
+    states: readonly string[];
+    limit: number;
+    cursor?: string;
+    audience: 'staff' | 'customer';
+    signal: AbortSignal;
+  }) => Promise<ReadResult<unknown>>;
   /** Opaque lookup map — raw guest values never accepted from model. */
   lookupCandidates: ReadonlyMap<string, LookupCandidate>;
   /** Attachment IDs authorized for this thread context only. */
@@ -159,8 +161,7 @@ export function claimsFromToolResult(
   const readiness = evaluateDraftReadiness(result, now);
   if (!readiness.draftReady) return [];
 
-  const expiresAt =
-    result.evidence.kind === 'hms' ? result.evidence.expiresAt : undefined;
+  const expiresAt = result.evidence.kind === 'hms' ? result.evidence.expiresAt : undefined;
   return mapEnvelopeToClaims(toolResultToClaimEnvelope(result), { expiresAt });
 }
 
@@ -224,10 +225,7 @@ export function createLeaseLostError(
   });
 }
 
-function sessionHandlerPresent(
-  session: CandidateToolSession,
-  toolId: CandidateToolId,
-): boolean {
+function sessionHandlerPresent(session: CandidateToolSession, toolId: CandidateToolId): boolean {
   if (toolId === 'hms_find_reservation') {
     return typeof session.findReservation === 'function';
   }
@@ -271,8 +269,7 @@ export function createCandidateTools(
   const eligibleEvidenceIds = new Set<string>();
   const now = options?.now ?? (() => new Date());
 
-  const activeToolIds =
-    session.activeToolIds ?? new Set(DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS);
+  const activeToolIds = session.activeToolIds ?? new Set(DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS);
 
   for (const toolId of activeToolIds) {
     if (!(toolId in candidateToolEffects)) {
@@ -353,8 +350,7 @@ export function createCandidateTools(
 
   const hmsFindReservation = createTool({
     id: 'hms_find_reservation',
-    description:
-      'Read one reservation by opaque lookup candidate ID from thread context.',
+    description: 'Read one reservation by opaque lookup candidate ID from thread context.',
     inputSchema: opaqueIdSchema,
     outputSchema: ToolResultSchema,
     toModelOutput: (output) =>
@@ -380,8 +376,7 @@ export function createCandidateTools(
 
   const hmsQuoteStay = createTool({
     id: 'hms_quote_stay',
-    description:
-      'Read stay-option inventory/rates by opaque surname_dates candidate ID.',
+    description: 'Read stay-option inventory/rates by opaque surname_dates candidate ID.',
     inputSchema: opaqueIdSchema,
     outputSchema: ToolResultSchema,
     toModelOutput: (output) =>
@@ -434,8 +429,7 @@ export function createCandidateTools(
 
   const hmsReadFolio = createTool({
     id: 'hms_read_folio',
-    description:
-      'Read folio/deposit summary by opaque confirmation candidate ID (read-only).',
+    description: 'Read folio/deposit summary by opaque confirmation candidate ID (read-only).',
     inputSchema: opaqueIdSchema,
     outputSchema: ToolResultSchema,
     toModelOutput: (output) =>
@@ -462,8 +456,7 @@ export function createCandidateTools(
 
   const hmsSentEmailAudit = createTool({
     id: 'hms_sent_email_audit',
-    description:
-      'Read sent-email audit metadata by opaque confirmation candidate ID (read-only).',
+    description: 'Read sent-email audit metadata by opaque confirmation candidate ID (read-only).',
     inputSchema: opaqueIdSchema,
     outputSchema: ToolResultSchema,
     toModelOutput: (output) =>
@@ -492,8 +485,7 @@ export function createCandidateTools(
 
   const hmsListDocuments = createTool({
     id: 'hms_list_documents',
-    description:
-      'List document metadata by opaque confirmation candidate ID (read-only).',
+    description: 'List document metadata by opaque confirmation candidate ID (read-only).',
     inputSchema: opaqueIdSchema,
     outputSchema: ToolResultSchema,
     toModelOutput: (output) =>
@@ -566,10 +558,7 @@ export async function generateCandidateDraftPlan(input: {
   normalizedThreadText: string;
   claimSummaries: MinimizedToolModelOutput[];
   availableClaimIds: string[];
-  planModel?: (prompt: {
-    systemPrompt: string;
-    userPrompt: string;
-  }) => Promise<unknown>;
+  planModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
 }): Promise<CandidateDraftPlan> {
   const userPrompt = JSON.stringify({
     thread: input.normalizedThreadText.slice(0, 8_192),
@@ -634,10 +623,7 @@ export async function runClaimSafeCandidateDraft(input: {
   /** Plan-scoped bindings — when set with activeReleases, plan before browser I/O. */
   candidateBindings?: ReadonlyMap<string, CandidateBinding>;
   requesterAuthorization?: TrustedRequesterAuthorizationV1;
-  planModel?: (prompt: {
-    systemPrompt: string;
-    userPrompt: string;
-  }) => Promise<unknown>;
+  planModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
   now?: Date;
 }): Promise<ClaimSafeCandidateResult> {
   const frozenNow = input.now;
@@ -653,8 +639,7 @@ export async function runClaimSafeCandidateDraft(input: {
       input.probeCandidateIds ??
       [...input.session.lookupCandidates.keys()].slice(0, CANDIDATE_TOOL_BUDGET);
     const attachmentIds =
-      input.probeAttachmentIds ??
-      [...input.session.authorizedAttachmentIds].slice(0, 1);
+      input.probeAttachmentIds ?? [...input.session.authorizedAttachmentIds].slice(0, 1);
 
     const hasQuoteCandidate = probeIds.some((id) => {
       const candidate = input.session.lookupCandidates.get(id);
@@ -664,9 +649,7 @@ export async function runClaimSafeCandidateDraft(input: {
       const candidate = input.session.lookupCandidates.get(id);
       return candidate != null && candidate.kind !== 'surname_dates';
     });
-    const { hasGroupRef, hasEventRef } = detectDirectReadPlanRefs(
-      input.normalizedThreadText,
-    );
+    const { hasGroupRef, hasEventRef } = detectDirectReadPlanRefs(input.normalizedThreadText);
 
     const readPlan =
       input.readPlan ??
@@ -685,10 +668,8 @@ export async function runClaimSafeCandidateDraft(input: {
     // Missing bindings with non-empty releases = fail closed (never legacy fallthrough).
     let executablePlan: ExecutableReadPlanResult | null = null;
     let scoreFullAllowed = true;
-    const activeReleases =
-      input.session.activeReleases ?? new Map();
-    const candidateBindings =
-      input.candidateBindings ?? input.session.candidateBindings;
+    const activeReleases = input.session.activeReleases ?? new Map();
+    const candidateBindings = input.candidateBindings ?? input.session.candidateBindings;
     const requesterAuthorization =
       input.requesterAuthorization ?? input.session.requesterAuthorization;
     if (activeReleases.size > 0) {
@@ -743,8 +724,7 @@ export async function runClaimSafeCandidateDraft(input: {
       // the executable allowlist via bundle.tools fallthrough.
       let tool;
       if (candidate.kind === 'surname_dates') {
-        const preferQuote =
-          executableToolIds.has('hms_quote_stay') && bundle.tools.hms_quote_stay;
+        const preferQuote = executableToolIds.has('hms_quote_stay') && bundle.tools.hms_quote_stay;
         tool = preferQuote
           ? bundle.tools.hms_quote_stay
           : executableToolIds.has('hms_find_reservation')
@@ -757,10 +737,7 @@ export async function runClaimSafeCandidateDraft(input: {
         if (!tool) continue;
       }
       try {
-        await tool.execute!(
-          { candidateId },
-          { abortSignal: signal } as never,
-        );
+        await tool.execute!({ candidateId }, { abortSignal: signal } as never);
       } catch (error) {
         if (isFatalCandidateGatheringError(error)) throw error;
         // Soft failures already counted in budget; continue gathering.
@@ -775,10 +752,7 @@ export async function runClaimSafeCandidateDraft(input: {
       const tool = bundle.tools.mail_read_artifact;
       if (!tool) break;
       try {
-        await tool.execute!(
-          { attachmentId },
-          { abortSignal: signal } as never,
-        );
+        await tool.execute!({ attachmentId }, { abortSignal: signal } as never);
       } catch (error) {
         if (isFatalCandidateGatheringError(error)) throw error;
       }
@@ -798,10 +772,7 @@ export async function runClaimSafeCandidateDraft(input: {
 
     const availableClaimIds = [...bundle.claims.keys()];
     const claimSummaries = bundle.evidenceResults.map((result) =>
-      minimizeToolResultForModel(
-        result,
-        claimsFromToolResult(result, input.now),
-      ),
+      minimizeToolResultForModel(result, claimsFromToolResult(result, input.now)),
     );
 
     let plan: CandidateDraftPlan;
@@ -826,8 +797,7 @@ export async function runClaimSafeCandidateDraft(input: {
       claimCount: bundle.claims.size,
       readPlanKind: readPlan.kind,
       readPlanFollowups:
-        readPlan.kind === 'reservation' ||
-        readPlan.kind === 'artifact_reservation'
+        readPlan.kind === 'reservation' || readPlan.kind === 'artifact_reservation'
           ? readPlan.followups
           : [],
       hmsMode: 'claim_safe',
@@ -925,9 +895,7 @@ export function allToolEffectsAreRead(): boolean {
 }
 
 /** Reject prompt-injection attempts to register extra tools / write effects. */
-export function assertToolRegistrySealed(
-  tools: Record<string, unknown>,
-): void {
+export function assertToolRegistrySealed(tools: Record<string, unknown>): void {
   const allowed = new Set(Object.keys(candidateToolEffects));
   for (const key of Object.keys(tools)) {
     if (!allowed.has(key)) {

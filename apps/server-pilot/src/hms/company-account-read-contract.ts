@@ -6,12 +6,7 @@ export const COMPANY_ACCOUNT_READ_MAX_SOURCE_AGE_MS = 5 * 60 * 1_000;
 
 export const COMPANY_ACCOUNT_READ_PRIVACY_POLICY = {
   allowedSurfaces: ['Company/Agency Billing'],
-  deniedData: [
-    'account_identifier',
-    'contact',
-    'credit_limit',
-    'credit_status',
-  ],
+  deniedData: ['account_identifier', 'contact', 'credit_limit', 'credit_status'],
   deniedActions: [
     'save',
     'submit',
@@ -23,8 +18,7 @@ export const COMPANY_ACCOUNT_READ_PRIVACY_POLICY = {
 } as const;
 
 /** Live surface blocker — billing mode/terms/contract absent on safe linked form. */
-export const COMPANY_ACCOUNT_READ_SURFACE_BLOCKER =
-  'BLOCKED_COMPANY_READ_SURFACE_UNPROVEN';
+export const COMPANY_ACCOUNT_READ_SURFACE_BLOCKER = 'BLOCKED_COMPANY_READ_SURFACE_UNPROVEN';
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoTimestamp = z.string().datetime();
@@ -64,11 +58,8 @@ export function companyBillingClaimEligibility(
   inquiryClass: z.infer<typeof inquiryClassSchema>,
 ): 'eligible' | 'blocked' {
   const authorized =
-    recipientClass === 'authorized_booking_contact' ||
-    recipientClass === 'internal_finance';
-  return authorized && inquiryClass === 'labelled_company_billing'
-    ? 'eligible'
-    : 'blocked';
+    recipientClass === 'authorized_booking_contact' || recipientClass === 'internal_finance';
+  return authorized && inquiryClass === 'labelled_company_billing' ? 'eligible' : 'blocked';
 }
 
 export const companyAccountReadDataSchema = z
@@ -90,9 +81,14 @@ export const companyAccountReadDataSchema = z
   })
   .strict();
 
-export type CompanyAccountReadData = z.infer<
-  typeof companyAccountReadDataSchema
->;
+export type CompanyAccountReadData = z.infer<typeof companyAccountReadDataSchema>;
+
+// Normal executor payload: field-level facts are intentionally distinct from
+// the legacy fixture kernel above.
+export {
+  companyAccountContextDataSchema,
+  type CompanyAccountContextData,
+} from './context-read-contracts.js';
 
 const privateFieldsSchema = z
   .object({
@@ -133,10 +129,7 @@ export const companyAccountReadFixtureInputSchema = z
       .strict(),
     surfaceProof: z
       .object({
-        fieldSemantics: z.enum([
-          'company_billing_terms',
-          'booking_agency_contract_availability',
-        ]),
+        fieldSemantics: z.enum(['company_billing_terms', 'booking_agency_contract_availability']),
         billingModeFieldViewOnly: z.boolean(),
         paymentTermsFieldViewOnly: z.boolean(),
         contractStatusFieldViewOnly: z.boolean(),
@@ -159,9 +152,7 @@ export const companyAccountReadFixtureInputSchema = z
   })
   .strict();
 
-export type CompanyAccountReadFixtureInput = z.input<
-  typeof companyAccountReadFixtureInputSchema
->;
+export type CompanyAccountReadFixtureInput = z.input<typeof companyAccountReadFixtureInputSchema>;
 
 export type CompanyAccountReadKernelResult = {
   status: 'ok' | 'unverified_negative' | 'manual_required';
@@ -187,10 +178,7 @@ export function parseCompanyAccountReadFixture(
   if (input.binding.linkSource !== 'reservation_link') {
     return fail('COMPANY_EXACT_RESERVATION_LINK_REQUIRED');
   }
-  if (
-    input.binding.exactReservationScopeHash !==
-    input.binding.observedReservationScopeHash
-  ) {
+  if (input.binding.exactReservationScopeHash !== input.binding.observedReservationScopeHash) {
     return fail('COMPANY_EXACT_RESERVATION_BINDING_MISMATCH');
   }
   if (input.binding.linkedOrganizationCount === 0) {
@@ -208,14 +196,12 @@ export function parseCompanyAccountReadFixture(
   const observedAt = Date.parse(input.observedAt);
   const issuedAt = Date.parse(input.roleProof.issuedAt);
   const expiresAt = Date.parse(input.roleProof.expiresAt);
-  const hasRequiredSurface =
-    COMPANY_ACCOUNT_READ_PRIVACY_POLICY.allowedSurfaces.every((surface) =>
-      input.roleProof.allowedSurfaces.includes(surface),
-    );
-  const deniesEveryAction =
-    COMPANY_ACCOUNT_READ_PRIVACY_POLICY.deniedActions.every((action) =>
-      input.roleProof.deniedActions.includes(action),
-    );
+  const hasRequiredSurface = COMPANY_ACCOUNT_READ_PRIVACY_POLICY.allowedSurfaces.every((surface) =>
+    input.roleProof.allowedSurfaces.includes(surface),
+  );
+  const deniesEveryAction = COMPANY_ACCOUNT_READ_PRIVACY_POLICY.deniedActions.every((action) =>
+    input.roleProof.deniedActions.includes(action),
+  );
   if (
     input.roleProof.credentialMode !== 'view_only' ||
     !input.roleProof.companyBillingRead ||
@@ -236,17 +222,11 @@ export function parseCompanyAccountReadFixture(
     return fail('COMPANY_ACCOUNT_BOUNDS_EXCEEDED');
   }
   const sourceAgeMs = evaluatedAt - observedAt;
-  if (
-    sourceAgeMs < 0 ||
-    sourceAgeMs > COMPANY_ACCOUNT_READ_MAX_SOURCE_AGE_MS
-  ) {
+  if (sourceAgeMs < 0 || sourceAgeMs > COMPANY_ACCOUNT_READ_MAX_SOURCE_AGE_MS) {
     return fail('COMPANY_ACCOUNT_SOURCE_STALE');
   }
 
-  if (
-    input.surfaceProof.fieldSemantics ===
-    'booking_agency_contract_availability'
-  ) {
+  if (input.surfaceProof.fieldSemantics === 'booking_agency_contract_availability') {
     return fail('COMPANY_BOOKING_AGENCY_AVAILABILITY_NOT_BILLING_TERMS');
   }
   if (
@@ -281,10 +261,7 @@ export function parseCompanyAccountReadFixture(
     disclosure: {
       recipientClass: input.recipientClass,
       inquiryClass: input.inquiryClass,
-      claimEligibility: companyBillingClaimEligibility(
-        input.recipientClass,
-        input.inquiryClass,
-      ),
+      claimEligibility: companyBillingClaimEligibility(input.recipientClass, input.inquiryClass),
     },
     observedAt: input.observedAt,
   });
@@ -303,9 +280,7 @@ export const companyBillingClaimValueSchema = z
   })
   .strict();
 
-export type CompanyBillingClaimValue = z.infer<
-  typeof companyBillingClaimValueSchema
->;
+export type CompanyBillingClaimValue = z.infer<typeof companyBillingClaimValueSchema>;
 
 export function mapCompanyBillingClaim(
   data: CompanyAccountReadData,

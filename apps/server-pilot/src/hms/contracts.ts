@@ -74,6 +74,11 @@ export {
   type ReadToolId,
   type RequestBranchDefinition,
   type RoleSurfaceId,
+  U15_CONTEXT_READ_TOOL_IDS,
+  U15_CONTEXT_DISCOVERY_OPERATION_IDS,
+  u15ContextReadToolIdSchema,
+  type U15ContextReadToolId,
+  type U15ContextDiscoveryOperationId,
 } from './read-tools.js';
 
 export type CapabilityRow = {
@@ -377,8 +382,10 @@ export const TRUSTED_REQUESTER_CLAIM_KINDS = [
   'sent_email_audit',
   'folio_status',
   'company_billing',
+  'company_billing_summary',
   'group_status',
   'event_status',
+  'notes_trace_observation',
 ] as const;
 
 export const requesterClassSchema = z.enum(REQUESTER_CLASSES);

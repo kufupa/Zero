@@ -511,7 +511,11 @@ describe('U8 independent review RED contracts', () => {
     await expect(
       executeRead(
         admittedReadContext(),
-        admittedRequest({ captureRequired: true, captureBindingRef: 'run-stale' }),
+        admittedRequest({
+          captureRequired: true,
+          captureBindingRef: 'run-stale',
+          manifestSha256: 'a'.repeat(64),
+        }),
       ),
     ).rejects.toMatchObject({ code: 'READ_CAPTURE_BINDING_MISMATCH' });
   });

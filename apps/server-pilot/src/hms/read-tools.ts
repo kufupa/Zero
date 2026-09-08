@@ -28,6 +28,27 @@ export const READ_TOOL_IDS = [
 export type ReadToolId = (typeof READ_TOOL_IDS)[number];
 
 /**
+ * U15 normal read-service branches are intentionally tracked separately from
+ * the Phase-B promotion portfolio. Their typed receipts can be exercised by
+ * the model-free worker while the active HMS release remains unavailable.
+ */
+export const U15_CONTEXT_READ_TOOL_IDS = [
+  'hms_company_account_read',
+  'hms_group_block_read',
+  'hms_event_read',
+  'hms_read_notes_traces',
+] as const;
+export type U15ContextReadToolId = (typeof U15_CONTEXT_READ_TOOL_IDS)[number];
+export const u15ContextReadToolIdSchema = z.enum(U15_CONTEXT_READ_TOOL_IDS);
+export const U15_CONTEXT_DISCOVERY_OPERATION_IDS = [
+  'reservation_linked_company_billing',
+  'group_block_list',
+  'event_list',
+  'notes_traces_list',
+] as const;
+export type U15ContextDiscoveryOperationId = (typeof U15_CONTEXT_DISCOVERY_OPERATION_IDS)[number];
+
+/**
  * Mail-first existing-document operations are dispatched by the closed U8
  * read service. They remain a separate registry union so the accepted Phase-B
  * promotion/fingerprint key set above cannot drift while these adapters gain
