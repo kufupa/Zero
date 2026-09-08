@@ -1,15 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
-import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun } from '../db/schema/mail.js';
-import type {
-  aiExecutorLaneEnum,
-  aiWorkflowRunKindEnum,
-  aiWorkflowRunStateEnum,
-} from '../db/schema/mail.js';
-import { parseEnv } from '../env.js';
-import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
-import { readRequestSchema } from '../hms/read-service.js';
 import {
   readRefSchema,
   readReservationBindingSchema,
@@ -18,9 +6,26 @@ import {
   type ReadResult,
 } from '../hms/read-service-contracts.js';
 import {
+  assertReadAdmissionIssuer,
+  READ_CLEANUP_RESERVE_MS,
+  type ReadAdmissionIssuer,
+} from '../hms/read-admission.js';
+import {
   reservationContextReadResultSchema,
   reservationFindResultSchema,
 } from '../hms/reservation-context-contract.js';
+import type {
+  aiExecutorLaneEnum,
+  aiWorkflowRunKindEnum,
+  aiWorkflowRunStateEnum,
+} from '../db/schema/mail.js';
+import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
+import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
+import { readRequestSchema } from '../hms/read-service.js';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { getDb, type DB } from '../db/client.js';
+import { randomUUID } from 'node:crypto';
+import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -34,10 +39,9 @@ export function canClaimReadToolRun(input: {
   lane: AiExecutorLane | string;
   readServiceEnabled: boolean;
 }): boolean {
-  return input.runKind !== READ_TOOL_RUN_KIND ||
-    (input.lane === 'hms' && input.readServiceEnabled);
+  return input.runKind !== READ_TOOL_RUN_KIND || (input.lane === 'hms' && input.readServiceEnabled);
 }
-export const CLEANUP_RESERVE_MS = 10_000;
+export const CLEANUP_RESERVE_MS = READ_CLEANUP_RESERVE_MS;
 
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];
 export type AiWorkflowRunState = (typeof aiWorkflowRunStateEnum.enumValues)[number];
@@ -83,9 +87,7 @@ export function mergeTerminalRunMetrics(
   terminal: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const base =
-    existing && typeof existing === 'object'
-      ? (existing as Record<string, unknown>)
-      : {};
+    existing && typeof existing === 'object' ? (existing as Record<string, unknown>) : {};
   const readBudget = base.readBudget;
   return {
     ...base,
@@ -106,12 +108,7 @@ export function nextReadBudget(
   const byTool = { ...rawBudget.byTool };
   const total = Number(rawBudget.total ?? 0);
   const perTool = Number(byTool[toolId] ?? 0);
-  if (
-    !Number.isFinite(total) ||
-    !Number.isFinite(perTool) ||
-    total < 0 ||
-    perTool < 0
-  ) {
+  if (!Number.isFinite(total) || !Number.isFinite(perTool) || total < 0 || perTool < 0) {
     return null;
   }
   if (total >= PLAN_TOTAL_CAPS[planKind] || perTool >= READ_TOOLS[toolId].attemptCap) {
@@ -207,6 +204,8 @@ export interface EnqueueAiRunInput {
   readRequest?: Record<string, unknown>;
   /** Private typed receipt reference; only present for read_tool runs. */
   readResultRef?: string;
+  /** Non-serializable server-issued admission provenance. */
+  readAdmissionIssuer?: ReadAdmissionIssuer;
 }
 
 export interface AiRunScopeFilter {
@@ -331,6 +330,7 @@ export function toAiRunFence(run: AiWorkflowRun): AiRunFence | null {
 export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   assertMailRunLinks(input);
   let readAdmissionBinding: ReadReservationBinding | undefined;
+  let readAdmissionIssuer: ReturnType<typeof assertReadAdmissionIssuer> | undefined;
   if (input.runKind === 'read_tool') {
     if (input.executorLane !== 'hms') {
       throw new Error('read_tool runs must use the hms executor lane');
@@ -341,14 +341,24 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     if (input.promptVersion !== READ_TOOL_PROMPT_VERSION) {
       throw new Error(`read_tool runs require promptVersion=${READ_TOOL_PROMPT_VERSION}`);
     }
-    if (!input.readRequest || typeof input.readRequest !== 'object') throw new Error('read_tool runs require a closed readRequest');
+    if (!input.readRequest || typeof input.readRequest !== 'object')
+      throw new Error('read_tool runs require a closed readRequest');
     if (!input.readResultRef) throw new Error('read_tool runs require a private readResultRef');
     const parsedReadRequest = readRequestSchema.parse(input.readRequest);
     const admission = 'admission' in parsedReadRequest ? parsedReadRequest.admission : undefined;
     if (!admission) throw new Error('read_tool runs require trusted admission');
+    readAdmissionIssuer = assertReadAdmissionIssuer({
+      issuer: input.readAdmissionIssuer,
+      admission,
+      request: parsedReadRequest as unknown as Record<string, unknown>,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: input.triggerMessageId,
+    });
     if (
       (parsedReadRequest.toolId === 'hms_find_reservation' && admission.reservationRef !== null) ||
-      (parsedReadRequest.toolId === 'hms_read_reservation' && admission.reservationRef !== parsedReadRequest.reservationRef)
+      (parsedReadRequest.toolId === 'hms_read_reservation' &&
+        admission.reservationRef !== parsedReadRequest.reservationRef)
     ) {
       throw new Error('read_tool reservation reference is not bound to trusted admission');
     }
@@ -386,7 +396,14 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
       promptHash: input.promptHash,
       readRequest: input.readRequest,
       readResultRef: input.readResultRef,
-      ...(readAdmissionBinding ? { metrics: { readAdmissionBinding } } : {}),
+      ...(readAdmissionBinding || readAdmissionIssuer
+        ? {
+            metrics: {
+              ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
+              ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
+            },
+          }
+        : {}),
       executorLane: input.executorLane ?? 'default',
       state: 'queued',
       createdAt: now,
@@ -413,11 +430,14 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const env = parseEnv(process.env as Record<string, string | undefined>);
-  if (!canClaimReadToolRun({
-    runKind: input.runKind ?? '',
-    lane: input.lane,
-    readServiceEnabled: env.HMS_READ_SERVICE_ENABLED,
-  })) return null;
+  if (
+    !canClaimReadToolRun({
+      runKind: input.runKind ?? '',
+      lane: input.lane,
+      readServiceEnabled: env.HMS_READ_SERVICE_ENABLED,
+    })
+  )
+    return null;
   const staleRunTimeoutMs = input.staleRunTimeoutMs ?? env.AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
@@ -662,7 +682,8 @@ export async function readAiRunReceipt(
     return null;
   }
   const request = readRequestSchema.safeParse(run.readRequest);
-  const admission = request.success && 'admission' in request.data ? request.data.admission : undefined;
+  const admission =
+    request.success && 'admission' in request.data ? request.data.admission : undefined;
   if (!admission || admission.requesterAuthorizationId !== input.requesterAuthorizationId) {
     return null;
   }

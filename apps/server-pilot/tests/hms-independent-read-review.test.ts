@@ -1,18 +1,15 @@
-import { describe, expect, it } from 'vitest';
 import {
   reservationContextReadResultSchema,
   type ReservationContextReadResult,
 } from '../src/hms/reservation-context-contract.js';
-import { readResultSchema } from '../src/hms/read-service-contracts.js';
-import { requireHmsReadRuntimeConfig } from '../src/env.js';
-import {
-  assertReadAdmissionPlanBinding,
-  mapProductionReservationRead,
-} from '../src/ai/worker.js';
+import { assertReadAdmissionPlanBinding, mapProductionReservationRead } from '../src/ai/worker.js';
+import { createReservationContextFacade } from '../src/hms/reservation-context-facade.js';
 import { buildHmsFindSessionAuthorization } from '../src/hms/active-read-runtime.js';
 import { executeRead, type ReadExecutionContext } from '../src/hms/read-service.js';
-import { createReservationContextFacade } from '../src/hms/reservation-context-facade.js';
+import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import { readInputDigest } from '../src/hms/read-service-contracts.js';
+import { requireHmsReadRuntimeConfig } from '../src/env.js';
+import { describe, expect, it } from 'vitest';
 
 const observedAt = '2026-09-07T12:00:00.000Z';
 const expiresAt = '2026-09-07T12:05:00.000Z';
@@ -22,9 +19,7 @@ const admittedClosedRequest = {
   candidateId: 'candidate-red',
 };
 
-function admittedReadContext(
-  _admission: Record<string, unknown>,
-): ReadExecutionContext {
+function admittedReadContext(): ReadExecutionContext {
   return {
     transportId: 'transport-red',
     mailboxId: 'mailbox-red',
@@ -48,10 +43,11 @@ function admittedReadContext(
     requireAdmissionBinding: true,
     propertyReadLock: {
       key: '1',
-      withLock: async (callback) => callback({
-        query: async () => [],
-        close: async () => undefined,
-      }),
+      withLock: async (callback) =>
+        callback({
+          query: async () => [],
+          close: async () => undefined,
+        }),
     },
     handlers: {
       findReservation: async () => ({
@@ -237,12 +233,20 @@ describe('U8 independent review RED contracts', () => {
       roomType: 'STD',
       ratePlan: null,
     };
-    expect(() => mapProductionReservationRead({ status: 'partial', data: { matches: [row] }, evidence })).toThrow();
-    expect(() => mapProductionReservationRead({ status: 'manual_required', data: { matches: [row] }, evidence })).toThrow();
+    expect(() =>
+      mapProductionReservationRead({ status: 'partial', data: { matches: [row] }, evidence }),
+    ).toThrow();
+    expect(() =>
+      mapProductionReservationRead({
+        status: 'manual_required',
+        data: { matches: [row] },
+        evidence,
+      }),
+    ).toThrow();
   });
 
   it('does not treat a forged lock connection as proof that dispatch owns the lock', async () => {
-    const context = admittedReadContext(admittedRequest().admission);
+    const context = admittedReadContext();
     let lockCalls = 0;
     context.propertyReadLock = {
       key: '1',
@@ -299,17 +303,21 @@ describe('U8 independent review RED contracts', () => {
     });
 
     expect(authorization.requestBranchId).toBe('requested_branch');
-    expect(() => buildHmsFindSessionAuthorization({
-      ...authorizationInput,
-      requestBranchId: 'not-enabled',
-    })).toThrow(/request branch/i);
+    expect(() =>
+      buildHmsFindSessionAuthorization({
+        ...authorizationInput,
+        requestBranchId: 'not-enabled',
+      }),
+    ).toThrow(/request branch/i);
   });
 
   it('rejects a requester admission that does not match the trusted plan authorization', () => {
-    expect(() => assertReadAdmissionPlanBinding({
-      readAdmission: admittedRequest().admission as never,
-      requesterAuthorizationId: 'trusted-plan-auth',
-    })).toThrow(/trusted plan authorization/);
+    expect(() =>
+      assertReadAdmissionPlanBinding({
+        readAdmission: admittedRequest().admission as never,
+        requesterAuthorizationId: 'trusted-plan-auth',
+      }),
+    ).toThrow(/trusted plan authorization/);
   });
 
   it('admits a model-free read runtime while drafting remains off', () => {
@@ -440,36 +448,32 @@ describe('U8 independent review RED contracts', () => {
     };
     const found = await facade.findReservation(lookup);
     expect(found.data?.matches[0]?.reservationRef).toEqual(expect.any(String));
-    await expect(facade.readReservation({
-      ...lookup,
-      reservationRef: 'model-invented-ref',
-      sections: ['core'],
-      detail: 'summary',
-    })).rejects.toMatchObject({ code: 'RESERVATION_REF_NOT_FOUND' });
+    await expect(
+      facade.readReservation({
+        ...lookup,
+        reservationRef: 'model-invented-ref',
+        sections: ['core'],
+        detail: 'summary',
+      }),
+    ).rejects.toMatchObject({ code: 'RESERVATION_REF_NOT_FOUND' });
   });
 
   it('rejects a read admission whose release binding is stale', async () => {
     await expect(
-      executeRead(
-        admittedReadContext({ ...admittedRequest().admission, releaseId: 'release-stale' }),
-        admittedRequest({ releaseId: 'release-stale' }),
-      ),
+      executeRead(admittedReadContext(), admittedRequest({ releaseId: 'release-stale' })),
     ).rejects.toMatchObject({ code: 'READ_RELEASE_BINDING_MISMATCH' });
   });
 
   it('rejects a read admission whose input digest does not match the closed request', async () => {
     await expect(
-      executeRead(
-        admittedReadContext(admittedRequest().admission),
-        admittedRequest({ inputDigest: 'f'.repeat(64) }),
-      ),
+      executeRead(admittedReadContext(), admittedRequest({ inputDigest: 'f'.repeat(64) })),
     ).rejects.toMatchObject({ code: 'READ_INPUT_BINDING_MISMATCH' });
   });
 
   it('rejects a read admission whose request branch is not the admitted branch', async () => {
     await expect(
       executeRead(
-        admittedReadContext(admittedRequest().admission),
+        admittedReadContext(),
         admittedRequest({ requestBranchId: 'guest_stay_other_branch' }),
       ),
     ).rejects.toMatchObject({ code: 'READ_BRANCH_BINDING_MISMATCH' });
@@ -478,7 +482,7 @@ describe('U8 independent review RED contracts', () => {
   it('rejects a read admission whose requester authorization is stale', async () => {
     await expect(
       executeRead(
-        admittedReadContext(admittedRequest().admission),
+        admittedReadContext(),
         admittedRequest({ requesterAuthorizationId: 'auth-stale' }),
       ),
     ).rejects.toMatchObject({ code: 'READ_REQUESTER_BINDING_MISMATCH' });
@@ -487,9 +491,24 @@ describe('U8 independent review RED contracts', () => {
   it('rejects a read admission whose capture binding is not the run fence', async () => {
     await expect(
       executeRead(
-        admittedReadContext(admittedRequest().admission),
+        admittedReadContext(),
         admittedRequest({ captureRequired: true, captureBindingRef: 'run-stale' }),
       ),
     ).rejects.toMatchObject({ code: 'READ_CAPTURE_BINDING_MISMATCH' });
+  });
+
+  it('requires a server-owned issuer and authenticated model-free enqueue/receipt surface', async () => {
+    const admission = await import('../src/hms/read-admission.js');
+    expect(typeof (admission as { issueReadAdmission?: unknown }).issueReadAdmission).toBe(
+      'function',
+    );
+
+    const { appRouter } = await import('../src/trpc/router.js');
+    const procedures = Object.keys(
+      (appRouter as unknown as { _def: { procedures: Record<string, unknown> } })._def.procedures,
+    );
+    expect(procedures).toContain('ai.enqueueHmsRead');
+    expect(procedures).toContain('ai.enqueueHmsContextRead');
+    expect(procedures).toContain('ai.readHmsReceipt');
   });
 });
