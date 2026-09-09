@@ -5,6 +5,7 @@ import type {
   AdminDashboardDomainRow,
   AdminDashboardFolderRow,
   AdminDashboardMetrics,
+  AdminDashboardShadowScorecard,
   AdminDashboardCountDenominatorStatus,
   AdminDashboardSelection,
   DashboardCohortId,
@@ -1104,6 +1105,114 @@ function DataHealthSection({
   );
 }
 
+function ShadowScorecardSection({
+  scorecard,
+}: {
+  scorecard: AdminDashboardShadowScorecard | undefined;
+}) {
+  if (!scorecard) {
+    return (
+      <section aria-labelledby="shadow-scorecard-heading" className="grid gap-3">
+        <h2 id="shadow-scorecard-heading" className="text-lg font-semibold">
+          Private prediction scorecard
+        </h2>
+        <div
+          role="status"
+          className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
+        >
+          Scorecard unavailable: no private shadow-store evidence was returned.
+        </div>
+      </section>
+    );
+  }
+
+  const { counts, quality } = scorecard;
+  const qualityText =
+    quality.availability === 'available' && quality.correctRate !== null
+      ? formatPercent(quality.correctRate * 100)
+      : 'Unavailable';
+  const usefulText =
+    quality.availability === 'available' && quality.usefulRate !== null
+      ? formatPercent(quality.usefulRate * 100)
+      : 'Unavailable';
+  const denominatorTextValue =
+    quality.denominator === null ? 'Unknown' : formatNumber(quality.denominator);
+
+  return (
+    <section aria-labelledby="shadow-scorecard-heading" className="grid gap-4">
+      <div>
+        <h2 id="shadow-scorecard-heading" className="text-lg font-semibold">
+          Private prediction scorecard
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          Internal {scorecard.evaluationMode.replaceAll('_', ' ')} observations. Predictions never
+          create drafts, labels, read-state changes, or sends.
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Admitted predictions</CardTitle>
+            <CardDescription>Eligible private prediction jobs.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.admitted)}</p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Sealed: {formatNumber(counts.sealed)} · unavailable:{' '}
+              {formatNumber(counts.unavailable)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Reference outcomes</CardTitle>
+            <CardDescription>Verified outbound observations and delays.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.matched)}</p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Pending: {formatNumber(counts.pending)} · late: {formatNumber(counts.late)} ·
+              unobserved: {formatNumber(counts.unobserved)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Label coverage</CardTitle>
+            <CardDescription>Bound, unique labels only.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.labelled)}</p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Scorable denominator: {formatNumber(counts.scorable)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Quality</CardTitle>
+            <CardDescription>Gold labels are not inferred from missing evidence.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-semibold tabular-nums">{qualityText}</p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Useful: {usefulText} · denominator: {denominatorTextValue}
+            </p>
+            {quality.availability !== 'available' ? (
+              <p className="text-muted-foreground mt-1 text-xs">
+                Unavailable: {(quality.reason ?? 'evidence unavailable').replaceAll('_', ' ')}
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Source: private shadow store. Missing is not zero; mode: {scorecard.evaluationMode}.
+      </p>
+    </section>
+  );
+}
+
 function HostedAdminDashboardView({
   metrics,
   isStale,
@@ -1179,6 +1288,7 @@ function HostedAdminDashboardView({
         <FolderSection metrics={metrics} />
         <CorrespondentSection metrics={metrics} />
         <ServiceSection metrics={metrics} />
+        <ShadowScorecardSection scorecard={metrics.shadowScorecard} />
         <DataHealthSection dataHealth={metrics.dataHealth} />
         {!metrics.traffic ? (
           <p className="text-muted-foreground text-xs">

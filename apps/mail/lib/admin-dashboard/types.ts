@@ -173,6 +173,47 @@ export type AdminDashboardDataHealth = {
   };
 };
 
+/** Private U13 evaluation scorecard; unavailable quality remains null. */
+export type AdminDashboardShadowScorecard = {
+  schemaVersion: 'shadow-scorecard-v1';
+  evaluationMode: 'current_state' | 'historical_replay' | 'future_shadow';
+  counts: {
+    eligible: number;
+    admitted: number;
+    sealed: number;
+    unavailable: number;
+    failed: number;
+    skipped: number;
+    denied: number;
+    pending: number;
+    matched: number;
+    late: number;
+    ambiguous: number;
+    unmatched: number;
+    unobserved: number;
+    unknownCoverage: number;
+    changedState: number;
+    unscorable: number;
+    labelled: number;
+    scorable: number;
+    correct: number;
+    partial: number;
+    incorrect: number;
+  };
+  quality: {
+    availability: 'available' | 'unavailable';
+    denominator: number | null;
+    reason: 'label_provenance_unavailable' | 'no_assessments' | null;
+    correctRate: number | null;
+    usefulRate: number | null;
+  };
+  provenance: {
+    source: 'private_shadow_store';
+    missingIsNotZero: true;
+    evaluationMode: 'current_state' | 'historical_replay' | 'future_shadow';
+  };
+};
+
 export type AdminDashboardConversations = {
   awaitingHotel: MetricResult<number>;
   awaitingCustomer: MetricResult<number>;
@@ -205,6 +246,7 @@ export type AdminDashboardPayload = {
   correspondents: AdminDashboardCorrespondents;
   service: AdminDashboardService;
   dataHealth: AdminDashboardDataHealth | null;
+  shadowScorecard?: AdminDashboardShadowScorecard;
 };
 
 export type ExecutiveDashboardPayload = AdminDashboardPayload;
@@ -247,6 +289,7 @@ export type AdminDashboardMetrics = {
   correspondents?: AdminDashboardCorrespondents;
   service?: AdminDashboardService;
   dataHealth?: AdminDashboardPayload['dataHealth'];
+  shadowScorecard?: AdminDashboardShadowScorecard;
   inboundVolume: MetricCell;
   medianFirstResponseMinutes: MetricCell;
   p90FirstResponseMinutes: MetricCell;

@@ -26,6 +26,7 @@ import {
   queryMailBaselineProjection,
   reduceProjectedMailBaseline,
 } from '../../metrics/mail-baseline-repository.js';
+import { loadShadowScorecard, SHADOW_EVALUATION_MODE } from '../../ai/shadow-evaluation.js';
 import { serializeAdminDashboardExport } from '../../metrics/admin-dashboard-export.js';
 import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
@@ -449,7 +450,7 @@ export async function loadAdminDashboardMetrics(
       interpretationVersion: first.interpretationVersion,
     });
   });
-  return aggregateAdminDashboardMetrics({
+  const aggregate = aggregateAdminDashboardMetrics({
     cohortId: query.cohortId,
     observationCutoff: new Date(query.observationCutoff),
     classificationSnapshot,
@@ -465,6 +466,13 @@ export async function loadAdminDashboardMetrics(
     windowStart: new Date(query.windowStart),
     windowEnd: new Date(query.windowEnd),
   });
+  const shadowScorecard = await loadShadowScorecard({
+    evaluationMode: SHADOW_EVALUATION_MODE,
+    transportIds: selectedTransportIds,
+    observationCutoff: new Date(query.observationCutoff),
+    db,
+  });
+  return { ...aggregate, shadowScorecard };
 }
 
 export const adminDashboardRouter = tRouter({

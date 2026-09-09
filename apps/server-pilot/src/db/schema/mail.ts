@@ -54,6 +54,7 @@ export const aiWorkflowRunKindEnum = pgEnum('ai_workflow_run_kind', [
   'candidate_draft',
   'feedback_extraction',
   'read_tool',
+  'shadow_prediction',
 ]);
 
 export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [

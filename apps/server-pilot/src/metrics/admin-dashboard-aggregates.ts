@@ -10,6 +10,7 @@ import {
 } from './mail-baseline.js';
 import { isWithinConfirmedGap, type MailboxMeasurementConfig } from './mail-measurement-config.js';
 import { buildMailDataHealth, type MailDataHealthMessage } from './mail-data-health.js';
+import type { ShadowScorecard } from './shadow-scorecard.js';
 
 export type MetricAvailability = 'live' | 'unavailable' | 'coming_soon';
 
@@ -271,6 +272,8 @@ export type AdminDashboardAggregateResult = {
   footnote: string;
   windowStart: string;
   windowEnd: string;
+  /** Private U13 scorecard; absent only for legacy aggregate producers. */
+  shadowScorecard?: ShadowScorecard;
 };
 
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000;

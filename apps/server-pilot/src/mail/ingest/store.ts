@@ -51,6 +51,7 @@ import {
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
+import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { buildReferenceChain, canonicalMessageId } from './message-id.js';
@@ -624,6 +625,30 @@ export async function persistInboundMessage(
         },
         tx as unknown as DB,
       );
+
+      // U13 shadow admission is a separate private purpose. It is queued only
+      // after this inbound row/attachment transaction has the same committed
+      // scope and never writes a draft, label, read state, or SMTP row.
+      if (!isHotelSent) {
+        await enqueueShadowPrediction({
+          transportId: transport.id,
+          threadId,
+          triggerMessageId: messageId,
+          db: tx as unknown as DB,
+        });
+      }
+    }
+
+    // External Sent/imported hotel mail is the delayed reference producer. A
+    // rematch reads only private prediction rows and appends an assessment;
+    // it never mutates the just-stored message or visible thread state.
+    if (isHotelSent && !opts.skipAiEnqueue) {
+      await rematchShadowPredictions({
+        transportId: transport.id,
+        threadId,
+        outboundMessageId: messageId,
+        db: tx as unknown as DB,
+      });
     }
 
     if (opts.promoteQuarantineId) {

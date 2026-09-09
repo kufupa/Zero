@@ -23,6 +23,16 @@ import {
   type CandidateReadPlanKind,
 } from './run-ledger.js';
 import {
+  createFailedShadowPredictionSeal,
+  createShadowPredictionSeal,
+  createUnavailableShadowPredictionSeal,
+  freezeShadowInput,
+  persistShadowPrediction,
+  shadowPredictionPrompt,
+  SHADOW_EVALUATION_MODE,
+  type ShadowMessageInput,
+} from './shadow-evaluation.js';
+import {
   existingDocumentRefForRecord,
   existingDocumentSha256FromRef,
   existingDocumentScopeRef,
@@ -86,6 +96,11 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
+  createApprovedLocalModelAdapter,
+  createProductionShadowModelRouteFactory,
+  type ShadowModelRouteFactory,
+} from './bedrock/factory.js';
+import {
   createProductionMailBaselineExtractionRouteFactory,
   type MailBaselineExtractionRouteFactory,
 } from './mail-baseline-route-factory.js';
@@ -129,18 +144,18 @@ import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../metrics/mail-baseline.j
 import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
 import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
+import { aiShadowPrediction } from '../db/schema/ai-shadow-evaluation.js';
 import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
 import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
-import { createApprovedLocalModelAdapter } from './bedrock/factory.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
+import { and, asc, eq, inArray, lt, lte, or } from 'drizzle-orm';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
-import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import type { ToolResult } from './draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
@@ -296,6 +311,10 @@ export interface RunAiWorkerDrainInput extends AiRunScopeFilter {
   ownerId?: string;
   /** Normal daemon composition for the purpose-bound extraction edge. */
   mailBaselineExtractionRouteFactory?: MailBaselineExtractionRouteFactory;
+  shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
+  shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
+  shadowModelTransport?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelTransport'];
+  shadowModelRouteFactory?: ShadowModelRouteFactory;
 }
 
 export interface RunAiWorkerDrainResult {
@@ -3278,6 +3297,225 @@ async function executeProductionReadTool(input: {
   }
 }
 
+type ExecuteShadowPredictionInput = {
+  run: typeof aiWorkflowRun.$inferSelect;
+  fence: AiRunFence;
+  signal: AbortSignal;
+  shadowModelAdapter?: ModelAdapter;
+  shadowModelRoute?: LocalModelRouteEvidence;
+  shadowModelTransport?: LocalModelTransport;
+};
+
+/**
+ * Normal default-lane shadow worker. It reads the committed inbound thread,
+ * freezes the causal horizon, and writes only the private shadow store. The
+ * approved purpose route is resolved after freeze; missing route is a durable
+ * unavailable result and never falls through to Bedrock/fake initialization.
+ */
+async function executeShadowPredictionRun(
+  input: ExecuteShadowPredictionInput,
+): Promise<ExecuteAiRunResult> {
+  const { run, fence, signal } = input;
+  const db = getDb();
+  const predictionKey = run.idempotencyKey;
+  const [existing] = await db
+    .select({ id: aiShadowPrediction.id, predictionStatus: aiShadowPrediction.predictionStatus })
+    .from(aiShadowPrediction)
+    .where(eq(aiShadowPrediction.predictionKey, predictionKey))
+    .limit(1);
+  if (existing) {
+    const marked = await markAiRunSucceeded({
+      runId: run.id,
+      claimOwner: fence.claimOwner,
+      claimToken: fence.claimToken,
+      expectedStates: ['running'],
+      metrics: {
+        shadow: {
+          evaluationMode: SHADOW_EVALUATION_MODE,
+          predictionStatus: existing.predictionStatus,
+          idempotentReuse: true,
+        },
+      },
+    });
+    return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+  }
+
+  const [trigger] = await db
+    .select()
+    .from(message)
+    .where(
+      and(
+        eq(message.id, run.triggerMessageId),
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+      ),
+    )
+    .limit(1);
+  if (!trigger) throw new Error('shadow prediction trigger message not found');
+  if (trigger.direction !== 'inbound') {
+    throw new Error('shadow prediction trigger must be inbound');
+  }
+
+  const threadRows = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+    })
+    .from(message)
+    .where(and(eq(message.transportId, run.transportId), eq(message.threadId, run.threadId)))
+    .orderBy(asc(message.createdAt), asc(message.id));
+  const threadMessageIds = threadRows.map((row) => row.id);
+  const attachmentRows = threadMessageIds.length
+    ? await db
+        .select({ id: attachment.id, messageId: attachment.messageId })
+        .from(attachment)
+        .where(inArray(attachment.messageId, threadMessageIds))
+    : [];
+  const attachmentIdsByMessage = new Map<string, string[]>();
+  for (const row of attachmentRows) {
+    const ids = attachmentIdsByMessage.get(row.messageId) ?? [];
+    ids.push(row.id);
+    attachmentIdsByMessage.set(row.messageId, ids);
+  }
+  const asOfAt = trigger.receivedAt ?? trigger.sentAt ?? trigger.createdAt;
+  const frozen = freezeShadowInput({
+    transportId: run.transportId,
+    threadId: run.threadId,
+    triggerMessageId: trigger.id,
+    asOfAt,
+    messages: threadRows.map(
+      (row): ShadowMessageInput => ({
+        ...row,
+        attachmentIds: attachmentIdsByMessage.get(row.id) ?? [],
+      }),
+    ),
+  });
+
+  let adapter = input.shadowModelAdapter;
+  const route = input.shadowModelRoute;
+  if (!adapter || !route) {
+    try {
+      adapter = createApprovedLocalModelAdapter({
+        purpose: 'shadow',
+        route,
+        transport: input.shadowModelTransport,
+      });
+    } catch (error) {
+      if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
+      const seal = createUnavailableShadowPredictionSeal({
+        predictionKey,
+        transportId: run.transportId,
+        threadId: run.threadId,
+        triggerMessageId: run.triggerMessageId,
+        frozen,
+        sealedAt: new Date(),
+        reason: 'approved_shadow_route_unavailable',
+      });
+      const persisted = await persistShadowPrediction(seal, db);
+      const marked = await markAiRunSucceeded({
+        runId: run.id,
+        claimOwner: fence.claimOwner,
+        claimToken: fence.claimToken,
+        expectedStates: ['running'],
+        metrics: {
+          shadow: {
+            evaluationMode: SHADOW_EVALUATION_MODE,
+            predictionStatus: 'unavailable',
+            routeStatus: 'unavailable',
+            reason: 'approved_shadow_route_unavailable',
+            predictionId: persisted.row.id,
+          },
+        },
+      });
+      return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+    }
+  }
+
+  if (!route || route.purpose !== 'shadow') {
+    throw new LocalModelRouteUnavailableError('shadow route provenance is unavailable');
+  }
+  try {
+    if (signal.aborted) throw new Error('shadow prediction aborted');
+    const prompt = shadowPredictionPrompt(frozen);
+    const result = await adapter.invoke({
+      modelId: run.modelId === 'approved-local' ? 'approved-local' : run.modelId,
+      systemPrompt: prompt.systemPrompt,
+      userPrompt: prompt.userPrompt,
+      responseSchema: {
+        type: 'object',
+        required: ['outcome'],
+        additionalProperties: false,
+      },
+      signal,
+      deadlineAt: fence.deadlineAt.getTime(),
+    });
+    if (
+      result.provenance?.routeId !== route.routeId ||
+      result.provenance.modelId !== route.modelId ||
+      result.provenance.purpose !== 'shadow'
+    ) {
+      throw new Error('shadow model provenance mismatch');
+    }
+    const seal = createShadowPredictionSeal({
+      predictionKey,
+      transportId: run.transportId,
+      threadId: run.threadId,
+      triggerMessageId: run.triggerMessageId,
+      frozen,
+      output: result.output,
+      route,
+      modelUsage: {
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        latencyMs: result.usage.latencyMs,
+      },
+      sealedAt: new Date(),
+    });
+    const persisted = await persistShadowPrediction(seal, db);
+    const marked = await markAiRunSucceeded({
+      runId: run.id,
+      claimOwner: fence.claimOwner,
+      claimToken: fence.claimToken,
+      expectedStates: ['running'],
+      metrics: {
+        shadow: {
+          evaluationMode: SHADOW_EVALUATION_MODE,
+          predictionStatus: 'sealed',
+          routeStatus: 'available',
+          routeId: route.routeId,
+          modelId: route.modelId,
+          predictionId: persisted.row.id,
+          idempotentReuse: !persisted.inserted,
+        },
+      },
+    });
+    return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'shadow_prediction_failed';
+    const seal = createFailedShadowPredictionSeal({
+      predictionKey,
+      transportId: run.transportId,
+      threadId: run.threadId,
+      triggerMessageId: run.triggerMessageId,
+      frozen,
+      sealedAt: new Date(),
+      reason: 'shadow_prediction_failed',
+    });
+    await persistShadowPrediction(seal, db);
+    // The run ledger receives only a fixed safe class; raw model/fixture errors
+    // never enter metrics or logs. Outer failure handling applies fencing.
+    throw Object.assign(new Error('shadow prediction failed'), {
+      failureClass: /abort/i.test(reason) ? ('RUN_DEADLINE' as const) : ('UNKNOWN' as const),
+    });
+  }
+}
+
 export async function executeAiRun(
   runId: string,
   options: {
@@ -3299,6 +3537,10 @@ export async function executeAiRun(
       route: LocalModelRouteEvidence;
       transport: LocalModelTransport;
     };
+    /** Explicit purpose-bound private shadow route; absent remains unavailable. */
+    shadowModelAdapter?: ModelAdapter;
+    shadowModelRoute?: LocalModelRouteEvidence;
+    shadowModelTransport?: LocalModelTransport;
     /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
     readToolExecutor?: (input: {
       run: typeof aiWorkflowRun.$inferSelect;
@@ -3444,6 +3686,17 @@ export async function executeAiRun(
         },
       });
       return { runId, state: marked ? 'succeeded' : 'retry_wait' };
+    }
+
+    if (run.runKind === 'shadow_prediction') {
+      return await executeShadowPredictionRun({
+        run: runWithFence,
+        fence,
+        signal,
+        shadowModelAdapter: options.shadowModelAdapter,
+        shadowModelRoute: options.shadowModelRoute,
+        shadowModelTransport: options.shadowModelTransport,
+      });
     }
 
     if (run.runKind === 'inbound_triage') {
@@ -4436,6 +4689,10 @@ export type RunAiWorkerOnceOptions = {
     Parameters<typeof executeAiRun>[1]
   >['candidateReplyModelAdapter'];
   candidateReplyAsks?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateReplyAsks'];
+  shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
+  shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
+  shadowModelTransport?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelTransport'];
+  shadowModelRouteFactory?: ShadowModelRouteFactory;
 } & AiRunScopeFilter;
 
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
@@ -4450,12 +4707,18 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidateModelAdapter,
     candidateReplyModelAdapter,
     candidateReplyAsks,
+    shadowModelAdapter,
+    shadowModelRoute,
+    shadowModelTransport,
+    shadowModelRouteFactory,
     ...scope
   } = options;
   const composedMailBaselineExtractionRoute =
     mailBaselineExtractionRoute ??
     mailBaselineExtractionRouteFactory?.() ??
     createProductionMailBaselineExtractionRouteFactory()();
+  const composedShadowModelRoute =
+    shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   // hms + off: drafting claims none, but an independently enabled read lane
   // remains claimable without browser/model initialization.
   if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
@@ -4480,6 +4743,9 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidateModelAdapter,
     candidateReplyModelAdapter,
     candidateReplyAsks,
+    shadowModelAdapter,
+    shadowModelRoute: shadowModelRoute ?? composedShadowModelRoute?.route,
+    shadowModelTransport: shadowModelTransport ?? composedShadowModelRoute?.transport,
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
@@ -4499,6 +4765,8 @@ export async function runAiWorkerDrain(
   const mailBaselineExtractionRouteFactory =
     input.mailBaselineExtractionRouteFactory ??
     createProductionMailBaselineExtractionRouteFactory();
+  const shadowModelRouteFactory =
+    input.shadowModelRouteFactory ?? createProductionShadowModelRouteFactory();
   const deadline = Date.now() + input.timeoutMs;
   let processed = 0;
 
@@ -4519,6 +4787,10 @@ export async function runAiWorkerDrain(
     const worked = await runAiWorkerOnce({
       ...scope,
       mailBaselineExtractionRouteFactory,
+      shadowModelAdapter: input.shadowModelAdapter,
+      shadowModelRoute: input.shadowModelRoute,
+      shadowModelTransport: input.shadowModelTransport,
+      shadowModelRouteFactory,
     });
     if (worked) {
       processed += 1;

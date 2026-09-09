@@ -130,6 +130,6 @@ describe('AdminDashboardPage response metric availability', () => {
     renderToStaticMarkup(createElement(HookProbe));
 
     const queryOptions = useQueryMock.mock.calls.at(-1)?.[0] as { queryKey?: unknown[] };
-    expect(queryOptions.queryKey).toContain('executive-dashboard-v2');
+    expect(queryOptions.queryKey).toContain('executive-dashboard-v3-shadow-scorecard');
   });
 });

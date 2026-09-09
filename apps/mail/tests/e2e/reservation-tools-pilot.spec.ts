@@ -38,6 +38,7 @@ async function expectDashboardReady(page: Page) {
   await expect(page.getByRole('heading', { name: 'Communication demand' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Conversation activity' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Business breakdown' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Private prediction scorecard' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Data diagnostics' })).toBeVisible();
 }
 
@@ -173,6 +174,10 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await expect(page.getByText('Answered', { exact: true })).toBeVisible();
   await expect(page.getByText('No reply required', { exact: true })).toBeVisible();
   await expect(page.getByText('Unknown evidence', { exact: true })).toBeVisible();
+  await expect(page.getByText('Label coverage', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Unavailable: label provenance unavailable', { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText('Primary request-state buckets are mutually exclusive.', { exact: false }),
   ).toBeVisible();

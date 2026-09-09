@@ -24,7 +24,7 @@ export type AdminDashboardQueryInput = {
 };
 
 /** Bump when the dashboard interpretation/provenance contract changes. */
-export const ADMIN_DASHBOARD_REPORT_VERSION = 'executive-dashboard-v2';
+export const ADMIN_DASHBOARD_REPORT_VERSION = 'executive-dashboard-v3-shadow-scorecard';
 
 export type AdminDashboardState = {
   canAccess: boolean;

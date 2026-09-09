@@ -8,6 +8,7 @@ import {
   resolveAdminDashboardGrant,
   type AdminDashboardGrant,
 } from '../src/metrics/admin-dashboard-access.js';
+import { aiShadowAssessment, aiShadowPrediction } from '../src/db/schema/ai-shadow-evaluation.js';
 import { persistMailBaselineProjection } from '../src/metrics/mail-baseline-projection.js';
 import { mailThread, mailThreadCategory, message } from '../src/db/schema/mail.js';
 import type { MailBaselineEvidence } from '../src/metrics/mail-baseline.js';
@@ -615,6 +616,121 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
       expect(result.folders.mix.value).toEqual(
         expect.arrayContaining([expect.objectContaining({ folder: 'bookings', count: 1 })]),
       );
+    });
+
+    it('serves the private shadow scorecard as a real aggregate consumer', async () => {
+      const query = resolveExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          windowStart: '2026-09-01T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
+          observationCutoff: '2026-09-08T12:00:00.000Z',
+        },
+        new Date('2026-09-08T12:00:00.000Z'),
+      );
+      const result = await withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        try {
+          const threadId = 'u13-dashboard-scorecard-thread';
+          const messageId = 'u13-dashboard-scorecard-message';
+          const predictionId = 'u13-dashboard-scorecard-prediction';
+          const predictionKey = `shadow-prediction:${predictionId}`;
+          const eventAt = new Date('2026-09-02T09:00:00.000Z');
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: 'transport-centurion',
+            threadRootId: `${threadId}-root`,
+            subject: 'U13 scorecard fixture',
+            snippet: 'U13 scorecard fixture',
+            createdAt: eventAt,
+            updatedAt: eventAt,
+            latestMessageAt: eventAt,
+          });
+          await db.insert(message).values({
+            id: messageId,
+            transportId: 'transport-centurion',
+            threadId,
+            direction: 'inbound',
+            messageIdHeader: `<${messageId}@example.test>`,
+            fromAddress: 'scorecard-guest@example.test',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+            ccAddresses: [],
+            bccAddresses: [],
+            receivedAt: eventAt,
+            createdAt: eventAt,
+            updatedAt: eventAt,
+          });
+          await db.insert(aiShadowPrediction).values({
+            id: predictionId,
+            predictionKey,
+            evaluationMode: 'future_shadow',
+            evaluationVersion: 'shadow-evaluation-v1',
+            admissionStatus: 'admitted',
+            predictionStatus: 'sealed',
+            transportId: 'transport-centurion',
+            threadId,
+            triggerMessageId: messageId,
+            asOfAt: eventAt,
+            sealedAt: eventAt,
+            observationEndsAt: new Date('2026-09-09T09:00:00.000Z'),
+            sourceVintage: eventAt.toISOString(),
+            inputDigest: 'a'.repeat(64),
+            messageIds: [messageId],
+            attachmentIds: [],
+            excludedFutureMessageIds: [],
+            modelId: 'u13-dashboard-model',
+            promptVersion: 'shadow-mail/v1',
+            route: {
+              routeId: 'u13-dashboard-route',
+              purpose: 'shadow',
+              protocol: 'in_process',
+              modelId: 'u13-dashboard-model',
+            },
+            modelUsage: { inputTokens: 2, outputTokens: 1, latencyMs: 1 },
+            prediction: { outcome: 'partial' },
+          });
+          await db.insert(aiShadowAssessment).values({
+            id: 'u13-dashboard-scorecard-assessment',
+            predictionId,
+            revision: 1,
+            revisionKey: `${predictionKey}:matched`,
+            evaluationMode: 'future_shadow',
+            status: 'matched',
+            referenceMessageId: null,
+            linkStrength: 'unknown',
+            reason: 'approved reference fixture',
+            labelProvenance: {
+              source: 'approved_reference',
+              labelId: 'u13-approved-label',
+              unique: true,
+              bound: true,
+            },
+            verdict: 'correct',
+            assessment: {},
+          });
+          return loadAdminDashboardMetrics(query);
+        } finally {
+          __setDbForTests(null);
+        }
+      });
+
+      expect(result.shadowScorecard).toMatchObject({
+        evaluationMode: 'future_shadow',
+        counts: expect.objectContaining({
+          admitted: 1,
+          sealed: 1,
+          matched: 1,
+          labelled: 1,
+          scorable: 1,
+          correct: 1,
+        }),
+        quality: expect.objectContaining({
+          availability: 'available',
+          denominator: 1,
+          correctRate: 1,
+          usefulRate: 1,
+        }),
+      });
     });
   });
 }
