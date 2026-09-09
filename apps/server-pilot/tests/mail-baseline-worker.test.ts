@@ -40,6 +40,19 @@ const configuredExtractionFixturePath = join(
   'fixtures',
   'u2-second-approved-local-extraction.cjs',
 );
+const configuredExtractionDescriptor = JSON.stringify({
+  module: configuredExtractionFixturePath,
+  route: {
+    routeId: 'u2-configured-extraction-route',
+    purpose: 'extraction',
+    protocol: 'in_process',
+    access: 'current_app',
+    egress: 'none',
+    retention: 'bounded',
+    usage: 'reported',
+    modelId: 'u2-configured-extraction-model',
+  },
+});
 
 const reachable = await probeTestDb();
 
@@ -199,8 +212,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         );
         const priorRoute = process.env.AI_MODEL_ROUTE;
         const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+        const priorConfig = process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
         process.env.AI_MODEL_ROUTE = 'approved-local';
-        process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = configuredExtractionFixturePath;
+        delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+        process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = configuredExtractionDescriptor;
         configuredExtractionFixture.resetTransportCalls();
         let semanticDrain;
         try {
@@ -216,6 +231,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           else process.env.AI_MODEL_ROUTE = priorRoute;
           if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
           else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+          if (priorConfig === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+          else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = priorConfig;
         }
         expect(semanticDrain).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
         expect(configuredExtractionFixture.getTransportCalls()).toBe(1);
@@ -360,9 +377,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
         const priorRoute = process.env.AI_MODEL_ROUTE;
         const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+        const priorConfig = process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
         const priorMeasurementConfig = process.env.MAIL_MEASUREMENT_CONFIG_JSON;
         process.env.AI_MODEL_ROUTE = 'approved-local';
-        process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = configuredExtractionFixturePath;
+        delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+        process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = configuredExtractionDescriptor;
         process.env.MAIL_MEASUREMENT_CONFIG_JSON = JSON.stringify({
           version: 1,
           transportId,
@@ -387,6 +406,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           else process.env.AI_MODEL_ROUTE = priorRoute;
           if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
           else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+          if (priorConfig === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+          else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = priorConfig;
           if (priorMeasurementConfig === undefined) delete process.env.MAIL_MEASUREMENT_CONFIG_JSON;
           else process.env.MAIL_MEASUREMENT_CONFIG_JSON = priorMeasurementConfig;
         }

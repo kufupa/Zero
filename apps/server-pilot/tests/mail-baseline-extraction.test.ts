@@ -10,6 +10,75 @@ import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+type InitializationBoundaryProbeState = {
+  imports: number;
+  factoryCalls: number;
+  clientInitializations: number;
+  transportCalls: number;
+};
+
+type InitializationBoundaryGlobal = typeof globalThis & {
+  __u2InitializationBoundaryProbe?: InitializationBoundaryProbeState;
+};
+
+const initializationBoundaryProbePath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'u2-initialization-boundary-probe.cjs',
+);
+
+function initializationBoundaryProbeState(): InitializationBoundaryProbeState {
+  return (
+    (globalThis as InitializationBoundaryGlobal).__u2InitializationBoundaryProbe ?? {
+      imports: 0,
+      factoryCalls: 0,
+      clientInitializations: 0,
+      transportCalls: 0,
+    }
+  );
+}
+
+function expectNoInitializationForBoundaryCase(input: {
+  moduleConfigured: boolean;
+  config?: string;
+}): void {
+  const priorRoute = process.env.AI_MODEL_ROUTE;
+  const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+  const priorConfig = process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+  (globalThis as InitializationBoundaryGlobal).__u2InitializationBoundaryProbe = {
+    imports: 0,
+    factoryCalls: 0,
+    clientInitializations: 0,
+    transportCalls: 0,
+  };
+  process.env.AI_MODEL_ROUTE = 'approved-local';
+  if (input.moduleConfigured) {
+    process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = initializationBoundaryProbePath;
+  } else {
+    delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+  }
+  if (input.config === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+  else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = input.config;
+  try {
+    expect(loadConfiguredMailBaselineExtractionRoute()).toBeUndefined();
+    expect(createProductionMailBaselineExtractionRouteFactory()()).toBeUndefined();
+    expect(initializationBoundaryProbeState()).toEqual({
+      imports: 0,
+      factoryCalls: 0,
+      clientInitializations: 0,
+      transportCalls: 0,
+    });
+  } finally {
+    if (priorRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+    else process.env.AI_MODEL_ROUTE = priorRoute;
+    if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+    if (priorConfig === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+    else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = priorConfig;
+    delete (globalThis as InitializationBoundaryGlobal).__u2InitializationBoundaryProbe;
+  }
+}
+
 describe('mail baseline semantic extraction', () => {
   it('uses source event clocks and emits an ask without persisting message bodies', () => {
     const result = extractMailBaselineEvidence({
@@ -181,8 +250,10 @@ describe('mail baseline semantic extraction', () => {
   it('normal startup remains unavailable for a marker without a configured lower edge', () => {
     const priorRoute = process.env.AI_MODEL_ROUTE;
     const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    const priorConfig = process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
     process.env.AI_MODEL_ROUTE = 'approved-local';
     delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
     try {
       expect(loadConfiguredMailBaselineExtractionRoute()).toBeUndefined();
       expect(createProductionMailBaselineExtractionRouteFactory()()).toBeUndefined();
@@ -191,18 +262,68 @@ describe('mail baseline semantic extraction', () => {
       else process.env.AI_MODEL_ROUTE = priorRoute;
       if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
       else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+      if (priorConfig === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+      else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = priorConfig;
     }
+  });
+
+  it.each([
+    { name: 'missing module/configuration', moduleConfigured: false },
+    { name: 'unproved module without descriptor', moduleConfigured: true },
+    { name: 'malformed descriptor', moduleConfigured: true, config: '{not-json' },
+    {
+      name: 'incomplete descriptor',
+      moduleConfigured: true,
+      config: JSON.stringify({
+        module: initializationBoundaryProbePath,
+        route: { purpose: 'extraction' },
+      }),
+    },
+    {
+      name: 'wrong-purpose descriptor',
+      moduleConfigured: true,
+      config: JSON.stringify({
+        module: initializationBoundaryProbePath,
+        route: {
+          routeId: 'u2-unapproved-draft-route',
+          purpose: 'draft',
+          protocol: 'in_process',
+          access: 'current_app',
+          egress: 'none',
+          retention: 'bounded',
+          usage: 'reported',
+          modelId: 'u2-unapproved-draft-model',
+        },
+      }),
+    },
+  ])('does not initialize a lower edge for $name', ({ moduleConfigured, config }) => {
+    expectNoInitializationForBoundaryCase({ moduleConfigured, config });
   });
 
   it('loads the explicitly configured in-process lower edge through the startup factory', async () => {
     const priorRoute = process.env.AI_MODEL_ROUTE;
     const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
-    process.env.AI_MODEL_ROUTE = 'approved-local';
-    process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = join(
+    const priorConfig = process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+    const configuredModule = join(
       dirname(fileURLToPath(import.meta.url)),
       'fixtures',
       'u2-second-approved-local-extraction.cjs',
     );
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = JSON.stringify({
+      module: configuredModule,
+      route: {
+        routeId: 'u2-configured-extraction-route',
+        purpose: 'extraction',
+        protocol: 'in_process',
+        access: 'current_app',
+        egress: 'none',
+        retention: 'bounded',
+        usage: 'reported',
+        modelId: 'u2-configured-extraction-model',
+      },
+    });
     try {
       const configured = loadConfiguredMailBaselineExtractionRoute();
       expect(configured?.route).toMatchObject({
@@ -218,6 +339,8 @@ describe('mail baseline semantic extraction', () => {
       else process.env.AI_MODEL_ROUTE = priorRoute;
       if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
       else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+      if (priorConfig === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG;
+      else process.env.AI_APPROVED_LOCAL_EXTRACTION_CONFIG = priorConfig;
     }
   });
 
