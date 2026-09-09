@@ -54,6 +54,17 @@ export type MailBaselineSourceBasis =
   | 'import_created_at'
   | 'availability'
   | 'unknown';
+
+/**
+ * Creation/ingest clocks establish that a fact is present, not when the
+ * source event happened.  Keep their labels for provenance, but never let
+ * them establish a population, reply, or latency denominator.
+ */
+export function isMailBaselineAvailabilityBasis(
+  basis: MailBaselineSourceBasis | null | undefined,
+): boolean {
+  return basis === 'availability' || basis === 'first_known' || basis === 'import_created_at';
+}
 export type MailBaselineLinkStrength = 'header' | 'thread' | 'manual' | 'ambiguous' | 'unknown';
 export type MailBaselineDeliveryStatus =
   | 'accepted'
@@ -201,7 +212,8 @@ function hasCoverageGap(at: Date, coverage: MailBaselineCoverage): boolean {
 }
 
 function eventCanAnswer(evidence: ParsedEvidence): boolean {
-  if (evidence.eventDate === null || evidence.sourceBasis === 'availability') return false;
+  if (evidence.eventDate === null || isMailBaselineAvailabilityBasis(evidence.sourceBasis))
+    return false;
   if (evidence.direction !== 'outbound') return false;
   if (
     evidence.eventType === 'acknowledgement' ||
@@ -467,7 +479,9 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
       answerConflict ||
       explicitUnknown ||
       ignoredNonSubstantive ||
-      events.some((event) => event.eventDate === null || event.sourceBasis === 'availability') ||
+      events.some(
+        (event) => event.eventDate === null || isMailBaselineAvailabilityBasis(event.sourceBasis),
+      ) ||
       requiresHotel.conflict ||
       requiresCustomer.conflict ||
       noReply.conflict ||
@@ -486,12 +500,14 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
     ask.partial = ask.answerState === 'partial' || ask.workState === 'partially_complete';
     ask.unknown = unknown || ask.answerState === 'unknown' || ask.workState === 'unknown';
     const unavailableClock = events.some(
-      (event) => event.eventDate === null || event.sourceBasis === 'availability',
+      (event) => event.eventDate === null || isMailBaselineAvailabilityBasis(event.sourceBasis),
     );
     if (unavailableClock) {
       // A clockless fact can identify an ask, but cannot establish its current
       // work/reply state or win an operational bucket.
+      ask.answerState = 'unknown';
       ask.workState = 'unknown';
+      ask.partial = false;
     }
     ask.replyState = replyStateForAsk({
       answerState: ask.answerState,

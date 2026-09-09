@@ -86,6 +86,10 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
+  createProductionMailBaselineExtractionRouteFactory,
+  type MailBaselineExtractionRouteFactory,
+} from './mail-baseline-route-factory.js';
+import {
   extractMailBaselineWithApprovedRoute,
   resolveMailBaselineExtractionRoute,
 } from './mail-baseline-extraction.js';
@@ -290,6 +294,8 @@ export interface RunAiWorkerDrainInput extends AiRunScopeFilter {
   timeoutMs: number;
   pollIntervalMs?: number;
   ownerId?: string;
+  /** Normal daemon composition for the purpose-bound extraction edge. */
+  mailBaselineExtractionRouteFactory?: MailBaselineExtractionRouteFactory;
 }
 
 export interface RunAiWorkerDrainResult {
@@ -3352,6 +3358,17 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
+  // Resolve the purpose-bound extraction edge before any inbound workflow
+  // client is initialized.  Missing config stays unavailable; the worker
+  // persists only the explicit source-observation boundary below.
+  const baselineRoute = resolveMailBaselineExtractionRoute({
+    approvedRoute: options.mailBaselineExtractionRoute
+      ? 'approved-local'
+      : process.env.AI_MODEL_ROUTE,
+    route: options.mailBaselineExtractionRoute?.route,
+    transport: options.mailBaselineExtractionRoute?.transport,
+  });
+
   const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
 
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -3577,16 +3594,6 @@ export async function executeAiRun(
         workflowMetrics = (result.result?.metrics as Record<string, unknown>) ?? {};
       }
 
-      const baselineRoute = resolveMailBaselineExtractionRoute({
-        // A marker alone is not an approved route. The injected route is
-        // limited to the purpose-bound in-process seam; absent that seam the
-        // source observation below remains explicitly unknown.
-        approvedRoute: options.mailBaselineExtractionRoute
-          ? 'approved-local'
-          : process.env.AI_MODEL_ROUTE,
-        route: options.mailBaselineExtractionRoute?.route,
-        transport: options.mailBaselineExtractionRoute?.transport,
-      });
       const baselineHints = triageOutputSemanticHints(output);
       const baselineRow = trigger
         ? messages.find((candidate) => candidate.id === run.triggerMessageId)
@@ -4422,6 +4429,7 @@ export type RunAiWorkerOnceOptions = {
   mailBaselineExtractionRoute?: NonNullable<
     Parameters<typeof executeAiRun>[1]
   >['mailBaselineExtractionRoute'];
+  mailBaselineExtractionRouteFactory?: MailBaselineExtractionRouteFactory;
   candidatePlanModel?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidatePlanModel'];
   candidateModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateModelAdapter'];
   candidateReplyModelAdapter?: NonNullable<
@@ -4433,6 +4441,21 @@ export type RunAiWorkerOnceOptions = {
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const lane = env.AI_WORKER_LANE;
+  const {
+    shutdownSignal,
+    readToolExecutor,
+    mailBaselineExtractionRoute,
+    mailBaselineExtractionRouteFactory,
+    candidatePlanModel,
+    candidateModelAdapter,
+    candidateReplyModelAdapter,
+    candidateReplyAsks,
+    ...scope
+  } = options;
+  const composedMailBaselineExtractionRoute =
+    mailBaselineExtractionRoute ??
+    mailBaselineExtractionRouteFactory?.() ??
+    createProductionMailBaselineExtractionRouteFactory()();
   // hms + off: drafting claims none, but an independently enabled read lane
   // remains claimable without browser/model initialization.
   if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
@@ -4444,16 +4467,6 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const {
-    shutdownSignal,
-    readToolExecutor,
-    mailBaselineExtractionRoute,
-    candidatePlanModel,
-    candidateModelAdapter,
-    candidateReplyModelAdapter,
-    candidateReplyAsks,
-    ...scope
-  } = options;
   const readOnlyLane =
     lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
   const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
@@ -4462,7 +4475,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
-    mailBaselineExtractionRoute,
+    mailBaselineExtractionRoute: composedMailBaselineExtractionRoute,
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,
@@ -4483,6 +4496,9 @@ export async function runAiWorkerDrain(
     promptVersion: input.promptVersion,
     idempotencyPrefix: input.idempotencyPrefix,
   };
+  const mailBaselineExtractionRouteFactory =
+    input.mailBaselineExtractionRouteFactory ??
+    createProductionMailBaselineExtractionRouteFactory();
   const deadline = Date.now() + input.timeoutMs;
   let processed = 0;
 
@@ -4500,7 +4516,10 @@ export async function runAiWorkerDrain(
       };
     }
 
-    const worked = await runAiWorkerOnce({ ...scope });
+    const worked = await runAiWorkerOnce({
+      ...scope,
+      mailBaselineExtractionRouteFactory,
+    });
     if (worked) {
       processed += 1;
       continue;
@@ -4538,6 +4557,7 @@ async function closeAiWorkerResources(): Promise<void> {
 export async function runAiWorkerLoop(
   pollIntervalMs = 5_000,
   scope: AiRunScopeFilter = {},
+  mailBaselineExtractionRouteFactory: MailBaselineExtractionRouteFactory = createProductionMailBaselineExtractionRouteFactory(),
 ): Promise<void> {
   let stopping = false;
   const shutdown = new AbortController();
@@ -4550,7 +4570,11 @@ export async function runAiWorkerLoop(
 
   try {
     while (!stopping) {
-      const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
+      const worked = await runAiWorkerOnce({
+        ...scope,
+        shutdownSignal: shutdown.signal,
+        mailBaselineExtractionRouteFactory,
+      });
       if (!worked) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
@@ -4566,6 +4590,7 @@ async function main() {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   maybeInitHmsRuntime(env.AI_WORKER_LANE);
   const args = parseAiWorkerCliArgs(process.argv.slice(2));
+  const mailBaselineExtractionRouteFactory = createProductionMailBaselineExtractionRouteFactory();
   const scoped =
     args.drainPrefix !== undefined ||
     args.transportId !== undefined ||
@@ -4581,6 +4606,7 @@ async function main() {
       result = await runAiWorkerDrain({
         ...scopeFromCli(args),
         timeoutMs: args.timeoutMs,
+        mailBaselineExtractionRouteFactory,
       });
     } finally {
       await closeAiWorkerResources();
@@ -4609,7 +4635,11 @@ async function main() {
 
   // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
-  await runAiWorkerLoop(5_000, idempotencyPrefix ? { idempotencyPrefix } : {});
+  await runAiWorkerLoop(
+    5_000,
+    idempotencyPrefix ? { idempotencyPrefix } : {},
+    mailBaselineExtractionRouteFactory,
+  );
 }
 
 if (isCliEntry(import.meta.url, 'ai-worker')) {

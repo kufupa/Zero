@@ -15,11 +15,31 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { parseAndPersist } from '../src/mail/ingest/store.js';
 import { enqueueAiRun } from '../src/ai/run-ledger.js';
-import { runAiWorkerOnce } from '../src/ai/worker.js';
+import { runAiWorkerDrain } from '../src/ai/worker.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
+
+const require = createRequire(import.meta.url);
+const configuredExtractionFixture = require(
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'u2-second-approved-local-extraction.cjs',
+  ),
+) as {
+  getTransportCalls: () => number;
+  resetTransportCalls: () => void;
+};
+const configuredExtractionFixturePath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'u2-second-approved-local-extraction.cjs',
+);
 
 const reachable = await probeTestDb();
 
@@ -88,12 +108,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           db,
         );
         expect(
-          await runAiWorkerOnce({
+          await runAiWorkerDrain({
             transportId,
             runKind: 'inbound_triage',
             promptVersion: 'triage-v6',
+            timeoutMs: 5_000,
+            pollIntervalMs: 10,
           }),
-        ).toBe(true);
+        ).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
 
         const rows = await queryMailBaselineProjection(db, {
           transportIds: [transportId],
@@ -175,47 +197,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           },
           db,
         );
-        let transportCalls = 0;
-        const semanticRoute = {
-          routeId: 'u2-normal-worker-extraction-route',
-          purpose: 'extraction' as const,
-          protocol: 'in_process' as const,
-          access: 'current_app' as const,
-          egress: 'none' as const,
-          retention: 'bounded' as const,
-          usage: 'reported' as const,
-          modelId: 'u2-normal-worker-extraction-model',
-        };
-        const semanticProcessed = await runAiWorkerOnce({
-          transportId: semanticTransportId,
-          runKind: 'inbound_triage',
-          promptVersion: 'triage-v6',
-          mailBaselineExtractionRoute: {
-            route: semanticRoute,
-            transport: async (request) => {
-              transportCalls += 1;
-              expect(request.modelId).toBe(semanticRoute.modelId);
-              expect(request.userPrompt).toContain('Please confirm my reservation');
-              return {
-                output: {
-                  asks: [
-                    {
-                      askCode: 'reservation',
-                      requiresHotelResponse: true,
-                      requiresCustomerInformation: false,
-                      noReplyRequired: false,
-                      workState: 'open',
-                    },
-                  ],
-                  answers: [],
-                },
-                usage: { inputTokens: 11, outputTokens: 7, latencyMs: 3 },
-              };
-            },
-          },
-        });
-        expect(semanticProcessed).toBe(true);
-        expect(transportCalls).toBe(1);
+        const priorRoute = process.env.AI_MODEL_ROUTE;
+        const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+        process.env.AI_MODEL_ROUTE = 'approved-local';
+        process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = configuredExtractionFixturePath;
+        configuredExtractionFixture.resetTransportCalls();
+        let semanticDrain;
+        try {
+          semanticDrain = await runAiWorkerDrain({
+            transportId: semanticTransportId,
+            runKind: 'inbound_triage',
+            promptVersion: 'triage-v6',
+            timeoutMs: 5_000,
+            pollIntervalMs: 10,
+          });
+        } finally {
+          if (priorRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+          else process.env.AI_MODEL_ROUTE = priorRoute;
+          if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+          else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+        }
+        expect(semanticDrain).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
+        expect(configuredExtractionFixture.getTransportCalls()).toBe(1);
         const semanticRows = await queryMailBaselineProjection(db, {
           transportIds: [semanticTransportId],
           threadIds: [semanticThreadId],
@@ -246,12 +249,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         };
         expect(semanticMetrics.mailBaseline?.status).toBe('persisted_semantic_projection');
         expect(semanticMetrics.mailBaseline?.routeStatus).toBe('available');
-        expect(semanticMetrics.mailBaseline?.routeId).toBe(semanticRoute.routeId);
+        expect(semanticMetrics.mailBaseline?.routeId).toBe('u2-configured-extraction-route');
         expect(semanticMetrics.mailBaseline?.extraction).toBe('approved_local_extraction');
         expect(semanticMetrics.mailBaseline?.modelUsage).toMatchObject({
-          inputTokens: 11,
-          outputTokens: 7,
-          latencyMs: 3,
+          inputTokens: 13,
+          outputTokens: 9,
+          latencyMs: 4,
         });
       });
     }, 30000);
@@ -355,8 +358,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .from(mailThread)
           .where(eq(mailThread.id, stored.threadId));
 
-        let transportCalls = 0;
+        const priorRoute = process.env.AI_MODEL_ROUTE;
+        const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
         const priorMeasurementConfig = process.env.MAIL_MEASUREMENT_CONFIG_JSON;
+        process.env.AI_MODEL_ROUTE = 'approved-local';
+        process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = configuredExtractionFixturePath;
         process.env.MAIL_MEASUREMENT_CONFIG_JSON = JSON.stringify({
           version: 1,
           transportId,
@@ -365,46 +371,27 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           captureAssumptionBasis: 'u2-test-two-way-feed',
           confirmedGapIntervals: [],
         });
-        const processed = await runAiWorkerOnce({
-          transportId,
-          runKind: 'inbound_triage',
-          promptVersion: 'triage-v6',
-          idempotencyPrefix: 'external-sent-baseline:',
-          mailBaselineExtractionRoute: {
-            route: {
-              routeId: 'u2-external-sent-route',
-              purpose: 'extraction',
-              protocol: 'in_process',
-              access: 'current_app',
-              egress: 'none',
-              retention: 'bounded',
-              usage: 'reported',
-              modelId: 'u2-external-sent-model',
-            },
-            transport: async () => {
-              transportCalls += 1;
-              return {
-                output: {
-                  asks: [],
-                  answers: [
-                    {
-                      askCode: 'reservation',
-                      eventType: 'answer',
-                      answerState: 'supported',
-                      workState: 'complete',
-                      substantive: true,
-                    },
-                  ],
-                },
-                usage: { inputTokens: 5, outputTokens: 3, latencyMs: 2 },
-              };
-            },
-          },
-        });
-        if (priorMeasurementConfig === undefined) delete process.env.MAIL_MEASUREMENT_CONFIG_JSON;
-        else process.env.MAIL_MEASUREMENT_CONFIG_JSON = priorMeasurementConfig;
-        expect(processed).toBe(true);
-        expect(transportCalls).toBe(1);
+        configuredExtractionFixture.resetTransportCalls();
+        let drain;
+        try {
+          drain = await runAiWorkerDrain({
+            transportId,
+            runKind: 'inbound_triage',
+            promptVersion: 'triage-v6',
+            idempotencyPrefix: 'external-sent-baseline:',
+            timeoutMs: 5_000,
+            pollIntervalMs: 10,
+          });
+        } finally {
+          if (priorRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+          else process.env.AI_MODEL_ROUTE = priorRoute;
+          if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+          else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+          if (priorMeasurementConfig === undefined) delete process.env.MAIL_MEASUREMENT_CONFIG_JSON;
+          else process.env.MAIL_MEASUREMENT_CONFIG_JSON = priorMeasurementConfig;
+        }
+        expect(drain).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
+        expect(configuredExtractionFixture.getTransportCalls()).toBe(1);
         const [threadAfterWorker] = await db
           .select({
             labelIds: mailThread.labelIds,
@@ -434,6 +421,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .where(eq(aiWorkflowRun.triggerMessageId, stored.messageId));
         expect(externalRun?.metrics).toMatchObject({
           applyMode: 'analytics_only_external_sent',
+          mailBaseline: expect.objectContaining({
+            routeId: 'u2-configured-extraction-route',
+            extraction: 'approved_local_extraction',
+          }),
         });
 
         const rows = await queryMailBaselineProjection(db, {

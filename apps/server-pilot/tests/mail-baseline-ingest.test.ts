@@ -97,4 +97,111 @@ describe('mail baseline ingest clock provenance', () => {
     expect(result.denominators).toEqual({ eligible: 1, scorable: 0, unscorable: 1 });
     expect(result.exclusions).toMatchObject({ unscorable_event_clock: 1 });
   });
+
+  it.each([
+    ['first_known', 'mail_event'],
+    ['import_created_at', 'import'],
+  ] as const)(
+    '%s remains descriptive but cannot score population or latency',
+    (sourceBasis, source) => {
+      const start = '2026-09-02T09:00:00.000Z';
+      const answer = '2026-09-02T10:00:00.000Z';
+      const result = reduceMailBaseline({
+        transportId: 'transport-centurion',
+        threadId: `thread-${sourceBasis}`,
+        observationCutoff: '2026-09-08T12:00:00.000Z',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        sourceVintage: `${sourceBasis}-v1`,
+        interpretationVersion: 'mail-baseline-interpretation-v1',
+        coverage: {
+          startAt: '2026-09-01T00:00:00.000Z',
+          endAt: '2026-09-08T12:00:00.000Z',
+          basis: 'configured-v1',
+          complete: true,
+          configVersion: 'v1',
+        },
+        evidence: [
+          {
+            id: `${sourceBasis}-ask`,
+            requestId: `${sourceBasis}-request`,
+            askId: `${sourceBasis}-ask`,
+            threadId: `thread-${sourceBasis}`,
+            transportId: 'transport-centurion',
+            eventType: 'ask',
+            direction: 'inbound',
+            eventAt: start,
+            observedAt: start,
+            source,
+            sourceBasis,
+            requiresHotelResponse: true,
+            requiresCustomerInformation: false,
+            answerState: null,
+            workState: 'open',
+            substantive: false,
+            linkStrength: 'header',
+            delivery: null,
+          },
+          {
+            id: `${sourceBasis}-answer`,
+            requestId: `${sourceBasis}-request`,
+            askId: `${sourceBasis}-ask`,
+            threadId: `thread-${sourceBasis}`,
+            transportId: 'transport-centurion',
+            eventType: 'answer',
+            direction: 'outbound',
+            eventAt: answer,
+            observedAt: answer,
+            source,
+            sourceBasis,
+            requiresHotelResponse: false,
+            requiresCustomerInformation: false,
+            answerState: 'supported',
+            workState: 'complete',
+            substantive: true,
+            linkStrength: 'header',
+            delivery: { status: 'accepted', acceptedAt: answer },
+          },
+        ],
+      });
+
+      expect(result.primaryBucket).toBe('unknown');
+      expect(result.denominators).toEqual({ eligible: 1, scorable: 0, unscorable: 1 });
+      expect(result.asks[0]).toMatchObject({
+        answerState: 'unknown',
+        usefulReplyAt: null,
+        unknownReasons: expect.arrayContaining(['availability_clock_unavailable']),
+      });
+      expect(result.exclusions).toMatchObject({ unscorable_event_clock: 1 });
+    },
+  );
+
+  it('preserves parser provenance for first_known and import_created_at before reduction', () => {
+    const makeMessage = (source: 'mail_event' | 'import') =>
+      extractMailBaselineEvidence({
+        sourceVintage: `${source}-v1`,
+        observationCutoff: '2026-09-08T12:00:00.000Z',
+        message: {
+          id: `${source}-missing-event-clock`,
+          transportId: 'transport-centurion',
+          threadId: `thread-${source}`,
+          direction: 'inbound',
+          fromAddress: 'guest@example.test',
+          subject: 'Please confirm my reservation',
+          textBody: 'Please confirm my reservation.',
+          receivedAt: null,
+          sentAt: null,
+          createdAt: '2026-09-02T09:05:00.000Z',
+          source,
+        },
+      });
+
+    expect(makeMessage('mail_event')).toMatchObject({
+      sourceBasis: 'first_known',
+      eventAt: '2026-09-02T09:05:00.000Z',
+    });
+    expect(makeMessage('import')).toMatchObject({
+      sourceBasis: 'import_created_at',
+      eventAt: '2026-09-02T09:05:00.000Z',
+    });
+  });
 });

@@ -1,8 +1,14 @@
 import {
+  createProductionMailBaselineExtractionRouteFactory,
+  loadConfiguredMailBaselineExtractionRoute,
+} from '../src/ai/mail-baseline-route-factory.js';
+import {
   extractMailBaselineEvidence,
   resolveMailBaselineExtractionRoute,
 } from '../src/ai/mail-baseline-extraction.js';
 import { describe, expect, it } from 'vitest';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 describe('mail baseline semantic extraction', () => {
   it('uses source event clocks and emits an ask without persisting message bodies', () => {
@@ -170,6 +176,49 @@ describe('mail baseline semantic extraction', () => {
       available: false,
       reason: 'approved_route_unavailable',
     });
+  });
+
+  it('normal startup remains unavailable for a marker without a configured lower edge', () => {
+    const priorRoute = process.env.AI_MODEL_ROUTE;
+    const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    try {
+      expect(loadConfiguredMailBaselineExtractionRoute()).toBeUndefined();
+      expect(createProductionMailBaselineExtractionRouteFactory()()).toBeUndefined();
+    } finally {
+      if (priorRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+      else process.env.AI_MODEL_ROUTE = priorRoute;
+      if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+      else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+    }
+  });
+
+  it('loads the explicitly configured in-process lower edge through the startup factory', async () => {
+    const priorRoute = process.env.AI_MODEL_ROUTE;
+    const priorModule = process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = join(
+      dirname(fileURLToPath(import.meta.url)),
+      'fixtures',
+      'u2-second-approved-local-extraction.cjs',
+    );
+    try {
+      const configured = loadConfiguredMailBaselineExtractionRoute();
+      expect(configured?.route).toMatchObject({
+        routeId: 'u2-configured-extraction-route',
+        purpose: 'extraction',
+      });
+      expect(configured?.transport).toBeTypeOf('function');
+      expect(createProductionMailBaselineExtractionRouteFactory()()?.route).toMatchObject(
+        configured?.route ?? {},
+      );
+    } finally {
+      if (priorRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+      else process.env.AI_MODEL_ROUTE = priorRoute;
+      if (priorModule === undefined) delete process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE;
+      else process.env.AI_APPROVED_LOCAL_EXTRACTION_MODULE = priorModule;
+    }
   });
 
   it('recognizes only a purpose-bound local route with a real injected transport', () => {

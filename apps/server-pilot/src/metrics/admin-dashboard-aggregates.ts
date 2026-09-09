@@ -874,6 +874,28 @@ function asValidMillis(value: Date | string | null | undefined): number | null {
   return Number.isFinite(millis) ? millis : null;
 }
 
+function isWithinProjectionCoverageGap(
+  atMillis: number,
+  coverage: MailBaselineProjection['coverage'],
+): boolean {
+  return (coverage.confirmedGapIntervals ?? []).some((gap) => {
+    const start = asValidMillis(gap.startAt);
+    const end = asValidMillis(gap.endAt);
+    return start !== null && end !== null && start <= atMillis && atMillis < end;
+  });
+}
+
+function projectionCoverageWindow(projection: MailBaselineProjection): {
+  startMillis: number;
+  endMillis: number;
+} | null {
+  if (!projection.coverage.complete) return null;
+  const startMillis = asValidMillis(projection.coverage.startAt);
+  const endMillis = asValidMillis(projection.coverage.endAt);
+  if (startMillis === null || endMillis === null || endMillis <= startMillis) return null;
+  return { startMillis, endMillis };
+}
+
 function asIso(value: Date | string | null | undefined): string | null {
   const millis = asValidMillis(value);
   return millis === null ? null : new Date(millis).toISOString();
@@ -1847,8 +1869,8 @@ function aggregateExecutiveDashboardMetrics(
   );
   const usefulReplyDurations: number[] = [];
   const usefulReplyExclusions: Record<string, number> = {};
-  const incrementUsefulExclusion = (key: string) => {
-    usefulReplyExclusions[key] = (usefulReplyExclusions[key] ?? 0) + 1;
+  const incrementUsefulExclusion = (key: string, amount = 1) => {
+    usefulReplyExclusions[key] = (usefulReplyExclusions[key] ?? 0) + amount;
   };
   const projectionConfigVersions = [
     ...new Set(
@@ -1857,19 +1879,28 @@ function aggregateExecutiveDashboardMetrics(
         .filter((version): version is string => typeof version === 'string' && version.length > 0),
     ),
   ].sort();
+  const projectionCoverageBases = [
+    ...new Set(
+      (input.requestBaselines ?? []).map((projection) => projection.coverage.basis).filter(Boolean),
+    ),
+  ].sort();
   const usefulReplyMetricBase = {
     ...metricBase,
-    measurementConfigVersion:
-      projectionConfigVersions.join(', ') || metricBase.measurementConfigVersion,
-    captureBasis:
-      (input.requestBaselines ?? [])
-        .map((projection) => projection.coverage.basis)
-        .filter(Boolean)
-        .filter((basis, index, values) => values.indexOf(basis) === index)
-        .join(', ') || metricBase.captureBasis,
+    // First-useful metrics are owned by the selected producer snapshot. A
+    // later GET config may describe current feed metrics, but cannot restate
+    // this historical projection's T0, gaps, or provenance.
+    measurementConfigVersion: projectionConfigVersions.join(', ') || null,
+    captureBasis: projectionCoverageBases.join(', ') || 'producer_coverage_unavailable',
   };
-  if (measurementStartMillis !== null && measurementConfig !== null) {
-    for (const projection of input.requestBaselines ?? []) {
+  const requestBaselines = input.requestBaselines ?? [];
+  const coverageWindows = requestBaselines.map((projection) =>
+    projectionCoverageWindow(projection),
+  );
+  const allProjectionCoverageComplete =
+    requestBaselines.length > 0 && coverageWindows.every((window) => window !== null);
+  if (allProjectionCoverageComplete) {
+    for (const [index, projection] of requestBaselines.entries()) {
+      const coverageWindow = coverageWindows[index]!;
       for (const ask of projection.asks) {
         const startedAt = asValidMillis(ask.startedAt);
         const usefulAt = asValidMillis(ask.usefulReplyAt);
@@ -1877,13 +1908,18 @@ function aggregateExecutiveDashboardMetrics(
           incrementUsefulExclusion('missing_useful_reply_clock');
           continue;
         }
-        if (startedAt < measurementStartMillis || usefulAt > cutoffMillis) {
+        if (
+          startedAt < coverageWindow.startMillis ||
+          startedAt >= coverageWindow.endMillis ||
+          usefulAt >= coverageWindow.endMillis ||
+          usefulAt > cutoffMillis
+        ) {
           incrementUsefulExclusion('outside_measurement_window');
           continue;
         }
         if (
-          isWithinConfirmedGap(new Date(startedAt).toISOString(), measurementConfig) ||
-          isWithinConfirmedGap(new Date(usefulAt).toISOString(), measurementConfig)
+          isWithinProjectionCoverageGap(startedAt, projection.coverage) ||
+          isWithinProjectionCoverageGap(usefulAt, projection.coverage)
         ) {
           incrementUsefulExclusion('coverage_gap');
           continue;
@@ -1896,21 +1932,23 @@ function aggregateExecutiveDashboardMetrics(
         usefulReplyDurations.push(duration);
       }
     }
+  } else if (requestBaselines.length > 0) {
+    incrementUsefulExclusion(
+      'coverage_unavailable',
+      coverageWindows.filter((window) => window === null).length,
+    );
   }
-  const firstUseful = !measurementConfig
-    ? unavailableMetric<number>('measurement_config_unavailable', {
-        ...usefulReplyMetricBase,
-        unit: 'calendar minutes',
-      })
-    : measurementStartMillis === null
-      ? unavailableMetric<number>('measurement_start_unavailable', {
+  const firstUseful =
+    requestBaselines.length === 0
+      ? unavailableMetric<number>('request_projection_unavailable', {
           ...usefulReplyMetricBase,
           unit: 'calendar minutes',
         })
-      : (input.requestBaselines ?? []).length === 0
-        ? unavailableMetric<number>('request_projection_unavailable', {
+      : !allProjectionCoverageComplete
+        ? unavailableMetric<number>('coverage_unavailable', {
             ...usefulReplyMetricBase,
             unit: 'calendar minutes',
+            exclusions: usefulReplyExclusions,
           })
         : usefulReplyDurations.length === 0
           ? unavailableMetric<number>('no_useful_reply_evidence', {

@@ -1,5 +1,6 @@
 import {
   MAIL_BASELINE_INTERPRETATION_VERSION,
+  isMailBaselineAvailabilityBasis,
   type MailBaselineDelivery,
   type MailBaselineEvidence,
   type MailBaselineSource,
@@ -347,7 +348,7 @@ export function extractMailBaselineEvidence(
   const subject = message.subject ?? '';
   const clock = eventClock(message);
   const base = baseEvidence(input, clock);
-  const availabilityClock = clock.at === null || clock.basis === 'availability';
+  const availabilityClock = clock.at === null || isMailBaselineAvailabilityBasis(clock.basis);
   const automated = isAutomatedMessage(message, body);
   const forwarded = isInternalForward(message, body);
   const acknowledgement = isAcknowledgement(message, body);
