@@ -23,6 +23,7 @@ import {
   FOLIO_READ_MAX_DURATION_MS,
   FOLIO_READ_PRIVACY_POLICY,
 } from '../src/hms/folio-read-contract.js';
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
 import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
 import type { HmsBrowserArtifactReceiptV1 } from '../src/hms/browser-artifacts.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
@@ -76,6 +77,40 @@ function auth(overrides: Partial<HmsSessionAuthorization> = {}): HmsSessionAutho
     sourceRevision: 'test-rev',
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     ...overrides,
+  };
+}
+
+function claimAuthorizationFor(at: Date) {
+  const state = {
+    operationId: 'folio-claim-operation',
+    mailboxGrant: { sha256: 'a'.repeat(64), transportId: 'folio-transport', active: true },
+    thread: {
+      transportId: 'folio-transport',
+      threadId: 'folio-thread',
+      stateVersion: 'folio-thread-v1',
+    },
+    requester: {
+      identity: 'folio-requester',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: ['folio_status'],
+      forwarded: false,
+      spoofed: false,
+    },
+  };
+  const key = Buffer.alloc(32, 0x41);
+  const authorization = issueTrustedRequesterAuthorization(state, {
+    key,
+    keyVersion: 'folio-claim-key-v1',
+    issuedAt: at,
+    expiresAt: new Date(at.getTime() + 5 * 60_000),
+  });
+  return {
+    authorization,
+    currentState: state,
+    key,
+    expectedPrivateDigestKeyVersion: 'folio-claim-key-v1',
+    now: at,
   };
 }
 
@@ -477,7 +512,12 @@ describe('mergeFolioEvidence', () => {
       expect(merged.evidence.expiresAt).toBe(balanceExpiry);
       expect(Date.parse(merged.evidence.expiresAt)).toBeLessThan(Date.parse(depositExpiry));
       expect(merged.evidence.scopeVerified).toBe(true);
-      const claims = claimsFromToolResult(merged, new Date());
+      const observedAtForClaims = new Date();
+      const claims = claimsFromToolResult(
+        merged,
+        observedAtForClaims,
+        claimAuthorizationFor(observedAtForClaims),
+      );
       expect(claims).toHaveLength(1);
       expect(claims[0]?.kind).toBe('folio_deposit_summary');
       expect(renderClaim(claims[0]!)).toContain('Full credit: labelled narrow status');

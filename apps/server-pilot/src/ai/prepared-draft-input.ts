@@ -7,7 +7,6 @@
  * it is never treated as an instruction or authority grant.
  */
 
-import { preparedAttachmentReaderProofFor } from '../mail/artifacts/prepared-attachment-proof.js';
 import type { AuthorizedArtifactBytes } from '../mail/artifacts/read-artifact.js';
 
 export const PREPARED_DRAFT_INPUT_VERSION = 'u5-prepared-draft-input-v1';
@@ -420,33 +419,16 @@ function cloneAttachment(attachment: PreparedAttachment, index: number): Prepare
 }
 
 /**
- * Create the only attachment value accepted by the prepared-input boundary.
- * Callers must obtain selected bytes and owner/thread binding from the
- * code-owned artifact reader before constructing this proof.
+ * U5 can read bounded attachment bytes for evidence, but it has no
+ * server-owned selection/recipient binding.  Keep this compatibility seam
+ * explicit and fail closed; U6 owns the later selection/send workflow.
  */
 export function authorizePreparedAttachment(
-  input: PreparedAttachmentAuthorization,
+  _input: PreparedAttachmentAuthorization,
 ): PreparedAttachment {
-  const proof = preparedAttachmentReaderProofFor(input.bytes);
-  if (!proof || proof.sourceHash !== input.bytes.sha256 || proof.selectedBytes !== true) {
-    throw new PreparedDraftInputError(
-      'INVALID_INPUT',
-      'authorized attachment requires selected bytes from the code-owned reader',
-    );
-  }
-  return cloneAttachment(
-    {
-      artifactRef: proof.artifactRef,
-      sourceHash: proof.sourceHash,
-      ...(proof.kind ? { kind: proof.kind } : {}),
-      ownerRef: proof.ownerRef,
-      threadId: proof.threadId,
-      selectedBytes: true,
-      observedAt: proof.observedAt,
-      ...(proof.expiresAt ? { expiresAt: proof.expiresAt } : {}),
-      [AUTHORIZED_ATTACHMENT_PROOF]: true,
-    },
-    0,
+  throw new PreparedDraftInputError(
+    'INVALID_INPUT',
+    'attachment selection is unavailable in U5; manual review is required before sending',
   );
 }
 

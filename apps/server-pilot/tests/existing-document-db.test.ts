@@ -615,7 +615,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
           }),
         ).rejects.toThrow(/DOCUMENT_CHANGED|document reference is not current/i);
         expect(storageIoStarted).toBe(false);
-        const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+        const runs = await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.threadId, fixture.threadId));
         expect(runs).toHaveLength(1);
       }),
     );
@@ -820,7 +823,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
             requestedPriceVisibility: 'allowed',
           }),
         ).rejects.toThrow(/grant|mailbox|active|forbidden/i);
-        const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+        const runs = await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.threadId, fixture.threadId));
         expect(runs).toHaveLength(0);
       }),
     );
@@ -849,7 +855,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
           ).rejects.toThrow(
             /DOCUMENT_(?:SCOPE|REF|CHANGED)|SOURCE_UNAVAILABLE|MISSING_AUTHORIZED_BYTES|document reference is not current/,
           );
-          const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+          const runs = await db
+            .select({ id: aiWorkflowRun.id })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.threadId, fixture.threadId));
           expect(runs).toHaveLength(0);
         }),
       );

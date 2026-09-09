@@ -102,37 +102,7 @@ run_clean_db_command() {
 
 verify_vitest_report() {
   local report_path=$1
-  node --input-type=module - "$report_path" <<'NODE'
-import { readFileSync } from 'node:fs';
-
-const reportPath = process.argv[2];
-const report = JSON.parse(readFileSync(reportPath, 'utf8'));
-const total = Number(report.numTotalTests ?? 0);
-const passed = Number(report.numPassedTests ?? 0);
-const failed = Number(report.numFailedTests ?? 0);
-const skipped =
-  Number(report.numPendingTests ?? 0) +
-  Number(report.numTodoTests ?? 0) +
-  Number(report.numSkippedTests ?? 0);
-
-function countSkipped(assertions) {
-  return (assertions ?? []).filter((assertion) =>
-    ['pending', 'skipped', 'todo'].includes(assertion.status),
-  ).length;
-}
-
-const assertionSkipped = (report.testResults ?? []).reduce(
-  (sum, suite) => sum + countSkipped(suite.assertionResults),
-  0,
-);
-
-if (total < 1) throw new Error('required test slice selected zero tests');
-if (failed > 0 || skipped > 0 || assertionSkipped > 0 || passed !== total) {
-  throw new Error(
-    `required test slice is not fully green (total=${total}, passed=${passed}, failed=${failed}, skipped=${skipped + assertionSkipped})`,
-  );
-}
-NODE
+  run_gate_helper validate-vitest-report "$report_path"
 }
 
 run_vitest_in_dir() {
@@ -387,6 +357,7 @@ run_db_slice() {
     exec
     vitest
     run
+    --no-file-parallelism
     "${test_files[@]}"
     --reporter=json
     "--outputFile=${report_path}"
@@ -400,6 +371,21 @@ run_db_slice() {
   verify_vitest_report "$report_path" || die 'required DB Vitest slice failed or skipped' 1
   rm -f "$report_path"
   trap - RETURN
+}
+
+run_db_planned_slice() {
+  local slice=$1
+  local planned_files
+  planned_files=$(run_gate_helper server-test-files db "$slice") || \
+    die "named DB slice '${slice}' has no executable server test plan" 69
+  [[ -n "$planned_files" ]] || die "named DB slice '${slice}' selected no tests" 69
+
+  local -a test_files=()
+  while IFS= read -r test_file; do
+    [[ -n "$test_file" ]] && test_files+=("$test_file")
+  done <<<"$planned_files"
+  ((${#test_files[@]} > 0)) || die "named DB slice '${slice}' selected no tests" 69
+  run_db_slice "${test_files[@]}"
 }
 
 run_browser_slice() {
@@ -478,7 +464,9 @@ run_build_slice() {
 case "${MODE}:${SLICE}" in
   unit:gate)
     run_gate_helper validate-manifest "$FIXTURE_MANIFEST" || die 'synthetic fixture manifest validation failed' 69
-    run_vitest "tests/reservation-pilot-gate.test.ts"
+    run_vitest \
+      "tests/reservation-pilot-gate.test.ts" \
+      "tests/reservation-pilot-gate-dispatch.test.ts"
     ;;
   unit:dashboard)
     run_vitest \
@@ -537,6 +525,7 @@ case "${MODE}:${SLICE}" in
       "tests/prepared-draft-input.test.ts" \
       "tests/hms-candidate-agent.test.ts" \
       "tests/hms-claim-envelope.test.ts" \
+      "tests/hms-live-guest-stay.test.ts" \
       "tests/local-model-adapter-contract.test.ts" \
       "tests/shadow-model-routing.test.ts"
     ;;
@@ -585,6 +574,9 @@ case "${MODE}:${SLICE}" in
     ;;
   db:outbox)
     run_db_slice "tests/outbound-queue.test.ts"
+    ;;
+  db:candidate-drafting)
+    run_db_planned_slice candidate-drafting
     ;;
   browser:dashboard|browser:documents|browser:pilot)
     run_browser_slice "$SLICE"

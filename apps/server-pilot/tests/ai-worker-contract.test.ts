@@ -462,7 +462,10 @@ describe('ai worker contract', () => {
     expect(prompt).toContain('u5-prepared-draft-input-v1');
     expect(prompt).toContain('worker-contract-request');
     expect(result.serializedInput).toContain('worker-contract-request');
-    expect(result.metrics.fallback).toBe(false);
+    expect(result.metrics).toMatchObject({
+      fallback: true,
+      modelOutputRejected: 'unbounded_prose',
+    });
   });
 
   it('claim-safe path renders clarification templates and fences persist+succeed TX', () => {
@@ -526,6 +529,9 @@ describe('ai worker contract', () => {
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
   beforeEach(async () => {
+    // These committed compatibility fixtures intentionally use triage-v5;
+    // current v6 is the default and v5 must remain explicit for the fixture.
+    process.env.AI_TRIAGE_PROMPT_VERSION = 'triage-v5';
     // Committed seedInbound tests never roll back; clear leftover rows (incl.
     // stale queued runs) so claimNextAiRun's oldest-in-lane pick is this test's
     // own run. Also wipes cross-run pollution from prior invocations.
@@ -661,11 +667,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         origin: 'ai',
         toAddresses: ['guest@example.com'],
         subject: `Re: ${unrelatedSubject}`,
-        textBody:
-          'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
       });
-      expect(draft?.textBody).toBe(
-        'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
+      expect(draft?.textBody).toContain(
+        '[MISSING: reservation status | how: approved reservation read]',
       );
 
       const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
@@ -678,7 +682,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         preparedInputSerializedBytes: expect.any(Number),
         routeId: route.routeId,
         usageSource: 'reported',
-        fallback: false,
+        fallback: true,
+        modelOutputRejected: 'unbounded_prose',
         provenance: expect.objectContaining({
           routeId: route.routeId,
           purpose: 'draft',
@@ -774,7 +779,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       rawOutput: expect.objectContaining({
-        category: expect.any(String),
+        primaryFolder: expect.any(String),
+        isSpam: expect.any(Boolean),
         rationale: expect.any(String),
         policyFlags: expect.any(Array),
       }),
@@ -921,7 +927,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
   });
 
-  it('write and draft mode writes category and enqueues one candidate draft', async () => {
+  it('write and draft mode writes category without enqueuing a candidate draft', async () => {
     await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
@@ -975,7 +981,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
-      expect(draftRuns).toHaveLength(1);
+      expect(draftRuns).toHaveLength(0);
 
       const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
       expect(row?.metrics).toMatchObject({
@@ -989,7 +995,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
   });
 
-  it('retry same triage still enqueues only one candidate draft', async () => {
+  it('retry same triage still does not enqueue a candidate draft', async () => {
     await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
@@ -1036,7 +1042,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
-      expect(draftRuns).toHaveLength(1);
+      expect(draftRuns).toHaveLength(0);
     });
   });
 
@@ -1145,7 +1151,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
   });
 
-  it('new-bookings triage enqueues candidate draft when drafts enabled', async () => {
+  it('new-bookings triage does not enqueue candidate draft when drafts enabled', async () => {
     await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
@@ -1188,11 +1194,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
+      const memberships = await db
+        .select({ slug: mailCategory.slug })
+        .from(mailThreadCategory)
+        .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(memberships.map((row) => row.slug)).toContain('new-bookings');
+
       const draftRuns = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
-      expect(draftRuns).toHaveLength(1);
+      expect(draftRuns).toHaveLength(0);
     });
   });
 
@@ -1217,7 +1230,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         fromAddress: 'guest@example.com',
         toAddresses: ['centurion@legacyhotel.com'],
         subject: 'Suspicious mail',
-        textBody: 'Actually maybe a booking',
+        textBody: 'Actually maybe a spam booking',
         receivedAt: new Date(),
       });
 

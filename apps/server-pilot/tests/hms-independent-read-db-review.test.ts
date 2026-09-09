@@ -1318,7 +1318,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
               detail: 'summary',
             }),
           ).rejects.toThrow(/issuer|parent|provenance|scope/i);
-          const rows = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+          const rows = await db
+            .select({ id: aiWorkflowRun.id })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.threadId, context.threadId));
           expect(rows).toHaveLength(1);
         });
       });
@@ -1418,7 +1421,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
         await expect(caller.ai.enqueueHmsRead({ threadId: context.threadId })).rejects.toThrow(
           /grant|mailbox|active|forbidden/i,
         );
-        const rows = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun);
+        const rows = await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.threadId, context.threadId));
         expect(rows).toHaveLength(0);
       });
     });

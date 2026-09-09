@@ -688,11 +688,15 @@ describe('reservation pilot runtime validators', () => {
     expect(gate.getSlicePlan('unit', 'gate')).toEqual({
       server: [
         'tests/reservation-pilot-gate.test.ts',
+        'tests/reservation-pilot-gate-dispatch.test.ts',
         'tests/fixtures/reservation-tools-pilot.json',
         'scripts/reservation-pilot-gate-lib.mjs',
         'scripts/reservation-pilot-fixture-guard.mjs',
       ],
     });
+    expect(gate.getSlicePlan('unit', 'drafting').server).toContain(
+      'tests/hms-live-guest-stay.test.ts',
+    );
   });
 
   it('refuses a deterministic missing path without launching a future test runner', async () => {

@@ -279,7 +279,8 @@ describe('reply assessment', () => {
     expect(prompts[0]).toContain(PREPARED_DRAFT_INPUT_VERSION);
     expect(prompts[0]).toContain('request-u5-normal-path');
     expect(result.outcome).toBe('complete');
-    expect(result.textBody).toBe('Your reservation is confirmed.');
+    expect(result.textBody).toContain('Reservation status: Confirmed');
+    expect(result.textBody).not.toContain('Your reservation is confirmed.');
     expect(result.assessment.ok).toBe(true);
     expect(result.metrics).toMatchObject({
       routeId: localRoute.routeId,

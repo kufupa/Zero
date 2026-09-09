@@ -65,8 +65,7 @@ export type MapEnvelopeToClaimsOptions = {
   expiresAt?: string;
   /**
    * Separately issued server authorization.
-   * - omit: Phase A compat path (no auth gate; observation still cannot mint trust)
-   * - null: explicit missing → no claims
+   * - omit/null: missing authorization → no claims
    * - object: must validate for the emitted claim kind
    */
   requesterAuthorization?: MapEnvelopeRequesterAuthorization | null;
@@ -186,8 +185,9 @@ export function parseClaimEnvelope(
 /**
  * Map a closed observation envelope to at most one typed summary claim.
  * Rejects unknown keys, non-claimable toolIds, and unverified_negative.
- * When `requesterAuthorization` is provided (incl. null), auth gate applies;
- * observations never mint requester trust.
+ * A separately issued requester authorization is mandatory for every claim;
+ * observations never mint requester trust and omitted authorization fails
+ * closed.
  */
 export function mapEnvelopeToClaims(
   raw: unknown,
@@ -237,15 +237,12 @@ function mapEnvelopeToClaimsInternal(
   }
 
   const authOpt = options?.requesterAuthorization;
-  const authRequired = authOpt !== undefined;
-  if (authRequired && authOpt === null) return [];
+  if (authOpt === undefined || authOpt === null) return [];
 
   const evidenceId = envelope.evidenceId;
   const expiresAt = options?.expiresAt ?? envelope.expiresAt;
 
   const gate = (kind: EvidenceClaim['kind']): boolean => {
-    if (envelope.requesterAuthorizationId !== undefined && !authRequired) return false;
-    if (!authRequired) return true;
     const validated = authorizeClaimKind(authOpt, kind);
     return (
       validated !== null &&

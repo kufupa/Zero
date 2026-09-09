@@ -7,6 +7,12 @@
  * release/auth binding when a find release is active.
  */
 import {
+  reservationReadDataSchema,
+  trustedRequesterAuthorizationV1Schema,
+  type ReservationObservation,
+  type ReservationReadData,
+} from './contracts.js';
+import {
   HMS_FIND_RESERVATION_TOOL_ID,
   HMS_FIND_RESERVATION_TOOL_VERSION,
   RESERVATION_EVIDENCE_TTL_MS,
@@ -16,11 +22,7 @@ import type {
   GuestStaySearchResult,
   LiveGuestStayDriver,
 } from './live-guest-stay-driver.js';
-import {
-  reservationReadDataSchema,
-  type ReservationObservation,
-  type ReservationReadData,
-} from './contracts.js';
+import type { MapEnvelopeRequesterAuthorization } from './claim-envelope.js';
 import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
 import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
 import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
@@ -193,6 +195,8 @@ export type CreateReservationCandidateSessionInput = {
   /** Plan-scoped gate inputs — set when activeReleases non-empty. */
   candidateBindings?: ReadonlyMap<string, import('./candidate-read-plan.js').CandidateBinding>;
   requesterAuthorization?: import('./contracts.js').TrustedRequesterAuthorizationV1;
+  /** Existing issued mapper proof; without it claims remain unavailable. */
+  claimAuthorization?: MapEnvelopeRequesterAuthorization | null;
   /**
    * Optional: bind find release via handler index before browser I/O.
    * Live path supplies this after building HmsSessionAuthorization.
@@ -257,6 +261,7 @@ export function createReservationCandidateSession(
     activeReleases: input.activeReleases,
     candidateBindings: input.candidateBindings,
     requesterAuthorization: input.requesterAuthorization,
+    claimAuthorization: input.claimAuthorization,
     propertyReadLock: input.propertyReadLock,
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
@@ -290,9 +295,68 @@ export function createReservationCandidateSession(
         });
       }
       const exact: ExactReservationCandidate = candidate;
-      return input.driver.searchExactAndMap(exact, signal, (search) =>
+      const result = await input.driver.searchExactAndMap(exact, signal, (search) =>
         mapSearchResult(search, now()),
       );
+      if (!input.claimAuthorization || result.status !== 'ok') return result;
+
+      const authorization = trustedRequesterAuthorizationV1Schema.safeParse(
+        input.claimAuthorization.authorization,
+      );
+      const receipt = input.driver.lastAuditReceipt();
+      const branch =
+        findRelease?.evidenceKind === 'hms'
+          ? findRelease.requestBranches.find((item) => item.id === 'guest_stay_search')
+          : undefined;
+      if (
+        !authorization.success ||
+        !receipt ||
+        receipt.artifactState !== 'complete' ||
+        receipt.operationOutcome !== 'succeeded' ||
+        receipt.terminalCode !== 'OK' ||
+        !branch
+      ) {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [
+            ...new Set([...result.unresolvedFields, 'requester_authorization', 'audit_capture']),
+          ],
+        };
+      }
+      if (result.evidence.kind !== 'hms') {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture'])],
+        };
+      }
+      const evidenceExpiry = Math.min(
+        Date.parse(result.evidence.expiresAt),
+        Date.parse(receipt.expiresAt),
+      );
+      if (!Number.isFinite(evidenceExpiry) || evidenceExpiry <= now().getTime()) {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture'])],
+        };
+      }
+      return {
+        ...result,
+        evidence: {
+          ...result.evidence,
+          scopeVerified: true,
+          artifactRef: receipt.artifactId,
+          manifestSha256: branch.manifestSha256,
+          manifestSha256ByBranch: { [branch.id]: branch.manifestSha256 },
+          requesterAuthorizationId: authorization.data.authorizationId,
+          expiresAt: new Date(evidenceExpiry).toISOString(),
+        },
+      };
     },
     quoteStay: async (candidateId, signal) => {
       if (signal.aborted) {

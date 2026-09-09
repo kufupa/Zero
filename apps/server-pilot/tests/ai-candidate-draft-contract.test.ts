@@ -11,16 +11,28 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { claimNextAiRun, enqueueAiRun } from '../src/ai/run-ledger.js';
 import { prepareDraftInput } from '../src/ai/prepared-draft-input.js';
+import { aiWorkerOwnerId, executeAiRun } from '../src/ai/worker.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { createMastraRuntime } from '../src/ai/mastra.js';
-import { enqueueAiRun } from '../src/ai/run-ledger.js';
-import { executeAiRun } from '../src/ai/worker.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
+
+async function withCandidateWorkerDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
+  return withSeededTestDb(async (db) => {
+    __setDbForTests({ db, conn: null as never });
+    try {
+      return await cb(db);
+    } finally {
+      __setDbForTests(null);
+    }
+  });
+}
 
 describe('candidate draft workflow contract', () => {
   it('deriveReplyToAddress parses display name envelope', () => {
@@ -64,7 +76,7 @@ describe('candidate draft workflow contract', () => {
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence contract', () => {
   it('skips candidate draft when inbound sender cannot be parsed', async () => {
-    await withSeededTestDb(async (db) => {
+    await withCandidateWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -100,6 +112,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence c
         db,
       );
 
+      const claimed = await claimNextAiRun({
+        ownerId: aiWorkerOwnerId('default'),
+        lane: 'default',
+        idempotencyPrefix: `candidate-draft:${messageId}`,
+      });
+      expect(claimed?.id).toBe(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -118,7 +136,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence c
   });
 
   it('persists code-derived recipient and subject with candidate draft revision', async () => {
-    await withSeededTestDb(async (db) => {
+    await withCandidateWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -154,6 +172,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence c
         db,
       );
 
+      const claimed = await claimNextAiRun({
+        ownerId: aiWorkerOwnerId('default'),
+        lane: 'default',
+        idempotencyPrefix: `candidate-draft:${messageId}`,
+      });
+      expect(claimed?.id).toBe(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -164,8 +188,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence c
       expect(draft.origin).toBe('ai');
       expect(draft.toAddresses).toEqual(['guest@example.com']);
       expect(draft.subject).toBe('Re: Group booking');
-      expect(draft.textBody).toContain('[');
-      expect(draft.textBody).toContain(']');
+      expect(draft.textBody).toBe(
+        'Hello,\n\nThank you for your message. We need a staff member to perform a manual review before we provide an answer.\n\nKind regards,\nCenturion Reservations',
+      );
 
       const revisions = await db
         .select()

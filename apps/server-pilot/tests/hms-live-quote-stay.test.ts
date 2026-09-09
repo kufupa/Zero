@@ -13,6 +13,7 @@ import {
   parseLiveQuoteAvailability,
 } from '../src/hms/live-quote-stay-driver.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../src/hms/quote-stay-contract.js';
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
 import { syntheticQuoteReferenceAuthority } from './helpers/quote-reference-authority.js';
 import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
 import { normalizeQuoteRequest } from '../src/hms/quote-request-normalization.js';
@@ -95,6 +96,40 @@ function auth(overrides: Partial<HmsSessionAuthorization> = {}): HmsSessionAutho
     sourceRevision: 'test-rev',
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     ...overrides,
+  };
+}
+
+function claimAuthorizationFor(at: Date) {
+  const state = {
+    operationId: 'quote-claim-operation',
+    mailboxGrant: { sha256: 'a'.repeat(64), transportId: 'quote-transport', active: true },
+    thread: {
+      transportId: 'quote-transport',
+      threadId: 'quote-thread',
+      stateVersion: 'quote-thread-v1',
+    },
+    requester: {
+      identity: 'quote-requester',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'quote_request',
+      allowedClaimKinds: ['quote'],
+      forwarded: false,
+      spoofed: false,
+    },
+  };
+  const key = Buffer.alloc(32, 0x41);
+  const authorization = issueTrustedRequesterAuthorization(state, {
+    key,
+    keyVersion: 'quote-claim-key-v1',
+    issuedAt: at,
+    expiresAt: new Date(at.getTime() + 5 * 60_000),
+  });
+  return {
+    authorization,
+    currentState: state,
+    key,
+    expectedPrivateDigestKeyVersion: 'quote-claim-key-v1',
+    now: at,
   };
 }
 
@@ -548,7 +583,8 @@ describe('live quote stay driver', () => {
     expect(first.evidence.manifestSha256ByBranch).toEqual({
       quote_availability_search: auth().manifestSha256,
     });
-    const claims = claimsFromToolResult(first, new Date());
+    const observedAt = new Date();
+    const claims = claimsFromToolResult(first, observedAt, claimAuthorizationFor(observedAt));
     expect(claims).toHaveLength(1);
     expect(claims[0]?.kind).toBe('quote_stay_summary');
     expect(renderClaim(claims[0]!)).toMatch(

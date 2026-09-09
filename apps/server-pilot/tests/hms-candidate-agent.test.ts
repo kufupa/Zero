@@ -1,4 +1,19 @@
 import {
+  CANDIDATE_TOOL_BUDGET,
+  HMS_CANDIDATE_TOOLSET_VERSION,
+  HMS_FIND_RESERVATION_TOOLSET_VERSION,
+  allToolEffectsAreRead,
+  assertToolRegistrySealed,
+  candidateToolEffects,
+  claimsFromToolResult as mapClaimsFromToolResult,
+  createCandidateTools,
+  createLeaseLostError,
+  createMockCandidateSession as makeMockCandidateSession,
+  isFatalCandidateGatheringError,
+  minimizeToolResultForModel,
+  runClaimSafeCandidateDraft,
+} from '../src/ai/candidate-draft-agent.js';
+import {
   EvidenceClaimSchema,
   HmsEvidenceRefSchema,
   MailEvidenceRefSchema,
@@ -18,22 +33,8 @@ import {
   type MailEvidenceRef,
   type ToolResult,
 } from '../src/ai/draft-evidence.js';
-import {
-  CANDIDATE_TOOL_BUDGET,
-  HMS_CANDIDATE_TOOLSET_VERSION,
-  HMS_FIND_RESERVATION_TOOLSET_VERSION,
-  allToolEffectsAreRead,
-  assertToolRegistrySealed,
-  candidateToolEffects,
-  claimsFromToolResult,
-  createCandidateTools,
-  createLeaseLostError,
-  createMockCandidateSession,
-  isFatalCandidateGatheringError,
-  minimizeToolResultForModel,
-  runClaimSafeCandidateDraft,
-} from '../src/ai/candidate-draft-agent.js';
 import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai/bedrock/local.js';
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
 import { ThreadStateStaleError, assertThreadStateVersionFresh } from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
 import { HMS_FIND_RESERVATION_TOOL_VERSION } from '../src/hms/adapter.js';
@@ -44,6 +45,71 @@ import { READ_TOOLS } from '../src/hms/read-tools.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const now = new Date('2026-07-30T12:00:00.000Z');
+
+function claimAuthorizationFor(at: Date) {
+  const state = {
+    operationId: 'candidate-test-operation',
+    mailboxGrant: {
+      sha256: 'a'.repeat(64),
+      transportId: 'candidate-transport',
+      active: true,
+    },
+    thread: {
+      transportId: 'candidate-transport',
+      threadId: 'candidate-thread',
+      stateVersion: 'candidate-thread-v1',
+    },
+    requester: {
+      identity: 'candidate-requester',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: [
+        'reservation_summary',
+        'quote',
+        'document_metadata',
+        'sent_email_audit',
+        'folio_status',
+        'company_billing',
+        'group_status',
+        'event_status',
+      ],
+      forwarded: false,
+      spoofed: false,
+    },
+  };
+  const key = Buffer.alloc(32, 0x41);
+  const issued = issueTrustedRequesterAuthorization(state, {
+    key,
+    keyVersion: 'candidate-test-key-v1',
+    issuedAt: at,
+    expiresAt: new Date(at.getTime() + 15 * 60_000),
+  });
+  return {
+    authorization: issued,
+    currentState: state,
+    key,
+    expectedPrivateDigestKeyVersion: 'candidate-test-key-v1',
+    now: at,
+  } as const;
+}
+
+function createMockCandidateSession(
+  overrides: Parameters<typeof makeMockCandidateSession>[0] = {},
+) {
+  return makeMockCandidateSession({
+    claimAuthorization: claimAuthorizationFor(now),
+    ...overrides,
+  });
+}
+
+function claimsFromToolResult(
+  result: ToolResult<unknown>,
+  at: Date = new Date(),
+  authorization?: Parameters<typeof mapClaimsFromToolResult>[2],
+): EvidenceClaim[] {
+  if (authorization !== undefined) return mapClaimsFromToolResult(result, at, authorization);
+  return mapClaimsFromToolResult(result, at, claimAuthorizationFor(at));
+}
 
 function hmsEvidence(overrides: Partial<HmsEvidenceRef> = {}): HmsEvidenceRef {
   return {
@@ -1190,7 +1256,8 @@ describe('claim-safe candidate agent', () => {
     });
 
     expect(result.outcome).toBe('candidate');
-    expect(result.textBody).toBe('Your reservation is confirmed.');
+    expect(result.textBody).toContain('reservation status: Confirmed.');
+    expect(result.textBody).not.toContain('Your reservation is confirmed.');
     expect(result.metrics.preparedReplyOutcome).toBe('complete');
     expect(calls).toBe(2);
   });
@@ -1256,7 +1323,10 @@ describe('claim-safe candidate agent', () => {
       transport: async () => {
         replyCalls += 1;
         return {
-          output: JSON.stringify({ replyText: 'Your booking has been secured.' }),
+          output: JSON.stringify({
+            replyText:
+              'Your reservation is confirmed, but I cannot verify the booking was secured; your stay is on 2027-12-31 at 14:00.',
+          }),
           usage: { inputTokens: 5, outputTokens: 5, latencyMs: 1 },
         };
       },

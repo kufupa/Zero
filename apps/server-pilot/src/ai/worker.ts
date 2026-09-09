@@ -557,6 +557,8 @@ export type CandidateSessionInput = {
   readOnly?: boolean;
   /** Trusted release/input/capture admission for the production read path. */
   readAdmission?: ReadAdmissionBinding;
+  /** Existing issued mapper proof; absence keeps normal claims fail-closed. */
+  claimAuthorization?: import('../hms/claim-envelope.js').MapEnvelopeRequesterAuthorization | null;
   readToolId?:
     | import('../hms/read-tools.js').ReadToolId
     | 'hms_read_reservation'
@@ -1266,6 +1268,7 @@ export function createLiveHmsCandidateSessionFactory(
       handlerPathActive: active?.handlerPathActive === true,
       candidateBindings: input.readOnly ? undefined : planGate?.candidateBindings,
       requesterAuthorization: input.readOnly ? undefined : planGate?.requesterAuthorization,
+      claimAuthorization: input.claimAuthorization,
       quoteDriver,
       quoteCandidates: input.quoteCandidates,
       folioRead,

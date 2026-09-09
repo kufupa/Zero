@@ -102,7 +102,7 @@ describe('prepared draft input', () => {
     ).toThrow(/reader|bytes|scope|selection|authority/i);
   });
 
-  it('authorizes only bytes returned by the existing resolver and bounded reader', async () => {
+  it('reads bounded bytes but keeps attachment selection manual in U5', async () => {
     const s3 = new FakeS3Storage('u5-prepared-attachments');
     const body = Buffer.from('synthetic authorized attachment');
     const locator = {
@@ -120,36 +120,11 @@ describe('prepared draft input', () => {
       signal: new AbortController().signal,
       resolveLocator: async () => locator,
       expectedSha256: sourceHash,
-      preparedAttachmentScope: {
-        attachmentId: 'attachment-u5',
-        artifactRef: 'server-artifact-u5',
-        ownerRef: 'guest-u5',
-        threadId: 'thread-u5',
-        observedAt: '2026-08-06T12:00:00.000Z',
-        expiresAt: '2026-08-06T13:00:00.000Z',
-        kind: 'text',
-      },
     });
     expect(bytes?.sha256).toBe(sourceHash);
     expect(bytes?.body.equals(body)).toBe(true);
 
-    const attachment = authorizePreparedAttachment({ bytes: bytes! });
-    expect(attachment).toMatchObject({
-      artifactRef: 'server-artifact-u5',
-      sourceHash,
-      ownerRef: 'guest-u5',
-      threadId: 'thread-u5',
-      selectedBytes: true,
-    });
-    expect(
-      prepareDraftInput({
-        requestId: 'request-u5-attachment',
-        threadId: 'thread-u5',
-        audience: 'guest',
-        requestText: 'Please send the document.',
-        authorizedAttachments: [attachment],
-      }).authorizedAttachments,
-    ).toHaveLength(1);
+    expect(() => authorizePreparedAttachment({ bytes: bytes! })).toThrow(/manual|selection/i);
 
     await expect(
       readAuthorizedArtifactBytes({
@@ -164,5 +139,28 @@ describe('prepared draft input', () => {
     expect(() =>
       authorizePreparedAttachment({ bytes: { ...bytes!, body: Buffer.from(body) } }),
     ).toThrow(/reader|bytes|scope|selection|authority/i);
+  });
+
+  it('does not accept bounded bytes as attachment selection authority', async () => {
+    const s3 = new FakeS3Storage('u5-prepared-attachment-scope');
+    const body = Buffer.from('scope bridge must not authorize');
+    const locator = {
+      s3Key: 'attachments/message-scope/attachment-scope',
+      mimeType: 'text/plain',
+      sizeBytes: body.byteLength,
+      messageId: 'message-scope',
+    };
+    await s3.putObject({ key: locator.s3Key, body, contentType: locator.mimeType });
+    const bytes = await readAuthorizedArtifactBytes({
+      attachmentId: 'attachment-scope',
+      authorizedAttachmentIds: new Set(['attachment-scope']),
+      s3,
+      signal: new AbortController().signal,
+      resolveLocator: async () => locator,
+    });
+    expect(bytes).not.toBeNull();
+    expect(() => authorizePreparedAttachment({ bytes: bytes! })).toThrow(
+      /manual|reader|selection|unavailable|authority/i,
+    );
   });
 });

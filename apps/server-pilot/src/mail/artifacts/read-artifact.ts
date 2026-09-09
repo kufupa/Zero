@@ -3,10 +3,6 @@
  * No OCR. No raw text persistence. Hash-bound MailEvidenceRef only.
  * Model never receives S3 keys.
  */
-import {
-  registerPreparedAttachmentReaderBytes,
-  type PreparedAttachmentReaderScope,
-} from './prepared-attachment-proof.js';
 import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { ToolResult } from '../../ai/draft-evidence.js';
@@ -827,8 +823,6 @@ export async function readAuthorizedArtifactBytes(input: {
   resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
   expectedLocator?: AttachmentLocator;
   expectedSha256?: string;
-  /** Optional trusted owner/thread selection binding for prepared replies. */
-  preparedAttachmentScope?: PreparedAttachmentReaderScope;
   /** Revalidate current DB grant/source immediately before object bytes. */
   revalidate?: () => Promise<boolean>;
 }): Promise<AuthorizedArtifactBytes | null> {
@@ -891,9 +885,6 @@ export async function readAuthorizedArtifactBytes(input: {
     sha256,
     locator,
   };
-  if (input.preparedAttachmentScope) {
-    registerPreparedAttachmentReaderBytes(bytes, input.preparedAttachmentScope);
-  }
   return bytes;
 }
 

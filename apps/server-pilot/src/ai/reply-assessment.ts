@@ -285,9 +285,11 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
       reply,
     );
   const hasActionEvidence = input.facts.some((fact) => positiveActionEvidence(fact, audience));
-  const limitationClaim =
-    /\b(?:cannot|can't|unable|not able|unverified|not confirmed|not yet)\b/i.test(reply);
-  if (completionClaim && !hasActionEvidence && !limitationClaim) {
+  // A limitation does not authorize a separate unsupported action/date
+  // clause. Every factual clause must still be justified by a typed fact; the
+  // workflow's returned body is code-owned, while this check remains useful
+  // telemetry for rejecting an untrusted model proposal.
+  if (completionClaim && !hasActionEvidence) {
     addIssue(issues, { code: 'UNSUPPORTED_ACTION_CLAIM', severity: 'critical' });
   }
 
@@ -300,7 +302,7 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
     ) ||
     (mentionedTimes.length > 0 &&
       !knownDates.some((knownDate) => mentionedTimes.some((time) => knownDate.includes(time))));
-  if (unsupportedDate && !limitationClaim) {
+  if (unsupportedDate) {
     addIssue(issues, { code: 'UNSUPPORTED_DATE_CLAIM', severity: 'critical' });
   }
 

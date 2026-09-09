@@ -128,6 +128,42 @@ function factLine(fact: PreparedFact): string {
   return `${fact.label}: ${value}.`;
 }
 
+function factLineForAsk(fact: PreparedFact, ask: PreparedAsk): string {
+  const record =
+    fact.value && typeof fact.value === 'object' && !Array.isArray(fact.value)
+      ? (fact.value as Record<string, unknown>)
+      : null;
+  const code = normalized(ask.code);
+  if (record && (code === 'reservation_status' || code === 'reservation')) {
+    const status = record.reservationStatus ?? record.bookingStatus ?? record.status;
+    if (status !== undefined && status !== null) {
+      return `${ask.label}: ${String(status)}.`;
+    }
+  }
+  if (record && code === 'stay_dates') {
+    const dates = [
+      ['arrival', record.arrivalDate ?? record.checkIn],
+      ['departure', record.departureDate ?? record.checkOut],
+    ].filter(([, value]) => value !== undefined && value !== null);
+    if (dates.length > 0) {
+      return `${ask.label}: ${dates.map(([label, value]) => `${label} ${String(value)}`).join(', ')}.`;
+    }
+  }
+  if (record && (code === 'price' || code === 'rate' || code === 'quote')) {
+    const price = [record.amount ?? record.displayedAmount ?? record.total, record.currency]
+      .filter((value) => value !== undefined && value !== null)
+      .join(' ');
+    if (price) return `${ask.label}: ${price}.`;
+  }
+  if (record && (code === 'payment_status' || code === 'payment' || code === 'deposit')) {
+    const payment = record.paymentStatus ?? record.depositStatus ?? record.status;
+    if (payment !== undefined && payment !== null) {
+      return `${ask.label}: ${String(payment)}.`;
+    }
+  }
+  return factLine(fact);
+}
+
 function uniqueAsks(asks: readonly PreparedAsk[]): PreparedAsk[] {
   const seen = new Set<string>();
   return asks.filter((ask) => {
@@ -203,30 +239,44 @@ function renderInternal(
 export function buildReplyPlaybook(input: ReplyPlaybookInput): ReplyPlaybookResult {
   const released = input.releasedCapabilities ?? {};
   const asks = uniqueAsks(input.asks);
+  const requiredAsks = asks.filter((ask) => ask.required !== false);
   const usableFacts = input.facts.filter((fact) => isKnownFact(fact, input.audience));
   const guestFacts = usableFacts.filter(
     (fact) => input.audience === 'internal' || fact.disclosure !== 'staff_only',
   );
-  const factsUsed = guestFacts.map((fact) => fact.key);
+  // A playbook clause must answer a current ask.  Facts with no matching ask
+  // remain evidence for a later step, but are not rendered into this reply;
+  // this keeps the approved output vocabulary closed over the requested
+  // semantics instead of turning every known fact into a free-form paragraph.
+  const boundFacts =
+    asks.length === 0
+      ? []
+      : guestFacts.filter((fact) => asks.some((ask) => factSupportsAsk(fact, ask)));
+  const factsUsed = boundFacts.map((fact) => fact.key);
   const supportedAsks = new Set(
     asks
       .filter(
         (ask) =>
           (!ask.capabilityId || released[ask.capabilityId]) &&
-          guestFacts.some((fact) => factSupportsAsk(fact, ask)),
+          boundFacts.some((fact) => factSupportsAsk(fact, ask)),
       )
       .map((ask) => normalized(ask.code)),
   );
-  const requiredAsks = asks.filter((ask) => ask.required !== false);
   const unsupported = requiredAsks.filter((ask) => !supportedAsks.has(normalized(ask.code)));
   const questions = unsupported.map(questionFor);
   const limitations = unsupported.map((ask) => missingBracket(ask, released));
-  const lines = guestFacts.map(factLine);
+  const lines = [
+    ...new Set(
+      boundFacts.flatMap((fact) =>
+        asks.filter((ask) => factSupportsAsk(fact, ask)).map((ask) => factLineForAsk(fact, ask)),
+      ),
+    ),
+  ];
 
   let outcome: ReplyOutcome;
   if (input.audience === 'internal' || input.requestKind === 'group') {
     outcome = 'internal_brief';
-  } else if (guestFacts.length === 0) {
+  } else if (boundFacts.length === 0) {
     // An empty evidence set can be resolved by a focused guest question;
     // an explicitly unavailable/unknown source must remain an abstention.
     outcome = questions.length > 0 && input.facts.length === 0 ? 'clarification' : 'abstain';

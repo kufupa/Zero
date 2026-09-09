@@ -231,8 +231,8 @@ describe('claim envelope', () => {
     ).toEqual([]);
   });
 
-  it('Phase A omit-auth still maps; auth path is opt-in gate', () => {
-    expect(mapEnvelopeToClaims(findEnvelope(), { expiresAt })).toHaveLength(1);
+  it('omitted requester authorization cannot issue a claim', () => {
+    expect(mapEnvelopeToClaims(findEnvelope(), { expiresAt })).toEqual([]);
   });
 
   it('runs disclosure gate before folio claim creation', () => {

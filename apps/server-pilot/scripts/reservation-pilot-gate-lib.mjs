@@ -100,6 +100,12 @@ export const CHILD_ENV_ALLOWLIST = new Set([
   'HMS_DB_TEST_REQUIRED',
   'NAVA_TEST_DATABASE_SCOPE',
   'NAVA_TEST_DATABASE_PROFILE',
+  'DATABASE_URL',
+  'PORT',
+  'BETTER_AUTH_URL',
+  'BETTER_AUTH_SECRET',
+  'AWS_REGION',
+  'S3_BUCKET',
 ]);
 
 const SLICE_PLANS = {
@@ -107,6 +113,7 @@ const SLICE_PLANS = {
     gate: {
       server: [
         'tests/reservation-pilot-gate.test.ts',
+        'tests/reservation-pilot-gate-dispatch.test.ts',
         'tests/fixtures/reservation-tools-pilot.json',
         'scripts/reservation-pilot-gate-lib.mjs',
         'scripts/reservation-pilot-fixture-guard.mjs',
@@ -171,6 +178,7 @@ const SLICE_PLANS = {
         'tests/prepared-draft-input.test.ts',
         'tests/hms-candidate-agent.test.ts',
         'tests/hms-claim-envelope.test.ts',
+        'tests/hms-live-guest-stay.test.ts',
         'tests/local-model-adapter-contract.test.ts',
         'tests/shadow-model-routing.test.ts',
       ],
@@ -600,6 +608,54 @@ export function getSlicePlan(mode, slice) {
   return clone(plan);
 }
 
+/**
+ * Return the exact server-side test files for a named gate slice.
+ * Dispatchers must consume this plan rather than silently accepting an empty
+ * branch when a slice is known only to the library.
+ */
+export function getServerTestFiles(mode, slice) {
+  const plan = getSlicePlan(mode, slice);
+  const files = plan.server;
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error(`named ${mode} slice ${slice} has no server test files`);
+  }
+  return [...files];
+}
+
+/**
+ * Validate the JSON reporter contract used by required unit/DB slices.
+ * A zero-test, failed, or skipped report is never a passing gate receipt.
+ */
+export function validateVitestReport(report) {
+  if (!report || typeof report !== 'object') {
+    throw new Error('Vitest report is missing or invalid');
+  }
+  const total = Number(report.numTotalTests ?? 0);
+  const passed = Number(report.numPassedTests ?? 0);
+  const failed = Number(report.numFailedTests ?? 0);
+  const skipped =
+    Number(report.numPendingTests ?? 0) +
+    Number(report.numTodoTests ?? 0) +
+    Number(report.numSkippedTests ?? 0);
+  const countSkipped = (assertions) =>
+    (assertions ?? []).filter((assertion) =>
+      ['pending', 'skipped', 'todo'].includes(assertion.status),
+    ).length;
+  const assertionSkipped = (report.testResults ?? []).reduce(
+    (sum, suite) => sum + countSkipped(suite.assertionResults),
+    0,
+  );
+  const effectiveSkipped = skipped + assertionSkipped;
+
+  if (total < 1) throw new Error('required test slice selected zero tests');
+  if (failed > 0 || effectiveSkipped > 0 || passed !== total) {
+    throw new Error(
+      `required test slice is not fully green (total=${total}, passed=${passed}, failed=${failed}, skipped=${effectiveSkipped})`,
+    );
+  }
+  return { total, passed, failed, skipped: effectiveSkipped };
+}
+
 function assertLoopbackOrigin(origin) {
   let parsed;
   try {
@@ -691,6 +747,15 @@ export function buildChildEnvironment(parent, { kind, guardPath }) {
     if (!parent.NAVA_TEST_DATABASE_URL) throw new Error('verified NAVA_TEST_DATABASE_URL required');
     const profile = getDbProfile(parent.NAVA_TEST_DATABASE_PROFILE || 'pg17');
     assertDisposableUrlForProfile(parent.NAVA_TEST_DATABASE_URL, profile);
+    // The DB contract imports application modules that parse required server
+    // settings before the test helper maps TEST_DATABASE_URL. These are
+    // neutral disposable-test values, never inherited or production values.
+    output.DATABASE_URL = parent.NAVA_TEST_DATABASE_URL;
+    output.PORT = '8788';
+    output.BETTER_AUTH_URL = 'http://127.0.0.1:8788';
+    output.BETTER_AUTH_SECRET = 'reservation-pilot-disposable-test-secret';
+    output.AWS_REGION = 'af-south-1';
+    output.S3_BUCKET = 'reservation-pilot-disposable-test';
     output.NAVA_TEST_DATABASE_URL = parent.NAVA_TEST_DATABASE_URL;
     output.TEST_DATABASE_URL = parent.NAVA_TEST_DATABASE_URL;
     output.CONFIRM_DISPOSABLE_TEST_DB = '1';
@@ -1169,6 +1234,16 @@ function runCli(argv) {
   if (command === 'assert-plan-files') {
     if (argv.length !== 4) throw new Error('assert-plan-files requires root, mode, and slice');
     assertPlanFiles(argv[1], argv[2], argv[3]);
+    return;
+  }
+  if (command === 'server-test-files') {
+    if (argv.length !== 3) throw new Error('server-test-files requires mode and slice');
+    process.stdout.write(`${getServerTestFiles(argv[1], argv[2]).join('\n')}\n`);
+    return;
+  }
+  if (command === 'validate-vitest-report') {
+    if (argv.length !== 2) throw new Error('validate-vitest-report requires report path');
+    validateVitestReport(readJsonFile(argv[1], 'Vitest report'));
     return;
   }
   if (command === 'validate-manifest') {
