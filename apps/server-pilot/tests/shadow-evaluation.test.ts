@@ -88,6 +88,7 @@ const shadowTestCapScope = 'u13-test-property';
 const shadowTestTokenCap = '100000';
 const shadowTestSpendCapUsd = '100';
 const shadowTestBrowserCap = '1';
+const shadowTestExecutionMode = 'local_synthetic';
 
 async function withConfiguredShadowRoute<T>(callback: () => Promise<T>): Promise<T> {
   const previousRoute = process.env.AI_MODEL_ROUTE;
@@ -97,6 +98,7 @@ async function withConfiguredShadowRoute<T>(callback: () => Promise<T>): Promise
   const previousTokenCap = process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
   const previousSpendCapUsd = process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY;
   const previousBrowserCap = process.env.AI_SHADOW_BROWSER_CAP_PER_DAY;
+  const previousExecutionMode = process.env.AI_SHADOW_EXECUTION_MODE;
   process.env.AI_MODEL_ROUTE = 'approved-local';
   process.env.AI_APPROVED_LOCAL_SHADOW_CONFIG = configuredShadowDescriptor;
   process.env.AI_SHADOW_ADMISSION_CAP_PER_DAY = shadowTestCap;
@@ -104,6 +106,7 @@ async function withConfiguredShadowRoute<T>(callback: () => Promise<T>): Promise
   process.env.AI_SHADOW_TOKEN_CAP_PER_DAY = shadowTestTokenCap;
   process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY = shadowTestSpendCapUsd;
   process.env.AI_SHADOW_BROWSER_CAP_PER_DAY = shadowTestBrowserCap;
+  process.env.AI_SHADOW_EXECUTION_MODE = shadowTestExecutionMode;
   try {
     return await callback();
   } finally {
@@ -121,6 +124,8 @@ async function withConfiguredShadowRoute<T>(callback: () => Promise<T>): Promise
     else process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY = previousSpendCapUsd;
     if (previousBrowserCap === undefined) delete process.env.AI_SHADOW_BROWSER_CAP_PER_DAY;
     else process.env.AI_SHADOW_BROWSER_CAP_PER_DAY = previousBrowserCap;
+    if (previousExecutionMode === undefined) delete process.env.AI_SHADOW_EXECUTION_MODE;
+    else process.env.AI_SHADOW_EXECUTION_MODE = previousExecutionMode;
   }
 }
 
@@ -132,6 +137,7 @@ async function withNoConfiguredShadowRoute<T>(callback: () => Promise<T>): Promi
   const previousTokenCap = process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
   const previousSpendCapUsd = process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY;
   const previousBrowserCap = process.env.AI_SHADOW_BROWSER_CAP_PER_DAY;
+  const previousExecutionMode = process.env.AI_SHADOW_EXECUTION_MODE;
   delete process.env.AI_MODEL_ROUTE;
   delete process.env.AI_APPROVED_LOCAL_SHADOW_CONFIG;
   process.env.AI_SHADOW_ADMISSION_CAP_PER_DAY = shadowTestCap;
@@ -139,6 +145,7 @@ async function withNoConfiguredShadowRoute<T>(callback: () => Promise<T>): Promi
   process.env.AI_SHADOW_TOKEN_CAP_PER_DAY = shadowTestTokenCap;
   process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY = shadowTestSpendCapUsd;
   process.env.AI_SHADOW_BROWSER_CAP_PER_DAY = shadowTestBrowserCap;
+  process.env.AI_SHADOW_EXECUTION_MODE = shadowTestExecutionMode;
   try {
     return await callback();
   } finally {
@@ -156,6 +163,8 @@ async function withNoConfiguredShadowRoute<T>(callback: () => Promise<T>): Promi
     else process.env.AI_SHADOW_SPEND_CAP_USD_PER_DAY = previousSpendCapUsd;
     if (previousBrowserCap === undefined) delete process.env.AI_SHADOW_BROWSER_CAP_PER_DAY;
     else process.env.AI_SHADOW_BROWSER_CAP_PER_DAY = previousBrowserCap;
+    if (previousExecutionMode === undefined) delete process.env.AI_SHADOW_EXECUTION_MODE;
+    else process.env.AI_SHADOW_EXECUTION_MODE = previousExecutionMode;
   }
 }
 
@@ -662,6 +671,210 @@ if (TEST_DB_AVAILABLE && reachable)
       );
     }, 30_000);
 
+    it('purges expired skipped and dead-letter admission receipts through normal producer and worker maintenance', async () => {
+      await withConfiguredShadowRoute(() =>
+        withAiWriteGate(async () => {
+          const previousTokenCap = process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
+          const storage = new FakeS3Storage(`u13-orphan-retention-${randomUUID()}`);
+          const persistNormalInbound = async (db: DB, label: string, date: string) => {
+            const token = randomUUID();
+            const messageId = `u13-${label}-message-${token}`;
+            const raw = inboundRaw({
+              messageId,
+              body: `U13 ${label} retention receipt.`,
+              date,
+            });
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const stored = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `u13-${label}-${token}`,
+                messageId,
+              },
+              { db, storage },
+            );
+            return { messageId, stored };
+          };
+          try {
+            await withWorkerDb(async (db) => {
+              const expiredAt = new Date('2026-08-01T00:00:00.000Z');
+              const unexpiredAt = new Date('2026-10-01T00:00:00.000Z');
+
+              // The normal producer records an admission-only skipped receipt.
+              delete process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
+              const skipped = await persistNormalInbound(
+                db,
+                'skipped-orphan',
+                'Tue, 01 Sep 2026 12:40:00 +0000',
+              );
+              expect(skipped.stored.kind).toBe('stored');
+              if (skipped.stored.kind !== 'stored') return;
+              const [skippedAdmission] = await db
+                .select()
+                .from(aiShadowAdmission)
+                .where(eq(aiShadowAdmission.triggerMessageId, skipped.stored.messageId));
+              expect(skippedAdmission).toMatchObject({
+                admissionStatus: 'skipped',
+                reason: 'admission_cap_unconfigured',
+              });
+              await db
+                .update(aiShadowAdmission)
+                .set({ retentionExpiresAt: expiredAt })
+                .where(eq(aiShadowAdmission.id, skippedAdmission!.id));
+
+              // No queue row exists, so this is the worker's normal maintenance pass.
+              expect(
+                await runAiWorkerOnce({
+                  transportId: skipped.stored.transportId,
+                  runKind: 'shadow_prediction',
+                }),
+              ).toBe(true);
+
+              // Admit through the same producer, then remove the policy before the
+              // worker claims it. This creates an admitted-but-dead-lettered receipt
+              // without a prediction body.
+              process.env.AI_SHADOW_TOKEN_CAP_PER_DAY = shadowTestTokenCap;
+              const deadLetter = await persistNormalInbound(
+                db,
+                'dead-letter-orphan',
+                'Tue, 01 Sep 2026 12:45:00 +0000',
+              );
+              expect(deadLetter.stored.kind).toBe('stored');
+              if (deadLetter.stored.kind !== 'stored') return;
+              const [deadLetterAdmission] = await db
+                .select()
+                .from(aiShadowAdmission)
+                .where(eq(aiShadowAdmission.triggerMessageId, deadLetter.stored.messageId));
+              expect(deadLetterAdmission).toMatchObject({
+                admissionStatus: 'admitted',
+                reason: 'admitted_within_daily_cap',
+              });
+              await db
+                .update(aiShadowAdmission)
+                .set({ retentionExpiresAt: expiredAt })
+                .where(eq(aiShadowAdmission.id, deadLetterAdmission!.id));
+              delete process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
+
+              // A second skipped receipt remains as an explicit unexpired control.
+              const retained = await persistNormalInbound(
+                db,
+                'retained-skipped',
+                'Tue, 01 Sep 2026 12:50:00 +0000',
+              );
+              expect(retained.stored.kind).toBe('stored');
+              if (retained.stored.kind !== 'stored') return;
+              const [retainedAdmission] = await db
+                .select()
+                .from(aiShadowAdmission)
+                .where(eq(aiShadowAdmission.triggerMessageId, retained.stored.messageId));
+              expect(retainedAdmission).toMatchObject({ admissionStatus: 'skipped' });
+              await db
+                .update(aiShadowAdmission)
+                .set({ retentionExpiresAt: unexpiredAt })
+                .where(eq(aiShadowAdmission.id, retainedAdmission!.id));
+
+              await runAiWorkerOnce({
+                transportId: deadLetter.stored.transportId,
+                runKind: 'shadow_prediction',
+              });
+              const [run] = await db
+                .select()
+                .from(aiWorkflowRun)
+                .where(
+                  and(
+                    eq(aiWorkflowRun.triggerMessageId, deadLetter.stored.messageId),
+                    eq(aiWorkflowRun.runKind, 'shadow_prediction'),
+                  ),
+                );
+              expect(run?.state).toBe('dead_letter');
+
+              // A linked prediction remains retained even if its receipt's
+              // expiry is older. This exercises the orphan predicate's
+              // unexpired-evidence fence through the normal producer/worker.
+              process.env.AI_SHADOW_TOKEN_CAP_PER_DAY = shadowTestTokenCap;
+              const linked = await persistNormalInbound(
+                db,
+                'linked-unexpired',
+                'Tue, 01 Sep 2026 12:55:00 +0000',
+              );
+              expect(linked.stored.kind).toBe('stored');
+              if (linked.stored.kind !== 'stored') return;
+              configuredShadowFixture.resetTransportCalls();
+              const linkedDrain = await runAiWorkerDrain({
+                transportId: linked.stored.transportId,
+                threadId: linked.stored.threadId,
+                triggerMessageId: linked.stored.messageId,
+                runKind: 'shadow_prediction',
+                timeoutMs: 5_000,
+                pollIntervalMs: 10,
+              });
+              expect(linkedDrain).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
+              expect(configuredShadowFixture.getTransportCalls()).toBe(1);
+              const [linkedAdmission] = await db
+                .select()
+                .from(aiShadowAdmission)
+                .where(eq(aiShadowAdmission.triggerMessageId, linked.stored.messageId));
+              const [linkedPrediction] = await db
+                .select()
+                .from(aiShadowPrediction)
+                .where(eq(aiShadowPrediction.triggerMessageId, linked.stored.messageId));
+              expect(linkedAdmission).toMatchObject({ admissionStatus: 'admitted' });
+              expect(linkedPrediction).toMatchObject({ predictionStatus: 'sealed' });
+              if (!linkedAdmission || !linkedPrediction) return;
+              await db
+                .update(aiShadowAdmission)
+                .set({ retentionExpiresAt: expiredAt })
+                .where(eq(aiShadowAdmission.id, linkedAdmission.id));
+              delete process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
+
+              // The next normal worker pass has no claim and must purge both
+              // expired orphan receipts while retaining both unexpired controls
+              // (one admission-only and one linked prediction).
+              await runAiWorkerOnce({
+                transportId: deadLetter.stored.transportId,
+                runKind: 'shadow_prediction',
+              });
+              expect(
+                await db
+                  .select()
+                  .from(aiShadowAdmission)
+                  .where(eq(aiShadowAdmission.id, skippedAdmission!.id)),
+              ).toHaveLength(0);
+              expect(
+                await db
+                  .select()
+                  .from(aiShadowAdmission)
+                  .where(eq(aiShadowAdmission.id, deadLetterAdmission!.id)),
+              ).toHaveLength(0);
+              expect(
+                await db
+                  .select()
+                  .from(aiShadowAdmission)
+                  .where(eq(aiShadowAdmission.id, retainedAdmission!.id)),
+              ).toHaveLength(1);
+              expect(
+                await db
+                  .select()
+                  .from(aiShadowAdmission)
+                  .where(eq(aiShadowAdmission.id, linkedAdmission.id)),
+              ).toHaveLength(1);
+              expect(
+                await db
+                  .select()
+                  .from(aiShadowPrediction)
+                  .where(eq(aiShadowPrediction.id, linkedPrediction.id)),
+              ).toHaveLength(1);
+            });
+          } finally {
+            if (previousTokenCap === undefined) delete process.env.AI_SHADOW_TOKEN_CAP_PER_DAY;
+            else process.env.AI_SHADOW_TOKEN_CAP_PER_DAY = previousTokenCap;
+          }
+        }),
+      );
+    }, 30_000);
+
     it('persists a skipped admission when the real daily cap is exhausted before queueing', async () => {
       await withNoConfiguredShadowRoute(() =>
         withWorkerDb(async (db) => {
@@ -786,6 +999,69 @@ if (TEST_DB_AVAILABLE && reachable)
             releaseId: shadowAdmissionReleaseId(),
             requestGeneration: 'shadow-request-v1',
           });
+
+          // Exercise the same admission through the normal inbound producer,
+          // then read it through the authorized scorecard route. The seeded
+          // rows above only establish the lower-edge cap fixture.
+          const storage = new FakeS3Storage(`u13-cap-route-${token}`);
+          const producedMessageId = `u13-cap-produced-${token}`;
+          const producedRaw = inboundRaw({
+            messageId: producedMessageId,
+            body: 'Please confirm the capped reservation through normal ingest.',
+            date: 'Tue, 01 Sep 2026 13:00:00 +0000',
+          });
+          const producedParsed = await parseRawMessage(producedRaw, {
+            messageId: producedMessageId,
+            storage,
+          });
+          const produced = await persistInboundMessage(
+            producedParsed,
+            producedRaw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: `u13-cap-produced-${token}`,
+              messageId: producedMessageId,
+            },
+            { db, storage },
+          );
+          expect(produced.kind).toBe('stored');
+          if (produced.kind !== 'stored') return;
+          const [normalSkipped] = await db
+            .select()
+            .from(aiShadowAdmission)
+            .where(eq(aiShadowAdmission.triggerMessageId, produced.messageId));
+          expect(normalSkipped).toMatchObject({
+            eligible: true,
+            admissionStatus: 'skipped',
+            reason: 'daily_admission_cap_exhausted',
+          });
+          const cutoff = new Date();
+          const authorizedCaller = appRouter.createCaller({
+            auth: null as never,
+            reqHeaders: new Headers(),
+            sessionUser: {
+              id: `u13-cap-scorecard-user-${token}`,
+              email: 'ropperman@legacyhotels.co.za',
+              name: null,
+            },
+          });
+          const authorizedScorecard = await authorizedCaller.adminDashboard.getMetrics({
+            cohortId: 'centurion',
+            windowStart: new Date(cutoff.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+            windowEnd: cutoff.toISOString(),
+            observationCutoff: cutoff.toISOString(),
+            operation: 'aggregate',
+          });
+          expect(authorizedScorecard.shadowScorecard).toMatchObject({
+            admissionPopulation: expect.objectContaining({
+              availability: 'available',
+              counts: expect.objectContaining({ skipped: expect.any(Number) }),
+              provenance: expect.objectContaining({ selectionClock: 'admission_created_at' }),
+            }),
+          });
+          expect(
+            authorizedScorecard.shadowScorecard?.admissionPopulation.counts.skipped,
+          ).toBeGreaterThan(0);
           expect(
             await db
               .select()
@@ -864,6 +1140,74 @@ if (TEST_DB_AVAILABLE && reachable)
       );
     }, 30_000);
 
+    it('does not admit a costly/live mode even when declarations are complete', async () => {
+      await withConfiguredShadowRoute(() =>
+        withAiWriteGate(async () => {
+          const previousExecutionMode = process.env.AI_SHADOW_EXECUTION_MODE;
+          process.env.AI_SHADOW_EXECUTION_MODE = 'live';
+          try {
+            await withWorkerDb(async (db) => {
+              const storage = new FakeS3Storage(`u13-live-disabled-${randomUUID()}`);
+              const token = randomUUID();
+              const inboundId = `u13-live-disabled-inbound-${token}`;
+              const raw = inboundRaw({
+                messageId: inboundId,
+                body: 'Please confirm reservation without a local synthetic budget lane.',
+                date: 'Tue, 01 Sep 2026 12:30:00 +0000',
+              });
+              const parsed = await parseRawMessage(raw, { messageId: inboundId, storage });
+              const stored = await persistInboundMessage(
+                parsed,
+                raw,
+                {
+                  ingestMailboxId: 'ingest-nava-legacy',
+                  pop3Uidl: `u13-live-disabled-${token}`,
+                  messageId: inboundId,
+                },
+                { db, storage },
+              );
+              expect(stored.kind).toBe('stored');
+              if (stored.kind !== 'stored') return;
+              const [admission] = await db
+                .select()
+                .from(aiShadowAdmission)
+                .where(eq(aiShadowAdmission.triggerMessageId, stored.messageId));
+              expect(admission).toMatchObject({
+                eligible: true,
+                admissionStatus: 'skipped',
+                reason: 'admission_live_disabled',
+              });
+              expect(
+                await db
+                  .select()
+                  .from(aiWorkflowRun)
+                  .where(
+                    and(
+                      eq(aiWorkflowRun.triggerMessageId, stored.messageId),
+                      eq(aiWorkflowRun.runKind, 'shadow_prediction'),
+                    ),
+                  ),
+              ).toHaveLength(0);
+              configuredShadowFixture.resetTransportCalls();
+              const drain = await runAiWorkerDrain({
+                transportId: stored.transportId,
+                threadId: stored.threadId,
+                triggerMessageId: stored.messageId,
+                runKind: 'shadow_prediction',
+                timeoutMs: 200,
+                pollIntervalMs: 10,
+              });
+              expect(drain).toMatchObject({ ok: true, reason: 'drained', processed: 0 });
+              expect(configuredShadowFixture.getTransportCalls()).toBe(0);
+            });
+          } finally {
+            if (previousExecutionMode === undefined) delete process.env.AI_SHADOW_EXECUTION_MODE;
+            else process.env.AI_SHADOW_EXECUTION_MODE = previousExecutionMode;
+          }
+        }),
+      );
+    }, 30_000);
+
     it('uses the normal ingest producer, claims the private queue, seals once, and rematches a later outbound ingest', async () => {
       await withConfiguredShadowRoute(() =>
         withAiWriteGate(() =>
@@ -903,6 +1247,36 @@ if (TEST_DB_AVAILABLE && reachable)
               .where(eq(mailThread.id, storedInbound.threadId));
             expect(threadBeforeWorker?.isRead).toBe(false);
             expect(threadBeforeWorker?.labelIds).toEqual([]);
+
+            // The normal producer has admitted and queued the receipt, but
+            // before the worker claims it the authorized scorecard must expose
+            // operational pending-seal coverage separately from assessment
+            // pending.
+            const pendingCutoff = new Date();
+            const pendingCaller = appRouter.createCaller({
+              auth: null as never,
+              reqHeaders: new Headers(),
+              sessionUser: {
+                id: `u13-pending-scorecard-user-${token}`,
+                email: 'ropperman@legacyhotels.co.za',
+                name: null,
+              },
+            });
+            const pendingScorecard = await pendingCaller.adminDashboard.getMetrics({
+              cohortId: 'centurion',
+              windowStart: new Date(pendingCutoff.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+              windowEnd: pendingCutoff.toISOString(),
+              observationCutoff: pendingCutoff.toISOString(),
+              operation: 'aggregate',
+            });
+            expect(pendingScorecard.shadowScorecard).toMatchObject({
+              counts: expect.objectContaining({ pending: 0 }),
+              admissionPopulation: expect.objectContaining({
+                availability: 'available',
+                counts: expect.objectContaining({ admitted: 1, pending: 1 }),
+                provenance: expect.objectContaining({ selectionClock: 'admission_created_at' }),
+              }),
+            });
 
             configuredShadowFixture.resetTransportCalls();
             const drain = await runAiWorkerDrain({
@@ -1057,6 +1431,20 @@ if (TEST_DB_AVAILABLE && reachable)
             expect(authorizedScorecard.shadowScorecard).toMatchObject({
               evaluationMode: SHADOW_EVALUATION_MODE,
               counts: expect.objectContaining({ admitted: 1, sealed: 1, late: 1 }),
+              admissionPopulation: expect.objectContaining({
+                availability: 'available',
+                reason: null,
+                counts: expect.objectContaining({
+                  eligible: 1,
+                  admitted: 1,
+                  skipped: 0,
+                  denied: 0,
+                  pending: 0,
+                }),
+                provenance: expect.objectContaining({
+                  selectionClock: 'admission_created_at',
+                }),
+              }),
               quality: expect.objectContaining({ availability: 'unavailable', denominator: null }),
               provenance: expect.objectContaining({
                 source: 'private_shadow_store',

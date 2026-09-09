@@ -176,6 +176,15 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await expect(page.getByText('Unknown evidence', { exact: true })).toBeVisible();
   await expect(page.getByText('Label coverage', { exact: true })).toBeVisible();
   await expect(
+    page.getByRole('heading', { name: 'Admission coverage', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Eligible admissions', { exact: true })).toBeVisible();
+  await expect(page.getByText('Admitted receipts', { exact: true })).toBeVisible();
+  await expect(page.getByText('Pending seal', { exact: true })).toBeVisible();
+  await expect(page.getByText('Skipped admissions', { exact: true })).toBeVisible();
+  await expect(page.getByText('Denied admissions', { exact: true })).toBeVisible();
+  await expect(page.getByText('Admission clock: created at', { exact: false })).toBeVisible();
+  await expect(
     page.getByText('Unavailable: label provenance unavailable', { exact: true }),
   ).toBeVisible();
   await expect(
@@ -210,6 +219,16 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
     'no_reply_required',
   ]);
   expect(Object.keys(exported.overlays)).toEqual(['partially_answered', 'unknown_evidence']);
+
+  const missingContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const missingPage = await missingContext.newPage();
+  await missingPage.goto(dashboardUrl('missing'), { waitUntil: 'domcontentloaded' });
+  await expectDashboardReady(missingPage);
+  await expect(
+    missingPage.getByText('Admission coverage unknown: not loaded.', { exact: true }),
+  ).toBeVisible();
+  await expect(missingPage.getByText('Eligible admissions', { exact: true })).not.toBeVisible();
+  await missingContext.close();
 
   await selectOptionKeyboard(page, 'Cohort', 'Research');
   await expect(page.getByText('research', { exact: true })).toBeVisible();

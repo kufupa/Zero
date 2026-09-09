@@ -200,6 +200,63 @@ const metrics: AdminDashboardMetrics = {
       missingIdentity: 0,
     },
   },
+  shadowScorecard: {
+    schemaVersion: 'shadow-scorecard-v1',
+    evaluationMode: 'future_shadow',
+    counts: {
+      eligible: 1,
+      admitted: 1,
+      sealed: 1,
+      unavailable: 0,
+      failed: 0,
+      skipped: 0,
+      denied: 0,
+      pending: 1,
+      matched: 0,
+      late: 0,
+      ambiguous: 0,
+      unmatched: 0,
+      unobserved: 0,
+      unknownCoverage: 0,
+      changedState: 0,
+      unscorable: 0,
+      labelled: 0,
+      scorable: 0,
+      correct: 0,
+      partial: 0,
+      incorrect: 0,
+    },
+    quality: {
+      availability: 'unavailable',
+      denominator: null,
+      reason: 'label_provenance_unavailable',
+      correctRate: null,
+      usefulRate: null,
+    },
+    admissionPopulation: {
+      availability: 'available',
+      reason: null,
+      counts: { eligible: 3, admitted: 2, skipped: 1, denied: 1, pending: 1 },
+      provenance: {
+        source: 'private_shadow_store',
+        missingIsNotZero: true,
+        evaluationMode: 'future_shadow',
+        selectionClock: 'admission_created_at',
+        windowStart: '2026-09-01T00:00:00.000Z',
+        windowEnd: '2026-09-08T00:00:00.000Z',
+        observationCutoff: '2026-09-09T12:00:00.000Z',
+      },
+    },
+    provenance: {
+      source: 'private_shadow_store',
+      missingIsNotZero: true,
+      evaluationMode: 'future_shadow',
+      selectionClock: 'sealed_at',
+      windowStart: '2026-09-01T00:00:00.000Z',
+      windowEnd: '2026-09-08T00:00:00.000Z',
+      observationCutoff: '2026-09-09T12:00:00.000Z',
+    },
+  },
   inboundVolume: { availability: 'live', value: 6 },
   medianFirstResponseMinutes: { availability: 'unavailable', value: null },
   p90FirstResponseMinutes: { availability: 'unavailable', value: null },
@@ -260,6 +317,8 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain('Unknown evidence');
     expect(markup).toContain('Primary request-state buckets are mutually exclusive');
     expect(markup).toContain('Export bounded snapshot');
+    expect(markup).toContain('Admission coverage');
+    expect(markup).toContain('Admission clock: created at');
     expect(markup).toContain('Measurement config version');
     expect(markup).toContain('Source vintage');
     expect(markup).toContain('classificationAsOf');

@@ -1137,6 +1137,17 @@ function ShadowScorecardSection({
       : 'Unavailable';
   const denominatorTextValue =
     quality.denominator === null ? 'Unknown' : formatNumber(quality.denominator);
+  const admissionPopulation = scorecard.admissionPopulation;
+  const admissionCounts = admissionPopulation?.counts;
+  const admissionAvailable =
+    admissionPopulation?.availability === 'available' &&
+    typeof admissionCounts?.eligible === 'number' &&
+    typeof admissionCounts?.admitted === 'number' &&
+    typeof admissionCounts?.skipped === 'number' &&
+    typeof admissionCounts?.denied === 'number' &&
+    typeof admissionCounts?.pending === 'number';
+  const admissionNumber = (value: number | null | undefined) =>
+    value === null || value === undefined ? 'Unknown' : formatNumber(value);
 
   return (
     <section aria-labelledby="shadow-scorecard-heading" className="grid gap-4">
@@ -1149,6 +1160,96 @@ function ShadowScorecardSection({
           create drafts, labels, read-state changes, or sends.
         </p>
       </div>
+      <section aria-labelledby="shadow-admission-heading" className="grid gap-3">
+        <div>
+          <h3 id="shadow-admission-heading" className="text-base font-semibold">
+            Admission coverage
+          </h3>
+          <p className="text-muted-foreground text-sm">
+            Operational receipts are selected independently from sealed prediction outcomes.
+          </p>
+        </div>
+        {!admissionAvailable ? (
+          <div
+            role="status"
+            className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
+          >
+            Admission coverage unknown:{' '}
+            {(admissionPopulation?.reason ?? 'population unavailable').replaceAll('_', ' ')}.
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Eligible admissions</CardTitle>
+                  <CardDescription>Receipts eligible at the admission boundary.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {admissionNumber(admissionCounts?.eligible)}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Admitted receipts</CardTitle>
+                  <CardDescription>Receipts allowed into the private queue.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {admissionNumber(admissionCounts?.admitted)}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Pending seal</CardTitle>
+                  <CardDescription>
+                    Admitted receipts without a sealed prediction by cutoff.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {admissionNumber(admissionCounts?.pending)}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Skipped admissions</CardTitle>
+                  <CardDescription>Eligible receipts skipped before queue work.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {admissionNumber(admissionCounts?.skipped)}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Denied admissions</CardTitle>
+                  <CardDescription>Receipts denied at the admission boundary.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {admissionNumber(admissionCounts?.denied)}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              Admission clock: created at ({admissionPopulation.provenance.selectionClock}). Window:{' '}
+              {displayDate(admissionPopulation.provenance.windowStart)} to{' '}
+              {displayDate(admissionPopulation.provenance.windowEnd)}. Observation cutoff:{' '}
+              {displayDate(admissionPopulation.provenance.observationCutoff)}.{' '}
+              {admissionPopulation.reason === 'no_admission_receipts'
+                ? 'No admission receipts in this window; this is confirmed absence, not zero-filled unknown evidence.'
+                : 'Pending seal is not assessment pending.'}
+            </p>
+          </>
+        )}
+      </section>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">

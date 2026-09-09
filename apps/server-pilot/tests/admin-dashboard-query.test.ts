@@ -8,7 +8,11 @@ import {
   resolveAdminDashboardGrant,
   type AdminDashboardGrant,
 } from '../src/metrics/admin-dashboard-access.js';
-import { aiShadowAssessment, aiShadowPrediction } from '../src/db/schema/ai-shadow-evaluation.js';
+import {
+  aiShadowAdmission,
+  aiShadowAssessment,
+  aiShadowPrediction,
+} from '../src/db/schema/ai-shadow-evaluation.js';
 import { persistMailBaselineProjection } from '../src/metrics/mail-baseline-projection.js';
 import { mailThread, mailThreadCategory, message } from '../src/db/schema/mail.js';
 import type { MailBaselineEvidence } from '../src/metrics/mail-baseline.js';
@@ -258,6 +262,19 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
           denominator: 1,
           measurementConfigVersion: 'v1',
           captureBasis: 'configured-v1',
+        });
+        expect(result.loaded.shadowScorecard).toMatchObject({
+          admissionPopulation: {
+            availability: 'available',
+            reason: 'no_admission_receipts',
+            counts: { eligible: 0, admitted: 0, skipped: 0, denied: 0, pending: 0 },
+            provenance: {
+              selectionClock: 'admission_created_at',
+              windowStart: '2026-09-01T00:00:00.000Z',
+              windowEnd: '2026-09-08T00:00:00.000Z',
+              observationCutoff: '2026-09-08T12:00:00.000Z',
+            },
+          },
         });
         expect(result.exported).toMatchObject({
           schemaVersion: 'admin-dashboard-export-v1',
@@ -815,6 +832,227 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
           windowStart: '2026-08-11T00:00:00.000Z',
           windowEnd: '2026-09-08T00:00:00.000Z',
         }),
+      });
+    });
+
+    it('excludes a delayed seal from the authorized sealed-at scorecard population', async () => {
+      const result = await withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        try {
+          const threadId = 'u13-residual-fr3-thread';
+          const messageId = 'u13-residual-fr3-message';
+          const predictionId = 'u13-residual-fr3-prediction';
+          const predictionKey = `shadow-prediction:${predictionId}`;
+          const admittedAt = new Date('2026-09-02T09:00:00.000Z');
+          const sealedAt = new Date('2026-09-09T09:00:00.000Z');
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: 'transport-centurion',
+            threadRootId: `${threadId}-root`,
+            subject: 'U13 delayed seal fixture',
+            snippet: 'U13 delayed seal fixture',
+            createdAt: admittedAt,
+            updatedAt: sealedAt,
+            latestMessageAt: sealedAt,
+          });
+          await db.insert(message).values({
+            id: messageId,
+            transportId: 'transport-centurion',
+            threadId,
+            direction: 'inbound',
+            messageIdHeader: `<${messageId}@example.test>`,
+            fromAddress: 'fr3-guest@example.test',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+            ccAddresses: [],
+            bccAddresses: [],
+            receivedAt: admittedAt,
+            createdAt: admittedAt,
+            updatedAt: sealedAt,
+          });
+          await db.insert(aiShadowAdmission).values({
+            id: 'u13-residual-fr3-admission',
+            admissionKey: predictionKey,
+            evaluationMode: 'future_shadow',
+            evaluationVersion: 'shadow-evaluation-v1',
+            eligible: true,
+            admissionStatus: 'admitted',
+            reason: 'admitted_within_daily_cap',
+            transportId: 'transport-centurion',
+            threadId,
+            triggerMessageId: messageId,
+            releaseId: 'shadow-evaluation-v1:fr3',
+            contextDigest: 'c'.repeat(64),
+            requestGeneration: 'shadow-request-v1',
+            capBucketAt: admittedAt,
+            retentionExpiresAt: new Date('2026-10-09T09:00:00.000Z'),
+            createdAt: admittedAt,
+          });
+          await db.insert(aiShadowPrediction).values({
+            id: predictionId,
+            predictionKey,
+            evaluationMode: 'future_shadow',
+            evaluationVersion: 'shadow-evaluation-v1',
+            admissionStatus: 'admitted',
+            predictionStatus: 'sealed',
+            transportId: 'transport-centurion',
+            threadId,
+            triggerMessageId: messageId,
+            observedAt: sealedAt,
+            asOfAt: admittedAt,
+            sealedAt,
+            observationEndsAt: new Date('2026-09-16T09:00:00.000Z'),
+            retentionExpiresAt: new Date('2026-10-09T09:00:00.000Z'),
+            sourceVintage: sealedAt.toISOString(),
+            inputDigest: 'd'.repeat(64),
+            messageIds: [messageId],
+            attachmentIds: [],
+            excludedFutureMessageIds: [],
+            modelId: 'u13-residual-fr3-model',
+            promptVersion: 'shadow-mail/v1',
+            route: {
+              routeId: 'u13-residual-fr3-route',
+              purpose: 'shadow',
+              protocol: 'in_process',
+              access: 'current_app',
+              egress: 'none',
+              retention: 'bounded',
+              usage: 'reported',
+              modelId: 'u13-residual-fr3-model',
+            },
+            modelUsage: { inputTokens: 2, outputTokens: 1, latencyMs: 1 },
+            prediction: { outcome: 'partial' },
+            createdAt: sealedAt,
+          });
+          await db.insert(aiShadowAdmission).values([
+            {
+              id: 'u13-coverage-skipped-admission',
+              admissionKey: 'shadow-admission:u13-coverage-skipped',
+              evaluationMode: 'future_shadow',
+              evaluationVersion: 'shadow-evaluation-v1',
+              eligible: true,
+              admissionStatus: 'skipped',
+              reason: 'daily_cap_exhausted',
+              transportId: 'transport-centurion',
+              threadId,
+              triggerMessageId: messageId,
+              releaseId: 'shadow-evaluation-v1:fr3-coverage',
+              contextDigest: 'e'.repeat(64),
+              requestGeneration: 'shadow-request-v1',
+              capBucketAt: new Date('2026-09-02T10:00:00.000Z'),
+              retentionExpiresAt: new Date('2026-10-09T10:00:00.000Z'),
+              createdAt: new Date('2026-09-02T10:00:00.000Z'),
+            },
+            {
+              id: 'u13-coverage-denied-admission',
+              admissionKey: 'shadow-admission:u13-coverage-denied',
+              evaluationMode: 'future_shadow',
+              evaluationVersion: 'shadow-evaluation-v1',
+              eligible: false,
+              admissionStatus: 'denied',
+              reason: 'route_unavailable',
+              transportId: 'transport-centurion',
+              threadId,
+              triggerMessageId: messageId,
+              releaseId: 'shadow-evaluation-v1:fr3-coverage',
+              contextDigest: 'f'.repeat(64),
+              requestGeneration: 'shadow-request-v1',
+              capBucketAt: new Date('2026-09-02T11:00:00.000Z'),
+              retentionExpiresAt: new Date('2026-10-09T11:00:00.000Z'),
+              createdAt: new Date('2026-09-02T11:00:00.000Z'),
+            },
+            {
+              id: 'u13-coverage-pending-admission',
+              admissionKey: 'shadow-admission:u13-coverage-pending',
+              evaluationMode: 'future_shadow',
+              evaluationVersion: 'shadow-evaluation-v1',
+              eligible: true,
+              admissionStatus: 'admitted',
+              reason: 'admitted_within_daily_cap',
+              transportId: 'transport-centurion',
+              threadId,
+              triggerMessageId: messageId,
+              releaseId: 'shadow-evaluation-v1:fr3-coverage',
+              contextDigest: 'g'.repeat(64),
+              requestGeneration: 'shadow-request-v1',
+              capBucketAt: new Date('2026-09-02T12:00:00.000Z'),
+              retentionExpiresAt: new Date('2026-10-09T12:00:00.000Z'),
+              createdAt: new Date('2026-09-02T12:00:00.000Z'),
+            },
+          ]);
+          const caller = appRouter.createCaller({
+            auth: null as never,
+            reqHeaders: new Headers(),
+            sessionUser: {
+              id: 'u13-residual-fr3-user',
+              email: 'ropperman@legacyhotels.co.za',
+              name: null,
+            },
+          });
+          const shortWindow = await caller.adminDashboard.getMetrics({
+            cohortId: 'centurion',
+            windowStart: '2026-09-01T00:00:00.000Z',
+            windowEnd: '2026-09-08T00:00:00.000Z',
+            observationCutoff: '2026-09-09T12:00:00.000Z',
+            operation: 'aggregate',
+          });
+          const retainedWindow = await caller.adminDashboard.getMetrics({
+            cohortId: 'centurion',
+            window: '28d',
+            windowStart: '2026-08-12T12:00:00.000Z',
+            windowEnd: '2026-09-09T12:00:00.000Z',
+            observationCutoff: '2026-09-09T12:00:00.000Z',
+            operation: 'aggregate',
+          });
+          return { shortWindow, retainedWindow };
+        } finally {
+          __setDbForTests(null);
+        }
+      });
+
+      expect(result.shortWindow.shadowScorecard).toMatchObject({
+        evaluationMode: 'future_shadow',
+        counts: expect.objectContaining({
+          eligible: 0,
+          admitted: 0,
+          sealed: 0,
+          pending: 0,
+        }),
+        provenance: expect.objectContaining({
+          selectionClock: 'sealed_at',
+          windowStart: '2026-09-01T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
+        }),
+        admissionPopulation: {
+          availability: 'available',
+          reason: null,
+          counts: { eligible: 3, admitted: 2, skipped: 1, denied: 1, pending: 1 },
+          provenance: {
+            selectionClock: 'admission_created_at',
+            windowStart: '2026-09-01T00:00:00.000Z',
+            windowEnd: '2026-09-08T00:00:00.000Z',
+            observationCutoff: '2026-09-09T12:00:00.000Z',
+          },
+        },
+      });
+      expect(result.retainedWindow.shadowScorecard).toMatchObject({
+        evaluationMode: 'future_shadow',
+        counts: expect.objectContaining({ eligible: 1, admitted: 1, sealed: 1 }),
+        provenance: expect.objectContaining({
+          selectionClock: 'sealed_at',
+          windowStart: '2026-08-12T12:00:00.000Z',
+          windowEnd: '2026-09-09T12:00:00.000Z',
+        }),
+        admissionPopulation: {
+          availability: 'available',
+          reason: null,
+          counts: { eligible: 3, admitted: 2, skipped: 1, denied: 1, pending: 1 },
+          provenance: {
+            selectionClock: 'admission_created_at',
+            windowStart: '2026-08-12T12:00:00.000Z',
+            windowEnd: '2026-09-09T12:00:00.000Z',
+            observationCutoff: '2026-09-09T12:00:00.000Z',
+          },
+        },
       });
     });
   });

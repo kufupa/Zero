@@ -35,6 +35,36 @@ export type ShadowAssessmentScorecardRow = {
   verdict: 'correct' | 'partial' | 'incorrect' | null;
 };
 
+export type ShadowAdmissionPopulationRow = {
+  id: string;
+  evaluationMode?: ShadowEvaluationMode;
+  eligible: boolean;
+  admissionStatus: 'eligible' | 'admitted' | 'skipped' | 'denied';
+  /** True only when a sealed prediction is observable by the population cutoff. */
+  hasSealedPrediction: boolean;
+};
+
+export type ShadowAdmissionPopulation = {
+  availability: 'available' | 'unavailable';
+  reason: 'no_admission_receipts' | 'not_loaded' | null;
+  counts: {
+    eligible: number | null;
+    admitted: number | null;
+    skipped: number | null;
+    denied: number | null;
+    pending: number | null;
+  };
+  provenance: {
+    source: 'private_shadow_store';
+    missingIsNotZero: true;
+    evaluationMode: ShadowEvaluationMode;
+    selectionClock: 'admission_created_at';
+    windowStart: string | null;
+    windowEnd: string | null;
+    observationCutoff: string | null;
+  };
+};
+
 export type ShadowScorecard = {
   schemaVersion: 'shadow-scorecard-v1';
   evaluationMode: ShadowEvaluationMode;
@@ -68,6 +98,8 @@ export type ShadowScorecard = {
     correctRate: number | null;
     usefulRate: number | null;
   };
+  /** Operational admission evidence; separate from the sealed prediction population. */
+  admissionPopulation: ShadowAdmissionPopulation;
   provenance: {
     source: 'private_shadow_store';
     missingIsNotZero: true;
@@ -94,6 +126,69 @@ function assertMode(
   if (mismatch) throw new Error(`${label} evaluation mode cannot be pooled`);
 }
 
+function unavailableAdmissionPopulation(
+  evaluationMode: ShadowEvaluationMode,
+): ShadowAdmissionPopulation {
+  return {
+    availability: 'unavailable',
+    reason: 'not_loaded',
+    counts: {
+      eligible: null,
+      admitted: null,
+      skipped: null,
+      denied: null,
+      pending: null,
+    },
+    provenance: {
+      source: 'private_shadow_store',
+      missingIsNotZero: true,
+      evaluationMode,
+      selectionClock: 'admission_created_at',
+      windowStart: null,
+      windowEnd: null,
+      observationCutoff: null,
+    },
+  };
+}
+
+/**
+ * Build the operational admission population independently from prediction
+ * selection. An admitted receipt without a sealed prediction observable by
+ * the cutoff is admission-pending; assessment pending is counted elsewhere.
+ */
+export function buildShadowAdmissionPopulation(input: {
+  evaluationMode: ShadowEvaluationMode;
+  admissions: readonly ShadowAdmissionPopulationRow[];
+  windowStart?: string | null;
+  windowEnd?: string | null;
+  observationCutoff?: string | null;
+}): ShadowAdmissionPopulation {
+  assertMode(input.evaluationMode, input.admissions, 'admission');
+  const counts = {
+    eligible: input.admissions.filter((row) => row.eligible).length,
+    admitted: input.admissions.filter((row) => row.admissionStatus === 'admitted').length,
+    skipped: input.admissions.filter((row) => row.admissionStatus === 'skipped').length,
+    denied: input.admissions.filter((row) => row.admissionStatus === 'denied').length,
+    pending: input.admissions.filter(
+      (row) => row.admissionStatus === 'admitted' && !row.hasSealedPrediction,
+    ).length,
+  };
+  return {
+    availability: 'available',
+    reason: input.admissions.length === 0 ? 'no_admission_receipts' : null,
+    counts,
+    provenance: {
+      source: 'private_shadow_store',
+      missingIsNotZero: true,
+      evaluationMode: input.evaluationMode,
+      selectionClock: 'admission_created_at',
+      windowStart: input.windowStart ?? null,
+      windowEnd: input.windowEnd ?? null,
+      observationCutoff: input.observationCutoff ?? null,
+    },
+  };
+}
+
 /**
  * Build the operator-facing scorecard from persisted rows. This is a pure
  * consumer: absent/ambiguous labels stay out of the quality numerator and are
@@ -103,6 +198,7 @@ export function buildShadowScorecard(input: {
   evaluationMode: ShadowEvaluationMode;
   predictions: readonly ShadowPredictionScorecardRow[];
   assessments: readonly ShadowAssessmentScorecardRow[];
+  admissionPopulation?: ShadowAdmissionPopulation;
 }): ShadowScorecard {
   assertMode(input.evaluationMode, input.predictions, 'prediction');
   assertMode(input.evaluationMode, input.assessments, 'assessment');
@@ -192,6 +288,8 @@ export function buildShadowScorecard(input: {
       usefulRate:
         qualityDenominator > 0 ? (counts.correct + counts.partial) / qualityDenominator : null,
     },
+    admissionPopulation:
+      input.admissionPopulation ?? unavailableAdmissionPopulation(input.evaluationMode),
     provenance: {
       source: 'private_shadow_store',
       missingIsNotZero: true,

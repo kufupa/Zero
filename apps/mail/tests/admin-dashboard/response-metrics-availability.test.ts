@@ -70,6 +70,60 @@ const metrics: AdminDashboardMetrics = {
   windowEnd: '2026-08-12T00:00:00.000Z',
 };
 
+const unknownAdmissionShadowScorecard: NonNullable<AdminDashboardMetrics['shadowScorecard']> = {
+  schemaVersion: 'shadow-scorecard-v1',
+  evaluationMode: 'future_shadow',
+  counts: {
+    eligible: 0,
+    admitted: 0,
+    sealed: 0,
+    unavailable: 0,
+    failed: 0,
+    skipped: 0,
+    denied: 0,
+    pending: 0,
+    matched: 0,
+    late: 0,
+    ambiguous: 0,
+    unmatched: 0,
+    unobserved: 0,
+    unknownCoverage: 0,
+    changedState: 0,
+    unscorable: 0,
+    labelled: 0,
+    scorable: 0,
+    correct: 0,
+    partial: 0,
+    incorrect: 0,
+  },
+  quality: {
+    availability: 'unavailable',
+    denominator: null,
+    reason: 'no_assessments',
+    correctRate: null,
+    usefulRate: null,
+  },
+  admissionPopulation: {
+    availability: 'unavailable',
+    reason: 'not_loaded',
+    counts: { eligible: null, admitted: null, skipped: null, denied: null, pending: null },
+    provenance: {
+      source: 'private_shadow_store',
+      missingIsNotZero: true,
+      evaluationMode: 'future_shadow',
+      selectionClock: 'admission_created_at',
+      windowStart: null,
+      windowEnd: null,
+      observationCutoff: null,
+    },
+  },
+  provenance: {
+    source: 'private_shadow_store',
+    missingIsNotZero: true,
+    evaluationMode: 'future_shadow',
+  },
+};
+
 describe('AdminDashboardPage response metric availability', () => {
   beforeEach(() => {
     vi.stubGlobal('React', React);
@@ -96,6 +150,24 @@ describe('AdminDashboardPage response metric availability', () => {
     expect(markup).not.toContain('p90 6m');
     expect(markup).not.toContain('0.3%');
     expect(markup).not.toContain('379 unanswered');
+  });
+
+  it('keeps an unavailable admission population unknown instead of zero-filling it', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      source: 'hosted',
+      data: null,
+      metrics: { ...metrics, shadowScorecard: unknownAdmissionShadowScorecard },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain('Admission coverage');
+    expect(markup).toContain('Admission coverage unknown: not loaded.');
+    expect(markup).not.toContain('Eligible admissions');
+    expect(markup).not.toContain('No admission receipts in this window');
   });
 
   it('adds a report version to the hosted dashboard cache key', async () => {

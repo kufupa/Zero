@@ -31,14 +31,18 @@ type DocumentQueryAudit = {
 const FIXTURE_CUTOFF = '2026-09-07T12:00:00.000Z';
 const FIXTURE_ORIGIN = 'http://127.0.0.1:4179';
 
-type FixtureMode = 'default' | 'unauthorized' | 'error';
+type FixtureMode = 'default' | 'unauthorized' | 'error' | 'missing';
 
 const INITIAL_FIXTURE_MODE = new URL(window.location.href).searchParams.get('fixture');
 
 function fixtureMode(): FixtureMode {
   const mode = new URL(window.location.href).searchParams.get('fixture');
-  if (mode === 'unauthorized' || mode === 'error') return mode;
-  if (INITIAL_FIXTURE_MODE === 'unauthorized' || INITIAL_FIXTURE_MODE === 'error') {
+  if (mode === 'unauthorized' || mode === 'error' || mode === 'missing') return mode;
+  if (
+    INITIAL_FIXTURE_MODE === 'unauthorized' ||
+    INITIAL_FIXTURE_MODE === 'error' ||
+    INITIAL_FIXTURE_MODE === 'missing'
+  ) {
     return INITIAL_FIXTURE_MODE;
   }
   return 'default';
@@ -364,6 +368,26 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
         correctRate: null,
         usefulRate: null,
       },
+      admissionPopulation: {
+        availability: 'available',
+        reason: inbound === 0 ? 'no_admission_receipts' : null,
+        counts: {
+          eligible: inbound,
+          admitted: Math.max(0, inbound - 1),
+          skipped: inbound > 0 ? 1 : 0,
+          denied: inbound > 1 ? 1 : 0,
+          pending: Math.max(0, inbound - outbound),
+        },
+        provenance: {
+          source: 'private_shadow_store',
+          missingIsNotZero: true,
+          evaluationMode: 'future_shadow',
+          selectionClock: 'admission_created_at',
+          windowStart: isoWithDays(cutoff, preset === '28d' ? 28 : 7),
+          windowEnd: cutoff,
+          observationCutoff: cutoff,
+        },
+      },
       provenance: {
         source: 'private_shadow_store',
         missingIsNotZero: true,
@@ -620,9 +644,27 @@ export function installReservationToolsPilotTransport(): void {
         );
       }
       record(200, input);
-      return trpcResponse(
-        input.operation === 'export' ? dashboardExportPayload(input) : dashboardPayload(input),
-      );
+      const payload = dashboardPayload(input);
+      if (fixtureMode() === 'missing' && input.operation !== 'export' && payload.shadowScorecard) {
+        payload.shadowScorecard = {
+          ...payload.shadowScorecard,
+          admissionPopulation: {
+            availability: 'unavailable',
+            reason: 'not_loaded',
+            counts: { eligible: null, admitted: null, skipped: null, denied: null, pending: null },
+            provenance: {
+              source: 'private_shadow_store',
+              missingIsNotZero: true,
+              evaluationMode: 'future_shadow',
+              selectionClock: 'admission_created_at',
+              windowStart: null,
+              windowEnd: null,
+              observationCutoff: null,
+            },
+          },
+        };
+      }
+      return trpcResponse(input.operation === 'export' ? dashboardExportPayload(input) : payload);
     }
 
     if (

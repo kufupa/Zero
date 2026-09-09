@@ -1,4 +1,7 @@
-import { buildShadowScorecard } from '../src/metrics/shadow-scorecard.js';
+import {
+  buildShadowAdmissionPopulation,
+  buildShadowScorecard,
+} from '../src/metrics/shadow-scorecard.js';
 import { describe, expect, it } from 'vitest';
 
 describe('shadow scorecard', () => {
@@ -115,5 +118,85 @@ describe('shadow scorecard', () => {
         assessments: [],
       }),
     ).toThrow(/evaluation mode/i);
+  });
+
+  it('exposes admission-clock coverage separately from sealed prediction counts', () => {
+    const admissionPopulation = buildShadowAdmissionPopulation({
+      evaluationMode: 'future_shadow',
+      admissions: [
+        {
+          id: 'sealed-only',
+          eligible: true,
+          admissionStatus: 'admitted',
+          hasSealedPrediction: true,
+        },
+        {
+          id: 'skipped',
+          eligible: true,
+          admissionStatus: 'skipped',
+          hasSealedPrediction: false,
+        },
+        {
+          id: 'denied',
+          eligible: false,
+          admissionStatus: 'denied',
+          hasSealedPrediction: false,
+        },
+        {
+          id: 'pending',
+          eligible: true,
+          admissionStatus: 'admitted',
+          hasSealedPrediction: false,
+        },
+      ],
+      windowStart: '2026-09-01T00:00:00.000Z',
+      windowEnd: '2026-09-08T00:00:00.000Z',
+      observationCutoff: '2026-09-09T12:00:00.000Z',
+    });
+    const report = buildShadowScorecard({
+      evaluationMode: 'future_shadow',
+      predictions: [{ id: 'sealed-only', admissionStatus: 'admitted', predictionStatus: 'sealed' }],
+      assessments: [],
+      admissionPopulation,
+    });
+
+    expect(report.counts).toMatchObject({ eligible: 1, admitted: 1, sealed: 1, pending: 0 });
+    expect(report.admissionPopulation).toMatchObject({
+      availability: 'available',
+      reason: null,
+      counts: { eligible: 3, admitted: 2, skipped: 1, denied: 1, pending: 1 },
+      provenance: {
+        selectionClock: 'admission_created_at',
+        windowStart: '2026-09-01T00:00:00.000Z',
+        windowEnd: '2026-09-08T00:00:00.000Z',
+        observationCutoff: '2026-09-09T12:00:00.000Z',
+      },
+    });
+  });
+
+  it('distinguishes confirmed admission absence from an unloaded population', () => {
+    const absent = buildShadowAdmissionPopulation({
+      evaluationMode: 'future_shadow',
+      admissions: [],
+      windowStart: '2026-09-01T00:00:00.000Z',
+      windowEnd: '2026-09-08T00:00:00.000Z',
+      observationCutoff: '2026-09-09T12:00:00.000Z',
+    });
+    expect(absent).toMatchObject({
+      availability: 'available',
+      reason: 'no_admission_receipts',
+      counts: { eligible: 0, admitted: 0, skipped: 0, denied: 0, pending: 0 },
+    });
+    expect(
+      buildShadowScorecard({
+        evaluationMode: 'future_shadow',
+        predictions: [],
+        assessments: [],
+      }).admissionPopulation,
+    ).toMatchObject({
+      availability: 'unavailable',
+      reason: 'not_loaded',
+      counts: { eligible: null, admitted: null, skipped: null, denied: null, pending: null },
+    });
   });
 });

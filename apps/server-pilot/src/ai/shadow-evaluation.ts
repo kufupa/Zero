@@ -1,5 +1,7 @@
 import {
+  buildShadowAdmissionPopulation,
   buildShadowScorecard,
+  type ShadowAdmissionPopulationRow,
   type ShadowAssessmentScorecardRow,
   type ShadowPredictionScorecardRow,
   type ShadowScorecard,
@@ -32,6 +34,8 @@ const SHADOW_CAP_SCOPE_ENV = 'AI_SHADOW_CAP_SCOPE';
 const SHADOW_TOKEN_CAP_ENV = 'AI_SHADOW_TOKEN_CAP_PER_DAY';
 const SHADOW_SPEND_CAP_ENV = 'AI_SHADOW_SPEND_CAP_USD_PER_DAY';
 const SHADOW_BROWSER_CAP_ENV = 'AI_SHADOW_BROWSER_CAP_PER_DAY';
+const SHADOW_EXECUTION_MODE_ENV = 'AI_SHADOW_EXECUTION_MODE';
+const SHADOW_LOCAL_SYNTHETIC_EXECUTION_MODE = 'local_synthetic';
 const SHADOW_TOKEN_CAP_MAX = 1_000_000;
 const SHADOW_SPEND_CAP_USD_MAX = 100_000;
 const SHADOW_BROWSER_CAP_MAX = 100;
@@ -479,6 +483,12 @@ export type ShadowAdmissionPolicy = {
 export function resolveShadowAdmissionPolicy(
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): ShadowAdmissionPolicy | null {
+  const executionMode = env[SHADOW_EXECUTION_MODE_ENV]?.trim();
+  // The local fixture is the only currently executable shadow lane. A missing
+  // or costly/live mode is unavailable before queue/model construction; the
+  // declarations below are not treated as live token, spend, or browser
+  // metering merely because they are present.
+  if (executionMode !== SHADOW_LOCAL_SYNTHETIC_EXECUTION_MODE) return null;
   const rawCap = env[SHADOW_ADMISSION_CAP_ENV]?.trim();
   const scope = env[SHADOW_CAP_SCOPE_ENV]?.trim();
   const rawTokenCap = env[SHADOW_TOKEN_CAP_ENV]?.trim();
@@ -537,7 +547,10 @@ export async function enqueueShadowPrediction(input: {
           evaluationVersion: SHADOW_EVALUATION_VERSION,
           eligible: true,
           admissionStatus: 'skipped',
-          reason: 'admission_cap_unconfigured',
+          reason:
+            process.env[SHADOW_EXECUTION_MODE_ENV]?.trim() === SHADOW_LOCAL_SYNTHETIC_EXECUTION_MODE
+              ? 'admission_cap_unconfigured'
+              : 'admission_live_disabled',
           transportId: input.transportId,
           threadId: input.threadId,
           triggerMessageId: input.triggerMessageId,
@@ -1000,23 +1013,58 @@ export async function purgeExpiredShadowDerivatives(
       .orderBy(asc(aiShadowPrediction.retentionExpiresAt), asc(aiShadowPrediction.id))
       .limit(limit)
       .for('update', { skipLocked: true });
-    if (rows.length === 0) return { deletedPredictions: 0, deletedAdmissions: 0 };
     const ids = rows.map((row) => row.id);
     const keys = rows.map((row) => row.predictionKey);
-    // Assessment payloads are the body-bearing derivative; remove them before
-    // their prediction parent, then remove the accounting receipt in scope.
-    await tx.delete(aiShadowAssessment).where(inArray(aiShadowAssessment.predictionId, ids));
-    const deletedPredictions = await tx
-      .delete(aiShadowPrediction)
-      .where(inArray(aiShadowPrediction.id, ids))
-      .returning({ id: aiShadowPrediction.id });
-    const deletedAdmissions = await tx
-      .delete(aiShadowAdmission)
-      .where(inArray(aiShadowAdmission.admissionKey, keys))
-      .returning({ id: aiShadowAdmission.id });
+    let deletedPredictions = 0;
+    let deletedAdmissions = 0;
+    if (ids.length > 0) {
+      // Assessment payloads are the body-bearing derivative; remove them before
+      // their prediction parent, then remove the accounting receipt in scope.
+      await tx.delete(aiShadowAssessment).where(inArray(aiShadowAssessment.predictionId, ids));
+      const deletedPredictionRows = await tx
+        .delete(aiShadowPrediction)
+        .where(inArray(aiShadowPrediction.id, ids))
+        .returning({ id: aiShadowPrediction.id });
+      deletedPredictions = deletedPredictionRows.length;
+      const deletedAdmissionRows = await tx
+        .delete(aiShadowAdmission)
+        .where(inArray(aiShadowAdmission.admissionKey, keys))
+        .returning({ id: aiShadowAdmission.id });
+      deletedAdmissions += deletedAdmissionRows.length;
+    }
+
+    // Admission receipts can expire before a prediction exists: skipped
+    // receipts never queue, and policy-fenced queued work can dead-letter
+    // without sealing. Select only true orphans so a receipt linked to an
+    // unexpired prediction remains available for its retained derivative.
+    const orphanRows = await tx
+      .select({ id: aiShadowAdmission.id })
+      .from(aiShadowAdmission)
+      .where(
+        and(
+          eq(aiShadowAdmission.evaluationMode, SHADOW_EVALUATION_MODE),
+          lte(aiShadowAdmission.retentionExpiresAt, now),
+          sql`not exists (
+            select 1
+            from ${aiShadowPrediction}
+            where ${aiShadowPrediction.predictionKey} = ${aiShadowAdmission.admissionKey}
+          )`,
+        ),
+      )
+      .orderBy(asc(aiShadowAdmission.retentionExpiresAt), asc(aiShadowAdmission.id))
+      .limit(limit)
+      .for('update', { skipLocked: true });
+    if (orphanRows.length > 0) {
+      const orphanIds = orphanRows.map((row) => row.id);
+      const deletedOrphanRows = await tx
+        .delete(aiShadowAdmission)
+        .where(inArray(aiShadowAdmission.id, orphanIds))
+        .returning({ id: aiShadowAdmission.id });
+      deletedAdmissions += deletedOrphanRows.length;
+    }
     return {
-      deletedPredictions: deletedPredictions.length,
-      deletedAdmissions: deletedAdmissions.length,
+      deletedPredictions,
+      deletedAdmissions,
     };
   });
 }
@@ -1055,6 +1103,41 @@ export async function loadShadowScorecard(
     .select()
     .from(aiShadowAdmission)
     .where(and(...admissionPredicates));
+  const admissionKeys = admissions.map((row) => row.admissionKey);
+  const observablePredictions = admissionKeys.length
+    ? await db
+        .select({ predictionKey: aiShadowPrediction.predictionKey })
+        .from(aiShadowPrediction)
+        .where(
+          and(
+            eq(aiShadowPrediction.evaluationMode, mode),
+            ...(input.transportIds?.length
+              ? [inArray(aiShadowPrediction.transportId, [...input.transportIds])]
+              : []),
+            inArray(aiShadowPrediction.predictionKey, admissionKeys),
+            ...(input.observationCutoff
+              ? [lte(aiShadowPrediction.sealedAt, input.observationCutoff)]
+              : []),
+          ),
+        )
+    : [];
+  const observablePredictionKeys = new Set(observablePredictions.map((row) => row.predictionKey));
+  const admissionPopulationAdmissions = admissions.filter((row) => {
+    const createdAt = row.createdAt.getTime();
+    return (
+      (!input.windowStart || createdAt >= input.windowStart.getTime()) &&
+      (!input.windowEnd || createdAt < input.windowEnd.getTime())
+    );
+  });
+  const admissionPopulationRows: ShadowAdmissionPopulationRow[] = admissionPopulationAdmissions.map(
+    (row) => ({
+      id: row.id,
+      evaluationMode: row.evaluationMode as ShadowEvaluationMode,
+      eligible: row.eligible,
+      admissionStatus: row.admissionStatus as ShadowAdmissionPopulationRow['admissionStatus'],
+      hasSealedPrediction: observablePredictionKeys.has(row.admissionKey),
+    }),
+  );
   const assessments = predictionIds.length
     ? await db
         .select()
@@ -1077,22 +1160,20 @@ export async function loadShadowScorecard(
   const predictionsByKey = new Map(predictions.map((row) => [row.predictionKey, row]));
   const predictionRows: ShadowPredictionScorecardRow[] = [];
   const seenPredictionIds = new Set<string>();
-  const windowStartMs = input.windowStart?.getTime() ?? Number.NEGATIVE_INFINITY;
-  const windowEndMs = input.windowEnd?.getTime() ?? Number.POSITIVE_INFINITY;
   for (const admission of admissions) {
     const prediction = predictionsByKey.get(admission.admissionKey);
-    const admissionCreatedAt = admission.createdAt.getTime();
-    const isInWindow = admissionCreatedAt >= windowStartMs && admissionCreatedAt < windowEndMs;
-    if (!prediction && !isInWindow) continue;
-    if (prediction) seenPredictionIds.add(prediction.id);
+    // This scorecard's declared clock is sealed_at. Admission-only receipts
+    // belong to a separate operational population and must not be relabelled
+    // as pending sealed predictions when their seal falls outside the window.
+    if (!prediction) continue;
+    seenPredictionIds.add(prediction.id);
     predictionRows.push({
       id: admission.admissionKey,
-      predictionId: prediction?.id,
+      predictionId: prediction.id,
       evaluationMode: admission.evaluationMode as ShadowEvaluationMode,
       admissionStatus: admission.admissionStatus as ShadowPredictionScorecardRow['admissionStatus'],
       predictionStatus:
-        (prediction?.predictionStatus as ShadowPredictionScorecardRow['predictionStatus']) ??
-        'pending',
+        prediction.predictionStatus as ShadowPredictionScorecardRow['predictionStatus'],
     });
   }
   // Preserve compatibility with additive migration deployments and older
@@ -1120,6 +1201,13 @@ export async function loadShadowScorecard(
     evaluationMode: mode,
     predictions: predictionRows,
     assessments: assessmentRows,
+    admissionPopulation: buildShadowAdmissionPopulation({
+      evaluationMode: mode,
+      admissions: admissionPopulationRows,
+      windowStart: input.windowStart?.toISOString() ?? null,
+      windowEnd: input.windowEnd?.toISOString() ?? null,
+      observationCutoff: input.observationCutoff?.toISOString() ?? null,
+    }),
   });
   return {
     ...scorecard,

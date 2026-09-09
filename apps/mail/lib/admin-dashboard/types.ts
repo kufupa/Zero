@@ -173,6 +173,27 @@ export type AdminDashboardDataHealth = {
   };
 };
 
+export type AdminDashboardShadowAdmissionPopulation = {
+  availability: 'available' | 'unavailable';
+  reason: 'no_admission_receipts' | 'not_loaded' | null;
+  counts: {
+    eligible: number | null;
+    admitted: number | null;
+    skipped: number | null;
+    denied: number | null;
+    pending: number | null;
+  };
+  provenance: {
+    source: 'private_shadow_store';
+    missingIsNotZero: true;
+    evaluationMode: 'current_state' | 'historical_replay' | 'future_shadow';
+    selectionClock: 'admission_created_at';
+    windowStart: string | null;
+    windowEnd: string | null;
+    observationCutoff: string | null;
+  };
+};
+
 /** Private U13 evaluation scorecard; unavailable quality remains null. */
 export type AdminDashboardShadowScorecard = {
   schemaVersion: 'shadow-scorecard-v1';
@@ -207,10 +228,16 @@ export type AdminDashboardShadowScorecard = {
     correctRate: number | null;
     usefulRate: number | null;
   };
+  /** Admission-clock operational evidence; separate from sealed prediction outcomes. */
+  admissionPopulation: AdminDashboardShadowAdmissionPopulation;
   provenance: {
     source: 'private_shadow_store';
     missingIsNotZero: true;
     evaluationMode: 'current_state' | 'historical_replay' | 'future_shadow';
+    selectionClock?: 'sealed_at';
+    windowStart?: string | null;
+    windowEnd?: string | null;
+    observationCutoff?: string | null;
   };
 };
 
