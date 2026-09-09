@@ -9,19 +9,19 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Command, ImagePlus, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { ScheduleSendPicker } from './schedule-send-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ScheduleSendPicker } from './schedule-send-picker';
 import useComposeEditor from '@/hooks/use-compose-editor';
-import { CurvedArrow, X } from '../icons/icons';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { CurvedArrow, X } from '../icons/icons';
 
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSettings } from '@/hooks/use-settings';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { demoUpsertDraft } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useTRPC } from '@/providers/query-provider';
+import { useSettings } from '@/hooks/use-settings';
 
 import { cn, formatFileSize } from '@/lib/utils';
 import { serializeFiles } from '@/lib/schemas';
@@ -37,12 +37,10 @@ import { z } from 'zod';
 
 import { RecipientAutosuggest } from '@/components/ui/recipient-autosuggest';
 import { ImageCompressionSettings } from './image-compression-settings';
-import { compressImages } from '@/lib/image-compression';
 import type { ImageQuality } from '@/lib/image-compression';
+import { compressImages } from '@/lib/image-compression';
 
 const shortcodeRegex = /:([a-zA-Z0-9_+-]+):/g;
-import { TemplateButton } from './template-button';
-import { emailListSignature } from '@/lib/mail/compose-signatures';
 import {
   buildDraftMutationInput,
   chooseDraftEditorState,
@@ -55,17 +53,19 @@ import {
   type DraftRevisionState,
   type PersistDecisionInput,
 } from '@/lib/mail/draft-persistence';
-import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
-import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
-import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { m } from '@/paraglide/messages';
-import { useDraft } from '@/hooks/use-drafts';
-import type { HeaderDebugLine } from '@/types';
 import {
   COMPOSE_ATTACHMENT_ACCEPT,
   partitionComposeAttachmentFiles,
 } from '@/lib/compose-attachment-policy';
+import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
+import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
+import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
+import { emailListSignature } from '@/lib/mail/compose-signatures';
+import { TemplateButton } from './template-button';
+import type { HeaderDebugLine } from '@/types';
+import { useDraft } from '@/hooks/use-drafts';
+import { m } from '@/paraglide/messages';
 
 const hasFileDrag = (dataTransfer: DataTransfer | null): boolean =>
   dataTransfer !== null && Array.from(dataTransfer.types).includes('Files');
@@ -97,6 +97,8 @@ interface EmailComposerProps {
   syncReplyHeadersFromProps?: boolean;
   replyToMessageId?: string | null;
   headerPreview?: HeaderDebugLine[];
+  /** Assisted drafts keep the same editor but make the human review step explicit. */
+  sendButtonLabel?: string;
 }
 
 const schema = z.object({
@@ -137,6 +139,7 @@ export function EmailComposer({
   syncReplyHeadersFromProps = false,
   replyToMessageId = null,
   headerPreview = [],
+  sendButtonLabel = 'Send',
 }: EmailComposerProps) {
   const { data: settings } = useSettings();
   const [showCc, setShowCc] = useState(initialCc.length > 0);
@@ -178,12 +181,10 @@ export function EmailComposer({
     id: `attachment-${index}`,
     file,
   }));
-  const [attachmentEntries, setAttachmentEntries] = useState<AttachmentEntry[]>(() =>
-    initialAttachmentEntries,
+  const [attachmentEntries, setAttachmentEntries] = useState<AttachmentEntry[]>(
+    () => initialAttachmentEntries,
   );
-  const originalAttachmentsRef = useRef<AttachmentEntry[]>(
-    initialAttachmentEntries,
-  );
+  const originalAttachmentsRef = useRef<AttachmentEntry[]>(initialAttachmentEntries);
   const attachmentQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingAttachmentWorkRef = useRef(0);
   const inlineImageQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -222,9 +223,7 @@ export function EmailComposer({
       subject: initialSubject,
       message: initialMessage,
       attachments: initialAttachments,
-      fromEmail:
-        settings?.settings?.defaultEmailAlias ||
-        '',
+      fromEmail: settings?.settings?.defaultEmailAlias || '',
     },
   });
 
@@ -431,10 +430,7 @@ export function EmailComposer({
           await task();
         } finally {
           if (marksDraftDirty) {
-            pendingAttachmentWorkRef.current = Math.max(
-              0,
-              pendingAttachmentWorkRef.current - 1,
-            );
+            pendingAttachmentWorkRef.current = Math.max(0, pendingAttachmentWorkRef.current - 1);
           }
         }
       };
@@ -473,11 +469,7 @@ export function EmailComposer({
 
       return enqueueAttachmentTask(
         async () => {
-          await processAndSetAttachments(
-            originalAttachmentsRef.current,
-            imageQuality,
-            true,
-          );
+          await processAndSetAttachments(originalAttachmentsRef.current, imageQuality, true);
 
           const acceptedMessage = `${pluralize('file', accepted.length, true)} attached`;
           toast.success(acceptedMessage);
@@ -513,10 +505,7 @@ export function EmailComposer({
         try {
           await task();
         } finally {
-          pendingInlineImageWorkRef.current = Math.max(
-            0,
-            pendingInlineImageWorkRef.current - 1,
-          );
+          pendingInlineImageWorkRef.current = Math.max(0, pendingInlineImageWorkRef.current - 1);
         }
       };
       const queuedTask = inlineImageQueueRef.current.then(runTask, runTask);
@@ -543,10 +532,7 @@ export function EmailComposer({
             (entry) => entry.id !== attachmentId,
           );
           originalAttachmentsRef.current = newOriginals;
-          await processAndSetAttachments(
-            newOriginals,
-            imageQuality,
-          );
+          await processAndSetAttachments(newOriginals, imageQuality);
           setAttachmentStatus('Attachment removed');
         },
         { marksDraftDirty: true },
@@ -634,12 +620,7 @@ export function EmailComposer({
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [
-    editor,
-    getValues,
-    hasSynchronousDraftChanges,
-    initialMessage,
-  ]);
+  }, [editor, getValues, hasSynchronousDraftChanges, initialMessage]);
 
   const drainAttachmentWork = useCallback(async () => {
     for (;;) {
@@ -856,18 +837,19 @@ export function EmailComposer({
                 })
               : Promise.resolve(),
             threadId
-              ? queryClient.invalidateQueries({ queryKey: trpc.mail.get.queryKey({ id: threadId }) })
+              ? queryClient.invalidateQueries({
+                  queryKey: trpc.mail.get.queryKey({ id: threadId }),
+                })
               : Promise.resolve(),
             queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
           ]);
         }
 
         revisionRef.current = reduceDraftRevision(revisionRef.current, {
-          type: 'saved', capturedRevision,
+          type: 'saved',
+          capturedRevision,
         });
-        setHasUnsavedChanges(
-          revisionRef.current.localRevision > revisionRef.current.savedRevision,
-        );
+        setHasUnsavedChanges(revisionRef.current.localRevision > revisionRef.current.savedRevision);
         return 'saved';
       } catch (error) {
         console.error('Error saving draft:', error);
@@ -926,12 +908,7 @@ export function EmailComposer({
       subject: values.subject ?? '',
       aiBlocked: false,
     };
-  }, [
-    hasSynchronousDraftChanges,
-    initialMessage,
-    editor,
-    getValues,
-  ]);
+  }, [hasSynchronousDraftChanges, initialMessage, editor, getValues]);
 
   const handleClose = useCallback(() => {
     const action = resolveComposeCloseAction({ ...buildPersistInput(), intent: 'userClose' });
@@ -997,13 +974,7 @@ export function EmailComposer({
     };
     registerComposeFlush(flush);
     return () => registerComposeFlush(null);
-  }, [
-    hasSynchronousDraftChanges,
-    initialMessage,
-    editor,
-    saveDraft,
-    getValues,
-  ]);
+  }, [hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
 
   useEffect(() => {
     if (!editor) return;
@@ -1041,17 +1012,11 @@ export function EmailComposer({
     }, 3000);
 
     return () => clearTimeout(autoSaveTimer);
-  }, [
-    autosaveSuppressedAfterFailure,
-    hasUnsavedChanges,
-    isSavingDraft,
-    persistDraftOnce,
-  ]);
+  }, [autosaveSuppressedAfterFailure, hasUnsavedChanges, isSavingDraft, persistDraftOnce]);
 
   // keep fromEmail in sync when settings load
   useEffect(() => {
-    const preferred =
-      settings?.settings?.defaultEmailAlias || '';
+    const preferred = settings?.settings?.defaultEmailAlias || '';
 
     if (preferred && getValues('fromEmail') !== preferred) {
       setValue('fromEmail', preferred, { shouldDirty: false });
@@ -1187,11 +1152,7 @@ export function EmailComposer({
     setImageQuality(newQuality);
     return enqueueAttachmentTask(
       async () => {
-        await processAndSetAttachments(
-          originalAttachmentsRef.current,
-          newQuality,
-          true,
-        );
+        await processAndSetAttachments(originalAttachmentsRef.current, newQuality, true);
         setAttachmentStatus('Attachment compression updated');
       },
       { marksDraftDirty: true },
@@ -1225,10 +1186,14 @@ export function EmailComposer({
   };
 
   const sendButton = (
-    <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
+    <Button
+      size={'xs'}
+      onClick={handleSend}
+      disabled={isLoading || settingsLoading || !isScheduleValid}
+    >
       <div className="flex items-center justify-center">
         <div className="text-center text-sm leading-none text-white dark:text-black">
-          <span>Send </span>
+          <span>{sendButtonLabel} </span>
         </div>
       </div>
       <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
@@ -1258,7 +1223,7 @@ export function EmailComposer({
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/20"
         >
-          <span className="rounded-md bg-background px-4 py-2 text-sm font-medium shadow-sm">
+          <span className="bg-background rounded-md px-4 py-2 text-sm font-medium shadow-sm">
             Drop files to attach
           </span>
         </div>
@@ -1281,14 +1246,14 @@ export function EmailComposer({
             <div className="flex shrink-0 gap-2">
               <button
                 type="button"
-                className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
+                className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
                 onClick={() => setShowCc(!showCc)}
               >
                 <span>Cc</span>
               </button>
               <button
                 type="button"
-                className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
+                className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
                 onClick={() => setShowBcc(!showBcc)}
               >
                 <span>Bcc</span>
@@ -1297,7 +1262,7 @@ export function EmailComposer({
                 <button
                   type="button"
                   aria-label="Close composer"
-                  className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
+                  className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
                   onClick={handleClose}
                 >
                   <X className="h-3.5 w-3.5 fill-[#9A9A9A]" />
@@ -1342,8 +1307,8 @@ export function EmailComposer({
           <div className="flex items-center gap-2 border-b p-3">
             <p className="text-sm font-medium text-[#8C8C8C]">Subject:</p>
             <input
-                  id="compose-subject"
-                  name="subject"
+              id="compose-subject"
+              name="subject"
               className="h-4 w-full bg-transparent text-sm font-normal leading-normal text-black placeholder:text-[#797979] focus:outline-none dark:text-white/90"
               placeholder="Re: Design review feedback"
               value={subjectInput}
@@ -1396,7 +1361,7 @@ export function EmailComposer({
               size={'xs'}
               onClick={() => fileInputRef.current?.click()}
               disabled={isLoading}
-              className="bg-background border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+              className="bg-background cursor-pointer border transition-colors hover:bg-gray-50 dark:hover:bg-[#404040]"
             >
               <Plus className="h-3 w-3 fill-[#9A9A9A]" />
               <span className="hidden px-0.5 text-sm md:block">Add</span>
@@ -1408,7 +1373,7 @@ export function EmailComposer({
               aria-label="Insert image"
               onClick={handleInlineImagePickerClick}
               disabled={isLoading}
-              className="bg-background border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+              className="bg-background cursor-pointer border transition-colors hover:bg-gray-50 dark:hover:bg-[#404040]"
             >
               <ImagePlus className="h-3 w-3" />
               <span className="px-0.5 text-sm">Insert image</span>
@@ -1453,7 +1418,7 @@ export function EmailComposer({
               <Popover modal={true}>
                 <PopoverTrigger asChild>
                   <button
-                    className="focus-visible:ring-ring flex items-center gap-1.5 rounded-md border border-[#E7E7E7] bg-white/5 px-2 py-1 text-sm hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 dark:border-[#2B2B2B] cursor-pointer"
+                    className="focus-visible:ring-ring flex cursor-pointer items-center gap-1.5 rounded-md border border-[#E7E7E7] bg-white/5 px-2 py-1 text-sm hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 dark:border-[#2B2B2B]"
                     aria-label={`View ${attachments.length} attached ${pluralize('file', attachments.length)}`}
                   >
                     <Paperclip className="h-3.5 w-3.5 text-[#9A9A9A]" />
@@ -1496,8 +1461,8 @@ export function EmailComposer({
                             ? `${nameWithoutExt.slice(0, maxNameLength)}…`
                             : nameWithoutExt;
                         return (
-                            <div
-                              key={attachmentEntry.id}
+                          <div
+                            key={attachmentEntry.id}
                             className="group flex items-center justify-between gap-3 rounded-md px-1.5 py-1.5 hover:bg-black/5 dark:hover:bg-white/10"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1553,7 +1518,7 @@ export function EmailComposer({
                                   toast.error('Failed to remove attachment');
                                 }
                               }}
-                              className="focus-visible:ring-ring ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-transparent hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 cursor-pointer"
+                              className="focus-visible:ring-ring ml-1 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full bg-transparent hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2"
                               aria-label={`Remove ${file.name}`}
                             >
                               <XIcon className="text-muted-foreground h-3.5 w-3.5 hover:text-black dark:text-[#9B9B9B] dark:hover:text-white" />
@@ -1574,7 +1539,7 @@ export function EmailComposer({
                     variant="ghost"
                     size="icon"
                     onClick={() => setToggleToolbar(!toggleToolbar)}
-                    className={`h-auto w-auto rounded p-1.5 ${toggleToolbar ? 'bg-muted' : 'bg-background'} border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer`}
+                    className={`h-auto w-auto rounded p-1.5 ${toggleToolbar ? 'bg-muted' : 'bg-background'} cursor-pointer border transition-colors hover:bg-gray-50 dark:hover:bg-[#404040]`}
                   >
                     <Type className="h-4 w-4" />
                   </Button>
@@ -1600,10 +1565,7 @@ export function EmailComposer({
             >
               {m['common.replyCompose.keepEditing']()}
             </Button>
-            <Button
-              onClick={() => void handleDialogChoice('saveDraft')}
-              className="cursor-pointer"
-            >
+            <Button onClick={() => void handleDialogChoice('saveDraft')} className="cursor-pointer">
               {m['common.replyCompose.saveDraft']()}
             </Button>
             <Button

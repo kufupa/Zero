@@ -18,14 +18,35 @@ declare global {
       method: string;
       path: string;
       status: number;
-      query?: DashboardInput | DocumentQueryAudit | null;
+      query?: DashboardInput | DocumentQueryAudit | U6RequestAudit | null;
     }>;
     __reservationToolsPilotFetchHandler?: typeof fetch;
+    __u6DraftSafetyState?: U6DraftSafetyState;
   }
 }
 
 type DocumentQueryAudit = {
   toolId: 'documents_list_existing' | 'documents_read_existing';
+};
+
+type U6RequestAudit = {
+  procedure: string;
+};
+
+export type U6FixtureMode = 'ai' | 'manual';
+
+export type U6DraftSafetyState = {
+  mode: U6FixtureMode;
+  aiDraftActive: boolean;
+  stale: boolean;
+  draftBody: string;
+  approvalCalls: number;
+  sendCalls: number;
+  blockedSends: number;
+  smtpAttempts: number;
+  acceptedSends: number;
+  lastEvent: string;
+  lastSentBody: string | null;
 };
 
 const FIXTURE_CUTOFF = '2026-09-07T12:00:00.000Z';
@@ -527,6 +548,174 @@ function trpcResponse(data: unknown): Response {
   return response([{ result: { data: { json: data } } }]);
 }
 
+function trpcErrorResponse(
+  procedure: string,
+  message: string,
+  code: 'CONFLICT' | 'BAD_REQUEST' = 'CONFLICT',
+  status = 409,
+): Response {
+  return response(
+    [
+      {
+        error: {
+          json: {
+            message,
+            code: -32003,
+            data: { code, httpStatus: status, path: procedure },
+          },
+        },
+      },
+    ],
+    status,
+  );
+}
+
+function parseProcedureInput(body: string | undefined): Record<string, unknown> {
+  if (!body?.trim()) return {};
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    const envelope = Array.isArray(parsed)
+      ? parsed.length === 1
+        ? parsed[0]
+        : undefined
+      : isRecord(parsed) && Object.keys(parsed).length === 1 && '0' in parsed
+        ? parsed['0']
+        : undefined;
+    if (!isRecord(envelope) || !isRecord(envelope.json)) return {};
+    return envelope.json;
+  } catch {
+    return {};
+  }
+}
+
+const U6_THREAD_ID = 'u6-thread-1';
+const U6_MESSAGE_ID = 'u6-message-1';
+const U6_AI_DRAFT_ID = 'u6-ai-draft';
+const U6_MANUAL_DRAFT_ID = 'u6-manual-draft';
+const U6_HEX = 'a'.repeat(64);
+
+function u6DraftSafetyState(): U6DraftSafetyState {
+  const existing = window.__u6DraftSafetyState;
+  if (existing) return existing;
+  const created: U6DraftSafetyState = {
+    mode: 'ai',
+    aiDraftActive: false,
+    stale: false,
+    draftBody:
+      '<p>Hello guest,</p><p>We can confirm the requested synthetic stay details for review.</p>',
+    approvalCalls: 0,
+    sendCalls: 0,
+    blockedSends: 0,
+    smtpAttempts: 0,
+    acceptedSends: 0,
+    lastEvent: 'candidate-ready',
+    lastSentBody: null,
+  };
+  window.__u6DraftSafetyState = created;
+  return created;
+}
+
+function emitU6DraftSafetyEvent(event: string): void {
+  const state = u6DraftSafetyState();
+  state.lastEvent = event;
+  window.dispatchEvent(
+    new CustomEvent('u6-draft-safety-update', {
+      detail: {
+        event,
+        approvalCalls: state.approvalCalls,
+        sendCalls: state.sendCalls,
+        blockedSends: state.blockedSends,
+        smtpAttempts: state.smtpAttempts,
+        acceptedSends: state.acceptedSends,
+        lastSentBody: state.lastSentBody,
+      },
+    }),
+  );
+}
+
+function u6DraftWire(): Record<string, unknown> {
+  const state = u6DraftSafetyState();
+  const isManual = state.mode === 'manual';
+  return {
+    id: isManual ? U6_MANUAL_DRAFT_ID : U6_AI_DRAFT_ID,
+    threadId: U6_THREAD_ID,
+    replyToMessageId: U6_MESSAGE_ID,
+    to: ['guest@example.test'],
+    cc: [],
+    bcc: [],
+    subject: 'Re: Synthetic booking request',
+    content: isManual ? state.draftBody || '<p>Manual fixture reply.</p>' : state.draftBody,
+    updatedAt: '2026-09-09T12:00:00.000Z',
+    status: isManual || state.aiDraftActive ? 'active' : 'candidate',
+    origin: isManual ? 'manual' : 'ai',
+    generationId: isManual ? null : 'u6-generation-1',
+    isStale: state.stale,
+  };
+}
+
+function u6ThreadPayload(): Record<string, unknown> {
+  const state = u6DraftSafetyState();
+  const latest = {
+    id: U6_MESSAGE_ID,
+    title: 'Synthetic booking request',
+    subject: 'Synthetic booking request',
+    tags: [],
+    sender: { name: 'Fixture guest', email: 'guest@example.test' },
+    to: [{ name: 'Centurion fixture', email: 'centurion@example.org' }],
+    cc: null,
+    bcc: null,
+    tls: true,
+    receivedOn: '2026-09-09T10:00:00.000Z',
+    unread: false,
+    body: 'Please confirm the synthetic stay details.',
+    processedHtml: '<p>Please confirm the synthetic stay details.</p>',
+    blobUrl: '',
+    decodedBody: 'Please confirm the synthetic stay details.',
+    references: '<u6-thread-1@example.test>',
+    messageId: '<u6-message-1@example.test>',
+    threadId: U6_THREAD_ID,
+  };
+  const draft = u6DraftWire();
+  return {
+    id: U6_THREAD_ID,
+    latest,
+    messages: [latest],
+    drafts: state.mode === 'manual' || state.aiDraftActive ? [draft] : [draft],
+    hasUnread: false,
+    hasReplied: false,
+    totalReplies: 0,
+    labels: [],
+    categories: [],
+    categoryIds: [],
+    conversationId: U6_THREAD_ID,
+    linkedThreadIds: [],
+    conversationResponded: false,
+    conversationMessageCount: 1,
+  };
+}
+
+function u6ApprovalToken(): Record<string, string> {
+  return {
+    version: 'draft-approval-v1',
+    purpose: 'ai-draft-send',
+    draftId: U6_AI_DRAFT_ID,
+    generationId: 'u6-generation-1',
+    transportId: 'transport-centurion',
+    threadId: U6_THREAD_ID,
+    revisionId: 'u6-revision-1',
+    threadStateVersion: 'u6-thread-version-1',
+    policyVersion: 'u6-policy-1',
+    approvedByUserId: 'fixture-viewer',
+    approvedAt: '2026-09-09T12:00:00.000Z',
+    bodyDigest: U6_HEX,
+    recipientDigest: U6_HEX,
+    attachmentDigest: U6_HEX,
+    evidenceDigest: U6_HEX,
+    fingerprint: U6_HEX,
+    signature: U6_HEX,
+  };
+}
+
 function proxyDocumentRequest(url: URL, init: RequestInit): Promise<Response> {
   return new Promise((resolve, reject) => {
     if (url.origin !== FIXTURE_ORIGIN) {
@@ -567,7 +756,10 @@ export function installReservationToolsPilotTransport(): void {
     const url = new URL(requestUrl, window.location.href);
     const requestLog = (window.__reservationToolsPilotRequests ??= []);
     const method = init?.method ?? 'GET';
-    const record = (status: number, query?: DashboardInput | DocumentQueryAudit | null) => {
+    const record = (
+      status: number,
+      query?: DashboardInput | DocumentQueryAudit | U6RequestAudit | null,
+    ) => {
       requestLog.push({
         method,
         path: url.pathname,
@@ -601,6 +793,217 @@ export function installReservationToolsPilotTransport(): void {
               session: { id: 'fixture-session' },
             },
       );
+    }
+
+    if (new URL(window.location.href).searchParams.get('fixture') === 'u6-draft-safety') {
+      const procedure = url.pathname.replace(/^\/api\/trpc\//, '');
+      const u6Record = (status: number) => record(status, { procedure });
+      const input = parseProcedureInput(typeof init?.body === 'string' ? init.body : undefined);
+      const state = u6DraftSafetyState();
+
+      if (procedure === 'labels.list') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture labels.list route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        u6Record(200);
+        return trpcResponse([]);
+      }
+
+      if (procedure === 'settings.get') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture settings route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        u6Record(200);
+        return trpcResponse({
+          settings: {
+            language: 'en',
+            timezone: 'UTC',
+            dynamicContent: false,
+            colorTheme: 'system',
+            externalImages: true,
+            trustedSenders: [],
+            customPrompt: '',
+            defaultEmailAlias: 'centurion@legacyhotels.co.za',
+            undoSendEnabled: true,
+            imageCompression: 'medium',
+            autoRead: true,
+            animations: false,
+          },
+        });
+      }
+
+      if (procedure === 'mail.get') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture mail.get route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        u6Record(200);
+        return trpcResponse(u6ThreadPayload());
+      }
+
+      if (procedure === 'drafts.get') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture drafts.get route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        u6Record(200);
+        return trpcResponse(u6DraftWire());
+      }
+
+      if (procedure === 'drafts.ensureEditableForReply') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture drafts.ensureEditableForReply route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        state.mode = 'ai';
+        state.aiDraftActive = true;
+        state.stale = false;
+        emitU6DraftSafetyEvent('candidate-adopted');
+        u6Record(200);
+        return trpcResponse(u6DraftWire());
+      }
+
+      if (procedure === 'drafts.create') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture drafts.create route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        const html = input.html ?? input.message ?? input.content;
+        if (typeof html === 'string' && html.trim()) state.draftBody = html;
+        emitU6DraftSafetyEvent('draft-edited');
+        u6Record(200);
+        return trpcResponse(u6DraftWire());
+      }
+
+      if (procedure === 'drafts.approve') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture drafts.approve route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        state.approvalCalls += 1;
+        emitU6DraftSafetyEvent('draft-approved');
+        u6Record(200);
+        return trpcResponse(u6ApprovalToken());
+      }
+
+      if (procedure === 'ai.hmsCandidateState') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture candidate state route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        u6Record(200);
+        return trpcResponse({
+          threadId: U6_THREAD_ID,
+          visible: true,
+          candidate: state.mode === 'ai' ? u6DraftWire() : null,
+          activeRun: null,
+          outcome: state.mode === 'ai' ? 'candidate' : 'none',
+          freshness: state.stale ? 'stale' : 'fresh',
+          unresolvedFields: [],
+          refreshedAt: '2026-09-09T12:01:00.000Z',
+        });
+      }
+
+      if (procedure === 'ai.refreshHmsCandidate') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture candidate refresh route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        state.stale = false;
+        emitU6DraftSafetyEvent('candidate-refreshed');
+        u6Record(200);
+        return trpcResponse({
+          runId: 'u6-refresh-run',
+          idempotencyKey: 'u6-refresh-idempotency',
+          status: 'queued',
+          threadId: U6_THREAD_ID,
+        });
+      }
+
+      if (procedure === 'mail.send') {
+        if (method !== 'POST') {
+          u6Record(405);
+          return trpcErrorResponse(
+            procedure,
+            'fixture mail.send route requires POST',
+            'BAD_REQUEST',
+            405,
+          );
+        }
+        state.sendCalls += 1;
+        const approval = input.draftApproval ?? input.approval;
+        if (state.mode === 'ai' && (!approval || !isRecord(approval))) {
+          state.blockedSends += 1;
+          emitU6DraftSafetyEvent('approval-required');
+          u6Record(409);
+          return trpcErrorResponse(procedure, 'DRAFT_APPROVAL_REQUIRED');
+        }
+        if (state.mode === 'ai' && state.stale) {
+          state.blockedSends += 1;
+          emitU6DraftSafetyEvent('approval-blocked');
+          u6Record(409);
+          return trpcErrorResponse(procedure, 'DRAFT_APPROVAL_INVALID');
+        }
+        state.smtpAttempts += 1;
+        state.acceptedSends += 1;
+        const message = input.message ?? input.html;
+        state.lastSentBody = typeof message === 'string' ? message : null;
+        emitU6DraftSafetyEvent('fake-smtp-accepted');
+        u6Record(200);
+        return trpcResponse({
+          sent: true,
+          delivery: 'full',
+          messageId: `u6-fake-message-${state.acceptedSends}`,
+          accepted: ['guest@example.test'],
+        });
+      }
     }
 
     if (url.pathname.endsWith('/adminDashboard.getMetrics')) {

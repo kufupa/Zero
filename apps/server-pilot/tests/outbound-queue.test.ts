@@ -16,9 +16,12 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { mailBaselineProjection } from '../src/db/schema/mail-baseline-projection.js';
 import { message, outboundSendQueue } from '../src/db/schema/mail.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildDraftApproval } from '../src/ai/draft-approval.js';
 import { callerFor } from './helpers/trpc-caller.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { readFile } from 'node:fs/promises';
+
+const SIGNING_SECRET = 'u6-test-signing-secret';
 
 const reachable = await probeTestDb();
 
@@ -149,6 +152,60 @@ describe('smtp payload serialize round-trip', () => {
     expect(queued.attachments?.[0]?.contentBase64).toBe(content.toString('base64'));
     const back = deserializeSmtpPayload(queued);
     expect(back.attachments?.[0]?.content).toEqual(content);
+  });
+
+  it('preserves the server-derived filing BCC in delayed SMTP payloads', () => {
+    const queued = serializeSmtpPayload({
+      from: 'nava@example.test',
+      to: ['guest@example.test'],
+      cc: [],
+      bcc: ['nava@example.test'],
+      subject: 'x',
+      html: '<p>x</p>',
+      text: 'x',
+    });
+    expect(queued.bcc).toEqual(['nava@example.test']);
+    expect(deserializeSmtpPayload(queued).bcc).toEqual(['nava@example.test']);
+  });
+
+  it('persists an AI draft approval alongside the exact SMTP payload', () => {
+    const approval = buildDraftApproval(
+      {
+        draftId: 'draft-1',
+        generationId: 'generation-1',
+        transportId: 'transport-1',
+        threadId: 'thread-1',
+        revisionId: 'revision-1',
+        threadStateVersion: 'state-1',
+        evidence: [{ kind: 'hms', id: 'evidence-1', sourceHash: 'source-1' }],
+        policyVersion: 'u6-draft-policy-v1',
+        approvedByUserId: 'user-1',
+        approvedAt: '2026-09-09T10:00:00.000Z',
+        origin: 'ai',
+        subject: 'approved',
+        html: '<p>approved</p>',
+        text: 'approved',
+        to: ['guest@example.test'],
+        cc: [],
+        bcc: [],
+        attachments: [],
+      },
+      SIGNING_SECRET,
+    );
+    const queued = serializeSmtpPayload(
+      {
+        from: 'nava@example.test',
+        to: ['guest@example.test'],
+        cc: [],
+        bcc: [],
+        subject: 'approved',
+        html: '<p>approved</p>',
+        text: 'approved',
+      },
+      approval,
+    );
+    expect(queued.draftApproval).toEqual(approval);
+    expect(deserializeSmtpPayload(queued).html).toBe('<p>approved</p>');
   });
 });
 

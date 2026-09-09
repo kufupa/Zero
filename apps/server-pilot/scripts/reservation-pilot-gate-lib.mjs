@@ -221,7 +221,13 @@ const SLICE_PLANS = {
       ],
     },
     shadow: { server: ['tests/shadow-evaluation.test.ts'] },
-    outbox: { server: ['tests/outbound-queue.test.ts'] },
+    outbox: {
+      server: [
+        'tests/outbound-queue.test.ts',
+        'tests/draft-stale-conflict.test.ts',
+        'tests/hms-candidate-state.test.ts',
+      ],
+    },
     'candidate-drafting': {
       server: ['tests/ai-candidate-draft-contract.test.ts', 'tests/ai-worker-contract.test.ts'],
     },

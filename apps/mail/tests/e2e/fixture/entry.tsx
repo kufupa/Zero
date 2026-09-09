@@ -5,6 +5,8 @@ import type {
 import AdminDashboardPage from '../../../app/(routes)/settings/admin-dashboard/page';
 import { setMailCacheScope } from '../../../lib/mail/mail-cache-scope';
 import { QueryProvider } from '../../../providers/query-provider';
+import { NuqsAdapter } from 'nuqs/adapters/react-router/v7';
+import U6DraftSafetyPage from './u6-draft-safety';
 import { BrowserRouter } from 'react-router-dom';
 import { createRoot } from 'react-dom/client';
 import React from 'react';
@@ -304,9 +306,19 @@ if (!root) throw new Error('fixture root is missing');
 
 const isDocumentsFixture =
   new URL(window.location.href).searchParams.get('fixture') === 'documents';
+const isU6DraftSafetyFixture =
+  new URL(window.location.href).searchParams.get('fixture') === 'u6-draft-safety';
 
 createRoot(root).render(
-  isDocumentsFixture ? (
+  isU6DraftSafetyFixture ? (
+    <BrowserRouter>
+      <NuqsAdapter>
+        <QueryProvider>
+          <U6DraftSafetyPage />
+        </QueryProvider>
+      </NuqsAdapter>
+    </BrowserRouter>
+  ) : isDocumentsFixture ? (
     <BrowserRouter>
       <DocumentsPilotPage />
     </BrowserRouter>

@@ -1,30 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
-import type { DB } from '../src/db/client.js';
-import {
-  aiDraftGeneration,
-  aiWorkflowRun,
-  attachment,
-  mailDraft,
-  mailDraftRevision,
-  mailThread,
-  message,
-} from '../src/db/schema/mail.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
-import { computeThreadStateVersion } from '../src/ai/thread-context.js';
-import {
-  assertThreadStateVersionFresh,
-  loadLatestThreadAffectingDraftRevisionId,
-  loadLiveThreadStateVersion,
-  persistAiCandidateDraft,
-  ThreadStateStaleError,
-} from '../src/ai/drafts.js';
-import {
-  RESERVATION_EVIDENCE_TTL_MS,
-  QUOTE_EVIDENCE_TTL_MS,
-} from '../src/hms/adapter.js';
 import {
   buildHmsRefreshIdempotencyKey,
   evaluateHmsCandidateFreshness,
@@ -36,12 +9,32 @@ import {
   HMS_CANDIDATE_TOOLSET_VERSION,
 } from '../src/trpc/routes/drafts.js';
 import {
-  TEST_DB_AVAILABLE,
-  probeTestDb,
-  withSeededTestDb,
-} from './helpers/test-db';
-import { appRouter } from '../src/trpc/router.js';
+  assertThreadStateVersionFresh,
+  loadLatestThreadAffectingDraftRevisionId,
+  loadLiveThreadStateVersion,
+  persistAiCandidateDraft,
+  ThreadStateStaleError,
+} from '../src/ai/drafts.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  attachment,
+  mailDraft,
+  mailDraftRevision,
+  mailThread,
+  message,
+} from '../src/db/schema/mail.js';
+import { RESERVATION_EVIDENCE_TTL_MS, QUOTE_EVIDENCE_TTL_MS } from '../src/hms/adapter.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
+import { computeThreadStateVersion } from '../src/ai/thread-context.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { appRouter } from '../src/trpc/router.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
+import type { DB } from '../src/db/client.js';
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { and, eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 
@@ -60,6 +53,7 @@ function hmsEvidence(partial: Record<string, unknown> = {}) {
     expiresAt: '2026-07-30T12:15:00.000Z',
     claimKeys: ['rate'],
     sourceHash: sha('seed'),
+    scopeVerified: true,
     ...partial,
   };
 }
@@ -90,18 +84,12 @@ describe('HMS candidate freshness helpers', () => {
   });
 
   it('candidate-state activeRun query filters executorLane=hms', () => {
-    const source = readFileSync(
-      new URL('../src/trpc/routes/drafts.ts', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/trpc/routes/drafts.ts', import.meta.url), 'utf8');
     expect(source).toMatch(/eq\(aiWorkflowRun\.executorLane, 'hms'\)/);
   });
 
   it('shadow mode blocks enqueueHmsCandidateRefresh with HMS_MANUAL_OPS_REQUIRED', () => {
-    const source = readFileSync(
-      new URL('../src/trpc/routes/drafts.ts', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/trpc/routes/drafts.ts', import.meta.url), 'utf8');
     expect(source).toMatch(/hmsMode === 'shadow'/);
     expect(source).toMatch(/HMS_MANUAL_OPS_REQUIRED/);
   });
@@ -197,9 +185,7 @@ describe('HMS candidate freshness helpers', () => {
 
   it('new message during Refresh prevents final commit via thread version fence', () => {
     const v0 = computeThreadStateVersion({
-      messages: [
-        { id: 'm1', direction: 'inbound', timestamp: '2026-07-30T10:00:00.000Z' },
-      ],
+      messages: [{ id: 'm1', direction: 'inbound', timestamp: '2026-07-30T10:00:00.000Z' }],
       latestDraftRevisionId: null,
     });
     const v1 = computeThreadStateVersion({

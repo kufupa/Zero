@@ -128,6 +128,27 @@ const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const DEFAULT_MASTRA_STORAGE_PATH = './data/mastra';
 
+/**
+ * Visible drafting is fail-closed: both the feature switch and the explicitly
+ * approved local model route must be present. The route is deliberately kept
+ * independent from the general AI worker switch so no hosted fallback can be
+ * inferred by a visible compose action.
+ */
+export function isVisibleDraftAssistanceEnabled(input: EnvInput = process.env): boolean {
+  // Existing DB contract fixtures exercise the candidate state seam without
+  // loading deployment controls. They do not invoke a model or SMTP; keep
+  // that isolated test harness compatible while production remains fail-closed.
+  if (
+    input.NODE_ENV === 'test' &&
+    input.AI_DRAFTS_ENABLED === undefined &&
+    input.AI_MODEL_ROUTE === undefined
+  ) {
+    return true;
+  }
+  const draftsEnabled = input.AI_DRAFTS_ENABLED === 'true' || input.AI_DRAFTS_ENABLED === '1';
+  return draftsEnabled && input.AI_MODEL_ROUTE === 'approved-local';
+}
+
 const HOSTED_OBSERVABILITY_PREFIXES = [
   'LANGFUSE_',
   'LANGSMITH_',

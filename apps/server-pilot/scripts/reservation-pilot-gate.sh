@@ -580,7 +580,10 @@ case "${MODE}:${SLICE}" in
     run_db_slice "tests/shadow-evaluation.test.ts"
     ;;
   db:outbox)
-    run_db_slice "tests/outbound-queue.test.ts"
+    run_db_slice \
+      "tests/outbound-queue.test.ts" \
+      "tests/draft-stale-conflict.test.ts" \
+      "tests/hms-candidate-state.test.ts"
     ;;
   db:candidate-drafting)
     run_db_planned_slice candidate-drafting

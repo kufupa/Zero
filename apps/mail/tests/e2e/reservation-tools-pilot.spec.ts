@@ -508,3 +508,115 @@ test('reservation-tools-pilot/documents', async ({ page }, testInfo: TestInfo) =
   expect(requests.some((request) => request.path.endsWith('/documents.readExisting'))).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('documents.png'), fullPage: true });
 });
+
+test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
+  const forbidden: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.hostname !== '127.0.0.1' || url.port !== '4179') {
+      forbidden.push(`${url.hostname}:${url.port}`);
+    }
+  });
+  const fixtureUrl = () =>
+    `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=u6-draft-safety&mode=reply&threadId=u6-thread-1&activeReplyId=u6-message-1`;
+  const editor = () => page.locator('[contenteditable="true"]').first();
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(fixtureUrl(), { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: 'U6 draft safety fixture' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Assisted candidate' })).toBeVisible();
+  await page.getByRole('button', { name: 'Adopt candidate', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'U6 reply review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
+  await expect(editor()).toBeVisible();
+
+  const editedBody = 'Edited synthetic reply survives the candidate refresh.';
+  await editor().fill(editedBody);
+  await expect(editor()).toContainText(editedBody);
+  await page.getByRole('button', { name: 'Refresh candidate', exact: true }).click();
+  await expect(page.getByTestId('u6-status')).toContainText('edited editor body remains');
+  await expect(editor()).toContainText(editedBody);
+
+  await page.screenshot({ path: testInfo.outputPath('u6-desktop-review.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Review & Send', exact: true }).click();
+  await expect(page.getByTestId('u6-status')).toHaveText(
+    'Fake SMTP accepted the reviewed message.',
+  );
+  await expect(page.getByTestId('u6-audit')).toContainText('Approval calls: 1');
+  await expect(page.getByTestId('u6-audit')).toContainText('Fake SMTP attempts: 1');
+  await expect(page.getByTestId('u6-last-sent-body')).toContainText(editedBody);
+  const firstRunRequests = (await page.evaluate(
+    () => window.__reservationToolsPilotRequests ?? [],
+  )) as Array<{ method: string; path: string; status: number }>;
+
+  await page.goto(fixtureUrl(), { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'Adopt candidate', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
+  await editor().fill('Edited stale synthetic reply remains available after the fence.');
+  await page.getByRole('button', { name: 'Simulate newer inbound', exact: true }).click();
+  await page.getByRole('button', { name: 'Review & Send', exact: true }).click();
+  await expect(page.getByTestId('u6-status')).toHaveText(
+    'Approval blocked before SMTP; the edited draft remains available.',
+  );
+  await expect(page.getByTestId('u6-audit')).toContainText('Blocked sends: 1');
+  await expect(page.getByTestId('u6-audit')).toContainText('Fake SMTP attempts: 0');
+
+  const actionBoxes = await readTouchTargetBoxes(page.locator('[data-u6-action]'));
+  expectTouchTargetBoxes([{ label: 'U6 desktop safety actions', boxes: actionBoxes }]);
+  await page.getByRole('button', { name: 'Use manual fallback', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(editor()).toBeVisible();
+  await editor().fill('Manual mobile keyboard reply is intentionally user-authored.');
+  await editor().focus();
+  await editor().press('Control+Enter');
+  await expect(page.getByTestId('u6-status')).toHaveText(
+    'Fake SMTP accepted the reviewed message.',
+  );
+  await expect(page.getByTestId('u6-audit')).toContainText('Approval calls: 1');
+  await expect(page.getByTestId('u6-audit')).toContainText('Fake SMTP attempts: 1');
+  await page.screenshot({ path: testInfo.outputPath('u6-mobile-manual.png'), fullPage: true });
+
+  const secondRunRequests = (await page.evaluate(
+    () => window.__reservationToolsPilotRequests ?? [],
+  )) as Array<{ method: string; path: string; status: number }>;
+  const requests = [...firstRunRequests, ...secondRunRequests];
+  const allowedPaths = new Set([
+    '/api/auth/get-session',
+    '/settings/undefined',
+    '/api/trpc/settings.get',
+    '/api/trpc/connections.getDefault',
+    '/api/trpc/labels.list',
+    '/api/trpc/mail.get',
+    '/api/trpc/drafts.get',
+    '/api/trpc/drafts.ensureEditableForReply',
+    '/api/trpc/drafts.create',
+    '/api/trpc/drafts.approve',
+    '/api/trpc/ai.hmsCandidateState',
+    '/api/trpc/ai.refreshHmsCandidate',
+    '/api/trpc/mail.send',
+  ]);
+  expect(forbidden).toEqual([]);
+  const unexpectedPaths = requests
+    .filter((request) => !allowedPaths.has(request.path))
+    .map((request) => request.path);
+  expect(
+    unexpectedPaths,
+    `unexpected U6 fixture paths: ${JSON.stringify(unexpectedPaths)}`,
+  ).toEqual([]);
+  expect(requests.every((request) => typeof request.status === 'number')).toBe(true);
+  expect(requests.some((request) => request.path.endsWith('/drafts.ensureEditableForReply'))).toBe(
+    true,
+  );
+  expect(requests.some((request) => request.path.endsWith('/ai.refreshHmsCandidate'))).toBe(true);
+  expect(requests.some((request) => request.path.endsWith('/drafts.approve'))).toBe(true);
+  expect(requests.filter((request) => request.path.endsWith('/mail.send'))).toHaveLength(3);
+  expect(requests.filter((request) => request.path.endsWith('/mail.send'))).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ status: 200 }),
+      expect.objectContaining({ status: 409 }),
+    ]),
+  );
+});

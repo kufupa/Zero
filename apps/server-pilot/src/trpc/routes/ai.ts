@@ -18,6 +18,7 @@ import { enqueueHmsCandidateRefresh, loadHmsCandidateState } from './drafts.js';
 import { resolveHmsSourceRevision } from '../../hms/production-runtime.js';
 import { runtimeFingerprintSha256 } from '../../hms/evidence-runtime.js';
 import { aiWorkflowRun, message } from '../../db/schema/mail.js';
+import { isVisibleDraftAssistanceEnabled } from '../../env.js';
 import { readRequestSchema } from '../../hms/read-service.js';
 import { requireThreadForTransport } from './mail-helpers.js';
 import { readAiRunReceipt } from '../../ai/run-ledger.js';
@@ -231,6 +232,9 @@ export const aiRouter = tRouter({
   hmsCandidateState: mailboxProcedure
     .input(z.object({ threadId: z.string() }))
     .query(async ({ input, ctx }) => {
+      if (!isVisibleDraftAssistanceEnabled()) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'AI_DRAFTS_ROUTE_UNAVAILABLE' });
+      }
       const db = getDb();
       const transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
@@ -248,6 +252,9 @@ export const aiRouter = tRouter({
   refreshHmsCandidate: mailboxProcedure
     .input(z.object({ threadId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      if (!isVisibleDraftAssistanceEnabled()) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'AI_DRAFTS_ROUTE_UNAVAILABLE' });
+      }
       // Shadow: fixed block before any DB write (enqueue helper also gates).
       const { parseEnv } = await import('../../env.js');
       const { HMS_MANUAL_OPS_REQUIRED } = await import('../../ai/hms-shadow.js');

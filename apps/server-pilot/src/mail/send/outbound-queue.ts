@@ -6,13 +6,23 @@
  * intentionally not retried automatically because standard SMTP is not
  * provider-idempotent.
  */
+import {
+  assertDraftApprovalCurrent,
+  parseDraftApproval,
+  getDraftApprovalSigningSecret,
+  type DraftApproval,
+  type DraftApprovalPayload,
+  DraftApprovalError,
+} from '../../ai/draft-approval.js';
 import { getSmtpTransport, type OutboundMailPayload, type SmtpSendResult } from './smtp.js';
 import { persistMailBaselineProjection } from '../../metrics/mail-baseline-projection.js';
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
+import { refreshThreadAfterMessageRemoved } from '../../trpc/routes/mail-helpers.js';
 import { extractMailBaselineEvidence } from '../../ai/mail-baseline-extraction.js';
+import { mailDraft, message, outboundSendQueue } from '../../db/schema/mail.js';
 import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
-import { message, outboundSendQueue } from '../../db/schema/mail.js';
 import { mailBaselineGenerationKey } from '../../ai/run-ledger.js';
+import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { maybeEnqueueLoopback } from '../fixture-loopback.js';
 import { getDb, type DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
@@ -39,6 +49,8 @@ export type QueuedSmtpPayload = {
   references?: string[];
   extraHeaders?: Record<string, string>;
   attachments?: QueuedSmtpAttachment[];
+  /** Exact human-reviewed AI draft approval; absent for ordinary manual mail. */
+  draftApproval?: DraftApproval;
   deliveryOutcome?: SmtpDeliveryOutcome;
 };
 
@@ -75,16 +87,29 @@ export class OutboundDeliveryUncertainError extends Error {
   }
 }
 
+/** Approval invalidation is terminal for this queued send, never an SMTP retry. */
+export class DraftApprovalInvalidError extends Error {
+  constructor(message = 'AI draft approval is no longer valid') {
+    super(message);
+    this.name = 'DraftApprovalInvalidError';
+  }
+}
+
 export function getUndoSendSeconds(): number {
   const n = Number(process.env.UNDO_SEND_SECONDS ?? '20');
   return Number.isFinite(n) && n >= 0 ? n : 20;
 }
 
-export function serializeSmtpPayload(payload: OutboundMailPayload): QueuedSmtpPayload {
+export function serializeSmtpPayload(
+  payload: OutboundMailPayload,
+  draftApproval?: DraftApproval,
+): QueuedSmtpPayload {
   return {
     from: payload.from,
     to: payload.to,
     cc: payload.cc,
+    // Keep the exact SMTP payload, including the server-derived filing BCC.
+    // Approval matching removes that derived copy separately below.
     bcc: payload.bcc,
     subject: payload.subject,
     html: payload.html,
@@ -99,6 +124,7 @@ export function serializeSmtpPayload(payload: OutboundMailPayload): QueuedSmtpPa
         : Buffer.from(String(a.content)).toString('base64'),
       contentType: a.contentType,
     })),
+    ...(draftApproval ? { draftApproval } : {}),
   };
 }
 
@@ -120,6 +146,72 @@ export function deserializeSmtpPayload(raw: QueuedSmtpPayload): OutboundMailPayl
       contentType: a.contentType,
     })),
   };
+}
+
+function approvalPayloadFromQueuedSmtp(
+  approval: DraftApproval,
+  payload: OutboundMailPayload,
+): DraftApprovalPayload {
+  return {
+    draftId: approval.draftId,
+    generationId: approval.generationId,
+    transportId: approval.transportId,
+    threadId: approval.threadId,
+    revisionId: approval.revisionId,
+    threadStateVersion: approval.threadStateVersion,
+    subject: payload.subject,
+    html: payload.html,
+    text: payload.text,
+    to: payload.to,
+    cc: payload.cc,
+    // The active mailbox filing copy is server-derived rather than an editor
+    // recipient; compare the reviewed user-entered list at the queue fence.
+    bcc: payload.bcc.filter(
+      (recipient) => recipient.trim().toLowerCase() !== payload.from.trim().toLowerCase(),
+    ),
+    attachments: (payload.attachments ?? []).map((attachment) => ({
+      filename: attachment.filename,
+      mimeType: attachment.contentType,
+      contentBase64: Buffer.isBuffer(attachment.content)
+        ? attachment.content.toString('base64')
+        : Buffer.from(String(attachment.content)).toString('base64'),
+    })),
+  };
+}
+
+/**
+ * Revalidate the exact persisted approval immediately before opening SMTP.
+ * A malformed/expired token is terminal and is never converted to an unknown
+ * delivery result because no transport call has started yet.
+ */
+export async function assertQueuedDraftApproval(
+  rawApproval: unknown,
+  payload: OutboundMailPayload,
+  db: DB,
+  messageId?: string,
+): Promise<DraftApproval> {
+  try {
+    const signingSecret = getDraftApprovalSigningSecret();
+    const approval = parseDraftApproval(rawApproval, signingSecret);
+    return await assertDraftApprovalCurrent({
+      db,
+      approval,
+      payload: approvalPayloadFromQueuedSmtp(approval, payload),
+      queueMessageId: messageId,
+      loadThreadStateVersion: (stateDb, state) =>
+        loadLiveThreadStateVersion(stateDb, {
+          ...state,
+          ...(messageId ? { excludeMessageIds: [messageId] } : {}),
+          ...(messageId ? { excludeSentMessageIds: [messageId] } : {}),
+        }),
+      signingSecret,
+    });
+  } catch (error) {
+    if (error instanceof DraftApprovalError) {
+      throw new DraftApprovalInvalidError(error.message);
+    }
+    throw error;
+  }
 }
 
 function requireRecord(raw: unknown, error: string): Record<string, unknown> {
@@ -251,11 +343,12 @@ export async function enqueueOutbound(args: {
   messageId: string;
   sendAt: Date;
   smtpPayload: OutboundMailPayload;
+  draftApproval?: DraftApproval;
   db?: DB;
 }): Promise<void> {
   const db = args.db ?? getDb();
   const now = new Date();
-  const queued = serializeSmtpPayload(args.smtpPayload);
+  const queued = serializeSmtpPayload(args.smtpPayload, args.draftApproval);
 
   await db.insert(outboundSendQueue).values({
     id: randomUUID(),
@@ -671,6 +764,11 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
     return finalizeLegacyHeaderOnlyDelivery(row, db);
   }
 
+  const queuedRecord = requireRecord(row.smtpPayload, 'outbound SMTP payload malformed');
+  if (Object.hasOwn(queuedRecord, 'draftApproval') && queuedRecord.draftApproval !== undefined) {
+    await assertQueuedDraftApproval(queuedRecord.draftApproval, payload, db, row.messageId);
+  }
+
   const smtpTransport = getSmtpTransport();
   if (!(await markSmtpAttemptStarted(row, db))) throw new OutboundClaimLostError();
   const leaseRenewal = startClaimLeaseRenewal(row, db);
@@ -714,6 +812,58 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
 
 async function markFlushError(row: ClaimedQueueRow, err: unknown, db: DB): Promise<boolean> {
   const now = new Date();
+  if (err instanceof DraftApprovalInvalidError) {
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(outboundSendQueue)
+        .set({
+          status: 'cancelled',
+          lastError: JSON.stringify({ code: 'DRAFT_APPROVAL_INVALID', detail: err.message }),
+          updatedAt: now,
+        })
+        .where(claimFence(row))
+        .returning({ id: outboundSendQueue.id });
+      if (!updated) return false;
+
+      // mail.send marks the draft sent in the same transaction as enqueue. If
+      // approval invalidates before SMTP, return it to the normal editable path
+      // before deleting the message (the FK then clears sentMessageId).
+      await tx
+        .update(mailDraft)
+        .set({ isSent: false, status: 'active', sentMessageId: null, updatedAt: now })
+        .where(
+          and(
+            eq(mailDraft.transportId, row.transportId),
+            eq(mailDraft.sentMessageId, row.messageId),
+            eq(mailDraft.isSent, true),
+            eq(mailDraft.status, 'sent'),
+          ),
+        );
+
+      const [outbound] = await tx
+        .select({ threadId: message.threadId })
+        .from(message)
+        .where(
+          and(
+            eq(message.id, row.messageId),
+            eq(message.transportId, row.transportId),
+            eq(message.direction, 'outbound'),
+          ),
+        )
+        .limit(1);
+      if (outbound) {
+        await tx
+          .delete(message)
+          .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
+        await refreshThreadAfterMessageRemoved(
+          tx as unknown as DB,
+          outbound.threadId,
+          row.transportId,
+        );
+      }
+      return true;
+    });
+  }
   const lastError =
     err instanceof OutboundDeliveryUncertainError
       ? JSON.stringify({ code: 'SMTP_DELIVERY_OUTCOME_UNKNOWN' })

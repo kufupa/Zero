@@ -5,12 +5,21 @@
  * attach to a thread (`threadId`); the thread is verified to belong to the
  * same transport before linking.
  */
-import { TRPCError } from '@trpc/server';
-import { z } from 'zod';
-import { and, eq, desc, inArray, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { getDb, type DB } from '../../db/client.js';
+import {
+  DRAFT_APPROVAL_POLICY_VERSION,
+  DraftApprovalError,
+  assertDraftApprovalCurrent,
+  buildDraftApproval,
+  getDraftApprovalSigningSecret,
+  type DraftApprovalPayload,
+} from '../../ai/draft-approval.js';
+import {
+  requireThreadForTransport,
+  requireMessageForTransport,
+  encodePageCursor,
+  decodePageCursor,
+  keysetBefore,
+} from './mail-helpers.js';
 import {
   aiDraftGeneration,
   aiWorkflowRun,
@@ -20,30 +29,25 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import {
-  requireThreadForTransport,
-  requireMessageForTransport,
-  encodePageCursor,
-  decodePageCursor,
-  keysetBefore,
-} from './mail-helpers.js';
-import { createDraftInput } from '../wire-compat.js';
-import { toDraftWire } from './draft-wire.js';
-import { buildDraftSearchConditions } from '../../mail/search/query.js';
-import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
-import {
   EvidenceRefSchema,
   isEvidenceFresh,
   type HmsEvidenceRef,
   type MailEvidenceRef,
 } from '../../ai/draft-evidence.js';
-import {
-  loadLiveThreadStateVersion,
-} from '../../ai/drafts.js';
-import {
-  DEFAULT_AI_MODEL_ID,
-  enqueueAiRun,
-} from '../../ai/run-ledger.js';
+import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
+import { DEFAULT_AI_MODEL_ID, enqueueAiRun } from '../../ai/run-ledger.js';
+import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
+import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
+import { buildDraftSearchConditions } from '../../mail/search/query.js';
+import { mailboxProcedure, router as tRouter } from '../trpc.js';
+import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
+import { and, eq, desc, inArray, sql } from 'drizzle-orm';
+import { getDb, type DB } from '../../db/client.js';
+import { toDraftWire } from './draft-wire.js';
+import { TRPCError } from '@trpc/server';
+import { randomUUID } from 'node:crypto';
 import { parseEnv } from '../../env.js';
+import { z } from 'zod';
 
 function isPostgresUniqueViolation(err: unknown): boolean {
   if (err && typeof err === 'object' && 'code' in err) {
@@ -56,9 +60,7 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 }
 
 /** Bump when candidate tool registry / claim schemas change. */
-export {
-  HMS_CANDIDATE_TOOLSET_VERSION,
-} from '../../ai/candidate-draft-agent.js';
+export { HMS_CANDIDATE_TOOLSET_VERSION } from '../../ai/candidate-draft-agent.js';
 import { HMS_CANDIDATE_TOOLSET_VERSION } from '../../ai/candidate-draft-agent.js';
 
 export const DEFAULT_HMS_CANDIDATE_PROMPT_VERSION = 'draft-v1';
@@ -79,12 +81,7 @@ export type HmsCandidateState = {
   refreshedAt: string | null;
 };
 
-const ACTIVE_REFRESH_STATES = new Set<string>([
-  'queued',
-  'claimed',
-  'running',
-  'retry_wait',
-]);
+const ACTIVE_REFRESH_STATES = new Set<string>(['queued', 'claimed', 'running', 'retry_wait']);
 
 export function buildHmsRefreshIdempotencyKey(input: {
   transportId: string;
@@ -259,9 +256,7 @@ export async function resolveMailAttachmentFreshnessInputs(input: {
     );
 
   const found = new Set(rows.map((r) => r.id));
-  const missingAttachmentIds = new Set(
-    [...attachmentIds].filter((id) => !found.has(id)),
-  );
+  const missingAttachmentIds = new Set([...attachmentIds].filter((id) => !found.has(id)));
 
   // Injected hashes win. DB has no contentHash column yet — do not invent
   // metadata fingerprints that cannot match evidence.sourceHash (body sha256).
@@ -337,9 +332,7 @@ export async function loadHmsCandidateState(input: {
 
   const visibility = resolveHmsCandidateVisibility({
     priorCandidateId: candidate?.id ?? null,
-    refreshRun: activeRunRow
-      ? { id: activeRunRow.id, state: activeRunRow.state }
-      : null,
+    refreshRun: activeRunRow ? { id: activeRunRow.id, state: activeRunRow.state } : null,
   });
   const activeRun = visibility.activeRun;
 
@@ -470,7 +463,14 @@ export async function enqueueHmsCandidateRefresh(input: {
   promptVersion?: string;
 }): Promise<{
   runId: string;
-  runState: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'succeeded' | 'dead_letter' | 'superseded';
+  runState:
+    | 'queued'
+    | 'claimed'
+    | 'running'
+    | 'retry_wait'
+    | 'succeeded'
+    | 'dead_letter'
+    | 'superseded';
   idempotencyKey: string;
   threadStateVersion: string;
 }> {
@@ -557,8 +557,7 @@ export const draftsRouter = tRouter({
       }),
     )
     .query(async ({ input, ctx }) => {
-      const parsedSearch =
-        input.q && input.q.trim() ? parseDraftSearchQueryOrThrow(input.q) : null;
+      const parsedSearch = input.q && input.q.trim() ? parseDraftSearchQueryOrThrow(input.q) : null;
       const db = getDb();
       const transportId = ctx.activeTransportId;
       const limit = input.limit;
@@ -581,26 +580,17 @@ export const draftsRouter = tRouter({
       if (input.cursor) {
         const decoded = decodePageCursor(input.cursor);
         if (decoded) {
-          conditions.push(
-            keysetBefore(mailDraft.updatedAt, mailDraft.id, decoded.ts, decoded.id),
-          );
+          conditions.push(keysetBefore(mailDraft.updatedAt, mailDraft.id, decoded.ts, decoded.id));
         } else {
           const cursorDraft = await db
             .select({ updatedAt: mailDraft.updatedAt, id: mailDraft.id })
             .from(mailDraft)
-            .where(
-              and(eq(mailDraft.id, input.cursor), eq(mailDraft.transportId, transportId)),
-            )
+            .where(and(eq(mailDraft.id, input.cursor), eq(mailDraft.transportId, transportId)))
             .limit(1);
           if (cursorDraft.length > 0) {
             const row = cursorDraft[0]!;
             conditions.push(
-              keysetBefore(
-                mailDraft.updatedAt,
-                mailDraft.id,
-                row.updatedAt ?? new Date(0),
-                row.id,
-              ),
+              keysetBefore(mailDraft.updatedAt, mailDraft.id, row.updatedAt ?? new Date(0), row.id),
             );
           }
         }
@@ -626,23 +616,137 @@ export const draftsRouter = tRouter({
       };
     }),
 
-  get: mailboxProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ input, ctx }) => {
+  get: mailboxProcedure.input(z.object({ id: z.string() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const rows = await db
+      .select()
+      .from(mailDraft)
+      .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
+      .limit(1);
+    if (rows.length === 0) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
+    }
+    const r = rows[0]!;
+    return toDraftWire(r);
+  }),
+
+  /**
+   * Bind an explicit human review of the current AI draft to one send
+   * payload. The token is intentionally opaque and is re-read at send and
+   * immediately before SMTP; it is never a general-purpose send grant.
+   */
+  approve: mailboxProcedure
+    .input(
+      z.object({
+        draftId: z.string().min(1),
+        subject: z.string(),
+        html: z.string(),
+        text: z.string().default(''),
+        originalMessage: z.string().optional(),
+        to: z.array(z.string()),
+        cc: z.array(z.string()).default([]),
+        bcc: z.array(z.string()).default([]),
+        attachments: z.array(serializedAttachmentInput).default([]),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      const rows = await db
+      const [draft] = await db
         .select()
         .from(mailDraft)
         .where(
-          and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)),
+          and(
+            eq(mailDraft.id, input.draftId),
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'active'),
+            eq(mailDraft.origin, 'ai'),
+          ),
         )
         .limit(1);
-      if (rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
+      if (!draft || !draft.generationId || !draft.threadId) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_REQUIRED' });
       }
-      const r = rows[0]!;
-      return toDraftWire(r);
+
+      const [generation] = await db
+        .select()
+        .from(aiDraftGeneration)
+        .where(
+          and(
+            eq(aiDraftGeneration.id, draft.generationId),
+            eq(aiDraftGeneration.transportId, transportId),
+            eq(aiDraftGeneration.threadId, draft.threadId),
+          ),
+        )
+        .limit(1);
+      const [latestRevision] = await db
+        .select({ id: mailDraftRevision.id })
+        .from(mailDraftRevision)
+        .where(eq(mailDraftRevision.draftId, draft.id))
+        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+        .limit(1);
+      if (!generation || !latestRevision) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+      }
+
+      const threadStateVersion = await loadLiveThreadStateVersion(db, {
+        transportId,
+        threadId: draft.threadId,
+      });
+      const payload: DraftApprovalPayload = {
+        draftId: draft.id,
+        generationId: draft.generationId,
+        transportId,
+        threadId: draft.threadId,
+        revisionId: latestRevision.id,
+        threadStateVersion,
+        evidence: generation.evidence ?? [],
+        policyVersion: DRAFT_APPROVAL_POLICY_VERSION,
+        approvedByUserId: ctx.sessionUser.id,
+        approvedAt: new Date().toISOString(),
+        origin: 'ai',
+        subject: input.subject,
+        html: prepareOutboundHtml(
+          input.originalMessage?.trim() &&
+            !input.html.includes(
+              input.originalMessage
+                .trim()
+                .slice(0, Math.min(80, input.originalMessage.trim().length)),
+            )
+            ? `${input.html}${input.originalMessage}`
+            : input.html,
+        ),
+        text: input.text,
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        attachments: input.attachments.map((attachment) => ({
+          filename: attachment.name,
+          mimeType: attachment.type,
+          sizeBytes: attachment.size,
+          contentBase64: attachment.base64,
+        })),
+      };
+
+      try {
+        const signingSecret = getDraftApprovalSigningSecret();
+        const approval = buildDraftApproval(payload, signingSecret);
+        await assertDraftApprovalCurrent({
+          db,
+          approval,
+          payload,
+          loadThreadStateVersion: loadLiveThreadStateVersion,
+          signingSecret,
+        });
+        return approval;
+      } catch (error) {
+        if (error instanceof DraftApprovalError) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+        }
+        throw error;
+      }
     }),
 
   ensureEditableForReply: mailboxProcedure
@@ -768,93 +872,112 @@ export const draftsRouter = tRouter({
       }
     }),
 
-  create: mailboxProcedure
-    .input(createDraftInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      if (input.threadId) {
-        await requireThreadForTransport(db, input.threadId, transportId);
+  create: mailboxProcedure.input(createDraftInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    if (input.threadId) {
+      await requireThreadForTransport(db, input.threadId, transportId);
+    }
+    const draftId = input.id ?? randomUUID();
+    const existing = await db
+      .select()
+      .from(mailDraft)
+      .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)))
+      .limit(1);
+    const row = {
+      threadId: input.threadId,
+      replyToMessageId: input.replyToMessageId,
+      toAddresses: input.to,
+      ccAddresses: input.cc,
+      bccAddresses: input.bcc,
+      subject: input.subject || null,
+      textBody: input.html || null,
+      htmlBody: input.html || null,
+      attachments: [] as { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[],
+      updatedAt: new Date(),
+    };
+    if (existing.length > 0) {
+      const prior = existing[0]!;
+      await db
+        .update(mailDraft)
+        .set({ ...row, status: 'active' as const })
+        .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)));
+      const changed =
+        JSON.stringify(prior.toAddresses ?? []) !== JSON.stringify(row.toAddresses) ||
+        JSON.stringify(prior.ccAddresses ?? []) !== JSON.stringify(row.ccAddresses) ||
+        JSON.stringify(prior.bccAddresses ?? []) !== JSON.stringify(row.bccAddresses) ||
+        prior.subject !== row.subject ||
+        prior.textBody !== row.textBody ||
+        prior.htmlBody !== row.htmlBody ||
+        JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
+      if (changed) {
+        await db.insert(mailDraftRevision).values({
+          id: randomUUID(),
+          draftId,
+          generationId: prior.generationId,
+          actorUserId: ctx.sessionUser.id,
+          kind: 'edited',
+          toAddresses: row.toAddresses,
+          ccAddresses: row.ccAddresses,
+          bccAddresses: row.bccAddresses,
+          subject: row.subject,
+          textBody: row.textBody,
+          htmlBody: row.htmlBody,
+          attachments: row.attachments,
+        });
       }
-      const draftId = input.id ?? randomUUID();
-      const existing = await db
-        .select({ id: mailDraft.id })
-        .from(mailDraft)
-        .where(
-          and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)),
-        )
-        .limit(1);
-      const row = {
-        threadId: input.threadId,
-        replyToMessageId: input.replyToMessageId,
-        status: 'active' as const,
-        origin: 'manual' as const,
+      return { id: draftId };
+    }
+
+    try {
+      await db.insert(mailDraft).values({
+        id: draftId,
+        transportId,
+        createdByUserId: ctx.sessionUser.id,
+        isSent: false,
+        status: 'active',
+        origin: 'manual',
+        ...row,
+      });
+      await db.insert(mailDraftRevision).values({
+        id: randomUUID(),
+        draftId,
+        actorUserId: ctx.sessionUser.id,
+        kind: 'created',
         toAddresses: input.to,
         ccAddresses: input.cc,
         bccAddresses: input.bcc,
         subject: input.subject || null,
         textBody: input.html || null,
         htmlBody: input.html || null,
-        attachments: [] as { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[],
-        updatedAt: new Date(),
-      };
-      if (existing.length > 0) {
-        await db
-          .update(mailDraft)
-          .set(row)
-          .where(
-            and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)),
-          );
-        return { id: draftId };
-      }
-
-      try {
-        await db.insert(mailDraft).values({
-          id: draftId,
-          transportId,
-          createdByUserId: ctx.sessionUser.id,
-          isSent: false,
-          ...row,
-        });
-        await db.insert(mailDraftRevision).values({
-          id: randomUUID(),
-          draftId,
-          actorUserId: ctx.sessionUser.id,
-          kind: 'created',
-          toAddresses: input.to,
-          ccAddresses: input.cc,
-          bccAddresses: input.bcc,
-          subject: input.subject || null,
-          textBody: input.html || null,
-          htmlBody: input.html || null,
-          attachments: [],
-        });
-        return { id: draftId };
-      } catch (error) {
-        // One active draft per thread — FE may omit draftId while latestDraft already exists.
-        if (!isPostgresUniqueViolation(error) || !input.threadId) throw error;
-        const activeRows = await db
-          .select({ id: mailDraft.id })
-          .from(mailDraft)
-          .where(
-            and(
-              eq(mailDraft.transportId, transportId),
-              eq(mailDraft.threadId, input.threadId),
-              eq(mailDraft.isSent, false),
-              eq(mailDraft.status, 'active'),
-            ),
-          )
-          .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
-          .limit(1);
-        const activeId = activeRows[0]?.id;
-        if (!activeId) throw error;
-        await db
-          .update(mailDraft)
-          .set(row)
-          .where(and(eq(mailDraft.id, activeId), eq(mailDraft.transportId, transportId)));
-        return { id: activeId };
-      }
-    }),
+        attachments: [],
+      });
+      return { id: draftId };
+    } catch (error) {
+      // One active draft per thread — FE may omit draftId while latestDraft already exists.
+      if (!isPostgresUniqueViolation(error) || !input.threadId) throw error;
+      const activeRows = await db
+        .select({ id: mailDraft.id })
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.threadId, input.threadId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'active'),
+          ),
+        )
+        .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
+        .limit(1);
+      const activeId = activeRows[0]?.id;
+      if (!activeId) throw error;
+      await db
+        .update(mailDraft)
+        .set(row)
+        .where(and(eq(mailDraft.id, activeId), eq(mailDraft.transportId, transportId)));
+      return { id: activeId };
+    }
+  }),
 
   update: mailboxProcedure
     .input(
@@ -877,9 +1000,7 @@ export const draftsRouter = tRouter({
       const existing = await db
         .select({ id: mailDraft.id })
         .from(mailDraft)
-        .where(
-          and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)),
-        )
+        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
         .limit(1);
       if (existing.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
@@ -899,16 +1020,12 @@ export const draftsRouter = tRouter({
       await db
         .update(mailDraft)
         .set(patch)
-        .where(
-          and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)),
-        );
+        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)));
 
       const mergedRows = await db
         .select()
         .from(mailDraft)
-        .where(
-          and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)),
-        )
+        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
         .limit(1);
       const merged = mergedRows[0]!;
       const latestRevision = await db
@@ -922,9 +1039,12 @@ export const draftsRouter = tRouter({
         latestRevision[0]?.subject !== merged.subject ||
         latestRevision[0]?.textBody !== merged.textBody ||
         latestRevision[0]?.htmlBody !== merged.htmlBody ||
-        JSON.stringify(latestRevision[0]?.toAddresses ?? []) !== JSON.stringify(merged.toAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !== JSON.stringify(merged.ccAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !== JSON.stringify(merged.bccAddresses ?? []);
+        JSON.stringify(latestRevision[0]?.toAddresses ?? []) !==
+          JSON.stringify(merged.toAddresses ?? []) ||
+        JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !==
+          JSON.stringify(merged.ccAddresses ?? []) ||
+        JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
+          JSON.stringify(merged.bccAddresses ?? []);
 
       if (changed) {
         await db.insert(mailDraftRevision).values({
@@ -945,32 +1065,27 @@ export const draftsRouter = tRouter({
       return { id: input.id };
     }),
 
-  delete: mailboxProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const existing = await db
-        .select({ id: mailDraft.id })
-        .from(mailDraft)
-        .where(
-          and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)),
-        )
-        .limit(1);
-      if (existing.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
-      }
-      await db
-        .update(mailDraft)
-        .set({ status: 'discarded', updatedAt: new Date() })
-        .where(
-          and(
-            eq(mailDraft.id, input.id),
-            eq(mailDraft.transportId, transportId),
-            inArray(mailDraft.status, ['active', 'candidate']),
-          ),
-        );
-      return { deleted: true };
-    }),
+  delete: mailboxProcedure.input(z.object({ id: z.string() })).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const existing = await db
+      .select({ id: mailDraft.id })
+      .from(mailDraft)
+      .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
+      .limit(1);
+    if (existing.length === 0) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
+    }
+    await db
+      .update(mailDraft)
+      .set({ status: 'discarded', updatedAt: new Date() })
+      .where(
+        and(
+          eq(mailDraft.id, input.id),
+          eq(mailDraft.transportId, transportId),
+          inArray(mailDraft.status, ['active', 'candidate']),
+        ),
+      );
+    return { deleted: true };
+  }),
 });
-
