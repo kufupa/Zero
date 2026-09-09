@@ -13,6 +13,7 @@ import { user as userAuthTable } from '../src/db/schema/auth.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { callerFor } from './helpers/trpc-caller.js';
 import { simpleParser } from 'mailparser';
+import { FakeS3Storage, setS3Storage } from '../src/storage/s3.js';
 
 const reachable = await probeTestDb();
 
@@ -230,6 +231,14 @@ describe('mail.getEmlDownloadUrl (tRPC procedure unit)', () => {
     process.env.S3_BUCKET = 'test-mail-bucket';
     process.env.AWS_REGION = 'af-south-1';
 
+    const fakeS3 = new FakeS3Storage('test-mail-bucket');
+    await fakeS3.putObject({
+      key: 'raw-mime/msg-proc-2.eml',
+      body: Buffer.from('test content'),
+      contentType: 'message/rfc822',
+    });
+    setS3Storage(fakeS3);
+
     const mockMsg = {
       id: 'msg-proc-2',
       transportId: 'transport-1',
@@ -276,6 +285,80 @@ describe('mail.getEmlDownloadUrl (tRPC procedure unit)', () => {
       expect(res.filename).toBe('Special_Request_2026-09-09.eml');
       expect(res.isDirectHttp).toBe(false);
       expect(res.url).toContain('test-mail-bucket');
+    } finally {
+      __setDbForTests(null);
+      if (prevBucket !== undefined) {
+        process.env.S3_BUCKET = prevBucket;
+      } else {
+        delete process.env.S3_BUCKET;
+      }
+      if (prevRegion !== undefined) {
+        process.env.AWS_REGION = prevRegion;
+      } else {
+        delete process.env.AWS_REGION;
+      }
+    }
+  });
+
+  it('falls back to direct HTTP download url when rawMimeS3Key is missing in S3 storage (expired or not found)', async () => {
+    const { appRouter } = await import('../src/trpc/router.js');
+    const { __setDbForTests } = await import('../src/db/client.js');
+
+    const prevBucket = process.env.S3_BUCKET;
+    const prevRegion = process.env.AWS_REGION;
+    process.env.S3_BUCKET = 'test-mail-bucket';
+    process.env.AWS_REGION = 'af-south-1';
+
+    const fakeS3 = new FakeS3Storage('test-mail-bucket');
+    // Notice: not putting raw-mime/msg-expired-1.eml into fakeS3, simulating 30d lifecycle expiration
+    setS3Storage(fakeS3);
+
+    const mockMsg = {
+      id: 'msg-expired-1',
+      transportId: 'transport-1',
+      subject: 'Expired S3 Email',
+      receivedAt: new Date('2026-07-28T18:00:00Z'),
+      sentAt: null,
+      rawMimeS3Key: 'raw-mime/msg-expired-1.eml',
+    };
+
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: () => [
+                {
+                  transportId: 'transport-1',
+                  role: 'owner',
+                  email: 'test@example.com',
+                },
+              ],
+            }),
+          }),
+          where: () => ({
+            limit: () => [mockMsg],
+          }),
+        }),
+      }),
+    } as any;
+
+    __setDbForTests({ db: mockDb, conn: null as any });
+
+    try {
+      const caller = appRouter.createCaller({
+        auth: null as never,
+        reqHeaders: new Headers({ 'x-zero-active-transport': 'transport-1' }),
+        sessionUser: { id: 'user-1', email: 'test@example.com', name: 'Test' },
+        activeTransportId: 'transport-1',
+        activeTransportEmail: 'test@example.com',
+        userRole: 'owner',
+      });
+
+      const res = await caller.mail.getEmlDownloadUrl({ messageId: 'msg-expired-1' });
+      expect(res.filename).toBe('Expired_S3_Email_2026-07-28.eml');
+      expect(res.isDirectHttp).toBe(true);
+      expect(res.url).toBe('/api/mail/messages/msg-expired-1/download.eml');
     } finally {
       __setDbForTests(null);
       if (prevBucket !== undefined) {

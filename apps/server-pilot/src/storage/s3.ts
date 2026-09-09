@@ -134,7 +134,13 @@ export class RealS3Storage implements S3Storage {
         err && typeof err === 'object' && 'name' in err
           ? String((err as { name?: string }).name)
           : '';
-      if (code === 'NoSuchKey' || code === 'NotFound') return null;
+      if (
+        code === 'NoSuchKey' ||
+        code === 'NotFound' ||
+        (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode === 404
+      ) {
+        return null;
+      }
       throw err;
     }
   }

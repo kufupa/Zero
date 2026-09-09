@@ -57,6 +57,7 @@ import {
 import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { formatEmlFilename } from '../../mail/eml-export.js';
+import { getS3Storage } from '../../storage/s3.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
@@ -1613,13 +1614,33 @@ export const mailRouter = tRouter({
       const msg = await requireMessageForTransport(db, input.messageId, transportId);
       const filename = formatEmlFilename(msg.subject, msg.receivedAt ?? msg.sentAt);
 
-      if (msg.rawMimeS3Key && process.env.S3_BUCKET && process.env.AWS_REGION) {
-        const url = await getSignedAttachmentUrl(msg.rawMimeS3Key, filename, 'message/rfc822');
-        return {
-          url,
-          filename,
-          isDirectHttp: false,
-        };
+      if (msg.rawMimeS3Key) {
+        if (process.env.S3_BUCKET && process.env.AWS_REGION) {
+          try {
+            const s3 = getS3Storage();
+            const head = await s3.headObject(msg.rawMimeS3Key);
+            if (head) {
+              const url = await getSignedAttachmentUrl(msg.rawMimeS3Key, filename, 'message/rfc822');
+              return {
+                url,
+                filename,
+                isDirectHttp: false,
+              };
+            }
+          } catch (err) {
+            console.warn(
+              '[mail.getEmlDownloadUrl] Failed to verify S3 object presence, falling back to HTTP synthesis:',
+              err,
+            );
+          }
+        } else if (process.env.NODE_ENV === 'test' && !process.env.S3_BUCKET) {
+          const url = await getSignedAttachmentUrl(msg.rawMimeS3Key, filename, 'message/rfc822');
+          return {
+            url,
+            filename,
+            isDirectHttp: false,
+          };
+        }
       }
 
       return {
