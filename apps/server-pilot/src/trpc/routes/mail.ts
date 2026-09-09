@@ -56,6 +56,7 @@ import {
 } from '../../mail/sender-preference.js';
 import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
+import { formatEmlFilename } from '../../mail/eml-export.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
@@ -1602,6 +1603,30 @@ export const mailRouter = tRouter({
         .from(attachment)
         .where(eq(attachment.messageId, input.messageId));
       return { attachments: rows };
+    }),
+
+  getEmlDownloadUrl: mailboxProcedure
+    .input(z.object({ messageId: z.string() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      const msg = await requireMessageForTransport(db, input.messageId, transportId);
+      const filename = formatEmlFilename(msg.subject, msg.receivedAt ?? msg.sentAt);
+
+      if (msg.rawMimeS3Key && process.env.S3_BUCKET && process.env.AWS_REGION) {
+        const url = await getSignedAttachmentUrl(msg.rawMimeS3Key, filename, 'message/rfc822');
+        return {
+          url,
+          filename,
+          isDirectHttp: false,
+        };
+      }
+
+      return {
+        url: `/api/mail/messages/${encodeURIComponent(input.messageId)}/download.eml`,
+        filename,
+        isDirectHttp: true,
+      };
     }),
 });
 
