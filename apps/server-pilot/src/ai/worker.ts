@@ -119,6 +119,7 @@ import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } fro
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import { parseMailboxMeasurementConfig } from '../metrics/mail-measurement-config.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../metrics/mail-baseline.js';
 import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
@@ -3521,35 +3522,61 @@ export async function executeAiRun(
         })),
       );
 
-      const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-      const workflow = mastra.getWorkflow('mailTriage');
-      const workflowRun = await workflow.createRun();
-      const result = await workflowRun.start({
-        inputData: {
-          transportId: run.transportId,
-          threadId: run.threadId,
-          triggerMessageId: run.triggerMessageId,
-          subject: trigger?.subject ?? undefined,
-          from: trigger?.fromAddress ?? '',
-          to: trigger?.toAddresses ?? [],
-          cc: trigger?.ccAddresses ?? [],
-          bcc: trigger?.bccAddresses ?? [],
-          body: trigger?.textBody ?? trigger?.htmlBody ?? '',
-          messages,
-          threadSignals,
-          transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
-          asOf: run.createdAt.toISOString(),
-          modelId: run.modelId,
-          promptVersion: TRIAGE_PROMPT_VERSION,
-        },
-        // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
-        abortSignal: signal,
-      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
-      if (result.status !== 'success') {
-        throw new Error(`mail triage workflow failed: ${result.status}`);
+      const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
+      let output: WorkflowTriageOutput;
+      let mastraTraceId: string | undefined;
+      let workflowMetrics: Record<string, unknown> = {};
+      if (externalSentAnalyticsOnly) {
+        // Sent copies are analytics evidence, not a triage admission. Do not
+        // initialize the triage workflow or apply folder/read/spam changes.
+        output = validateWorkflowTriageOutput({
+          primaryFolder: 'unknown-review',
+          priority: 'P3',
+          urgent: false,
+          overlays: {},
+          isSpam: false,
+          suggestedTools: [],
+          sourceScope: 'external',
+          automationState: 'unknown',
+          humanAction: 'review_required',
+          confidence: 0,
+          rationale: 'External Sent copy is analytics-only evidence.',
+          policyFlags: ['analytics-only:external-sent'],
+          abstainReason: 'analytics_only_external_sent',
+        });
+      } else {
+        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
+        const workflow = mastra.getWorkflow('mailTriage');
+        const workflowRun = await workflow.createRun();
+        const result = await workflowRun.start({
+          inputData: {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            triggerMessageId: run.triggerMessageId,
+            subject: trigger?.subject ?? undefined,
+            from: trigger?.fromAddress ?? '',
+            to: trigger?.toAddresses ?? [],
+            cc: trigger?.ccAddresses ?? [],
+            bcc: trigger?.bccAddresses ?? [],
+            body: trigger?.textBody ?? trigger?.htmlBody ?? '',
+            messages,
+            threadSignals,
+            transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
+            asOf: run.createdAt.toISOString(),
+            modelId: run.modelId,
+            promptVersion: TRIAGE_PROMPT_VERSION,
+          },
+          // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
+          abortSignal: signal,
+        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
+        if (result.status !== 'success') {
+          throw new Error(`mail triage workflow failed: ${result.status}`);
+        }
+        output = validateWorkflowTriageOutput(result.result?.output);
+        mastraTraceId = result.result?.traceId;
+        workflowMetrics = (result.result?.metrics as Record<string, unknown>) ?? {};
       }
 
-      const output = validateWorkflowTriageOutput(result.result?.output);
       const baselineRoute = resolveMailBaselineExtractionRoute({
         // A marker alone is not an approved route. The injected route is
         // limited to the purpose-bound in-process seam; absent that seam the
@@ -3595,8 +3622,11 @@ export async function executeAiRun(
               messageIdHeader: baselineRow.messageIdHeader,
               inReplyTo: baselineRow.inReplyTo,
               references: baselineRow.references,
-              source: 'mail_event',
+              source: baselineRow.direction === 'outbound' ? 'external_sent' : 'mail_event',
               sourceBasis: clock.basis,
+              ...(baselineRow.direction === 'outbound'
+                ? { sendEvidence: { status: 'sent' as const } }
+                : {}),
             },
           },
           baselineRoute,
@@ -3605,20 +3635,26 @@ export async function executeAiRun(
       }
 
       await db.transaction(async (tx) => {
-        const applyResult = await applyDurableTriageFromWorker({
-          db: tx as unknown as typeof db,
-          transportId: run.transportId,
-          threadId: run.threadId,
-          output,
-          writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
-          workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
-          forceUnsettle: run.metrics?.retagPending === true,
-          threadSignals,
-          from: trigger?.fromAddress ?? '',
-          to: trigger?.toAddresses ?? [],
-          cc: trigger?.ccAddresses ?? [],
-          bcc: trigger?.bccAddresses ?? [],
-        });
+        let applyMode: string;
+        if (externalSentAnalyticsOnly) {
+          applyMode = 'analytics_only_external_sent';
+        } else {
+          const applyResult = await applyDurableTriageFromWorker({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            output,
+            writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+            workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
+            forceUnsettle: run.metrics?.retagPending === true,
+            threadSignals,
+            from: trigger?.fromAddress ?? '',
+            to: trigger?.toAddresses ?? [],
+            cc: trigger?.ccAddresses ?? [],
+            bcc: trigger?.bccAddresses ?? [],
+          });
+          applyMode = applyResult.applyMode;
+        }
 
         let baselineMetrics: Record<string, unknown> = {
           status:
@@ -3633,6 +3669,11 @@ export async function executeAiRun(
         };
         if (routedBaseline && baselineRow) {
           const extraction = routedBaseline.extraction;
+          const configuredMeasurement = parseMailboxMeasurementConfig(
+            process.env.MAIL_MEASUREMENT_CONFIG_JSON,
+          );
+          const producerMeasurement =
+            configuredMeasurement?.transportId === run.transportId ? configuredMeasurement : null;
           const generationId = mailBaselineGenerationKey({
             transportId: run.transportId,
             threadId: run.threadId,
@@ -3648,6 +3689,16 @@ export async function executeAiRun(
             interpretationVersion: extraction.interpretationVersion,
             reviewerVersion: TRIAGE_REVIEWER_VERSION,
             observationCutoff: run.createdAt,
+            measurementStartAt: producerMeasurement?.measurementStartAt ?? null,
+            coverage: {
+              configVersion: producerMeasurement ? String(producerMeasurement.version) : null,
+              startAt: producerMeasurement?.measurementStartAt ?? null,
+              endAt: run.createdAt.toISOString(),
+              basis: producerMeasurement?.captureAssumptionBasis ?? 'coverage_unconfigured',
+              complete:
+                producerMeasurement !== null && producerMeasurement.measurementStartAt !== null,
+              confirmedGapIntervals: producerMeasurement?.confirmedGapIntervals ?? [],
+            },
             evidence: extraction.evidence,
           });
           baselineMetrics = {
@@ -3665,12 +3716,12 @@ export async function executeAiRun(
             claimOwner: owner,
             claimToken,
             expectedStates: ['running'],
-            mastraTraceId: result.result?.traceId,
+            mastraTraceId,
             metrics: {
-              ...(result.result?.metrics as Record<string, unknown>),
+              ...workflowMetrics,
               durableWrite: env.AI_WRITE_GATE_ENABLED,
               workflowTriage: env.WORKFLOW_TRIAGE_V6,
-              applyMode: applyResult.applyMode,
+              applyMode,
               mailBaseline: baselineMetrics,
             },
           },
@@ -4368,6 +4419,9 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
 export type RunAiWorkerOnceOptions = {
   shutdownSignal?: AbortSignal;
   readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
+  mailBaselineExtractionRoute?: NonNullable<
+    Parameters<typeof executeAiRun>[1]
+  >['mailBaselineExtractionRoute'];
   candidatePlanModel?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidatePlanModel'];
   candidateModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateModelAdapter'];
   candidateReplyModelAdapter?: NonNullable<
@@ -4393,6 +4447,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   const {
     shutdownSignal,
     readToolExecutor,
+    mailBaselineExtractionRoute,
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,
@@ -4407,6 +4462,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
+    mailBaselineExtractionRoute,
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,

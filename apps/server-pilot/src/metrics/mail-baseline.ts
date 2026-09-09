@@ -52,6 +52,7 @@ export type MailBaselineSourceBasis =
   | 'sender_timestamp_estimate'
   | 'first_known'
   | 'import_created_at'
+  | 'availability'
   | 'unknown';
 export type MailBaselineLinkStrength = 'header' | 'thread' | 'manual' | 'ambiguous' | 'unknown';
 export type MailBaselineDeliveryStatus =
@@ -101,6 +102,8 @@ export type MailBaselineEvidence = {
 };
 
 export type MailBaselineCoverage = {
+  /** Version of the producer-side measurement/T0 config snapshot. */
+  configVersion?: string | null;
   startAt: string | null;
   endAt: string | null;
   basis: string;
@@ -125,6 +128,7 @@ export type MailBaselineAskProjection = {
   askId: string;
   threadId: string;
   startedAt: string | null;
+  usefulReplyAt: string | null;
   waitStartedAt: string | null;
   followUpCount: number;
   replyState: MailBaselineReplyState;
@@ -168,7 +172,7 @@ export type MailBaselineProjection = {
   sourceMessageIds: readonly string[];
 };
 
-type ParsedEvidence = MailBaselineEvidence & { eventDate: Date; observedDate: Date | null };
+type ParsedEvidence = MailBaselineEvidence & { eventDate: Date | null; observedDate: Date | null };
 
 function asDate(value: string | Date | null | undefined): Date | null {
   if (value === null || value === undefined) return null;
@@ -181,10 +185,10 @@ function iso(date: Date | null): string | null {
 }
 
 function stableEvidenceCompare(left: ParsedEvidence, right: ParsedEvidence): number {
+  const leftTime = left.eventDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const rightTime = right.eventDate?.getTime() ?? Number.NEGATIVE_INFINITY;
   return (
-    left.eventDate.getTime() - right.eventDate.getTime() ||
-    left.id.localeCompare(right.id) ||
-    left.askId.localeCompare(right.askId)
+    leftTime - rightTime || left.id.localeCompare(right.id) || left.askId.localeCompare(right.askId)
   );
 }
 
@@ -197,6 +201,7 @@ function hasCoverageGap(at: Date, coverage: MailBaselineCoverage): boolean {
 }
 
 function eventCanAnswer(evidence: ParsedEvidence): boolean {
+  if (evidence.eventDate === null || evidence.sourceBasis === 'availability') return false;
   if (evidence.direction !== 'outbound') return false;
   if (
     evidence.eventType === 'acknowledgement' ||
@@ -279,6 +284,7 @@ function makeDefaultAsk(
     askId,
     threadId,
     startedAt: null,
+    usefulReplyAt: null,
     waitStartedAt: null,
     followUpCount: 0,
     replyState: 'unknown',
@@ -355,16 +361,15 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
   const valid: ParsedEvidence[] = [];
   for (const raw of input.evidence) {
     const eventDate = asDate(raw.eventAt);
-    if (!eventDate) {
-      increment('invalid_clock');
-      continue;
-    }
     const observedDate = asDate(raw.observedAt);
-    if (eventDate.getTime() > cutoff.getTime() || (observedDate && observedDate > cutoff)) {
+    if (
+      (eventDate && eventDate.getTime() > cutoff.getTime()) ||
+      (observedDate && observedDate > cutoff)
+    ) {
       increment('future_event');
       continue;
     }
-    if (eventDate.getTime() < 0) {
+    if (eventDate && eventDate.getTime() < 0) {
       increment('invalid_clock');
       continue;
     }
@@ -443,6 +448,11 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
       .sort((left, right) => stableEvidenceCompare(left.latest, right.latest))
       .at(-1);
     const answerState = answerConflict ? null : (latestAnswer?.values.at(-1) ?? null);
+    const firstUsefulReply = answers
+      .filter((item) => item.value === 'supported' && item.event.eventDate !== null)
+      .sort((left, right) => stableEvidenceCompare(left.event, right.event))[0]?.event;
+    ask.usefulReplyAt =
+      !answerConflict && firstUsefulReply ? iso(firstUsefulReply.eventDate) : null;
     const explicitUnknown = events.some(
       (event) => event.answerState === 'unknown' || event.unknownReason,
     );
@@ -457,6 +467,7 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
       answerConflict ||
       explicitUnknown ||
       ignoredNonSubstantive ||
+      events.some((event) => event.eventDate === null || event.sourceBasis === 'availability') ||
       requiresHotel.conflict ||
       requiresCustomer.conflict ||
       noReply.conflict ||
@@ -474,12 +485,22 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
     }
     ask.partial = ask.answerState === 'partial' || ask.workState === 'partially_complete';
     ask.unknown = unknown || ask.answerState === 'unknown' || ask.workState === 'unknown';
+    const unavailableClock = events.some(
+      (event) => event.eventDate === null || event.sourceBasis === 'availability',
+    );
+    if (unavailableClock) {
+      // A clockless fact can identify an ask, but cannot establish its current
+      // work/reply state or win an operational bucket.
+      ask.workState = 'unknown';
+    }
     ask.replyState = replyStateForAsk({
       answerState: ask.answerState,
       requiresHotelResponse: ask.requiresHotelResponse,
       requiresCustomerInformation: ask.requiresCustomerInformation,
       noReplyRequired: ask.noReplyRequired,
-      unknown: ask.unknown && !ask.requiresHotelResponse && !ask.requiresCustomerInformation,
+      unknown:
+        unavailableClock ||
+        (ask.unknown && !ask.requiresHotelResponse && !ask.requiresCustomerInformation),
     });
     ask.unknownReasons = [
       ...(answerConflict ? ['conflicting_duplicate_answer'] : []),
@@ -490,35 +511,42 @@ export function reduceMailBaseline(input: MailBaselineReducerInput): MailBaselin
             .sort()
         : []),
       ...(ignoredNonSubstantive ? ['non_substantive_or_unaccepted_reply'] : []),
+      ...(unavailableClock ? ['availability_clock_unavailable'] : []),
       ...(requiresHotel.conflict ? ['conflicting_duplicate_hotel_response_requirement'] : []),
       ...(requiresCustomer.conflict ? ['conflicting_duplicate_customer_requirement'] : []),
       ...(work.conflict ? ['conflicting_duplicate_work_state'] : []),
     ];
 
-    if (measurementStart && ask.startedAt) {
-      const started = asDate(ask.startedAt)!;
-      if (started < measurementStart) {
-        prePeriod = true;
-        increment('pre_period');
-        // A pre-T0 unresolved ask is retained as a separate backlog/unknown-
-        // start population and must not win the current-period bucket.
-        ask.unknown = true;
-        ask.replyState = 'unknown';
-        ask.workState = 'unknown';
-        ask.unknownReasons = [...ask.unknownReasons, 'pre_period'];
-      } else {
+    if (measurementStart) {
+      const started = asDate(ask.startedAt);
+      if (!started || unavailableClock) {
         eligible! += 1;
-        const inGap = hasCoverageGap(started, coverage);
-        const covered =
-          coverage.complete && !inGap && started >= measurementStart && started < cutoff;
-        if (inGap) {
-          coverageGap = true;
-          increment('coverage_gap');
-        }
-        if (covered) scorable! += 1;
-        else {
-          unscorable! += 1;
-          increment('unscorable');
+        unscorable! += 1;
+        increment('unscorable_event_clock');
+      } else {
+        if (started < measurementStart) {
+          prePeriod = true;
+          increment('pre_period');
+          // A pre-T0 unresolved ask is retained as a separate backlog/unknown-
+          // start population and must not win the current-period bucket.
+          ask.unknown = true;
+          ask.replyState = 'unknown';
+          ask.workState = 'unknown';
+          ask.unknownReasons = [...ask.unknownReasons, 'pre_period'];
+        } else {
+          eligible! += 1;
+          const inGap = hasCoverageGap(started, coverage);
+          const covered =
+            coverage.complete && !inGap && started >= measurementStart && started < cutoff;
+          if (inGap) {
+            coverageGap = true;
+            increment('coverage_gap');
+          }
+          if (covered) scorable! += 1;
+          else {
+            unscorable! += 1;
+            increment('unscorable');
+          }
         }
       }
     }

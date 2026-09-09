@@ -22,12 +22,10 @@ export const ADMIN_DASHBOARD_ALLOWED_EMAILS = [
 ] as const;
 
 /**
- * Client-facing dashboard access is aggregate-only by default.  The Nava
- * operator account is the only explicitly configured research/raw/export
- * principal; mailbox access itself never implies one of these grants.
+ * Every configured pilot dashboard user receives the same configured cohort
+ * tools/data grant. There are no staff/finance or per-cohort user sub-roles;
+ * tenant/source boundaries remain enforced by the selected cohort itself.
  */
-const ADMIN_DASHBOARD_OPERATOR_EMAIL = 'navaai@legacyhotels.co.za';
-
 function normalizeEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
 }
@@ -49,20 +47,12 @@ export function resolveAdminDashboardGrant(
       message: 'ADMIN_DASHBOARD_FORBIDDEN',
     });
   }
-  if (cohortId === 'research' && normalized !== ADMIN_DASHBOARD_OPERATOR_EMAIL) {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: 'ADMIN_DASHBOARD_RESEARCH_FORBIDDEN',
-    });
-  }
-
-  const operator = normalized === ADMIN_DASHBOARD_OPERATOR_EMAIL;
   return {
     email: normalized,
     cohortId,
     aggregate: true,
-    drilldown: operator,
-    export: operator,
+    drilldown: true,
+    export: true,
   };
 }
 

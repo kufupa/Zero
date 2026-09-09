@@ -1,8 +1,8 @@
-import * as React from 'react';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AdminDashboardMetrics } from '@/lib/admin-dashboard/types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
+import * as React from 'react';
 
 const { useQueryMock, useSessionMock, useTRPCMock, queryOptionsMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(),
@@ -19,12 +19,14 @@ vi.mock('@/lib/auth-client', () => ({ useSession: useSessionMock }));
 vi.mock('@/providers/query-provider', () => ({ useTRPC: useTRPCMock }));
 vi.mock('@/lib/demo/runtime', () => ({ isFrontendOnlyDemo: () => false }));
 
-const { useAdminDashboardDataMock } = vi.hoisted(() => ({
+const { useAdminDashboardDataMock, useAdminDashboardExportMock } = vi.hoisted(() => ({
   useAdminDashboardDataMock: vi.fn(),
+  useAdminDashboardExportMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/use-admin-dashboard', () => ({
   useAdminDashboardData: useAdminDashboardDataMock,
+  useAdminDashboardExport: useAdminDashboardExportMock,
 }));
 
 import AdminDashboardPage from '@/app/(routes)/settings/admin-dashboard/page';
@@ -59,7 +61,9 @@ const metrics: AdminDashboardMetrics = {
       unanswered: 379,
     },
   ],
-  transports: [{ id: 'centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion Transport' }],
+  transports: [
+    { id: 'centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion Transport' },
+  ],
   assumptions: [],
   footnote: 'Baseline from Centurion ingest.',
   windowStart: '2026-08-05T00:00:00.000Z',
@@ -76,6 +80,11 @@ describe('AdminDashboardPage response metric availability', () => {
       source: 'hosted',
       data: null,
       metrics,
+    });
+    useAdminDashboardExportMock.mockReturnValue({
+      isDownloading: false,
+      isError: false,
+      download: vi.fn(),
     });
   });
 
@@ -111,9 +120,9 @@ describe('AdminDashboardPage response metric availability', () => {
       isPlaceholderData: false,
     });
 
-    const { useAdminDashboardData } = await vi.importActual<typeof import('../../hooks/use-admin-dashboard')>(
-      '../../hooks/use-admin-dashboard',
-    );
+    const { useAdminDashboardData } = await vi.importActual<
+      typeof import('../../hooks/use-admin-dashboard')
+    >('../../hooks/use-admin-dashboard');
     function HookProbe() {
       useAdminDashboardData({ cohortId: 'centurion', window: '7d' });
       return null;

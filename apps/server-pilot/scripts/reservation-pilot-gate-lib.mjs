@@ -124,10 +124,12 @@ const SLICE_PLANS = {
         'tests/admin-dashboard-access.test.ts',
         'tests/admin-dashboard-metrics.test.ts',
         'tests/admin-dashboard-query.test.ts',
+        'tests/admin-dashboard-export.test.ts',
       ],
       mail: [
         'tests/admin-dashboard/response-metrics-availability.test.ts',
         'tests/admin-dashboard/business-overview.test.tsx',
+        'tests/admin-dashboard/export.test.ts',
       ],
     },
     measurement: {
@@ -188,6 +190,8 @@ const SLICE_PLANS = {
         'tests/mail-baseline.test.ts',
         'tests/mail-baseline-projection.test.ts',
         'tests/mail-baseline-extraction.test.ts',
+        'tests/mail-baseline-ingest.test.ts',
+        'tests/mail-baseline-coverage.test.ts',
       ],
     },
     shadow: {

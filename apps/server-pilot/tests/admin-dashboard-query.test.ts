@@ -1,32 +1,48 @@
-import { describe, expect, it } from 'vitest';
-import { TRPCError } from '@trpc/server';
-import {
-  assertAdminDashboardGrant,
-  resolveAdminDashboardGrant,
-  type AdminDashboardGrant,
-} from '../src/metrics/admin-dashboard-access.js';
 import {
   parseExecutiveDashboardQuery,
   resolveExecutiveDashboardQuery,
   loadAdminDashboardMetrics,
 } from '../src/trpc/routes/admin-dashboard.js';
-import { __setDbForTests } from '../src/db/client.js';
+import {
+  assertAdminDashboardGrant,
+  resolveAdminDashboardGrant,
+  type AdminDashboardGrant,
+} from '../src/metrics/admin-dashboard-access.js';
 import { mailThread, mailThreadCategory, message } from '../src/db/schema/mail.js';
-import { appRouter } from '../src/trpc/router.js';
 import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { __setDbForTests } from '../src/db/client.js';
+import { appRouter } from '../src/trpc/router.js';
+import { describe, expect, it } from 'vitest';
+import { TRPCError } from '@trpc/server';
 
 const CUTOFF = '2026-08-08T00:00:00.000Z';
 
 describe('executive dashboard query and grants', () => {
   it('authorizes the cohort and operation independently before any data load', () => {
     const client = resolveAdminDashboardGrant('ropperman@legacyhotels.co.za', 'centurion');
-    expect(client).toMatchObject({ cohortId: 'centurion', aggregate: true, drilldown: false, export: false });
+    expect(client).toMatchObject({
+      cohortId: 'centurion',
+      aggregate: true,
+      drilldown: true,
+      export: true,
+    });
     expect(() => assertAdminDashboardGrant(client, 'aggregate')).not.toThrow();
-    expect(() => assertAdminDashboardGrant(client, 'drilldown')).toThrowError(TRPCError);
-    expect(() => assertAdminDashboardGrant(client, 'export')).toThrowError(TRPCError);
+    expect(() => assertAdminDashboardGrant(client, 'drilldown')).not.toThrow();
+    expect(() => assertAdminDashboardGrant(client, 'export')).not.toThrow();
 
-    const operator = resolveAdminDashboardGrant('navaai@legacyhotels.co.za', 'research');
-    expect(operator).toMatchObject({ cohortId: 'research', aggregate: true, drilldown: true, export: true });
+    for (const email of [
+      'navaai@legacyhotels.co.za',
+      'ropperman@legacyhotels.co.za',
+      'dbezuidenhout@legacyhotels.co.za',
+    ]) {
+      const researchGrant = resolveAdminDashboardGrant(email, 'research');
+      expect(researchGrant).toMatchObject({
+        cohortId: 'research',
+        aggregate: true,
+        drilldown: true,
+        export: true,
+      });
+    }
 
     expect(() => resolveAdminDashboardGrant('not-allowed@example.com', 'centurion')).toThrowError(
       TRPCError,
@@ -39,7 +55,7 @@ describe('executive dashboard query and grants', () => {
       reqHeaders: new Headers(),
       sessionUser: { id: 'u10a-unauthorized', email: 'not-allowed@example.com', name: null },
     });
-    await expect(caller.adminDashboard.getMetrics()).rejects.toMatchObject({
+    await expect(caller.adminDashboard.getMetrics({ operation: 'export' })).rejects.toMatchObject({
       code: 'FORBIDDEN',
       message: 'ADMIN_DASHBOARD_FORBIDDEN',
     });
@@ -47,11 +63,14 @@ describe('executive dashboard query and grants', () => {
 
   it('rejects a future or inverted cutoff instead of widening the evidence window', () => {
     expect(() =>
-      parseExecutiveDashboardQuery({
-        cohortId: 'centurion',
-        window: '7d',
-        observationCutoff: '2026-08-09T00:00:00.000Z',
-      }, new Date(CUTOFF)),
+      parseExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          window: '7d',
+          observationCutoff: '2026-08-09T00:00:00.000Z',
+        },
+        new Date(CUTOFF),
+      ),
     ).toThrow(/cutoff/i);
 
     expect(() =>
@@ -64,30 +83,32 @@ describe('executive dashboard query and grants', () => {
     ).toThrow(/window/i);
 
     expect(() =>
-      parseExecutiveDashboardQuery({
-        cohortId: 'centurion',
-        window: '7d',
-        windowStart: '2026-08-01T00:00:00.000Z',
-        windowEnd: '2026-09-06T00:00:00.000Z',
-        observationCutoff: '2026-09-07T00:00:00.000Z',
-      }, new Date('2026-09-07T00:00:00.000Z')),
+      parseExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          window: '7d',
+          windowStart: '2026-08-01T00:00:00.000Z',
+          windowEnd: '2026-09-06T00:00:00.000Z',
+          observationCutoff: '2026-09-07T00:00:00.000Z',
+        },
+        new Date('2026-09-07T00:00:00.000Z'),
+      ),
     ).toThrow(/window/i);
   });
 
-  it('denies raw drilldown and export operations for an aggregate-only caller', async () => {
-    const caller = appRouter.createCaller({
-      auth: null as never,
-      reqHeaders: new Headers(),
-      sessionUser: { id: 'u10a-aggregate-only', email: 'ropperman@legacyhotels.co.za', name: null },
-    });
-    await expect(caller.adminDashboard.getMetrics({ operation: 'drilldown' })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
-      message: 'ADMIN_DASHBOARD_DRILLDOWN_FORBIDDEN',
-    });
-    await expect(caller.adminDashboard.getMetrics({ operation: 'export' })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
-      message: 'ADMIN_DASHBOARD_EXPORT_FORBIDDEN',
-    });
+  it('allows configured pilot users to use all configured dashboard operations', async () => {
+    expect(() =>
+      assertAdminDashboardGrant(
+        resolveAdminDashboardGrant('ropperman@legacyhotels.co.za'),
+        'drilldown',
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertAdminDashboardGrant(
+        resolveAdminDashboardGrant('ropperman@legacyhotels.co.za'),
+        'export',
+      ),
+    ).not.toThrow();
   });
 
   it('resolves a bounded default Centurion query with an explicit cutoff and source vintage', () => {
@@ -233,14 +254,44 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
       expect(result.transports.map((transport) => transport.id)).toEqual(['transport-centurion']);
     });
 
-    it('keeps aggregate, drilldown, and export grants distinct', () => {
+    it('authorizes and returns a bounded export through the real router', async () => {
       const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
         'ropperman@legacyhotels.co.za',
         'centurion',
       );
       expect(grant.aggregate).toBe(true);
-      expect(grant.drilldown).toBe(false);
-      expect(grant.export).toBe(false);
+      expect(grant.drilldown).toBe(true);
+      expect(grant.export).toBe(true);
+
+      const caller = appRouter.createCaller({
+        auth: null as never,
+        reqHeaders: new Headers(),
+        sessionUser: {
+          id: 'u10a-export-authorized',
+          email: 'ropperman@legacyhotels.co.za',
+          name: null,
+        },
+      });
+      const result = await caller.adminDashboard.getMetrics({
+        cohortId: 'centurion',
+        windowStart: '2026-08-01T00:00:00.000Z',
+        windowEnd: CUTOFF,
+        observationCutoff: CUTOFF,
+        operation: 'export',
+      });
+      expect(result).toMatchObject({
+        schemaVersion: 'admin-dashboard-export-v1',
+        query: { cohortId: 'centurion', observationCutoff: CUTOFF },
+      });
+      expect(Object.keys((result as { buckets: Record<string, unknown> }).buckets)).toEqual([
+        'awaiting_hotel_reply',
+        'awaiting_customer_information',
+        'hotel_action_pending',
+        'unknown',
+        'answered',
+        'no_reply_required',
+      ]);
+      expect(JSON.stringify(result)).not.toContain('textBody');
     });
 
     it('projects the current retained folder snapshot for a current-cutoff query', async () => {

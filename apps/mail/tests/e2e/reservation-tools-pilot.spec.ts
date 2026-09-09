@@ -8,6 +8,7 @@ type DashboardQueryMetadata = {
   cohortId: 'centurion' | 'research';
   window: '7d' | '28d';
   observationCutoff?: string;
+  operation?: 'aggregate' | 'drilldown' | 'export';
 };
 
 type DocumentQueryMetadata = {
@@ -169,11 +170,43 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   ).toBeVisible();
   await expect(page.getByText('classificationAsOf:', { exact: false })).toBeVisible();
   await expect(page.getByText('First observed human reply', { exact: true })).toBeVisible();
+  await expect(page.getByText('Answered', { exact: true })).toBeVisible();
+  await expect(page.getByText('No reply required', { exact: true })).toBeVisible();
+  await expect(page.getByText('Unknown evidence', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Primary request-state buckets are mutually exclusive.', { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Export bounded snapshot', exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText('Unavailable: reply evidence unavailable', { exact: true }).first(),
   ).toBeVisible();
 
-  await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
+  const exportDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export bounded snapshot', exact: true }).click();
+  const exportDownload = await exportDownloadPromise;
+  expect(exportDownload.suggestedFilename()).toBe('admin-dashboard-export.json');
+  const exportStream = await exportDownload.createReadStream();
+  let exportText = '';
+  for await (const chunk of exportStream ?? []) exportText += chunk.toString();
+  const exported = JSON.parse(exportText) as {
+    schemaVersion: string;
+    buckets: Record<string, unknown>;
+    overlays: Record<string, unknown>;
+  };
+  expect(exported.schemaVersion).toBe('admin-dashboard-export-v1');
+  expect(Object.keys(exported.buckets)).toEqual([
+    'awaiting_hotel_reply',
+    'awaiting_customer_information',
+    'hotel_action_pending',
+    'unknown',
+    'answered',
+    'no_reply_required',
+  ]);
+  expect(Object.keys(exported.overlays)).toEqual(['partially_answered', 'unknown_evidence']);
+
+  await selectOptionKeyboard(page, 'Cohort', 'Research');
   await expect(page.getByText('research', { exact: true })).toBeVisible();
   await expect(
     page.locator('section[aria-labelledby="traffic-heading"] p[aria-live="polite"]').first(),
@@ -226,7 +259,7 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   );
   const mobileDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
   await page.screenshot({ path: testInfo.outputPath('dashboard-mobile.png'), fullPage: true });
-  await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
+  await selectOptionKeyboard(page, 'Cohort', 'Research');
   await toggleDisclosureKeyboard(page, page.locator('summary').first());
   const mobileCutoff = page.locator('#dashboard-cutoff');
   await mobileCutoff.focus();

@@ -26,6 +26,7 @@ import {
   queryMailBaselineProjection,
   reduceProjectedMailBaseline,
 } from '../../metrics/mail-baseline-repository.js';
+import { serializeAdminDashboardExport } from '../../metrics/admin-dashboard-export.js';
 import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -446,20 +447,6 @@ export async function loadAdminDashboardMetrics(
       observationCutoff: query.observationCutoff,
       sourceVintage,
       interpretationVersion: first.interpretationVersion,
-      measurementStartAt:
-        measurementConfig?.transportId === first.transportId
-          ? measurementConfig.measurementStartAt
-          : null,
-      coverage:
-        measurementConfig?.transportId === first.transportId
-          ? {
-              startAt: measurementConfig.measurementStartAt,
-              endAt: query.observationCutoff,
-              basis: measurementConfig.captureAssumptionBasis,
-              complete: true,
-              confirmedGapIntervals: measurementConfig.confirmedGapIntervals,
-            }
-          : undefined,
     });
   });
   return aggregateAdminDashboardMetrics({
@@ -489,6 +476,7 @@ export const adminDashboardRouter = tRouter({
       query.cohortId,
     );
     assertAdminDashboardGrant(grant, input?.operation ?? 'aggregate');
-    return loadAdminDashboardMetrics(query);
+    const payload = await loadAdminDashboardMetrics(query);
+    return input?.operation === 'export' ? serializeAdminDashboardExport(payload) : payload;
   }),
 });

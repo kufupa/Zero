@@ -1,19 +1,21 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useEffect, useRef, useSyncExternalStore } from 'react';
-import { useSession } from '@/lib/auth-client';
-import { useTRPC } from '@/providers/query-provider';
-import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
-import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import type {
   AdminDashboardData,
   AdminDashboardMetrics,
   AdminDashboardSelection,
   DashboardCohortId,
   DashboardWindowPreset,
+  AdminDashboardExport,
 } from '@/lib/admin-dashboard/types';
+import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
 import { normalizeAdminDashboardSelection } from '@/lib/admin-dashboard/types';
+import { downloadAdminDashboardExport } from '@/lib/admin-dashboard/export';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useTRPC } from '@/providers/query-provider';
+import { useSession } from '@/lib/auth-client';
 
 export type AdminDashboardQueryInput = {
   cohortId?: DashboardCohortId;
@@ -89,13 +91,15 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
       selection: currentSelection,
     };
   }
-  const retainedSnapshotRecord = lastSuccessfulSnapshotRef.current?.scopeKey === cacheScopeKey
-    ? lastSuccessfulSnapshotRef.current
-    : undefined;
+  const retainedSnapshotRecord =
+    lastSuccessfulSnapshotRef.current?.scopeKey === cacheScopeKey
+      ? lastSuccessfulSnapshotRef.current
+      : undefined;
   const retainedSnapshot = retainedSnapshotRecord?.metrics;
-  const snapshotSelection = queryMetrics && !metricsQuery.isPlaceholderData
-    ? currentSelection
-    : retainedSnapshotRecord?.selection ?? null;
+  const snapshotSelection =
+    queryMetrics && !metricsQuery.isPlaceholderData
+      ? currentSelection
+      : (retainedSnapshotRecord?.selection ?? null);
   const metrics = queryMetrics ?? retainedSnapshot ?? null;
 
   if (isSessionLoading) {
@@ -141,10 +145,42 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
     canAccess: true,
     isLoading: metricsQuery.isLoading && !metrics,
     isError: metricsQuery.isError,
-    isStale: Boolean(metrics) && (metricsQuery.isFetching || metricsQuery.isError || metricsQuery.isPlaceholderData),
+    isStale:
+      Boolean(metrics) &&
+      (metricsQuery.isFetching || metricsQuery.isError || metricsQuery.isPlaceholderData),
     source: 'hosted',
     data: null,
     metrics,
     snapshotSelection,
+  };
+}
+
+/** Fetch the server-authorized bounded export only on an explicit user action. */
+export function useAdminDashboardExport(queryInput?: AdminDashboardQueryInput): {
+  isDownloading: boolean;
+  isError: boolean;
+  download: () => Promise<boolean>;
+} {
+  const { data: session, isLoading: isSessionLoading, isError: isSessionError } = useSession();
+  const canAccess = isAdminDashboardEnabled(session);
+  const demoMode = isFrontendOnlyDemo();
+  const trpc = useTRPC();
+  const exportInput = { ...queryInput, operation: 'export' as const };
+  const exportQueryOptions = trpc.adminDashboard.getMetrics.queryOptions(exportInput, {
+    enabled: false,
+  });
+  const exportQuery = useQuery({ ...exportQueryOptions });
+  const download = async (): Promise<boolean> => {
+    if (demoMode || !canAccess || isSessionLoading || isSessionError) return false;
+    const result = await exportQuery.refetch();
+    const payload = result.data as AdminDashboardExport | undefined;
+    if (!payload || payload.schemaVersion !== 'admin-dashboard-export-v1') return false;
+    downloadAdminDashboardExport(payload);
+    return true;
+  };
+  return {
+    isDownloading: exportQuery.isFetching,
+    isError: exportQuery.isError,
+    download,
   };
 }

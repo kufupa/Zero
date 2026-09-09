@@ -676,10 +676,12 @@ describe('reservation pilot runtime validators', () => {
         'tests/admin-dashboard-access.test.ts',
         'tests/admin-dashboard-metrics.test.ts',
         'tests/admin-dashboard-query.test.ts',
+        'tests/admin-dashboard-export.test.ts',
       ],
       mail: [
         'tests/admin-dashboard/response-metrics-availability.test.ts',
         'tests/admin-dashboard/business-overview.test.tsx',
+        'tests/admin-dashboard/export.test.ts',
       ],
     });
     expect(gate.getSlicePlan('unit', 'measurement')).toEqual({

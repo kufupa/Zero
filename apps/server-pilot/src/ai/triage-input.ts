@@ -24,6 +24,7 @@ export type TriageEventClockBasis =
   | 'source_event'
   | 'sender_timestamp_estimate'
   | 'first_known'
+  | 'availability'
   | 'unknown';
 
 export type TriageEventClock = {
@@ -38,6 +39,11 @@ export function resolveTriageEventClock(row: TriageMessageRow): TriageEventClock
   }
   if (row.direction === 'outbound' && row.sentAt) {
     return { at: new Date(row.sentAt.getTime()), basis: 'source_event' };
+  }
+  // Ingestion/creation time proves that the row exists, not when the source
+  // event happened. Preserve that distinction for baseline denominators.
+  if (row.receivedAt === null && row.sentAt === null) {
+    return { at: null, basis: 'availability' };
   }
   if (Number.isFinite(row.createdAt.getTime())) {
     return { at: new Date(row.createdAt.getTime()), basis: 'first_known' };

@@ -472,10 +472,12 @@ case "${MODE}:${SLICE}" in
     run_vitest \
       "tests/admin-dashboard-access.test.ts" \
       "tests/admin-dashboard-metrics.test.ts" \
-      "tests/admin-dashboard-query.test.ts"
+      "tests/admin-dashboard-query.test.ts" \
+      "tests/admin-dashboard-export.test.ts"
     run_vitest_in_dir "${REPO_ROOT}/apps/mail" \
       "tests/admin-dashboard/response-metrics-availability.test.ts" \
-      "tests/admin-dashboard/business-overview.test.tsx"
+      "tests/admin-dashboard/business-overview.test.tsx" \
+      "tests/admin-dashboard/export.test.ts"
     ;;
   unit:measurement)
     run_vitest \
@@ -533,7 +535,9 @@ case "${MODE}:${SLICE}" in
     run_vitest \
       "tests/mail-baseline.test.ts" \
       "tests/mail-baseline-projection.test.ts" \
-      "tests/mail-baseline-extraction.test.ts"
+      "tests/mail-baseline-extraction.test.ts" \
+      "tests/mail-baseline-ingest.test.ts" \
+      "tests/mail-baseline-coverage.test.ts"
     ;;
   unit:shadow)
     run_vitest \

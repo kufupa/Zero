@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   aggregateAdminDashboardMetrics,
   type AdminDashboardMessageRow,
   type AdminDashboardThreadRow,
 } from '../src/metrics/admin-dashboard-aggregates.js';
+import { reduceMailBaseline } from '../src/metrics/mail-baseline.js';
+import { describe, expect, it } from 'vitest';
 
 const WINDOW_START = new Date('2026-08-01T00:00:00.000Z');
 const WINDOW_END = new Date('2026-08-08T00:00:00.000Z');
@@ -199,7 +200,9 @@ describe('aggregateAdminDashboardMetrics', () => {
       classificationSnapshot: {
         classificationAsOf: cutoff,
         snapshotBasis: 'retained_matching_snapshot',
-        threads: [{ threadId: 'unknown-history', primaryFolder: 'bookings', spam: false, trashed: false }],
+        threads: [
+          { threadId: 'unknown-history', primaryFolder: 'bookings', spam: false, trashed: false },
+        ],
       },
       threads: [thread({ id: 'unknown-history', transportId: 'transport-centurion' })],
       messages: [
@@ -211,7 +214,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           receivedAt: new Date('2026-08-02T08:00:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       preWindowThreadIds: [],
       preWindowUnknownThreadIds: ['unknown-history'],
       preWindowEvidenceAvailable: true,
@@ -247,7 +256,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           receivedAt: new Date('2026-08-02T08:00:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -270,7 +285,9 @@ describe('aggregateAdminDashboardMetrics', () => {
       classificationSnapshot: {
         classificationAsOf: cutoff,
         snapshotBasis: 'retained_matching_snapshot',
-        threads: [{ threadId: 'gap-thread', primaryFolder: 'bookings', spam: false, trashed: false }],
+        threads: [
+          { threadId: 'gap-thread', primaryFolder: 'bookings', spam: false, trashed: false },
+        ],
       },
       measurementConfig: {
         version: 1,
@@ -305,7 +322,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sendState: 'accepted',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     });
@@ -323,7 +346,9 @@ describe('aggregateAdminDashboardMetrics', () => {
       classificationSnapshot: {
         classificationAsOf: cutoff,
         snapshotBasis: 'retained_matching_snapshot',
-        threads: [{ threadId: 'route-thread', primaryFolder: 'bookings', spam: false, trashed: false }],
+        threads: [
+          { threadId: 'route-thread', primaryFolder: 'bookings', spam: false, trashed: false },
+        ],
       },
       measurementConfig: {
         version: 1,
@@ -344,7 +369,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           fromAddress: 'route-guest@example.com',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     });
@@ -404,7 +435,13 @@ describe('aggregateAdminDashboardMetrics', () => {
         thread({ id: 'reply-a', transportId: 'transport-centurion' }),
         thread({ id: 'reply-b', transportId: 'transport-centurion' }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     };
@@ -497,7 +534,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sendState: 'sent',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart,
       windowEnd,
     });
@@ -540,7 +583,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           qualifiesNewConversation: true,
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     });
@@ -567,6 +616,98 @@ describe('aggregateAdminDashboardMetrics', () => {
         denominatorStatus: 'known',
       },
       measurementStartAt,
+      measurementConfigVersion: '1',
+    });
+  });
+
+  it('reports first useful reply only from retained supported baseline evidence', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const projection = reduceMailBaseline({
+      transportId: 'transport-centurion',
+      threadId: 'useful-reply-thread',
+      observationCutoff: cutoff,
+      measurementStartAt: '2026-09-01T00:00:00.000Z',
+      coverage: {
+        configVersion: '1',
+        startAt: '2026-09-01T00:00:00.000Z',
+        endAt: cutoff.toISOString(),
+        basis: 'verified-two-way-feed',
+        complete: true,
+      },
+      sourceVintage: '2026-09-08T00:00:00.000Z',
+      interpretationVersion: 'mail-baseline-interpretation-v1',
+      evidence: [
+        {
+          id: 'useful-ask',
+          requestId: 'useful-request',
+          askId: 'useful-ask',
+          threadId: 'useful-reply-thread',
+          transportId: 'transport-centurion',
+          eventType: 'ask',
+          direction: 'inbound',
+          eventAt: '2026-09-02T10:00:00.000Z',
+          observedAt: '2026-09-02T10:01:00.000Z',
+          source: 'mail_event',
+          sourceBasis: 'source_event',
+          requiresHotelResponse: true,
+          workState: 'open',
+          answerState: null,
+          substantive: false,
+          linkStrength: 'header',
+          delivery: null,
+        },
+        {
+          id: 'useful-answer',
+          requestId: 'useful-request',
+          askId: 'useful-ask',
+          threadId: 'useful-reply-thread',
+          transportId: 'transport-centurion',
+          eventType: 'answer',
+          direction: 'outbound',
+          eventAt: '2026-09-02T10:30:00.000Z',
+          observedAt: '2026-09-02T10:31:00.000Z',
+          source: 'external_sent',
+          sourceBasis: 'source_event',
+          answerState: 'supported',
+          workState: 'complete',
+          substantive: true,
+          linkStrength: 'header',
+          delivery: { status: 'sent' },
+        },
+      ],
+    });
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'current-config-must-not-rewrite-projection',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'useful-reply-thread', transportId: 'transport-centurion' })],
+      messages: [],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
+      requestBaselines: [projection],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.firstUsefulReply).toMatchObject({
+      availability: 'available',
+      value: 30,
+      denominator: 1,
+      measurementConfigVersion: '1',
+      captureBasis: 'verified-two-way-feed',
     });
   });
 
@@ -606,7 +747,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sendState: 'sent',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     });
@@ -646,7 +793,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           qualifiesNewConversation: true,
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: new Date('2026-09-01T00:00:00.000Z'),
       windowEnd: cutoff,
     });
@@ -688,7 +841,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sendState: 'sent',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -727,7 +886,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sendState: 'pending',
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -743,7 +908,13 @@ describe('aggregateAdminDashboardMetrics', () => {
     const result = aggregateAdminDashboardMetrics({
       threads: [],
       messages: [],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -811,7 +982,11 @@ describe('aggregateAdminDashboardMetrics', () => {
         }),
       ],
       transports: [
-        { id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' },
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
         { id: 'transport-nava', email: 'navaai@legacyhotels.co.za', displayName: 'Nava' },
       ],
       windowStart: WINDOW_START,
@@ -860,7 +1035,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           receivedAt: new Date('2026-08-02T08:00:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -921,7 +1102,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sentAt: new Date('2026-08-02T13:00:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -970,7 +1157,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           receivedAt: new Date('2026-08-02T10:00:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -1008,7 +1201,13 @@ describe('aggregateAdminDashboardMetrics', () => {
           sentAt: new Date('2026-08-02T23:30:00.000Z'),
         }),
       ],
-      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      transports: [
+        {
+          id: 'transport-centurion',
+          email: 'centurion@legacyhotels.co.za',
+          displayName: 'Centurion',
+        },
+      ],
       windowStart: WINDOW_START,
       windowEnd: WINDOW_END,
     });
@@ -1069,6 +1268,8 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(b).toMatchObject({ inbound: 1, unanswered: 1, latenciesMinutes: [] });
     expect(b?.label).toBe('b@legacyhotels.co.za');
     // Unanswered-only mailbox is a real 0% miss, not null.
-    expect(result.comparison.find((row) => row.transportId === 'transport-b')?.answeredWithin3hPercent).toBe(0);
+    expect(
+      result.comparison.find((row) => row.transportId === 'transport-b')?.answeredWithin3hPercent,
+    ).toBe(0);
   });
 });

@@ -7,7 +7,7 @@ import {
   type MailBaselineReducerInput,
 } from './mail-baseline.js';
 import { mailBaselineProjection } from '../db/schema/mail-baseline-projection.js';
-import { and, asc, gt, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, gt, inArray, isNull, lte, lt, or } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 import { createHash } from 'node:crypto';
 
@@ -38,11 +38,19 @@ export type MailBaselineProjectionRowInput = {
 };
 
 export type MailBaselineProjectionRow = typeof mailBaselineProjection.$inferSelect;
+type MailBaselineProjectionRowLike = MailBaselineProjectionRow | MailBaselineProjectionRowInput;
 
 function asDate(value: string | Date | null | undefined): Date | null {
   if (value === null || value === undefined) return null;
   const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function compareSourceVintage(left: string, right: string): number {
+  const leftMillis = Date.parse(left);
+  const rightMillis = Date.parse(right);
+  if (Number.isFinite(leftMillis) && Number.isFinite(rightMillis)) return leftMillis - rightMillis;
+  return left.localeCompare(right, undefined, { numeric: true });
 }
 
 function hash(value: string): string {
@@ -157,6 +165,7 @@ export async function queryMailBaselineProjection(
   if (query.transportIds.length === 0) return [];
   const conditions = [
     inArray(mailBaselineProjection.transportId, [...query.transportIds]),
+    lte(mailBaselineProjection.observationCutoff, cutoff),
     or(isNull(mailBaselineProjection.eventAt), lt(mailBaselineProjection.eventAt, cutoff)),
   ];
   if (query.threadIds?.length) {
@@ -174,6 +183,96 @@ export async function queryMailBaselineProjection(
     .where(and(...conditions))
     .orderBy(asc(mailBaselineProjection.eventAt), asc(mailBaselineProjection.id))
     .limit(limit);
+}
+
+/**
+ * Select one immutable producer generation before reducing it. Projection
+ * rows are append-only, so an as-of read must exclude later observations and
+ * must never combine an older interpretation with a retry/version.
+ */
+export function selectMailBaselineGeneration(
+  rows: readonly MailBaselineProjectionRowLike[],
+  input: {
+    observationCutoff: string | Date;
+    sourceVintage: string;
+    interpretationVersion: string;
+    generationId?: string | null;
+  },
+): MailBaselineProjectionRowLike[] {
+  const cutoff = asDate(input.observationCutoff);
+  if (!cutoff) throw new Error('mail baseline generation cutoff must be a valid instant');
+  const eligible = rows.filter((row) => {
+    const rowCutoff = asDate(row.observationCutoff);
+    return (
+      rowCutoff !== null &&
+      rowCutoff.getTime() <= cutoff.getTime() &&
+      compareSourceVintage(row.sourceVintage, input.sourceVintage) <= 0 &&
+      row.interpretationVersion === input.interpretationVersion &&
+      (input.generationId === undefined ||
+        input.generationId === null ||
+        row.generationId === input.generationId)
+    );
+  });
+  if (eligible.length === 0) return [];
+  if (input.generationId) return eligible.filter((row) => row.generationId === input.generationId);
+
+  // A thread may receive independent asks/messages in different producer
+  // generations. Select the latest eligible generation per stable source fact
+  // rather than one generation for the whole thread.
+  const factKey = (row: MailBaselineProjectionRowLike): string => {
+    const payload = row.evidence ?? {};
+    const explicit = payload.factKey;
+    if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+    return [row.sourceMessageId ?? row.id, row.requestId, row.askId, row.eventKind].join(':');
+  };
+  const byFact = new Map<string, MailBaselineProjectionRowLike[]>();
+  for (const row of eligible) {
+    const list = byFact.get(factKey(row)) ?? [];
+    list.push(row);
+    byFact.set(factKey(row), list);
+  }
+  const selected: MailBaselineProjectionRowLike[] = [];
+  for (const factRows of byFact.values()) {
+    const generationIds = [...new Set(factRows.map((row) => row.generationId))];
+    const selectedGenerationId = generationIds
+      .map((generationId) => {
+        const generationRows = factRows.filter((row) => row.generationId === generationId);
+        const latestSourceVintage =
+          generationRows
+            .map((row) => row.sourceVintage)
+            .sort(compareSourceVintage)
+            .at(-1) ?? '';
+        const latestCutoff = Math.max(
+          ...generationRows.map(
+            (row) => asDate(row.observationCutoff)?.getTime() ?? Number.NEGATIVE_INFINITY,
+          ),
+        );
+        const latestCreated = Math.max(
+          ...generationRows.map((row) =>
+            'createdAt' in row
+              ? (asDate(row.createdAt)?.getTime() ?? Number.NEGATIVE_INFINITY)
+              : Number.NEGATIVE_INFINITY,
+          ),
+        );
+        return { generationId, latestSourceVintage, latestCutoff, latestCreated };
+      })
+      .sort(
+        (left, right) =>
+          compareSourceVintage(left.latestSourceVintage, right.latestSourceVintage) ||
+          left.latestCutoff - right.latestCutoff ||
+          left.latestCreated - right.latestCreated ||
+          left.generationId.localeCompare(right.generationId),
+      )
+      .at(-1)?.generationId;
+    if (selectedGenerationId)
+      selected.push(...factRows.filter((row) => row.generationId === selectedGenerationId));
+  }
+  return selected.sort(
+    (left, right) =>
+      (asDate(left.eventAt)?.getTime() ?? Number.NEGATIVE_INFINITY) -
+        (asDate(right.eventAt)?.getTime() ?? Number.NEGATIVE_INFINITY) ||
+      left.id.localeCompare(right.id),
+  );
 }
 
 function evidenceFromRow(row: MailBaselineProjectionRow): MailBaselineEvidence {
@@ -214,9 +313,12 @@ export function reduceProjectedMailBaseline(
   > &
     Partial<
       Pick<MailBaselineReducerInput, 'transportId' | 'threadId' | 'measurementStartAt' | 'coverage'>
-    >,
+    > & { generationId?: string | null },
 ): MailBaselineProjection {
-  const normalizedRows = rows as readonly MailBaselineProjectionRow[];
+  const normalizedRows = selectMailBaselineGeneration(
+    rows,
+    input,
+  ) as readonly MailBaselineProjectionRow[];
   const first = normalizedRows[0];
   const evidence = normalizedRows.map(evidenceFromRow);
   return reduceMailBaseline({
@@ -225,8 +327,10 @@ export function reduceProjectedMailBaseline(
     observationCutoff: input.observationCutoff,
     sourceVintage: input.sourceVintage,
     interpretationVersion: input.interpretationVersion,
-    measurementStartAt: input.measurementStartAt ?? first?.measurementStartAt ?? null,
-    coverage: input.coverage ?? (first?.coverage as MailBaselineCoverage | undefined),
+    // A retained row carries the producer's immutable T0/coverage snapshot.
+    // Never replace it with mutable read-time configuration.
+    measurementStartAt: first?.measurementStartAt ?? input.measurementStartAt ?? null,
+    coverage: (first?.coverage as MailBaselineCoverage | undefined) ?? input.coverage,
     evidence,
   });
 }

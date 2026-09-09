@@ -33,6 +33,7 @@ export type MetricResult<T> = {
   sourceVintage: string;
   classificationAsOf: string | null;
   snapshotBasis: string | null;
+  measurementConfigVersion: string | null;
   availabilityReason: string | null;
 };
 
@@ -123,6 +124,8 @@ export type AdminDashboardServiceCounts = {
   unscorable: AdminDashboardCountMetric;
   /** Configured prospective measurement start; null means no trusted T0 was returned. */
   measurementStartAt: string | null;
+  /** Version of the measurement config used for these counts, if available. */
+  measurementConfigVersion: string | null;
 };
 
 export type AdminDashboardService = {
@@ -305,6 +308,7 @@ function legacyMetric<T>(
     sourceVintage: string;
     classificationAsOf?: string | null;
     snapshotBasis?: string | null;
+    measurementConfigVersion?: string | null;
   },
 ): MetricResult<T> {
   return {
@@ -318,6 +322,7 @@ function legacyMetric<T>(
     sourceVintage: options.sourceVintage,
     classificationAsOf: options.classificationAsOf ?? null,
     snapshotBasis: options.snapshotBasis ?? null,
+    measurementConfigVersion: options.measurementConfigVersion ?? null,
     availabilityReason: null,
   };
 }
@@ -333,6 +338,7 @@ function unavailableMetric<T>(
     captureBasis?: string | null;
     classificationAsOf?: string | null;
     snapshotBasis?: string | null;
+    measurementConfigVersion?: string | null;
   },
 ): MetricResult<T> {
   return {
@@ -346,6 +352,7 @@ function unavailableMetric<T>(
     sourceVintage: options.sourceVintage,
     classificationAsOf: options.classificationAsOf ?? null,
     snapshotBasis: options.snapshotBasis ?? null,
+    measurementConfigVersion: options.measurementConfigVersion ?? null,
     availabilityReason: reason,
   };
 }
@@ -706,6 +713,7 @@ function aggregateLegacyAdminDashboardMetrics(input: {
       'unknown',
     ),
     measurementStartAt: null,
+    measurementConfigVersion: null,
   };
 
   return {
@@ -770,7 +778,7 @@ function aggregateLegacyAdminDashboardMetrics(input: {
         unit: 'minutes',
         sourceVintage: legacyQuery.sourceVintage,
       }),
-      firstUsefulReply: unavailableMetric<number>('not_implemented', {
+      firstUsefulReply: unavailableMetric<number>('no_useful_reply_evidence', {
         unit: 'minutes',
         sourceVintage: legacyQuery.sourceVintage,
       }),
@@ -1050,6 +1058,7 @@ function executiveMetricOptions(
     captureBasis: config?.captureAssumptionBasis ?? null,
     classificationAsOf: asIso(input.classificationSnapshot?.classificationAsOf),
     snapshotBasis: input.classificationSnapshot?.snapshotBasis ?? null,
+    measurementConfigVersion: config ? String(config.version) : null,
   };
 }
 
@@ -1059,6 +1068,7 @@ type ConversationMetricBase = {
   captureBasis: string | null;
   classificationAsOf: string | null;
   snapshotBasis: string | null;
+  measurementConfigVersion: string | null;
 };
 
 function unavailableRequestConversations(
@@ -1139,6 +1149,13 @@ function aggregateRequestConversations(
   }
 
   const sourceVintage = [...sourceVintages].sort().at(-1) ?? base.sourceVintage;
+  const coverageConfigVersions = [
+    ...new Set(
+      projections
+        .map((projection) => projection.coverage.configVersion)
+        .filter((version): version is string => typeof version === 'string' && version.length > 0),
+    ),
+  ].sort();
   const shared = {
     ...base,
     sourceVintage,
@@ -1151,6 +1168,7 @@ function aggregateRequestConversations(
         .filter(Boolean)
         .filter((basis, index, values) => values.indexOf(basis) === index)
         .join(', ') || base.captureBasis,
+    measurementConfigVersion: coverageConfigVersions.join(', ') || base.measurementConfigVersion,
   };
   const count = (value: number): MetricResult<number> =>
     legacyMetric(value, { ...shared, unit: 'requests' });
@@ -1809,6 +1827,7 @@ function aggregateExecutiveDashboardMetrics(
       serviceUnscorableDenominatorStatus,
     ),
     measurementStartAt: measurementConfig?.measurementStartAt ?? null,
+    measurementConfigVersion: measurementConfig ? String(measurementConfig.version) : null,
   };
   const serviceMetric =
     serviceCountsKnown && serviceDurations.length > 0
@@ -1821,15 +1840,90 @@ function aggregateExecutiveDashboardMetrics(
           serviceMetric.availabilityReason ?? 'reply_evidence_unavailable',
           serviceMetricOptions,
         );
-  const firstUseful = unavailableMetric<number>('not_implemented', {
-    ...metricBase,
-    unit: 'calendar minutes',
-  });
   const conversations = aggregateRequestConversations(
     input.requestBaselines ?? [],
     metricBase,
     input.observationCutoff,
   );
+  const usefulReplyDurations: number[] = [];
+  const usefulReplyExclusions: Record<string, number> = {};
+  const incrementUsefulExclusion = (key: string) => {
+    usefulReplyExclusions[key] = (usefulReplyExclusions[key] ?? 0) + 1;
+  };
+  const projectionConfigVersions = [
+    ...new Set(
+      (input.requestBaselines ?? [])
+        .map((projection) => projection.coverage.configVersion)
+        .filter((version): version is string => typeof version === 'string' && version.length > 0),
+    ),
+  ].sort();
+  const usefulReplyMetricBase = {
+    ...metricBase,
+    measurementConfigVersion:
+      projectionConfigVersions.join(', ') || metricBase.measurementConfigVersion,
+    captureBasis:
+      (input.requestBaselines ?? [])
+        .map((projection) => projection.coverage.basis)
+        .filter(Boolean)
+        .filter((basis, index, values) => values.indexOf(basis) === index)
+        .join(', ') || metricBase.captureBasis,
+  };
+  if (measurementStartMillis !== null && measurementConfig !== null) {
+    for (const projection of input.requestBaselines ?? []) {
+      for (const ask of projection.asks) {
+        const startedAt = asValidMillis(ask.startedAt);
+        const usefulAt = asValidMillis(ask.usefulReplyAt);
+        if (startedAt === null || usefulAt === null) {
+          incrementUsefulExclusion('missing_useful_reply_clock');
+          continue;
+        }
+        if (startedAt < measurementStartMillis || usefulAt > cutoffMillis) {
+          incrementUsefulExclusion('outside_measurement_window');
+          continue;
+        }
+        if (
+          isWithinConfirmedGap(new Date(startedAt).toISOString(), measurementConfig) ||
+          isWithinConfirmedGap(new Date(usefulAt).toISOString(), measurementConfig)
+        ) {
+          incrementUsefulExclusion('coverage_gap');
+          continue;
+        }
+        const duration = usefulAt - startedAt;
+        if (duration < 0) {
+          incrementUsefulExclusion('invalid_useful_reply_clock');
+          continue;
+        }
+        usefulReplyDurations.push(duration);
+      }
+    }
+  }
+  const firstUseful = !measurementConfig
+    ? unavailableMetric<number>('measurement_config_unavailable', {
+        ...usefulReplyMetricBase,
+        unit: 'calendar minutes',
+      })
+    : measurementStartMillis === null
+      ? unavailableMetric<number>('measurement_start_unavailable', {
+          ...usefulReplyMetricBase,
+          unit: 'calendar minutes',
+        })
+      : (input.requestBaselines ?? []).length === 0
+        ? unavailableMetric<number>('request_projection_unavailable', {
+            ...usefulReplyMetricBase,
+            unit: 'calendar minutes',
+          })
+        : usefulReplyDurations.length === 0
+          ? unavailableMetric<number>('no_useful_reply_evidence', {
+              ...usefulReplyMetricBase,
+              unit: 'calendar minutes',
+              exclusions: usefulReplyExclusions,
+            })
+          : legacyMetric(round1((median(usefulReplyDurations) ?? 0) / 60_000), {
+              ...usefulReplyMetricBase,
+              unit: 'calendar minutes',
+              denominator: usefulReplyDurations.length,
+              exclusions: usefulReplyExclusions,
+            });
   const dataHealth = input.dataHealth ?? buildExecutiveDataHealth(input, deduped);
   const service: AdminDashboardService = {
     firstObservedHumanReply: serviceMetric,

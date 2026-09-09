@@ -10,6 +10,7 @@ export {
   persistMailBaselineProjection,
   queryMailBaselineProjection,
   reduceProjectedMailBaseline,
+  selectMailBaselineGeneration,
   type MailBaselineProjectionQuery,
   type MailBaselineProjectionRow,
   type MailBaselineProjectionRowInput,

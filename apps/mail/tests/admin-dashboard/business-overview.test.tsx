@@ -1,19 +1,21 @@
-import * as React from 'react';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AdminDashboardDailyPoint,
   AdminDashboardMetrics,
   MetricResult,
 } from '@/lib/admin-dashboard/types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
+import * as React from 'react';
 
-const { useAdminDashboardDataMock } = vi.hoisted(() => ({
+const { useAdminDashboardDataMock, useAdminDashboardExportMock } = vi.hoisted(() => ({
   useAdminDashboardDataMock: vi.fn(),
+  useAdminDashboardExportMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/use-admin-dashboard', () => ({
   useAdminDashboardData: useAdminDashboardDataMock,
+  useAdminDashboardExport: useAdminDashboardExportMock,
 }));
 
 import AdminDashboardPage from '@/app/(routes)/settings/admin-dashboard/page';
@@ -99,7 +101,13 @@ const metrics: AdminDashboardMetrics = {
   folders: {
     mix: metric(
       [
-        { folder: 'bookings', label: 'Bookings', count: 2, urgentCount: 1, classification: 'primary' },
+        {
+          folder: 'bookings',
+          label: 'Bookings',
+          count: 2,
+          urgentCount: 1,
+          classification: 'primary',
+        },
         {
           folder: 'groups-events',
           label: 'Groups & Events',
@@ -133,7 +141,7 @@ const metrics: AdminDashboardMetrics = {
   },
   service: {
     firstObservedHumanReply: unavailableMetric('calendar minutes', 'reply_evidence_unavailable'),
-    firstUsefulReply: unavailableMetric('calendar minutes', 'not_implemented'),
+    firstUsefulReply: unavailableMetric('calendar minutes', 'no_useful_reply_evidence'),
     counts: {
       eligibleNewConversations: {
         ...unavailableMetric('conversations', 'reply_evidence_unavailable'),
@@ -148,6 +156,7 @@ const metrics: AdminDashboardMetrics = {
         denominatorStatus: 'unknown',
       },
       measurementStartAt: null,
+      measurementConfigVersion: null,
     },
     eligibleNewConversationCount: null,
     unansweredEligible: null,
@@ -157,8 +166,12 @@ const metrics: AdminDashboardMetrics = {
     awaitingHotel: unavailableMetric('conversations', 'request_projection_unavailable'),
     awaitingCustomer: unavailableMetric('conversations', 'request_projection_unavailable'),
     hotelActionPending: unavailableMetric('conversations', 'request_projection_unavailable'),
+    answered: unavailableMetric('conversations', 'request_projection_unavailable'),
+    noReplyRequired: unavailableMetric('conversations', 'request_projection_unavailable'),
     partial: unavailableMetric('conversations', 'request_projection_unavailable'),
     unknown: unavailableMetric('conversations', 'request_projection_unavailable'),
+    unknownEvidence: unavailableMetric('conversations', 'request_projection_unavailable'),
+    bucketTotals: unavailableMetric('conversations', 'request_projection_unavailable'),
     ageBands: unavailableMetric('conversation age bands', 'request_projection_unavailable'),
   },
   dataHealth: {
@@ -200,7 +213,9 @@ const metrics: AdminDashboardMetrics = {
   inboundPerDay: [],
   comparison: [],
   perTransport: [],
-  transports: [{ id: 'transport-centurion', email: 'centurion@example.test', displayName: 'Centurion' }],
+  transports: [
+    { id: 'transport-centurion', email: 'centurion@example.test', displayName: 'Centurion' },
+  ],
   assumptions: ['event_clock_not_import_created_at'],
   footnote: 'Observed mail only.',
   windowStart: '2026-08-31T12:00:00.000Z',
@@ -219,6 +234,11 @@ describe('AdminDashboardPage executive business overview', () => {
       data: null,
       metrics,
     });
+    useAdminDashboardExportMock.mockReturnValue({
+      isDownloading: false,
+      isError: false,
+      download: vi.fn(),
+    });
   });
 
   it('renders observed traffic and business breakdowns with provenance', () => {
@@ -235,6 +255,12 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain('Unknown / Needs Review');
     expect(markup).toContain('External correspondents');
     expect(markup).toContain('public-email');
+    expect(markup).toContain('Answered');
+    expect(markup).toContain('No reply required');
+    expect(markup).toContain('Unknown evidence');
+    expect(markup).toContain('Primary request-state buckets are mutually exclusive');
+    expect(markup).toContain('Export bounded snapshot');
+    expect(markup).toContain('Measurement config version');
     expect(markup).toContain('Source vintage');
     expect(markup).toContain('classificationAsOf');
     expect(markup).toContain('View data table');
@@ -245,7 +271,7 @@ describe('AdminDashboardPage executive business overview', () => {
     const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
     const pixelTargetCount = (markup.match(/min-h-\[44px\]/g) ?? []).length;
 
-    expect(pixelTargetCount, 'dashboard interactive targets').toBe(30);
+    expect(pixelTargetCount, 'dashboard interactive targets').toBe(34);
     expect(markup).not.toContain('min-h-11');
   });
 
@@ -269,7 +295,7 @@ describe('AdminDashboardPage executive business overview', () => {
       'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 28d / 2026-09-07T12:00:00.000Z.',
     );
     expect(markup).toContain('The selected query is refreshing; showing the observed snapshot.');
-    expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
+    expect(markup).toContain('<dt class="text-foreground font-medium">Window</dt><dd>28d</dd>');
   });
 
   it('labels a latest selection separately from an explicitly cut-off observed snapshot', () => {
@@ -291,7 +317,9 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain(
       'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 7d / 2026-09-06T12:00:00.000Z.',
     );
-    expect(markup).toContain('The selected query failed; showing the observed snapshot; no demo data is substituted.');
+    expect(markup).toContain(
+      'The selected query failed; showing the observed snapshot; no demo data is substituted.',
+    );
   });
 
   it('labels the prior snapshot when a changed selection fails', () => {
@@ -313,8 +341,10 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain(
       'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 28d / 2026-09-07T12:00:00.000Z.',
     );
-    expect(markup).toContain('The selected query failed; showing the observed snapshot; no demo data is substituted.');
-    expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
+    expect(markup).toContain(
+      'The selected query failed; showing the observed snapshot; no demo data is substituted.',
+    );
+    expect(markup).toContain('<dt class="text-foreground font-medium">Window</dt><dd>28d</dd>');
   });
 
   it('keeps unavailable chart evidence inspectable instead of reducing it to a reason-only state', () => {
@@ -329,7 +359,10 @@ describe('AdminDashboardPage executive business overview', () => {
         ...metrics,
         traffic: {
           ...metrics.traffic!,
-          daily: unavailableMetric<AdminDashboardDailyPoint[]>('messages per day', 'classification_snapshot_unavailable'),
+          daily: unavailableMetric<AdminDashboardDailyPoint[]>(
+            'messages per day',
+            'classification_snapshot_unavailable',
+          ),
         },
       },
     });

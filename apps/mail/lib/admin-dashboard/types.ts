@@ -27,6 +27,7 @@ export type MetricResult<T> = {
   sourceVintage: string;
   classificationAsOf: string | null;
   snapshotBasis: string | null;
+  measurementConfigVersion?: string | null;
   availabilityReason: string | null;
 };
 
@@ -47,7 +48,9 @@ export type AdminDashboardSelection = {
   observationCutoff?: string;
 };
 
-export function normalizeAdminDashboardCutoff(value: string | null | undefined): string | undefined {
+export function normalizeAdminDashboardCutoff(
+  value: string | null | undefined,
+): string | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : value;
@@ -125,6 +128,7 @@ export type AdminDashboardServiceCounts = {
   unscorable: AdminDashboardCountMetric;
   /** Configured prospective measurement start; null means no trusted T0 was returned. */
   measurementStartAt: string | null;
+  measurementConfigVersion?: string | null;
 };
 
 export type AdminDashboardService = {
@@ -173,8 +177,22 @@ export type AdminDashboardConversations = {
   awaitingHotel: MetricResult<number>;
   awaitingCustomer: MetricResult<number>;
   hotelActionPending: MetricResult<number>;
+  answered: MetricResult<number>;
+  noReplyRequired: MetricResult<number>;
   partial: MetricResult<number>;
   unknown: MetricResult<number>;
+  unknownEvidence: MetricResult<number>;
+  bucketTotals: MetricResult<
+    Record<
+      | 'awaiting_hotel_reply'
+      | 'awaiting_customer_information'
+      | 'hotel_action_pending'
+      | 'unknown'
+      | 'answered'
+      | 'no_reply_required',
+      number
+    >
+  >;
   ageBands: MetricResult<Record<string, number>>;
 };
 
@@ -247,6 +265,36 @@ export type AdminDashboardMetrics = {
   footnote: string;
   windowStart: string;
   windowEnd: string;
+};
+
+export type AdminDashboardExportMetric = MetricResult<number>;
+
+export type AdminDashboardExport = {
+  schemaVersion: 'admin-dashboard-export-v1';
+  query: ExecutiveDashboardQuery;
+  provenance: {
+    observationCutoff: string;
+    sourceVintage: string;
+    measurementConfigVersions: string[];
+    captureBases: string[];
+  };
+  buckets: Record<
+    | 'awaiting_hotel_reply'
+    | 'awaiting_customer_information'
+    | 'hotel_action_pending'
+    | 'unknown'
+    | 'answered'
+    | 'no_reply_required',
+    AdminDashboardExportMetric
+  >;
+  overlays: {
+    partially_answered: AdminDashboardExportMetric;
+    unknown_evidence: AdminDashboardExportMetric;
+  };
+  metrics: Pick<
+    AdminDashboardMetrics,
+    'traffic' | 'activity' | 'service' | 'folders' | 'correspondents' | 'dataHealth'
+  >;
 };
 
 // --- Legacy demo contract (preserved; demo mode only) ---
@@ -350,7 +398,9 @@ export function summarizeTransportSeries(series: readonly AdminDashboardTranspor
   const median = (() => {
     if (latencies.length === 0) return null;
     const mid = Math.floor(latencies.length / 2);
-    return latencies.length % 2 === 0 ? (latencies[mid - 1]! + latencies[mid]!) / 2 : latencies[mid]!;
+    return latencies.length % 2 === 0
+      ? (latencies[mid - 1]! + latencies[mid]!) / 2
+      : latencies[mid]!;
   })();
   const p90 = (() => {
     if (latencies.length === 0) return null;

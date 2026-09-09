@@ -204,6 +204,9 @@ function eventClock(message: MailBaselineSourceMessage): {
   at: Date | null;
   basis: MailBaselineSourceBasis;
 } {
+  if (message.sourceBasis === 'availability') {
+    return { at: null, basis: 'availability' };
+  }
   if (message.direction === 'inbound') {
     const received = asDate(message.receivedAt);
     if (received) return { at: received, basis: message.sourceBasis ?? 'source_event' };
@@ -344,6 +347,7 @@ export function extractMailBaselineEvidence(
   const subject = message.subject ?? '';
   const clock = eventClock(message);
   const base = baseEvidence(input, clock);
+  const availabilityClock = clock.at === null || clock.basis === 'availability';
   const automated = isAutomatedMessage(message, body);
   const forwarded = isInternalForward(message, body);
   const acknowledgement = isAcknowledgement(message, body);
@@ -387,8 +391,9 @@ export function extractMailBaselineEvidence(
         delivery: null,
         ...(unresolved
           ? {
-              unknownReason:
-                askCode === 'unknown'
+              unknownReason: availabilityClock
+                ? 'availability_clock_unavailable'
+                : askCode === 'unknown'
                   ? 'no_supported_ask'
                   : semanticOutput
                     ? 'model_unknown_ask'
@@ -447,13 +452,15 @@ export function extractMailBaselineEvidence(
         substantive,
         linkStrength: header ? 'header' : 'ambiguous',
         delivery,
-        unknownReason: !acceptanceKnown
-          ? 'recipient_acceptance_unavailable'
-          : semanticAnswer
-            ? null
-            : semanticOutput
-              ? 'model_answer_missing'
-              : 'semantic_route_unavailable',
+        unknownReason: availabilityClock
+          ? 'availability_clock_unavailable'
+          : !acceptanceKnown
+            ? 'recipient_acceptance_unavailable'
+            : semanticAnswer
+              ? null
+              : semanticOutput
+                ? 'model_answer_missing'
+                : 'semantic_route_unavailable',
       });
     }
   }

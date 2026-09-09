@@ -1,8 +1,13 @@
-import type { AdminDashboardMetrics, MetricResult } from '@/lib/admin-dashboard/types';
+import type {
+  AdminDashboardExport,
+  AdminDashboardMetrics,
+  MetricResult,
+} from '@/lib/admin-dashboard/types';
 type DashboardInput = {
   cohortId: 'centurion' | 'research';
   window: '7d' | '28d';
   observationCutoff?: string;
+  operation?: 'aggregate' | 'drilldown' | 'export';
 };
 
 type DashboardInputResult = { ok: true; input: DashboardInput } | { ok: false; reason: string };
@@ -109,7 +114,7 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
   }
 
   const input = envelope.json;
-  const allowedKeys = new Set(['cohortId', 'window', 'observationCutoff']);
+  const allowedKeys = new Set(['cohortId', 'window', 'observationCutoff', 'operation']);
   if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
     return { ok: false, reason: 'unknown_input_field' };
   }
@@ -118,6 +123,14 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
   }
   if (input.window !== '7d' && input.window !== '28d') {
     return { ok: false, reason: 'invalid_window' };
+  }
+  if (
+    input.operation !== undefined &&
+    input.operation !== 'aggregate' &&
+    input.operation !== 'drilldown' &&
+    input.operation !== 'export'
+  ) {
+    return { ok: false, reason: 'invalid_operation' };
   }
   const hasObservationCutoff = Object.hasOwn(input, 'observationCutoff');
   const hasMeta = Object.hasOwn(envelope, 'meta');
@@ -150,6 +163,7 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
       cohortId: input.cohortId,
       window: input.window,
       ...(observationCutoff === undefined ? {} : { observationCutoff }),
+      ...(input.operation === undefined ? {} : { operation: input.operation }),
     },
   };
 }
@@ -296,7 +310,7 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
     },
     service: {
       firstObservedHumanReply: unavailableMetric('calendar minutes', 'reply_evidence_unavailable'),
-      firstUsefulReply: unavailableMetric('calendar minutes', 'not_implemented'),
+      firstUsefulReply: unavailableMetric('calendar minutes', 'no_useful_reply_evidence'),
       counts: {
         eligibleNewConversations: {
           ...unavailableMetric<number>('conversations', 'reply_evidence_unavailable'),
@@ -311,6 +325,7 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
           denominatorStatus: 'unknown',
         },
         measurementStartAt: null,
+        measurementConfigVersion: null,
       },
       eligibleNewConversationCount: null,
       unansweredEligible: null,
@@ -320,8 +335,12 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
       awaitingHotel: unavailableMetric('conversations', 'request_projection_unavailable'),
       awaitingCustomer: unavailableMetric('conversations', 'request_projection_unavailable'),
       hotelActionPending: unavailableMetric('conversations', 'request_projection_unavailable'),
+      answered: unavailableMetric('conversations', 'request_projection_unavailable'),
+      noReplyRequired: unavailableMetric('conversations', 'request_projection_unavailable'),
       partial: unavailableMetric('conversations', 'request_projection_unavailable'),
       unknown: unavailableMetric('conversations', 'request_projection_unavailable'),
+      unknownEvidence: unavailableMetric('conversations', 'request_projection_unavailable'),
+      bucketTotals: unavailableMetric('conversations', 'request_projection_unavailable'),
       ageBands: unavailableMetric('calendar age bands', 'request_projection_unavailable'),
     },
     dataHealth: historical
@@ -396,6 +415,42 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
     windowStart: isoWithDays(cutoff, preset === '28d' ? 28 : 7),
     windowEnd: cutoff,
   } as AdminDashboardMetrics;
+}
+
+function dashboardExportPayload(input: DashboardInput): AdminDashboardExport {
+  const payload = dashboardPayload(input);
+  const conversations = payload.conversations!;
+  const captureBasis = payload.traffic?.inbound.captureBasis;
+  return {
+    schemaVersion: 'admin-dashboard-export-v1',
+    query: payload.query!,
+    provenance: {
+      observationCutoff: payload.query!.observationCutoff,
+      sourceVintage: payload.query!.sourceVintage,
+      measurementConfigVersions: [],
+      captureBases: captureBasis ? [captureBasis] : [],
+    },
+    buckets: {
+      awaiting_hotel_reply: conversations.awaitingHotel,
+      awaiting_customer_information: conversations.awaitingCustomer,
+      hotel_action_pending: conversations.hotelActionPending,
+      unknown: conversations.unknown,
+      answered: conversations.answered,
+      no_reply_required: conversations.noReplyRequired,
+    },
+    overlays: {
+      partially_answered: conversations.partial,
+      unknown_evidence: conversations.unknownEvidence,
+    },
+    metrics: {
+      traffic: payload.traffic!,
+      activity: payload.activity!,
+      service: payload.service!,
+      folders: payload.folders!,
+      correspondents: payload.correspondents!,
+      dataHealth: payload.dataHealth ?? null,
+    },
+  };
 }
 
 function response(body: unknown, status = 200): Response {
@@ -526,7 +581,9 @@ export function installReservationToolsPilotTransport(): void {
         );
       }
       record(200, input);
-      return trpcResponse(dashboardPayload(input));
+      return trpcResponse(
+        input.operation === 'export' ? dashboardExportPayload(input) : dashboardPayload(input),
+      );
     }
 
     if (
