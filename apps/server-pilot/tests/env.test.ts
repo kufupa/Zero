@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   parseEnv,
   parseHmsControlConfig,
   requireHmsEvidenceHmacChildKey,
   requireHmsWorkerRuntimeConfig,
 } from '../src/env';
+import { describe, expect, it } from 'vitest';
 
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -35,8 +35,7 @@ function hmsShadowRuntimeEnv(
     HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
     HMS_RUN_DEADLINE_MS: '150000',
     HMS_CIRCUIT_COOLDOWN_MS: '30000',
-    HMS_EVIDENCE_HMAC_SECRET_ARN:
-      'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
+    HMS_EVIDENCE_HMAC_SECRET_ARN: 'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
     HMS_EVIDENCE_HMAC_KEY_VERSION: 'evidence-key-v1',
     ...overrides,
   };
@@ -75,17 +74,21 @@ describe('env', () => {
     expect(parseEnv(baseEnv({ MAIL_MEASUREMENT_CONFIG_JSON: rawConfig }))).toMatchObject({
       MAIL_MEASUREMENT_CONFIG_JSON: rawConfig,
     });
-    expect(
-      parseEnv(baseEnv({ MAIL_MEASUREMENT_CONFIG_JSON: '{not-json' })),
-    ).toMatchObject({ MAIL_MEASUREMENT_CONFIG_JSON: '{not-json' });
+    expect(parseEnv(baseEnv({ MAIL_MEASUREMENT_CONFIG_JSON: '{not-json' }))).toMatchObject({
+      MAIL_MEASUREMENT_CONFIG_JSON: '{not-json',
+    });
   });
 
   it('parses CATCHUP_UPLOAD_ENABLED correctly', () => {
     expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'true' })).CATCHUP_UPLOAD_ENABLED).toBe(true);
     expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: '1' })).CATCHUP_UPLOAD_ENABLED).toBe(true);
-    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'false' })).CATCHUP_UPLOAD_ENABLED).toBe(false);
+    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'false' })).CATCHUP_UPLOAD_ENABLED).toBe(
+      false,
+    );
     expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: '0' })).CATCHUP_UPLOAD_ENABLED).toBe(false);
-    expect(() => parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'invalid' }))).toThrow(/CATCHUP_UPLOAD_ENABLED/);
+    expect(() => parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'invalid' }))).toThrow(
+      /CATCHUP_UPLOAD_ENABLED/,
+    );
   });
 
   it('throws on missing required keys', () => {
@@ -164,6 +167,14 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_WRITE_GATE_ENABLED).toBe(false);
     expect(parseEnv(baseEnv()).AI_DRAFTS_ENABLED).toBe(false);
     expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
+    expect(parseEnv(baseEnv()).AI_MODEL_ROUTE).toBe('unavailable');
+  });
+
+  it('accepts only the explicit approved-local model route marker', () => {
+    expect(parseEnv(baseEnv({ AI_MODEL_ROUTE: 'approved-local' })).AI_MODEL_ROUTE).toBe(
+      'approved-local',
+    );
+    expect(() => parseEnv(baseEnv({ AI_MODEL_ROUTE: 'bedrock' }))).toThrow(/AI_MODEL_ROUTE/);
   });
 
   it('defaults durable workflow triage off', () => {
@@ -200,18 +211,18 @@ describe('env', () => {
   });
 
   it('parses INGEST_REQUIRE_OWNER_HEADER when relaxed', () => {
-    expect(
-      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'false' }),
-    ).toMatchObject({ INGEST_REQUIRE_OWNER_HEADER: false });
-    expect(
-      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: '0' }),
-    ).toMatchObject({ INGEST_REQUIRE_OWNER_HEADER: false });
+    expect(parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'false' })).toMatchObject({
+      INGEST_REQUIRE_OWNER_HEADER: false,
+    });
+    expect(parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: '0' })).toMatchObject({
+      INGEST_REQUIRE_OWNER_HEADER: false,
+    });
   });
 
   it('rejects invalid INGEST_REQUIRE_OWNER_HEADER values', () => {
-    expect(() =>
-      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'maybe' }),
-    ).toThrow(/INGEST_REQUIRE_OWNER_HEADER/);
+    expect(() => parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'maybe' })).toThrow(
+      /INGEST_REQUIRE_OWNER_HEADER/,
+    );
   });
 
   it('disables AI by default when AI_ENABLED is absent', () => {
@@ -269,12 +280,12 @@ describe('env', () => {
   });
 
   it.each([
-  'LANGFUSE_PUBLIC_KEY',
-  'LANGFUSE_SECRET_KEY',
-  'LANGSMITH_API_KEY',
-  'MASTRA_CLOUD_API_KEY',
-  'MASTRA_PLATFORM_TOKEN',
-])('rejects hosted observability env %s when AI is enabled', (key) => {
+    'LANGFUSE_PUBLIC_KEY',
+    'LANGFUSE_SECRET_KEY',
+    'LANGSMITH_API_KEY',
+    'MASTRA_CLOUD_API_KEY',
+    'MASTRA_PLATFORM_TOKEN',
+  ])('rejects hosted observability env %s when AI is enabled', (key) => {
     expect(() =>
       parseEnv({
         NODE_ENV: 'production',
@@ -335,9 +346,7 @@ describe('env', () => {
     ).toThrow(/env HMS_/);
 
     expect(() =>
-      requireHmsWorkerRuntimeConfig(
-        hmsShadowRuntimeEnv({ HMS_READ_SECRET_ARN: undefined }),
-      ),
+      requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv({ HMS_READ_SECRET_ARN: undefined })),
     ).toThrow(/HMS_READ_SECRET_ARN/);
 
     expect(() =>
@@ -347,15 +356,11 @@ describe('env', () => {
     ).toThrow(/HMS_CHROMIUM_EXECUTABLE_PATH/);
 
     expect(() =>
-      requireHmsWorkerRuntimeConfig(
-        hmsShadowRuntimeEnv({ HMS_READ_ROLE_PROOF_PATH: undefined }),
-      ),
+      requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv({ HMS_READ_ROLE_PROOF_PATH: undefined })),
     ).toThrow(/HMS_READ_ROLE_PROOF_PATH/);
 
     expect(() =>
-      requireHmsWorkerRuntimeConfig(
-        hmsShadowRuntimeEnv({ HMS_HEALTH_STATUS_PATH: '' }),
-      ),
+      requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv({ HMS_HEALTH_STATUS_PATH: '' })),
     ).toThrow(/HMS_HEALTH_STATUS_PATH/);
 
     const runtime = requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv());
@@ -369,8 +374,7 @@ describe('env', () => {
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 150_000,
       circuitCooldownMs: 30_000,
-      evidenceHmacSecretArn:
-        'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
+      evidenceHmacSecretArn: 'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
       evidenceHmacKeyVersion: 'evidence-key-v1',
     });
 
@@ -389,9 +393,7 @@ describe('env', () => {
       HMS_EVIDENCE_HMAC_KEY: Buffer.alloc(32, 7).toString('base64'),
     });
     expect(childKey.key.byteLength).toBe(32);
-    expect(() => requireHmsEvidenceHmacChildKey({})).toThrow(
-      /HMS_EVIDENCE_HMAC_KEY/,
-    );
+    expect(() => requireHmsEvidenceHmacChildKey({})).toThrow(/HMS_EVIDENCE_HMAC_KEY/);
 
     // parseEnv must never persist the child-only key onto MailEnv.
     const env = parseEnv(baseEnv({ HMS_EVIDENCE_HMAC_KEY: 'should-not-land' }));

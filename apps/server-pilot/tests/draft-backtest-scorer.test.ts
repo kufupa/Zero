@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
 import {
   assertBacktestSourceSafe,
   aggregateRecords,
@@ -10,9 +8,12 @@ import {
   pairCenturionFromReply,
   pairCenturionGold,
   renderOfflineBracketDraft,
+  assessDraftAgainstFacts,
   scoreDraftAgainstEvidence,
   type DraftEvalRecord,
 } from '../src/ai/draft-backtest.js';
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 describe('pairCenturionGold', () => {
   it('pairs earliest later Centurion outbound on same thread', () => {
@@ -112,9 +113,7 @@ describe('pairCenturionFromReply', () => {
   });
 
   it('accepts angle-addr centurion@ and labels forward', () => {
-    expect(
-      isCenturionMailboxFrom('Centurion <centurion@legacyhotels.co.za>'),
-    ).toBe(true);
+    expect(isCenturionMailboxFrom('Centurion <centurion@legacyhotels.co.za>')).toBe(true);
     expect(isCenturionMailboxFrom('bongi@legacyhotels.co.za')).toBe(false);
 
     const fwd = pairCenturionFromReply({
@@ -184,6 +183,27 @@ describe('scoreDraftAgainstEvidence', () => {
     });
     expect(classes).toContain('MISSING_BRACKET');
   });
+
+  it('runs deterministic fact assessment for negation and amount safety', () => {
+    const assessment = assessDraftAgainstFacts({
+      draftText: 'Your payment is cleared for USD 2,000.',
+      asks: [{ code: 'payment_status', label: 'payment status', required: true }],
+      facts: [
+        {
+          key: 'payment.receipt',
+          label: 'payment receipt',
+          value: { fundsCleared: false, amount: '1000.00', currency: 'ZAR' },
+          source: 'mail',
+          authority: 'authorized',
+          status: 'known',
+        },
+      ],
+    });
+    expect(assessment.ok).toBe(false);
+    expect(assessment.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['NEGATION_MISMATCH', 'AMOUNT_OR_CURRENCY_MISMATCH']),
+    );
+  });
 });
 
 describe('renderOfflineBracketDraft', () => {
@@ -222,9 +242,7 @@ describe('compareDraftToGold + draftFromInboundSignals', () => {
     const classes = scoreDraftAgainstEvidence({
       draftText: 'Thanks for writing.',
       evidenceTokens: [],
-      bracketLines: [
-        '[MISSING: confirmation number | how: hms_find_reservation]',
-      ],
+      bracketLines: ['[MISSING: confirmation number | how: hms_find_reservation]'],
       goldKind: 'centurion_outbound',
       goldCriticalCoverage: 0.1,
     });
@@ -235,9 +253,7 @@ describe('compareDraftToGold + draftFromInboundSignals', () => {
     const classes = scoreDraftAgainstEvidence({
       draftText: 'Thanks for writing.',
       evidenceTokens: [],
-      bracketLines: [
-        '[MISSING: confirmation number | how: hms_find_reservation]',
-      ],
+      bracketLines: ['[MISSING: confirmation number | how: hms_find_reservation]'],
       goldKind: 'centurion_outbound',
       goldCriticalCoverage: 0.9,
       toneOverlap: 0.02,
@@ -296,16 +312,11 @@ describe('aggregate + safety', () => {
   });
 
   it('refuses unsafe source patterns', () => {
-    expect(() => assertBacktestSourceSafe('await db.insert({ x: 1 })')).toThrow(
-      /safety refuse/,
-    );
+    expect(() => assertBacktestSourceSafe('await db.insert({ x: 1 })')).toThrow(/safety refuse/);
     expect(() =>
       assertBacktestSourceSafe('const x = select only; createHash().update(id)'),
     ).not.toThrow();
-    const self = readFileSync(
-      new URL('../src/ai/draft-backtest.ts', import.meta.url),
-      'utf8',
-    );
+    const self = readFileSync(new URL('../src/ai/draft-backtest.ts', import.meta.url), 'utf8');
     expect(() => assertBacktestSourceSafe(self)).not.toThrow();
   });
 });

@@ -1,6 +1,15 @@
 # Centurion Dashboard, Read Tools and Drafting — Execution Ledger
 
-## Current checkpoint — U16 local implementation accepted; U5 next (2026-09-09)
+## Current checkpoint — U5 freshly verified; independent review pending (2026-09-09)
+
+- Mechanical formatting is complete across the exact20 U5 TS paths. Root's final post-format run at01:14 UTC passes13 exact files/234 tests with23 explicit existing guarded skips (2 persistence +21 regression guards), reviewed server build, installed20-path Oxlint,20-path Prettier and diff check. Earlier exact unit reads/documents/knowledge gates also pass. No required U5 test is reported skipped and no DB/live proof is inferred. A clean local snapshot now proceeds to fresh independent specification/quality review; U5 is not yet accepted.
+
+### U5 implementation and first verification history
+
+- U5 candidate changes20 TS paths: bounded prepared inputs, reply modes/factual assessment, approved-local adapter/routing and existing candidate/workflow/evidence/backtest integration. Root freshly verifies10 scoped files116 passed/2 existing optional DB skips, three regression files118 passed/21 guarded skips, unit reads/documents/knowledge, reviewed server build, installed20-path Oxlint and diff check: PASS. Prettier finds19 paths requiring formatting; same Luna worker owns a mechanical exact-path cleanup before a clean review snapshot. No required U5 test is reported skipped; optional guards are not DB/live proof.
+- Initial new-module RED failed five suites at import collection with0 tests; later normal-path test failed at the missing prepared-workflow export. These are recorded as such, not a blanket pre-code behavioral RED claim. No real approved model-processing route or Phase2B release is established by synthetic tests. Independent review must verify normal runtime composition, pre-trace preparation and actual trust/fact boundaries before acceptance. Writer report: `.private/centurion-dashboard-tools-execution/u5-report.md`.
+
+- U5 is dispatched to a fresh explicit Luna Max sole writer from007bd435: prepared authorized bounded inputs, reusable reply modes/factual checks and approved local model-adapter integration at existing workflow seams. CodeGraph-first/TDD, actual normal-path testing, independent review and all-current-users/all-tools policy remain binding. No approved live model route or live capability proof is assumed; absent evidence disables that activation path without stopping framework work. Private report: `.private/centurion-dashboard-tools-execution/u5-report.md`.
 
 - Independent final re-review at4cc17014 returns repair specification PASS and task quality PASS, all five prior findings closed and no Important/Critical residual within the supported server-owned local/document contract. The actual facade/native document-service/FakeS3 path and unchanged-metadata byte mutation are verified locally. Final review: `.private/centurion-dashboard-tools-execution/u16-final-repair-review.md`. Current source/config/owner approval and a production property-tool caller are not established; U5 integration is next, and no live/Phase2B completion is claimed.
 
@@ -68,7 +77,7 @@
 | U7 | All-night availability/rate evidence | Complete for local implementation; reviewed | `d3af800c` independent specification/quality PASS; exact source authority, allocation/currency/segments, audited receipts/digests and typed/durable expiry verified locally. Real commercial catalog remains unavailable; no live/Phase2B acceptance |
 | U15 | Company/group/event/notes context | Local repair PASS/PASS at04bd6577; native readiness incomplete | Three P1s closed; fresh unit/DB/build/14-file checks pass. All four native relationship-discovery paths remain unavailable; synthetic binding and group capture proof are not live readiness |
 | U16 | Approved property knowledge | Local implementation PASS/PASS at4cc17014 | All prior findings closed; focused35/35, related47/47 and fresh root gates PASS. Real approved source/config and production caller remain unestablished; native filesystem limits explicit; no live/Phase2B claim |
-| U5 | Safe drafting and approved model adapter | Next: approved dispatch ready | Accepted local read milestones; every live consumed capability and model-processing route still requires its own evidence |
+| U5 | Safe drafting and approved model adapter | Candidate freshly verified; independent review pending | Post-format13files234pass/23guarded, server build and20-path lint/format/diff PASS; earlier read/document/knowledge regressions PASS; no live activation or DB proof from fixtures/skips |
 | U2 | Ask-aware service projection | Pending | U12/U5 |
 | U13 | Private predictions and factual evaluation | Pending | U2/U5 and released capabilities |
 | U6 | Human-reviewed visible assistance | Pending | U5/U13 and family-quality gates |

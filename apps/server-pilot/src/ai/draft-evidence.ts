@@ -1,5 +1,6 @@
 import type { QuarantinedNegative, ValidatedBusinessNotFound } from '../hms/negative-result.js';
 import { toBusinessNotFoundToolStatus } from '../hms/negative-result.js';
+import type { PreparedFact } from './prepared-draft-input.js';
 import { z } from 'zod';
 
 export type HmsEvidenceRef = {
@@ -75,6 +76,21 @@ export type EvidenceClaim = {
   evidenceIds?: string[];
   expiresAt?: string;
 };
+
+/** Convert a code-owned claim to the bounded fact shape used by U5 replies. */
+export function evidenceClaimToPreparedFact(claim: EvidenceClaim): PreparedFact {
+  const source =
+    claim.kind === 'document_metadata' || claim.kind === 'sent_email_audit' ? 'attachment' : 'hms';
+  return {
+    key: `claim.${claim.kind}`,
+    label: claim.kind.replace(/_/g, ' '),
+    value: claim.value,
+    source,
+    authority: 'authorized',
+    status: 'known',
+    evidenceRef: claim.evidenceId,
+  };
+}
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/i);
 
