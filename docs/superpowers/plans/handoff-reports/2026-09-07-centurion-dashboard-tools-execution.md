@@ -1,6 +1,10 @@
 # Centurion Dashboard, Read Tools and Drafting — Execution Ledger
 
-## Current checkpoint — U16 residual repairs freshly verified; re-review pending (2026-09-09)
+## Current checkpoint — U16 local implementation accepted; U5 next (2026-09-09)
+
+- Independent final re-review at4cc17014 returns repair specification PASS and task quality PASS, all five prior findings closed and no Important/Critical residual within the supported server-owned local/document contract. The actual facade/native document-service/FakeS3 path and unchanged-metadata byte mutation are verified locally. Final review: `.private/centurion-dashboard-tools-execution/u16-final-repair-review.md`. Current source/config/owner approval and a production property-tool caller are not established; U5 integration is next, and no live/Phase2B completion is claimed.
+
+### Accepted repair verification
 
 - Residual repair changes exactly two implementation TS paths and one test TS path. Genuine RED34total/28pass/6fail preceded production edits; final focused35/35 and related47/47 across four files pass with0 skips. Native-service precedence, genuine post-list same-length byte mutation, real facade/service/FakeS3 composition, closed context/abort/budget, raw-token variants, stable partial truncation and native opened-file/root identity/response deadline are covered. Root freshly reruns unit knowledge/reads/documents, reviewed server build, installed Oxlint/Prettier on all three changed TS paths and diff check: all PASS. Independent residual re-review remains pending.
 - The supported native filesystem contract is server-owned paths, post-open identity validation, regular-file/no-final-symlink access, bounded bytes and response deadline with eventual late-resource cleanup. It is not an atomic openat2 confinement or forcible cancellation of kernel calls unavailable from Node. Real approved property source/config/owner approval remains unavailable. Report: `.private/centurion-dashboard-tools-execution/u16-residual-repair-report.md`.
@@ -63,8 +67,8 @@
 | U17 | Finance and deposit evidence | Complete for local implementation; reviewed | `d3af800c` independent specification/quality PASS closes audited receipts, per-branch manifest/scope/artifact joins, authoritative durable expiry and observed property/record scope; no live/Phase2B claim |
 | U7 | All-night availability/rate evidence | Complete for local implementation; reviewed | `d3af800c` independent specification/quality PASS; exact source authority, allocation/currency/segments, audited receipts/digests and typed/durable expiry verified locally. Real commercial catalog remains unavailable; no live/Phase2B acceptance |
 | U15 | Company/group/event/notes context | Local repair PASS/PASS at04bd6577; native readiness incomplete | Three P1s closed; fresh unit/DB/build/14-file checks pass. All four native relationship-discovery paths remain unavailable; synthetic binding and group capture proof are not live readiness |
-| U16 | Approved property knowledge | Residual repair freshly verified; independent re-review pending | Focused35/35, related47/47; root unit knowledge/reads/documents, server build and three-path static checks PASS. Explicit native filesystem limits and missing real owner-approved source/config remain separate activation considerations |
-| U5 | Safe drafting and approved model adapter | Pending | Useful read milestone; each consumed capability gated |
+| U16 | Approved property knowledge | Local implementation PASS/PASS at4cc17014 | All prior findings closed; focused35/35, related47/47 and fresh root gates PASS. Real approved source/config and production caller remain unestablished; native filesystem limits explicit; no live/Phase2B claim |
+| U5 | Safe drafting and approved model adapter | Next: approved dispatch ready | Accepted local read milestones; every live consumed capability and model-processing route still requires its own evidence |
 | U2 | Ask-aware service projection | Pending | U12/U5 |
 | U13 | Private predictions and factual evaluation | Pending | U2/U5 and released capabilities |
 | U6 | Human-reviewed visible assistance | Pending | U5/U13 and family-quality gates |
