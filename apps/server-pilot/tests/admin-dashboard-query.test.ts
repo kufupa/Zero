@@ -628,6 +628,16 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
         },
         new Date('2026-09-08T12:00:00.000Z'),
       );
+      const longQuery = resolveExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          window: '28d',
+          windowStart: '2026-08-11T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
+          observationCutoff: '2026-09-08T12:00:00.000Z',
+        },
+        new Date('2026-09-08T12:00:00.000Z'),
+      );
       const result = await withSeededTestDb(async (db) => {
         __setDbForTests({ db, conn: null as never });
         try {
@@ -670,9 +680,11 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
             transportId: 'transport-centurion',
             threadId,
             triggerMessageId: messageId,
+            observedAt: eventAt,
             asOfAt: eventAt,
             sealedAt: eventAt,
             observationEndsAt: new Date('2026-09-09T09:00:00.000Z'),
+            retentionExpiresAt: new Date('2026-10-02T09:00:00.000Z'),
             sourceVintage: eventAt.toISOString(),
             inputDigest: 'a'.repeat(64),
             messageIds: [messageId],
@@ -707,14 +719,73 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
             },
             verdict: 'correct',
             assessment: {},
+            createdAt: eventAt,
           });
-          return loadAdminDashboardMetrics(query);
+          const longThreadId = 'u13-dashboard-scorecard-long-thread';
+          const longMessageId = 'u13-dashboard-scorecard-long-message';
+          const longPredictionId = 'u13-dashboard-scorecard-long-prediction';
+          const longPredictionKey = `shadow-prediction:${longPredictionId}`;
+          const longEventAt = new Date('2026-08-20T09:00:00.000Z');
+          await db.insert(mailThread).values({
+            id: longThreadId,
+            transportId: 'transport-centurion',
+            threadRootId: `${longThreadId}-root`,
+            subject: 'U13 long-window scorecard fixture',
+            snippet: 'U13 long-window scorecard fixture',
+            createdAt: longEventAt,
+            updatedAt: longEventAt,
+            latestMessageAt: longEventAt,
+          });
+          await db.insert(message).values({
+            id: longMessageId,
+            transportId: 'transport-centurion',
+            threadId: longThreadId,
+            direction: 'inbound',
+            messageIdHeader: `<${longMessageId}@example.test>`,
+            fromAddress: 'long-scorecard-guest@example.test',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+            ccAddresses: [],
+            bccAddresses: [],
+            receivedAt: longEventAt,
+            createdAt: longEventAt,
+            updatedAt: longEventAt,
+          });
+          await db.insert(aiShadowPrediction).values({
+            id: longPredictionId,
+            predictionKey: longPredictionKey,
+            evaluationMode: 'future_shadow',
+            evaluationVersion: 'shadow-evaluation-v1',
+            admissionStatus: 'admitted',
+            predictionStatus: 'sealed',
+            transportId: 'transport-centurion',
+            threadId: longThreadId,
+            triggerMessageId: longMessageId,
+            observedAt: longEventAt,
+            asOfAt: longEventAt,
+            sealedAt: longEventAt,
+            observationEndsAt: new Date('2026-08-27T09:00:00.000Z'),
+            retentionExpiresAt: new Date('2026-09-19T09:00:00.000Z'),
+            sourceVintage: longEventAt.toISOString(),
+            inputDigest: 'b'.repeat(64),
+            messageIds: [longMessageId],
+            attachmentIds: [],
+            excludedFutureMessageIds: [],
+            modelId: 'u13-dashboard-long-model',
+            promptVersion: 'shadow-mail/v1',
+            route: null,
+            modelUsage: null,
+            prediction: { outcome: 'partial' },
+          });
+          return {
+            seven: await loadAdminDashboardMetrics(query),
+            twentyEight: await loadAdminDashboardMetrics(longQuery),
+          };
         } finally {
           __setDbForTests(null);
         }
       });
 
-      expect(result.shadowScorecard).toMatchObject({
+      expect(result.seven.shadowScorecard).toMatchObject({
         evaluationMode: 'future_shadow',
         counts: expect.objectContaining({
           admitted: 1,
@@ -729,6 +800,20 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
           denominator: 1,
           correctRate: 1,
           usefulRate: 1,
+        }),
+        provenance: expect.objectContaining({
+          selectionClock: 'sealed_at',
+          windowStart: '2026-09-01T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
+        }),
+      });
+      expect(result.twentyEight.shadowScorecard).toMatchObject({
+        evaluationMode: 'future_shadow',
+        counts: expect.objectContaining({ admitted: 2, sealed: 2, matched: 1 }),
+        provenance: expect.objectContaining({
+          selectionClock: 'sealed_at',
+          windowStart: '2026-08-11T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
         }),
       });
     });

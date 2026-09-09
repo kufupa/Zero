@@ -1,5 +1,57 @@
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
 import { mailboxTransport, mailThread, message } from './mail.js';
+
+/**
+ * Private pre-work admission receipt. It records the bounded decision before
+ * the default worker can spend model/context work; prediction bodies never
+ * enter this table.
+ */
+export const aiShadowAdmission = pgTable(
+  'ai_shadow_admission',
+  {
+    id: text('id').primaryKey(),
+    admissionKey: text('admission_key').notNull(),
+    evaluationMode: text('evaluation_mode').notNull(),
+    evaluationVersion: text('evaluation_version').notNull(),
+    eligible: boolean('eligible').notNull().default(true),
+    admissionStatus: text('admission_status').notNull(),
+    reason: text('reason').notNull(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => mailThread.id, { onDelete: 'cascade' }),
+    triggerMessageId: text('trigger_message_id').references(() => message.id, {
+      onDelete: 'set null',
+    }),
+    releaseId: text('release_id').notNull(),
+    contextDigest: text('context_digest').notNull(),
+    requestGeneration: text('request_generation').notNull(),
+    capBucketAt: timestamp('cap_bucket_at').notNull(),
+    retentionExpiresAt: timestamp('retention_expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('ai_shadow_admission_key_uidx').on(t.admissionKey),
+    index('ai_shadow_admission_cap_idx').on(
+      t.transportId,
+      t.releaseId,
+      t.capBucketAt,
+      t.admissionStatus,
+    ),
+    index('ai_shadow_admission_retention_idx').on(t.retentionExpiresAt),
+  ],
+);
 
 /** Private immutable prediction artifact. It is never a mail draft or label. */
 export const aiShadowPrediction = pgTable(
@@ -20,9 +72,12 @@ export const aiShadowPrediction = pgTable(
     triggerMessageId: text('trigger_message_id').references(() => message.id, {
       onDelete: 'set null',
     }),
+    /** Availability clock at which this context became observable to the worker. */
+    observedAt: timestamp('observed_at').notNull(),
     asOfAt: timestamp('as_of_at').notNull(),
     sealedAt: timestamp('sealed_at').notNull(),
     observationEndsAt: timestamp('observation_ends_at').notNull(),
+    retentionExpiresAt: timestamp('retention_expires_at').notNull(),
     sourceVintage: text('source_vintage').notNull(),
     inputDigest: text('input_digest').notNull(),
     messageIds: jsonb('message_ids').$type<string[]>().notNull().default([]),
@@ -43,6 +98,7 @@ export const aiShadowPrediction = pgTable(
     uniqueIndex('ai_shadow_prediction_key_uidx').on(t.predictionKey),
     index('ai_shadow_prediction_scope_idx').on(t.transportId, t.threadId, t.asOfAt),
     index('ai_shadow_prediction_observation_idx').on(t.transportId, t.observationEndsAt),
+    index('ai_shadow_prediction_retention_idx').on(t.evaluationMode, t.retentionExpiresAt),
     index('ai_shadow_prediction_status_idx').on(t.predictionStatus, t.createdAt),
   ],
 );

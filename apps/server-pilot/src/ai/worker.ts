@@ -26,8 +26,11 @@ import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
   createUnavailableShadowPredictionSeal,
+  assessDueShadowPredictions,
   freezeShadowInput,
   persistShadowPrediction,
+  purgeExpiredShadowDerivatives,
+  resolveShadowAdmissionPolicy,
   shadowPredictionPrompt,
   SHADOW_EVALUATION_MODE,
   type ShadowMessageInput,
@@ -3383,7 +3386,10 @@ async function executeShadowPredictionRun(
     ids.push(row.id);
     attachmentIdsByMessage.set(row.messageId, ids);
   }
-  const asOfAt = trigger.receivedAt ?? trigger.sentAt ?? trigger.createdAt;
+  // `createdAt` is the availability clock. RFC822 received/sent clocks remain
+  // event evidence for matching and cannot pull a late-imported body into an
+  // earlier frozen context.
+  const asOfAt = trigger.createdAt;
   const frozen = freezeShadowInput({
     transportId: run.transportId,
     threadId: run.threadId,
@@ -3392,6 +3398,7 @@ async function executeShadowPredictionRun(
     messages: threadRows.map(
       (row): ShadowMessageInput => ({
         ...row,
+        availableAt: row.createdAt,
         attachmentIds: attachmentIdsByMessage.get(row.id) ?? [],
       }),
     ),
@@ -3598,6 +3605,18 @@ export async function executeAiRun(
       lastError: `unsupported prompt version: ${run.promptVersion} (deployed ${deployed})`,
     });
     return { runId: run.id, state: 'dead_letter' };
+  }
+
+  if (run.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
+    await markAiRunDeadLetter({
+      runId,
+      claimOwner: owner,
+      claimToken,
+      expectedStates: ['running'],
+      lastError: 'shadow admission cap policy unavailable',
+      failureClass: 'POLICY_BLOCK',
+    });
+    return { runId, state: 'dead_letter' };
   }
 
   // Resolve the purpose-bound extraction edge before any inbound workflow
@@ -4713,12 +4732,6 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     shadowModelRouteFactory,
     ...scope
   } = options;
-  const composedMailBaselineExtractionRoute =
-    mailBaselineExtractionRoute ??
-    mailBaselineExtractionRouteFactory?.() ??
-    createProductionMailBaselineExtractionRouteFactory()();
-  const composedShadowModelRoute =
-    shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   // hms + off: drafting claims none, but an independently enabled read lane
   // remains claimable without browser/model initialization.
   if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
@@ -4734,7 +4747,27 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
   const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
-  if (!claimed) return false;
+  if (!claimed) {
+    // Assessment and retention are private, bounded database lanes. They run
+    // only after the claim check, so a normal queued prediction cannot be
+    // hidden behind maintenance work; no route factory is initialized here.
+    const purge = await purgeExpiredShadowDerivatives({ limit: 100 });
+    const due = await assessDueShadowPredictions({ limit: 100 });
+    return purge.deletedPredictions > 0 || purge.deletedAdmissions > 0 || due.processed > 0;
+  }
+  // A stale run admitted under a policy that has since been unset is fenced
+  // through executeAiRun's policy-block path without constructing any route
+  // factory or model transport.
+  if (claimed.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
+    await executeAiRun(claimed.id, { shutdownSignal });
+    return true;
+  }
+  const composedMailBaselineExtractionRoute =
+    mailBaselineExtractionRoute ??
+    mailBaselineExtractionRouteFactory?.() ??
+    createProductionMailBaselineExtractionRouteFactory()();
+  const composedShadowModelRoute =
+    shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,

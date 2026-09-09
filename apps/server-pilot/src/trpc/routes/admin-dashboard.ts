@@ -469,6 +469,8 @@ export async function loadAdminDashboardMetrics(
   const shadowScorecard = await loadShadowScorecard({
     evaluationMode: SHADOW_EVALUATION_MODE,
     transportIds: selectedTransportIds,
+    windowStart: new Date(query.windowStart),
+    windowEnd: new Date(query.windowEnd),
     observationCutoff: new Date(query.observationCutoff),
     db,
   });

@@ -4,10 +4,14 @@ import {
   type ShadowPredictionScorecardRow,
   type ShadowScorecard,
 } from '../metrics/shadow-scorecard.js';
+import {
+  aiShadowAdmission,
+  aiShadowAssessment,
+  aiShadowPrediction,
+} from '../db/schema/ai-shadow-evaluation.js';
 import { matchShadowReference, type ShadowReferenceMatch } from './shadow-reference-matcher.js';
-import { aiShadowAssessment, aiShadowPrediction } from '../db/schema/ai-shadow-evaluation.js';
+import { and, asc, desc, eq, gt, gte, inArray, lt, lte, sql } from 'drizzle-orm';
 import type { LocalModelRouteEvidence } from './bedrock/local.js';
-import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
@@ -19,6 +23,18 @@ export const SHADOW_PURPOSE = 'shadow' as const;
 export const SHADOW_EVALUATION_VERSION = 'shadow-evaluation-v1';
 export const SHADOW_PROMPT_VERSION = 'shadow-mail/v1';
 export const SHADOW_OBSERVATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const SHADOW_RETENTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** Proposed local predicate ceiling; this is not a live default. */
+export const SHADOW_ADMISSION_CAP = 100;
+export const SHADOW_REQUEST_GENERATION = 'shadow-request-v1';
+const SHADOW_ADMISSION_CAP_ENV = 'AI_SHADOW_ADMISSION_CAP_PER_DAY';
+const SHADOW_CAP_SCOPE_ENV = 'AI_SHADOW_CAP_SCOPE';
+const SHADOW_TOKEN_CAP_ENV = 'AI_SHADOW_TOKEN_CAP_PER_DAY';
+const SHADOW_SPEND_CAP_ENV = 'AI_SHADOW_SPEND_CAP_USD_PER_DAY';
+const SHADOW_BROWSER_CAP_ENV = 'AI_SHADOW_BROWSER_CAP_PER_DAY';
+const SHADOW_TOKEN_CAP_MAX = 1_000_000;
+const SHADOW_SPEND_CAP_USD_MAX = 100_000;
+const SHADOW_BROWSER_CAP_MAX = 100;
 export type ShadowEvaluationMode = 'current_state' | 'historical_replay' | 'future_shadow';
 
 export type ShadowMessageInput = {
@@ -30,6 +46,8 @@ export type ShadowMessageInput = {
   receivedAt: Date | null;
   sentAt: Date | null;
   createdAt: Date;
+  /** Persisted availability clock; old callers fall back to createdAt. */
+  availableAt?: Date | null;
   attachmentIds: readonly string[];
 };
 
@@ -37,6 +55,8 @@ export type FrozenShadowInput = {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
+  /** Availability clock at which the frozen context became observable. */
+  observedAt: string;
   asOfAt: string;
   messageIds: string[];
   attachmentIds: string[];
@@ -47,6 +67,7 @@ export type FrozenShadowInput = {
     subject: string | null;
     text: string;
     eventAt: string;
+    observedAt: string;
   }>;
   inputDigest: string;
 };
@@ -77,6 +98,10 @@ function messageEventAt(message: ShadowMessageInput): Date | null {
   return asDate(message.receivedAt ?? message.sentAt ?? message.createdAt);
 }
 
+function messageAvailableAt(message: ShadowMessageInput): Date | null {
+  return asDate(message.availableAt ?? message.createdAt);
+}
+
 function normalizedText(message: ShadowMessageInput): string {
   return (message.textBody ?? message.htmlBody ?? '').replaceAll('\u0000', '').trim();
 }
@@ -101,9 +126,9 @@ export function freezeShadowInput(input: {
   if (!asOf) throw new Error('shadow prediction as-of must be a valid instant');
   const trigger = input.messages.find((message) => message.id === input.triggerMessageId);
   if (!trigger) throw new Error('shadow prediction trigger message is missing');
-  const triggerAt = messageEventAt(trigger);
-  if (!triggerAt || triggerAt.getTime() > asOf.getTime()) {
-    throw new Error('shadow prediction trigger is after the as-of horizon');
+  const triggerAvailableAt = messageAvailableAt(trigger);
+  if (!triggerAvailableAt || triggerAvailableAt.getTime() > asOf.getTime()) {
+    throw new Error('shadow prediction trigger is not available at the as-of horizon');
   }
 
   const ordered = [...input.messages].sort((left, right) => {
@@ -112,7 +137,7 @@ export function freezeShadowInput(input: {
     return leftAt - rightAt || left.id.localeCompare(right.id);
   });
   const included = ordered.filter((message) => {
-    const at = messageEventAt(message)?.getTime();
+    const at = messageAvailableAt(message)?.getTime();
     return at !== undefined && at !== null && at <= asOf.getTime();
   });
   if (!included.some((message) => message.id === input.triggerMessageId)) {
@@ -124,12 +149,15 @@ export function freezeShadowInput(input: {
   const modelMessages = included.map((message) => {
     const eventAt = messageEventAt(message);
     if (!eventAt) throw new Error(`shadow message ${message.id} has no usable event clock`);
+    const observedAt = messageAvailableAt(message);
+    if (!observedAt) throw new Error(`shadow message ${message.id} has no availability clock`);
     return {
       id: message.id,
       direction: message.direction,
       subject: message.subject,
       text: normalizedText(message),
       eventAt: eventAt.toISOString(),
+      observedAt: observedAt.toISOString(),
     };
   });
   const attachmentIds = [...new Set(included.flatMap((message) => message.attachmentIds))].sort();
@@ -138,6 +166,7 @@ export function freezeShadowInput(input: {
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    observedAt: asOf.toISOString(),
     asOfAt: asOf.toISOString(),
     modelMessages,
     attachmentIds,
@@ -146,6 +175,7 @@ export function freezeShadowInput(input: {
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    observedAt: asOf.toISOString(),
     asOfAt: asOf.toISOString(),
     messageIds: included.map((message) => message.id),
     attachmentIds,
@@ -170,9 +200,11 @@ export type ShadowPredictionSeal = {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
+  observedAt: string;
   asOfAt: string;
   sealedAt: string;
   observationEndsAt: string;
+  retentionExpiresAt: string;
   sourceVintage: string;
   inputDigest: string;
   lineage: {
@@ -246,6 +278,7 @@ export function createShadowPredictionSeal(input: {
   const route = routeSummary(input.route);
   const observationEndsAt =
     asDate(input.observationEndsAt) ?? new Date(sealedAt.getTime() + SHADOW_OBSERVATION_WINDOW_MS);
+  const retentionExpiresAt = new Date(sealedAt.getTime() + SHADOW_RETENTION_WINDOW_MS);
   if (observationEndsAt.getTime() < sealedAt.getTime()) {
     throw new Error('shadow observation window cannot end before seal');
   }
@@ -258,9 +291,11 @@ export function createShadowPredictionSeal(input: {
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    observedAt: input.frozen.observedAt,
     asOfAt: input.frozen.asOfAt,
     sealedAt: sealedAt.toISOString(),
     observationEndsAt: observationEndsAt.toISOString(),
+    retentionExpiresAt: retentionExpiresAt.toISOString(),
     sourceVintage: input.frozen.asOfAt,
     inputDigest: input.frozen.inputDigest,
     lineage: {
@@ -290,6 +325,7 @@ export function createUnavailableShadowPredictionSeal(input: {
   if (!sealedAt) throw new Error('shadow unavailable time must be a valid instant');
   const observationEndsAt =
     asDate(input.observationEndsAt) ?? new Date(sealedAt.getTime() + SHADOW_OBSERVATION_WINDOW_MS);
+  const retentionExpiresAt = new Date(sealedAt.getTime() + SHADOW_RETENTION_WINDOW_MS);
   return {
     predictionKey: input.predictionKey,
     evaluationMode: SHADOW_EVALUATION_MODE,
@@ -299,9 +335,11 @@ export function createUnavailableShadowPredictionSeal(input: {
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    observedAt: input.frozen.observedAt,
     asOfAt: input.frozen.asOfAt,
     sealedAt: sealedAt.toISOString(),
     observationEndsAt: observationEndsAt.toISOString(),
+    retentionExpiresAt: retentionExpiresAt.toISOString(),
     sourceVintage: input.frozen.asOfAt,
     inputDigest: input.frozen.inputDigest,
     lineage: {
@@ -353,14 +391,58 @@ export function shadowPredictionPrompt(frozen: FrozenShadowInput): {
   };
 }
 
+export function shadowAdmissionReleaseId(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): string {
+  // Only the server-owned descriptor participates in identity. Resolving this
+  // string never imports or initializes the configured route module.
+  const descriptor = [
+    env.AI_MODEL_ROUTE?.trim() || 'route-unconfigured',
+    env.AI_APPROVED_LOCAL_SHADOW_CONFIG?.trim() || 'config-unconfigured',
+  ].join('\u001f');
+  return `${SHADOW_EVALUATION_VERSION}:${digest(descriptor).slice(0, 32)}`;
+}
+
+export function shadowAdmissionContextDigest(input: {
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+}): string {
+  return digest({
+    contextVersion: 'shadow-context-v1',
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+  });
+}
+
+function utcDayStart(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+}
+
 export function shadowPredictionKey(input: {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
   experimentVersion?: string;
+  releaseId?: string;
+  contextDigest?: string;
+  requestGeneration?: string;
 }): string {
+  const releaseId = input.releaseId ?? shadowAdmissionReleaseId();
+  const contextDigest =
+    input.contextDigest ??
+    shadowAdmissionContextDigest({
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: input.triggerMessageId,
+    });
+  const requestGeneration = input.requestGeneration ?? SHADOW_REQUEST_GENERATION;
   const canonical = [
     SHADOW_EVALUATION_VERSION,
+    releaseId,
+    contextDigest,
+    requestGeneration,
     input.transportId,
     input.threadId,
     input.triggerMessageId,
@@ -369,25 +451,187 @@ export function shadowPredictionKey(input: {
   return `shadow-prediction:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
+export function shouldAdmitShadowPrediction(input: {
+  admittedCount: number;
+  cap?: number;
+}): boolean {
+  const cap = Math.min(Math.max(input.cap ?? SHADOW_ADMISSION_CAP, 1), SHADOW_ADMISSION_CAP);
+  return (
+    Number.isInteger(input.admittedCount) && input.admittedCount >= 0 && input.admittedCount < cap
+  );
+}
+
+export type ShadowAdmissionPolicy = {
+  cap: number;
+  scope: string;
+  tokenCap: number;
+  spendCapUsd: number;
+  browserCap: number;
+};
+
+/**
+ * Admission is fail-closed until the operator supplies every required bounded
+ * per-property/day policy. The token, spend, and browser values are explicit
+ * prerequisites for the local synthetic lane; this module does not claim to
+ * meter live usage. The exported predicate above is still useful for local
+ * deterministic tests, but it is never the runtime policy default.
+ */
+export function resolveShadowAdmissionPolicy(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): ShadowAdmissionPolicy | null {
+  const rawCap = env[SHADOW_ADMISSION_CAP_ENV]?.trim();
+  const scope = env[SHADOW_CAP_SCOPE_ENV]?.trim();
+  const rawTokenCap = env[SHADOW_TOKEN_CAP_ENV]?.trim();
+  const rawSpendCapUsd = env[SHADOW_SPEND_CAP_ENV]?.trim();
+  const rawBrowserCap = env[SHADOW_BROWSER_CAP_ENV]?.trim();
+  if (!rawCap || !scope || !rawTokenCap || !rawSpendCapUsd || !rawBrowserCap) return null;
+  const cap = Number(rawCap);
+  if (!Number.isInteger(cap) || cap < 1 || cap > SHADOW_ADMISSION_CAP) return null;
+  const tokenCap = Number(rawTokenCap);
+  if (!Number.isInteger(tokenCap) || tokenCap < 1 || tokenCap > SHADOW_TOKEN_CAP_MAX) return null;
+  const spendCapUsd = Number(rawSpendCapUsd);
+  if (!Number.isFinite(spendCapUsd) || spendCapUsd <= 0 || spendCapUsd > SHADOW_SPEND_CAP_USD_MAX) {
+    return null;
+  }
+  const browserCap = Number(rawBrowserCap);
+  if (!Number.isInteger(browserCap) || browserCap < 1 || browserCap > SHADOW_BROWSER_CAP_MAX) {
+    return null;
+  }
+  return { cap, scope, tokenCap, spendCapUsd, browserCap };
+}
+
 export async function enqueueShadowPrediction(input: {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
   db?: DB;
-}): Promise<Awaited<ReturnType<typeof enqueueAiRun>>> {
-  return enqueueAiRun(
-    {
-      transportId: input.transportId,
-      threadId: input.threadId,
-      triggerMessageId: input.triggerMessageId,
-      runKind: 'shadow_prediction',
-      idempotencyKey: shadowPredictionKey(input),
-      modelId: 'approved-local',
-      promptVersion: SHADOW_PROMPT_VERSION,
-      executorLane: 'default',
-    },
-    input.db ?? getDb(),
-  );
+}): Promise<Awaited<ReturnType<typeof enqueueAiRun>> | null> {
+  const targetDb = input.db ?? getDb();
+  const now = new Date();
+  const releaseId = shadowAdmissionReleaseId();
+  const contextDigest = shadowAdmissionContextDigest(input);
+  const requestGeneration = SHADOW_REQUEST_GENERATION;
+  const policy = resolveShadowAdmissionPolicy();
+  const admissionKey = shadowPredictionKey({
+    ...input,
+    releaseId,
+    contextDigest,
+    requestGeneration,
+  });
+  const capBucketAt = utcDayStart(now);
+  const retentionExpiresAt = new Date(now.getTime() + SHADOW_RETENTION_WINDOW_MS);
+
+  const admit = async (tx: DB): Promise<Awaited<ReturnType<typeof enqueueAiRun>> | null> => {
+    const [existing] = await tx
+      .select()
+      .from(aiShadowAdmission)
+      .where(eq(aiShadowAdmission.admissionKey, admissionKey))
+      .limit(1)
+      .for('update');
+    if (!policy) {
+      if (!existing) {
+        await tx.insert(aiShadowAdmission).values({
+          id: randomUUID(),
+          admissionKey,
+          evaluationMode: SHADOW_EVALUATION_MODE,
+          evaluationVersion: SHADOW_EVALUATION_VERSION,
+          eligible: true,
+          admissionStatus: 'skipped',
+          reason: 'admission_cap_unconfigured',
+          transportId: input.transportId,
+          threadId: input.threadId,
+          triggerMessageId: input.triggerMessageId,
+          releaseId,
+          contextDigest,
+          requestGeneration,
+          capBucketAt,
+          retentionExpiresAt,
+        });
+      }
+      return null;
+    }
+    if (existing?.admissionStatus === 'skipped' || existing?.admissionStatus === 'denied') {
+      return null;
+    }
+    if (existing?.admissionStatus === 'admitted') {
+      return enqueueAiRun(
+        {
+          transportId: input.transportId,
+          threadId: input.threadId,
+          triggerMessageId: input.triggerMessageId,
+          runKind: 'shadow_prediction',
+          idempotencyKey: admissionKey,
+          modelId: 'approved-local',
+          promptVersion: SHADOW_PROMPT_VERSION,
+          executorLane: 'default',
+        },
+        tx as unknown as DB,
+      );
+    }
+
+    // Serialize the configured property/day counter without introducing a
+    // broad queue service. Release and mailbox are deliberately not counter
+    // dimensions, so neither can reset the applicable cap.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`shadow-admission:${policy.scope}:${capBucketAt.toISOString()}`}))`,
+    );
+    const admitted = await tx
+      .select({ id: aiShadowAdmission.id })
+      .from(aiShadowAdmission)
+      .where(
+        and(
+          eq(aiShadowAdmission.evaluationMode, SHADOW_EVALUATION_MODE),
+          eq(aiShadowAdmission.capBucketAt, capBucketAt),
+          eq(aiShadowAdmission.admissionStatus, 'admitted'),
+        ),
+      );
+    const admittedWithinCap = shouldAdmitShadowPrediction({
+      admittedCount: admitted.length,
+      cap: policy.cap,
+    });
+    const admissionStatus = admittedWithinCap ? 'admitted' : 'skipped';
+    const reason = admittedWithinCap
+      ? 'admitted_within_daily_cap'
+      : 'daily_admission_cap_exhausted';
+    if (!existing) {
+      await tx.insert(aiShadowAdmission).values({
+        id: randomUUID(),
+        admissionKey,
+        evaluationMode: SHADOW_EVALUATION_MODE,
+        evaluationVersion: SHADOW_EVALUATION_VERSION,
+        eligible: true,
+        admissionStatus,
+        reason,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        releaseId,
+        contextDigest,
+        requestGeneration,
+        capBucketAt,
+        retentionExpiresAt,
+      });
+    }
+    if (!admittedWithinCap) return null;
+    return enqueueAiRun(
+      {
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        runKind: 'shadow_prediction',
+        idempotencyKey: admissionKey,
+        modelId: 'approved-local',
+        promptVersion: SHADOW_PROMPT_VERSION,
+        executorLane: 'default',
+      },
+      tx,
+    );
+  };
+  // Normal ingest already owns the encompassing mail transaction. Avoid a
+  // second connection/savepoint there so the admission and run are visible
+  // to the same committed producer. A direct operational caller gets its own
+  // transaction and retains the same lock/idempotency fence.
+  return input.db ? admit(targetDb) : targetDb.transaction((tx) => admit(tx as unknown as DB));
 }
 
 function predictionInsertValues(seal: ShadowPredictionSeal) {
@@ -401,9 +645,11 @@ function predictionInsertValues(seal: ShadowPredictionSeal) {
     transportId: seal.transportId,
     threadId: seal.threadId,
     triggerMessageId: seal.triggerMessageId,
+    observedAt: new Date(seal.observedAt),
     asOfAt: new Date(seal.asOfAt),
     sealedAt: new Date(seal.sealedAt),
     observationEndsAt: new Date(seal.observationEndsAt),
+    retentionExpiresAt: new Date(seal.retentionExpiresAt),
     sourceVintage: seal.sourceVintage,
     inputDigest: seal.inputDigest,
     messageIds: seal.lineage.messageIds,
@@ -443,10 +689,11 @@ async function ensurePendingAssessment(db: DB, prediction: ShadowPredictionInser
 /** Insert a prediction once; retries return the original immutable row. */
 export async function persistShadowPrediction(
   seal: ShadowPredictionSeal,
-  db: DB = getDb(),
+  db?: DB,
 ): Promise<{ row: typeof aiShadowPrediction.$inferSelect; inserted: boolean }> {
   const values = predictionInsertValues(seal);
-  return db.transaction(async (tx) => {
+  const targetDb = db ?? getDb();
+  const persist = async (tx: DB) => {
     const inserted = await tx
       .insert(aiShadowPrediction)
       .values(values)
@@ -462,9 +709,13 @@ export async function persistShadowPrediction(
           .limit(1)
       )[0];
     if (!row) throw new Error('shadow prediction insert did not return a row');
-    await ensurePendingAssessment(tx as unknown as DB, values);
+    await ensurePendingAssessment(tx, values);
     return { row, inserted: inserted.length === 1 };
-  });
+  };
+  // Worker execution is already inside the claimed run's DB scope. Keep the
+  // seal and its first pending revision in that same transaction when a DB
+  // handle is supplied; standalone callers receive an atomic transaction.
+  return db ? persist(targetDb) : targetDb.transaction((tx) => persist(tx as unknown as DB));
 }
 
 export async function appendShadowAssessmentRevision(input: {
@@ -564,6 +815,7 @@ async function loadShadowMessages(db: DB, prediction: typeof aiShadowPrediction.
 export async function rematchShadowPrediction(
   predictionId: string,
   db: DB = getDb(),
+  options: { appendUnmatched?: boolean } = {},
 ): Promise<ShadowReferenceMatch | null> {
   const [prediction] = await db
     .select()
@@ -578,21 +830,25 @@ export async function rematchShadowPrediction(
     .from(message)
     .where(eq(message.id, prediction.triggerMessageId))
     .limit(1);
-  const rows = await loadShadowMessages(db, prediction);
+  const rows = (await loadShadowMessages(db, prediction)).filter(
+    (row) => row.createdAt.getTime() <= prediction.observationEndsAt.getTime(),
+  );
   const match = matchShadowReference(
     toMatcherPrediction(prediction, trigger?.messageIdHeader ?? null),
     rows,
   );
-  await appendShadowAssessmentRevision({
-    predictionId,
-    revisionKey: `${prediction.predictionKey}:${match.matchKey}`,
-    evaluationMode: prediction.evaluationMode as ShadowEvaluationMode,
-    status: match.status,
-    referenceMessageId: match.referenceMessageId,
-    linkStrength: match.linkStrength,
-    reason: match.reason,
-    db,
-  });
+  if (match.status !== 'unmatched' || options.appendUnmatched !== false) {
+    await appendShadowAssessmentRevision({
+      predictionId,
+      revisionKey: `${prediction.predictionKey}:${match.matchKey}`,
+      evaluationMode: prediction.evaluationMode as ShadowEvaluationMode,
+      status: match.status,
+      referenceMessageId: match.referenceMessageId,
+      linkStrength: match.linkStrength,
+      reason: match.reason,
+      db,
+    });
+  }
   return match;
 }
 
@@ -621,7 +877,7 @@ export async function rematchShadowPredictions(input: {
     )
     .limit(1);
   if (!outbound) return 0;
-  const outboundAt = outbound.sentAt ?? outbound.receivedAt ?? outbound.createdAt;
+  const outboundAvailableAt = outbound.createdAt;
   const rows = await db
     .select()
     .from(aiShadowPrediction)
@@ -630,7 +886,7 @@ export async function rematchShadowPredictions(input: {
         eq(aiShadowPrediction.transportId, input.transportId),
         eq(aiShadowPrediction.threadId, input.threadId),
         eq(aiShadowPrediction.predictionStatus, 'sealed'),
-        lte(aiShadowPrediction.asOfAt, outboundAt),
+        gt(aiShadowPrediction.observationEndsAt, outboundAvailableAt),
       ),
     )
     .orderBy(asc(aiShadowPrediction.asOfAt), asc(aiShadowPrediction.id));
@@ -649,50 +905,128 @@ export async function assessDueShadowPredictions(
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
-  const rows = await db
-    .select()
-    .from(aiShadowPrediction)
-    .where(
-      and(
-        eq(aiShadowPrediction.predictionStatus, 'sealed'),
-        lte(aiShadowPrediction.observationEndsAt, now),
-      ),
-    )
-    .orderBy(asc(aiShadowPrediction.observationEndsAt), asc(aiShadowPrediction.id))
-    .limit(limit);
-  const matches: ShadowReferenceMatch[] = [];
-  for (const prediction of rows) {
-    const match = await rematchShadowPrediction(prediction.id, db);
-    if (!match) continue;
-    if (match.status === 'unmatched') {
-      const unobserved: ShadowReferenceMatch = {
-        ...match,
-        status: 'unobserved',
-        reason: 'observation_window_ended_without_verified_reference',
-        matchKey: `${match.matchKey}:unobserved`,
-      };
-      await appendShadowAssessmentRevision({
-        predictionId: prediction.id,
-        revisionKey: `${prediction.predictionKey}:${unobserved.matchKey}`,
-        evaluationMode: prediction.evaluationMode as ShadowEvaluationMode,
-        status: unobserved.status,
-        referenceMessageId: null,
-        linkStrength: 'unknown',
-        reason: unobserved.reason,
-        db,
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(aiShadowPrediction)
+      .where(
+        and(
+          eq(aiShadowPrediction.predictionStatus, 'sealed'),
+          lte(aiShadowPrediction.observationEndsAt, now),
+        ),
+      )
+      .orderBy(asc(aiShadowPrediction.observationEndsAt), asc(aiShadowPrediction.id))
+      .limit(limit)
+      .for('update', { skipLocked: true });
+    const matches: ShadowReferenceMatch[] = [];
+    for (const prediction of rows) {
+      const [latest] = await tx
+        .select({ status: aiShadowAssessment.status })
+        .from(aiShadowAssessment)
+        .where(eq(aiShadowAssessment.predictionId, prediction.id))
+        .orderBy(desc(aiShadowAssessment.revision))
+        .limit(1);
+      if (
+        latest &&
+        [
+          'matched',
+          'late',
+          'ambiguous',
+          'unobserved',
+          'unknown_coverage',
+          'changed_state',
+          'unscorable',
+        ].includes(latest.status)
+      ) {
+        continue;
+      }
+      const match = await rematchShadowPrediction(prediction.id, tx as unknown as DB, {
+        appendUnmatched: false,
       });
-      matches.push(unobserved);
-    } else {
-      matches.push(match);
+      if (!match) continue;
+      if (match.status === 'unmatched') {
+        const unobserved: ShadowReferenceMatch = {
+          ...match,
+          status: 'unobserved',
+          reason: 'observation_window_ended_without_verified_reference',
+          matchKey: `${match.matchKey}:unobserved`,
+        };
+        await appendShadowAssessmentRevision({
+          predictionId: prediction.id,
+          revisionKey: `${prediction.predictionKey}:${unobserved.matchKey}`,
+          evaluationMode: prediction.evaluationMode as ShadowEvaluationMode,
+          status: unobserved.status,
+          referenceMessageId: null,
+          linkStrength: 'unknown',
+          reason: unobserved.reason,
+          db: tx as unknown as DB,
+        });
+        matches.push(unobserved);
+      } else {
+        await appendShadowAssessmentRevision({
+          predictionId: prediction.id,
+          revisionKey: `${prediction.predictionKey}:${match.matchKey}`,
+          evaluationMode: prediction.evaluationMode as ShadowEvaluationMode,
+          status: match.status,
+          referenceMessageId: match.referenceMessageId,
+          linkStrength: match.linkStrength,
+          reason: match.reason,
+          db: tx as unknown as DB,
+        });
+        matches.push(match);
+      }
     }
-  }
-  return { processed: rows.length, matches };
+    return { processed: rows.length, matches };
+  });
+}
+
+/** Delete only expired private U13 derivatives in bounded batches. */
+export async function purgeExpiredShadowDerivatives(
+  input: { now?: Date; limit?: number; db?: DB } = {},
+): Promise<{ deletedPredictions: number; deletedAdmissions: number }> {
+  const db = input.db ?? getDb();
+  const now = input.now ?? new Date();
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: aiShadowPrediction.id, predictionKey: aiShadowPrediction.predictionKey })
+      .from(aiShadowPrediction)
+      .where(
+        and(
+          eq(aiShadowPrediction.evaluationMode, SHADOW_EVALUATION_MODE),
+          lte(aiShadowPrediction.retentionExpiresAt, now),
+        ),
+      )
+      .orderBy(asc(aiShadowPrediction.retentionExpiresAt), asc(aiShadowPrediction.id))
+      .limit(limit)
+      .for('update', { skipLocked: true });
+    if (rows.length === 0) return { deletedPredictions: 0, deletedAdmissions: 0 };
+    const ids = rows.map((row) => row.id);
+    const keys = rows.map((row) => row.predictionKey);
+    // Assessment payloads are the body-bearing derivative; remove them before
+    // their prediction parent, then remove the accounting receipt in scope.
+    await tx.delete(aiShadowAssessment).where(inArray(aiShadowAssessment.predictionId, ids));
+    const deletedPredictions = await tx
+      .delete(aiShadowPrediction)
+      .where(inArray(aiShadowPrediction.id, ids))
+      .returning({ id: aiShadowPrediction.id });
+    const deletedAdmissions = await tx
+      .delete(aiShadowAdmission)
+      .where(inArray(aiShadowAdmission.admissionKey, keys))
+      .returning({ id: aiShadowAdmission.id });
+    return {
+      deletedPredictions: deletedPredictions.length,
+      deletedAdmissions: deletedAdmissions.length,
+    };
+  });
 }
 
 export async function loadShadowScorecard(
   input: {
     evaluationMode?: ShadowEvaluationMode;
     transportIds?: readonly string[];
+    windowStart?: Date;
+    windowEnd?: Date;
     observationCutoff?: Date;
     db?: DB;
   } = {},
@@ -702,6 +1036,8 @@ export async function loadShadowScorecard(
   const predicates = [eq(aiShadowPrediction.evaluationMode, mode)];
   if (input.transportIds?.length)
     predicates.push(inArray(aiShadowPrediction.transportId, [...input.transportIds]));
+  if (input.windowStart) predicates.push(gte(aiShadowPrediction.sealedAt, input.windowStart));
+  if (input.windowEnd) predicates.push(lt(aiShadowPrediction.sealedAt, input.windowEnd));
   if (input.observationCutoff)
     predicates.push(lte(aiShadowPrediction.sealedAt, input.observationCutoff));
   const predictions = await db
@@ -710,6 +1046,15 @@ export async function loadShadowScorecard(
     .where(and(...predicates))
     .orderBy(asc(aiShadowPrediction.createdAt), asc(aiShadowPrediction.id));
   const predictionIds = predictions.map((row) => row.id);
+  const admissionPredicates = [eq(aiShadowAdmission.evaluationMode, mode)];
+  if (input.transportIds?.length)
+    admissionPredicates.push(inArray(aiShadowAdmission.transportId, [...input.transportIds]));
+  if (input.observationCutoff)
+    admissionPredicates.push(lte(aiShadowAdmission.createdAt, input.observationCutoff));
+  const admissions = await db
+    .select()
+    .from(aiShadowAdmission)
+    .where(and(...admissionPredicates));
   const assessments = predictionIds.length
     ? await db
         .select()
@@ -718,26 +1063,72 @@ export async function loadShadowScorecard(
           and(
             eq(aiShadowAssessment.evaluationMode, mode),
             inArray(aiShadowAssessment.predictionId, predictionIds),
+            ...(input.observationCutoff
+              ? [lte(aiShadowAssessment.createdAt, input.observationCutoff)]
+              : []),
           ),
         )
-        .orderBy(asc(aiShadowAssessment.createdAt), asc(aiShadowAssessment.id))
+        .orderBy(
+          asc(aiShadowAssessment.predictionId),
+          asc(aiShadowAssessment.revision),
+          asc(aiShadowAssessment.id),
+        )
     : [];
-  const predictionRows: ShadowPredictionScorecardRow[] = predictions.map((row) => ({
-    id: row.id,
-    evaluationMode: row.evaluationMode as ShadowEvaluationMode,
-    admissionStatus: row.admissionStatus as ShadowPredictionScorecardRow['admissionStatus'],
-    predictionStatus: row.predictionStatus as ShadowPredictionScorecardRow['predictionStatus'],
-  }));
+  const predictionsByKey = new Map(predictions.map((row) => [row.predictionKey, row]));
+  const predictionRows: ShadowPredictionScorecardRow[] = [];
+  const seenPredictionIds = new Set<string>();
+  const windowStartMs = input.windowStart?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const windowEndMs = input.windowEnd?.getTime() ?? Number.POSITIVE_INFINITY;
+  for (const admission of admissions) {
+    const prediction = predictionsByKey.get(admission.admissionKey);
+    const admissionCreatedAt = admission.createdAt.getTime();
+    const isInWindow = admissionCreatedAt >= windowStartMs && admissionCreatedAt < windowEndMs;
+    if (!prediction && !isInWindow) continue;
+    if (prediction) seenPredictionIds.add(prediction.id);
+    predictionRows.push({
+      id: admission.admissionKey,
+      predictionId: prediction?.id,
+      evaluationMode: admission.evaluationMode as ShadowEvaluationMode,
+      admissionStatus: admission.admissionStatus as ShadowPredictionScorecardRow['admissionStatus'],
+      predictionStatus:
+        (prediction?.predictionStatus as ShadowPredictionScorecardRow['predictionStatus']) ??
+        'pending',
+    });
+  }
+  // Preserve compatibility with additive migration deployments and older
+  // private rows that predate the admission receipt table.
+  for (const row of predictions) {
+    if (seenPredictionIds.has(row.id)) continue;
+    predictionRows.push({
+      id: row.id,
+      predictionId: row.id,
+      evaluationMode: row.evaluationMode as ShadowEvaluationMode,
+      admissionStatus: row.admissionStatus as ShadowPredictionScorecardRow['admissionStatus'],
+      predictionStatus: row.predictionStatus as ShadowPredictionScorecardRow['predictionStatus'],
+    });
+  }
   const assessmentRows: ShadowAssessmentScorecardRow[] = assessments.map((row) => ({
     predictionId: row.predictionId,
+    revision: row.revision,
+    createdAt: row.createdAt,
     evaluationMode: row.evaluationMode as ShadowEvaluationMode,
     status: row.status as ShadowAssessmentScorecardRow['status'],
     labelProvenance: row.labelProvenance as ShadowAssessmentScorecardRow['labelProvenance'],
     verdict: (row.verdict as ShadowAssessmentScorecardRow['verdict']) ?? null,
   }));
-  return buildShadowScorecard({
+  const scorecard = buildShadowScorecard({
     evaluationMode: mode,
     predictions: predictionRows,
     assessments: assessmentRows,
   });
+  return {
+    ...scorecard,
+    provenance: {
+      ...scorecard.provenance,
+      selectionClock: 'sealed_at',
+      windowStart: input.windowStart?.toISOString() ?? null,
+      windowEnd: input.windowEnd?.toISOString() ?? null,
+      observationCutoff: input.observationCutoff?.toISOString() ?? null,
+    },
+  };
 }

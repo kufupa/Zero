@@ -63,6 +63,37 @@ describe('shadow scorecard', () => {
     });
   });
 
+  it('uses the highest persisted assessment revision instead of input order', () => {
+    const report = buildShadowScorecard({
+      evaluationMode: 'future_shadow',
+      predictions: [{ id: 'p1', admissionStatus: 'admitted', predictionStatus: 'sealed' }],
+      assessments: [
+        {
+          predictionId: 'p1',
+          status: 'matched',
+          labelProvenance: {
+            source: 'reviewer',
+            labelId: 'latest',
+            unique: true,
+            bound: true,
+          },
+          verdict: 'incorrect',
+          revision: 2,
+        } as never,
+        {
+          predictionId: 'p1',
+          status: 'matched',
+          labelProvenance: { source: 'reviewer', labelId: 'old', unique: true, bound: true },
+          verdict: 'correct',
+          revision: 1,
+        } as never,
+      ],
+    });
+
+    expect(report.counts.correct).toBe(0);
+    expect(report.counts.incorrect).toBe(1);
+  });
+
   it('does not pool evaluation modes', () => {
     expect(() =>
       buildShadowScorecard({

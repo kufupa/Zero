@@ -2,6 +2,8 @@ export type ShadowEvaluationMode = 'current_state' | 'historical_replay' | 'futu
 
 export type ShadowPredictionScorecardRow = {
   id: string;
+  /** Admission key; predictionId is present when a seal exists. */
+  predictionId?: string;
   evaluationMode?: ShadowEvaluationMode;
   admissionStatus: 'eligible' | 'admitted' | 'skipped' | 'denied';
   predictionStatus: 'sealed' | 'unavailable' | 'failed' | 'pending';
@@ -16,6 +18,8 @@ export type ShadowLabelProvenance = {
 
 export type ShadowAssessmentScorecardRow = {
   predictionId: string;
+  revision?: number;
+  createdAt?: Date | string;
   evaluationMode?: ShadowEvaluationMode;
   status:
     | 'pending'
@@ -68,6 +72,10 @@ export type ShadowScorecard = {
     source: 'private_shadow_store';
     missingIsNotZero: true;
     evaluationMode: ShadowEvaluationMode;
+    selectionClock?: 'sealed_at';
+    windowStart?: string | null;
+    windowEnd?: string | null;
+    observationCutoff?: string | null;
   };
 };
 
@@ -98,14 +106,19 @@ export function buildShadowScorecard(input: {
 }): ShadowScorecard {
   assertMode(input.evaluationMode, input.predictions, 'prediction');
   assertMode(input.evaluationMode, input.assessments, 'assessment');
-  const predictionIds = new Set(input.predictions.map((row) => row.id));
+  const predictionIds = new Set(
+    input.predictions.flatMap((row) => [row.id, ...(row.predictionId ? [row.predictionId] : [])]),
+  );
   const latestByPrediction = new Map<string, ShadowAssessmentScorecardRow>();
   for (const row of input.assessments) {
     if (!predictionIds.has(row.predictionId)) continue;
-    // Repository rows are append-only; the consumer receives the latest row
-    // per prediction. The last input row is deterministic for already-ordered
-    // DB results, while pure callers can supply one row per prediction.
-    latestByPrediction.set(row.predictionId, row);
+    // Repository rows are append-only. Revision is authoritative, while the
+    // input order remains a deterministic tie-breaker for legacy rows without
+    // a revision projection.
+    const current = latestByPrediction.get(row.predictionId);
+    if (!current || (row.revision ?? 0) >= (current.revision ?? 0)) {
+      latestByPrediction.set(row.predictionId, row);
+    }
   }
 
   const counts: ShadowScorecard['counts'] = {

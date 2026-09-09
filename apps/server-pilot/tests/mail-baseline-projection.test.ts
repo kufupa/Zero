@@ -257,8 +257,8 @@ if (TEST_DB_AVAILABLE && reachable)
             SELECT count(*)::int AS count, max(created_at)::bigint AS "latestCreatedAt"
             FROM drizzle.__drizzle_migrations
           `);
-          expect(migrationMetadata[0]?.count).toBe(27);
-          expect(Number(migrationMetadata[0]?.latestCreatedAt)).toBe(1789036800000);
+          expect(migrationMetadata[0]?.count).toBe(28);
+          expect(Number(migrationMetadata[0]?.latestCreatedAt)).toBe(1789123200000);
 
           const threadId = `u2-baseline-thread-${randomUUID()}`;
           const messageId = `u2-baseline-message-${randomUUID()}`;
