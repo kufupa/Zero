@@ -54,6 +54,7 @@ export type PropertyKnowledgeFileRead = (input: {
   allowedRoot?: string;
   signal: AbortSignal;
   maxBytes: number;
+  deadlineMs?: number;
 }) => Promise<AsyncIterable<Uint8Array>>;
 
 export type PropertyKnowledgeFileSourceOptions = {
@@ -62,6 +63,8 @@ export type PropertyKnowledgeFileSourceOptions = {
   /** Optional server-owned root that must contain filePath. */
   allowedRoot?: string;
   maxBytes?: number;
+  /** Server-owned filesystem/object-read response bound; never model supplied. */
+  deadlineMs?: number;
   /** Test/object-storage seam; production defaults to bounded local fs read. */
   readFile?: PropertyKnowledgeFileRead;
 };
@@ -130,12 +133,18 @@ export interface PropertyKnowledgeReader {
 }
 
 const DEFAULT_FRESHNESS_MS = 5 * 60 * 1_000;
+const DEFAULT_SOURCE_DEADLINE_MS = 5_000;
 
 const PAYMENT_SECRET_PATTERNS = [
   /\b(?:credit|debit|payment|card)\s*(?:card\s*)?(?:number|no\.?|#)\s*[:=-]?\s*(?:\d[ -]?){13,19}\b/i,
   /\b(?:cvv|cvc|security\s+code|password|passcode|room\s+pin|api\s+key|access\s+token|secret)\b/i,
   /\bBearer\s+\S+/i,
   /-----BEGIN\s+[A-Z ]*PRIVATE KEY-----/i,
+  /\b(?:sk_(?:live|test)_|ghp_|github_pat_|glpat-|xox[baprs]-|pypi-)[A-Za-z0-9_-]{8,}\b/i,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+  /\b(?:aws_access_key_id|aws_secret_access_key)\s*[:=]\s*\S+/i,
+  /\bBasic\s+[A-Za-z0-9+/]{8,}={0,2}\b/i,
+  /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/,
 ];
 
 const PAN_CANDIDATE_PATTERN = /(?<!\d)(?:\d[ -]?){13,19}(?!\d)/g;
@@ -171,6 +180,78 @@ function readAbortedError(): Error {
   const error = new Error('property knowledge source read aborted');
   error.name = 'AbortError';
   return error;
+}
+
+function readDeadlineError(): Error {
+  const error = new Error('property knowledge source read deadline exceeded');
+  error.name = 'TimeoutError';
+  return error;
+}
+
+function withReadDeadline<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+  deadlineAt: number,
+  onLateResolution?: (value: T) => void | Promise<void>,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(readAbortedError());
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return Promise.reject(readDeadlineError());
+
+  let pending: Promise<T>;
+  try {
+    pending = operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      cleanup();
+      reject(readDeadlineError());
+    }, remainingMs);
+    timer.unref?.();
+    const onAbort = () => {
+      settled = true;
+      cleanup();
+      reject(readAbortedError());
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (value) => {
+        if (settled) {
+          if (onLateResolution)
+            void Promise.resolve(onLateResolution(value)).catch(() => undefined);
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function closeAsyncIterator(source: AsyncIterable<Uint8Array>): void {
+  try {
+    const iterator = source[Symbol.asyncIterator]();
+    const closing = iterator.return?.();
+    if (closing) void Promise.resolve(closing).catch(() => undefined);
+  } catch {
+    // A late source result is already outside the response deadline.
+  }
 }
 
 function boundedFilePath(options: PropertyKnowledgeFileSourceOptions): string {
@@ -333,14 +414,24 @@ async function revalidateWithExistingDocumentService(input: {
   }
 }
 
-async function assertLocalKnowledgeFilePath(filePath: string, allowedRoot?: string): Promise<void> {
-  const fileStat = await lstat(filePath);
-  if (fileStat.isSymbolicLink()) {
-    throw new Error('property knowledge source file must not be a symbolic link');
-  }
-  const resolvedFile = await realpath(filePath);
-  if (!allowedRoot) return;
-  const resolvedRoot = await realpath(allowedRoot);
+type PathIdentity = { dev: number; ino: number };
+
+type LocalPathCheck = {
+  file: PathIdentity;
+  resolvedFile: string;
+  root?: PathIdentity;
+  resolvedRoot?: string;
+};
+
+function pathIdentity(stat: { dev: number; ino: number }): PathIdentity {
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function samePathIdentity(left: PathIdentity, right: PathIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertWithinRoot(resolvedRoot: string, resolvedFile: string): void {
   const withinRoot = relative(resolvedRoot, resolvedFile);
   if (
     !withinRoot ||
@@ -352,27 +443,105 @@ async function assertLocalKnowledgeFilePath(filePath: string, allowedRoot?: stri
   }
 }
 
+async function assertLocalKnowledgeFilePath(
+  filePath: string,
+  allowedRoot: string | undefined,
+  signal: AbortSignal,
+  deadlineAt: number,
+): Promise<LocalPathCheck> {
+  const fileStat = await withReadDeadline(() => lstat(filePath), signal, deadlineAt);
+  if (fileStat.isSymbolicLink()) {
+    throw new Error('property knowledge source file must not be a symbolic link');
+  }
+  const resolvedFile = await withReadDeadline(() => realpath(filePath), signal, deadlineAt);
+  if (!allowedRoot) return { file: pathIdentity(fileStat), resolvedFile };
+  const resolvedRoot = await withReadDeadline(() => realpath(allowedRoot), signal, deadlineAt);
+  assertWithinRoot(resolvedRoot, resolvedFile);
+  const rootStat = await withReadDeadline(() => lstat(resolvedRoot), signal, deadlineAt);
+  return {
+    file: pathIdentity(fileStat),
+    resolvedFile,
+    root: pathIdentity(rootStat),
+    resolvedRoot,
+  };
+}
+
+async function assertOpenedKnowledgeFileIdentity(
+  filePath: string,
+  allowedRoot: string | undefined,
+  openedFile: PathIdentity,
+  initial: LocalPathCheck,
+  signal: AbortSignal,
+  deadlineAt: number,
+): Promise<void> {
+  const currentFile = await withReadDeadline(() => lstat(filePath), signal, deadlineAt);
+  if (currentFile.isSymbolicLink() || !samePathIdentity(pathIdentity(currentFile), openedFile)) {
+    throw new Error('property knowledge source file changed during open');
+  }
+  const currentResolvedFile = await withReadDeadline(() => realpath(filePath), signal, deadlineAt);
+  if (currentResolvedFile !== initial.resolvedFile) {
+    throw new Error('property knowledge source file path changed during open');
+  }
+  if (!allowedRoot || !initial.resolvedRoot || !initial.root) return;
+  const currentResolvedRoot = await withReadDeadline(
+    () => realpath(allowedRoot),
+    signal,
+    deadlineAt,
+  );
+  if (currentResolvedRoot !== initial.resolvedRoot) {
+    throw new Error('property knowledge source root changed during open');
+  }
+  const currentRoot = await withReadDeadline(() => lstat(currentResolvedRoot), signal, deadlineAt);
+  if (!samePathIdentity(pathIdentity(currentRoot), initial.root)) {
+    throw new Error('property knowledge source root identity changed during open');
+  }
+  assertWithinRoot(currentResolvedRoot, currentResolvedFile);
+}
+
 async function* readLocalKnowledgeFile(
   filePath: string,
   allowedRoot: string | undefined,
   signal: AbortSignal,
   maxBytes: number,
+  deadlineMs: number,
 ): AsyncGenerator<Uint8Array> {
   if (signal.aborted) throw readAbortedError();
-  await assertLocalKnowledgeFilePath(filePath, allowedRoot);
+  const deadlineAt = Date.now() + deadlineMs;
+  const initialPath = await assertLocalKnowledgeFilePath(filePath, allowedRoot, signal, deadlineAt);
   const flags =
     fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
-  const handle = await open(filePath, flags);
+  const handle = await withReadDeadline(
+    () => open(filePath, flags),
+    signal,
+    deadlineAt,
+    (late) => late.close(),
+  );
   try {
-    const stat = await handle.stat();
+    const stat = await withReadDeadline(() => handle.stat(), signal, deadlineAt);
     if (!stat.isFile()) {
       throw new Error('property knowledge source file exceeds the bounded size');
     }
+    const openedIdentity = pathIdentity(stat);
+    if (!samePathIdentity(openedIdentity, initialPath.file)) {
+      throw new Error('property knowledge source file changed before read');
+    }
+    await assertOpenedKnowledgeFileIdentity(
+      filePath,
+      allowedRoot,
+      openedIdentity,
+      initialPath,
+      signal,
+      deadlineAt,
+    );
     const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes));
     let total = 0;
     while (true) {
       if (signal.aborted) throw readAbortedError();
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      const { bytesRead } = await withReadDeadline(
+        () => handle.read(buffer, 0, buffer.length, null),
+        signal,
+        deadlineAt,
+      );
       if (bytesRead === 0) break;
       total += bytesRead;
       if (total > maxBytes) {
@@ -381,7 +550,14 @@ async function* readLocalKnowledgeFile(
       yield Buffer.from(buffer.subarray(0, bytesRead));
     }
   } finally {
-    await handle.close();
+    const closing = handle.close();
+    try {
+      await withReadDeadline(() => closing, signal, deadlineAt);
+    } catch {
+      void closing.catch(() => undefined);
+      // The close was still initiated; a pathological filesystem close must
+      // not extend the bounded response beyond the source deadline.
+    }
   }
 }
 
@@ -389,19 +565,39 @@ async function collectBoundedKnowledgeSource(
   source: AsyncIterable<Uint8Array>,
   signal: AbortSignal,
   maxBytes: number,
+  deadlineAt: number,
 ): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
-  for await (const chunk of source) {
-    if (signal.aborted) throw readAbortedError();
-    if (!(chunk instanceof Uint8Array)) {
-      throw new Error('property knowledge source did not return byte chunks');
+  const iterator = source[Symbol.asyncIterator]();
+  let completed = false;
+  try {
+    while (true) {
+      const next = await withReadDeadline(() => iterator.next(), signal, deadlineAt);
+      if (next.done) {
+        completed = true;
+        break;
+      }
+      const chunk = next.value;
+      if (signal.aborted) throw readAbortedError();
+      if (!(chunk instanceof Uint8Array)) {
+        throw new Error('property knowledge source did not return byte chunks');
+      }
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        throw new Error('property knowledge source exceeds the bounded size');
+      }
+      chunks.push(Buffer.from(chunk));
     }
-    total += chunk.byteLength;
-    if (total > maxBytes) {
-      throw new Error('property knowledge source exceeds the bounded size');
+  } finally {
+    if (!completed) {
+      try {
+        const closing = iterator.return?.();
+        if (closing) void Promise.resolve(closing).catch(() => undefined);
+      } catch {
+        // The source may be a late/failed adapter; the bounded result is already closed.
+      }
     }
-    chunks.push(Buffer.from(chunk));
   }
   if (signal.aborted) throw readAbortedError();
   return Buffer.concat(chunks, total).toString('utf8');
@@ -420,21 +616,39 @@ export function createPropertyKnowledgeFileSource(
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > PROPERTY_KNOWLEDGE_MAX_FILE_BYTES) {
     throw new Error('property knowledge source maxBytes is outside the bounded limit');
   }
+  const deadlineMs = options.deadlineMs ?? DEFAULT_SOURCE_DEADLINE_MS;
+  if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > DEFAULT_SOURCE_DEADLINE_MS) {
+    throw new Error('property knowledge source deadline is outside the bounded limit');
+  }
   const readFile =
     options.readFile ??
     (async (input) =>
-      readLocalKnowledgeFile(input.filePath, input.allowedRoot, input.signal, input.maxBytes));
+      readLocalKnowledgeFile(
+        input.filePath,
+        input.allowedRoot,
+        input.signal,
+        input.maxBytes,
+        input.deadlineMs ?? DEFAULT_SOURCE_DEADLINE_MS,
+      ));
 
   return {
     async list(input) {
       if (input.signal.aborted) throw readAbortedError();
-      const stream = await readFile({
-        filePath,
-        allowedRoot: options.allowedRoot,
-        signal: input.signal,
-        maxBytes,
-      });
-      const raw = await collectBoundedKnowledgeSource(stream, input.signal, maxBytes);
+      const deadlineAt = Date.now() + deadlineMs;
+      const stream = await withReadDeadline(
+        () =>
+          readFile({
+            filePath,
+            allowedRoot: options.allowedRoot,
+            signal: input.signal,
+            maxBytes,
+            deadlineMs,
+          }),
+        input.signal,
+        deadlineAt,
+        closeAsyncIterator,
+      );
+      const raw = await collectBoundedKnowledgeSource(stream, input.signal, maxBytes, deadlineAt);
 
       let parsedFile: ReturnType<typeof propertyKnowledgeFileSchema.parse>;
       try {
@@ -718,15 +932,11 @@ export function createPropertyKnowledgeReader(
         for (const documentRef of record.documentRefs) {
           let check: PropertyKnowledgeDocumentCheck;
           try {
-            if (options.revalidateDocument) {
-              check = await options.revalidateDocument({
-                documentRef,
-                propertyRef,
-                sourceRef: record.sourceRef,
-                now,
-                signal,
-              });
-            } else if (options.existingDocumentService) {
+            // The configured ExistingDocumentService is the authoritative
+            // document path. A callback is only a local adapter when no
+            // native authority was composed; it can never override a native
+            // blocked/changed result.
+            if (options.existingDocumentService) {
               check = await revalidateWithExistingDocumentService({
                 service: options.existingDocumentService,
                 documentRef,
@@ -734,6 +944,14 @@ export function createPropertyKnowledgeReader(
                 sourceKind: record.sourceKind,
                 sourceHash: record.sourceHash,
                 now,
+              });
+            } else if (options.revalidateDocument) {
+              check = await options.revalidateDocument({
+                documentRef,
+                propertyRef,
+                sourceRef: record.sourceRef,
+                now,
+                signal,
               });
             } else {
               check = { status: 'missing' };
@@ -786,21 +1004,27 @@ export function createPropertyKnowledgeReader(
         });
       }
 
+      const orderedApproved = [...currentApproved].sort((left, right) => {
+        const entryOrder = left.record.entryRef.localeCompare(right.record.entryRef);
+        return entryOrder !== 0
+          ? entryOrder
+          : left.record.sourceRef.localeCompare(right.record.sourceRef);
+      });
       const byContent = new Map<string, typeof currentApproved>();
-      for (const candidate of currentApproved) {
+      for (const candidate of orderedApproved) {
         const key = digestContent(candidate.record.content);
         const group = byContent.get(key) ?? [];
         group.push(candidate);
         byContent.set(key, group);
       }
       if (byContent.size > 1) {
-        const conflictTruncated = currentApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
+        const conflictTruncated = orderedApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
         const conflict = {
           topic: request.topic,
-          entryRefs: currentApproved
+          entryRefs: orderedApproved
             .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
             .map(({ record }) => record.entryRef),
-          sourceRefs: currentApproved
+          sourceRefs: orderedApproved
             .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
             .map(({ record }) => record.sourceRef),
         };
@@ -824,20 +1048,21 @@ export function createPropertyKnowledgeReader(
         });
       }
 
-      const entriesTruncated = currentApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
-      const entries = currentApproved
+      const entriesTruncated = orderedApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
+      const entries = orderedApproved
         .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
         .map(({ record: entry }) => toEntry(entry));
-      const evidence = currentApproved
+      const evidence = orderedApproved
         .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
         .map(({ record: entry, documentExpiry }) => toEvidence(entry, now, documentExpiry));
       const data = makeData({ propertyRef, audience, topic: request.topic, entries });
+      const outputIssues = [...issues, ...(entriesTruncated ? [issue('RESULT_TRUNCATED')] : [])];
       return result({
         propertyRef,
-        status: issues.length > 0 ? 'partial' : 'ok',
+        status: outputIssues.length > 0 ? 'partial' : 'ok',
         data,
         evidence,
-        issues: [...issues, ...(entriesTruncated ? [issue('RESULT_TRUNCATED')] : [])],
+        issues: outputIssues,
       });
     },
   };

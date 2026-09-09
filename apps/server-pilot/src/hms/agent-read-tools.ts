@@ -16,8 +16,12 @@ import {
   type PropertyKnowledgeReader,
   type PropertyKnowledgeReadContextInput,
 } from '../ai/property-knowledge-read.js';
+import {
+  executeRead,
+  readExecutionContextSchema,
+  type ReadExecutionContext,
+} from './read-service.js';
 import { reservationContextRequestSchema } from './reservation-context-contract.js';
-import { executeRead, type ReadExecutionContext } from './read-service.js';
 import { assertReadRequesterScope } from './requester-authorization.js';
 import { quoteRequestSchema } from './quote-request-normalization.js';
 import { readRefSchema } from './read-service-contracts.js';
@@ -154,6 +158,13 @@ export async function propertyReadKnowledge(
   audience: PropertyKnowledgeAudience = 'customer',
 ): Promise<PropertyKnowledgeReadResult> {
   const parsed = propertyReadKnowledgeInputSchema.parse(input);
+  // This model-free tool still runs on the normal server-owned read boundary:
+  // validate the closed context, requester/current-app proof, abort state and
+  // one budget unit. HMS admission/capture binding is intentionally not
+  // invented here because this property source is not a PMS read and has no
+  // durable capture path.
+  readExecutionContextSchema.parse(context);
+  const now = context.now();
   // The legacy audience argument is intentionally ignored: disclosure is not
   // a role claim, and a model-facing/factory caller cannot self-select staff.
   void audience;
@@ -164,10 +175,17 @@ export async function propertyReadKnowledge(
       threadId: context.threadId,
       triggerMessageId: context.triggerMessageId,
     },
-    now: context.now(),
+    now,
     currentAppAccessProof: context.currentAppAccessProof,
     requireCurrentAppAccess: true,
   });
+  if (context.signal.aborted) {
+    throw Object.assign(new Error('read was aborted'), { code: 'READ_ABORTED' });
+  }
+  if (context.budget.total >= context.budget.limit) {
+    throw Object.assign(new Error('read budget exhausted'), { code: 'READ_BUDGET_EXCEEDED' });
+  }
+  context.budget.total += 1;
   if (!reader) {
     return propertyKnowledgeReadResultSchema.parse({
       toolId: PROPERTY_KNOWLEDGE_TOOL_ID,
@@ -187,7 +205,7 @@ export async function propertyReadKnowledge(
   const readerContext: PropertyKnowledgeReadContextInput = {
     propertyRef: context.propertyCode,
     audience: 'customer',
-    now: context.now(),
+    now,
     signal: context.signal,
   };
   return readPropertyKnowledge(reader, parsed, readerContext);
