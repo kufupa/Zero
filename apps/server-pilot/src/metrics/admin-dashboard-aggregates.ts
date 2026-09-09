@@ -3,8 +3,13 @@
  * Compute-on-read from message/thread rows — no warehouse, no PII bodies.
  */
 
-import { buildMailDataHealth, type MailDataHealthMessage } from './mail-data-health.js';
+import {
+  PRIMARY_BUCKETS,
+  type MailBaselinePrimaryBucket,
+  type MailBaselineProjection,
+} from './mail-baseline.js';
 import { isWithinConfirmedGap, type MailboxMeasurementConfig } from './mail-measurement-config.js';
+import { buildMailDataHealth, type MailDataHealthMessage } from './mail-data-health.js';
 
 export type MetricAvailability = 'live' | 'unavailable' | 'coming_soon';
 
@@ -139,8 +144,12 @@ export type AdminDashboardConversations = {
   awaitingHotel: MetricResult<number>;
   awaitingCustomer: MetricResult<number>;
   hotelActionPending: MetricResult<number>;
+  answered: MetricResult<number>;
+  noReplyRequired: MetricResult<number>;
   partial: MetricResult<number>;
   unknown: MetricResult<number>;
+  unknownEvidence: MetricResult<number>;
+  bucketTotals: MetricResult<Record<MailBaselinePrimaryBucket, number>>;
   ageBands: MetricResult<Record<string, number>>;
 };
 
@@ -467,7 +476,9 @@ function computeThreadLatencies(
     const inbounds = threadMessages
       .filter((m) => m.direction === 'inbound')
       .map((m) => ({ message: m, at: messageInstant(m, false) }))
-      .filter((entry): entry is { message: AdminDashboardMessageRow; at: Date } => entry.at !== null)
+      .filter(
+        (entry): entry is { message: AdminDashboardMessageRow; at: Date } => entry.at !== null,
+      )
       .filter((entry) => inWindow(entry.at, windowStart, windowEnd))
       .sort((a, b) => a.at.getTime() - b.at.getTime());
 
@@ -477,7 +488,9 @@ function computeThreadLatencies(
     const outbounds = threadMessages
       .filter((m) => m.direction === 'outbound')
       .map((m) => ({ message: m, at: messageInstant(m, true) }))
-      .filter((entry): entry is { message: AdminDashboardMessageRow; at: Date } => entry.at !== null)
+      .filter(
+        (entry): entry is { message: AdminDashboardMessageRow; at: Date } => entry.at !== null,
+      )
       .filter((entry) => entry.at.getTime() >= anchor.getTime())
       .sort((a, b) => a.at.getTime() - b.at.getTime());
 
@@ -578,8 +591,9 @@ function aggregateLegacyAdminDashboardMetrics(input: {
 
   const comparison: AdminDashboardComparisonRow[] = perTransport.map((series) => {
     const eligible = series.latenciesMinutes.length + (series.unanswered ?? 0);
-    const within = series.latenciesMinutes.filter((minutes) => minutes * 60_000 <= THREE_HOURS_MS)
-      .length;
+    const within = series.latenciesMinutes.filter(
+      (minutes) => minutes * 60_000 <= THREE_HOURS_MS,
+    ).length;
     return {
       transportId: series.transportId,
       label: series.label,
@@ -614,34 +628,58 @@ function aggregateLegacyAdminDashboardMetrics(input: {
     timestampBasis: 'mixed',
     sourceVintage: legacyQuery.sourceVintage,
   });
-  const legacyDaily = resultDailyFromLegacy(inboundPerDay, input.messages, input.windowStart, input.windowEnd);
+  const legacyDaily = resultDailyFromLegacy(
+    inboundPerDay,
+    input.messages,
+    input.windowStart,
+    input.windowEnd,
+  );
   const legacyUnavailable = unavailableMetric<never>('classification_snapshot_unavailable', {
     unit: 'conversations',
     sourceVintage: legacyQuery.sourceVintage,
   });
   const legacyConversations: AdminDashboardConversations = {
     awaitingHotel: unavailableMetric<number>('request_projection_unavailable', {
-      unit: 'conversations',
+      unit: 'requests',
       sourceVintage: legacyQuery.sourceVintage,
     }),
     awaitingCustomer: unavailableMetric<number>('request_projection_unavailable', {
-      unit: 'conversations',
+      unit: 'requests',
       sourceVintage: legacyQuery.sourceVintage,
     }),
     hotelActionPending: unavailableMetric<number>('request_projection_unavailable', {
-      unit: 'conversations',
+      unit: 'requests',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    answered: unavailableMetric<number>('request_projection_unavailable', {
+      unit: 'requests',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    noReplyRequired: unavailableMetric<number>('request_projection_unavailable', {
+      unit: 'requests',
       sourceVintage: legacyQuery.sourceVintage,
     }),
     partial: unavailableMetric<number>('request_projection_unavailable', {
-      unit: 'conversations',
+      unit: 'requests',
       sourceVintage: legacyQuery.sourceVintage,
     }),
     unknown: unavailableMetric<number>('request_projection_unavailable', {
-      unit: 'conversations',
+      unit: 'requests',
       sourceVintage: legacyQuery.sourceVintage,
     }),
+    unknownEvidence: unavailableMetric<number>('request_projection_unavailable', {
+      unit: 'requests',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    bucketTotals: unavailableMetric<Record<MailBaselinePrimaryBucket, number>>(
+      'request_projection_unavailable',
+      {
+        unit: 'requests by primary bucket',
+        sourceVintage: legacyQuery.sourceVintage,
+      },
+    ),
     ageBands: unavailableMetric<Record<string, number>>('request_projection_unavailable', {
-      unit: 'conversation age bands',
+      unit: 'request age bands',
       sourceVintage: legacyQuery.sourceVintage,
     }),
   };
@@ -691,14 +729,20 @@ function aggregateLegacyAdminDashboardMetrics(input: {
       newlyObservedConversations: legacyUnavailable,
       continuingConversations: legacyUnavailable,
       distinctExternalSenderAddresses: legacyUnavailable,
-      weekdayArrivals: unavailableMetric<Record<string, number>>('classification_snapshot_unavailable', {
-        unit: 'arrivals by weekday',
-        sourceVintage: legacyQuery.sourceVintage,
-      }),
-      hourArrivals: unavailableMetric<Record<string, number>>('classification_snapshot_unavailable', {
-        unit: 'arrivals by hour',
-        sourceVintage: legacyQuery.sourceVintage,
-      }),
+      weekdayArrivals: unavailableMetric<Record<string, number>>(
+        'classification_snapshot_unavailable',
+        {
+          unit: 'arrivals by weekday',
+          sourceVintage: legacyQuery.sourceVintage,
+        },
+      ),
+      hourArrivals: unavailableMetric<Record<string, number>>(
+        'classification_snapshot_unavailable',
+        {
+          unit: 'arrivals by hour',
+          sourceVintage: legacyQuery.sourceVintage,
+        },
+      ),
     },
     conversations: legacyConversations,
     folders: {
@@ -707,13 +751,19 @@ function aggregateLegacyAdminDashboardMetrics(input: {
         unit: 'conversations',
         sourceVintage: legacyQuery.sourceVintage,
       }),
-      exclusions: { spam: input.threads.filter((thread) => thread.spamAt != null).length, trash: input.threads.filter((thread) => thread.trashedAt != null).length },
+      exclusions: {
+        spam: input.threads.filter((thread) => thread.spamAt != null).length,
+        trash: input.threads.filter((thread) => thread.trashedAt != null).length,
+      },
     },
     correspondents: {
-      externalDomains: unavailableMetric<AdminDashboardDomainRow[]>('classification_snapshot_unavailable', {
-        unit: 'domains',
-        sourceVintage: legacyQuery.sourceVintage,
-      }),
+      externalDomains: unavailableMetric<AdminDashboardDomainRow[]>(
+        'classification_snapshot_unavailable',
+        {
+          unit: 'domains',
+          sourceVintage: legacyQuery.sourceVintage,
+        },
+      ),
     },
     service: {
       firstObservedHumanReply: unavailableMetric<number>('measurement_start_unavailable', {
@@ -772,6 +822,8 @@ export type ExecutiveAggregateInput = {
   /** Threads with retained pre-window rows whose source event clocks are unusable. */
   preWindowUnknownThreadIds?: readonly string[];
   preWindowEvidenceAvailable?: boolean;
+  /** One immutable, reduced request projection per scoped thread. */
+  requestBaselines?: readonly MailBaselineProjection[];
 };
 
 const EXECUTIVE_FOLDER_LABELS: Record<string, string> = {
@@ -794,12 +846,7 @@ const LEGACY_FOLDER_ALIASES: Record<string, string> = {
   'at-risk': 'exceptions-recovery',
   ops: 'unknown-review',
 };
-const NON_OBSERVED_EXECUTIVE_SEND_STATES = new Set([
-  'pending',
-  'sending',
-  'cancelled',
-  'failed',
-]);
+const NON_OBSERVED_EXECUTIVE_SEND_STATES = new Set(['pending', 'sending', 'cancelled', 'failed']);
 
 const EXECUTIVE_SEND_STATE_RANK: Record<
   NonNullable<AdminDashboardMessageRow['sendState']>,
@@ -814,7 +861,8 @@ const EXECUTIVE_SEND_STATE_RANK: Record<
 };
 
 function asValidMillis(value: Date | string | null | undefined): number | null {
-  const millis = value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : NaN;
+  const millis =
+    value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : NaN;
   return Number.isFinite(millis) ? millis : null;
 }
 
@@ -882,7 +930,9 @@ function executiveMessageIdentity(message: AdminDashboardMessageRow): string {
   const scope = normalizeExecutiveIdentity(message.transportId);
   const canonical = message.canonicalId ? normalizeExecutiveIdentity(message.canonicalId) : null;
   if (canonical) return `${scope}:canonical:${canonical}`;
-  const source = message.sourceMessageId ? normalizeExecutiveIdentity(message.sourceMessageId) : null;
+  const source = message.sourceMessageId
+    ? normalizeExecutiveIdentity(message.sourceMessageId)
+    : null;
   if (source) return `${scope}:source:${source}`;
   return `${scope}:local:${message.id}`;
 }
@@ -925,7 +975,11 @@ function executiveEvent(
   if (message.eventAt !== undefined && message.eventAt !== null) {
     candidates.push({ value: message.eventAt, basis: 'source_event' });
   }
-  if (message.direction === 'inbound' && message.receivedAt !== undefined && message.receivedAt !== null) {
+  if (
+    message.direction === 'inbound' &&
+    message.receivedAt !== undefined &&
+    message.receivedAt !== null
+  ) {
     candidates.push({ value: message.receivedAt, basis: 'sender_timestamp_estimate' });
   }
   if (message.direction === 'outbound' && message.sentAt !== undefined && message.sentAt !== null) {
@@ -939,13 +993,20 @@ function executiveEvent(
   ) {
     candidates.push({ value: message.receivedAt, basis: 'sender_timestamp_estimate' });
   }
-  if (candidates.length === 0 && message.headerDateAt !== undefined && message.headerDateAt !== null) {
+  if (
+    candidates.length === 0 &&
+    message.headerDateAt !== undefined &&
+    message.headerDateAt !== null
+  ) {
     candidates.push({ value: message.headerDateAt, basis: 'sender_timestamp_estimate' });
   }
-  if (candidates.some(({ value }) => {
-    const millis = asValidMillis(value);
-    return millis === null || millis > observationCutoffMillis;
-  })) return null;
+  if (
+    candidates.some(({ value }) => {
+      const millis = asValidMillis(value);
+      return millis === null || millis > observationCutoffMillis;
+    })
+  )
+    return null;
   const candidate = candidates[0];
   if (!candidate) return null;
   const millis = asValidMillis(candidate.value);
@@ -972,7 +1033,10 @@ function executiveHasFutureClock(
 }
 
 function executiveMessageIsObserved(message: AdminDashboardMessageRow): boolean {
-  return message.direction !== 'outbound' || !NON_OBSERVED_EXECUTIVE_SEND_STATES.has(message.sendState ?? '');
+  return (
+    message.direction !== 'outbound' ||
+    !NON_OBSERVED_EXECUTIVE_SEND_STATES.has(message.sendState ?? '')
+  );
 }
 
 function executiveMetricOptions(
@@ -989,17 +1053,138 @@ function executiveMetricOptions(
   };
 }
 
+type ConversationMetricBase = {
+  sourceVintage: string;
+  timestampBasis: DashboardTimestampBasis | null;
+  captureBasis: string | null;
+  classificationAsOf: string | null;
+  snapshotBasis: string | null;
+};
+
+function unavailableRequestConversations(
+  base: ConversationMetricBase,
+  reason = 'request_projection_unavailable',
+): AdminDashboardConversations {
+  return {
+    awaitingHotel: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    awaitingCustomer: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    hotelActionPending: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    answered: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    noReplyRequired: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    partial: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    unknown: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    unknownEvidence: unavailableMetric<number>(reason, { ...base, unit: 'requests' }),
+    bucketTotals: unavailableMetric<Record<MailBaselinePrimaryBucket, number>>(reason, {
+      ...base,
+      unit: 'requests by primary bucket',
+    }),
+    ageBands: unavailableMetric<Record<string, number>>(reason, {
+      ...base,
+      unit: 'request age bands',
+    }),
+  };
+}
+
+/** Aggregate only immutable request projections; never infer state from folders. */
+function aggregateRequestConversations(
+  projections: readonly MailBaselineProjection[],
+  base: ConversationMetricBase,
+  cutoff: Date,
+): AdminDashboardConversations {
+  if (projections.length === 0) return unavailableRequestConversations(base);
+
+  const bucketTotals = Object.fromEntries(PRIMARY_BUCKETS.map((bucket) => [bucket, 0])) as Record<
+    MailBaselinePrimaryBucket,
+    number
+  >;
+  let partial = 0;
+  let unknownEvidence = 0;
+  const exclusions: Record<string, number> = {};
+  const ageBands: Record<string, number> = {
+    under_1h: 0,
+    one_to_four_hours: 0,
+    four_to_twenty_four_hours: 0,
+    one_to_three_days: 0,
+    over_three_days: 0,
+  };
+  const sourceVintages = new Set<string>();
+  const increment = (key: string, amount = 1) => {
+    exclusions[key] = (exclusions[key] ?? 0) + amount;
+  };
+
+  for (const projection of projections) {
+    bucketTotals[projection.primaryBucket] += 1;
+    if (projection.overlays.includes('partially_answered')) partial += 1;
+    if (projection.overlays.includes('unknown_evidence')) unknownEvidence += 1;
+    sourceVintages.add(projection.sourceVintage);
+    for (const [key, value] of Object.entries(projection.exclusions)) increment(key, value);
+    const eligible = projection.denominators.eligible;
+    if (eligible !== null) increment('eligible_requests', eligible);
+    if (projection.denominators.scorable !== null)
+      increment('scorable_requests', projection.denominators.scorable);
+    if (projection.denominators.unscorable !== null)
+      increment('unscorable_requests', projection.denominators.unscorable);
+
+    const ageStart = projection.waitStartedAt ?? projection.firstAskAt;
+    const ageMillis = ageStart ? cutoff.getTime() - Date.parse(ageStart) : NaN;
+    if (!Number.isFinite(ageMillis) || ageMillis < 0) {
+      increment('invalid_age_clock');
+      continue;
+    }
+    if (ageMillis < 60 * 60 * 1000) ageBands.under_1h += 1;
+    else if (ageMillis < 4 * 60 * 60 * 1000) ageBands.one_to_four_hours += 1;
+    else if (ageMillis < 24 * 60 * 60 * 1000) ageBands.four_to_twenty_four_hours += 1;
+    else if (ageMillis < 3 * 24 * 60 * 60 * 1000) ageBands.one_to_three_days += 1;
+    else ageBands.over_three_days += 1;
+  }
+
+  const sourceVintage = [...sourceVintages].sort().at(-1) ?? base.sourceVintage;
+  const shared = {
+    ...base,
+    sourceVintage,
+    denominator: projections.length,
+    exclusions,
+    timestampBasis: base.timestampBasis ?? 'mixed',
+    captureBasis:
+      projections
+        .map((projection) => projection.coverage.basis)
+        .filter(Boolean)
+        .filter((basis, index, values) => values.indexOf(basis) === index)
+        .join(', ') || base.captureBasis,
+  };
+  const count = (value: number): MetricResult<number> =>
+    legacyMetric(value, { ...shared, unit: 'requests' });
+  return {
+    awaitingHotel: count(bucketTotals.awaiting_hotel_reply),
+    awaitingCustomer: count(bucketTotals.awaiting_customer_information),
+    hotelActionPending: count(bucketTotals.hotel_action_pending),
+    answered: count(bucketTotals.answered),
+    noReplyRequired: count(bucketTotals.no_reply_required),
+    partial: count(partial),
+    unknown: count(bucketTotals.unknown),
+    unknownEvidence: count(unknownEvidence),
+    bucketTotals: legacyMetric(bucketTotals, { ...shared, unit: 'requests by primary bucket' }),
+    ageBands: legacyMetric(ageBands, { ...shared, unit: 'request age bands' }),
+  };
+}
+
 function strictLegacyCell<T>(metric: MetricResult<T>): MetricCell {
   return metric.availability === 'available'
     ? { availability: 'live', value: metric.value as number | null }
     : { availability: 'unavailable', value: null };
 }
 
-function normalizeExecutiveFolder(
-  snapshot: AdminDashboardClassificationThread,
-): { folder: string; classification: AdminDashboardFolderRow['classification'] } {
-  const folders = [...new Set((snapshot.folderSlugs ?? []).map((folder) => folder.trim().toLowerCase()).filter(Boolean))];
-  const raw = snapshot.primaryFolder?.trim().toLowerCase() ?? (folders.length === 1 ? folders[0] : null);
+function normalizeExecutiveFolder(snapshot: AdminDashboardClassificationThread): {
+  folder: string;
+  classification: AdminDashboardFolderRow['classification'];
+} {
+  const folders = [
+    ...new Set(
+      (snapshot.folderSlugs ?? []).map((folder) => folder.trim().toLowerCase()).filter(Boolean),
+    ),
+  ];
+  const raw =
+    snapshot.primaryFolder?.trim().toLowerCase() ?? (folders.length === 1 ? folders[0] : null);
   if (!raw) return { folder: 'unknown-review', classification: 'unclassified' };
   if (folders.length > 1) return { folder: 'unknown-review', classification: 'ambiguous' };
   if (EXECUTIVE_FOLDER_LABELS[raw]) return { folder: raw, classification: 'primary' };
@@ -1010,7 +1195,10 @@ function normalizeExecutiveFolder(
 }
 
 function executiveDayRows(
-  rows: readonly { message: AdminDashboardMessageRow; event: { at: Date; basis: DashboardTimestampBasis } }[],
+  rows: readonly {
+    message: AdminDashboardMessageRow;
+    event: { at: Date; basis: DashboardTimestampBasis };
+  }[],
   transports: readonly AdminDashboardTransportRow[],
   windowStart: Date,
   windowEnd: Date,
@@ -1067,18 +1255,32 @@ function buildExecutiveDataHealth(
   });
 }
 
-function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): AdminDashboardAggregateResult {
+function aggregateExecutiveDashboardMetrics(
+  input: ExecutiveAggregateInput,
+): AdminDashboardAggregateResult {
   const sourceVintage = input.observationCutoff.toISOString();
-  const transports = input.transports.filter((transport) => executiveTransportMatches(transport, input.cohortId));
+  const transports = input.transports.filter((transport) =>
+    executiveTransportMatches(transport, input.cohortId),
+  );
   const transportIds = new Set(transports.map((transport) => transport.id));
   const cutoffMillis = input.observationCutoff.getTime();
-  const cohortInputCount = input.messages.filter((message) => transportIds.has(message.transportId)).length;
-  const dedupedCohort = dedupeExecutiveMessages(input.messages).filter((message) => transportIds.has(message.transportId));
-  const nonObservedSendState = dedupedCohort.filter((message) => !executiveMessageIsObserved(message)).length;
+  const cohortInputCount = input.messages.filter((message) =>
+    transportIds.has(message.transportId),
+  ).length;
+  const dedupedCohort = dedupeExecutiveMessages(input.messages).filter((message) =>
+    transportIds.has(message.transportId),
+  );
+  const nonObservedSendState = dedupedCohort.filter(
+    (message) => !executiveMessageIsObserved(message),
+  ).length;
   const deduped = dedupedCohort.filter(executiveMessageIsObserved);
   const duplicateSourceCopies = Math.max(0, cohortInputCount - dedupedCohort.length);
-  const unscorableClockCount = deduped.filter((message) => executiveEvent(message, cutoffMillis) === null).length;
-  const futureOrCutoffCount = deduped.filter((message) => executiveHasFutureClock(message, cutoffMillis)).length;
+  const unscorableClockCount = deduped.filter(
+    (message) => executiveEvent(message, cutoffMillis) === null,
+  ).length;
+  const futureOrCutoffCount = deduped.filter((message) =>
+    executiveHasFutureClock(message, cutoffMillis),
+  ).length;
   const clockExclusions = {
     duplicate_source_copies: duplicateSourceCopies,
     non_observed_send_state: nonObservedSendState,
@@ -1090,7 +1292,14 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       const event = executiveEvent(message, cutoffMillis);
       return event ? { message, event } : null;
     })
-    .filter((row): row is { message: AdminDashboardMessageRow; event: { at: Date; basis: DashboardTimestampBasis } } => row !== null);
+    .filter(
+      (
+        row,
+      ): row is {
+        message: AdminDashboardMessageRow;
+        event: { at: Date; basis: DashboardTimestampBasis };
+      } => row !== null,
+    );
   const inWindow = rows.filter(
     (row) =>
       row.event.at.getTime() >= input.windowStart.getTime() &&
@@ -1115,9 +1324,7 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     .filter((row): row is AdminDashboardClassificationThread => row !== undefined);
   const businessThreadIds = classificationMatches
     ? new Set(
-        classificationRows
-          .filter((row) => !row.spam && !row.trashed)
-          .map((row) => row.threadId),
+        classificationRows.filter((row) => !row.spam && !row.trashed).map((row) => row.threadId),
       )
     : new Set<string>();
   const businessRows = inWindow.filter((row) => businessThreadIds.has(row.message.threadId));
@@ -1126,11 +1333,12 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     trash: classificationRows.filter((row) => row.trashed).length,
   };
   const configuredMeasurement = input.measurementConfig;
-  const measurementConfig = configuredMeasurement &&
+  const measurementConfig =
+    configuredMeasurement &&
     configuredMeasurement.cohortId === input.cohortId &&
     transports.some((transport) => transport.id === configuredMeasurement.transportId)
-    ? configuredMeasurement
-    : null;
+      ? configuredMeasurement
+      : null;
   const metricBase = executiveMetricOptions(input, basis, measurementConfig);
   const trafficMetricBase = {
     ...metricBase,
@@ -1163,23 +1371,45 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       input.windowStart.getTime() - (input.windowEnd.getTime() - input.windowStart.getTime()),
     );
     const previous = dedupeExecutiveMessages(input.previousMessages)
-      .filter((message) => transportIds.has(message.transportId) && executiveMessageIsObserved(message))
+      .filter(
+        (message) => transportIds.has(message.transportId) && executiveMessageIsObserved(message),
+      )
       .map((message) => ({ message, event: executiveEvent(message, input.windowStart.getTime()) }))
-      .filter((row): row is { message: AdminDashboardMessageRow; event: { at: Date; basis: DashboardTimestampBasis } } => row.event !== null)
+      .filter(
+        (
+          row,
+        ): row is {
+          message: AdminDashboardMessageRow;
+          event: { at: Date; basis: DashboardTimestampBasis };
+        } => row.event !== null,
+      )
       .filter((row) => row.message.direction === 'inbound');
     const previousCount = previous.filter(
       (row) => row.event.at >= previousWindowStart && row.event.at < input.windowStart,
     ).length;
-    const value = previousCount === 0 ? (inboundRows.length === 0 ? 0 : null) : ((inboundRows.length - previousCount) / previousCount) * 100;
-    comparisonMetric = value === null
-      ? unavailableMetric<number>('previous_window_zero', { ...trafficMetricBase, unit: 'percent', denominator: previousCount })
-      : legacyMetric(Math.round(value * 10) / 10, {
-          ...trafficMetricBase,
-          unit: 'percent',
-          denominator: previousCount,
-        });
+    const value =
+      previousCount === 0
+        ? inboundRows.length === 0
+          ? 0
+          : null
+        : ((inboundRows.length - previousCount) / previousCount) * 100;
+    comparisonMetric =
+      value === null
+        ? unavailableMetric<number>('previous_window_zero', {
+            ...trafficMetricBase,
+            unit: 'percent',
+            denominator: previousCount,
+          })
+        : legacyMetric(Math.round(value * 10) / 10, {
+            ...trafficMetricBase,
+            unit: 'percent',
+            denominator: previousCount,
+          });
   } else {
-    comparisonMetric = unavailableMetric<number>('previous_window_unavailable', { ...trafficMetricBase, unit: 'percent' });
+    comparisonMetric = unavailableMetric<number>('previous_window_unavailable', {
+      ...trafficMetricBase,
+      unit: 'percent',
+    });
   }
 
   const snapshotUnavailable = unavailableMetric<never>('classification_snapshot_unavailable', {
@@ -1193,8 +1423,7 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   const preWindowEvidenceAvailable = input.preWindowEvidenceAvailable === true;
   const unknownHistoryThreadIds = new Set(
     [...activityThreadIds].filter(
-      (threadId) =>
-        preWindowUnknownThreadIds.has(threadId) && !preWindowThreadIds.has(threadId),
+      (threadId) => preWindowUnknownThreadIds.has(threadId) && !preWindowThreadIds.has(threadId),
     ),
   );
   const historyUnavailableReason = !preWindowEvidenceAvailable
@@ -1235,9 +1464,19 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
 
   const activity: AdminDashboardActivity = classificationMatches
     ? {
-        activeConversations: legacyMetric(activityThreadIds.size, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts }),
+        activeConversations: legacyMetric(activityThreadIds.size, {
+          ...metricBase,
+          unit: 'conversations',
+          denominator: activityThreadIds.size,
+          exclusions: exclusionCounts,
+        }),
         newlyObservedConversations: historyKnown
-          ? legacyMetric(newlyObserved, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts })
+          ? legacyMetric(newlyObserved, {
+              ...metricBase,
+              unit: 'conversations',
+              denominator: activityThreadIds.size,
+              exclusions: exclusionCounts,
+            })
           : unavailableMetric<number>(historyUnavailableReason!, {
               ...metricBase,
               unit: 'conversations',
@@ -1245,41 +1484,76 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
               exclusions: exclusionCounts,
             }),
         continuingConversations: historyKnown
-          ? legacyMetric(continuingObserved, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts })
+          ? legacyMetric(continuingObserved, {
+              ...metricBase,
+              unit: 'conversations',
+              denominator: activityThreadIds.size,
+              exclusions: exclusionCounts,
+            })
           : unavailableMetric<number>(historyUnavailableReason!, {
               ...metricBase,
               unit: 'conversations',
               denominator: null,
               exclusions: exclusionCounts,
             }),
-        distinctExternalSenderAddresses: legacyMetric(distinctExternalAddresses, { ...metricBase, unit: 'email addresses', denominator: distinctExternalAddresses, exclusions: exclusionCounts }),
-        weekdayArrivals: legacyMetric(weekdayArrivals, { ...metricBase, unit: 'arrivals by weekday', denominator: businessRows.filter((row) => row.message.direction === 'inbound').length, exclusions: exclusionCounts }),
-        hourArrivals: legacyMetric(hourArrivals, { ...metricBase, unit: 'arrivals by hour', denominator: businessRows.filter((row) => row.message.direction === 'inbound').length, exclusions: exclusionCounts }),
+        distinctExternalSenderAddresses: legacyMetric(distinctExternalAddresses, {
+          ...metricBase,
+          unit: 'email addresses',
+          denominator: distinctExternalAddresses,
+          exclusions: exclusionCounts,
+        }),
+        weekdayArrivals: legacyMetric(weekdayArrivals, {
+          ...metricBase,
+          unit: 'arrivals by weekday',
+          denominator: businessRows.filter((row) => row.message.direction === 'inbound').length,
+          exclusions: exclusionCounts,
+        }),
+        hourArrivals: legacyMetric(hourArrivals, {
+          ...metricBase,
+          unit: 'arrivals by hour',
+          denominator: businessRows.filter((row) => row.message.direction === 'inbound').length,
+          exclusions: exclusionCounts,
+        }),
       }
     : {
         activeConversations: snapshotUnavailable,
         newlyObservedConversations: snapshotUnavailable,
         continuingConversations: snapshotUnavailable,
-        distinctExternalSenderAddresses: unavailableMetric<number>('classification_snapshot_unavailable', {
-          ...metricBase,
-          unit: 'email addresses',
-          exclusions: { classification: 1 },
-        }),
-        weekdayArrivals: unavailableMetric<Record<string, number>>('classification_snapshot_unavailable', {
-          ...metricBase,
-          unit: 'arrivals by weekday',
-          exclusions: { classification: 1 },
-        }),
-        hourArrivals: unavailableMetric<Record<string, number>>('classification_snapshot_unavailable', {
-          ...metricBase,
-          unit: 'arrivals by hour',
-          exclusions: { classification: 1 },
-        }),
+        distinctExternalSenderAddresses: unavailableMetric<number>(
+          'classification_snapshot_unavailable',
+          {
+            ...metricBase,
+            unit: 'email addresses',
+            exclusions: { classification: 1 },
+          },
+        ),
+        weekdayArrivals: unavailableMetric<Record<string, number>>(
+          'classification_snapshot_unavailable',
+          {
+            ...metricBase,
+            unit: 'arrivals by weekday',
+            exclusions: { classification: 1 },
+          },
+        ),
+        hourArrivals: unavailableMetric<Record<string, number>>(
+          'classification_snapshot_unavailable',
+          {
+            ...metricBase,
+            unit: 'arrivals by hour',
+            exclusions: { classification: 1 },
+          },
+        ),
       };
 
   const folderRows = new Map<string, AdminDashboardFolderRow>();
   for (const folder of EXECUTIVE_FOLDER_ORDER) {
-    folderRows.set(folder, { folder, label: EXECUTIVE_FOLDER_LABELS[folder]!, count: 0, urgentCount: 0, classification: 'primary' });
+    folderRows.set(folder, {
+      folder,
+      label: EXECUTIVE_FOLDER_LABELS[folder]!,
+      count: 0,
+      urgentCount: 0,
+      classification: 'primary',
+    });
   }
   if (classificationMatches) {
     for (const row of classificationRows) {
@@ -1288,14 +1562,28 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       const folder = folderRows.get(normalized.folder)!;
       folder.count += 1;
       folder.urgentCount += row.urgent ? 1 : 0;
-      if (normalized.classification !== 'primary') folder.classification = normalized.classification;
+      if (normalized.classification !== 'primary')
+        folder.classification = normalized.classification;
     }
   }
   const folderMix = classificationMatches
-    ? legacyMetric([...folderRows.values()], { ...metricBase, unit: 'conversations by folder', denominator: businessThreadIds.size, exclusions: exclusionCounts })
+    ? legacyMetric([...folderRows.values()], {
+        ...metricBase,
+        unit: 'conversations by folder',
+        denominator: businessThreadIds.size,
+        exclusions: exclusionCounts,
+      })
     : snapshotUnavailable;
   const urgentMetric = classificationMatches
-    ? legacyMetric(classificationRows.filter((row) => !row.spam && !row.trashed && row.urgent).length, { ...metricBase, unit: 'urgent conversations', denominator: businessThreadIds.size, exclusions: exclusionCounts })
+    ? legacyMetric(
+        classificationRows.filter((row) => !row.spam && !row.trashed && row.urgent).length,
+        {
+          ...metricBase,
+          unit: 'urgent conversations',
+          denominator: businessThreadIds.size,
+          exclusions: exclusionCounts,
+        },
+      )
     : snapshotUnavailable;
 
   const domainCounts = new Map<string, { count: number; addresses: Set<string> }>();
@@ -1303,7 +1591,9 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     const address = row.message.fromAddress?.trim().toLowerCase();
     if (!address || address.endsWith('@legacyhotels.co.za')) continue;
     const rawDomain = address.split('@')[1] ?? 'unknown';
-    const domain = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(rawDomain)
+    const domain = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(
+      rawDomain,
+    )
       ? 'public-email'
       : rawDomain;
     const bucket = domainCounts.get(domain) ?? { count: 0, addresses: new Set<string>() };
@@ -1314,18 +1604,39 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   const domainMetric = classificationMatches
     ? legacyMetric(
         [...domainCounts.entries()]
-          .map(([domain, value]) => ({ domain, count: value.count, addresses: value.addresses.size }))
-          .sort((left, right) => right.count - left.count || left.domain.localeCompare(right.domain)),
-        { ...metricBase, unit: 'external domains', denominator: businessRows.filter((row) => row.message.direction === 'inbound').length, exclusions: exclusionCounts },
+          .map(([domain, value]) => ({
+            domain,
+            count: value.count,
+            addresses: value.addresses.size,
+          }))
+          .sort(
+            (left, right) => right.count - left.count || left.domain.localeCompare(right.domain),
+          ),
+        {
+          ...metricBase,
+          unit: 'external domains',
+          denominator: businessRows.filter((row) => row.message.direction === 'inbound').length,
+          exclusions: exclusionCounts,
+        },
       )
-    : unavailableMetric<AdminDashboardDomainRow[]>('classification_snapshot_unavailable', { ...metricBase, unit: 'external domains' });
+    : unavailableMetric<AdminDashboardDomainRow[]>('classification_snapshot_unavailable', {
+        ...metricBase,
+        unit: 'external domains',
+      });
 
   const measurementStartMillis = asValidMillis(measurementConfig?.measurementStartAt);
-  const serviceGroups = new Map<string, { inbound: { at: Date; message: AdminDashboardMessageRow }[]; outbound: { at: Date; message: AdminDashboardMessageRow }[] }>();
+  const serviceGroups = new Map<
+    string,
+    {
+      inbound: { at: Date; message: AdminDashboardMessageRow }[];
+      outbound: { at: Date; message: AdminDashboardMessageRow }[];
+    }
+  >();
   for (const row of rows) {
     if (measurementConfig && row.message.transportId !== measurementConfig.transportId) continue;
     const group = serviceGroups.get(row.message.threadId) ?? { inbound: [], outbound: [] };
-    if (row.message.direction === 'inbound') group.inbound.push({ at: row.event.at, message: row.message });
+    if (row.message.direction === 'inbound')
+      group.inbound.push({ at: row.event.at, message: row.message });
     else group.outbound.push({ at: row.event.at, message: row.message });
     serviceGroups.set(row.message.threadId, group);
   }
@@ -1356,13 +1667,14 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   if (replyEvidenceAvailable && measurementStartMillis !== null && measurementConfig !== null) {
     for (const group of serviceGroups.values()) {
       const inbound = group.inbound
-        .filter(({ at, message }) =>
-          at.getTime() >= measurementStartMillis &&
-          at.getTime() >= input.windowStart.getTime() &&
-          at.getTime() < input.windowEnd.getTime() &&
-          at.getTime() < cutoffMillis &&
-          message.qualifiesNewConversation === true &&
-          message.authorClass === 'external_human',
+        .filter(
+          ({ at, message }) =>
+            at.getTime() >= measurementStartMillis &&
+            at.getTime() >= input.windowStart.getTime() &&
+            at.getTime() < input.windowEnd.getTime() &&
+            at.getTime() < cutoffMillis &&
+            message.qualifiesNewConversation === true &&
+            message.authorClass === 'external_human',
         )
         .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
       if (!inbound) continue;
@@ -1373,7 +1685,13 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
         continue;
       }
       const outbound = group.outbound
-        .filter(({ at, message }) => at.getTime() >= inbound.at.getTime() && at.getTime() < cutoffMillis && message.authorClass === 'internal_human' && message.hasScopedReplyLink === true)
+        .filter(
+          ({ at, message }) =>
+            at.getTime() >= inbound.at.getTime() &&
+            at.getTime() < cutoffMillis &&
+            message.authorClass === 'internal_human' &&
+            message.hasScopedReplyLink === true,
+        )
         .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
       if (!outbound) {
         const unknownOutbound = group.outbound.some(
@@ -1408,7 +1726,12 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
         measurementConfig?.confirmedGapIntervals.some((gap) => {
           const gapStart = asValidMillis(gap.startAt);
           const gapEnd = asValidMillis(gap.endAt);
-          return gapStart !== null && gapEnd !== null && inbound.at.getTime() < gapEnd && outbound.at.getTime() > gapStart;
+          return (
+            gapStart !== null &&
+            gapEnd !== null &&
+            inbound.at.getTime() < gapEnd &&
+            outbound.at.getTime() > gapStart
+          );
         })
       ) {
         serviceUnscorable += 1;
@@ -1439,18 +1762,17 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       ? { unanswered: serviceUnanswered, unscorable: serviceUnscorable }
       : ({} as Record<string, number>),
   };
-  const serviceUnavailableReason =
-    !configuredMeasurement
-      ? 'measurement_config_unavailable'
-      : !measurementConfig
-        ? 'measurement_config_scope_mismatch'
-        : measurementStartMillis === null
-          ? 'measurement_start_unavailable'
-          : !replyEvidenceAvailable
-            ? 'reply_evidence_unavailable'
-            : serviceEligible === 0
-              ? 'no_eligible_new_conversations'
-              : 'no_answered_conversations';
+  const serviceUnavailableReason = !configuredMeasurement
+    ? 'measurement_config_unavailable'
+    : !measurementConfig
+      ? 'measurement_config_scope_mismatch'
+      : measurementStartMillis === null
+        ? 'measurement_start_unavailable'
+        : !replyEvidenceAvailable
+          ? 'reply_evidence_unavailable'
+          : serviceEligible === 0
+            ? 'no_eligible_new_conversations'
+            : 'no_answered_conversations';
   const serviceCountMetricOptions = {
     ...metricBase,
     unit: 'conversations',
@@ -1468,55 +1790,46 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     denominator: serviceUnscorableDenominatorStatus === 'known' ? serviceEligibleOutput : null,
   };
   const serviceCounts: AdminDashboardServiceCounts = {
-    eligibleNewConversations:
-      withCountDenominatorStatus(
-        serviceCountsKnown && serviceEligibleOutput !== null
-          ? legacyMetric(serviceEligibleOutput, serviceCountMetricOptions)
-          : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
-        'not_applicable',
-      ),
-    unansweredEligible:
-      withCountDenominatorStatus(
-        serviceCountsKnown && serviceUnansweredOutput !== null
-          ? legacyMetric(serviceUnansweredOutput, serviceDependentCountMetricOptions)
-          : unavailableMetric<number>(serviceUnavailableReason, serviceDependentCountMetricOptions),
-        serviceCountsKnown ? 'known' : 'unknown',
-      ),
-    unscorable:
-      withCountDenominatorStatus(
-        serviceCountsKnown && serviceUnscorableOutput !== null
-          ? legacyMetric(serviceUnscorableOutput, serviceUnscorableCountMetricOptions)
-          : unavailableMetric<number>(serviceUnavailableReason, serviceUnscorableCountMetricOptions),
-        serviceUnscorableDenominatorStatus,
-      ),
+    eligibleNewConversations: withCountDenominatorStatus(
+      serviceCountsKnown && serviceEligibleOutput !== null
+        ? legacyMetric(serviceEligibleOutput, serviceCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+      'not_applicable',
+    ),
+    unansweredEligible: withCountDenominatorStatus(
+      serviceCountsKnown && serviceUnansweredOutput !== null
+        ? legacyMetric(serviceUnansweredOutput, serviceDependentCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceDependentCountMetricOptions),
+      serviceCountsKnown ? 'known' : 'unknown',
+    ),
+    unscorable: withCountDenominatorStatus(
+      serviceCountsKnown && serviceUnscorableOutput !== null
+        ? legacyMetric(serviceUnscorableOutput, serviceUnscorableCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceUnscorableCountMetricOptions),
+      serviceUnscorableDenominatorStatus,
+    ),
     measurementStartAt: measurementConfig?.measurementStartAt ?? null,
   };
   const serviceMetric =
     serviceCountsKnown && serviceDurations.length > 0
-      ? legacyMetric(
-          round1((median(serviceDurations) ?? 0) / 60_000),
-          serviceMetricOptions,
-        )
+      ? legacyMetric(round1((median(serviceDurations) ?? 0) / 60_000), serviceMetricOptions)
       : unavailableMetric<number>(serviceUnavailableReason, serviceMetricOptions);
   const p90Metric =
     serviceMetric.availability === 'available'
-      ? legacyMetric(
-          round1((percentile(serviceDurations, 90) ?? 0) / 60_000),
-          serviceMetricOptions,
-        )
+      ? legacyMetric(round1((percentile(serviceDurations, 90) ?? 0) / 60_000), serviceMetricOptions)
       : unavailableMetric<number>(
           serviceMetric.availabilityReason ?? 'reply_evidence_unavailable',
           serviceMetricOptions,
         );
-  const firstUseful = unavailableMetric<number>('not_implemented', { ...metricBase, unit: 'calendar minutes' });
-  const conversations: AdminDashboardConversations = {
-    awaitingHotel: unavailableMetric<number>('request_projection_unavailable', { ...metricBase, unit: 'conversations' }),
-    awaitingCustomer: unavailableMetric<number>('request_projection_unavailable', { ...metricBase, unit: 'conversations' }),
-    hotelActionPending: unavailableMetric<number>('request_projection_unavailable', { ...metricBase, unit: 'conversations' }),
-    partial: unavailableMetric<number>('request_projection_unavailable', { ...metricBase, unit: 'conversations' }),
-    unknown: unavailableMetric<number>('request_projection_unavailable', { ...metricBase, unit: 'conversations' }),
-    ageBands: unavailableMetric<Record<string, number>>('request_projection_unavailable', { ...metricBase, unit: 'conversation age bands' }),
-  };
+  const firstUseful = unavailableMetric<number>('not_implemented', {
+    ...metricBase,
+    unit: 'calendar minutes',
+  });
+  const conversations = aggregateRequestConversations(
+    input.requestBaselines ?? [],
+    metricBase,
+    input.observationCutoff,
+  );
   const dataHealth = input.dataHealth ?? buildExecutiveDataHealth(input, deduped);
   const service: AdminDashboardService = {
     firstObservedHumanReply: serviceMetric,
@@ -1528,7 +1841,10 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   };
   const query: ExecutiveDashboardQuery = {
     cohortId: input.cohortId,
-    window: input.windowEnd.getTime() - input.windowStart.getTime() > 7 * 24 * 60 * 60 * 1000 ? '28d' : '7d',
+    window:
+      input.windowEnd.getTime() - input.windowStart.getTime() > 7 * 24 * 60 * 60 * 1000
+        ? '28d'
+        : '7d',
     windowStart: input.windowStart.toISOString(),
     windowEnd: input.windowEnd.toISOString(),
     observationCutoff: input.observationCutoff.toISOString(),
@@ -1563,7 +1879,10 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     inboundPerDay: daily.map((day) => ({
       period: day.period,
       byTransport: Object.fromEntries(
-        Object.entries(day.byTransport).map(([transportId, counts]) => [transportId, counts.inbound]),
+        Object.entries(day.byTransport).map(([transportId, counts]) => [
+          transportId,
+          counts.inbound,
+        ]),
       ),
     })),
     comparison: transports.map((transport) => ({
@@ -1578,14 +1897,17 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       label: transport.displayName?.trim() || transport.email,
       inbound: inboundRows.filter((row) => row.message.transportId === transport.id).length,
       latenciesMinutes: serviceDurationsByTransport.get(transport.id) ?? [],
-      unanswered: serviceCountsKnown ? serviceUnansweredByTransport.get(transport.id) ?? 0 : null,
+      unanswered: serviceCountsKnown ? (serviceUnansweredByTransport.get(transport.id) ?? 0) : null,
     })),
     transports,
     assumptions: [
       ...ADMIN_DASHBOARD_ASSUMPTIONS,
       'event_clock_not_import_created_at',
       'first_observed_human_reply_only',
-      ...(measurementConfig?.captureAssumptionBasis ? [measurementConfig.captureAssumptionBasis] : ['measurement_config_unavailable']),
+      ...(measurementConfig?.captureAssumptionBasis
+        ? [measurementConfig.captureAssumptionBasis]
+        : ['measurement_config_unavailable']),
+      'request_projection_immutable_semantic_rows',
     ],
     footnote: ADMIN_DASHBOARD_FOOTNOTE,
     windowStart: input.windowStart.toISOString(),

@@ -34,8 +34,8 @@ import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
-import { randomUUID } from 'node:crypto';
 import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
@@ -44,6 +44,26 @@ export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
+export const MAIL_BASELINE_GENERATION_VERSION = 'mail-baseline-generation-v1';
+
+/** Stable analytics generation identity for retries and immutable restatements. */
+export function mailBaselineGenerationKey(input: {
+  transportId: string;
+  threadId: string;
+  sourceMessageId: string;
+  sourceVintage: string;
+  interpretationVersion: string;
+}): string {
+  const canonical = [
+    MAIL_BASELINE_GENERATION_VERSION,
+    input.transportId,
+    input.threadId,
+    input.sourceMessageId,
+    input.sourceVintage,
+    input.interpretationVersion,
+  ].join('\u001f');
+  return `${MAIL_BASELINE_GENERATION_VERSION}:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
+}
 
 export function canClaimReadToolRun(input: {
   runKind: AiWorkflowRunKind | string;

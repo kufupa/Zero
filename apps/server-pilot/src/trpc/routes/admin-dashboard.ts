@@ -1,7 +1,15 @@
-import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
-import { z } from 'zod';
-import { privateProcedure, router as tRouter } from '../trpc.js';
-import { getDb } from '../../db/client.js';
+import {
+  aggregateAdminDashboardMetrics,
+  type AdminDashboardClassificationSnapshot,
+  type AdminDashboardAggregateResult,
+  type ExecutiveDashboardQuery,
+} from '../../metrics/admin-dashboard-aggregates.js';
+import {
+  assertAdminDashboardGrant,
+  resolveAdminDashboardGrant,
+  type AdminDashboardCohort,
+  type AdminDashboardGrant,
+} from '../../metrics/admin-dashboard-access.js';
 import {
   mailCategory,
   mailThread,
@@ -11,21 +19,17 @@ import {
   outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
-  assertAdminDashboardGrant,
-  resolveAdminDashboardGrant,
-  type AdminDashboardCohort,
-  type AdminDashboardGrant,
-} from '../../metrics/admin-dashboard-access.js';
-import {
-  aggregateAdminDashboardMetrics,
-  type AdminDashboardClassificationSnapshot,
-  type AdminDashboardAggregateResult,
-  type ExecutiveDashboardQuery,
-} from '../../metrics/admin-dashboard-aggregates.js';
-import {
   parseMailboxMeasurementConfig,
   type MailboxMeasurementConfig,
 } from '../../metrics/mail-measurement-config.js';
+import {
+  queryMailBaselineProjection,
+  reduceProjectedMailBaseline,
+} from '../../metrics/mail-baseline-repository.js';
+import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
+import { privateProcedure, router as tRouter } from '../trpc.js';
+import { getDb } from '../../db/client.js';
+import { z } from 'zod';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const LONG_WINDOW_MS = 28 * 24 * 60 * 60 * 1000;
@@ -78,8 +82,7 @@ export function parseExecutiveDashboardQuery(
   const preset = parsed?.window ?? '7d';
   const duration = preset === '28d' ? LONG_WINDOW_MS : WINDOW_MS;
   const windowStart =
-    parseInstant(parsed?.windowStart, 'window start') ??
-    new Date(windowEnd.getTime() - duration);
+    parseInstant(parsed?.windowStart, 'window start') ?? new Date(windowEnd.getTime() - duration);
   if (windowStart.getTime() >= windowEnd.getTime()) {
     throw new Error('dashboard window must have a start before its end');
   }
@@ -203,7 +206,9 @@ async function loadQueryRows(
   const messages = (await db
     .select(columns)
     .from(message)
-    .where(and(inArray(message.transportId, [...transportIds]), dbClockPredicate(windowStart, cutoff)))) as QueryMessageRow[];
+    .where(
+      and(inArray(message.transportId, [...transportIds]), dbClockPredicate(windowStart, cutoff)),
+    )) as QueryMessageRow[];
   const previousMessages = (await db
     .select(columns)
     .from(message)
@@ -258,7 +263,9 @@ async function loadQueryRows(
       latestMessageAt: mailThread.latestMessageAt,
     })
     .from(mailThread)
-    .where(and(inArray(mailThread.id, threadIds), inArray(mailThread.transportId, [...transportIds])));
+    .where(
+      and(inArray(mailThread.id, threadIds), inArray(mailThread.transportId, [...transportIds])),
+    );
 
   // A response may be after the activity window, but never after the
   // observation cutoff. This upper bound is part of every evidence join.
@@ -284,7 +291,8 @@ async function loadQueryRows(
   for (const row of byId.values()) {
     if (row.direction !== 'outbound') continue;
     const status = statusByMessage.get(row.id);
-    if (status === 'pending' || status === 'sending' || status === 'cancelled') row.sendState = status;
+    if (status === 'pending' || status === 'sending' || status === 'cancelled')
+      row.sendState = status;
     else if (status === 'sent') row.sendState = 'sent';
     else if (status === 'failed') row.sendState = 'failed';
     else if (status === 'accepted') row.sendState = 'accepted';
@@ -301,9 +309,14 @@ async function loadQueryRows(
 
 const CURRENT_CLASSIFICATION_MAX_AGE_MS = 5_000;
 
-function canUseCurrentClassificationSnapshot(query: ExecutiveDashboardQuery, now = new Date()): boolean {
+function canUseCurrentClassificationSnapshot(
+  query: ExecutiveDashboardQuery,
+  now = new Date(),
+): boolean {
   const cutoff = new Date(query.observationCutoff).getTime();
-  return Number.isFinite(cutoff) && Math.abs(now.getTime() - cutoff) <= CURRENT_CLASSIFICATION_MAX_AGE_MS;
+  return (
+    Number.isFinite(cutoff) && Math.abs(now.getTime() - cutoff) <= CURRENT_CLASSIFICATION_MAX_AGE_MS
+  );
 }
 
 /**
@@ -382,7 +395,7 @@ export async function loadAdminDashboardMetrics(
   const query =
     queryOrNow instanceof Date
       ? resolveExecutiveDashboardQuery(undefined, queryOrNow)
-      : queryOrNow ?? resolveExecutiveDashboardQuery(undefined);
+      : (queryOrNow ?? resolveExecutiveDashboardQuery(undefined));
   const db = getDb();
   const transportIds = queryTransportIds(query.cohortId);
   const transports = await db
@@ -392,7 +405,9 @@ export async function loadAdminDashboardMetrics(
       displayName: mailboxTransport.displayName,
     })
     .from(mailboxTransport)
-    .where(and(eq(mailboxTransport.isActive, true), inArray(mailboxTransport.id, [...transportIds])));
+    .where(
+      and(eq(mailboxTransport.isActive, true), inArray(mailboxTransport.id, [...transportIds])),
+    );
   const selectedTransportIds = transports.map((transport) => transport.id);
   const loaded = await loadQueryRows(query, db, selectedTransportIds);
   const classificationSnapshot = await loadCurrentClassificationSnapshot(
@@ -404,6 +419,49 @@ export async function loadAdminDashboardMetrics(
   const measurementConfig: MailboxMeasurementConfig | null = parseMailboxMeasurementConfig(
     process.env.MAIL_MEASUREMENT_CONFIG_JSON,
   );
+  const projectionRows = await queryMailBaselineProjection(db, {
+    transportIds: selectedTransportIds,
+    observationCutoff: new Date(query.observationCutoff),
+    // No lower bound is applied: pre-T0 rows are retained so the reducer can
+    // expose left-censored backlog instead of silently treating it as new.
+    limit: 10_000,
+  });
+  const projectionsByScope = new Map<string, typeof projectionRows>();
+  for (const row of projectionRows) {
+    const key = `${row.transportId}:${row.threadId}`;
+    const scoped = projectionsByScope.get(key) ?? [];
+    scoped.push(row);
+    projectionsByScope.set(key, scoped);
+  }
+  const requestBaselines = [...projectionsByScope.values()].map((rows) => {
+    const first = rows[0]!;
+    const sourceVintage =
+      rows
+        .map((row) => row.sourceVintage)
+        .sort()
+        .at(-1) ?? first.sourceVintage;
+    return reduceProjectedMailBaseline(rows, {
+      transportId: first.transportId,
+      threadId: first.threadId,
+      observationCutoff: query.observationCutoff,
+      sourceVintage,
+      interpretationVersion: first.interpretationVersion,
+      measurementStartAt:
+        measurementConfig?.transportId === first.transportId
+          ? measurementConfig.measurementStartAt
+          : null,
+      coverage:
+        measurementConfig?.transportId === first.transportId
+          ? {
+              startAt: measurementConfig.measurementStartAt,
+              endAt: query.observationCutoff,
+              basis: measurementConfig.captureAssumptionBasis,
+              complete: true,
+              confirmedGapIntervals: measurementConfig.confirmedGapIntervals,
+            }
+          : undefined,
+    });
+  });
   return aggregateAdminDashboardMetrics({
     cohortId: query.cohortId,
     observationCutoff: new Date(query.observationCutoff),
@@ -416,22 +474,21 @@ export async function loadAdminDashboardMetrics(
     preWindowUnknownThreadIds: loaded.preWindowUnknownThreadIds,
     preWindowEvidenceAvailable: loaded.preWindowEvidenceAvailable,
     transports,
+    requestBaselines,
     windowStart: new Date(query.windowStart),
     windowEnd: new Date(query.windowEnd),
   });
 }
 
 export const adminDashboardRouter = tRouter({
-  getMetrics: privateProcedure
-    .input(executiveDashboardQueryInput)
-    .query(async ({ input, ctx }) => {
-      // Resolve and authorize the cohort/grant before touching the database.
-      const query = resolveExecutiveDashboardQuery(input);
-      const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
-        ctx.sessionUser.email,
-        query.cohortId,
-      );
-      assertAdminDashboardGrant(grant, input?.operation ?? 'aggregate');
-      return loadAdminDashboardMetrics(query);
-    }),
+  getMetrics: privateProcedure.input(executiveDashboardQueryInput).query(async ({ input, ctx }) => {
+    // Resolve and authorize the cohort/grant before touching the database.
+    const query = resolveExecutiveDashboardQuery(input);
+    const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
+      ctx.sessionUser.email,
+      query.cohortId,
+    );
+    assertAdminDashboardGrant(grant, input?.operation ?? 'aggregate');
+    return loadAdminDashboardMetrics(query);
+  }),
 });

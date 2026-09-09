@@ -209,7 +209,13 @@ const SLICE_PLANS = {
     quotes: { server: ['tests/hms-quote-db.test.ts'] },
     finance: { server: ['tests/hms-finance-db.test.ts'] },
     documents: { server: ['tests/existing-document-validation.test.ts'] },
-    baseline: { server: ['tests/mail-baseline-projection.test.ts'] },
+    baseline: {
+      server: [
+        'tests/mail-baseline-projection.test.ts',
+        'tests/mail-baseline-worker.test.ts',
+        'tests/outbound-queue.test.ts',
+      ],
+    },
     shadow: { server: ['tests/shadow-evaluation.test.ts'] },
     outbox: { server: ['tests/outbound-queue.test.ts'] },
     'candidate-drafting': {

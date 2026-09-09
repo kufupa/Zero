@@ -12,6 +12,7 @@ import {
   remainingRunBudgetMs,
   reserveReadAttempt,
   resolveDeployedTriagePromptVersion,
+  mailBaselineGenerationKey,
   RunDeadlineError,
   shouldRetryAiFailure,
   toAiRunFence,
@@ -60,6 +61,13 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
+  validateWorkflowTriageOutput,
+  triageOutputSemanticHints,
+  TRIAGE_REVIEWER_VERSION,
+  type ThreadSignals,
+  type WorkflowTriageOutput,
+} from './triage.js';
+import {
   quoteRequestAuthorityIssues,
   unavailableQuoteReferenceAuthority,
   type QuoteReferenceAuthorityLoader,
@@ -78,6 +86,15 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
+  extractMailBaselineWithApprovedRoute,
+  resolveMailBaselineExtractionRoute,
+} from './mail-baseline-extraction.js';
+import {
+  buildCausalTriageMessages,
+  resolveTriageEventClock,
+  type TriageMessageRow,
+} from './triage-input.js';
+import {
   prepareDraftInput,
   serializePreparedDraftInput,
   type PreparedAsk,
@@ -92,11 +109,6 @@ import {
   type ReadExecutionContext,
 } from '../hms/read-service.js';
 import {
-  validateWorkflowTriageOutput,
-  type ThreadSignals,
-  type WorkflowTriageOutput,
-} from './triage.js';
-import {
   issueCurrentAppAccessProof,
   type CurrentAppAccessProof,
 } from '../hms/requester-authorization.js';
@@ -105,8 +117,10 @@ import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
+import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
+import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
-import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
+import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../metrics/mail-baseline.js';
 import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
 import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
@@ -3273,6 +3287,11 @@ export async function executeAiRun(
     candidateModelAdapter?: ModelAdapter;
     candidateReplyModelAdapter?: ModelAdapter;
     candidateReplyAsks?: readonly PreparedAsk[];
+    /** Explicit purpose-bound mail extraction route; absent means unavailable. */
+    mailBaselineExtractionRoute?: {
+      route: LocalModelRouteEvidence;
+      transport: LocalModelTransport;
+    };
     /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
     readToolExecutor?: (input: {
       run: typeof aiWorkflowRun.$inferSelect;
@@ -3531,6 +3550,59 @@ export async function executeAiRun(
       }
 
       const output = validateWorkflowTriageOutput(result.result?.output);
+      const baselineRoute = resolveMailBaselineExtractionRoute({
+        // A marker alone is not an approved route. The injected route is
+        // limited to the purpose-bound in-process seam; absent that seam the
+        // source observation below remains explicitly unknown.
+        approvedRoute: options.mailBaselineExtractionRoute
+          ? 'approved-local'
+          : process.env.AI_MODEL_ROUTE,
+        route: options.mailBaselineExtractionRoute?.route,
+        transport: options.mailBaselineExtractionRoute?.transport,
+      });
+      const baselineHints = triageOutputSemanticHints(output);
+      const baselineRow = trigger
+        ? messages.find((candidate) => candidate.id === run.triggerMessageId)
+        : undefined;
+      let routedBaseline:
+        | Awaited<ReturnType<typeof extractMailBaselineWithApprovedRoute>>
+        | undefined;
+      if (baselineRow) {
+        const clock = resolveTriageEventClock(baselineRow);
+        routedBaseline = await extractMailBaselineWithApprovedRoute(
+          {
+            sourceVintage: run.createdAt.toISOString(),
+            observationCutoff: run.createdAt,
+            interpretationVersion: MAIL_BASELINE_INTERPRETATION_VERSION,
+            classifierVersion: baselineRoute.available
+              ? 'mail-baseline-semantic-v1'
+              : 'mail-baseline-observation-v1',
+            reviewerVersion: TRIAGE_REVIEWER_VERSION,
+            message: {
+              id: baselineRow.id,
+              transportId: run.transportId,
+              threadId: run.threadId,
+              direction: baselineRow.direction,
+              fromAddress: baselineRow.from,
+              toAddresses: baselineRow.to ?? [],
+              ccAddresses: baselineRow.cc ?? [],
+              bccAddresses: baselineRow.bcc ?? [],
+              subject: baselineRow.subject ?? null,
+              textBody: baselineRow.body,
+              receivedAt: baselineRow.receivedAt,
+              sentAt: baselineRow.sentAt,
+              createdAt: baselineRow.createdAt,
+              messageIdHeader: baselineRow.messageIdHeader,
+              inReplyTo: baselineRow.inReplyTo,
+              references: baselineRow.references,
+              source: 'mail_event',
+              sourceBasis: clock.basis,
+            },
+          },
+          baselineRoute,
+          { signal, deadlineAt: deadlineAt.getTime() },
+        );
+      }
 
       await db.transaction(async (tx) => {
         const applyResult = await applyDurableTriageFromWorker({
@@ -3548,6 +3620,45 @@ export async function executeAiRun(
           bcc: trigger?.bccAddresses ?? [],
         });
 
+        let baselineMetrics: Record<string, unknown> = {
+          status:
+            routedBaseline?.semanticRoute === 'approved_local_extraction'
+              ? 'persisted_semantic_projection'
+              : 'persisted_source_observation',
+          routeStatus: baselineRoute.available ? 'available' : 'unavailable',
+          routeId: baselineRoute.route,
+          extraction: routedBaseline?.semanticRoute ?? 'none',
+          triageClassifierVersion: baselineHints.classifierVersion,
+          ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
+        };
+        if (routedBaseline && baselineRow) {
+          const extraction = routedBaseline.extraction;
+          const generationId = mailBaselineGenerationKey({
+            transportId: run.transportId,
+            threadId: run.threadId,
+            sourceMessageId: baselineRow.id,
+            sourceVintage: run.createdAt.toISOString(),
+            interpretationVersion: extraction.interpretationVersion,
+          });
+          const persisted = await persistMailBaselineProjection(tx as unknown as typeof db, {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            generationId,
+            sourceVintage: extraction.sourceVintage,
+            interpretationVersion: extraction.interpretationVersion,
+            reviewerVersion: TRIAGE_REVIEWER_VERSION,
+            observationCutoff: run.createdAt,
+            evidence: extraction.evidence,
+          });
+          baselineMetrics = {
+            ...baselineMetrics,
+            generationId,
+            inserted: persisted.inserted,
+            evidenceCount: extraction.evidence.length,
+            ...(routedBaseline.modelUsage ? { modelUsage: routedBaseline.modelUsage } : {}),
+          };
+        }
+
         const marked = await markAiRunSucceeded(
           {
             runId,
@@ -3560,6 +3671,7 @@ export async function executeAiRun(
               durableWrite: env.AI_WRITE_GATE_ENABLED,
               workflowTriage: env.WORKFLOW_TRIAGE_V6,
               applyMode: applyResult.applyMode,
+              mailBaseline: baselineMetrics,
             },
           },
           tx as unknown as typeof db,

@@ -20,6 +20,31 @@ export interface TriageMessageRow {
   references?: string[] | null;
 }
 
+export type TriageEventClockBasis =
+  | 'source_event'
+  | 'sender_timestamp_estimate'
+  | 'first_known'
+  | 'unknown';
+
+export type TriageEventClock = {
+  at: Date | null;
+  basis: TriageEventClockBasis;
+};
+
+/** Resolve the committed source clock without treating ingestion time as a receipt. */
+export function resolveTriageEventClock(row: TriageMessageRow): TriageEventClock {
+  if (row.direction === 'inbound' && row.receivedAt) {
+    return { at: new Date(row.receivedAt.getTime()), basis: 'sender_timestamp_estimate' };
+  }
+  if (row.direction === 'outbound' && row.sentAt) {
+    return { at: new Date(row.sentAt.getTime()), basis: 'source_event' };
+  }
+  if (Number.isFinite(row.createdAt.getTime())) {
+    return { at: new Date(row.createdAt.getTime()), basis: 'first_known' };
+  }
+  return { at: null, basis: 'unknown' };
+}
+
 export interface TriageThreadSignals {
   legacyHotelsOutboundResponse?: boolean;
   reserveCloudStaffOutbound?: boolean;

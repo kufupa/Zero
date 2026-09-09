@@ -567,7 +567,10 @@ case "${MODE}:${SLICE}" in
     run_db_slice "tests/hms-finance-db.test.ts"
     ;;
   db:baseline)
-    run_db_slice "tests/mail-baseline-projection.test.ts"
+    run_db_slice \
+      "tests/mail-baseline-projection.test.ts" \
+      "tests/mail-baseline-worker.test.ts" \
+      "tests/outbound-queue.test.ts"
     ;;
   db:shadow)
     run_db_slice "tests/shadow-evaluation.test.ts"

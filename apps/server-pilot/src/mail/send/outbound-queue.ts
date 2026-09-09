@@ -7,9 +7,13 @@
  * provider-idempotent.
  */
 import { getSmtpTransport, type OutboundMailPayload, type SmtpSendResult } from './smtp.js';
-import { message, outboundSendQueue } from '../../db/schema/mail.js';
-import { maybeEnqueueLoopback } from '../fixture-loopback.js';
+import { persistMailBaselineProjection } from '../../metrics/mail-baseline-projection.js';
+import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
+import { extractMailBaselineEvidence } from '../../ai/mail-baseline-extraction.js';
 import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
+import { message, outboundSendQueue } from '../../db/schema/mail.js';
+import { mailBaselineGenerationKey } from '../../ai/run-ledger.js';
+import { maybeEnqueueLoopback } from '../fixture-loopback.js';
 import { getDb, type DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
 
@@ -437,9 +441,9 @@ async function persistDeliveryOutcome(
   row: ClaimedQueueRow,
   outcome: SmtpDeliveryOutcome,
   db: DB,
-): Promise<void> {
+  observedAt = new Date(),
+): Promise<Date> {
   const payload = requireRecord(row.smtpPayload, 'outbound SMTP payload malformed');
-  const now = new Date();
   const [updated] = await db
     .update(outboundSendQueue)
     .set({
@@ -447,8 +451,8 @@ async function persistDeliveryOutcome(
         ...payload,
         deliveryOutcome: cloneDeliveryOutcome(outcome),
       },
-      smtpOutcomePersistedAt: now,
-      updatedAt: now,
+      smtpOutcomePersistedAt: observedAt,
+      updatedAt: observedAt,
     })
     .where(
       and(
@@ -461,6 +465,7 @@ async function persistDeliveryOutcome(
   if (!updated) {
     throw new OutboundClaimLostError();
   }
+  return observedAt;
 }
 
 async function finalizePersistedDelivery(
@@ -468,6 +473,7 @@ async function finalizePersistedDelivery(
   payload: OutboundMailPayload,
   outcome: SmtpDeliveryOutcome,
   db: DB,
+  acceptedObservedAt?: Date,
 ): Promise<SmtpSendResult> {
   return db.transaction(async (tx) => {
     const [claimed] = await tx
@@ -479,7 +485,7 @@ async function finalizePersistedDelivery(
     if (!claimed) throw new OutboundClaimLostError();
 
     const [existing] = await tx
-      .select({ messageIdHeader: message.messageIdHeader })
+      .select({ threadId: message.threadId, messageIdHeader: message.messageIdHeader })
       .from(message)
       .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
       .limit(1)
@@ -494,7 +500,10 @@ async function finalizePersistedDelivery(
       throw new Error('outbound delivery outcome message ID mismatch');
     }
 
-    const now = new Date();
+    // Keep native acceptance time distinct from this finalization transaction.
+    // Recovery passes the original persisted observation time so a crash or
+    // late queue finalization cannot invent a later answer event.
+    const now = acceptedObservedAt ?? new Date();
     if (existing.messageIdHeader === outcome.messageId) {
       await tx
         .update(message)
@@ -532,6 +541,57 @@ async function finalizePersistedDelivery(
       .where(claimFence(row))
       .returning({ id: outboundSendQueue.id });
     if (!marked) throw new OutboundClaimLostError();
+
+    // Native recipient acceptance is the only Nava queue evidence that may
+    // close an ask. Persist the compact semantic fact in the same transaction
+    // as the durable sent state; queued/legacy recovery never invents this.
+    const extraction = extractMailBaselineEvidence({
+      sourceVintage: now.toISOString(),
+      observationCutoff: now,
+      interpretationVersion: MAIL_BASELINE_INTERPRETATION_VERSION,
+      message: {
+        id: row.messageId,
+        transportId: row.transportId,
+        threadId: existing.threadId,
+        direction: 'outbound',
+        fromAddress: payload.from,
+        toAddresses: payload.to,
+        ccAddresses: payload.cc,
+        bccAddresses: payload.bcc,
+        subject: payload.subject,
+        textBody: payload.text,
+        receivedAt: now,
+        sentAt: now,
+        createdAt: now,
+        messageIdHeader: outcome.messageId,
+        inReplyTo: payload.inReplyTo,
+        references: payload.references,
+        sendEvidence: {
+          status: getSmtpDeliveryStatus(payload, outcome) === 'partial' ? 'partial' : 'accepted',
+          acceptedAt: now.toISOString(),
+          acceptedRecipients: outcome.accepted,
+          rejectedRecipients: outcome.rejected,
+        },
+        source: 'mail_event',
+        sourceBasis: 'source_event',
+      },
+    });
+    const generationId = mailBaselineGenerationKey({
+      transportId: row.transportId,
+      threadId: existing.threadId,
+      sourceMessageId: row.messageId,
+      sourceVintage: `queue:${row.id}`,
+      interpretationVersion: extraction.interpretationVersion,
+    });
+    await persistMailBaselineProjection(tx as unknown as DB, {
+      transportId: row.transportId,
+      threadId: existing.threadId,
+      generationId,
+      sourceVintage: extraction.sourceVintage,
+      interpretationVersion: extraction.interpretationVersion,
+      observationCutoff: now,
+      evidence: extraction.evidence,
+    });
     return cloneDeliveryOutcome(outcome);
   });
 }
@@ -595,7 +655,17 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
 
   if (!(await renewClaimLease(row, db))) throw new OutboundClaimLostError();
   if (persistedOutcome) {
-    return finalizePersistedDelivery(row, payload, persistedOutcome, db);
+    // A persisted SMTP result without its original observation clock cannot
+    // prove when acceptance occurred. Leave it uncertain rather than using
+    // late queue finalization time as a fabricated answer event.
+    if (!row.smtpOutcomePersistedAt) throw new OutboundDeliveryUncertainError();
+    return finalizePersistedDelivery(
+      row,
+      payload,
+      persistedOutcome,
+      db,
+      row.smtpOutcomePersistedAt,
+    );
   }
   if (hasPersistedSmtpDelivery(existing.messageIdHeader)) {
     return finalizeLegacyHeaderOnlyDelivery(row, db);
@@ -628,8 +698,8 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
 
   let finalized: SmtpSendResult;
   try {
-    await persistDeliveryOutcome(row, smtpResult, db);
-    finalized = await finalizePersistedDelivery(row, payload, smtpResult, db);
+    const acceptedObservedAt = await persistDeliveryOutcome(row, smtpResult, db);
+    finalized = await finalizePersistedDelivery(row, payload, smtpResult, db, acceptedObservedAt);
   } catch {
     throw new OutboundDeliveryUncertainError();
   }
