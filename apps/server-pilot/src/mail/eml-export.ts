@@ -11,11 +11,12 @@ function sanitizeFilenamePart(raw: string): string {
       cleaned += raw[i];
     }
   }
-  return cleaned
+  cleaned = cleaned
     .replace(/[<>:"/\\|?*]/g, '_')
     .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 60);
+    .replace(/_+/g, '_');
+  const codepoints = [...cleaned].slice(0, 60).join('').replace(/^_+|_+$/g, '');
+  return codepoints;
 }
 
 export function formatEmlFilename(
@@ -48,13 +49,16 @@ export async function synthesizeRfc822Eml(params: {
     buffer: true,
   });
 
+  const validDate =
+    params.date && !Number.isNaN(params.date.getTime()) ? params.date : new Date();
+
   const mailOptions: nodemailer.SendMailOptions = {
     from: params.from,
     to: params.to,
     cc: params.cc,
     bcc: params.bcc,
     subject: params.subject,
-    date: params.date,
+    date: validDate,
     text: params.textBody ?? undefined,
     html: params.htmlBody ?? undefined,
     messageId: params.messageId ?? undefined,

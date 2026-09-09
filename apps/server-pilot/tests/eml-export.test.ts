@@ -14,9 +14,19 @@ describe('formatEmlFilename', () => {
     expect(filename.endsWith('.eml')).toBe(true);
   });
 
-  it('falls back when subject is missing or empty', () => {
-    const filename = formatEmlFilename('', new Date('2026-09-09'));
-    expect(filename).toBe('email_2026-09-09.eml');
+  it('falls back when subject is missing or empty or only punctuation', () => {
+    expect(formatEmlFilename('', new Date('2026-09-09'))).toBe('email_2026-09-09.eml');
+    expect(formatEmlFilename('???', new Date('2026-09-09'))).toBe('email_2026-09-09.eml');
+    expect(formatEmlFilename('___', new Date('2026-09-09'))).toBe('email_2026-09-09.eml');
+  });
+
+  it('preserves unicode surrogate pairs without splitting codepoints at 60 chars', () => {
+    // 59 'a' characters + emoji '🏨' (which is 2 UTF-16 code units)
+    const longSubject = 'a'.repeat(59) + '🏨';
+    const filename = formatEmlFilename(longSubject, new Date('2026-09-09'));
+    // Ensure encodeURIComponent does not throw URIError
+    expect(() => encodeURIComponent(filename)).not.toThrow();
+    expect(filename.endsWith('_2026-09-09.eml')).toBe(true);
   });
 });
 
@@ -41,5 +51,21 @@ describe('synthesizeRfc822Eml', () => {
     expect(parsed.from?.text).toBe('reservations@legacyhotel.com');
     expect(parsed.to?.text).toBe('guest@example.com');
     expect(parsed.text?.trim()).toBe('Hello Guest, we look forward to your stay.');
+    expect(parsed.messageId).toBe('<msg-123@legacyhotel.com>');
+  });
+
+  it('handles invalid date safely without throwing or invalid date header', async () => {
+    const invalidDate = new Date('invalid');
+    const buffer = await synthesizeRfc822Eml({
+      from: 'test@legacyhotel.com',
+      to: ['guest@example.com'],
+      subject: 'Fallback Date',
+      date: invalidDate,
+      textBody: 'Body',
+    });
+
+    const parsed = await simpleParser(buffer);
+    expect(parsed.date).toBeInstanceOf(Date);
+    expect(Number.isNaN(parsed.date?.getTime())).toBe(false);
   });
 });
