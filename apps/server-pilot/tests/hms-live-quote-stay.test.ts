@@ -18,8 +18,10 @@ import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runti
 import { normalizeQuoteRequest } from '../src/hms/quote-request-normalization.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
 import type { HmsBrowserAuditSpec } from '../src/hms/browser-artifacts.js';
+import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
 import { evaluateObservedRequest } from '../src/hms/request-policy.js';
 import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
+import { renderClaim } from '../src/ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -541,6 +543,17 @@ describe('live quote stay driver', () => {
     expect(first.evidence.id).not.toBe(second.evidence.id);
     expect(first.evidence.sourceHash).not.toBe(second.evidence.sourceHash);
     expect(first.evidence.artifactRef).toBe('quote-artifact-1');
+    expect(first.evidence.scopeVerified).toBe(true);
+    expect(first.evidence.manifestSha256).toBe(auth().manifestSha256);
+    expect(first.evidence.manifestSha256ByBranch).toEqual({
+      quote_availability_search: auth().manifestSha256,
+    });
+    const claims = claimsFromToolResult(first, new Date());
+    expect(claims).toHaveLength(1);
+    expect(claims[0]?.kind).toBe('quote_stay_summary');
+    expect(renderClaim(claims[0]!)).toMatch(
+      /not bookable, no stay total, and occupancy pricing is unverified/,
+    );
   });
 
   it('bounds typed quote evidence by the actual finalized capture expiry', async () => {

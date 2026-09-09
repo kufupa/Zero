@@ -6,6 +6,7 @@ export type ReplyAssessmentIssueCode =
   | 'MISSING_BRACKET'
   | 'UNSUPPORTED_ATTACHMENT_CLAIM'
   | 'UNSUPPORTED_ACTION_CLAIM'
+  | 'UNSUPPORTED_DATE_CLAIM'
   | 'UNSUPPORTED_RECIPIENT_CLAIM';
 
 export type ReplyAssessmentIssue = {
@@ -48,7 +49,12 @@ function supports(fact: PreparedFact, ask: PreparedAsk, audience: PreparedDraftA
   const code = normalize(ask.code);
   if (code === 'child_ages') return key.includes('child') && key.includes('age');
   if (code === 'stay_dates')
-    return key.includes('arrival') || key.includes('departure') || key.includes('stay_dates');
+    return (
+      key.includes('arrival') ||
+      key.includes('departure') ||
+      key.includes('stay_dates') ||
+      (key.includes('reservation') && key.includes('summary'))
+    );
   if (code === 'reservation_status' || code === 'reservation') {
     return (
       key.includes('reservation') &&
@@ -85,6 +91,33 @@ function factValueTexts(value: unknown, depth = 0): string[] {
   return [];
 }
 
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Select only fields whose semantics match the requested answer. */
+function factValuesForAsk(fact: PreparedFact, ask: PreparedAsk): string[] {
+  const code = normalize(ask.code);
+  const record = recordValue(fact.value);
+  if (!record) return factValueTexts(fact.value);
+  const fields =
+    code === 'reservation_status' || code === 'reservation'
+      ? ['reservationStatus', 'bookingStatus', 'confirmationStatus', 'status']
+      : code === 'stay_dates'
+        ? ['arrivalDate', 'departureDate', 'checkIn', 'checkOut', 'stayDates']
+        : code === 'price' || code === 'rate' || code === 'quote'
+          ? ['amount', 'currency', 'total', 'displayedAmount', 'rate']
+          : code === 'payment_status' || code === 'payment' || code === 'deposit'
+            ? ['paymentStatus', 'depositStatus', 'status', 'amount', 'currency']
+            : [];
+  return fields
+    .filter((field) => record[field] !== undefined && record[field] !== null)
+    .flatMap((field) => factValueTexts(record[field]))
+    .filter((item) => item.trim().length > 0);
+}
+
 function replyAnswersFact(
   replyText: string,
   fact: PreparedFact,
@@ -93,7 +126,7 @@ function replyAnswersFact(
 ): boolean {
   if (!supports(fact, ask, audience)) return false;
   const lower = replyText.toLocaleLowerCase();
-  const values = factValueTexts(fact.value)
+  const values = factValuesForAsk(fact, ask)
     .map((value) => value.trim().toLocaleLowerCase())
     .filter((value) => value.length >= 3);
   if (values.length === 0 || !values.some((value) => lower.includes(value))) return false;
@@ -154,6 +187,66 @@ function knownMoney(
   return result;
 }
 
+function positiveActionEvidence(fact: PreparedFact, audience: PreparedDraftAudience): boolean {
+  if (!known(fact, audience)) return false;
+  const key = normalize(fact.key);
+  const summary = recordValue(fact.value);
+  const value =
+    key.includes('summary') && summary?.reservationStatus !== undefined
+      ? summary.reservationStatus
+      : fact.value;
+  const values = factValueTexts(value).join(' ');
+  if (/(?:reservation|booking)/.test(key)) {
+    return /\b(?:confirmed|booked|completed|approved|secured)\b/i.test(values);
+  }
+  if (/(?:payment|deposit|folio)/.test(key)) {
+    return /\b(?:paid|settled|cleared|completed)\b/i.test(values);
+  }
+  if (key.includes('cancellation')) {
+    return /\b(?:cancelled|canceled|completed)\b/i.test(values);
+  }
+  return (
+    key.includes('action') && /\b(?:confirmed|completed|approved|secured|processed)\b/i.test(values)
+  );
+}
+
+function dateLiterals(text: string): string[] {
+  return [
+    ...(text.match(/\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g) ?? []),
+    ...(text.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/g) ?? []),
+    ...(text.match(
+      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,\s*20\d{2})?\b/gi,
+    ) ?? []),
+  ].map((literal) => literal.toLocaleLowerCase());
+}
+
+function timeLiterals(text: string): string[] {
+  return text.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g) ?? [];
+}
+
+function knownDateValues(
+  facts: readonly PreparedFact[],
+  audience: PreparedDraftAudience,
+): string[] {
+  return facts
+    .filter(
+      (fact) =>
+        known(fact, audience) &&
+        (/(?:date|arrival|departure|check.?in|check.?out|stay)/i.test(fact.key) ||
+          (/(?:reservation|booking)/i.test(fact.key) && /summary/i.test(fact.key))),
+    )
+    .flatMap((fact) => {
+      const record = recordValue(fact.value);
+      if (record && /(?:reservation|booking|summary)/i.test(fact.key)) {
+        return ['arrivalDate', 'departureDate', 'checkIn', 'checkOut', 'stayDates'].flatMap(
+          (field) => (record[field] === undefined ? [] : factValueTexts(record[field])),
+        );
+      }
+      return factValueTexts(fact.value);
+    })
+    .map((value) => value.toLocaleLowerCase());
+}
+
 function hasBracketFor(replyText: string, ask: PreparedAsk): boolean {
   const lower = replyText.toLocaleLowerCase();
   return lower.includes('[missing:') && lower.includes(ask.label.toLocaleLowerCase());
@@ -182,22 +275,33 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
   ).length;
 
   const completionClaim =
-    /\b(?:booking|reservation)\s+(?:is\s+)?(?:confirmed|booked|completed)\b/i.test(reply) ||
-    /\bpayment\s+(?:is\s+)?(?:cleared|paid|settled|completed)\b/i.test(reply);
-  const hasActionEvidence = input.facts.some((fact) => {
-    if (!known(fact, audience)) return false;
-    const key = normalize(fact.key);
-    return (
-      /(booking|reservation|payment|deposit|folio|action)/.test(key) &&
-      !/(?:pending|requested|unknown|false|unverified)/i.test(factText(fact))
+    /\b(?:booking|reservation)\s+(?:is\s+|has\s+been\s+|was\s+)?(?:confirmed|booked|completed|secured|approved)\b/i.test(
+      reply,
+    ) ||
+    /\bpayment\s+(?:is\s+|has\s+been\s+|was\s+)?(?:cleared|paid|settled|completed)\b/i.test(
+      reply,
+    ) ||
+    /\b(?:we|i)\s+(?:have\s+|has\s+|just\s+)?(?:processed|confirmed|booked|secured|approved|completed|cancelled|canceled)\s+(?:your\s+)?(?:booking|reservation|cancellation)\b/i.test(
+      reply,
     );
-  });
-  if (
-    completionClaim &&
-    !hasActionEvidence &&
-    !/\b(?:cannot|can't|unable|not able|unverified)\b/i.test(reply)
-  ) {
+  const hasActionEvidence = input.facts.some((fact) => positiveActionEvidence(fact, audience));
+  const limitationClaim =
+    /\b(?:cannot|can't|unable|not able|unverified|not confirmed|not yet)\b/i.test(reply);
+  if (completionClaim && !hasActionEvidence && !limitationClaim) {
     addIssue(issues, { code: 'UNSUPPORTED_ACTION_CLAIM', severity: 'critical' });
+  }
+
+  const mentionedDates = dateLiterals(reply);
+  const mentionedTimes = timeLiterals(reply);
+  const knownDates = knownDateValues(input.facts, audience);
+  const unsupportedDate =
+    mentionedDates.some(
+      (literal) => !knownDates.some((knownDate) => knownDate.includes(literal)),
+    ) ||
+    (mentionedTimes.length > 0 &&
+      !knownDates.some((knownDate) => mentionedTimes.some((time) => knownDate.includes(time))));
+  if (unsupportedDate && !limitationClaim) {
+    addIssue(issues, { code: 'UNSUPPORTED_DATE_CLAIM', severity: 'critical' });
   }
 
   for (const fact of input.facts) {

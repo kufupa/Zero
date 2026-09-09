@@ -1,14 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { createMastraRuntime } from '../src/ai/mastra.js';
 import {
   candidateDraftWorkflow,
   deriveReplySubject,
   deriveReplyToAddress,
 } from '../src/ai/workflows/candidate-draft.js';
-import { enqueueAiRun } from '../src/ai/run-ledger.js';
-import { executeAiRun } from '../src/ai/worker.js';
 import {
   aiWorkflowRun,
   mailDraft,
@@ -16,8 +10,15 @@ import {
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { prepareDraftInput } from '../src/ai/prepared-draft-input.js';
+import { createMastraRuntime } from '../src/ai/mastra.js';
+import { enqueueAiRun } from '../src/ai/run-ledger.js';
+import { executeAiRun } from '../src/ai/worker.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
+import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 
@@ -39,11 +40,15 @@ describe('candidate draft workflow contract', () => {
     const result = await workflowRun.start({
       inputData: {
         transportId: TRANSPORT_ID,
-        threadId: 'thread-1',
         triggerMessageId: 'msg-1',
-        fromAddress: 'Guest Person <guest@example.com>',
+        replyToAddress: 'guest@example.com',
         subject: 'Group booking',
-        body: 'Need a room for next week',
+        prepared: prepareDraftInput({
+          requestId: 'msg-1',
+          threadId: 'thread-1',
+          audience: 'guest',
+          requestText: 'Need a room for next week',
+        }),
       },
     });
     expect(result.status).toBe('success');
@@ -101,7 +106,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('candidate draft persistence c
       const drafts = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
       expect(drafts).toHaveLength(0);
 
-      const [updatedRun] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      const [updatedRun] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, run.id));
       expect(updatedRun?.metrics).toMatchObject({
         skipped: true,
         reason: 'missing_reply_to_address',

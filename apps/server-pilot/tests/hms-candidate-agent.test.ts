@@ -5,6 +5,7 @@ import {
   ToolResultSchema,
   assertNoUncitedCriticalLiterals,
   assertSelectedClaimsEligible,
+  evidenceClaimToPreparedFact,
   evaluateDraftReadiness,
   isEvidenceFresh,
   renderCandidate,
@@ -36,7 +37,9 @@ import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai
 import { ThreadStateStaleError, assertThreadStateVersionFresh } from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
 import { HMS_FIND_RESERVATION_TOOL_VERSION } from '../src/hms/adapter.js';
+import { prepareDraftInput } from '../src/ai/prepared-draft-input.js';
 import { classifyHmsShadowFailure } from '../src/ai/hms-shadow.js';
+import { createMastraRuntime } from '../src/ai/mastra.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -53,6 +56,10 @@ function hmsEvidence(overrides: Partial<HmsEvidenceRef> = {}): HmsEvidenceRef {
     expiresAt: '2026-07-30T13:00:00.000Z',
     claimKeys: ['reservation.status', 'reservation.dates'],
     sourceHash: 'a'.repeat(64),
+    scopeVerified: true,
+    manifestSha256: 'c'.repeat(64),
+    manifestSha256ByBranch: { guest_stay_search: 'c'.repeat(64) },
+    scopeHash: 'd'.repeat(64),
     ...overrides,
   };
 }
@@ -294,6 +301,42 @@ describe('hms typed evidence contracts', () => {
 });
 
 describe('claim-safe candidate agent', () => {
+  it('registered candidate workflow refuses raw body input before trace execution', async () => {
+    const mastra = createMastraRuntime(':memory:');
+    const workflow = mastra.getWorkflow('candidateDraft');
+    const rawRun = await workflow.createRun();
+    await expect(
+      rawRun.start({
+        inputData: {
+          transportId: 'transport-u5-i9',
+          threadId: 'thread-u5-i9',
+          triggerMessageId: 'message-u5-i9',
+          fromAddress: 'Guest Person <guest@example.com>',
+          subject: 'Booking',
+          body: 'Need a room',
+        },
+      }),
+    ).rejects.toThrow(/Invalid input data|prepared input|replyToAddress/i);
+
+    const preparedRun = await workflow.createRun();
+    const preparedResult = await preparedRun.start({
+      inputData: {
+        transportId: 'transport-u5-i9',
+        triggerMessageId: 'message-u5-i9',
+        replyToAddress: 'guest@example.com',
+        subject: 'Booking',
+        prepared: prepareDraftInput({
+          requestId: 'message-u5-i9',
+          threadId: 'thread-u5-i9',
+          audience: 'guest',
+          requestText: 'Need a room',
+        }),
+      },
+    });
+    expect(preparedResult.status).toBe('success');
+    expect(preparedResult.result?.draftBody.textBody).toContain('[');
+  });
+
   it('treats durable LEASE_LOST as fatal gathering failure', () => {
     const lost = createLeaseLostError();
     expect(isFatalCandidateGatheringError(lost)).toBe(true);
@@ -324,6 +367,66 @@ describe('claim-safe candidate agent', () => {
     expect(Object.keys(bundle.tools).sort()).toEqual(
       ['hms_find_reservation', 'hms_quote_stay', 'mail_read_artifact'].sort(),
     );
+  });
+
+  it('rejects missing or false scope verification before creating a claim', () => {
+    for (const scopeVerified of [false, undefined]) {
+      const result = okReservationResult({
+        evidence: hmsEvidence({ scopeVerified }),
+      });
+      expect(evaluateDraftReadiness(result, now).draftReady).toBe(false);
+      expect(claimsFromToolResult(result, now)).toEqual([]);
+    }
+  });
+
+  it('preserves and binds manifest and scope joins through claim and prepared fact', () => {
+    const manifestSha256 = 'c'.repeat(64);
+    const scopeHash = 'd'.repeat(64);
+    const claims = claimsFromToolResult(
+      okReservationResult({
+        evidence: hmsEvidence({
+          scopeVerified: true,
+          manifestSha256,
+          manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+          scopeHash,
+        }),
+      }),
+      now,
+    );
+    expect(claims[0]).toMatchObject({
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
+    });
+    expect(evidenceClaimToPreparedFact(claims[0]!)).toMatchObject({
+      authority: 'authorized',
+      status: 'known',
+      scopeVerified: true,
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
+    });
+  });
+
+  it('never turns an unscoped claim into an authorized-known prepared fact', () => {
+    const fact = evidenceClaimToPreparedFact(
+      EvidenceClaimSchema.parse({
+        id: 'claim-unscoped',
+        kind: 'reservation_summary',
+        value: { reservationStatus: 'Confirmed' },
+        evidenceId: 'ev-unscoped',
+        scopeVerified: false,
+      }),
+    );
+    expect(fact).toMatchObject({ authority: 'unknown', status: 'not_authorized' });
+  });
+
+  it('rejects a server requester join when no separately issued mapper proof is supplied', () => {
+    const result = okReservationResult({
+      evidence: hmsEvidence({ requesterAuthorizationId: 'auth-current-read' }),
+    });
+    expect(claimsFromToolResult(result, now)).toEqual([]);
+    expect(claimsFromToolResult(result, now, null)).toEqual([]);
   });
 
   it('fixture session may activate all three handlers; production allowlist is narrower', () => {
@@ -761,11 +864,16 @@ describe('claim-safe candidate agent', () => {
   it('off mode still runs existing skeleton flow', async () => {
     const skeleton = await generateSkeletonDraft({
       transportId: 't1',
-      threadId: 'th1',
       triggerMessageId: 'm1',
-      fromAddress: 'Guest Person <guest@example.com>',
+      replyToAddress: 'guest@example.com',
       subject: 'Booking',
-      body: 'Need a room',
+      deadlineAt: Date.now() + 30_000,
+      prepared: prepareDraftInput({
+        requestId: 'm1',
+        threadId: 'th1',
+        audience: 'guest',
+        requestText: 'Need a room',
+      }),
     });
     expect(skeleton.draftBody.textBody).toContain('[');
     expect(skeleton.draftBody.textBody).toContain(']');
@@ -1085,6 +1193,107 @@ describe('claim-safe candidate agent', () => {
     expect(result.textBody).toBe('Your reservation is confirmed.');
     expect(result.metrics.preparedReplyOutcome).toBe('complete');
     expect(calls).toBe(2);
+  });
+
+  it('normal candidate consumer refuses an unsupported action from non-action evidence', async () => {
+    const quoteResult = {
+      status: 'ok' as const,
+      draftReady: true,
+      data: {
+        nightlyObservations: [
+          {
+            date: '2026-08-01',
+            roomType: 'STD',
+            availableCount: 2,
+            ratePlan: 'BAR',
+            displayedAmount: '100.00',
+            currency: 'ZAR',
+            rateBasis: 'nightly' as const,
+            restrictions: ['none'],
+            observedAt: '2026-07-30T11:00:00.000Z',
+          },
+          {
+            date: '2026-08-02',
+            roomType: 'STD',
+            availableCount: 2,
+            ratePlan: 'BAR',
+            displayedAmount: '100.00',
+            currency: 'ZAR',
+            rateBasis: 'nightly' as const,
+            restrictions: ['none'],
+            observedAt: '2026-07-30T11:00:00.000Z',
+          },
+        ],
+        requestRef: 'quote-u5-c2',
+        arrival: '2026-08-01',
+        departure: '2026-08-03',
+        coveredNights: ['2026-08-01', '2026-08-02'],
+        missingNights: [],
+        bookable: false,
+        stayTotal: null,
+        occupancyPriced: false,
+        requestedRooms: 1,
+      },
+      unresolvedFields: [],
+      evidence: hmsEvidence({
+        toolId: 'hms_quote_stay',
+        claimKeys: ['quote.stay'],
+      }),
+    };
+    const quoteClaims = claimsFromToolResult(quoteResult, now);
+    let replyCalls = 0;
+    const adapter = createLocalModelAdapter({
+      route: {
+        routeId: 'hms-c2-consumer-route',
+        purpose: 'draft',
+        protocol: 'in_process',
+        access: 'current_app',
+        egress: 'none',
+        retention: 'bounded',
+        usage: 'reported',
+        modelId: 'hms-c2-consumer-model',
+      },
+      transport: async () => {
+        replyCalls += 1;
+        return {
+          output: JSON.stringify({ replyText: 'Your booking has been secured.' }),
+          usage: { inputTokens: 5, outputTokens: 5, latencyMs: 1 },
+        };
+      },
+    });
+    const result = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        activeToolIds: new Set(['hms_quote_stay']),
+        lookupCandidates: new Map([
+          ['quote-u5-c2', { id: 'quote-u5-c2', kind: 'surname_dates', value: '2026-08-01' }],
+        ]),
+        quoteStay: async () => quoteResult,
+      }),
+      normalizedThreadText: 'Please check availability for these dates.',
+      signal: new AbortController().signal,
+      now,
+      readPlan: { kind: 'quote', quote: true },
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: quoteClaims.map((claim) => claim.id),
+        closingTemplate: 'invite_questions',
+      }),
+      replyModelAdapter: adapter,
+      replyRequestKind: 'general',
+      replyAsks: [],
+    });
+
+    expect(result.outcome).not.toBe('candidate');
+    expect(['needs_clarification', 'insufficient_evidence']).toContain(result.outcome);
+    expect(result).not.toHaveProperty('textBody');
+    expect(replyCalls).toBe(1);
+    expect(result.metrics).toMatchObject({
+      preparedReplyMetrics: {
+        assessmentIssues: expect.arrayContaining(['UNSUPPORTED_ACTION_CLAIM']),
+      },
+    });
   });
 
   it('normal candidate agent refuses before generic model fallback when no approved route is injected', async () => {

@@ -490,6 +490,9 @@ function attachFinalizedQuoteReceipt(
       ...result.evidence,
       expiresAt: effectiveExpiresAt,
       artifactRef: artifactId,
+      scopeVerified: true,
+      manifestSha256,
+      manifestSha256ByBranch: { [expectedBranch]: manifestSha256 },
       sourceHash: sha256Hex(
         canonicalJson({
           sourceHash: result.evidence.sourceHash,

@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   InforReadAdapter,
   HMS_QUOTE_STAY_TOOL_VERSION,
@@ -6,16 +5,13 @@ import {
   type QuoteInput,
 } from '../src/hms/adapter.js';
 import {
-  quoteStayReadDataSchema,
-  type RequestDecision,
-} from '../src/hms/contracts.js';
-import {
   parseQuoteStayCandidateFromAuthoredSegment,
   QUOTE_STAY_MAX_NIGHTS,
 } from '../src/hms/quote-stay-candidate.js';
-import type { HmsPage, HmsReadSession } from '../src/hms/runtime.js';
+import { quoteStayReadDataSchema, type RequestDecision } from '../src/hms/contracts.js';
 import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import { renderClaim } from '../src/ai/draft-evidence.js';
+import type { HmsPage, HmsReadSession } from '../src/hms/runtime.js';
+import { describe, expect, it } from 'vitest';
 
 const BASE_QUOTE: QuoteInput = {
   arrivalDate: '2026-09-10',
@@ -149,9 +145,7 @@ describe('quote stay candidate v2', () => {
         'arrival 2026-02-30, departure 2026-03-02, 2 adults, 0 children, 1 room, room type STD, rate plan BAR',
       ),
     ).toBeNull();
-    const departure = new Date(
-      Date.UTC(2026, 8, 10 + QUOTE_STAY_MAX_NIGHTS + 1),
-    )
+    const departure = new Date(Date.UTC(2026, 8, 10 + QUOTE_STAY_MAX_NIGHTS + 1))
       .toISOString()
       .slice(0, 10);
     expect(
@@ -189,10 +183,7 @@ describe('InforReadAdapter quote v2 fixture kernel', () => {
       ]),
     );
 
-    const result = await adapter.quoteStay(
-      BASE_QUOTE,
-      new AbortController().signal,
-    );
+    const result = await adapter.quoteStay(BASE_QUOTE, new AbortController().signal);
 
     expect(quoteStayReadDataSchema.parse(result.data)).toEqual(result.data);
     expect(result.status).toBe('ok');
@@ -233,15 +224,10 @@ describe('InforReadAdapter quote v2 fixture kernel', () => {
     });
     expect(page.gotos).toEqual([]);
     expect(page.clicks).toEqual([]);
-    const claims = claimsFromToolResult(
-      result,
-      new Date('2026-08-06T00:01:00.000Z'),
-    );
-    expect(claims).toHaveLength(1);
-    expect(claims[0]?.kind).toBe('quote_stay_summary');
-    expect(renderClaim(claims[0]!)).toMatch(
-      /not bookable, no stay total, and occupancy pricing is unverified/,
-    );
+    const claims = claimsFromToolResult(result, new Date('2026-08-06T00:01:00.000Z'));
+    // The adapter fixture proves parsing only; it has no admitted scope proof.
+    // Claims are intentionally withheld until the audited live composition.
+    expect(claims).toEqual([]);
   });
 
   it('returns manual_required when any requested night lacks nightly semantics', async () => {
@@ -259,31 +245,20 @@ describe('InforReadAdapter quote v2 fixture kernel', () => {
         },
       ]),
     );
-    const result = await adapter.quoteStay(
-      BASE_QUOTE,
-      new AbortController().signal,
-    );
+    const result = await adapter.quoteStay(BASE_QUOTE, new AbortController().signal);
     expect(result.status).toBe('manual_required');
     expect(result.draftReady).toBe(false);
     expect(result.data.bookable).toBe(false);
     expect(result.data.stayTotal).toBeNull();
     expect(result.data.occupancyPriced).toBe(false);
     expect(result.unresolvedFields).toEqual(
-      expect.arrayContaining([
-        'nightly.2026-09-10.rateBasis',
-        'nightly.2026-09-11',
-      ]),
+      expect.arrayContaining(['nightly.2026-09-10.rateBasis', 'nightly.2026-09-11']),
     );
   });
 
   it('quarantines empty recognized result envelopes', async () => {
-    const { adapter } = adapterFor(
-      '<table data-testid="room-type-rate-availability"></table>',
-    );
-    const result = await adapter.quoteStay(
-      BASE_QUOTE,
-      new AbortController().signal,
-    );
+    const { adapter } = adapterFor('<table data-testid="room-type-rate-availability"></table>');
+    const result = await adapter.quoteStay(BASE_QUOTE, new AbortController().signal);
     expect(result.status).toBe('unverified_negative');
     expect(result.data.nightlyObservations).toEqual([]);
     expect(result.draftReady).toBe(false);
@@ -291,10 +266,7 @@ describe('InforReadAdapter quote v2 fixture kernel', () => {
 
   it('rejects unrecognized quote surface HTML as manual_required', async () => {
     const { adapter } = adapterFor('<div>login shell</div>');
-    const result = await adapter.quoteStay(
-      BASE_QUOTE,
-      new AbortController().signal,
-    );
+    const result = await adapter.quoteStay(BASE_QUOTE, new AbortController().signal);
     expect(result.status).toBe('manual_required');
     expect(result.unresolvedFields).toContain('quote_surface_envelope');
   });
@@ -334,18 +306,15 @@ describe('InforReadAdapter quote v2 fixture kernel', () => {
         },
       ]),
     );
-    const result = await adapter.quoteStay(
-      BASE_QUOTE,
-      new AbortController().signal,
-    );
+    const result = await adapter.quoteStay(BASE_QUOTE, new AbortController().signal);
     expect(result.status).toBe('manual_required');
     expect(result.unresolvedFields).toContain('nightly.out_of_window');
-    expect(result.data.nightlyObservations.every((row) =>
-      ['2026-09-10', '2026-09-11'].includes(row.date),
-    )).toBe(true);
     expect(
-      result.data.nightlyObservations.some((row) => row.date === '2026-09-20'),
-    ).toBe(false);
+      result.data.nightlyObservations.every((row) =>
+        ['2026-09-10', '2026-09-11'].includes(row.date),
+      ),
+    ).toBe(true);
+    expect(result.data.nightlyObservations.some((row) => row.date === '2026-09-20')).toBe(false);
   });
 
   it('aborts before transmission for invalid input', async () => {

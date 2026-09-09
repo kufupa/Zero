@@ -91,6 +91,16 @@ export const claimEnvelopeSchema = z
       .regex(/^[a-f0-9]{64}$/i)
       .optional(),
     scopeVerified: z.boolean().optional(),
+    manifestSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    manifestSha256ByBranch: z.record(z.string().regex(/^[a-f0-9]{64}$/i)).optional(),
+    scopeHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
     expiresAt: z.string().min(1).optional(),
     data: z.unknown(),
   })
@@ -193,6 +203,14 @@ export function mapEnvelopeToClaims(
     ...(parsed.data.scopeVerified === undefined
       ? {}
       : { scopeVerified: parsed.data.scopeVerified }),
+    ...(parsed.data.manifestSha256 ? { manifestSha256: parsed.data.manifestSha256 } : {}),
+    ...(parsed.data.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: parsed.data.manifestSha256ByBranch }
+      : {}),
+    ...(parsed.data.scopeHash ? { scopeHash: parsed.data.scopeHash } : {}),
+    ...(parsed.data.requesterAuthorizationId
+      ? { requesterAuthorizationId: parsed.data.requesterAuthorizationId }
+      : {}),
   }));
 }
 
@@ -210,6 +228,13 @@ function mapEnvelopeToClaimsInternal(
   }
   if (disclosureBlocksClaim(envelope.data)) return [];
   if (observationAttemptsSelfTrust(envelope.data)) return [];
+  if (
+    envelope.manifestSha256ByBranch &&
+    envelope.manifestSha256 &&
+    !Object.values(envelope.manifestSha256ByBranch).includes(envelope.manifestSha256)
+  ) {
+    return [];
+  }
 
   const authOpt = options?.requesterAuthorization;
   const authRequired = authOpt !== undefined;
@@ -219,8 +244,14 @@ function mapEnvelopeToClaimsInternal(
   const expiresAt = options?.expiresAt ?? envelope.expiresAt;
 
   const gate = (kind: EvidenceClaim['kind']): boolean => {
+    if (envelope.requesterAuthorizationId !== undefined && !authRequired) return false;
     if (!authRequired) return true;
-    return authorizeClaimKind(authOpt, kind) !== null;
+    const validated = authorizeClaimKind(authOpt, kind);
+    return (
+      validated !== null &&
+      (envelope.requesterAuthorizationId === undefined ||
+        envelope.requesterAuthorizationId === validated.authorizationId)
+    );
   };
 
   if (envelope.toolId === 'hms_find_reservation') {
@@ -428,6 +459,10 @@ export function toolResultToClaimEnvelope(result: {
     observedAt: string;
     sourceHash?: string;
     scopeVerified?: boolean;
+    manifestSha256?: string;
+    manifestSha256ByBranch?: Record<string, string>;
+    scopeHash?: string;
+    requesterAuthorizationId?: string;
     expiresAt?: string;
   };
 }): unknown {
@@ -440,6 +475,14 @@ export function toolResultToClaimEnvelope(result: {
     ...(result.evidence.scopeVerified === undefined
       ? {}
       : { scopeVerified: result.evidence.scopeVerified }),
+    ...(result.evidence.manifestSha256 ? { manifestSha256: result.evidence.manifestSha256 } : {}),
+    ...(result.evidence.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: result.evidence.manifestSha256ByBranch }
+      : {}),
+    ...(result.evidence.scopeHash ? { scopeHash: result.evidence.scopeHash } : {}),
+    ...(result.evidence.requesterAuthorizationId
+      ? { requesterAuthorizationId: result.evidence.requesterAuthorizationId }
+      : {}),
     ...(result.evidence.expiresAt ? { expiresAt: result.evidence.expiresAt } : {}),
     evidenceId: result.evidence.id,
     data: result.data,

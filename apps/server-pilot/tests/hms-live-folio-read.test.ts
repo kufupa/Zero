@@ -26,8 +26,10 @@ import {
 import { HmsRuntimeError, type HmsPage, type HmsRuntime } from '../src/hms/runtime.js';
 import type { HmsBrowserArtifactReceiptV1 } from '../src/hms/browser-artifacts.js';
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
+import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
 import type { ReadCandidateChild } from '../src/hms/candidate-graph.js';
 import { evaluateObservedRequest } from '../src/hms/request-policy.js';
+import { renderClaim } from '../src/ai/draft-evidence.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
@@ -474,6 +476,11 @@ describe('mergeFolioEvidence', () => {
     if (merged.evidence.kind === 'hms') {
       expect(merged.evidence.expiresAt).toBe(balanceExpiry);
       expect(Date.parse(merged.evidence.expiresAt)).toBeLessThan(Date.parse(depositExpiry));
+      expect(merged.evidence.scopeVerified).toBe(true);
+      const claims = claimsFromToolResult(merged, new Date());
+      expect(claims).toHaveLength(1);
+      expect(claims[0]?.kind).toBe('folio_deposit_summary');
+      expect(renderClaim(claims[0]!)).toContain('Full credit: labelled narrow status');
     }
   });
 });

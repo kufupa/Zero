@@ -23,6 +23,8 @@ export type HmsEvidenceRef = {
   /** Every reviewed branch exercised by one normal finance result. */
   manifestSha256ByBranch?: Record<string, string>;
   scopeHash?: string;
+  /** Server-issued requester/access join for the concrete read. */
+  requesterAuthorizationId?: string;
 };
 
 export type MailEvidenceRef = {
@@ -77,6 +79,10 @@ export type EvidenceClaim = {
   observedAt?: string;
   sourceHash?: string;
   scopeVerified?: boolean;
+  manifestSha256?: string;
+  manifestSha256ByBranch?: Record<string, string>;
+  scopeHash?: string;
+  requesterAuthorizationId?: string;
   expiresAt?: string;
 };
 
@@ -84,17 +90,26 @@ export type EvidenceClaim = {
 export function evidenceClaimToPreparedFact(claim: EvidenceClaim): PreparedFact {
   const source =
     claim.kind === 'document_metadata' || claim.kind === 'sent_email_audit' ? 'attachment' : 'hms';
+  const scopeAuthorized = claim.scopeVerified === true;
   return {
     key: `claim.${claim.kind}`,
     label: claim.kind.replace(/_/g, ' '),
     value: claim.value,
     source,
-    authority: 'authorized',
-    status: 'known',
+    authority: scopeAuthorized ? 'authorized' : 'unknown',
+    status: scopeAuthorized ? 'known' : 'not_authorized',
     evidenceRef: claim.evidenceId,
     ...(claim.observedAt ? { observedAt: claim.observedAt } : {}),
     ...(claim.sourceHash ? { sourceHash: claim.sourceHash } : {}),
     ...(claim.scopeVerified === undefined ? {} : { scopeVerified: claim.scopeVerified }),
+    ...(claim.manifestSha256 ? { manifestSha256: claim.manifestSha256 } : {}),
+    ...(claim.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: claim.manifestSha256ByBranch }
+      : {}),
+    ...(claim.scopeHash ? { scopeHash: claim.scopeHash } : {}),
+    ...(claim.requesterAuthorizationId
+      ? { requesterAuthorizationId: claim.requesterAuthorizationId }
+      : {}),
     ...(claim.expiresAt ? { expiresAt: claim.expiresAt } : {}),
   };
 }
@@ -119,6 +134,7 @@ export const HmsEvidenceRefSchema = z
     manifestSha256: sha256Hex.optional(),
     manifestSha256ByBranch: z.record(sha256Hex).optional(),
     scopeHash: sha256Hex.optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -179,6 +195,13 @@ export const EvidenceClaimSchema = z
     value: z.unknown(),
     evidenceId: z.string().min(1),
     evidenceIds: z.array(z.string().min(1)).min(1).max(16).optional(),
+    observedAt: z.string().min(1).optional(),
+    sourceHash: sha256Hex.optional(),
+    scopeVerified: z.boolean().optional(),
+    manifestSha256: sha256Hex.optional(),
+    manifestSha256ByBranch: z.record(sha256Hex).optional(),
+    scopeHash: sha256Hex.optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
     expiresAt: z.string().min(1).optional(),
   })
   .strict();
@@ -191,6 +214,14 @@ export function isEvidenceFresh(
   if (Number.isNaN(observed) || observed > now.getTime()) return false;
   if (!sha256Hex.safeParse(evidence.sourceHash).success) return false;
   if (evidence.kind === 'hms') {
+    if (evidence.scopeVerified !== true) return false;
+    if (
+      evidence.manifestSha256ByBranch &&
+      evidence.manifestSha256 &&
+      !Object.values(evidence.manifestSha256ByBranch).includes(evidence.manifestSha256)
+    ) {
+      return false;
+    }
     const expires = Date.parse(evidence.expiresAt);
     if (Number.isNaN(expires)) return false;
     return expires > now.getTime();

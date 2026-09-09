@@ -112,6 +112,93 @@ describe('reply assessment', () => {
     expect(assessment.issues.map((issue) => issue.code)).toContain('UNSUPPORTED_ACTION_CLAIM');
   });
 
+  it('keeps unsupported action and date claims outside the closed-world evidence set', () => {
+    const cases = [
+      'Your booking has been secured.',
+      'Your reservation is approved.',
+      'We have processed your cancellation.',
+    ];
+    for (const replyText of cases) {
+      const assessment = assessReply({ replyText, asks: [], facts: [] });
+      expect(assessment.ok, replyText).toBe(false);
+      expect(
+        assessment.issues.map((issue) => issue.code),
+        replyText,
+      ).toContain('UNSUPPORTED_ACTION_CLAIM');
+    }
+
+    const dateAssessment = assessReply({
+      replyText: 'Your stay is on 2027-12-31 at 14:00.',
+      asks: [],
+      facts: [],
+    });
+    expect(dateAssessment.ok).toBe(false);
+    expect(dateAssessment.issues.map((issue) => issue.code)).toContain('UNSUPPORTED_DATE_CLAIM');
+  });
+
+  it('does not let unrelated or nested identity values answer reservation status', () => {
+    const unrelated = assessReply({
+      replyText: 'Your booking is confirmed.',
+      asks: [],
+      facts: [
+        {
+          key: 'reservation.guestName',
+          label: 'guest name',
+          value: 'Alice',
+          source: 'hms',
+          authority: 'authorized',
+          status: 'known',
+        },
+      ],
+    });
+    expect(unrelated.ok).toBe(false);
+    expect(unrelated.issues.map((issue) => issue.code)).toContain('UNSUPPORTED_ACTION_CLAIM');
+
+    const nested = assessReply({
+      replyText: 'Reservation for Alice.',
+      asks: [{ code: 'reservation_status', label: 'reservation status', required: true }],
+      facts: [
+        {
+          key: 'reservation.summary',
+          label: 'reservation summary',
+          value: { guestName: 'Alice', reservationStatus: 'Pending' },
+          source: 'hms',
+          authority: 'authorized',
+          status: 'known',
+        },
+      ],
+    });
+    expect(nested.coverage).toEqual({ answered: 0, total: 1 });
+    expect(nested.issues.map((issue) => issue.code)).toContain('MISSING_BRACKET');
+  });
+
+  it('does not complete a normal prepared reply when no task or evidence is identified', async () => {
+    const prepared = prepareDraftInput({
+      requestId: 'request-u5-no-task',
+      audience: 'guest',
+      requestText: 'Please help.',
+    });
+    for (const replyText of [
+      'Thanks for your email.',
+      'We will look into this.',
+      'I cannot confirm this yet.',
+    ]) {
+      const adapter = createLocalModelAdapter({
+        route: localRoute,
+        transport: async () => ({
+          output: JSON.stringify({ replyText }),
+          usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 },
+        }),
+      });
+      const result = await runPreparedReplyWorkflow({
+        prepared,
+        requestKind: 'general',
+        adapter,
+      });
+      expect(result.outcome, replyText).not.toBe('complete');
+    }
+  });
+
   it('rejects an attachment claim without selected authorized bytes', () => {
     const assessment = assessReply({
       replyText: 'The invoice is attached for your records.',

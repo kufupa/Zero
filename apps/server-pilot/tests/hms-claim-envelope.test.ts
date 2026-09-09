@@ -1,11 +1,6 @@
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
+import { mapEnvelopeToClaims, parseClaimEnvelope } from '../src/hms/claim-envelope.js';
 import { describe, expect, it } from 'vitest';
-import {
-  mapEnvelopeToClaims,
-  parseClaimEnvelope,
-} from '../src/hms/claim-envelope.js';
-import {
-  issueTrustedRequesterAuthorization,
-} from '../src/hms/requester-authorization.js';
 
 const observedAt = '2026-08-06T12:00:00.000Z';
 const evidenceId = 'ev-envelope-1';
@@ -37,10 +32,7 @@ function currentState(
       identity: 'requester-private',
       requesterClass: 'reservation_guest',
       inquiryClass: 'labelled_narrow_status',
-      allowedClaimKinds: overrides.allowedClaimKinds ?? [
-        'reservation_summary',
-        'folio_status',
-      ],
+      allowedClaimKinds: overrides.allowedClaimKinds ?? ['reservation_summary', 'folio_status'],
       forwarded: false,
       spoofed: overrides.spoofed ?? false,
     },
@@ -108,9 +100,7 @@ function findEnvelope(overrides: Record<string, unknown> = {}) {
 describe('claim envelope', () => {
   it('parses closed generic envelope and rejects unknown keys', () => {
     expect(parseClaimEnvelope(findEnvelope()).success).toBe(true);
-    expect(
-      parseClaimEnvelope(findEnvelope({ extra: true })).success,
-    ).toBe(false);
+    expect(parseClaimEnvelope(findEnvelope({ extra: true })).success).toBe(false);
   });
 
   it('mapEnvelopeToClaims emits one reservation_summary with evidenceIds', () => {
@@ -137,9 +127,7 @@ describe('claim envelope', () => {
     expect(
       mapEnvelopeToClaims(findEnvelope({ status: 'unverified_negative' }), authOpts()),
     ).toEqual([]);
-    expect(mapEnvelopeToClaims(findEnvelope({ rogue: 1 }), authOpts())).toEqual(
-      [],
-    );
+    expect(mapEnvelopeToClaims(findEnvelope({ rogue: 1 }), authOpts())).toEqual([]);
   });
 
   it('rejects missing, stale, cross-thread, spoofed, and claim-kind mismatch auth', () => {
@@ -200,6 +188,45 @@ describe('claim envelope', () => {
           },
         }),
         authOpts(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('preserves scope joins and rejects mismatched or caller-invented requester authority', () => {
+    const authorization = issueAuth();
+    expect(authorization).not.toBeNull();
+    const manifestSha256 = 'c'.repeat(64);
+    const scopeHash = 'd'.repeat(64);
+    const scoped = findEnvelope({
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
+      requesterAuthorizationId: authorization!.authorizationId,
+    });
+    const claims = mapEnvelopeToClaims(scoped, authOpts({ authorization }));
+    expect(claims[0]).toMatchObject({
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
+      requesterAuthorizationId: authorization!.authorizationId,
+    });
+
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope({ requesterAuthorizationId: 'foreign-authorization' }),
+        authOpts({ authorization }),
+      ),
+    ).toEqual([]);
+    expect(
+      mapEnvelopeToClaims(findEnvelope({ requesterAuthorizationId: 'caller-invented' })),
+    ).toEqual([]);
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope({
+          manifestSha256: 'e'.repeat(64),
+          manifestSha256ByBranch: { guest_stay_search: 'f'.repeat(64) },
+        }),
+        authOpts({ authorization }),
       ),
     ).toEqual([]);
   });

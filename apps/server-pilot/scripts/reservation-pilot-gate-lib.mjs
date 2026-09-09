@@ -169,6 +169,8 @@ const SLICE_PLANS = {
         'tests/reply-playbooks.test.ts',
         'tests/reply-assessment.test.ts',
         'tests/prepared-draft-input.test.ts',
+        'tests/hms-candidate-agent.test.ts',
+        'tests/hms-claim-envelope.test.ts',
         'tests/local-model-adapter-contract.test.ts',
         'tests/shadow-model-routing.test.ts',
       ],

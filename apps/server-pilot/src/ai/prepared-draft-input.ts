@@ -7,6 +7,9 @@
  * it is never treated as an instruction or authority grant.
  */
 
+import { preparedAttachmentReaderProofFor } from '../mail/artifacts/prepared-attachment-proof.js';
+import type { AuthorizedArtifactBytes } from '../mail/artifacts/read-artifact.js';
+
 export const PREPARED_DRAFT_INPUT_VERSION = 'u5-prepared-draft-input-v1';
 export const MAX_PREPARED_REQUEST_TEXT = 8_192;
 export const MAX_PREPARED_FACTS = 64;
@@ -38,6 +41,10 @@ export type PreparedFact = {
   evidenceRef?: string;
   sourceHash?: string;
   scopeVerified?: boolean;
+  manifestSha256?: string;
+  manifestSha256ByBranch?: Record<string, string>;
+  scopeHash?: string;
+  requesterAuthorizationId?: string;
   expiresAt?: string;
   observedAt?: string;
   disclosure?: 'guest' | 'staff_only';
@@ -71,10 +78,10 @@ export type PreparedAttachment = {
   [AUTHORIZED_ATTACHMENT_PROOF]?: true;
 };
 
-export type PreparedAttachmentAuthorization = Omit<
-  PreparedAttachment,
-  typeof AUTHORIZED_ATTACHMENT_PROOF
->;
+export type PreparedAttachmentAuthorization = {
+  /** Exact object returned by readAuthorizedArtifactBytes with trusted scope. */
+  bytes: AuthorizedArtifactBytes;
+};
 
 export type PreparedDraftInput = {
   schemaVersion: typeof PREPARED_DRAFT_INPUT_VERSION;
@@ -246,6 +253,35 @@ function cloneFact(fact: PreparedFact, index: number): PreparedFact {
   if (fact.scopeVerified !== undefined && typeof fact.scopeVerified !== 'boolean') {
     throw new PreparedDraftInputError('INVALID_INPUT', `facts[${index}].scopeVerified is invalid`);
   }
+  for (const [name, digest] of [
+    ['manifestSha256', fact.manifestSha256],
+    ['scopeHash', fact.scopeHash],
+  ] as const) {
+    if (digest !== undefined && !/^[a-f0-9]{64}$/i.test(digest)) {
+      throw new PreparedDraftInputError('INVALID_INPUT', `facts[${index}].${name} is invalid`);
+    }
+  }
+  if (
+    fact.manifestSha256ByBranch !== undefined &&
+    Object.entries(fact.manifestSha256ByBranch).some(
+      ([branch, digest]) =>
+        !branch.trim() || typeof digest !== 'string' || !/^[a-f0-9]{64}$/i.test(digest),
+    )
+  ) {
+    throw new PreparedDraftInputError(
+      'INVALID_INPUT',
+      `facts[${index}].manifestSha256ByBranch is invalid`,
+    );
+  }
+  if (
+    fact.requesterAuthorizationId !== undefined &&
+    (!fact.requesterAuthorizationId.trim() || fact.requesterAuthorizationId.length > 256)
+  ) {
+    throw new PreparedDraftInputError(
+      'INVALID_INPUT',
+      `facts[${index}].requesterAuthorizationId is invalid`,
+    );
+  }
   return {
     key,
     label,
@@ -258,6 +294,21 @@ function cloneFact(fact: PreparedFact, index: number): PreparedFact {
       : {}),
     ...(fact.sourceHash ? { sourceHash: fact.sourceHash.toLowerCase() } : {}),
     ...(fact.scopeVerified === undefined ? {} : { scopeVerified: fact.scopeVerified }),
+    ...(fact.manifestSha256 ? { manifestSha256: fact.manifestSha256.toLowerCase() } : {}),
+    ...(fact.manifestSha256ByBranch
+      ? {
+          manifestSha256ByBranch: Object.fromEntries(
+            Object.entries(fact.manifestSha256ByBranch).map(([branch, digest]) => [
+              branch,
+              digest.toLowerCase(),
+            ]),
+          ),
+        }
+      : {}),
+    ...(fact.scopeHash ? { scopeHash: fact.scopeHash.toLowerCase() } : {}),
+    ...(fact.requesterAuthorizationId
+      ? { requesterAuthorizationId: fact.requesterAuthorizationId.trim() }
+      : {}),
     ...(fact.expiresAt ? { expiresAt: assertBoundedString(fact.expiresAt, 'expiresAt', 64) } : {}),
     ...(fact.observedAt
       ? { observedAt: assertBoundedString(fact.observedAt, 'observedAt', 64) }
@@ -376,7 +427,27 @@ function cloneAttachment(attachment: PreparedAttachment, index: number): Prepare
 export function authorizePreparedAttachment(
   input: PreparedAttachmentAuthorization,
 ): PreparedAttachment {
-  return cloneAttachment({ ...input, [AUTHORIZED_ATTACHMENT_PROOF]: true }, 0);
+  const proof = preparedAttachmentReaderProofFor(input.bytes);
+  if (!proof || proof.sourceHash !== input.bytes.sha256 || proof.selectedBytes !== true) {
+    throw new PreparedDraftInputError(
+      'INVALID_INPUT',
+      'authorized attachment requires selected bytes from the code-owned reader',
+    );
+  }
+  return cloneAttachment(
+    {
+      artifactRef: proof.artifactRef,
+      sourceHash: proof.sourceHash,
+      ...(proof.kind ? { kind: proof.kind } : {}),
+      ownerRef: proof.ownerRef,
+      threadId: proof.threadId,
+      selectedBytes: true,
+      observedAt: proof.observedAt,
+      ...(proof.expiresAt ? { expiresAt: proof.expiresAt } : {}),
+      [AUTHORIZED_ATTACHMENT_PROOF]: true,
+    },
+    0,
+  );
 }
 
 /** Freeze and validate authorized material before prompt/workflow serialization. */

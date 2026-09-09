@@ -1,6 +1,3 @@
-import { describe, expect, it } from 'vitest';
-import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import { renderClaim, type ToolResult } from '../src/ai/draft-evidence.js';
 import {
   FOLIO_READ_MAX_BYTES,
   FOLIO_READ_MAX_DURATION_MS,
@@ -11,15 +8,16 @@ import {
   parseFolioReadFixture,
   type FolioReadFixtureInput,
 } from '../src/hms/folio-read-contract.js';
+import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
 import { READ_TOOLS, capabilityStateFor } from '../src/hms/read-tools.js';
+import type { ToolResult } from '../src/ai/draft-evidence.js';
+import { describe, expect, it } from 'vitest';
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const OBSERVED = '2026-08-05T23:58:00.000Z';
 const HASH = 'a'.repeat(64);
 
-function fixture(
-  overrides: Partial<FolioReadFixtureInput> = {},
-): FolioReadFixtureInput {
+function fixture(overrides: Partial<FolioReadFixtureInput> = {}): FolioReadFixtureInput {
   return {
     binding: {
       parentToolId: 'hms_find_reservation',
@@ -173,16 +171,8 @@ describe('hms_read_folio fixture kernel', () => {
   );
 
   it.each([
-    [
-      'currency mismatch',
-      { currency: 'USD' },
-      'FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT',
-    ],
-    [
-      'folio total mismatch',
-      { totalBalance: '74.99' },
-      'FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT',
-    ],
+    ['currency mismatch', { currency: 'USD' }, 'FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT'],
+    ['folio total mismatch', { totalBalance: '74.99' }, 'FOLIO_CURRENCY_OR_TOTAL_INCONSISTENT'],
     [
       'deposit total mismatch',
       {
@@ -201,11 +191,9 @@ describe('hms_read_folio fixture kernel', () => {
   });
 
   it('rejects stale source and expired role proof', () => {
-    expect(
-      parseFolioReadFixture(
-        fixture({ observedAt: '2026-08-05T23:54:59.999Z' }),
-      ).blocker,
-    ).toBe('FOLIO_SOURCE_STALE');
+    expect(parseFolioReadFixture(fixture({ observedAt: '2026-08-05T23:54:59.999Z' })).blocker).toBe(
+      'FOLIO_SOURCE_STALE',
+    );
     expect(
       parseFolioReadFixture(
         fixture({
@@ -219,28 +207,19 @@ describe('hms_read_folio fixture kernel', () => {
   });
 
   it('enforces row, byte, and time caps before returning data', () => {
+    expect(parseFolioReadFixture(fixture({ rowsScanned: FOLIO_READ_MAX_ROWS + 1 })).blocker).toBe(
+      'FOLIO_BOUNDS_EXCEEDED',
+    );
     expect(
-      parseFolioReadFixture(
-        fixture({ rowsScanned: FOLIO_READ_MAX_ROWS + 1 }),
-      ).blocker,
+      parseFolioReadFixture(fixture({ bytesObserved: FOLIO_READ_MAX_BYTES + 1 })).blocker,
     ).toBe('FOLIO_BOUNDS_EXCEEDED');
     expect(
-      parseFolioReadFixture(
-        fixture({ bytesObserved: FOLIO_READ_MAX_BYTES + 1 }),
-      ).blocker,
-    ).toBe('FOLIO_BOUNDS_EXCEEDED');
-    expect(
-      parseFolioReadFixture(
-        fixture({ durationMs: FOLIO_READ_MAX_DURATION_MS + 1 }),
-      ).blocker,
+      parseFolioReadFixture(fixture({ durationMs: FOLIO_READ_MAX_DURATION_MS + 1 })).blocker,
     ).toBe('FOLIO_BOUNDS_EXCEEDED');
   });
 
   it('publishes closed privacy policy with every forbidden surface', () => {
-    expect(FOLIO_READ_PRIVACY_POLICY.allowedSurfaces).toEqual([
-      'Folio',
-      'Deposit Ledger',
-    ]);
+    expect(FOLIO_READ_PRIVACY_POLICY.allowedSurfaces).toEqual(['Folio', 'Deposit Ledger']);
     expect(FOLIO_READ_PRIVACY_POLICY.deniedData).toEqual(
       expect.arrayContaining([
         'card_number',
@@ -307,22 +286,19 @@ describe('folio recipient-class claims', () => {
       toolResult(parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
     );
-    expect(claims).toHaveLength(1);
-    expect(claims[0]?.kind).toBe('folio_deposit_summary');
-    expect(renderClaim(claims[0]!)).toContain('labelled narrow status');
+    // The fixture kernel output has no server-issued scope/receipt binding.
+    // Positive claim extraction is covered through mergeFolioEvidence below.
+    expect(claims).toEqual([]);
   });
 
-  it.each([
-    'refund_request',
-    'settlement_request',
-    'invoice_request',
-  ] as const)('limits %s to Partial', (inquiryClass) => {
-    const parsed = parseFolioReadFixture(fixture({ inquiryClass }));
-    expect(parsed.data).not.toBeNull();
-    expect(mapFolioDepositClaim(parsed.data!)?.responseCredit).toBe(
-      'partial_status_only',
-    );
-  });
+  it.each(['refund_request', 'settlement_request', 'invoice_request'] as const)(
+    'limits %s to Partial',
+    (inquiryClass) => {
+      const parsed = parseFolioReadFixture(fixture({ inquiryClass }));
+      expect(parsed.data).not.toBeNull();
+      expect(mapFolioDepositClaim(parsed.data!)?.responseCredit).toBe('partial_status_only');
+    },
+  );
 
   it.each(['unknown', 'third_party'] as const)(
     'blocks claims for %s recipient',
@@ -332,18 +308,13 @@ describe('folio recipient-class claims', () => {
       expect(parsed.data).not.toBeNull();
       expect(mapFolioDepositClaim(parsed.data!)).toBeNull();
       expect(
-        claimsFromToolResult(
-          toolResult(parsed.data),
-          new Date('2026-08-06T00:01:00.000Z'),
-        ),
+        claimsFromToolResult(toolResult(parsed.data), new Date('2026-08-06T00:01:00.000Z')),
       ).toEqual([]);
     },
   );
 
   it('ignores forged claimEligibility and recomputes from recipient/inquiry', () => {
-    const parsed = parseFolioReadFixture(
-      fixture({ recipientClass: 'third_party' }),
-    );
+    const parsed = parseFolioReadFixture(fixture({ recipientClass: 'third_party' }));
     expect(parsed.data).not.toBeNull();
     const forged = {
       ...parsed.data!,
@@ -358,18 +329,14 @@ describe('folio recipient-class claims', () => {
 
 describe('folio registry contract', () => {
   it('registers closed contract with discovery digest; live promotion still false', () => {
-    expect(READ_TOOLS.hms_read_folio.observationSchema).toBe(
-      folioReadDataSchema,
-    );
+    expect(READ_TOOLS.hms_read_folio.observationSchema).toBe(folioReadDataSchema);
     expect(READ_TOOLS.hms_read_folio.promotionEvidence).toEqual({
       fixture: true,
       discovery: false,
       live: false,
       shadow: false,
     });
-    expect(READ_TOOLS.hms_read_folio.evidenceRefs.discoveryDigest).toMatch(
-      /^[a-f0-9]{64}$/,
-    );
+    expect(READ_TOOLS.hms_read_folio.evidenceRefs.discoveryDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(capabilityStateFor('hms_read_folio')).toBe('discovery_verified');
   });
 });

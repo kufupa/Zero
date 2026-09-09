@@ -1,5 +1,5 @@
 import {
-  prepareDraftInput,
+  PREPARED_DRAFT_INPUT_VERSION,
   serializePreparedDraftInput,
   type PreparedDraftInput,
 } from '../prepared-draft-input.js';
@@ -14,14 +14,29 @@ import type { ModelAdapter } from '../bedrock/adapter.js';
 import { textToSafeHtml } from '../draft-evidence.js';
 import { z } from 'zod';
 
-const candidateDraftInputSchema = z.object({
-  transportId: z.string(),
-  threadId: z.string(),
-  triggerMessageId: z.string(),
-  fromAddress: z.string(),
-  subject: z.string().optional(),
-  body: z.string(),
-});
+const preparedDraftInputSchema = z.custom<PreparedDraftInput>(
+  (value) => {
+    if (!value || typeof value !== 'object') return false;
+    try {
+      serializePreparedDraftInput(value as PreparedDraftInput);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: `prepared input must be ${PREPARED_DRAFT_INPUT_VERSION}` },
+);
+
+const candidateDraftInputSchema = z
+  .object({
+    transportId: z.string(),
+    triggerMessageId: z.string(),
+    replyToAddress: z.string().email(),
+    subject: z.string().optional(),
+    deadlineAt: z.number().int().positive().optional(),
+    prepared: preparedDraftInputSchema,
+  })
+  .strict();
 
 export const candidateDraftOutputSchema = z.object({
   draftBody: z.object({
@@ -129,10 +144,12 @@ function outcomeForAssessment(
 ): ReplyOutcome {
   if (prepared.audience === 'internal' || requestKind === 'group') return 'internal_brief';
   if (!assessment.ok) return 'abstain';
-  if (
-    assessment.coverage.total === 0 ||
-    assessment.coverage.answered >= assessment.coverage.total
-  ) {
+  if (assessment.coverage.total === 0) {
+    // A reply without an identified task is never a completed answer, even
+    // when it contains harmless acknowledgement text or unrelated facts.
+    return 'clarification';
+  }
+  if (assessment.coverage.answered >= assessment.coverage.total) {
     return 'complete';
   }
   return prepared.facts.length === 0 ? 'clarification' : 'partial';
@@ -257,22 +274,16 @@ export async function runPreparedReplyWorkflow(
 
 /** Legacy off-mode skeleton — evidence rules do not apply. */
 export async function generateSkeletonDraft(input: SkeletonDraftInput, signal?: AbortSignal) {
-  if (signal?.aborted) {
+  if (signal?.aborted || (input.deadlineAt !== undefined && Date.now() >= input.deadlineAt)) {
     const err = new Error('skeleton draft aborted');
     err.name = 'AbortError';
     throw err;
   }
-  const prepared = prepareDraftInput({
-    requestId: input.triggerMessageId,
-    threadId: input.threadId,
-    audience: 'guest',
-    requestText: input.body,
-  });
-  // Serialize the bounded value before any workflow/model boundary. Off mode
-  // has no approved route, so it returns a deterministic manual-review
-  // skeleton rather than creating a hosted, fake, or guessed model client.
-  serializePreparedDraftInput(prepared);
-  const sender = deriveReplyToAddress(input.fromAddress) ?? 'guest';
+  // The workflow receives only this already-prepared value. Off mode has no
+  // approved route, so it returns a deterministic manual-review skeleton
+  // rather than creating a hosted, fake, or guessed model client.
+  serializePreparedDraftInput(input.prepared);
+  const sender = input.replyToAddress;
   const parsed = {
     textBody: `Hi ${sender},\n\n[human writes response here]\n\nBest,\n[staff name]`,
     htmlBody: textToSafeHtml(
@@ -295,8 +306,8 @@ const generateDraftStep = createStep({
   id: 'generate-candidate-draft',
   inputSchema: candidateDraftInputSchema,
   outputSchema: candidateDraftOutputSchema,
-  execute: async ({ inputData, runId }) => {
-    const result = await generateSkeletonDraft(inputData);
+  execute: async ({ inputData, runId, abortSignal }) => {
+    const result = await generateSkeletonDraft(inputData, abortSignal);
     return {
       draftBody: result.draftBody,
       metrics: result.metrics,

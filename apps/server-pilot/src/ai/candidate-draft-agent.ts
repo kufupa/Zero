@@ -32,6 +32,11 @@ import {
   type PreparedDraftInput,
 } from './prepared-draft-input.js';
 import {
+  mapEnvelopeToClaims,
+  toolResultToClaimEnvelope,
+  type MapEnvelopeRequesterAuthorization,
+} from '../hms/claim-envelope.js';
+import {
   RunDeadlineError,
   reserveReadAttempt,
   type AiRunFence,
@@ -41,7 +46,6 @@ import {
   runPreparedReplyWorkflow,
   type PreparedReplyWorkflowResult,
 } from './workflows/candidate-draft.js';
-import { mapEnvelopeToClaims, toolResultToClaimEnvelope } from '../hms/claim-envelope.js';
 import type { ReservationReadData, StayOptionReadData } from '../hms/contracts.js';
 import type { TrustedRequesterAuthorizationV1 } from '../hms/contracts.js';
 import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
@@ -154,6 +158,8 @@ export type CandidateToolSession = {
   /** Plan-scoped bindings — set by worker/session when activeReleases non-empty. */
   candidateBindings?: ReadonlyMap<string, CandidateBinding>;
   requesterAuthorization?: TrustedRequesterAuthorizationV1;
+  /** Optional full current-state proof for the typed claim envelope gate. */
+  claimAuthorization?: MapEnvelopeRequesterAuthorization | null;
   /** U8 production read path owns the lock around the whole typed dispatch. */
   propertyReadLock?: import('../hms/property-read-lock.js').PropertyReadLock;
   close?: () => Promise<void>;
@@ -172,12 +178,16 @@ export type MinimizedToolModelOutput = {
 export function claimsFromToolResult(
   result: ToolResult<unknown>,
   now: Date = new Date(),
+  requesterAuthorization?: MapEnvelopeRequesterAuthorization | null,
 ): EvidenceClaim[] {
   const readiness = evaluateDraftReadiness(result, now);
   if (!readiness.draftReady) return [];
 
   const expiresAt = result.evidence.kind === 'hms' ? result.evidence.expiresAt : undefined;
-  return mapEnvelopeToClaims(toolResultToClaimEnvelope(result), { expiresAt });
+  return mapEnvelopeToClaims(toolResultToClaimEnvelope(result), {
+    expiresAt,
+    ...(requesterAuthorization === undefined ? {} : { requesterAuthorization }),
+  });
 }
 
 export function minimizeToolResultForModel(
@@ -355,7 +365,7 @@ export function createCandidateTools(
   function ingest(result: ToolResult<unknown>): ToolResult<unknown> {
     const parsed = ToolResultSchema.parse(result) as ToolResult<unknown>;
     evidenceResults.push(parsed);
-    const built = claimsFromToolResult(parsed, now());
+    const built = claimsFromToolResult(parsed, now(), session.claimAuthorization);
     for (const claim of built) claimMap.set(claim.id, claim);
     if (evaluateDraftReadiness(parsed, now()).draftReady) {
       eligibleEvidenceIds.add(parsed.evidence.id);
@@ -371,7 +381,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -397,7 +407,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -424,7 +434,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -450,7 +460,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -477,7 +487,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -506,7 +516,7 @@ export function createCandidateTools(
     toModelOutput: (output) =>
       minimizeToolResultForModel(
         output as ToolResult<unknown>,
-        claimsFromToolResult(output as ToolResult<unknown>),
+        claimsFromToolResult(output as ToolResult<unknown>, now(), session.claimAuthorization),
       ),
     execute: async (input, context) => {
       const signal = context?.abortSignal;
@@ -1034,7 +1044,11 @@ export async function runClaimSafeCandidateDraft(input: {
         preparedReplyAssessment: replyResult.assessment.issues.map((issue) => issue.code),
         preparedReplyMetrics: replyResult.metrics,
       };
-      if (replyResult.outcome === 'complete' || replyResult.outcome === 'partial') {
+      if (
+        (replyResult.outcome === 'complete' || replyResult.outcome === 'partial') &&
+        replyResult.assessment.ok &&
+        replyResult.assessment.coverage.total > 0
+      ) {
         try {
           assertNoUncitedCriticalLiterals({
             textBody: replyResult.textBody,
