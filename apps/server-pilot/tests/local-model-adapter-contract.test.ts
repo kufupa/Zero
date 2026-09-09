@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const evidence: LocalModelRouteEvidence = {
   routeId: 'approved-local-test',
+  purpose: 'draft',
   protocol: 'in_process',
   access: 'current_app',
   egress: 'none',
@@ -108,5 +109,32 @@ describe('approved local model adapter', () => {
         transport: undefined as never,
       }),
     ).toThrow(LocalModelRouteUnavailableError);
+  });
+
+  it('refuses a caller model that is not the exact purpose-bound route model', async () => {
+    let transportCalls = 0;
+    const purposeBoundEvidence = {
+      ...evidence,
+      purpose: 'draft',
+    } as LocalModelRouteEvidence;
+    const adapter = createLocalModelAdapter({
+      route: purposeBoundEvidence,
+      transport: async () => {
+        transportCalls += 1;
+        return {
+          output: {},
+          usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+        };
+      },
+    });
+
+    await expect(
+      adapter.invoke({
+        modelId: 'unapproved-hosted-looking-model',
+        systemPrompt: 'system',
+        userPrompt: '{}',
+      }),
+    ).rejects.toThrow(LocalModelRouteUnavailableError);
+    expect(transportCalls).toBe(0);
   });
 });

@@ -1,10 +1,11 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
-import { getDb, __setDbForTests, type DB } from '../src/db/client.js';
+import {
+  DEFAULT_TRIAGE_PROMPT_VERSION,
+  enqueueAiRun,
+  claimNextAiRun,
+  isSupportedInboundTriagePromptVersion,
+  markAiRunRetry,
+  resolveDeployedTriagePromptVersion,
+} from '../src/ai/run-ledger.js';
 import {
   aiWorkflowRun,
   aiDraftGeneration,
@@ -16,32 +17,31 @@ import {
   mailboxTransport,
   message,
 } from '../src/db/schema/mail.js';
-import { user as userAuthTable } from '../src/db/schema/auth.js';
-import {
-  DEFAULT_TRIAGE_PROMPT_VERSION,
-  enqueueAiRun,
-  claimNextAiRun,
-  isSupportedInboundTriagePromptVersion,
-  markAiRunRetry,
-  resolveDeployedTriagePromptVersion,
-} from '../src/ai/run-ledger.js';
 import {
   aiWorkerOwnerId,
   executeAiRun,
+  runPreparedWorkerCandidateReply,
   renewAiRunLease,
   threadMessagesToTransportIndex,
 } from '../src/ai/worker.js';
-import * as mastraModule from '../src/ai/mastra.js';
+import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai/bedrock/local.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getDb, __setDbForTests, type DB } from '../src/db/client.js';
+import { resolveModelRoute } from '../src/ai/local-model-routing.js';
+import { user as userAuthTable } from '../src/db/schema/auth.js';
+import * as mastraModule from '../src/ai/mastra.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
+import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { eq, sql } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
 
-async function claimForExecute(
-  runId: string,
-  lane: 'default' | 'hms' = 'default',
-) {
+async function claimForExecute(runId: string, lane: 'default' | 'hms' = 'default') {
   const claimed = await claimNextAiRun({
     ownerId: aiWorkerOwnerId(lane),
     lane,
@@ -103,10 +103,7 @@ describe('ai worker contract', () => {
       }),
     ).toBe(false);
 
-    const ingestStore = readFileSync(
-      join(here, '..', 'src', 'mail', 'ingest', 'store.ts'),
-      'utf8',
-    );
+    const ingestStore = readFileSync(join(here, '..', 'src', 'mail', 'ingest', 'store.ts'), 'utf8');
     expect(ingestStore).toMatch(/promptVersion:\s*DEFAULT_TRIAGE_PROMPT_VERSION/);
   });
 
@@ -406,8 +403,66 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE/);
     expect(source).toMatch(/hmsMode === 'off'/);
     expect(source).toMatch(/runClaimSafeCandidateDraft/);
-    expect(source).toMatch(/candidateDraft/);
+    expect(source).toMatch(/runPreparedWorkerCandidateReply/);
     expect(source).toMatch(/persistDraft/);
+  });
+
+  it('normal candidate writer prepares before workflow serialization and has no generic model path', () => {
+    const worker = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    const workflow = readFileSync(
+      join(here, '..', 'src', 'ai', 'workflows', 'candidate-draft.ts'),
+      'utf8',
+    );
+    const offStart = worker.indexOf("if (hmsMode === 'off')");
+    const shadowStart = worker.indexOf("if (run.executorLane === 'hms'", offStart);
+    const offBlock = worker.slice(offStart, shadowStart);
+    expect(offBlock).toMatch(/runPreparedWorkerCandidateReply/);
+    expect(offBlock).toMatch(/candidateModelAdapter|modelAdapter/);
+    expect(offBlock).toMatch(/replyAsks/);
+    expect(offBlock).toMatch(/deadlineAt/);
+    expect(offBlock).not.toMatch(/createMastraRuntime/);
+    expect(offBlock).not.toMatch(/inputData:[\s\S]*body:\s*trigger\?/);
+    expect(workflow).not.toMatch(/createModelAdapter/);
+    expect(workflow).toMatch(/serializePreparedDraftInput/);
+  });
+
+  it('worker normal composition prepares before invoking the injected approved adapter', async () => {
+    const route: LocalModelRouteEvidence = {
+      routeId: 'worker-contract-route',
+      purpose: 'draft',
+      protocol: 'in_process',
+      access: 'current_app',
+      egress: 'none',
+      retention: 'bounded',
+      usage: 'reported',
+      modelId: 'worker-contract-model',
+    };
+    let prompt = '';
+    const adapter = createLocalModelAdapter({
+      route,
+      transport: async ({ userPrompt }) => {
+        prompt = userPrompt;
+        return {
+          output: {
+            replyText:
+              'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
+          },
+          usage: { inputTokens: 3, outputTokens: 4, latencyMs: 1 },
+        };
+      },
+    });
+    const result = await runPreparedWorkerCandidateReply({
+      requestId: 'worker-contract-request',
+      threadId: 'worker-contract-thread',
+      requestText: 'Please confirm my reservation.',
+      adapter,
+      signal: new AbortController().signal,
+      deadlineAt: Date.now() + 10_000,
+    });
+    expect(prompt).toContain('u5-prepared-draft-input-v1');
+    expect(prompt).toContain('worker-contract-request');
+    expect(result.serializedInput).toContain('worker-contract-request');
+    expect(result.metrics.fallback).toBe(false);
   });
 
   it('claim-safe path renders clarification templates and fences persist+succeed TX', () => {
@@ -430,7 +485,9 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/failHmsShadowRun/);
     expect(source).toMatch(/createLiveHmsCandidateSessionFactory/);
     expect(source).toMatch(/CandidateSessionFactory/);
-    expect(source).toMatch(/Promise<import\('\.\/candidate-draft-agent\.js'\)\.CandidateToolSession>/);
+    expect(source).toMatch(
+      /Promise<import\('\.\/candidate-draft-agent\.js'\)\.CandidateToolSession>/,
+    );
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
     expect(source).toMatch(/executorLane === 'hms'/);
     expect(source).toMatch(/probeAttachmentIds:\s*\[\s*\]/);
@@ -474,9 +531,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     // own run. Also wipes cross-run pollution from prior invocations.
     __setDbForTests(null);
     await getDb().execute(
-      sql.raw(
-        `TRUNCATE ${WORKER_DB_TABLES.join(', ')} RESTART IDENTITY CASCADE`,
-      ),
+      sql.raw(`TRUNCATE ${WORKER_DB_TABLES.join(', ')} RESTART IDENTITY CASCADE`),
     );
   });
 
@@ -522,6 +577,178 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
     return { transportId, threadId, messageId };
   }
+
+  it('claims a candidate run and persists the assessed prepared reply from the approved route', async () => {
+    await withWorkerDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      const unrelatedSubject = 'unrelated-secret-subject credential-token=never-serialize';
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: unrelatedSubject,
+        snippet: 'Please confirm my reservation.',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'Guest Person <guest@example.com>',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: unrelatedSubject,
+        textBody: 'Please confirm my reservation.',
+        receivedAt: new Date(),
+      });
+
+      const route: LocalModelRouteEvidence = {
+        routeId: 'u5-worker-positive-route',
+        purpose: 'draft',
+        protocol: 'in_process',
+        access: 'current_app',
+        egress: 'none',
+        retention: 'bounded',
+        usage: 'reported',
+        modelId: 'u5-worker-positive-model',
+      };
+      let transportCalls = 0;
+      let receivedPrompt = '';
+      let receivedSignal: AbortSignal | undefined;
+      const adapter = createLocalModelAdapter({
+        route,
+        transport: async (request) => {
+          transportCalls += 1;
+          receivedPrompt = request.userPrompt;
+          receivedSignal = request.signal;
+          return {
+            output: {
+              replyText:
+                'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
+            },
+            usage: { inputTokens: 11, outputTokens: 13, latencyMs: 2 },
+          };
+        },
+      });
+
+      const run = await enqueueAiRun({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        runKind: 'candidate_draft',
+        idempotencyKey: `worker-positive-prepared-reply:${messageId}`,
+        modelId: route.modelId,
+        promptVersion: 'draft-v1',
+      });
+      await claimForExecute(run.id);
+
+      const result = await executeAiRun(run.id, {
+        candidateReplyModelAdapter: adapter,
+      });
+
+      expect(result.state).toBe('succeeded');
+      expect(transportCalls).toBe(1);
+      expect(receivedSignal).toBeDefined();
+      expect(receivedSignal?.aborted).toBe(false);
+      expect(receivedPrompt).toContain('u5-prepared-draft-input-v1');
+      expect(receivedPrompt).toContain('Please confirm my reservation.');
+      expect(receivedPrompt).not.toContain(unrelatedSubject);
+
+      const [draft] = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+      expect(draft).toMatchObject({
+        status: 'candidate',
+        origin: 'ai',
+        toAddresses: ['guest@example.com'],
+        subject: `Re: ${unrelatedSubject}`,
+        textBody:
+          'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
+      });
+      expect(draft?.textBody).toBe(
+        'We cannot confirm this yet. [MISSING: reservation status | how: approved reservation read]',
+      );
+
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(row?.state).toBe('succeeded');
+      expect(row?.generationId).toBeTruthy();
+      expect(row?.metrics).toMatchObject({
+        hmsMode: 'off',
+        preparedReplyOutcome: 'clarification',
+        preparedReplyAssessment: [],
+        preparedInputSerializedBytes: expect.any(Number),
+        routeId: route.routeId,
+        usageSource: 'reported',
+        fallback: false,
+        provenance: expect.objectContaining({
+          routeId: route.routeId,
+          purpose: 'draft',
+          usageSource: 'reported',
+        }),
+      });
+      expect(JSON.stringify(row?.metrics)).not.toContain(unrelatedSubject);
+    });
+  });
+
+  it('returns manual review before transport initialization when the approved route is unavailable', async () => {
+    let transportCalls = 0;
+    expect(() =>
+      resolveModelRoute({
+        purpose: 'draft',
+        transport: async () => {
+          transportCalls += 1;
+          return {
+            output: {},
+            usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+          };
+        },
+      }),
+    ).toThrow(/route unavailable/i);
+    expect(transportCalls).toBe(0);
+
+    const result = await runPreparedWorkerCandidateReply({
+      requestId: 'worker-unavailable-route',
+      threadId: 'worker-unavailable-thread',
+      requestText: 'Please confirm my reservation.',
+      signal: new AbortController().signal,
+    });
+
+    expect(result.metrics).toMatchObject({
+      fallback: true,
+      modelRouteUnavailable: true,
+      modelRoutePurpose: 'draft',
+      manualReview: true,
+    });
+    expect(result.textBody).toContain('[MISSING: reservation status');
+  });
+
+  it('refuses a purpose-mismatched route before transport initialization', () => {
+    let transportCalls = 0;
+    const route: LocalModelRouteEvidence = {
+      routeId: 'u5-worker-mismatched-route',
+      purpose: 'extraction',
+      protocol: 'in_process',
+      access: 'current_app',
+      egress: 'none',
+      retention: 'bounded',
+      usage: 'reported',
+      modelId: 'u5-worker-mismatched-model',
+    };
+
+    expect(() =>
+      resolveModelRoute({
+        purpose: 'draft',
+        route,
+        transport: async () => {
+          transportCalls += 1;
+          return {
+            output: {},
+            usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+          };
+        },
+      }),
+    ).toThrow(/purpose mismatch/i);
+    expect(transportCalls).toBe(0);
+  });
 
   it('claims queued run and marks it succeeded', async () => {
     const { transportId, threadId, messageId } = await seedInbound();
@@ -612,7 +839,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     await executeAiRun(run.id);
     await executeAiRun(run.id);
 
-    const drafts = await db.select().from(mailDraft).where(eq(mailDraft.generationId, generationId));
+    const drafts = await db
+      .select()
+      .from(mailDraft)
+      .where(eq(mailDraft.generationId, generationId));
     const revisions = await db
       .select()
       .from(mailDraftRevision)
@@ -1165,9 +1395,7 @@ describe('Task 5 HMS live proof CLI (DB-free)', () => {
   it('status validates build/deps/manifest/fingerprint/role/health/TTL/deltas', () => {
     const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
     expect(source).toMatch(/NAVA_BUILD_COMMIT|buildCommit|runningProcessCommit/);
-    expect(source).toMatch(
-      /playwright-1\.52\.0-chromium-1169/,
-    );
+    expect(source).toMatch(/playwright-1\.52\.0-chromium-1169/);
     expect(source).toMatch(/manifestSha256/);
     expect(source).toMatch(/rowFingerprintSha256/);
     expect(source).toMatch(/roleProofSha256/);

@@ -202,6 +202,9 @@ const SLICE_PLANS = {
     baseline: { server: ['tests/mail-baseline-projection.test.ts'] },
     shadow: { server: ['tests/shadow-evaluation.test.ts'] },
     outbox: { server: ['tests/outbound-queue.test.ts'] },
+    'candidate-drafting': {
+      server: ['tests/ai-candidate-draft-contract.test.ts', 'tests/ai-worker-contract.test.ts'],
+    },
   },
   browser: {
     dashboard: {

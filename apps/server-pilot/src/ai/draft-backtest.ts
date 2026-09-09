@@ -25,6 +25,7 @@ export function isCenturionMailboxFrom(fromAddress: string | null | undefined): 
 }
 
 export type GoldPairingKind = 'centurion_outbound' | 'forward_or_external' | 'no_gold_reply';
+export type EvaluationMode = 'current-state' | 'historical-replay' | 'future-shadow';
 
 export type CorpusPair = {
   threadId: string;
@@ -60,6 +61,8 @@ export type DraftEvalRecord = {
   toneOverlap?: number;
   /** Gold reply id hash — dedupe key for centurion-from-replies sample. */
   goldMessageIdHash?: string;
+  /** Explicit boundary between current, historical, and future evaluation. */
+  evaluationMode: EvaluationMode;
 };
 
 export type FailureClass =
@@ -73,6 +76,7 @@ export type FailureClass =
 
 export type AggregateScorecard = {
   runId: string;
+  evaluationMode: EvaluationMode;
   scored: number;
   byClass: Record<FailureClass, number>;
   inventedFactRate: number;
@@ -112,7 +116,7 @@ export function pairCenturionGold(input: {
   messages: ReadonlyArray<{
     id: string;
     direction: 'inbound' | 'outbound';
-    transportId?: string | null;
+    transportId: string | null;
     createdAt: string;
     subject?: string | null;
   }>;
@@ -121,9 +125,23 @@ export function pairCenturionGold(input: {
   if (!inbound || inbound.direction !== 'inbound') {
     throw new Error('inbound message required for gold pairing');
   }
+  if (inbound.transportId !== CENTURION_TRANSPORT_ID) {
+    return {
+      threadId: input.threadId,
+      inboundMessageId: input.inboundMessageId,
+      inboundMessageIdHash: hashOpaqueId(input.inboundMessageId),
+      goldKind: 'no_gold_reply',
+      goldOutboundMessageId: null,
+    };
+  }
   const inboundAt = Date.parse(inbound.createdAt);
   const laterOutbound = input.messages
-    .filter((m) => m.direction === 'outbound' && Date.parse(m.createdAt) >= inboundAt)
+    .filter(
+      (m) =>
+        m.direction === 'outbound' &&
+        m.transportId === CENTURION_TRANSPORT_ID &&
+        Date.parse(m.createdAt) >= inboundAt,
+    )
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
   const first = laterOutbound[0] ?? null;
@@ -148,13 +166,16 @@ export function pairCenturionGold(input: {
 /**
  * Gold = message FROM centurion@ that replies on an existing thread
  * (at least one prior message). Trigger = latest prior message.
- * Direction ignored — BCC copies are often labeled inbound.
+ * Only an outbound Centurion message may be gold; the trigger must be the
+ * latest earlier inbound on the same Centurion transport.
  */
 export function pairCenturionFromReply(input: {
   threadId: string;
   goldMessageId: string;
   messages: ReadonlyArray<{
     id: string;
+    direction: 'inbound' | 'outbound';
+    transportId: string | null;
     fromAddress?: string | null;
     createdAt: string;
     subject?: string | null;
@@ -162,12 +183,22 @@ export function pairCenturionFromReply(input: {
 }): CorpusPair {
   const gold = input.messages.find((m) => m.id === input.goldMessageId);
   if (!gold) throw new Error('gold message required');
-  if (!isCenturionMailboxFrom(gold.fromAddress)) {
+  if (
+    gold.direction !== 'outbound' ||
+    gold.transportId !== CENTURION_TRANSPORT_ID ||
+    !isCenturionMailboxFrom(gold.fromAddress)
+  ) {
     throw new Error('gold must be from centurion@ mailbox');
   }
   const goldAt = Date.parse(gold.createdAt);
   const priors = input.messages
-    .filter((m) => m.id !== gold.id && Date.parse(m.createdAt) < goldAt)
+    .filter(
+      (m) =>
+        m.id !== gold.id &&
+        m.direction === 'inbound' &&
+        m.transportId === CENTURION_TRANSPORT_ID &&
+        Date.parse(m.createdAt) < goldAt,
+    )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
   if (priors.length === 0) {
@@ -467,19 +498,28 @@ export function appendEvalRecord(root: string, runId: string, record: DraftEvalR
   });
 }
 
-export function loadScoredHashes(root: string, runId: string): Set<string> {
+export function loadScoredHashes(
+  root: string,
+  runId: string,
+  evaluationMode?: EvaluationMode,
+): Set<string> {
   const path = join(root, runId, 'results.jsonl');
   const out = new Set<string>();
   if (!existsSync(path)) return out;
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     if (!line.trim()) continue;
+    let row: DraftEvalRecord;
     try {
-      const row = JSON.parse(line) as DraftEvalRecord;
-      if (row.goldMessageIdHash) out.add(row.goldMessageIdHash);
-      else if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
+      row = JSON.parse(line) as DraftEvalRecord;
     } catch {
       /* skip corrupt line */
+      continue;
     }
+    if (evaluationMode && row.evaluationMode !== evaluationMode) {
+      throw new Error('persisted evaluation mode does not match requested mode');
+    }
+    if (row.goldMessageIdHash) out.add(row.goldMessageIdHash);
+    else if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
   }
   return out;
 }
@@ -501,7 +541,17 @@ export function writeScorecard(root: string, runId: string, card: AggregateScore
 export function aggregateRecords(
   runId: string,
   records: readonly DraftEvalRecord[],
+  requestedEvaluationMode?: EvaluationMode,
 ): AggregateScorecard {
+  const recordModes = records.map((record) => record.evaluationMode);
+  const modes = new Set(recordModes.filter(Boolean));
+  if (recordModes.some((mode) => !mode) || modes.size > 1) {
+    throw new Error('evaluation mode is required and records must not mix evaluation modes');
+  }
+  const evaluationMode = requestedEvaluationMode ?? recordModes[0] ?? 'historical-replay';
+  if (modes.size === 1 && !modes.has(evaluationMode)) {
+    throw new Error('evaluation mode does not match requested mode');
+  }
   const byClass: Record<FailureClass, number> = {
     INVENTED_FACT: 0,
     MISSING_BRACKET: 0,
@@ -545,6 +595,7 @@ export function aggregateRecords(
   const scored = records.length;
   return {
     runId,
+    evaluationMode,
     scored,
     byClass,
     inventedFactRate: scored === 0 ? 0 : byClass.INVENTED_FACT / scored,

@@ -71,6 +71,54 @@ function factText(fact: PreparedFact): string {
   return '';
 }
 
+function factValueTexts(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value == null) return [];
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) return value.flatMap((item) => factValueTexts(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).flatMap((item) =>
+      factValueTexts(item, depth + 1),
+    );
+  }
+  return [];
+}
+
+function replyAnswersFact(
+  replyText: string,
+  fact: PreparedFact,
+  ask: PreparedAsk,
+  audience: PreparedDraftAudience,
+): boolean {
+  if (!supports(fact, ask, audience)) return false;
+  const lower = replyText.toLocaleLowerCase();
+  const values = factValueTexts(fact.value)
+    .map((value) => value.trim().toLocaleLowerCase())
+    .filter((value) => value.length >= 3);
+  if (values.length === 0 || !values.some((value) => lower.includes(value))) return false;
+  const code = normalize(ask.code);
+  if (code === 'reservation_status' || code === 'reservation') {
+    return /\b(?:reservation|booking|status|confirmation|confirmed|pending|cancelled|canceled)\b/i.test(
+      lower,
+    );
+  }
+  if (code === 'stay_dates')
+    return /\b(?:stay|arrival|departure|check[- ]?in|check[- ]?out|\d{4}[-/]\d{1,2})\b/i.test(
+      lower,
+    );
+  if (code === 'price' || code === 'rate' || code === 'quote') {
+    return /\b(?:price|rate|quote|total|usd|zar|eur|gbp|r)\b/i.test(lower);
+  }
+  if (code === 'payment_status' || code === 'payment' || code === 'deposit') {
+    return /\b(?:payment|deposit|paid|pending|receipt|cleared|received|unpaid)\b/i.test(lower);
+  }
+  return (
+    lower.includes(normalize(ask.label).replace(/_/g, ' ')) ||
+    lower.includes(normalize(fact.label).replace(/_/g, ' '))
+  );
+}
+
 function extractMoney(text: string): Array<{ currency: string; amount: number }> {
   const out: Array<{ currency: string; amount: number }> = [];
   const expression = /\b(USD|ZAR|EUR|GBP|R)\s*([0-9][0-9,.]*)\b/gi;
@@ -130,8 +178,27 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
     .map((fact) => fact.key);
   const requiredAsks = input.asks.filter((ask) => ask.required !== false);
   const answered = requiredAsks.filter((ask) =>
-    input.facts.some((fact) => supports(fact, ask, audience)),
+    input.facts.some((fact) => replyAnswersFact(reply, fact, ask, audience)),
   ).length;
+
+  const completionClaim =
+    /\b(?:booking|reservation)\s+(?:is\s+)?(?:confirmed|booked|completed)\b/i.test(reply) ||
+    /\bpayment\s+(?:is\s+)?(?:cleared|paid|settled|completed)\b/i.test(reply);
+  const hasActionEvidence = input.facts.some((fact) => {
+    if (!known(fact, audience)) return false;
+    const key = normalize(fact.key);
+    return (
+      /(booking|reservation|payment|deposit|folio|action)/.test(key) &&
+      !/(?:pending|requested|unknown|false|unverified)/i.test(factText(fact))
+    );
+  });
+  if (
+    completionClaim &&
+    !hasActionEvidence &&
+    !/\b(?:cannot|can't|unable|not able|unverified)\b/i.test(reply)
+  ) {
+    addIssue(issues, { code: 'UNSUPPORTED_ACTION_CLAIM', severity: 'critical' });
+  }
 
   for (const fact of input.facts) {
     if (!known(fact, audience)) continue;
@@ -190,7 +257,10 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
   }
 
   for (const ask of requiredAsks) {
-    if (!input.facts.some((fact) => supports(fact, ask, audience)) && !hasBracketFor(reply, ask)) {
+    if (
+      !input.facts.some((fact) => replyAnswersFact(reply, fact, ask, audience)) &&
+      !hasBracketFor(reply, ask)
+    ) {
       addIssue(issues, { code: 'MISSING_BRACKET', severity: 'warning' });
     }
   }

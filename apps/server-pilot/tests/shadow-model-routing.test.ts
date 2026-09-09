@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const routeEvidence: LocalModelRouteEvidence = {
   routeId: 'shadow-test-route',
+  purpose: 'draft',
   protocol: 'in_process',
   access: 'current_app',
   egress: 'none',
@@ -38,6 +39,24 @@ describe('draft, extraction, shadow, and judge model routing', () => {
           },
         },
       ),
+    ).toThrow(ModelRouteUnavailableError);
+    expect(transportInitialized).toBe(false);
+  });
+
+  it('refuses a route approved for another purpose before transport initialization', () => {
+    let transportInitialized = false;
+    expect(() =>
+      resolveModelRoute({
+        purpose: 'draft',
+        route: { ...routeEvidence, purpose: 'extraction' } as LocalModelRouteEvidence,
+        transport: async () => {
+          transportInitialized = true;
+          return {
+            output: {},
+            usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+          };
+        },
+      }),
     ).toThrow(ModelRouteUnavailableError);
     expect(transportInitialized).toBe(false);
   });

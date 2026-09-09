@@ -24,6 +24,7 @@ describe('pairCenturionGold', () => {
         {
           id: 'in1',
           direction: 'inbound',
+          transportId: 'transport-centurion',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
         {
@@ -54,6 +55,7 @@ describe('pairCenturionGold', () => {
         {
           id: 'in2',
           direction: 'inbound',
+          transportId: 'transport-centurion',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
         {
@@ -74,12 +76,43 @@ describe('pairCenturionGold', () => {
         {
           id: 'in3',
           direction: 'inbound',
+          transportId: 'transport-centurion',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
       ],
     });
     expect(none.goldKind).toBe('no_gold_reply');
     expect(none.goldOutboundMessageId).toBeNull();
+  });
+
+  it('does not pair a cross-transport outbound as Centurion gold', () => {
+    const pair = pairCenturionGold({
+      threadId: 't-cross-transport',
+      inboundMessageId: 'in-cross-transport',
+      messages: [
+        {
+          id: 'in-cross-transport',
+          direction: 'inbound',
+          transportId: 'transport-centurion',
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+        {
+          id: 'out-other-transport',
+          direction: 'outbound',
+          transportId: 'transport-other',
+          createdAt: '2026-08-01T10:01:00.000Z',
+          subject: 'Re: stay',
+        },
+        {
+          id: 'out-centurion',
+          direction: 'outbound',
+          transportId: 'transport-centurion',
+          createdAt: '2026-08-01T10:02:00.000Z',
+          subject: 'Re: stay',
+        },
+      ],
+    });
+    expect(pair.goldOutboundMessageId).toBe('out-centurion');
   });
 });
 
@@ -91,16 +124,22 @@ describe('pairCenturionFromReply', () => {
       messages: [
         {
           id: 'guest1',
+          direction: 'inbound',
+          transportId: 'transport-centurion',
           fromAddress: 'guest@example.com',
           createdAt: '2026-08-01T09:00:00.000Z',
         },
         {
           id: 'guest2',
+          direction: 'inbound',
+          transportId: 'transport-centurion',
           fromAddress: 'guest@example.com',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
         {
           id: 'gold1',
+          direction: 'outbound',
+          transportId: 'transport-centurion',
           fromAddress: 'centurion@legacyhotels.co.za',
           createdAt: '2026-08-01T11:00:00.000Z',
           subject: 'Re: stay',
@@ -122,11 +161,15 @@ describe('pairCenturionFromReply', () => {
       messages: [
         {
           id: 'in',
+          direction: 'inbound',
+          transportId: 'transport-centurion',
           fromAddress: 'guest@example.com',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
         {
           id: 'g2',
+          direction: 'outbound',
+          transportId: 'transport-centurion',
           fromAddress: 'Centurion <centurion@legacyhotels.co.za>',
           createdAt: '2026-08-01T11:00:00.000Z',
           subject: 'Fw: external',
@@ -143,6 +186,8 @@ describe('pairCenturionFromReply', () => {
       messages: [
         {
           id: 'solo',
+          direction: 'outbound',
+          transportId: 'transport-centurion',
           fromAddress: 'centurion@legacyhotels.co.za',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
@@ -150,6 +195,31 @@ describe('pairCenturionFromReply', () => {
     });
     expect(none.goldKind).toBe('no_gold_reply');
     expect(none.goldOutboundMessageId).toBeNull();
+  });
+
+  it('does not use a different transport as the pre-reply trigger', () => {
+    const pair = pairCenturionFromReply({
+      threadId: 't-cross-transport-reply',
+      goldMessageId: 'gold-cross-transport',
+      messages: [
+        {
+          id: 'other-transport-inbound',
+          transportId: 'transport-other',
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+        {
+          id: 'gold-cross-transport',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          createdAt: '2026-08-01T11:00:00.000Z',
+        },
+      ] as never,
+    });
+    expect(pair.goldKind).toBe('no_gold_reply');
+    expect(pair.goldOutboundMessageId).toBeNull();
   });
 });
 
@@ -274,6 +344,7 @@ describe('aggregate + safety', () => {
         evidenceTokens: [],
         bracketLines: [],
         failureClasses: ['INVENTED_FACT'],
+        evaluationMode: 'historical-replay',
         scoredAt: '2026-08-07T00:00:00.000Z',
         goldCriticalCoverage: 0.2,
         softWordOverlap: 0.1,
@@ -291,6 +362,7 @@ describe('aggregate + safety', () => {
         evidenceTokens: [],
         bracketLines: [],
         failureClasses: ['NO_GOLD_REPLY'],
+        evaluationMode: 'historical-replay',
         scoredAt: '2026-08-07T00:00:00.000Z',
         goldCriticalCoverage: 1,
         softWordOverlap: 0.5,
@@ -318,5 +390,31 @@ describe('aggregate + safety', () => {
     ).not.toThrow();
     const self = readFileSync(new URL('../src/ai/draft-backtest.ts', import.meta.url), 'utf8');
     expect(() => assertBacktestSourceSafe(self)).not.toThrow();
+  });
+
+  it('persists the evaluation mode and rejects mixed-mode aggregation', () => {
+    const records = [
+      {
+        runId: 'r-mode',
+        inboundMessageIdHash: 'mode-a',
+        threadIdHash: 't',
+        goldKind: 'centurion_outbound' as const,
+        draftText: 'x',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'historical-replay',
+      } as DraftEvalRecord,
+    ];
+    const card = aggregateRecords('r-mode', records);
+    expect((card as Record<string, unknown>).evaluationMode).toBe('historical-replay');
+
+    expect(() =>
+      aggregateRecords('r-mode-mixed', [
+        ...records,
+        { ...records[0], inboundMessageIdHash: 'mode-b', evaluationMode: 'current-state' },
+      ]),
+    ).toThrow(/evaluation mode/i);
   });
 });

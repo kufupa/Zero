@@ -573,9 +573,16 @@ export async function generateCandidateDraftPlan(input: {
   normalizedThreadText: string;
   claimSummaries: MinimizedToolModelOutput[];
   availableClaimIds: string[];
-  planModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
+  planModel?: (prompt: {
+    systemPrompt: string;
+    userPrompt: string;
+    signal?: AbortSignal;
+    deadlineAt?: number;
+  }) => Promise<unknown>;
   modelAdapter?: ModelAdapter;
   preparedInput?: PreparedDraftInput;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }): Promise<CandidateDraftPlan> {
   const prepared =
     input.preparedInput ??
@@ -609,7 +616,12 @@ export async function generateCandidateDraftPlan(input: {
 
   if (input.planModel) {
     return CandidateDraftPlanSchema.parse(
-      await input.planModel({ systemPrompt: planSystemPrompt, userPrompt }),
+      await input.planModel({
+        systemPrompt: planSystemPrompt,
+        userPrompt,
+        signal: input.signal,
+        deadlineAt: input.deadlineAt,
+      }),
     );
   }
 
@@ -618,6 +630,8 @@ export async function generateCandidateDraftPlan(input: {
     modelId: 'approved-local',
     systemPrompt: planSystemPrompt,
     userPrompt: `candidate draft plan:\n${userPrompt}`,
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
   });
   return CandidateDraftPlanSchema.parse(validateStructuredJsonOutput(model.output));
 }
@@ -704,13 +718,19 @@ export async function runClaimSafeCandidateDraft(input: {
   /** Plan-scoped bindings — when set with activeReleases, plan before browser I/O. */
   candidateBindings?: ReadonlyMap<string, CandidateBinding>;
   requesterAuthorization?: TrustedRequesterAuthorizationV1;
-  planModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
+  planModel?: (prompt: {
+    systemPrompt: string;
+    userPrompt: string;
+    signal?: AbortSignal;
+    deadlineAt?: number;
+  }) => Promise<unknown>;
   /** Explicit approved local adapter for the normal draft/reply path. */
   modelAdapter?: ModelAdapter;
   /** Optional separate adapter when plan and reply purposes are split. */
   replyModelAdapter?: ModelAdapter;
   replyRequestKind?: ReplyRequestKind;
   replyAsks?: readonly PreparedAsk[];
+  deadlineAt?: number;
   now?: Date;
 }): Promise<ClaimSafeCandidateResult> {
   const frozenNow = input.now;
@@ -912,6 +932,8 @@ export async function runClaimSafeCandidateDraft(input: {
           planModel: input.planModel,
           modelAdapter: input.modelAdapter,
           preparedInput,
+          signal,
+          deadlineAt: input.deadlineAt,
         });
       } catch (error) {
         if (error instanceof LocalModelRouteUnavailableError) {
@@ -1003,6 +1025,7 @@ export async function runClaimSafeCandidateDraft(input: {
         requestKind: input.replyRequestKind ?? 'general',
         adapter: replyAdapter,
         signal,
+        deadlineAt: input.deadlineAt,
       });
       const replyMetrics = {
         ...planMetrics,

@@ -1,13 +1,15 @@
 import {
+  prepareDraftInput,
+  serializePreparedDraftInput,
+  type PreparedDraftInput,
+} from '../prepared-draft-input.js';
+import {
   buildReplyPlaybook,
   type ReplyOutcome,
   type ReplyRequestKind,
 } from '../reply-playbooks.js';
-import { serializePreparedDraftInput, type PreparedDraftInput } from '../prepared-draft-input.js';
-import { enforceInboundMailPolicy, validateStructuredJsonOutput } from '../security/policy.js';
 import { assessReply, type ReplyAssessment } from '../reply-assessment.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
-import { createModelAdapter } from '../bedrock/factory.js';
 import type { ModelAdapter } from '../bedrock/adapter.js';
 import { textToSafeHtml } from '../draft-evidence.js';
 import { z } from 'zod';
@@ -48,13 +50,6 @@ export function deriveReplySubject(subject: string | null | undefined): string {
   const trimmed = subject?.trim() || 'Your inquiry';
   return /^re:/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
 }
-
-const systemPrompt = [
-  'Generate a hotel staff candidate reply skeleton.',
-  'Do not answer the guest request.',
-  'Use this exact structure: Hi {sender name}, then [human writes response here], then Best, {staff name}.',
-  'Return JSON only.',
-].join('\n');
 
 export type SkeletonDraftInput = z.infer<typeof candidateDraftInputSchema>;
 
@@ -267,22 +262,30 @@ export async function generateSkeletonDraft(input: SkeletonDraftInput, signal?: 
     err.name = 'AbortError';
     throw err;
   }
-  enforceInboundMailPolicy({ body: input.body });
-  const adapter = createModelAdapter();
-  const model = await adapter.invoke({
-    modelId: 'amazon.nova-lite-v1:0',
-    systemPrompt,
-    userPrompt: `draft reply skeleton for inbound email from ${input.fromAddress}: ${input.body}`,
+  const prepared = prepareDraftInput({
+    requestId: input.triggerMessageId,
+    threadId: input.threadId,
+    audience: 'guest',
+    requestText: input.body,
   });
-  const parsed = candidateDraftModelOutputSchema.parse(validateStructuredJsonOutput(model.output));
+  // Serialize the bounded value before any workflow/model boundary. Off mode
+  // has no approved route, so it returns a deterministic manual-review
+  // skeleton rather than creating a hosted, fake, or guessed model client.
+  serializePreparedDraftInput(prepared);
+  const sender = deriveReplyToAddress(input.fromAddress) ?? 'guest';
+  const parsed = {
+    textBody: `Hi ${sender},\n\n[human writes response here]\n\nBest,\n[staff name]`,
+    htmlBody: textToSafeHtml(
+      `Hi ${sender},\n\n[human writes response here]\n\nBest,\n[staff name]`,
+    ),
+  };
   return {
     draftBody: {
       textBody: parsed.textBody,
       htmlBody: parsed.htmlBody,
     },
     metrics: {
-      modelId: model.modelId,
-      usage: model.usage,
+      manualReview: true,
       hmsMode: 'off',
     },
   };

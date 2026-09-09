@@ -36,6 +36,9 @@ export type PreparedFact = {
   authority: PreparedFactAuthority;
   status: PreparedFactStatus;
   evidenceRef?: string;
+  sourceHash?: string;
+  scopeVerified?: boolean;
+  expiresAt?: string;
   observedAt?: string;
   disclosure?: 'guest' | 'staff_only';
 };
@@ -53,11 +56,25 @@ export type PreparedPolicy = {
   rules: string[];
 };
 
+const AUTHORIZED_ATTACHMENT_PROOF = Symbol('authorized-prepared-attachment');
+
 export type PreparedAttachment = {
   artifactRef: string;
-  sourceHash?: string;
+  sourceHash: string;
   kind?: 'pdf' | 'image' | 'text' | 'other';
+  ownerRef: string;
+  threadId: string;
+  selectedBytes: true;
+  observedAt: string;
+  expiresAt?: string;
+  /** Runtime-only proof; it is deliberately omitted from serialized JSON. */
+  [AUTHORIZED_ATTACHMENT_PROOF]?: true;
 };
+
+export type PreparedAttachmentAuthorization = Omit<
+  PreparedAttachment,
+  typeof AUTHORIZED_ATTACHMENT_PROOF
+>;
 
 export type PreparedDraftInput = {
   schemaVersion: typeof PREPARED_DRAFT_INPUT_VERSION;
@@ -138,6 +155,7 @@ function assertBoundedString(value: string, name: string, max: number): string {
 }
 
 function assertSafeValue(value: unknown, path: string, depth = 0, seen = new Set<object>()): void {
+  if (value === undefined) return;
   if (depth > 8) {
     throw new PreparedDraftInputError('INPUT_TOO_LARGE', `${path} is too deeply nested`);
   }
@@ -222,6 +240,12 @@ function cloneFact(fact: PreparedFact, index: number): PreparedFact {
     throw new PreparedDraftInputError('INVALID_INPUT', `facts[${index}].status is invalid`);
   }
   assertSafeValue(fact.value, `facts[${index}].value`);
+  if (fact.sourceHash !== undefined && !/^[a-f0-9]{64}$/i.test(fact.sourceHash)) {
+    throw new PreparedDraftInputError('INVALID_INPUT', `facts[${index}].sourceHash is invalid`);
+  }
+  if (fact.scopeVerified !== undefined && typeof fact.scopeVerified !== 'boolean') {
+    throw new PreparedDraftInputError('INVALID_INPUT', `facts[${index}].scopeVerified is invalid`);
+  }
   return {
     key,
     label,
@@ -232,6 +256,9 @@ function cloneFact(fact: PreparedFact, index: number): PreparedFact {
     ...(fact.evidenceRef
       ? { evidenceRef: assertBoundedString(fact.evidenceRef, 'evidenceRef', 256) }
       : {}),
+    ...(fact.sourceHash ? { sourceHash: fact.sourceHash.toLowerCase() } : {}),
+    ...(fact.scopeVerified === undefined ? {} : { scopeVerified: fact.scopeVerified }),
+    ...(fact.expiresAt ? { expiresAt: assertBoundedString(fact.expiresAt, 'expiresAt', 64) } : {}),
     ...(fact.observedAt
       ? { observedAt: assertBoundedString(fact.observedAt, 'observedAt', 64) }
       : {}),
@@ -245,6 +272,9 @@ function cloneAsk(ask: PreparedAsk, index: number): PreparedAsk {
   if (SENSITIVE_KEY.test(code) || SENSITIVE_KEY.test(label)) {
     throw new PreparedDraftInputError('SENSITIVE_INPUT', `asks[${index}] is sensitive`);
   }
+  if (ask.acquisition !== undefined) assertSafeValue(ask.acquisition, `asks[${index}].acquisition`);
+  if (ask.capabilityId !== undefined)
+    assertSafeValue(ask.capabilityId, `asks[${index}].capabilityId`);
   return {
     code,
     label,
@@ -270,10 +300,18 @@ function clonePolicy(policy: PreparedPolicy | undefined): PreparedPolicy | undef
   const rules = policy.rules.map((rule, index) =>
     assertBoundedString(rule, `policy.rules[${index}]`, 1_024),
   );
+  assertSafeValue(version, 'policy.version');
+  assertSafeValue(rules, 'policy.rules');
   return { version, rules };
 }
 
 function cloneAttachment(attachment: PreparedAttachment, index: number): PreparedAttachment {
+  if (attachment[AUTHORIZED_ATTACHMENT_PROOF] !== true) {
+    throw new PreparedDraftInputError(
+      'INVALID_INPUT',
+      `authorizedAttachments[${index}] lacks authorized selected-bytes proof`,
+    );
+  }
   const artifactRef = assertBoundedString(
     attachment.artifactRef,
     `authorizedAttachments[${index}].artifactRef`,
@@ -285,13 +323,60 @@ function cloneAttachment(attachment: PreparedAttachment, index: number): Prepare
   if (attachment.kind !== undefined && !ATTACHMENT_KINDS.has(attachment.kind)) {
     throw new PreparedDraftInputError('INVALID_INPUT', 'attachment kind is invalid');
   }
+  const sourceHash = assertBoundedString(
+    attachment.sourceHash,
+    `authorizedAttachments[${index}].sourceHash`,
+    128,
+  );
+  if (!/^[a-f0-9]{64}$/i.test(sourceHash)) {
+    throw new PreparedDraftInputError('INVALID_INPUT', 'attachment sourceHash is invalid');
+  }
+  const ownerRef = assertBoundedString(
+    attachment.ownerRef,
+    `authorizedAttachments[${index}].ownerRef`,
+    256,
+  );
+  const threadId = assertBoundedString(
+    attachment.threadId,
+    `authorizedAttachments[${index}].threadId`,
+    256,
+  );
+  const observedAt = assertBoundedString(
+    attachment.observedAt,
+    `authorizedAttachments[${index}].observedAt`,
+    64,
+  );
+  if (attachment.selectedBytes !== true) {
+    throw new PreparedDraftInputError(
+      'INVALID_INPUT',
+      'attachment selected bytes proof is missing',
+    );
+  }
+  assertSafeValue({ artifactRef, ownerRef, threadId, observedAt }, 'authorizedAttachment');
   return {
     artifactRef,
-    ...(attachment.sourceHash
-      ? { sourceHash: assertBoundedString(attachment.sourceHash, 'sourceHash', 128) }
+    sourceHash: sourceHash.toLowerCase(),
+    ownerRef,
+    threadId,
+    observedAt,
+    selectedBytes: true,
+    ...(attachment.expiresAt
+      ? { expiresAt: assertBoundedString(attachment.expiresAt, 'attachment expiresAt', 64) }
       : {}),
     ...(attachment.kind ? { kind: attachment.kind } : {}),
+    [AUTHORIZED_ATTACHMENT_PROOF]: true,
   };
+}
+
+/**
+ * Create the only attachment value accepted by the prepared-input boundary.
+ * Callers must obtain selected bytes and owner/thread binding from the
+ * code-owned artifact reader before constructing this proof.
+ */
+export function authorizePreparedAttachment(
+  input: PreparedAttachmentAuthorization,
+): PreparedAttachment {
+  return cloneAttachment({ ...input, [AUTHORIZED_ATTACHMENT_PROOF]: true }, 0);
 }
 
 /** Freeze and validate authorized material before prompt/workflow serialization. */
@@ -321,6 +406,11 @@ export function prepareDraftInput(input: PrepareDraftInputRequest): PreparedDraf
     throw new PreparedDraftInputError('INPUT_TOO_LARGE', 'too many released capabilities');
   }
   assertSafeValue(boundedRequestText, 'requestText');
+  assertSafeValue(input.asks ?? [], 'asks');
+  assertSafeValue(input.facts ?? [], 'facts');
+  assertSafeValue(input.policy ?? undefined, 'policy');
+  assertSafeValue(input.authorizedAttachments ?? [], 'authorizedAttachments');
+  assertSafeValue(input.releasedCapabilities ?? {}, 'releasedCapabilities');
 
   if (input.audience !== 'guest' && input.audience !== 'internal') {
     throw new PreparedDraftInputError('INVALID_INPUT', 'audience is invalid');
@@ -383,6 +473,17 @@ export function serializePreparedDraftInput(input: PreparedDraftInput): string {
   assertSafeValue(input.requestText, 'requestText');
   input.facts.forEach((fact, index) => {
     cloneFact(fact, index);
+  });
+  input.asks.forEach((ask, index) => {
+    cloneAsk(ask, index);
+  });
+  clonePolicy(input.policy);
+  input.authorizedAttachments.forEach((attachment, index) => {
+    cloneAttachment(attachment, index);
+  });
+  Object.entries(input.releasedCapabilities).forEach(([key, value]) => {
+    assertBoundedString(key, 'capability key', 128);
+    assertBoundedString(value, 'capability version', 128);
   });
   const serialized = JSON.stringify(input);
   if (Buffer.byteLength(serialized, 'utf8') > MAX_PREPARED_SERIALIZED_BYTES) {

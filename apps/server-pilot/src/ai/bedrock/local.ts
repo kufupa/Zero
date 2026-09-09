@@ -1,7 +1,11 @@
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from './adapter.js';
 
+export type LocalModelRoutePurpose = 'draft' | 'extraction' | 'shadow' | 'judge';
+
 export type LocalModelRouteEvidence = {
   routeId: string;
+  /** The sole workflow purpose authorized to use this route. */
+  purpose: LocalModelRoutePurpose;
   protocol: 'in_process';
   access: 'current_app';
   egress: 'none';
@@ -59,6 +63,7 @@ export class LocalModelAdapter implements ModelAdapter {
     }
     if (
       !config.route.routeId ||
+      !config.route.purpose ||
       config.route.protocol !== 'in_process' ||
       config.route.access !== 'current_app' ||
       config.route.egress !== 'none' ||
@@ -70,14 +75,26 @@ export class LocalModelAdapter implements ModelAdapter {
         'approved local model route evidence is incomplete',
       );
     }
+    if (config.defaultModelId !== undefined && config.defaultModelId !== config.route.modelId) {
+      throw new LocalModelRouteUnavailableError(
+        'approved local model default does not match route evidence',
+      );
+    }
     this.route = config.route;
     this.transport = config.transport;
     this.defaultModelId = config.defaultModelId ?? config.route.modelId;
   }
 
   async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
-    const modelId =
-      !input.modelId || input.modelId === 'approved-local' ? this.defaultModelId : input.modelId;
+    if (!input.modelId) {
+      throw new LocalModelRouteUnavailableError('local model id is required');
+    }
+    const modelId = input.modelId === 'approved-local' ? this.defaultModelId : input.modelId;
+    if (modelId !== this.route.modelId) {
+      throw new LocalModelRouteUnavailableError(
+        `model is not approved for local ${this.route.purpose} route`,
+      );
+    }
     const callerSignal = input.signal;
     if (callerSignal?.aborted) throw abortError('local model invocation aborted');
     if (input.deadlineAt !== undefined && Date.now() >= input.deadlineAt) {
@@ -125,6 +142,7 @@ export class LocalModelAdapter implements ModelAdapter {
           routeId: this.route.routeId,
           protocol: this.route.protocol,
           modelId,
+          purpose: this.route.purpose,
           usageSource: 'reported',
         },
       };

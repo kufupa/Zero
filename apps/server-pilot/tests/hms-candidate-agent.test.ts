@@ -206,6 +206,33 @@ describe('hms typed evidence contracts', () => {
     ).toBe(false);
   });
 
+  it('does not turn future observed evidence into a current claim', () => {
+    expect(
+      claimsFromToolResult(
+        okReservationResult({
+          evidence: hmsEvidence({
+            observedAt: '2099-01-01T00:00:00.000Z',
+            expiresAt: '2099-01-02T00:00:00.000Z',
+          }),
+        }),
+        now,
+      ),
+    ).toEqual([]);
+  });
+
+  it('preserves observed-time, source-hash, and scope proof on prepared claims', () => {
+    const claims = claimsFromToolResult(
+      okReservationResult({ evidence: hmsEvidence({ scopeVerified: true }) }),
+      now,
+    );
+    expect(claims[0]).toMatchObject({
+      observedAt: '2026-07-30T11:00:00.000Z',
+      sourceHash: 'a'.repeat(64),
+      scopeVerified: true,
+      expiresAt: '2026-07-30T13:00:00.000Z',
+    });
+  });
+
   it('renders typed claims deterministically without free-form factual prose', () => {
     const claims: EvidenceClaim[] = [
       EvidenceClaimSchema.parse({
@@ -1009,6 +1036,7 @@ describe('claim-safe candidate agent', () => {
     const claims = claimsFromToolResult(okReservationResult(), now);
     const route: LocalModelRouteEvidence = {
       routeId: 'hms-agent-test-route',
+      purpose: 'draft',
       protocol: 'in_process',
       access: 'current_app',
       egress: 'none',
@@ -1075,5 +1103,46 @@ describe('claim-safe candidate agent', () => {
     expect(result.outcome).toBe('insufficient_evidence');
     expect(result.metrics.modelRouteUnavailable).toBe(true);
     expect(result.metrics.modelRoutePurpose).toBe('draft');
+  });
+
+  it('passes the worker cancellation signal and deadline through plan generation', async () => {
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
+    let received: { signal?: AbortSignal; deadlineAt?: number } | undefined;
+    const runInput = {
+      session: createMockCandidateSession({
+        lookupCandidates: new Map([
+          ['cand-1', { id: 'cand-1', kind: 'confirmation' as const, value: 'CONF-88421' }],
+        ]),
+        findReservation: async () => okReservationResult(),
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: controller.signal,
+      deadlineAt,
+      now,
+      planModel: async (prompt: {
+        systemPrompt: string;
+        userPrompt: string;
+        signal?: AbortSignal;
+        deadlineAt?: number;
+      }) => {
+        received = prompt;
+        return {
+          outcome: 'candidate',
+          salutation: 'generic',
+          openingTemplate: 'acknowledge_request',
+          selectedClaimIds: claimsFromToolResult(okReservationResult(), now).map(
+            (claim) => claim.id,
+          ),
+          closingTemplate: 'invite_questions',
+        };
+      },
+    } as Parameters<typeof runClaimSafeCandidateDraft>[0] & {
+      deadlineAt: number;
+    };
+
+    await runClaimSafeCandidateDraft(runInput);
+    expect(received?.signal).toBe(controller.signal);
+    expect(received?.deadlineAt).toBe(deadlineAt);
   });
 });

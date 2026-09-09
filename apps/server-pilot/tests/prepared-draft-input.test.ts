@@ -56,4 +56,24 @@ describe('prepared draft input', () => {
       }),
     ).toThrow(/sensitive|secret/i);
   });
+
+  it('refuses auxiliary policy, ask, capability, and arbitrary attachment metadata', () => {
+    expect(() =>
+      prepareDraftInput({
+        requestId: 'request-auxiliary-secrets',
+        audience: 'guest',
+        inboundText: 'Please help.',
+        asks: [
+          {
+            code: 'reservation_status',
+            label: 'reservation status',
+            acquisition: 'token: ask-secret',
+          },
+        ],
+        policy: { version: 'policy-v1', rules: ['token: policy-secret'] },
+        releasedCapabilities: { reservation: 'token: capability-secret' },
+        authorizedAttachments: [{ artifactRef: 'unproved-ref' }],
+      }),
+    ).toThrow(/sensitive|authorized|selected|bytes/i);
+  });
 });

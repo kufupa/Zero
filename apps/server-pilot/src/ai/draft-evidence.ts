@@ -74,6 +74,9 @@ export type EvidenceClaim = {
   evidenceId: string;
   /** Closed envelope claims always set evidenceIds (primary first). */
   evidenceIds?: string[];
+  observedAt?: string;
+  sourceHash?: string;
+  scopeVerified?: boolean;
   expiresAt?: string;
 };
 
@@ -89,6 +92,10 @@ export function evidenceClaimToPreparedFact(claim: EvidenceClaim): PreparedFact 
     authority: 'authorized',
     status: 'known',
     evidenceRef: claim.evidenceId,
+    ...(claim.observedAt ? { observedAt: claim.observedAt } : {}),
+    ...(claim.sourceHash ? { sourceHash: claim.sourceHash } : {}),
+    ...(claim.scopeVerified === undefined ? {} : { scopeVerified: claim.scopeVerified }),
+    ...(claim.expiresAt ? { expiresAt: claim.expiresAt } : {}),
   };
 }
 
@@ -180,12 +187,16 @@ export function isEvidenceFresh(
   evidence: HmsEvidenceRef | MailEvidenceRef,
   now: Date = new Date(),
 ): boolean {
+  const observed = Date.parse(evidence.observedAt);
+  if (Number.isNaN(observed) || observed > now.getTime()) return false;
+  if (!sha256Hex.safeParse(evidence.sourceHash).success) return false;
   if (evidence.kind === 'hms') {
     const expires = Date.parse(evidence.expiresAt);
     if (Number.isNaN(expires)) return false;
     return expires > now.getTime();
   }
-  // Mail attachment evidence has no TTL in the base ref; treat as fresh once observed.
+  // Mail attachment evidence has no TTL in the base ref; it is fresh only
+  // after a valid, non-future observation.
   return true;
 }
 

@@ -86,6 +86,12 @@ export const claimEnvelopeSchema = z
     ]),
     observedAt: z.string().min(1),
     evidenceId: z.string().min(1),
+    sourceHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    scopeVerified: z.boolean().optional(),
+    expiresAt: z.string().min(1).optional(),
     data: z.unknown(),
   })
   .strict();
@@ -177,6 +183,23 @@ export function mapEnvelopeToClaims(
   raw: unknown,
   options?: MapEnvelopeToClaimsOptions,
 ): EvidenceClaim[] {
+  const claims = mapEnvelopeToClaimsInternal(raw, options);
+  const parsed = parseClaimEnvelope(raw);
+  if (!parsed.success) return claims;
+  return claims.map((claim) => ({
+    ...claim,
+    observedAt: parsed.data.observedAt,
+    ...(parsed.data.sourceHash ? { sourceHash: parsed.data.sourceHash } : {}),
+    ...(parsed.data.scopeVerified === undefined
+      ? {}
+      : { scopeVerified: parsed.data.scopeVerified }),
+  }));
+}
+
+function mapEnvelopeToClaimsInternal(
+  raw: unknown,
+  options?: MapEnvelopeToClaimsOptions,
+): EvidenceClaim[] {
   const parsed = parseClaimEnvelope(raw);
   if (!parsed.success) return [];
   const envelope = parsed.data;
@@ -193,7 +216,7 @@ export function mapEnvelopeToClaims(
   if (authRequired && authOpt === null) return [];
 
   const evidenceId = envelope.evidenceId;
-  const expiresAt = options?.expiresAt;
+  const expiresAt = options?.expiresAt ?? envelope.expiresAt;
 
   const gate = (kind: EvidenceClaim['kind']): boolean => {
     if (!authRequired) return true;
@@ -403,6 +426,9 @@ export function toolResultToClaimEnvelope(result: {
     toolId: string;
     toolVersion: string;
     observedAt: string;
+    sourceHash?: string;
+    scopeVerified?: boolean;
+    expiresAt?: string;
   };
 }): unknown {
   return {
@@ -410,6 +436,11 @@ export function toolResultToClaimEnvelope(result: {
     toolVersion: result.evidence.toolVersion,
     status: result.status,
     observedAt: result.evidence.observedAt,
+    ...(result.evidence.sourceHash ? { sourceHash: result.evidence.sourceHash } : {}),
+    ...(result.evidence.scopeVerified === undefined
+      ? {}
+      : { scopeVerified: result.evidence.scopeVerified }),
+    ...(result.evidence.expiresAt ? { expiresAt: result.evidence.expiresAt } : {}),
     evidenceId: result.evidence.id,
     data: result.data,
   };

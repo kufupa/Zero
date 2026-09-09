@@ -2,6 +2,7 @@ import {
   createLocalModelAdapter,
   LocalModelRouteUnavailableError,
   type LocalModelRouteEvidence,
+  type LocalModelRoutePurpose,
   type LocalModelTransport,
 } from './bedrock/local.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
@@ -11,7 +12,7 @@ export {
   LocalModelRouteUnavailableError as ModelRouteUnavailableError,
 };
 
-export type ModelRoutePurpose = 'draft' | 'extraction' | 'shadow' | 'judge';
+export type ModelRoutePurpose = LocalModelRoutePurpose;
 
 export type ModelRouteRequest = {
   purpose: ModelRoutePurpose;
@@ -27,6 +28,11 @@ export function resolveModelRoute(input: ModelRouteRequest): ModelAdapter {
   if (!input.route || !input.transport) {
     throw new LocalModelRouteUnavailableError(
       `approved local model route unavailable for ${input.purpose}`,
+    );
+  }
+  if (input.route.purpose !== input.purpose) {
+    throw new LocalModelRouteUnavailableError(
+      `approved local model route purpose mismatch for ${input.purpose}`,
     );
   }
   return createLocalModelAdapter({
@@ -54,6 +60,7 @@ export function isApprovedLocalRouteEvidence(
   return Boolean(
     route &&
       route.routeId &&
+      route.purpose &&
       route.protocol === 'in_process' &&
       route.access === 'current_app' &&
       route.egress === 'none' &&

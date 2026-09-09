@@ -10,16 +10,6 @@
  *
  * No SMTP. No HMS mutation. No product draft promote. Concurrency=1.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import postgres from 'postgres';
-import {
-  draftClaimSafeStub,
-  draftSignalsOnly,
-  type BacktestDraftMode,
-} from '../src/ai/draft-backtest-agent.js';
 import {
   aggregateRecords,
   appendEvalRecord,
@@ -35,7 +25,18 @@ import {
   writeScorecard,
   type CorpusPair,
   type DraftEvalRecord,
+  type EvaluationMode,
 } from '../src/ai/draft-backtest.js';
+import {
+  draftClaimSafeStub,
+  draftSignalsOnly,
+  type BacktestDraftMode,
+} from '../src/ai/draft-backtest-agent.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import postgres from 'postgres';
 
 type SampleMode = 'gold-pairs' | 'all-inbounds' | 'centurion-from-replies';
 
@@ -46,9 +47,8 @@ function parseArgs(argv: string[]) {
   let live = false;
   let draftMode: BacktestDraftMode = 'signals';
   let sample: SampleMode = 'gold-pairs';
-  let root =
-    process.env.DRAFT_BACKTEST_ROOT?.trim() ||
-    '/opt/nava/shared/draft-backtest';
+  let evaluationMode: EvaluationMode = 'historical-replay';
+  let root = process.env.DRAFT_BACKTEST_ROOT?.trim() || '/opt/nava/shared/draft-backtest';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--offline-fixtures') offline = true;
@@ -58,16 +58,16 @@ function parseArgs(argv: string[]) {
     else if (a === '--root') root = String(argv[++i]);
     else if (a === '--sample') {
       const v = String(argv[++i]);
-      if (
-        v !== 'gold-pairs' &&
-        v !== 'all-inbounds' &&
-        v !== 'centurion-from-replies'
-      ) {
-        throw new Error(
-          '--sample must be gold-pairs|all-inbounds|centurion-from-replies',
-        );
+      if (v !== 'gold-pairs' && v !== 'all-inbounds' && v !== 'centurion-from-replies') {
+        throw new Error('--sample must be gold-pairs|all-inbounds|centurion-from-replies');
       }
       sample = v;
+    } else if (a === '--evaluation-mode') {
+      const v = String(argv[++i]);
+      if (v !== 'current-state' && v !== 'historical-replay' && v !== 'future-shadow') {
+        throw new Error('--evaluation-mode must be current-state|historical-replay|future-shadow');
+      }
+      evaluationMode = v;
     } else if (a === '--draft') {
       const v = String(argv[++i]);
       if (v !== 'signals' && v !== 'claim-safe-stub') {
@@ -76,7 +76,7 @@ function parseArgs(argv: string[]) {
       draftMode = v;
     } else if (a === '--help' || a === '-h') {
       console.log(
-        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR] [--draft signals|claim-safe-stub] [--sample gold-pairs|all-inbounds|centurion-from-replies]',
+        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR] [--draft signals|claim-safe-stub] [--sample gold-pairs|all-inbounds|centurion-from-replies] [--evaluation-mode current-state|historical-replay|future-shadow]',
       );
       process.exit(0);
     }
@@ -87,7 +87,7 @@ function parseArgs(argv: string[]) {
   if (offline === live) {
     throw new Error('choose exactly one of --offline-fixtures | --live-corpus');
   }
-  return { limit, runId, offline, live, root, draftMode, sample };
+  return { limit, runId, offline, live, root, draftMode, sample, evaluationMode };
 }
 
 function sslOptions(rootDir: string) {
@@ -113,6 +113,7 @@ function offlineFixturePairs(limit: number) {
           {
             id: inboundId,
             direction: 'inbound' as const,
+            transportId: CENTURION_TRANSPORT_ID,
             createdAt: '2026-08-01T10:00:00.000Z',
           },
           ...(hasGold
@@ -153,12 +154,16 @@ function offlineCenturionFromReplyPairs(limit: number): LivePairBundle[] {
       messages: [
         {
           id: triggerId,
+          direction: 'inbound' as const,
+          transportId: CENTURION_TRANSPORT_ID,
           fromAddress: 'guest@example.com',
           createdAt: '2026-08-01T10:00:00.000Z',
           subject: 'booking',
         },
         {
           id: goldId,
+          direction: 'outbound' as const,
+          transportId: CENTURION_TRANSPORT_ID,
           fromAddress: 'centurion@legacyhotels.co.za',
           createdAt: '2026-08-01T11:00:00.000Z',
           subject: forward ? 'Fw: handle' : 'Re: booking',
@@ -191,13 +196,8 @@ function messagePlainText(row: {
   text_body: string | null;
   html_body: string | null;
 }): string {
-  const body =
-    (row.text_body?.trim() || '') ||
-    (row.html_body ? stripHtmlToText(row.html_body) : '');
-  return [row.subject?.trim() ?? '', body]
-    .filter(Boolean)
-    .join('\n')
-    .slice(0, 12_000);
+  const body = row.text_body?.trim() || '' || (row.html_body ? stripHtmlToText(row.html_body) : '');
+  return [row.subject?.trim() ?? '', body].filter(Boolean).join('\n').slice(0, 12_000);
 }
 
 async function loadLivePairs(
@@ -218,13 +218,16 @@ async function loadLivePairs(
        * Gold = from centurion@ with ≥1 prior message on thread.
        * Direction ignored (BCC often inbound).
        */
-      const golds = await sql<{
-        id: string;
-        thread_id: string;
-      }[]>`
+      const golds = await sql<
+        {
+          id: string;
+          thread_id: string;
+        }[]
+      >`
         SELECT m.id, m.thread_id
         FROM message m
         WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+          AND m.direction = 'outbound'
           AND (
             lower(m.from_address) LIKE 'centurion@%'
             OR lower(m.from_address) LIKE '%<centurion@%'
@@ -234,6 +237,8 @@ async function loadLivePairs(
             FROM message p
             WHERE p.thread_id = m.thread_id
               AND p.id <> m.id
+              AND p.transport_id = ${CENTURION_TRANSPORT_ID}
+              AND p.direction = 'inbound'
               AND coalesce(p.received_at, p.sent_at, p.created_at)
                 < coalesce(m.received_at, m.sent_at, m.created_at)
           )
@@ -243,16 +248,22 @@ async function loadLivePairs(
 
       const bundles: LivePairBundle[] = [];
       for (const gold of golds) {
-        const msgs = await sql<{
-          id: string;
-          from_address: string | null;
-          created_at: string;
-          subject: string | null;
-          text_body: string | null;
-          html_body: string | null;
-        }[]>`
+        const msgs = await sql<
+          {
+            id: string;
+            direction: 'inbound' | 'outbound';
+            transport_id: string | null;
+            from_address: string | null;
+            created_at: string;
+            subject: string | null;
+            text_body: string | null;
+            html_body: string | null;
+          }[]
+        >`
           SELECT
             m.id,
+            m.direction,
+            m.transport_id,
             m.from_address,
             coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at,
             m.subject,
@@ -267,6 +278,8 @@ async function loadLivePairs(
           goldMessageId: gold.id,
           messages: msgs.map((m) => ({
             id: m.id,
+            direction: m.direction,
+            transportId: m.transport_id,
             fromAddress: m.from_address,
             createdAt: m.created_at,
             subject: m.subject,
@@ -285,13 +298,15 @@ async function loadLivePairs(
     }
 
     if (sample === 'all-inbounds') {
-      const inbounds = await sql<{
-        id: string;
-        thread_id: string;
-        subject: string | null;
-        text_body: string | null;
-        html_body: string | null;
-      }[]>`
+      const inbounds = await sql<
+        {
+          id: string;
+          thread_id: string;
+          subject: string | null;
+          text_body: string | null;
+          html_body: string | null;
+        }[]
+      >`
         SELECT m.id, m.thread_id, m.subject, m.text_body, m.html_body
         FROM message m
         WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
@@ -301,15 +316,17 @@ async function loadLivePairs(
       `;
       const bundles: LivePairBundle[] = [];
       for (const inbound of inbounds) {
-        const msgs = await sql<{
-          id: string;
-          direction: 'inbound' | 'outbound';
-          transport_id: string | null;
-          created_at: string;
-          subject: string | null;
-          text_body: string | null;
-          html_body: string | null;
-        }[]>`
+        const msgs = await sql<
+          {
+            id: string;
+            direction: 'inbound' | 'outbound';
+            transport_id: string | null;
+            created_at: string;
+            subject: string | null;
+            text_body: string | null;
+            html_body: string | null;
+          }[]
+        >`
           SELECT
             m.id,
             m.direction,
@@ -349,11 +366,13 @@ async function loadLivePairs(
      * Gold pairs: inbound-first with later outbound (proven ~8 on pilot).
      * Outbound-centric timestamps currently yield only ~4 due to thread shape.
      */
-    const inbounds = await sql<{
-      id: string;
-      thread_id: string;
-      created_at: string;
-    }[]>`
+    const inbounds = await sql<
+      {
+        id: string;
+        thread_id: string;
+        created_at: string;
+      }[]
+    >`
       SELECT m.id, m.thread_id, coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at
       FROM message m
       WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
@@ -372,15 +391,17 @@ async function loadLivePairs(
 
     const bundles: LivePairBundle[] = [];
     for (const inbound of inbounds) {
-      const msgs = await sql<{
-        id: string;
-        direction: 'inbound' | 'outbound';
-        transport_id: string | null;
-        created_at: string;
-        subject: string | null;
-        text_body: string | null;
-        html_body: string | null;
-      }[]>`
+      const msgs = await sql<
+        {
+          id: string;
+          direction: 'inbound' | 'outbound';
+          transport_id: string | null;
+          created_at: string;
+          subject: string | null;
+          text_body: string | null;
+          html_body: string | null;
+        }[]
+      >`
         SELECT
           m.id,
           m.direction,
@@ -420,11 +441,7 @@ async function loadLivePairs(
   }
 }
 
-async function draftForBundle(
-  mode: BacktestDraftMode,
-  inboundText: string,
-  signal: AbortSignal,
-) {
+async function draftForBundle(mode: BacktestDraftMode, inboundText: string, signal: AbortSignal) {
   if (mode === 'claim-safe-stub') {
     return draftClaimSafeStub({ inboundText, signal });
   }
@@ -435,17 +452,15 @@ async function main(): Promise<void> {
   const selfPath = fileURLToPath(import.meta.url);
   const serverRoot = join(dirname(selfPath), '..');
   assertBacktestSourceSafe(readFileSync(selfPath, 'utf8'));
-  assertBacktestSourceSafe(
-    readFileSync(join(serverRoot, 'src/ai/draft-backtest.ts'), 'utf8'),
-  );
+  assertBacktestSourceSafe(readFileSync(join(serverRoot, 'src/ai/draft-backtest.ts'), 'utf8'));
   assertBacktestSourceSafe(
     readFileSync(join(serverRoot, 'src/ai/draft-backtest-agent.ts'), 'utf8'),
   );
 
-  const { limit, runId, offline, root, draftMode, sample } = parseArgs(
+  const { limit, runId, offline, root, draftMode, sample, evaluationMode } = parseArgs(
     process.argv.slice(2),
   );
-  const already = loadScoredHashes(root, runId);
+  const already = loadScoredHashes(root, runId, evaluationMode);
   const ac = new AbortController();
 
   const bundles: LivePairBundle[] = offline
@@ -471,11 +486,7 @@ async function main(): Promise<void> {
 
   const records: DraftEvalRecord[] = [];
   for (const bundle of pending) {
-    const drafted = await draftForBundle(
-      draftMode,
-      bundle.inboundText,
-      ac.signal,
-    );
+    const drafted = await draftForBundle(draftMode, bundle.inboundText, ac.signal);
     const goldCompare = bundle.goldText
       ? compareDraftToGold({
           draftText: drafted.textBody,
@@ -509,12 +520,13 @@ async function main(): Promise<void> {
       wrongOrMissingFactCount: goldCompare?.wrongOrMissingFactCount,
       toneOverlap: goldCompare?.toneOverlap,
       goldMessageIdHash: bundle.goldMessageIdHash,
+      evaluationMode,
     };
     appendEvalRecord(root, runId, record);
     records.push(record);
   }
 
-  const card = aggregateRecords(runId, records);
+  const card = aggregateRecords(runId, records, evaluationMode);
   writeScorecard(root, runId, card);
   console.log(
     JSON.stringify(

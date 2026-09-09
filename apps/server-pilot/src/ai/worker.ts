@@ -78,6 +78,15 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import {
+  prepareDraftInput,
+  serializePreparedDraftInput,
+  type PreparedAsk,
+} from './prepared-draft-input.js';
+import {
+  runPreparedReplyWorkflow,
+  type PreparedReplyWorkflowResult,
+} from './workflows/candidate-draft.js';
+import {
   executeReadToolRun,
   readRequestSchema,
   type ReadExecutionContext,
@@ -98,23 +107,132 @@ import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } fro
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
+import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
 import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
 import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
 import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
 import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
+import { createApprovedLocalModelAdapter } from './bedrock/factory.js';
+import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import type { ToolResult } from './draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
+import { assessReply } from './reply-assessment.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
+
+/** Code-owned asks derived from the bounded inbound request; no model chooses scope. */
+export function deriveWorkerReplyAsks(requestText: string): PreparedAsk[] {
+  const asks: PreparedAsk[] = [];
+  const add = (code: string, label: string, acquisition: string) => {
+    if (!asks.some((ask) => ask.code === code))
+      asks.push({ code, label, required: true, acquisition });
+  };
+  if (/\b(?:reservation|booking|confirmation)\b/i.test(requestText)) {
+    add('reservation_status', 'reservation status', 'approved reservation read');
+  }
+  if (/\b(?:price|rate|quote|cost|how much)\b/i.test(requestText)) {
+    add('price', 'price or rate', 'approved quote read');
+  }
+  if (/\b(?:payment|deposit|receipt|folio)\b/i.test(requestText)) {
+    add('payment_status', 'payment status', 'approved folio read');
+  }
+  if (/\b(?:document|invoice|attachment|attached)\b/i.test(requestText)) {
+    add('document', 'document', 'authorized attachment read');
+  }
+  if (/\b(?:arrival|departure|check[- ]?in|check[- ]?out|stay dates?)\b/i.test(requestText)) {
+    add('stay_dates', 'stay dates', 'approved reservation read');
+  }
+  return asks;
+}
+
+function workerReplyRequestKind(requestText: string): ReplyRequestKind {
+  if (/\b(?:payment|deposit|receipt|folio)\b/i.test(requestText)) return 'finance';
+  if (/\b(?:price|rate|quote|cost|how much)\b/i.test(requestText)) return 'quote';
+  if (/\b(?:reservation|booking|confirmation|stay|arrival|departure)\b/i.test(requestText)) {
+    return 'reservation';
+  }
+  if (/\b(?:document|invoice|attachment)\b/i.test(requestText)) return 'document';
+  return 'general';
+}
+
+export type PreparedWorkerCandidateReplyInput = {
+  requestId: string;
+  threadId?: string;
+  requestText: string;
+  asks?: readonly PreparedAsk[];
+  requestKind?: ReplyRequestKind;
+  adapter?: ModelAdapter;
+  signal?: AbortSignal;
+  deadlineAt?: number;
+};
+
+/**
+ * Normal worker composition seam: bounded preparation precedes serialization
+ * and approved adapter invocation. Missing route returns a manual-review
+ * playbook before any client/network initialization.
+ */
+export async function runPreparedWorkerCandidateReply(
+  input: PreparedWorkerCandidateReplyInput,
+): Promise<PreparedReplyWorkflowResult> {
+  const asks = input.asks ?? deriveWorkerReplyAsks(input.requestText);
+  const prepared = prepareDraftInput({
+    requestId: input.requestId,
+    threadId: input.threadId,
+    audience: 'guest',
+    requestText: input.requestText,
+    asks,
+  });
+  const serializedInput = serializePreparedDraftInput(prepared);
+  let adapter: ModelAdapter;
+  try {
+    adapter = input.adapter ?? createApprovedLocalModelAdapter({ purpose: 'draft' });
+  } catch (error) {
+    if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
+    const fallback = buildReplyPlaybook({
+      audience: prepared.audience,
+      requestKind: input.requestKind ?? workerReplyRequestKind(prepared.requestText),
+      asks: prepared.asks,
+      facts: prepared.facts,
+      releasedCapabilities: prepared.releasedCapabilities,
+    });
+    const assessment = assessReply({
+      replyText: fallback.textBody,
+      asks: prepared.asks,
+      facts: prepared.facts,
+      audience: prepared.audience,
+    });
+    return {
+      outcome: fallback.outcome,
+      textBody: fallback.textBody,
+      htmlBody: fallback.htmlBody,
+      assessment,
+      serializedInput,
+      metrics: {
+        fallback: true,
+        modelRouteUnavailable: true,
+        modelRoutePurpose: 'draft',
+        manualReview: true,
+      },
+    };
+  }
+  return runPreparedReplyWorkflow({
+    prepared,
+    requestKind: input.requestKind ?? workerReplyRequestKind(prepared.requestText),
+    adapter,
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
+  });
+}
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
@@ -3142,7 +3260,16 @@ export async function executeAiRun(
     shutdownSignal?: AbortSignal;
     /** Injectable claim-safe tool session (tests / Task 7 mocks). */
     candidateSessionFactory?: CandidateSessionFactory;
-    candidatePlanModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
+    candidatePlanModel?: (prompt: {
+      systemPrompt: string;
+      userPrompt: string;
+      signal?: AbortSignal;
+      deadlineAt?: number;
+    }) => Promise<unknown>;
+    /** Approved local adapter seams for normal plan/reply composition. */
+    candidateModelAdapter?: ModelAdapter;
+    candidateReplyModelAdapter?: ModelAdapter;
+    candidateReplyAsks?: readonly PreparedAsk[];
     /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
     readToolExecutor?: (input: {
       run: typeof aiWorkflowRun.$inferSelect;
@@ -3478,25 +3605,26 @@ export async function executeAiRun(
       const subject = deriveReplySubject(trigger.subject);
       const hmsMode = env.HMS_DRAFT_ENRICHMENT_MODE;
 
-      // Off mode: existing skeleton workflow / evidence rules do not apply.
+      // Off mode still uses the normal prepared-input/assessment boundary.
+      // It must not enter the registered Mastra workflow with raw body text.
       if (hmsMode === 'off') {
-        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-        const workflow = mastra.getWorkflow('candidateDraft');
-        const workflowRun = await workflow.createRun();
-        const result = await workflowRun.start({
-          inputData: {
-            transportId: run.transportId,
-            threadId: run.threadId,
-            triggerMessageId: run.triggerMessageId,
-            fromAddress: trigger.fromAddress,
-            subject: trigger.subject ?? undefined,
-            body: trigger.textBody ?? trigger.htmlBody ?? '',
-          },
-          abortSignal: signal,
-        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
-        if (result.status !== 'success') {
-          throw new Error(`candidate draft workflow failed: ${result.status}`);
-        }
+        const requestText = trigger.textBody ?? trigger.htmlBody ?? '';
+        const replyAsks = options.candidateReplyAsks ?? deriveWorkerReplyAsks(requestText);
+        const preparedReply = await runPreparedWorkerCandidateReply({
+          requestId: run.triggerMessageId,
+          threadId: run.threadId,
+          requestText,
+          asks: replyAsks,
+          adapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+          signal,
+          deadlineAt: deadlineAt.getTime(),
+        });
+        const persistedOutcome =
+          preparedReply.outcome === 'complete' || preparedReply.outcome === 'partial'
+            ? 'candidate'
+            : preparedReply.outcome === 'clarification'
+              ? 'needs_clarification'
+              : 'insufficient_evidence';
 
         const draft = await persistAiCandidateDraft({
           db,
@@ -3510,9 +3638,9 @@ export async function executeAiRun(
           contextMessageIds: [run.triggerMessageId],
           toAddresses: [replyTo],
           subject,
-          textBody: result.result!.draftBody.textBody,
-          htmlBody: result.result!.draftBody.htmlBody,
-          outcome: 'candidate',
+          textBody: preparedReply.textBody,
+          htmlBody: preparedReply.htmlBody,
+          outcome: persistedOutcome,
           persistDraft: true,
         });
         const marked = await markAiRunSucceeded({
@@ -3526,7 +3654,10 @@ export async function executeAiRun(
             generationId: draft.generationId ?? generationId,
             modelId: run.modelId,
             hmsMode: 'off',
-            ...(result.result?.metrics as Record<string, unknown>),
+            ...(preparedReply.metrics as Record<string, unknown>),
+            preparedReplyOutcome: preparedReply.outcome,
+            preparedReplyAssessment: preparedReply.assessment.issues.map((issue) => issue.code),
+            preparedInputSerializedBytes: Buffer.byteLength(preparedReply.serializedInput, 'utf8'),
           },
         });
         if (!marked) {
@@ -3847,6 +3978,11 @@ export async function executeAiRun(
             probeAttachmentIds: [],
             planMode: 'production',
             planModel: options.candidatePlanModel,
+            modelAdapter: options.candidateModelAdapter,
+            replyModelAdapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+            replyAsks:
+              options.candidateReplyAsks ?? deriveWorkerReplyAsks(pre.context.normalizedText),
+            deadlineAt: deadlineAt.getTime(),
             ...(planGate
               ? {
                   candidateBindings: planGate.candidateBindings,
@@ -3956,6 +4092,10 @@ export async function executeAiRun(
         normalizedThreadText: context.normalizedText,
         signal,
         planModel: options.candidatePlanModel,
+        modelAdapter: options.candidateModelAdapter,
+        replyModelAdapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+        replyAsks: options.candidateReplyAsks ?? deriveWorkerReplyAsks(context.normalizedText),
+        deadlineAt: deadlineAt.getTime(),
         ...(planGate
           ? {
               candidateBindings: planGate.candidateBindings,
@@ -4113,6 +4253,12 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
 export type RunAiWorkerOnceOptions = {
   shutdownSignal?: AbortSignal;
   readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
+  candidatePlanModel?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidatePlanModel'];
+  candidateModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateModelAdapter'];
+  candidateReplyModelAdapter?: NonNullable<
+    Parameters<typeof executeAiRun>[1]
+  >['candidateReplyModelAdapter'];
+  candidateReplyAsks?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateReplyAsks'];
 } & AiRunScopeFilter;
 
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
@@ -4129,7 +4275,15 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const { shutdownSignal, readToolExecutor, ...scope } = options;
+  const {
+    shutdownSignal,
+    readToolExecutor,
+    candidatePlanModel,
+    candidateModelAdapter,
+    candidateReplyModelAdapter,
+    candidateReplyAsks,
+    ...scope
+  } = options;
   const readOnlyLane =
     lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
   const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
@@ -4138,6 +4292,10 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
+    candidatePlanModel,
+    candidateModelAdapter,
+    candidateReplyModelAdapter,
+    candidateReplyAsks,
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });

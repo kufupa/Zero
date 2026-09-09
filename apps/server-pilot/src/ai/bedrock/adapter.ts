@@ -25,6 +25,7 @@ export interface ModelInvokeResult {
     routeId: string;
     protocol: string;
     modelId: string;
+    purpose?: 'draft' | 'extraction' | 'shadow' | 'judge';
     usageSource: 'reported' | 'unknown';
   };
 }

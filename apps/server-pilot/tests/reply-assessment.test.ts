@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const localRoute: LocalModelRouteEvidence = {
   routeId: 'u5-workflow-test-route',
+  purpose: 'draft',
   protocol: 'in_process',
   access: 'current_app',
   egress: 'none',
@@ -78,6 +79,37 @@ describe('reply assessment', () => {
 
     expect(assessment.ok).toBe(true);
     expect(assessment.coverage).toMatchObject({ answered: 1, total: 2 });
+  });
+
+  it('does not count a fact as an answered ask when the reply is only an acknowledgement', () => {
+    const assessment = assessReply({
+      replyText: 'Thanks, we will review this shortly.',
+      asks: [{ code: 'reservation_status', label: 'reservation status', required: true }],
+      facts: [
+        {
+          key: 'reservation.status',
+          label: 'reservation status',
+          value: 'Confirmed',
+          source: 'hms',
+          authority: 'authorized',
+          status: 'known',
+        },
+      ],
+    });
+
+    expect(assessment.coverage).toMatchObject({ answered: 0, total: 1 });
+    expect(assessment.issues.map((issue) => issue.code)).toContain('MISSING_BRACKET');
+  });
+
+  it('rejects booking and payment completion claims without supporting evidence', () => {
+    const assessment = assessReply({
+      replyText: 'Your booking is confirmed and payment is cleared.',
+      asks: [],
+      facts: [],
+    });
+
+    expect(assessment.ok).toBe(false);
+    expect(assessment.issues.map((issue) => issue.code)).toContain('UNSUPPORTED_ACTION_CLAIM');
   });
 
   it('rejects an attachment claim without selected authorized bytes', () => {
