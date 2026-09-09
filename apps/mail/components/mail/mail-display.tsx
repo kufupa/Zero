@@ -21,7 +21,9 @@ import {
   Lock,
   HardDriveDownload,
   CopyIcon,
+  FileDown,
 } from 'lucide-react';
+import { triggerEmlDownload } from '@/lib/eml-download';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -307,18 +309,26 @@ export const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }
   );
 };
 
-type ActionButtonProps = {
+export type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
   icon: React.ReactNode;
   text: string;
+  ariaLabel?: string;
+  'aria-label'?: string;
 };
 
-const ActionButton = ({ onClick, icon, text }: ActionButtonProps) => {
+export const ActionButton = ({
+  onClick,
+  icon,
+  text,
+  ariaLabel,
+  'aria-label': ariaLabelProp,
+}: ActionButtonProps) => {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={text}
+      aria-label={ariaLabelProp ?? ariaLabel ?? text}
       className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
     >
       {icon}
@@ -461,6 +471,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
   //   const [unsubscribed, setUnsubscribed] = useState(false);
   //   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const [preventCollapse, setPreventCollapse] = useState(false);
+  const [isDownloadingEml, setIsDownloadingEml] = useState(false);
   const { folder } = useParams<{ folder: string }>();
   const categorySettings = useCategorySettings();
   const idToSlug = useMemo(
@@ -526,6 +537,20 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
     },
     [emailData.id, setMode, setActiveReplyId, setDraftId, setComposeState],
   );
+
+  const handleDownloadEml = useCallback(async () => {
+    if (!emailData?.id || isDownloadingEml) return;
+    setIsDownloadingEml(true);
+    try {
+      const { filename } = await triggerEmlDownload(emailData.id);
+      toast.success(`Downloaded ${filename} — drag into Infor PMS`);
+    } catch (err) {
+      console.error('Failed to download .eml:', err);
+      toast.error('Failed to download email file');
+    } finally {
+      setIsDownloadingEml(false);
+    }
+  }, [emailData?.id, isDownloadingEml]);
 
   useEffect(() => {
     if (!demo) {
@@ -1343,6 +1368,16 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                                 <Printer className="fill-iconLight dark:fill-iconDark mr-2 h-4 w-4" />
                                 {m['common.mailDisplay.print']()}
                               </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleDownloadEml();
+                                }}
+                              >
+                                <FileDown className="fill-iconLight dark:text-iconDark mr-2 h-4 w-4" />
+                                Download Email (.eml)
+                              </DropdownMenuItem>
                               {canDebugHeaders ? (
                                 <DropdownMenuItem onClick={toggleHeaderDebug}>
                                   {headerDebugEnabled ? 'Disable header debug' : 'Enable header debug'}
@@ -1429,6 +1464,15 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                             }}
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
+                          />
+                          <ActionButton
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDownloadEml();
+                            }}
+                            icon={<FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />}
+                            text={isDownloadingEml ? '...' : '.eml'}
+                            aria-label="Download .eml"
                           />
                         </div>
                       </div>
