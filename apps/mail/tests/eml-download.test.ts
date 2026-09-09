@@ -117,13 +117,14 @@ describe('eml-download helper', () => {
       defaultTriggerDownload('https://example.com/file.eml', 'file.eml');
 
       expect(createdAnchor).not.toBeNull();
-      expect(createdAnchor?.href).toBe('https://example.com/file.eml');
-      expect(createdAnchor?.download).toBe('file.eml');
-      expect(createdAnchor?.target).toBe('_blank');
-      expect(createdAnchor?.rel).toBe('noopener noreferrer');
-      expect(appendChildSpy).toHaveBeenCalledWith(createdAnchor);
+      const anchor = createdAnchor as unknown as HTMLAnchorElement;
+      expect(anchor.href).toBe('https://example.com/file.eml');
+      expect(anchor.download).toBe('file.eml');
+      expect(anchor.target).toBe('_blank');
+      expect(anchor.rel).toBe('noopener noreferrer');
+      expect(appendChildSpy).toHaveBeenCalledWith(anchor);
       expect(clicked).toBe(true);
-      expect(removeChildSpy).toHaveBeenCalledWith(createdAnchor);
+      expect(removeChildSpy).toHaveBeenCalledWith(anchor);
     });
 
     it('revokes object URL if url starts with blob:', () => {
