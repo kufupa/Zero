@@ -1646,6 +1646,113 @@ if (TEST_DB_AVAILABLE && reachable)
                 reason: 'approved_shadow_route_unavailable',
               },
             });
+            const cutoff = new Date();
+            const caller = appRouter.createCaller({
+              auth: null as never,
+              reqHeaders: new Headers(),
+              sessionUser: {
+                id: `u13-unavailable-scorecard-user-${token}`,
+                email: 'ropperman@legacyhotels.co.za',
+                name: null,
+              },
+            });
+            const scorecard = await caller.adminDashboard.getMetrics({
+              cohortId: 'centurion',
+              windowStart: new Date(cutoff.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+              windowEnd: cutoff.toISOString(),
+              observationCutoff: cutoff.toISOString(),
+              operation: 'aggregate',
+            });
+            expect(scorecard.shadowScorecard).toMatchObject({
+              counts: expect.objectContaining({ unavailable: 1, pending: 1 }),
+            });
+            expect(scorecard.shadowScorecard.admissionPopulation.counts.admitted).toBe(1);
+            expect(scorecard.shadowScorecard.admissionPopulation.counts.pending).toBe(1);
+            expect(scorecard.shadowScorecard.admissionPopulation.provenance).toMatchObject({
+              selectionClock: 'admission_created_at',
+            });
+          }),
+        ),
+      );
+    }, 30_000);
+
+    it('keeps a failed terminal prediction admission-pending through the authorized scorecard', async () => {
+      await withConfiguredShadowRoute(() =>
+        withAiWriteGate(() =>
+          withWorkerDb(async (db) => {
+            const storage = new FakeS3Storage(`u13-shadow-failed-${randomUUID()}`);
+            const token = randomUUID();
+            const inboundId = `u13-failed-inbound-${token}`;
+            const raw = inboundRaw({
+              messageId: inboundId,
+              body: 'Please confirm reservation U13-failed.',
+              date: 'Tue, 01 Sep 2026 11:30:00 +0000',
+            });
+            const parsed = await parseRawMessage(raw, { messageId: inboundId, storage });
+            const stored = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `u13-failed-${token}`,
+                messageId: inboundId,
+              },
+              { db, storage },
+            );
+            expect(stored.kind).toBe('stored');
+            if (stored.kind !== 'stored') return;
+
+            configuredShadowFixture.resetTransportCalls();
+            const drain = await runAiWorkerDrain({
+              transportId: stored.transportId,
+              threadId: stored.threadId,
+              triggerMessageId: stored.messageId,
+              runKind: 'shadow_prediction',
+              timeoutMs: 5_000,
+              pollIntervalMs: 10,
+              shadowModelTransport: async () => {
+                throw new Error('u13 bounded synthetic shadow transport failure');
+              },
+            });
+            expect(drain).toMatchObject({ ok: true, reason: 'drained', processed: 1 });
+            expect(configuredShadowFixture.getTransportCalls()).toBe(0);
+
+            const [prediction] = await db
+              .select()
+              .from(aiShadowPrediction)
+              .where(eq(aiShadowPrediction.triggerMessageId, stored.messageId));
+            expect(prediction).toMatchObject({
+              admissionStatus: 'admitted',
+              predictionStatus: 'failed',
+              unavailableReason: 'shadow_prediction_failed',
+            });
+            expect(prediction?.sealedAt).toBeInstanceOf(Date);
+
+            const cutoff = new Date();
+            const caller = appRouter.createCaller({
+              auth: null as never,
+              reqHeaders: new Headers(),
+              sessionUser: {
+                id: `u13-failed-scorecard-user-${token}`,
+                email: 'ropperman@legacyhotels.co.za',
+                name: null,
+              },
+            });
+            const scorecard = await caller.adminDashboard.getMetrics({
+              cohortId: 'centurion',
+              windowStart: new Date(cutoff.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+              windowEnd: cutoff.toISOString(),
+              observationCutoff: cutoff.toISOString(),
+              operation: 'aggregate',
+            });
+            expect(scorecard.shadowScorecard).toMatchObject({
+              counts: expect.objectContaining({ failed: 1, pending: 1 }),
+            });
+            expect(scorecard.shadowScorecard.admissionPopulation.counts.admitted).toBe(1);
+            expect(scorecard.shadowScorecard.admissionPopulation.counts.pending).toBe(1);
+            expect(scorecard.shadowScorecard.admissionPopulation.provenance).toMatchObject({
+              selectionClock: 'admission_created_at',
+            });
           }),
         ),
       );

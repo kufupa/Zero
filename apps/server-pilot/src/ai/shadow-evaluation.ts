@@ -1111,6 +1111,7 @@ export async function loadShadowScorecard(
         .where(
           and(
             eq(aiShadowPrediction.evaluationMode, mode),
+            eq(aiShadowPrediction.predictionStatus, 'sealed'),
             ...(input.transportIds?.length
               ? [inArray(aiShadowPrediction.transportId, [...input.transportIds])]
               : []),
