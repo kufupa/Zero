@@ -6,17 +6,28 @@ import {
   type PropertyKnowledgeReadResult,
 } from '../src/ai/property-knowledge-contract.js';
 import {
+  createExistingDocumentService,
+  createMetadataOnlyDocumentSource,
+  type ExistingDocumentRecord,
+  type ExistingDocumentService,
+} from '../src/mail/artifacts/existing-document-service.js';
+import {
   createPropertyKnowledgeReader,
   createPropertyKnowledgeFileSource,
   createPropertyKnowledgeSource,
   type PropertyKnowledgeReader,
 } from '../src/ai/property-knowledge-read.js';
-import type { ExistingDocumentService } from '../src/mail/artifacts/existing-document-service.js';
 import { issueCurrentAppAccessProof } from '../src/hms/requester-authorization.js';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createAgentReadTools } from '../src/hms/agent-read-tools.js';
+import { execFile as execFileCallback } from 'node:child_process';
+import { FakeS3Storage } from '../src/storage/s3.js';
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const NOW = new Date('2026-09-08T12:00:00.000Z');
@@ -26,6 +37,154 @@ const fixturePath = path.join(
 );
 const fixture = propertyKnowledgeFixtureSchema.parse(JSON.parse(readFileSync(fixturePath, 'utf8')));
 const FILE_PATH = '/srv/centurion/property-knowledge.json';
+const DOCUMENT_SCOPE = 'u16-document-scope';
+const DOCUMENT_BODY = Buffer.from('native linked source text', 'utf8');
+const DOCUMENT_HASH = createHash('sha256').update(DOCUMENT_BODY).digest('hex');
+const execFile = promisify(execFileCallback);
+
+function sourceHash(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function sourceChunks(text: string): AsyncIterable<Uint8Array> {
+  return (async function* () {
+    yield Buffer.from(text, 'utf8');
+  })();
+}
+
+function nativeDocumentRecord(
+  overrides: Partial<ExistingDocumentRecord> = {},
+): ExistingDocumentRecord {
+  return {
+    sourceRecordId: 'u16-native-document-1',
+    scopeRef: DOCUMENT_SCOPE,
+    source: 'mail_attachment',
+    kind: 'other_existing',
+    version: 'v1',
+    issuedAt: NOW.toISOString(),
+    status: 'final',
+    parentRef: 'u16-native-parent',
+    payerRef: 'u16-native-payer',
+    displayName: 'property-information.txt',
+    mime: 'text/plain',
+    sizeBytes: DOCUMENT_BODY.byteLength,
+    sha256: DOCUMENT_HASH,
+    priceVisibility: 'hidden',
+    propertyRef: 'HRCEN',
+    guestRef: 'u16-native-guest',
+    stayStart: '2026-09-10',
+    stayEnd: '2026-09-12',
+    currentVersion: true,
+    attachment: {
+      attachmentId: 'u16-native-attachment-1',
+      authorizedAttachmentIds: new Set(['u16-native-attachment-1']),
+      locator: {
+        s3Key: 'attachments/u16-native-message-1/property-information.txt',
+        mimeType: 'text/plain',
+        sizeBytes: DOCUMENT_BODY.byteLength,
+        messageId: 'u16-native-message-1',
+      },
+    },
+    ...overrides,
+  };
+}
+
+async function nativeDocumentFixture(
+  options: {
+    record?: ExistingDocumentRecord;
+    blocker?: string;
+    source?: ExistingDocumentRecord['source'];
+    requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+  } = {},
+): Promise<{
+  service: ExistingDocumentService;
+  record: ExistingDocumentRecord;
+  storage: FakeS3Storage;
+}> {
+  const storage = new FakeS3Storage('u16-native-documents');
+  const record =
+    options.record ?? nativeDocumentRecord({ source: options.source ?? 'mail_attachment' });
+  if (record.attachment) {
+    await storage.putObject({
+      key: record.attachment.locator.s3Key,
+      body: DOCUMENT_BODY,
+      contentType: 'text/plain',
+    });
+  }
+  const source = record.source;
+  const service = createExistingDocumentService({
+    now: () => NOW,
+    resolveScope: async (scopeRef) =>
+      scopeRef === DOCUMENT_SCOPE
+        ? {
+            scopeRef: DOCUMENT_SCOPE,
+            propertyRef: 'HRCEN',
+            guestRef: 'u16-native-guest',
+            stayStart: '2026-09-10',
+            stayEnd: '2026-09-12',
+            payerRef: 'u16-native-payer',
+            requestedKind: 'other_existing',
+            requestedPriceVisibility: options.requestedPriceVisibility ?? 'allowed',
+          }
+        : null,
+    sources: {
+      [source]: options.blocker
+        ? createMetadataOnlyDocumentSource({
+            source,
+            records: [record],
+            blocker: options.blocker,
+          })
+        : {
+            source,
+            list: async () => ({ records: [record] }),
+          },
+    },
+    readArtifact: async (attachment) => {
+      const { readAuthorizedArtifact } = await import('../src/mail/artifacts/read-artifact.js');
+      return readAuthorizedArtifact({
+        attachmentId: attachment.attachmentId,
+        authorizedAttachmentIds: attachment.authorizedAttachmentIds,
+        s3: storage,
+        signal: AbortSignal.timeout(5_000),
+        resolveLocator: async () => attachment.locator,
+      });
+    },
+  });
+  return { service, record, storage };
+}
+
+function nativeKnowledgeRecord(documentRef: string, overrides: Record<string, unknown> = {}) {
+  const content = 'native linked source text';
+  return propertyKnowledgeSourceRecordSchema.parse({
+    entryRef: 'knowledge-native-document',
+    topic: 'check_in_out',
+    content,
+    sourceKind: 'mail_attachment',
+    sourceRef: 'native-source-u16',
+    sourceHash: DOCUMENT_HASH,
+    version: 'v1',
+    ownerRef: 'owner-native-u16',
+    approval: {
+      status: 'approved',
+      approvedAt: '2026-09-01T09:00:00.000Z',
+      approvalRef: 'approval-native-u16',
+    },
+    effectiveFrom: '2026-09-01T00:00:00.000Z',
+    effectiveUntil: null,
+    propertyRef: 'HRCEN',
+    audience: 'customer_disclosable',
+    documentRefs: [documentRef],
+    ...overrides,
+  });
+}
+
+async function nativeDocumentRef(service: ExistingDocumentService): Promise<string> {
+  const listed = await service.documents_list_existing({
+    scopeRef: DOCUMENT_SCOPE,
+    source: 'mail_attachment',
+  });
+  return listed.data!.documents[0]!.documentRef!;
+}
 
 function syntheticKnowledgeFileText(): string {
   const fixtureDocument = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
@@ -93,7 +252,7 @@ function makeFileReader(
     }) => Promise<{ granted: boolean; reason?: string }>;
   } = {},
 ): PropertyKnowledgeReader {
-  const readFile = async () => syntheticKnowledgeFileText();
+  const readFile = async () => sourceChunks(syntheticKnowledgeFileText());
   return createPropertyKnowledgeReader({
     source: createPropertyKnowledgeFileSource({
       filePath: FILE_PATH,
@@ -166,10 +325,19 @@ describe('U16 approved property knowledge reader', () => {
 
   it('loads a versioned local source file before applying approval and scope checks', async () => {
     const readFile = vi.fn(
-      async ({ filePath, signal }: { filePath: string; signal: AbortSignal }) => {
+      async ({
+        filePath,
+        signal,
+        maxBytes,
+      }: {
+        filePath: string;
+        signal: AbortSignal;
+        maxBytes: number;
+      }) => {
         expect(filePath).toBe(FILE_PATH);
         expect(signal).toBeInstanceOf(AbortSignal);
-        return syntheticKnowledgeFileText();
+        expect(maxBytes).toBeGreaterThan(0);
+        return sourceChunks(syntheticKnowledgeFileText());
       },
     );
     const reader = createPropertyKnowledgeReader({
@@ -217,7 +385,7 @@ describe('U16 approved property knowledge reader', () => {
       source: createPropertyKnowledgeFileSource({
         filePath: FILE_PATH,
         allowedRoot: '/srv/centurion',
-        readFile: async () => '{"schemaVersion":"wrong"}',
+        readFile: async () => sourceChunks('{"schemaVersion":"wrong"}'),
       }),
       authorize: async () => ({ granted: true }),
       now: () => NOW,
@@ -357,6 +525,61 @@ describe('U16 approved property knowledge reader', () => {
     expect(JSON.stringify(result)).not.toContain('4111 1111 1111 1111');
   });
 
+  it('fails closed on an unlabeled Luhn-valid PAN in an approved source', async () => {
+    const sourceRecord = fixture.entries.find((entry) => entry.topic === 'compliance_documents')!;
+    const content = '4111 1111 1111 1111';
+    const reader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([
+        propertyKnowledgeSourceRecordSchema.parse({
+          ...sourceRecord,
+          content,
+          sourceHash: sourceHash(content),
+        }),
+      ]),
+      authorize: async () => ({ granted: true }),
+      revalidateDocument: async () => ({ status: 'current' as const }),
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+
+    const result = await read(reader, 'compliance_documents');
+
+    expect(result.status).toBe('unavailable');
+    expect(issueCodes(result)).toContain('PAYMENT_SECRET_REDACTED');
+    expect(JSON.stringify(result)).not.toContain(content);
+  });
+
+  it('fails closed on common raw credential forms before disclosure', async () => {
+    const sourceRecord = fixture.entries.find((entry) => entry.topic === 'compliance_documents')!;
+    for (const [index, content] of [
+      'Bearer eyJhbGciOiJIUzI1NiJ9.synthetic-token-value',
+      '-----BEGIN PRIVATE KEY----- synthetic-key -----END PRIVATE KEY-----',
+    ].entries()) {
+      const reader = createPropertyKnowledgeReader({
+        source: createPropertyKnowledgeSource([
+          propertyKnowledgeSourceRecordSchema.parse({
+            ...sourceRecord,
+            entryRef: `knowledge-credential-${index}`,
+            content,
+            sourceHash: sourceHash(content),
+          }),
+        ]),
+        authorize: async () => ({ granted: true }),
+        revalidateDocument: async () => ({ status: 'current' as const }),
+        now: () => NOW,
+        defaultPropertyRef: 'HRCEN',
+        defaultAudience: 'customer',
+      });
+
+      const result = await read(reader, 'compliance_documents');
+
+      expect(result.status).toBe('unavailable');
+      expect(issueCodes(result)).toContain('PAYMENT_SECRET_REDACTED');
+      expect(JSON.stringify(result)).not.toContain(content);
+    }
+  });
+
   it('rejects wrong-property records and never guesses a missing topic', async () => {
     const wrongProperty = await read(makeReader(), 'amenities', { propertyRef: 'HRCEN' });
     expect(wrongProperty.status).toBe('unavailable');
@@ -401,24 +624,14 @@ describe('U16 approved property knowledge reader', () => {
     expect(result.data).toBeNull();
   });
 
-  it('can revalidate a linked ref through the existing authorized document service', async () => {
-    const sourceRecord = fixture.entries.find((entry) => entry.topic === 'check_in_out')!;
-    const documents = {
-      documents_read_existing: vi.fn(async () => ({
-        status: 'ok',
-        data: {
-          document: { propertyRef: 'HRCEN', currentVersion: true },
-          validation: { version: 'current' },
-          artifactExpiresAt: '2026-09-09T12:00:00.000Z',
-        },
-        blocker: null,
-        issues: [],
-      })),
-    } as unknown as Pick<ExistingDocumentService, 'documents_read_existing'>;
+  it('revalidates a linked ref through the native authorized document service and bytes path', async () => {
+    const native = await nativeDocumentFixture();
+    const documentRef = await nativeDocumentRef(native.service);
+    const sourceRecord = nativeKnowledgeRecord(documentRef);
     const reader = createPropertyKnowledgeReader({
       source: createPropertyKnowledgeSource([sourceRecord]),
       authorize: async () => ({ granted: true }),
-      existingDocumentService: documents,
+      existingDocumentService: native.service,
       now: () => NOW,
       defaultPropertyRef: 'HRCEN',
       defaultAudience: 'customer',
@@ -426,14 +639,165 @@ describe('U16 approved property knowledge reader', () => {
     const result = await read(reader, 'check_in_out');
 
     expect(result.status).toBe('ok');
-    expect(documents.documents_read_existing).toHaveBeenCalledWith({
-      documentRef: 'doc-checkin-current',
-      format: 'text',
+    expect(result.data?.entries[0]).toMatchObject({
+      sourceHash: DOCUMENT_HASH,
+      documentRefs: [documentRef],
+    });
+    expect(native.storage.calls).toContainEqual({
+      op: 'GET_BOUNDED',
+      key: 'attachments/u16-native-message-1/property-information.txt',
     });
   });
 
+  it('fails closed for native blocked, changed, foreign-ref, source, hash, identity, and disclosure results', async () => {
+    const blocked = await nativeDocumentFixture({ blocker: 'METADATA_ONLY' });
+    const blockedRef = await nativeDocumentRef(blocked.service);
+    const blockedReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord(blockedRef)]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: blocked.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const blockedResult = await read(blockedReader, 'check_in_out');
+    expect(blockedResult.status).toBe('unavailable');
+    expect(issueCodes(blockedResult)).toContain('DOCUMENT_REVALIDATION_UNAVAILABLE');
+    expect(blockedResult.data).toBeNull();
+
+    const changed = await nativeDocumentFixture();
+    const changedRef = await nativeDocumentRef(changed.service);
+    changed.record.sha256 = 'c'.repeat(64);
+    const changedReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord(changedRef)]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: changed.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const changedResult = await read(changedReader, 'check_in_out');
+    expect(changedResult.status).toBe('unavailable');
+    expect(issueCodes(changedResult)).toContain('DOCUMENT_CHANGED');
+
+    const foreignRefReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord('foreign-ref')]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: changed.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const foreignRefResult = await read(foreignRefReader, 'check_in_out');
+    expect(foreignRefResult.status).toBe('unavailable');
+    expect(issueCodes(foreignRefResult)).toContain('DOCUMENT_UNAUTHORIZED');
+
+    const sourceMismatch = await nativeDocumentFixture({ source: 'approved_property_document' });
+    const sourceMismatchListing = await sourceMismatch.service.documents_list_existing({
+      scopeRef: DOCUMENT_SCOPE,
+      source: 'approved_property_document',
+    });
+    const sourceMismatchRef = sourceMismatchListing.data!.documents[0]!.documentRef!;
+    const sourceMismatchRecord = propertyKnowledgeSourceRecordSchema.parse({
+      ...nativeKnowledgeRecord(sourceMismatchRef),
+      sourceKind: 'mail_attachment',
+      entryRef: 'knowledge-native-source-mismatch',
+    });
+    const sourceMismatchReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([sourceMismatchRecord]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: sourceMismatch.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const sourceMismatchResult = await read(sourceMismatchReader, 'check_in_out');
+    expect(sourceMismatchResult.status).toBe('unavailable');
+    expect(issueCodes(sourceMismatchResult)).toContain('DOCUMENT_UNAUTHORIZED');
+
+    const hashMismatchRecord = propertyKnowledgeSourceRecordSchema.parse({
+      ...nativeKnowledgeRecord(changedRef),
+      entryRef: 'knowledge-native-hash-mismatch',
+      content: 'native linked source changed',
+      sourceHash: sourceHash('native linked source changed'),
+    });
+    const hashMismatchReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([hashMismatchRecord]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: changed.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const hashMismatchResult = await read(hashMismatchReader, 'check_in_out');
+    expect(hashMismatchResult.status).toBe('unavailable');
+    expect(issueCodes(hashMismatchResult)).toContain('DOCUMENT_CHANGED');
+
+    const identityMismatch = await nativeDocumentFixture({
+      record: nativeDocumentRecord({ propertyRef: 'OTHER' }),
+    });
+    const identityRef = await nativeDocumentRef(identityMismatch.service);
+    const identityReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord(identityRef)]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: identityMismatch.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const identityResult = await read(identityReader, 'check_in_out');
+    expect(identityResult.status).toBe('unavailable');
+    expect(issueCodes(identityResult)).toContain('DOCUMENT_UNAUTHORIZED');
+
+    const disclosureMismatch = await nativeDocumentFixture({
+      record: nativeDocumentRecord({ priceVisibility: 'visible' }),
+      requestedPriceVisibility: 'forbidden',
+    });
+    const disclosureRef = await nativeDocumentRef(disclosureMismatch.service);
+    const disclosureReader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord(disclosureRef)]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: disclosureMismatch.service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const disclosureResult = await read(disclosureReader, 'check_in_out');
+    expect(disclosureResult.status).toBe('unavailable');
+    expect(issueCodes(disclosureResult)).toContain('DOCUMENT_REVALIDATION_UNAVAILABLE');
+    expect(disclosureResult.data).toBeNull();
+  });
+
+  it('does not promote a current-looking native document with a non-ok status', async () => {
+    const native = await nativeDocumentFixture();
+    const documentRef = await nativeDocumentRef(native.service);
+    const service = {
+      ...native.service,
+      documents_read_existing: async () => {
+        const result = await native.service.documents_read_existing({
+          documentRef,
+          format: 'text',
+        });
+        return { ...result, status: 'manual_required' as const, blocker: 'METADATA_ONLY' };
+      },
+    } as ExistingDocumentService;
+    const reader = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeSource([nativeKnowledgeRecord(documentRef)]),
+      authorize: async () => ({ granted: true }),
+      existingDocumentService: service,
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const result = await read(reader, 'check_in_out');
+
+    expect(result.status).toBe('unavailable');
+    expect(issueCodes(result)).toContain('DOCUMENT_REVALIDATION_UNAVAILABLE');
+    expect(result.data).toBeNull();
+  });
+
   it('requires an authorized local source and performs no model or external call', async () => {
-    const readFile = vi.fn(async () => syntheticKnowledgeFileText());
+    const readFile = vi.fn(async () => sourceChunks(syntheticKnowledgeFileText()));
     const result = await read(
       createPropertyKnowledgeReader({
         source: createPropertyKnowledgeFileSource({
@@ -452,6 +816,135 @@ describe('U16 approved property knowledge reader', () => {
     expect(result.status).toBe('unavailable');
     expect(issueCodes(result)).toContain('AUTHORIZATION_DENIED');
     expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('uses bounded native file reads that reject symlinks and non-regular files', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'u16-property-'));
+    try {
+      const target = path.join(root, 'target.json');
+      const linked = path.join(root, 'linked.json');
+      const directory = path.join(root, 'directory');
+      const fifo = path.join(root, 'property.pipe');
+      await writeFile(target, syntheticKnowledgeFileText(), 'utf8');
+      await symlink(target, linked);
+      await mkdir(directory);
+      await execFile('mkfifo', [fifo]);
+
+      for (const filePath of [linked, directory, fifo]) {
+        const reader = createPropertyKnowledgeReader({
+          source: createPropertyKnowledgeFileSource({ filePath, allowedRoot: root }),
+          authorize: async () => ({ granted: true }),
+          revalidateDocument: async () => ({ status: 'current' as const }),
+          now: () => NOW,
+          defaultPropertyRef: 'HRCEN',
+          defaultAudience: 'customer',
+        });
+        const result = await read(reader, 'check_in_out');
+        expect(result.status).toBe('unavailable');
+        expect(issueCodes(result)).toContain('SOURCE_UNAVAILABLE');
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds streaming source bytes during I/O and observes abort before parsing', async () => {
+    const oversized = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeFileSource({
+        filePath: FILE_PATH,
+        allowedRoot: '/srv/centurion',
+        readFile: async () =>
+          (async function* () {
+            yield Buffer.alloc(512 * 1024 + 1, 0x61);
+          })(),
+      }),
+      authorize: async () => ({ granted: true }),
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const oversizedResult = await read(oversized, 'check_in_out');
+    expect(oversizedResult.status).toBe('unavailable');
+    expect(issueCodes(oversizedResult)).toContain('SOURCE_UNAVAILABLE');
+
+    const controller = new AbortController();
+    const aborted = createPropertyKnowledgeReader({
+      source: createPropertyKnowledgeFileSource({
+        filePath: FILE_PATH,
+        allowedRoot: '/srv/centurion',
+        readFile: async () =>
+          (async function* () {
+            yield Buffer.from('{', 'utf8');
+            controller.abort();
+            yield Buffer.from('"schemaVersion":"property-knowledge-file/v1"', 'utf8');
+          })(),
+      }),
+      authorize: async () => ({ granted: true }),
+      now: () => NOW,
+      defaultPropertyRef: 'HRCEN',
+      defaultAudience: 'customer',
+    });
+    const abortedResult = await aborted.read(
+      { topic: 'check_in_out', detail: 'summary' },
+      { propertyRef: 'HRCEN', audience: 'customer', signal: controller.signal },
+    );
+    expect(abortedResult.status).toBe('unavailable');
+    expect(issueCodes(abortedResult)).toContain('READ_ABORTED');
+  });
+
+  it('caps conflict and issue cardinality without throwing the closed result schema', async () => {
+    const base = fixture.entries.find((entry) => entry.topic === 'check_in_out')!;
+    const conflicts = Array.from({ length: 21 }, (_, index) => {
+      const content = `Approved conflict fact ${index}`;
+      return propertyKnowledgeSourceRecordSchema.parse({
+        ...base,
+        entryRef: `knowledge-conflict-${index}`,
+        sourceRef: `source-conflict-${index}`,
+        content,
+        sourceHash: sourceHash(content),
+        documentRefs: [],
+      });
+    });
+    const conflictResult = await read(
+      createPropertyKnowledgeReader({
+        source: createPropertyKnowledgeSource(conflicts),
+        authorize: async () => ({ granted: true }),
+        now: () => NOW,
+        defaultPropertyRef: 'HRCEN',
+        defaultAudience: 'customer',
+      }),
+      'check_in_out',
+    );
+    expect(conflictResult.status).toBe('ambiguous');
+    expect(conflictResult.data?.conflicts[0]?.entryRefs).toHaveLength(20);
+    expect(conflictResult.issues.length).toBeLessThanOrEqual(32);
+    expect(issueCodes(conflictResult)).toContain('RESULT_TRUNCATED');
+
+    const pending = Array.from({ length: 33 }, (_, index) => {
+      const content = `Pending policy fact ${index}`;
+      return propertyKnowledgeSourceRecordSchema.parse({
+        ...base,
+        entryRef: `knowledge-pending-${index}`,
+        sourceRef: `source-pending-${index}`,
+        content,
+        sourceHash: sourceHash(content),
+        documentRefs: [],
+        approval: { status: 'pending', approvedAt: null, approvalRef: null },
+      });
+    });
+    const pendingResult = await read(
+      createPropertyKnowledgeReader({
+        source: createPropertyKnowledgeSource(pending),
+        authorize: async () => ({ granted: true }),
+        now: () => NOW,
+        defaultPropertyRef: 'HRCEN',
+        defaultAudience: 'customer',
+      }),
+      'check_in_out',
+    );
+    expect(pendingResult.status).toBe('unavailable');
+    expect(pendingResult.issues.length).toBeLessThanOrEqual(32);
+    expect(issueCodes(pendingResult)).toContain('RESULT_TRUNCATED');
   });
 
   it('exposes the reader through the existing model-free agent facade', async () => {
@@ -477,14 +970,24 @@ describe('U16 approved property knowledge reader', () => {
       budget: { total: 0, limit: 3 },
       now: () => NOW,
     };
-    const unavailableTools = createAgentReadTools(context);
+    const proof = issueCurrentAppAccessProof({
+      userId: 'user-1',
+      mailboxAccessId: 'auth-1',
+      transportId: 'transport-centurion',
+      threadId: 'thread-1',
+      triggerMessageId: 'message-1',
+      expiresAt: '2026-09-09T12:00:00.000Z',
+      now: NOW,
+    });
+    const authorizedContext = { ...context, currentAppAccessProof: proof };
+    const unavailableTools = createAgentReadTools(authorizedContext);
     const unavailable = await unavailableTools.property_read_knowledge!.execute({
       topic: 'check_in_out',
     });
     expect((unavailable as PropertyKnowledgeReadResult).status).toBe('unavailable');
     expect((unavailable as PropertyKnowledgeReadResult).issues[0]?.code).toBe('SOURCE_UNAVAILABLE');
 
-    const tools = createAgentReadTools(context, {
+    const tools = createAgentReadTools(authorizedContext, {
       propertyKnowledgeReader: reader,
       propertyKnowledgeAudience: 'customer',
     });
@@ -493,6 +996,81 @@ describe('U16 approved property knowledge reader', () => {
     const result = await tools.property_read_knowledge!.execute({ topic: 'check_in_out' });
     expect((result as PropertyKnowledgeReadResult).status).toBe('ok');
     expect((result as PropertyKnowledgeReadResult).data?.scope).toBe('property_generic');
+  });
+
+  it('cannot disable normal requester and current-app scope checks with an omitted or false flag', async () => {
+    const expiredContext = {
+      transportId: 'transport-centurion',
+      mailboxId: 'mailbox-centurion',
+      threadId: 'thread-1',
+      triggerMessageId: 'message-1',
+      propertyCode: 'HRCEN',
+      parentRef: 'parent-1',
+      branchId: 'guest_stay_search',
+      releaseId: 'release-1',
+      requester: {
+        authorizationId: 'auth-1',
+        transportId: 'transport-centurion',
+        threadId: 'thread-1',
+        triggerMessageId: 'message-1',
+        allowedClaimKinds: ['reservation_summary'],
+        expiresAt: '2020-01-01T00:00:00.000Z',
+      },
+      signal: new AbortController().signal,
+      budget: { total: 0, limit: 3 },
+      now: () => NOW,
+      requireCurrentAppAccess: false,
+    };
+
+    const tools = createAgentReadTools(expiredContext, { propertyKnowledgeReader: makeReader() });
+
+    await expect(
+      tools.property_read_knowledge!.execute({ topic: 'check_in_out' }),
+    ).rejects.toMatchObject({ code: 'READ_AUTHORIZATION_EXPIRED' });
+  });
+
+  it('does not let a factory audience option disclose staff-only material', async () => {
+    const context = {
+      transportId: 'transport-centurion',
+      mailboxId: 'mailbox-centurion',
+      threadId: 'thread-1',
+      triggerMessageId: 'message-1',
+      propertyCode: 'HRCEN',
+      parentRef: 'parent-1',
+      branchId: 'guest_stay_search',
+      releaseId: 'release-1',
+      requester: {
+        authorizationId: 'auth-1',
+        transportId: 'transport-centurion',
+        threadId: 'thread-1',
+        triggerMessageId: 'message-1',
+        allowedClaimKinds: ['reservation_summary'],
+        expiresAt: '2026-09-09T12:00:00.000Z',
+      },
+      signal: new AbortController().signal,
+      budget: { total: 0, limit: 3 },
+      now: () => NOW,
+      currentAppAccessProof: issueCurrentAppAccessProof({
+        userId: 'user-1',
+        mailboxAccessId: 'auth-1',
+        transportId: 'transport-centurion',
+        threadId: 'thread-1',
+        triggerMessageId: 'message-1',
+        expiresAt: '2026-09-09T12:00:00.000Z',
+        now: NOW,
+      }),
+    };
+    const tools = createAgentReadTools(context, {
+      propertyKnowledgeReader: makeReader({ audience: 'staff' }),
+      propertyKnowledgeAudience: 'staff',
+    });
+
+    const result = await tools.property_read_knowledge!.execute({ topic: 'room_types' });
+
+    expect((result as PropertyKnowledgeReadResult).status).toBe('unavailable');
+    expect((result as PropertyKnowledgeReadResult).issues.map((entry) => entry.code)).toContain(
+      'AUDIENCE_NOT_AUTHORIZED',
+    );
   });
 
   it('requires the existing server-owned current app access proof when the normal path requires it', async () => {

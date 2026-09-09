@@ -6,7 +6,6 @@
 import {
   PROPERTY_KNOWLEDGE_CONTRACT_VERSION,
   PROPERTY_KNOWLEDGE_TOOL_ID,
-  propertyKnowledgeAudienceSchema,
   propertyKnowledgeReadRequestSchema,
   propertyKnowledgeReadResultSchema,
   type PropertyKnowledgeAudience,
@@ -18,8 +17,8 @@ import {
   type PropertyKnowledgeReadContextInput,
 } from '../ai/property-knowledge-read.js';
 import { reservationContextRequestSchema } from './reservation-context-contract.js';
-import { assertCurrentAppAccessProof } from './requester-authorization.js';
 import { executeRead, type ReadExecutionContext } from './read-service.js';
+import { assertReadRequesterScope } from './requester-authorization.js';
 import { quoteRequestSchema } from './quote-request-normalization.js';
 import { readRefSchema } from './read-service-contracts.js';
 import { z } from 'zod';
@@ -67,7 +66,7 @@ export type AgentReadTool = {
 export type AgentReadToolsOptions = {
   /** Server-wired local/storage reader; never constructed from model input. */
   propertyKnowledgeReader?: PropertyKnowledgeReader;
-  /** Presentation audience, not an additional application role. */
+  /** @deprecated Disclosure is fixed to customer until a trusted recipient context exists. */
   propertyKnowledgeAudience?: PropertyKnowledgeAudience;
 };
 
@@ -106,7 +105,7 @@ export function createAgentReadTools(
           context,
           options.propertyKnowledgeReader,
           propertyReadKnowledgeInputSchema.parse(input),
-          options.propertyKnowledgeAudience ?? 'customer',
+          'customer',
         ),
     },
   };
@@ -155,19 +154,20 @@ export async function propertyReadKnowledge(
   audience: PropertyKnowledgeAudience = 'customer',
 ): Promise<PropertyKnowledgeReadResult> {
   const parsed = propertyReadKnowledgeInputSchema.parse(input);
-  const parsedAudience = propertyKnowledgeAudienceSchema.parse(audience);
-  if (context.requireCurrentAppAccess) {
-    assertCurrentAppAccessProof({
-      proof: context.currentAppAccessProof,
-      requesterAuthorizationId: context.requester.authorizationId,
-      context: {
-        transportId: context.transportId,
-        threadId: context.threadId,
-        triggerMessageId: context.triggerMessageId,
-      },
-      now: context.now(),
-    });
-  }
+  // The legacy audience argument is intentionally ignored: disclosure is not
+  // a role claim, and a model-facing/factory caller cannot self-select staff.
+  void audience;
+  assertReadRequesterScope({
+    requester: context.requester,
+    context: {
+      transportId: context.transportId,
+      threadId: context.threadId,
+      triggerMessageId: context.triggerMessageId,
+    },
+    now: context.now(),
+    currentAppAccessProof: context.currentAppAccessProof,
+    requireCurrentAppAccess: true,
+  });
   if (!reader) {
     return propertyKnowledgeReadResultSchema.parse({
       toolId: PROPERTY_KNOWLEDGE_TOOL_ID,
@@ -186,7 +186,7 @@ export async function propertyReadKnowledge(
   }
   const readerContext: PropertyKnowledgeReadContextInput = {
     propertyRef: context.propertyCode,
-    audience: parsedAudience,
+    audience: 'customer',
     now: context.now(),
     signal: context.signal,
   };

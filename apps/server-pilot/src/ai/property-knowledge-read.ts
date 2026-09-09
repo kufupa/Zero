@@ -3,6 +3,7 @@ import {
   PROPERTY_KNOWLEDGE_MAX_FILE_BYTES,
   PROPERTY_KNOWLEDGE_MAX_CONTENT_CHARS,
   PROPERTY_KNOWLEDGE_MAX_ENTRIES,
+  PROPERTY_KNOWLEDGE_MAX_ISSUES,
   PROPERTY_KNOWLEDGE_SCOPE,
   PROPERTY_KNOWLEDGE_TOOL_ID,
   propertyKnowledgeDataSchema,
@@ -24,10 +25,12 @@ import {
   type PropertyKnowledgeSourceRecord,
   type PropertyKnowledgeTopic,
 } from './property-knowledge-contract.js';
+import { documentValidationIsUsable } from '../mail/artifacts/existing-document-contracts.js';
 import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, open, realpath } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { open } from 'node:fs/promises';
 
 export type PropertyKnowledgeSourceListInput = {
   propertyRef: string;
@@ -48,9 +51,10 @@ export interface PropertyKnowledgeSource {
 
 export type PropertyKnowledgeFileRead = (input: {
   filePath: string;
+  allowedRoot?: string;
   signal: AbortSignal;
   maxBytes: number;
-}) => Promise<string>;
+}) => Promise<AsyncIterable<Uint8Array>>;
 
 export type PropertyKnowledgeFileSourceOptions = {
   /** Server configuration only; never accepted from a model request. */
@@ -79,11 +83,13 @@ export type PropertyKnowledgeDocumentCheckStatus =
   | 'changed'
   | 'expired'
   | 'unauthorized'
+  | 'blocked'
   | 'missing';
 
 export type PropertyKnowledgeDocumentCheck = {
   status: PropertyKnowledgeDocumentCheckStatus;
   expiresAt?: string | null;
+  detail?: string | null;
 };
 
 export interface PropertyKnowledgeDocumentRevalidator {
@@ -128,10 +134,33 @@ const DEFAULT_FRESHNESS_MS = 5 * 60 * 1_000;
 const PAYMENT_SECRET_PATTERNS = [
   /\b(?:credit|debit|payment|card)\s*(?:card\s*)?(?:number|no\.?|#)\s*[:=-]?\s*(?:\d[ -]?){13,19}\b/i,
   /\b(?:cvv|cvc|security\s+code|password|passcode|room\s+pin|api\s+key|access\s+token|secret)\b/i,
+  /\bBearer\s+\S+/i,
+  /-----BEGIN\s+[A-Z ]*PRIVATE KEY-----/i,
 ];
 
+const PAN_CANDIDATE_PATTERN = /(?<!\d)(?:\d[ -]?){13,19}(?!\d)/g;
+
+function isLuhnValid(value: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    let digit = Number(value[index]);
+    if (double) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
 function hasPaymentSecret(content: string): boolean {
-  return PAYMENT_SECRET_PATTERNS.some((pattern) => pattern.test(content));
+  if (PAYMENT_SECRET_PATTERNS.some((pattern) => pattern.test(content))) return true;
+  PAN_CANDIDATE_PATTERN.lastIndex = 0;
+  return [...content.matchAll(PAN_CANDIDATE_PATTERN)].some((match) =>
+    isLuhnValid(match[0].replace(/[ -]/g, '')),
+  );
 }
 
 function digestContent(content: string): string {
@@ -184,6 +213,15 @@ function uniqueIssues(issues: readonly PropertyKnowledgeIssue[]): PropertyKnowle
   });
 }
 
+function boundedIssues(issues: readonly PropertyKnowledgeIssue[]): PropertyKnowledgeIssue[] {
+  const unique = uniqueIssues(issues);
+  if (unique.length <= PROPERTY_KNOWLEDGE_MAX_ISSUES) return unique;
+  return [
+    ...unique.slice(0, PROPERTY_KNOWLEDGE_MAX_ISSUES - 1),
+    issue('RESULT_TRUNCATED', 'additional result issues were omitted'),
+  ];
+}
+
 function result(input: {
   propertyRef: string;
   status: PropertyKnowledgeReadResult['status'];
@@ -198,7 +236,7 @@ function result(input: {
     scopeRef: input.propertyRef,
     data: input.data,
     evidence: input.evidence ?? [],
-    issues: uniqueIssues(input.issues ?? []),
+    issues: boundedIssues(input.issues ?? []),
   });
 }
 
@@ -229,6 +267,8 @@ function documentIssue(status: PropertyKnowledgeDocumentCheckStatus): PropertyKn
       return issue('DOCUMENT_UNAUTHORIZED');
     case 'missing':
       return issue('DOCUMENT_MISSING');
+    case 'blocked':
+      return issue('DOCUMENT_REVALIDATION_UNAVAILABLE');
     case 'current':
       return issue('DOCUMENT_REVALIDATION_UNAVAILABLE', 'unexpected current-document blocker');
   }
@@ -238,6 +278,8 @@ async function revalidateWithExistingDocumentService(input: {
   service: ExistingDocumentServiceLike;
   documentRef: string;
   propertyRef: string;
+  sourceKind: PropertyKnowledgeSourceRecord['sourceKind'];
+  sourceHash: string;
   now: Date;
 }): Promise<PropertyKnowledgeDocumentCheck> {
   try {
@@ -245,15 +287,40 @@ async function revalidateWithExistingDocumentService(input: {
       documentRef: input.documentRef,
       format: 'text',
     });
+    if (read.blocker === 'DOCUMENT_CHANGED') return { status: 'changed' };
+    if (read.blocker === 'SCOPE_DENIED') return { status: 'unauthorized' };
     const data = read.data;
-    if (!data) {
-      if (read.blocker === 'DOCUMENT_CHANGED') return { status: 'changed' };
-      if (read.blocker === 'SCOPE_DENIED') return { status: 'unauthorized' };
-      return { status: 'missing' };
+    if (!data) return { status: 'blocked', detail: read.blocker ?? 'document data unavailable' };
+
+    const expectedSource =
+      input.sourceKind === 'mail_attachment' ? 'mail_attachment' : 'approved_property_document';
+    if (
+      data.document.documentRef !== input.documentRef ||
+      data.document.source !== expectedSource ||
+      data.document.propertyRef !== input.propertyRef
+    ) {
+      return { status: 'unauthorized', detail: 'linked document identity is not bound' };
     }
-    if (data.document.propertyRef !== input.propertyRef) return { status: 'unauthorized' };
+    if (data.validation.identity === 'mismatch') {
+      return { status: 'unauthorized', detail: 'linked document property identity mismatched' };
+    }
     if (data.validation.version !== 'current' || !data.document.currentVersion) {
       return { status: 'expired' };
+    }
+    if (read.status !== 'ok' || read.blocker !== null || read.issues.length > 0) {
+      return { status: 'blocked', detail: read.blocker ?? 'linked document read was not current' };
+    }
+    if (data.document.sha256 !== input.sourceHash || data.sourceHash !== input.sourceHash) {
+      return { status: 'changed', detail: 'linked document bytes no longer match source hash' };
+    }
+    if (
+      data.validation.priceVisibility !== 'allowed' ||
+      !documentValidationIsUsable(data.validation) ||
+      data.document.retrievalBlocker !== null ||
+      data.extractionState !== 'complete' ||
+      data.text === null
+    ) {
+      return { status: 'blocked', detail: read.blocker ?? 'linked document disclosure is blocked' };
     }
     return {
       status: 'current',
@@ -262,33 +329,82 @@ async function revalidateWithExistingDocumentService(input: {
         new Date(input.now.getTime() + DEFAULT_FRESHNESS_MS).toISOString(),
     };
   } catch {
-    return { status: 'missing' };
+    return { status: 'blocked', detail: 'linked document validation failed' };
   }
 }
 
-async function readLocalKnowledgeFile(
+async function assertLocalKnowledgeFilePath(filePath: string, allowedRoot?: string): Promise<void> {
+  const fileStat = await lstat(filePath);
+  if (fileStat.isSymbolicLink()) {
+    throw new Error('property knowledge source file must not be a symbolic link');
+  }
+  const resolvedFile = await realpath(filePath);
+  if (!allowedRoot) return;
+  const resolvedRoot = await realpath(allowedRoot);
+  const withinRoot = relative(resolvedRoot, resolvedFile);
+  if (
+    !withinRoot ||
+    withinRoot === '..' ||
+    withinRoot.startsWith(`..${sep}`) ||
+    isAbsolute(withinRoot)
+  ) {
+    throw new Error('property knowledge source file resolves outside its server-owned root');
+  }
+}
+
+async function* readLocalKnowledgeFile(
   filePath: string,
+  allowedRoot: string | undefined,
   signal: AbortSignal,
   maxBytes: number,
-): Promise<string> {
-  const handle = await open(filePath, 'r');
+): AsyncGenerator<Uint8Array> {
+  if (signal.aborted) throw readAbortedError();
+  await assertLocalKnowledgeFilePath(filePath, allowedRoot);
+  const flags =
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
+  const handle = await open(filePath, flags);
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > maxBytes) {
+    if (!stat.isFile()) {
       throw new Error('property knowledge source file exceeds the bounded size');
     }
-    const buffer = Buffer.allocUnsafe(stat.size);
-    let offset = 0;
-    while (offset < buffer.length) {
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes));
+    let total = 0;
+    while (true) {
       if (signal.aborted) throw readAbortedError();
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
       if (bytesRead === 0) break;
-      offset += bytesRead;
+      total += bytesRead;
+      if (total > maxBytes) {
+        throw new Error('property knowledge source file exceeds the bounded size');
+      }
+      yield Buffer.from(buffer.subarray(0, bytesRead));
     }
-    return buffer.subarray(0, offset).toString('utf8');
   } finally {
     await handle.close();
   }
+}
+
+async function collectBoundedKnowledgeSource(
+  source: AsyncIterable<Uint8Array>,
+  signal: AbortSignal,
+  maxBytes: number,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of source) {
+    if (signal.aborted) throw readAbortedError();
+    if (!(chunk instanceof Uint8Array)) {
+      throw new Error('property knowledge source did not return byte chunks');
+    }
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      throw new Error('property knowledge source exceeds the bounded size');
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  if (signal.aborted) throw readAbortedError();
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 /**
@@ -306,16 +422,19 @@ export function createPropertyKnowledgeFileSource(
   }
   const readFile =
     options.readFile ??
-    ((input) => readLocalKnowledgeFile(input.filePath, input.signal, input.maxBytes));
+    (async (input) =>
+      readLocalKnowledgeFile(input.filePath, input.allowedRoot, input.signal, input.maxBytes));
 
   return {
     async list(input) {
       if (input.signal.aborted) throw readAbortedError();
-      const raw = await readFile({ filePath, signal: input.signal, maxBytes });
-      if (input.signal.aborted) throw readAbortedError();
-      if (Buffer.byteLength(raw, 'utf8') > maxBytes) {
-        throw new Error('property knowledge source file exceeds the bounded size');
-      }
+      const stream = await readFile({
+        filePath,
+        allowedRoot: options.allowedRoot,
+        signal: input.signal,
+        maxBytes,
+      });
+      const raw = await collectBoundedKnowledgeSource(stream, input.signal, maxBytes);
 
       let parsedFile: ReturnType<typeof propertyKnowledgeFileSchema.parse>;
       try {
@@ -612,6 +731,8 @@ export function createPropertyKnowledgeReader(
                 service: options.existingDocumentService,
                 documentRef,
                 propertyRef,
+                sourceKind: record.sourceKind,
+                sourceHash: record.sourceHash,
                 now,
               });
             } else {
@@ -673,10 +794,15 @@ export function createPropertyKnowledgeReader(
         byContent.set(key, group);
       }
       if (byContent.size > 1) {
+        const conflictTruncated = currentApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
         const conflict = {
           topic: request.topic,
-          entryRefs: currentApproved.map(({ record }) => record.entryRef),
-          sourceRefs: currentApproved.map(({ record }) => record.sourceRef),
+          entryRefs: currentApproved
+            .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
+            .map(({ record }) => record.entryRef),
+          sourceRefs: currentApproved
+            .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
+            .map(({ record }) => record.sourceRef),
         };
         const data = makeData({
           propertyRef,
@@ -690,10 +816,15 @@ export function createPropertyKnowledgeReader(
           status: 'ambiguous',
           data,
           evidence: [],
-          issues: [...issues, issue('CONFLICTING_APPROVED_SOURCES')],
+          issues: [
+            ...issues,
+            issue('CONFLICTING_APPROVED_SOURCES'),
+            ...(conflictTruncated ? [issue('RESULT_TRUNCATED')] : []),
+          ],
         });
       }
 
+      const entriesTruncated = currentApproved.length > PROPERTY_KNOWLEDGE_MAX_ENTRIES;
       const entries = currentApproved
         .slice(0, PROPERTY_KNOWLEDGE_MAX_ENTRIES)
         .map(({ record: entry }) => toEntry(entry));
@@ -706,7 +837,7 @@ export function createPropertyKnowledgeReader(
         status: issues.length > 0 ? 'partial' : 'ok',
         data,
         evidence,
-        issues,
+        issues: [...issues, ...(entriesTruncated ? [issue('RESULT_TRUNCATED')] : [])],
       });
     },
   };

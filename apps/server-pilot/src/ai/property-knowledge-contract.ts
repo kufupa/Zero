@@ -12,6 +12,7 @@ export const PROPERTY_KNOWLEDGE_TOOL_ID = 'property_read_knowledge' as const;
 export const PROPERTY_KNOWLEDGE_SCOPE = 'property_generic' as const;
 export const PROPERTY_KNOWLEDGE_FILE_CONTRACT_VERSION = 'property-knowledge-file/v1';
 export const PROPERTY_KNOWLEDGE_MAX_ENTRIES = 20;
+export const PROPERTY_KNOWLEDGE_MAX_ISSUES = 32;
 export const PROPERTY_KNOWLEDGE_MAX_CONTENT_CHARS = 2_000;
 export const PROPERTY_KNOWLEDGE_MAX_FILE_BYTES = 512 * 1024;
 const sourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -164,6 +165,7 @@ export const propertyKnowledgeIssueCodeSchema = z.enum([
   'SOURCE_UNAVAILABLE',
   'INVALID_SOURCE_RECORD',
   'READ_ABORTED',
+  'RESULT_TRUNCATED',
 ]);
 export type PropertyKnowledgeIssueCode = z.infer<typeof propertyKnowledgeIssueCodeSchema>;
 
@@ -249,7 +251,7 @@ export const propertyKnowledgeReadResultSchema = z
     scopeRef: z.string().min(1).max(256),
     data: propertyKnowledgeDataSchema.nullable(),
     evidence: z.array(propertyKnowledgeEvidenceSchema).max(PROPERTY_KNOWLEDGE_MAX_ENTRIES),
-    issues: z.array(propertyKnowledgeIssueSchema).max(32),
+    issues: z.array(propertyKnowledgeIssueSchema).max(PROPERTY_KNOWLEDGE_MAX_ISSUES),
   })
   .strict();
 export type PropertyKnowledgeReadResult = z.infer<typeof propertyKnowledgeReadResultSchema>;
