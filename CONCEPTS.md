@@ -46,6 +46,10 @@ Thread-level chrome that must stay above the whole message list (notably Thread 
 
 Reading-pane strip that aggregates downloadable attachments across every message in the open thread and sits above the message list. Distinct from per-message attachment chips under a single message body. When many filenames are present, chips scroll horizontally inside a shrinkable row rather than widening the thread column.
 
+### One-click EML download
+
+Message-header reading action (`.eml` button and three-dots menu item) that exports a single email as an RFC 822 `.eml` file into Chrome/Edge's native download shelf in ~150ms. Bypasses cross-origin browser drag-and-drop restrictions by enabling staff to drag the file directly out of the browser's download shelf into external web enterprise applications like Infor HMS Web (recreating Outlook 2016 desktop drag-and-drop parity). Backed by direct presigned S3 URLs when raw MIME exists and on-the-fly RFC 822 synthesis fallback. Distinct from Thread Attachments (which exports files enclosed within an email).
+
 ### Reply action scope
 
 Mail-view distinction between an action attached to a rendered message, which targets that message, and a toolbar, context-menu, or hotkey action, which targets the thread's chronological latest message. This remains true when the reading pane presents messages newest-first; visual position does not redefine the thread-level target.
