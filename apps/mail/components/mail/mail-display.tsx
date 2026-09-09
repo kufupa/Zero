@@ -22,6 +22,7 @@ import {
   HardDriveDownload,
   CopyIcon,
   FileDown,
+  Loader2,
 } from 'lucide-react';
 import { triggerEmlDownload } from '@/lib/eml-download';
 import {
@@ -315,6 +316,8 @@ export type ActionButtonProps = {
   text: string;
   ariaLabel?: string;
   'aria-label'?: string;
+  disabled?: boolean;
+  title?: string;
 };
 
 export const ActionButton = ({
@@ -323,13 +326,22 @@ export const ActionButton = ({
   text,
   ariaLabel,
   'aria-label': ariaLabelProp,
+  disabled,
+  title,
 }: ActionButtonProps) => {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      title={title}
       aria-label={ariaLabelProp ?? ariaLabel ?? text}
-      className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
+      className={cn(
+        'inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] transition-colors',
+        disabled
+          ? 'opacity-60 cursor-not-allowed'
+          : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d]',
+      )}
     >
       {icon}
       <span className="hidden whitespace-nowrap pl-0.5 pr-1 text-sm leading-none text-black md:inline dark:text-white">
@@ -1369,6 +1381,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                                 {m['common.mailDisplay.print']()}
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                disabled={isDownloadingEml}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
@@ -1465,15 +1478,28 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
                           />
-                          <ActionButton
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDownloadEml();
-                            }}
-                            icon={<FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />}
-                            text={isDownloadingEml ? '...' : '.eml'}
-                            aria-label="Download .eml"
-                          />
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <ActionButton
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDownloadEml();
+                                }}
+                                disabled={isDownloadingEml}
+                                icon={
+                                  isDownloadingEml ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                  ) : (
+                                    <FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />
+                                  )
+                                }
+                                text={isDownloadingEml ? '...' : '.eml'}
+                                aria-label="Download .eml"
+                                title="Download .eml file (drag into Infor PMS)"
+                              />
+                            </TooltipTrigger>
+                            <TooltipContent>Download .eml file (drag into Infor PMS)</TooltipContent>
+                          </Tooltip>
                         </div>
                       </div>
                     </div>
