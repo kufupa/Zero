@@ -11,6 +11,7 @@ import {
   assertDraftApprovalCurrent,
   buildDraftApproval,
   getDraftApprovalSigningSecret,
+  resolveDraftApprovalRouteBinding,
   type DraftApprovalPayload,
 } from '../../ai/draft-approval.js';
 import {
@@ -123,7 +124,10 @@ export function isHmsEnrichedGeneration(generation: {
   threadStateVersion: string | null;
   evidence: unknown[] | null;
 }): boolean {
-  if (generation.outcome) return true;
+  // Mail-only/off-mode candidates may carry a durable outcome while making
+  // no HMS claim.  Freshness fences apply only once the generation carries a
+  // pinned thread snapshot or factual evidence; outcome alone is not proof
+  // that an HMS-enriched path ran.
   if (generation.threadStateVersion) return true;
   return Array.isArray(generation.evidence) && generation.evidence.length > 0;
 }
@@ -308,7 +312,7 @@ export async function loadHmsCandidateState(input: {
         eq(aiWorkflowRun.transportId, input.transportId),
         eq(aiWorkflowRun.threadId, input.threadId),
         eq(aiWorkflowRun.runKind, 'candidate_draft'),
-        eq(aiWorkflowRun.executorLane, 'hms'),
+        eq(aiWorkflowRun.executorLane, 'default'),
         inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
       ),
     )
@@ -505,38 +509,48 @@ export async function enqueueHmsCandidateRefresh(input: {
       idempotencyKey,
       modelId: input.modelId ?? DEFAULT_AI_MODEL_ID,
       promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
-      executorLane: 'hms',
+      // Visible drafting is owned by the normal default worker. The isolated
+      // HMS lane remains read/shadow-only and cannot claim this run.
+      executorLane: 'default',
     },
     input.db,
   );
 
-  const generationId = run.generationId ?? `${run.id}-generation`;
-  const [existingGen] = await input.db
-    .select({ id: aiDraftGeneration.id })
-    .from(aiDraftGeneration)
-    .where(eq(aiDraftGeneration.id, generationId))
-    .limit(1);
-  if (!existingGen) {
-    await input.db.insert(aiDraftGeneration).values({
-      id: generationId,
-      transportId: input.transportId,
-      threadId: input.threadId,
-      requestedByUserId: input.requestedByUserId,
-      contextMessageIds: [input.triggerMessageId],
-      model: input.modelId ?? DEFAULT_AI_MODEL_ID,
-      promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
-      status: 'queued',
-      threadStateVersion,
-      evidence: [],
-      createdAt: new Date(),
-    });
-  }
-  if (!run.generationId) {
-    await input.db
-      .update(aiWorkflowRun)
-      .set({ generationId, updatedAt: new Date() })
-      .where(and(eq(aiWorkflowRun.id, run.id), sql`${aiWorkflowRun.generationId} IS NULL`));
-  }
+  // The idempotent run insert and this generation link are separate concerns,
+  // but the link must be serialized on the run row. Otherwise two callers can
+  // both observe generationId=NULL and race into the same primary key insert;
+  // one real refresh then fails even though the run itself is idempotent.
+  let generationId = run.generationId ?? `${run.id}-generation`;
+  await input.db.transaction(async (tx) => {
+    const [lockedRun] = await tx
+      .select({ generationId: aiWorkflowRun.generationId })
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.id, run.id))
+      .limit(1)
+      .for('update');
+    if (!lockedRun) throw new Error(`refresh run disappeared before generation link: ${run.id}`);
+
+    generationId = lockedRun.generationId ?? `${run.id}-generation`;
+    if (!lockedRun.generationId) {
+      await tx.insert(aiDraftGeneration).values({
+        id: generationId,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        requestedByUserId: input.requestedByUserId,
+        contextMessageIds: [input.triggerMessageId],
+        model: input.modelId ?? DEFAULT_AI_MODEL_ID,
+        promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
+        status: 'queued',
+        threadStateVersion,
+        evidence: [],
+        createdAt: new Date(),
+      });
+      await tx
+        .update(aiWorkflowRun)
+        .set({ generationId, updatedAt: new Date() })
+        .where(and(eq(aiWorkflowRun.id, run.id), sql`${aiWorkflowRun.generationId} IS NULL`));
+    }
+  });
 
   return {
     runId: run.id,
@@ -691,6 +705,20 @@ export const draftsRouter = tRouter({
         throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
       }
 
+      const [candidateRun] = await db
+        .select({ metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.generationId, draft.generationId),
+            eq(aiWorkflowRun.runKind, 'candidate_draft'),
+            eq(aiWorkflowRun.state, 'succeeded'),
+          ),
+        )
+        .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+        .limit(1);
+      const routeBinding = resolveDraftApprovalRouteBinding(candidateRun?.metrics);
+
       const threadStateVersion = await loadLiveThreadStateVersion(db, {
         transportId,
         threadId: draft.threadId,
@@ -703,6 +731,7 @@ export const draftsRouter = tRouter({
         revisionId: latestRevision.id,
         threadStateVersion,
         evidence: generation.evidence ?? [],
+        ...(routeBinding ? { routeBinding } : {}),
         policyVersion: DRAFT_APPROVAL_POLICY_VERSION,
         approvedByUserId: ctx.sessionUser.id,
         approvedAt: new Date().toISOString(),
@@ -998,12 +1027,15 @@ export const draftsRouter = tRouter({
       const transportId = ctx.activeTransportId;
       // Verify ownership: draft must be on this transport.
       const existing = await db
-        .select({ id: mailDraft.id })
+        .select({ id: mailDraft.id, status: mailDraft.status, isSent: mailDraft.isSent })
         .from(mailDraft)
         .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
         .limit(1);
       if (existing.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
+      }
+      if (existing[0]!.isSent || existing[0]!.status === 'sent') {
+        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
       }
       if (input.threadId) {
         await requireThreadForTransport(db, input.threadId, transportId);
@@ -1017,10 +1049,21 @@ export const draftsRouter = tRouter({
       if (input.html !== undefined) patch.htmlBody = input.html || null;
       if (input.threadId !== undefined) patch.threadId = input.threadId || null;
       if (input.replyToMessageId !== undefined) patch.replyToMessageId = input.replyToMessageId;
-      await db
+      const [updated] = await db
         .update(mailDraft)
         .set(patch)
-        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)));
+        .where(
+          and(
+            eq(mailDraft.id, input.id),
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'active'),
+          ),
+        )
+        .returning({ id: mailDraft.id });
+      if (!updated) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+      }
 
       const mergedRows = await db
         .select()

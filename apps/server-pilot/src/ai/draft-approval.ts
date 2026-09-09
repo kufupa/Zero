@@ -1,4 +1,9 @@
-import { aiDraftGeneration, mailDraft, mailDraftRevision } from '../db/schema/mail.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  mailDraft,
+  mailDraftRevision,
+} from '../db/schema/mail.js';
 import { EvidenceRefSchema, isEvidenceFresh } from './draft-evidence.js';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
@@ -26,6 +31,18 @@ export type DraftApprovalAttachment = {
   contentBase64?: string;
 };
 
+/** Trusted normal-worker capability/release identity bound into approval. */
+export type DraftApprovalRouteBinding = {
+  routeId: string;
+  modelId: string;
+  purpose: 'draft';
+  protocol: 'in_process';
+  access: 'current_app';
+  egress: 'none';
+  retention: 'bounded';
+  usage: 'reported';
+};
+
 export type DraftApprovalPayload = {
   draftId?: string;
   generationId?: string | null;
@@ -34,6 +51,7 @@ export type DraftApprovalPayload = {
   revisionId?: string | null;
   threadStateVersion?: string | null;
   evidence?: unknown[];
+  routeBinding?: DraftApprovalRouteBinding;
   policyVersion?: string;
   approvedByUserId?: string;
   approvedAt?: string;
@@ -63,9 +81,36 @@ export type DraftApproval = {
   recipientDigest: string;
   attachmentDigest: string;
   evidenceDigest: string;
+  routeBinding?: DraftApprovalRouteBinding;
   fingerprint: string;
   signature: string;
 };
+
+function isDraftRouteBinding(value: unknown): value is DraftApprovalRouteBinding {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<DraftApprovalRouteBinding>;
+  return (
+    typeof candidate.routeId === 'string' &&
+    candidate.routeId.trim().length > 0 &&
+    typeof candidate.modelId === 'string' &&
+    candidate.modelId.trim().length > 0 &&
+    candidate.purpose === 'draft' &&
+    candidate.protocol === 'in_process' &&
+    candidate.access === 'current_app' &&
+    candidate.egress === 'none' &&
+    candidate.retention === 'bounded' &&
+    candidate.usage === 'reported'
+  );
+}
+
+/** Extract only the complete trusted route evidence persisted by the worker. */
+export function resolveDraftApprovalRouteBinding(
+  metrics: unknown,
+): DraftApprovalRouteBinding | undefined {
+  if (typeof metrics !== 'object' || metrics === null) return undefined;
+  const candidate = (metrics as { routeBinding?: unknown }).routeBinding;
+  return isDraftRouteBinding(candidate) ? candidate : undefined;
+}
 
 /** Resolve the server-only key used to authenticate approval snapshots. */
 export function getDraftApprovalSigningSecret(
@@ -164,6 +209,7 @@ function approvalFingerprint(input: {
   recipientDigest: string;
   attachmentDigest: string;
   evidenceDigest: string;
+  routeBinding?: DraftApprovalRouteBinding;
 }): string {
   return digest(input);
 }
@@ -208,6 +254,7 @@ export function buildDraftApproval(
     recipientDigest,
     attachmentDigest,
     evidenceDigest,
+    ...(input.routeBinding ? { routeBinding: input.routeBinding } : {}),
   } as const;
   const fingerprint = approvalFingerprint(approval);
   const signed = {
@@ -237,6 +284,19 @@ const draftApprovalSchema = z
     recipientDigest: z.string().regex(/^[a-f0-9]{64}$/),
     attachmentDigest: z.string().regex(/^[a-f0-9]{64}$/),
     evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    routeBinding: z
+      .object({
+        routeId: z.string().min(1),
+        modelId: z.string().min(1),
+        purpose: z.literal('draft'),
+        protocol: z.literal('in_process'),
+        access: z.literal('current_app'),
+        egress: z.literal('none'),
+        retention: z.literal('bounded'),
+        usage: z.literal('reported'),
+      })
+      .strict()
+      .optional(),
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     signature: z.string().regex(/^[a-f0-9]{64}$/),
   })
@@ -262,6 +322,7 @@ export function parseDraftApproval(raw: unknown, signingSecret: string): DraftAp
     recipientDigest: parsed.data.recipientDigest,
     attachmentDigest: parsed.data.attachmentDigest,
     evidenceDigest: parsed.data.evidenceDigest,
+    routeBinding: parsed.data.routeBinding,
   });
   if (expected !== parsed.data.fingerprint) {
     throw new DraftApprovalError('approval fingerprint mismatch');
@@ -294,11 +355,17 @@ export function assertDraftApprovalMatchesPayload(
     'revisionId',
     'threadStateVersion',
     'policyVersion',
+    'routeBinding',
   ];
   for (const field of boundFields) {
     const submitted = input[field];
     const expected = approval[field as keyof DraftApproval];
-    if (submitted !== undefined && submitted !== expected) {
+    if (
+      submitted !== undefined &&
+      (field === 'routeBinding'
+        ? canonicalJson(submitted) !== canonicalJson(expected)
+        : submitted !== expected)
+    ) {
       throw new DraftApprovalError(`approval field changed: ${field}`);
     }
   }
@@ -314,6 +381,7 @@ export function assertDraftApprovalMatchesPayload(
       policyVersion: input.policyVersion ?? approval.policyVersion,
       approvedByUserId: approval.approvedByUserId,
       approvedAt: approval.approvedAt,
+      routeBinding: input.routeBinding ?? approval.routeBinding,
       origin: 'ai',
     },
     signingSecret,
@@ -332,7 +400,11 @@ export function assertDraftApprovalMatchesPayload(
 }
 
 function checkEvidenceFreshness(evidence: unknown[], now: Date): boolean {
-  if (!Array.isArray(evidence) || evidence.length === 0) return false;
+  // An approved-local mail-only draft makes no external factual claim and
+  // therefore has no HMS evidence to expire.  The human approval still binds
+  // the exact body, recipients, revision, generation, route, and thread
+  // state; non-empty evidence remains strict HMS-only validation below.
+  if (!Array.isArray(evidence) || evidence.length === 0) return true;
   for (const raw of evidence) {
     const parsed = EvidenceRefSchema.safeParse(raw);
     if (!parsed.success || parsed.data.kind !== 'hms') return false;
@@ -450,6 +522,25 @@ export async function assertDraftApprovalCurrent(input: {
     throw new DraftApprovalError('draft evidence is no longer fresh');
   }
 
+  if (approval.routeBinding) {
+    const [run] = await input.db
+      .select({ metrics: aiWorkflowRun.metrics })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.generationId, approval.generationId),
+          eq(aiWorkflowRun.runKind, 'candidate_draft'),
+          eq(aiWorkflowRun.state, 'succeeded'),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+      .limit(1);
+    const currentRoute = resolveDraftApprovalRouteBinding(run?.metrics);
+    if (!currentRoute || canonicalJson(currentRoute) !== canonicalJson(approval.routeBinding)) {
+      throw new DraftApprovalError('approved draft route release changed');
+    }
+  }
+
   const liveThreadStateVersion = await input.loadThreadStateVersion(input.db, {
     transportId: approval.transportId,
     threadId: approval.threadId,
@@ -457,5 +548,59 @@ export async function assertDraftApprovalCurrent(input: {
   if (liveThreadStateVersion !== approval.threadStateVersion) {
     throw new DraftApprovalError('thread changed after approval');
   }
+  return approval;
+}
+
+/**
+ * Linearize an approved AI send inside the caller's short DB transaction.
+ * The draft row is the mutable-state claim: edits that already committed are
+ * observed by the locked validation, while edits that race afterward wait for
+ * the row lock and cannot update a sent draft. No model or SMTP I/O belongs in
+ * this transaction.
+ */
+export async function claimDraftApprovalForSend(
+  input: Parameters<typeof assertDraftApprovalCurrent>[0] & { queueMessageId: string },
+): Promise<DraftApproval> {
+  if (!input.queueMessageId.trim()) {
+    throw new DraftApprovalError('send claim is missing its queue message id');
+  }
+  const parsedApproval = parseDraftApproval(input.approval, input.signingSecret);
+  const [lockedDraft] = await input.db
+    .select({
+      id: mailDraft.id,
+    })
+    .from(mailDraft)
+    .where(
+      and(
+        eq(mailDraft.id, parsedApproval.draftId),
+        eq(mailDraft.transportId, parsedApproval.transportId),
+        eq(mailDraft.origin, 'ai'),
+        eq(mailDraft.isSent, false),
+        eq(mailDraft.status, 'active'),
+      ),
+    )
+    .limit(1)
+    .for('update');
+  if (!lockedDraft) throw new DraftApprovalError('draft changed before send claim');
+
+  const approval = await assertDraftApprovalCurrent(input);
+  const [claimed] = await input.db
+    .update(mailDraft)
+    .set({
+      isSent: true,
+      status: 'sent',
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mailDraft.id, lockedDraft.id),
+        eq(mailDraft.transportId, approval.transportId),
+        eq(mailDraft.origin, 'ai'),
+        eq(mailDraft.isSent, false),
+        eq(mailDraft.status, 'active'),
+      ),
+    )
+    .returning({ id: mailDraft.id });
+  if (!claimed) throw new DraftApprovalError('draft changed during send claim');
   return approval;
 }

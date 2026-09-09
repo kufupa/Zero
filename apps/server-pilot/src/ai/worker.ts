@@ -108,6 +108,11 @@ import {
   type MailBaselineExtractionRouteFactory,
 } from './mail-baseline-route-factory.js';
 import {
+  createProductionDraftModelRouteFactory,
+  type DraftModelRouteConfig,
+  type DraftModelRouteFactory,
+} from './draft-route-factory.js';
+import {
   extractMailBaselineWithApprovedRoute,
   resolveMailBaselineExtractionRoute,
 } from './mail-baseline-extraction.js';
@@ -209,6 +214,8 @@ export type PreparedWorkerCandidateReplyInput = {
   asks?: readonly PreparedAsk[];
   requestKind?: ReplyRequestKind;
   adapter?: ModelAdapter;
+  /** Explicit purpose-bound route; absent remains unavailable. */
+  route?: DraftModelRouteConfig;
   signal?: AbortSignal;
   deadlineAt?: number;
 };
@@ -232,7 +239,13 @@ export async function runPreparedWorkerCandidateReply(
   const serializedInput = serializePreparedDraftInput(prepared);
   let adapter: ModelAdapter;
   try {
-    adapter = input.adapter ?? createApprovedLocalModelAdapter({ purpose: 'draft' });
+    adapter =
+      input.adapter ??
+      createApprovedLocalModelAdapter({
+        purpose: 'draft',
+        route: input.route?.route,
+        transport: input.route?.transport,
+      });
   } catch (error) {
     if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
     const fallback = buildReplyPlaybook({
@@ -262,13 +275,20 @@ export async function runPreparedWorkerCandidateReply(
       },
     };
   }
-  return runPreparedReplyWorkflow({
+  const result = await runPreparedReplyWorkflow({
     prepared,
     requestKind: input.requestKind ?? workerReplyRequestKind(prepared.requestText),
     adapter,
     signal: input.signal,
     deadlineAt: input.deadlineAt,
   });
+  return {
+    ...result,
+    metrics: {
+      ...result.metrics,
+      ...(input.route?.route ? { routeBinding: input.route.route } : {}),
+    },
+  };
 }
 
 function resolveWorkerLane(): AiExecutorLane {
@@ -3538,6 +3558,8 @@ export async function executeAiRun(
     /** Approved local adapter seams for normal plan/reply composition. */
     candidateModelAdapter?: ModelAdapter;
     candidateReplyModelAdapter?: ModelAdapter;
+    /** Explicit configured draft-purpose route; absent remains unavailable. */
+    candidateDraftRoute?: DraftModelRouteConfig;
     candidateReplyAsks?: readonly PreparedAsk[];
     /** Explicit purpose-bound mail extraction route; absent means unavailable. */
     mailBaselineExtractionRoute?: {
@@ -4061,6 +4083,7 @@ export async function executeAiRun(
           requestText,
           asks: replyAsks,
           adapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+          route: options.candidateDraftRoute,
           signal,
           deadlineAt: deadlineAt.getTime(),
         });
@@ -4707,6 +4730,7 @@ export type RunAiWorkerOnceOptions = {
   candidateReplyModelAdapter?: NonNullable<
     Parameters<typeof executeAiRun>[1]
   >['candidateReplyModelAdapter'];
+  candidateDraftRouteFactory?: DraftModelRouteFactory;
   candidateReplyAsks?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateReplyAsks'];
   shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
   shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
@@ -4725,6 +4749,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,
+    candidateDraftRouteFactory,
     candidateReplyAsks,
     shadowModelAdapter,
     shadowModelRoute,
@@ -4768,6 +4793,8 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     createProductionMailBaselineExtractionRouteFactory()();
   const composedShadowModelRoute =
     shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
+  const composedCandidateDraftRoute =
+    candidateDraftRouteFactory?.() ?? createProductionDraftModelRouteFactory()();
   await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
@@ -4775,6 +4802,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,
+    candidateDraftRoute: composedCandidateDraftRoute,
     candidateReplyAsks,
     shadowModelAdapter,
     shadowModelRoute: shadowModelRoute ?? composedShadowModelRoute?.route,

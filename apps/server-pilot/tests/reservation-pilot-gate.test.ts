@@ -639,6 +639,33 @@ describe('reservation pilot runtime validators', () => {
       skipped: 0,
       failed: 0,
     });
+    const splitDashboardReport = {
+      suites: [
+        {
+          title: '',
+          specs: [
+            {
+              title: 'reservation-tools-pilot/dashboard/desktop',
+              tests: [{ status: 'expected', results: [{ status: 'passed' }] }],
+            },
+            {
+              title: 'reservation-tools-pilot/dashboard/mobile',
+              tests: [{ status: 'expected', results: [{ status: 'passed' }] }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(
+      gate.validatePlaywrightReport(splitDashboardReport, 'reservation-tools-pilot/dashboard', 2),
+    ).toEqual({
+      testCount: 2,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(() =>
+      gate.validatePlaywrightReport(report, 'reservation-tools-pilot/dashboard', 2),
+    ).toThrow(/expected 2/i);
     expect(() =>
       gate.validatePlaywrightReport(
         {

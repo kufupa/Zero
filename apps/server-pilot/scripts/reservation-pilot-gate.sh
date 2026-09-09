@@ -391,11 +391,21 @@ run_db_planned_slice() {
 run_browser_slice() {
   local config="${REPO_ROOT}/apps/mail/vite.pilot-fixture.config.ts"
   local slice=${1:-}
-  local grep_pattern
+  local grep_pattern grep_expression expected_count=1
   case "$slice" in
-    dashboard) grep_pattern='reservation-tools-pilot/dashboard' ;;
-    documents) grep_pattern='reservation-tools-pilot/documents' ;;
-    pilot) grep_pattern='reservation-tools-pilot/pilot' ;;
+    dashboard)
+      grep_pattern='reservation-tools-pilot/dashboard'
+      grep_expression=".*${grep_pattern}"
+      expected_count=2
+      ;;
+    documents)
+      grep_pattern='reservation-tools-pilot/documents'
+      grep_expression=".*${grep_pattern}$"
+      ;;
+    pilot)
+      grep_pattern='reservation-tools-pilot/pilot'
+      grep_expression=".*${grep_pattern}$"
+      ;;
     *) die "unknown browser slice '${slice}'" 65 ;;
   esac
   run_gate_helper validate-browser-config "$config" "$FIXTURE_MANIFEST" || \
@@ -419,10 +429,10 @@ run_browser_slice() {
     playwright
     test
     "tests/e2e/reservation-tools-pilot.spec.ts"
-    # Playwright applies --grep to the file-qualified full title.  Anchor the
-    # reviewed slice at the suffix so the mapping remains exact without
-    # selecting zero tests because of the generated file prefix.
-    --grep=".*${grep_pattern}$"
+    # Playwright applies --grep to the file-qualified full title.  Dashboard
+    # is intentionally split into bounded desktop/mobile tests; retain the
+    # exact reviewed prefix while selecting both bounded journeys.
+    --grep="$grep_expression"
     --config=vite.pilot-fixture.config.ts
     --reporter=json
     --forbid-only
@@ -447,7 +457,7 @@ run_browser_slice() {
     NAVA_FIXTURE_ORIGIN="$origin" run_clean_command "${isolated_command[@]}" >"$report_path" 2>"$error_path"
   ) || die 'browser fixture runner failed; no external or live service is permitted' 1
   [[ -s "$report_path" ]] || die 'browser runner produced no result report; required slice cannot skip green' 1
-  run_gate_helper validate-browser-report "$report_path" "$grep_pattern" || \
+  run_gate_helper validate-browser-report "$report_path" "$grep_pattern" "$expected_count" || \
     die 'required browser slice selected zero tests, skipped, or failed' 1
   rm -f "$report_path" "$error_path"
   trap - RETURN

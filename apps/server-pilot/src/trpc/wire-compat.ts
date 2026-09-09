@@ -52,6 +52,19 @@ const draftApprovalInput = z
     recipientDigest: z.string(),
     attachmentDigest: z.string(),
     evidenceDigest: z.string(),
+    routeBinding: z
+      .object({
+        routeId: z.string(),
+        modelId: z.string(),
+        purpose: z.literal('draft'),
+        protocol: z.literal('in_process'),
+        access: z.literal('current_app'),
+        egress: z.literal('none'),
+        retention: z.literal('bounded'),
+        usage: z.literal('reported'),
+      })
+      .strict()
+      .optional(),
     fingerprint: z.string(),
     signature: z.string(),
   })

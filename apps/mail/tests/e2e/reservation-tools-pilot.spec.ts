@@ -25,6 +25,78 @@ type RecordedFixtureRequest = {
   query?: DashboardQueryMetadata | DocumentQueryMetadata | null;
 };
 
+type CssColor = { red: number; green: number; blue: number; alpha: number };
+
+type ReviewSendContrast = {
+  background: string;
+  label: string;
+  command: string;
+  arrow: string;
+  disabled: boolean;
+  focusVisible: boolean;
+};
+
+function parseCssColor(value: string): CssColor {
+  const channels = value
+    .match(/rgba?\(([^)]+)\)/)?.[1]
+    ?.split(',')
+    .map(Number);
+  if (!channels || channels.length < 3 || channels.some((channel) => !Number.isFinite(channel))) {
+    throw new Error(`expected an rgb/rgba color, got ${value}`);
+  }
+  return {
+    red: channels[0],
+    green: channels[1],
+    blue: channels[2],
+    alpha: channels[3] ?? 1,
+  };
+}
+
+function relativeLuminance(color: CssColor): number {
+  const channel = (value: number) => {
+    const normalized = value / 255;
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(color.red) + 0.7152 * channel(color.green) + 0.0722 * channel(color.blue);
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const foregroundColor = parseCssColor(foreground);
+  const backgroundColor = parseCssColor(background);
+  expect(foregroundColor.alpha, `foreground alpha for ${foreground}`).toBe(1);
+  expect(backgroundColor.alpha, `background alpha for ${background}`).toBe(1);
+  const lighter = Math.max(relativeLuminance(foregroundColor), relativeLuminance(backgroundColor));
+  const darker = Math.min(relativeLuminance(foregroundColor), relativeLuminance(backgroundColor));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+async function readReviewSendContrast(
+  page: Page,
+  theme: 'light' | 'dark',
+): Promise<ReviewSendContrast> {
+  await page.evaluate((nextTheme) => {
+    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
+  }, theme);
+  await page.waitForTimeout(200);
+  const button = page.getByRole('button', { name: 'Review & Send', exact: true });
+  await expect(button).toBeVisible();
+  return button.evaluate((element) => {
+    const label = element.querySelector('span');
+    const command = element.querySelector('svg');
+    const arrow = element.querySelectorAll('svg')[1];
+    if (!label || !command || !arrow) throw new Error('Review & Send CTA content is incomplete');
+    const buttonStyle = getComputedStyle(element);
+    return {
+      background: buttonStyle.backgroundColor,
+      label: getComputedStyle(label).color,
+      command: getComputedStyle(command).color,
+      arrow: getComputedStyle(arrow).fill,
+      disabled: (element as HTMLButtonElement).disabled,
+      focusVisible: element.matches(':focus-visible'),
+    };
+  });
+}
+
 function dashboardUrl(mode = 'default'): string {
   return `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=${mode}`;
 }
@@ -80,6 +152,22 @@ async function readTouchTargetBoxes(locator: ReturnType<Page['locator']>) {
       return { width: Math.round(rect.width), height: Math.round(rect.height) };
     }),
   );
+}
+
+async function expectTouchTargetHeightToSettle(
+  locator: ReturnType<Page['locator']>,
+  label: string,
+  minimumHeight = 44,
+) {
+  await expect
+    .poll(
+      async () => {
+        const boxes = await readTouchTargetBoxes(locator);
+        return boxes.length > 0 && boxes.every(({ height }) => height >= minimumHeight);
+      },
+      { message: `${label} should settle at ${minimumHeight}px before measurement` },
+    )
+    .toBe(true);
 }
 
 function touchTargetFailures(
@@ -146,7 +234,7 @@ async function assertLoopbackAndReadOnly(page: Page) {
   return { requests, forbidden };
 }
 
-test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: TestInfo) => {
+test('reservation-tools-pilot/dashboard/desktop', async ({ page }, testInfo: TestInfo) => {
   const audit = await assertLoopbackAndReadOnly(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
@@ -220,16 +308,6 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   ]);
   expect(Object.keys(exported.overlays)).toEqual(['partially_answered', 'unknown_evidence']);
 
-  const missingContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const missingPage = await missingContext.newPage();
-  await missingPage.goto(dashboardUrl('missing'), { waitUntil: 'domcontentloaded' });
-  await expectDashboardReady(missingPage);
-  await expect(
-    missingPage.getByText('Admission coverage unknown: not loaded.', { exact: true }),
-  ).toBeVisible();
-  await expect(missingPage.getByText('Eligible admissions', { exact: true })).not.toBeVisible();
-  await missingContext.close();
-
   await selectOptionKeyboard(page, 'Cohort', 'Research');
   await expect(page.getByText('research', { exact: true })).toBeVisible();
   await expect(
@@ -270,7 +348,59 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   const desktopFixtureRequests = (await page.evaluate(
     () => window.__reservationToolsPilotRequests ?? [],
   )) as RecordedFixtureRequest[];
+  expect(audit.forbidden).toEqual([]);
+  const allowedFixturePaths = new Set([
+    '/settings/undefined',
+    '/api/auth/get-session',
+    '/api/trpc/adminDashboard.getMetrics',
+    '/api/trpc/connections.getDefault',
+  ]);
+  expect(desktopFixtureRequests.every((request) => allowedFixturePaths.has(request.path))).toBe(
+    true,
+  );
+  expect(desktopFixtureRequests.every((request) => ['GET', 'POST'].includes(request.method))).toBe(
+    true,
+  );
+  const dashboardRequests = desktopFixtureRequests.filter((request) =>
+    request.path.endsWith('/api/trpc/adminDashboard.getMetrics'),
+  );
+  expect(dashboardRequests.length).toBeGreaterThan(0);
+  expect(dashboardRequests.every((request) => request.method === 'POST')).toBe(true);
+  expect(dashboardRequests.every((request) => request.status !== 400)).toBe(true);
+  const successfulDashboardRequests = dashboardRequests.filter((request) => request.status !== 400);
+  expect(successfulDashboardRequests.every((request) => request.query)).toBe(true);
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'centurion', window: '7d' },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'research', window: '7d' },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'research', window: '7d', observationCutoff: HISTORICAL_CUTOFF },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 503,
+      query: { cohortId: 'research', window: '28d', observationCutoff: HISTORICAL_CUTOFF },
+    }),
+  );
+  expectTouchTargetBoxes([
+    { label: 'desktop dashboard controls', boxes: desktopControlBoxes },
+    { label: 'desktop definition/data-table disclosures', boxes: desktopDisclosureBoxes },
+  ]);
+});
 
+test('reservation-tools-pilot/dashboard/mobile', async ({ page, browser }, testInfo: TestInfo) => {
+  const audit = await assertLoopbackAndReadOnly(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
   await expectDashboardReady(page);
@@ -283,6 +413,17 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   );
   const mobileDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
   await page.screenshot({ path: testInfo.outputPath('dashboard-mobile.png'), fullPage: true });
+
+  const missingContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const missingPage = await missingContext.newPage();
+  await missingPage.goto(dashboardUrl('missing'), { waitUntil: 'domcontentloaded' });
+  await expectDashboardReady(missingPage);
+  await expect(
+    missingPage.getByText('Admission coverage unknown: not loaded.', { exact: true }),
+  ).toBeVisible();
+  await expect(missingPage.getByText('Eligible admissions', { exact: true })).not.toBeVisible();
+  await missingContext.close();
+
   await selectOptionKeyboard(page, 'Cohort', 'Research');
   await toggleDisclosureKeyboard(page, page.locator('summary').first());
   const mobileCutoff = page.locator('#dashboard-cutoff');
@@ -298,11 +439,14 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await expect(page.locator('#dashboard-window')).toBeFocused();
   await page.getByRole('combobox', { name: 'Cohort' }).focus();
   await page.keyboard.press('Space');
+  await expectTouchTargetHeightToSettle(
+    page.locator('[role="option"]:visible'),
+    'mobile cohort options',
+  );
   const mobileOptionBoxes = await readTouchTargetBoxes(page.locator('[role="option"]:visible'));
   await page.keyboard.press('Escape');
   await expect(page.getByRole('combobox', { name: 'Cohort' })).toBeFocused();
 
-  expect(audit.forbidden).toEqual([]);
   const malformedBodies: Array<string | undefined> = [
     undefined,
     '{}',
@@ -331,16 +475,20 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   const mobileFixtureRequests = (await page.evaluate(
     () => window.__reservationToolsPilotRequests ?? [],
   )) as RecordedFixtureRequest[];
-  const fixtureRequests = [...desktopFixtureRequests, ...mobileFixtureRequests];
+  expect(audit.forbidden).toEqual([]);
   const allowedFixturePaths = new Set([
     '/settings/undefined',
     '/api/auth/get-session',
     '/api/trpc/adminDashboard.getMetrics',
     '/api/trpc/connections.getDefault',
   ]);
-  expect(fixtureRequests.every((request) => allowedFixturePaths.has(request.path))).toBe(true);
-  expect(fixtureRequests.every((request) => ['GET', 'POST'].includes(request.method))).toBe(true);
-  const dashboardRequests = fixtureRequests.filter((request) =>
+  expect(mobileFixtureRequests.every((request) => allowedFixturePaths.has(request.path))).toBe(
+    true,
+  );
+  expect(mobileFixtureRequests.every((request) => ['GET', 'POST'].includes(request.method))).toBe(
+    true,
+  );
+  const dashboardRequests = mobileFixtureRequests.filter((request) =>
     request.path.endsWith('/api/trpc/adminDashboard.getMetrics'),
   );
   expect(dashboardRequests.length).toBeGreaterThan(0);
@@ -379,6 +527,7 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
       query: { cohortId: 'research', window: '28d', observationCutoff: HISTORICAL_CUTOFF },
     }),
   );
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const authPage = await context.newPage();
   const authRequests = () => authPage.evaluate(() => window.__reservationToolsPilotRequests ?? []);
@@ -391,8 +540,6 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
   await context.close();
 
   expectTouchTargetBoxes([
-    { label: 'desktop dashboard controls', boxes: desktopControlBoxes },
-    { label: 'desktop definition/data-table disclosures', boxes: desktopDisclosureBoxes },
     { label: 'mobile dashboard controls', boxes: mobileControlBoxes },
     { label: 'mobile latest observed button', boxes: mobileLatestBoxes },
     { label: 'mobile definition/data-table disclosures', boxes: mobileDisclosureBoxes },
@@ -529,6 +676,79 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   await expect(page.getByRole('region', { name: 'U6 reply review' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
   await expect(editor()).toBeVisible();
+
+  const reviewButton = page.getByRole('button', { name: 'Review & Send', exact: true });
+  await reviewButton.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  const lightReviewContrast = await readReviewSendContrast(page, 'light');
+  expect(lightReviewContrast.focusVisible, 'light Review & Send focus ring').toBe(true);
+  expect(lightReviewContrast.disabled, 'light Review & Send enabled state').toBe(false);
+  expect(
+    contrastRatio(lightReviewContrast.label, lightReviewContrast.background),
+    `light label ${JSON.stringify(lightReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(4.5);
+  expect(
+    contrastRatio(lightReviewContrast.command, lightReviewContrast.background),
+    `light command ${JSON.stringify(lightReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    contrastRatio(lightReviewContrast.arrow, lightReviewContrast.background),
+    `light arrow ${JSON.stringify(lightReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+
+  await reviewButton.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  const darkReviewContrast = await readReviewSendContrast(page, 'dark');
+  expect(darkReviewContrast.focusVisible, 'dark Review & Send focus ring').toBe(true);
+  expect(darkReviewContrast.disabled, 'dark Review & Send enabled state').toBe(false);
+  expect(
+    contrastRatio(darkReviewContrast.label, darkReviewContrast.background),
+    `dark label ${JSON.stringify(darkReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(4.5);
+  expect(
+    contrastRatio(darkReviewContrast.command, darkReviewContrast.background),
+    `dark command ${JSON.stringify(darkReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    contrastRatio(darkReviewContrast.arrow, darkReviewContrast.background),
+    `dark arrow ${JSON.stringify(darkReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+  await page.evaluate(() => document.documentElement.classList.remove('dark'));
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileReviewContrast = await readReviewSendContrast(page, 'light');
+  expect(
+    contrastRatio(mobileReviewContrast.label, mobileReviewContrast.background),
+    `mobile label ${JSON.stringify(mobileReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(4.5);
+  expect(
+    contrastRatio(mobileReviewContrast.command, mobileReviewContrast.background),
+    `mobile command ${JSON.stringify(mobileReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    contrastRatio(mobileReviewContrast.arrow, mobileReviewContrast.background),
+    `mobile arrow ${JSON.stringify(mobileReviewContrast)}`,
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    await reviewButton.evaluate((element) => element.getBoundingClientRect().width),
+  ).toBeGreaterThan(0);
+  await page.evaluate(() => document.documentElement.classList.remove('dark'));
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  await page.evaluate(() => {
+    window.__u6RefreshHold = true;
+  });
+  const refreshButton = page.locator('[data-u6-action="refresh"]');
+  const heldRefresh = refreshButton.click();
+  await expect(refreshButton).toBeDisabled();
+  await page.evaluate(() => {
+    window.__u6RefreshHold = false;
+    window.__u6ReleaseRefresh?.();
+  });
+  await heldRefresh;
+  await expect(refreshButton).toBeEnabled();
 
   const editedBody = 'Edited synthetic reply survives the candidate refresh.';
   await editor().fill(editedBody);

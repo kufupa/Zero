@@ -21,16 +21,21 @@ import {
   aiWorkerOwnerId,
   executeAiRun,
   runPreparedWorkerCandidateReply,
+  runAiWorkerOnce,
   renewAiRunLease,
   threadMessagesToTransportIndex,
 } from '../src/ai/worker.js';
 import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai/bedrock/local.js';
+import { __forceSendAtPastForTests, flushDue } from '../src/mail/send/outbound-queue.js';
+import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb, __setDbForTests, type DB } from '../src/db/client.js';
 import { resolveModelRoute } from '../src/ai/local-model-routing.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
+import { resolveMailboxContext } from '../src/trpc/context.js';
 import * as mastraModule from '../src/ai/mastra.js';
+import { appRouter } from '../src/trpc/router.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -84,6 +89,7 @@ const WORKER_DB_TABLES = [
 describe('ai worker contract', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    __setSmtpTransportForTests(null);
     delete process.env.AI_TRIAGE_PROMPT_VERSION;
   });
 
@@ -693,6 +699,248 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       expect(JSON.stringify(row?.metrics)).not.toContain(unrelatedSubject);
     });
   });
+
+  it('normal refresh composes the default worker with the configured draft route', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+    };
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Booking',
+          snippet: 'Please confirm the reservation.',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Booking',
+          textBody: 'Please confirm the reservation.',
+          receivedAt: new Date(),
+        });
+
+        const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: 'user-navaai', email: '', name: null },
+          ...mailbox,
+        });
+
+        const route: LocalModelRouteEvidence = {
+          routeId: 'u6-normal-draft-route',
+          purpose: 'draft',
+          protocol: 'in_process',
+          access: 'current_app',
+          egress: 'none',
+          retention: 'bounded',
+          usage: 'reported',
+          modelId: 'u6-normal-draft-model',
+        };
+        let transportCalls = 0;
+        const candidateDraftRouteFactory = () => ({
+          route,
+          transport: async () => {
+            transportCalls += 1;
+            return {
+              output: {
+                replyText:
+                  'We will confirm this shortly. [MISSING: reservation status | how: approved reservation read]',
+              },
+              usage: { inputTokens: 5, outputTokens: 7, latencyMs: 1 },
+            };
+          },
+        });
+
+        const refresh = await caller.ai.refreshHmsCandidate({ threadId });
+        const [queued] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, refresh.runId));
+        expect(refresh.runState).toBe('queued');
+        expect(queued?.executorLane).toBe('default');
+
+        // This factory is the normal-worker composition seam; only its lower
+        // in-process transport is synthetic. Do not bypass it with an adapter.
+        const worked = await runAiWorkerOnce({
+          candidateDraftRouteFactory,
+        } as unknown as Parameters<typeof runAiWorkerOnce>[0]);
+
+        expect(worked).toBe(true);
+        expect(transportCalls).toBe(1);
+        const [draft] = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+        expect(draft).toMatchObject({ status: 'candidate', origin: 'ai' });
+        const [completed] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, refresh.runId));
+        expect(completed?.state).toBe('succeeded');
+        expect(completed?.metrics).toMatchObject({
+          routeId: route.routeId,
+          provenance: expect.objectContaining({ routeId: route.routeId, purpose: 'draft' }),
+        });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('carries the generated candidate through adopt, edit, approval, and fake SMTP', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+      UNDO_SEND_SECONDS: process.env.UNDO_SEND_SECONDS,
+      MAIL_SELF_BCC: process.env.MAIL_SELF_BCC,
+    };
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+    process.env.UNDO_SEND_SECONDS = '30';
+    process.env.MAIL_SELF_BCC = 'false';
+
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Hello',
+          snippet: 'Hello from the guest',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Hello',
+          textBody: 'Hello from the guest',
+          receivedAt: new Date(),
+        });
+
+        const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: 'user-navaai', email: '', name: null },
+          ...mailbox,
+        });
+        const route = {
+          routeId: 'u6-joined-draft-route',
+          purpose: 'draft' as const,
+          protocol: 'in_process' as const,
+          access: 'current_app' as const,
+          egress: 'none' as const,
+          retention: 'bounded' as const,
+          usage: 'reported' as const,
+          modelId: 'u6-joined-draft-model',
+        };
+        let transportCalls = 0;
+        const candidateDraftRouteFactory = () => ({
+          route,
+          transport: async () => {
+            transportCalls += 1;
+            return {
+              output: { replyText: 'Thanks for reaching out. We will follow up shortly.' },
+              usage: { inputTokens: 4, outputTokens: 8, latencyMs: 1 },
+            };
+          },
+        });
+
+        const refresh = await caller.ai.refreshHmsCandidate({ threadId });
+        expect(refresh.runState).toBe('queued');
+        expect(
+          await runAiWorkerOnce({
+            candidateDraftRouteFactory,
+          } as unknown as Parameters<typeof runAiWorkerOnce>[0]),
+        ).toBe(true);
+        expect(transportCalls).toBe(1);
+
+        const [candidate] = await db
+          .select()
+          .from(mailDraft)
+          .where(eq(mailDraft.threadId, threadId));
+        expect(candidate).toMatchObject({ status: 'candidate', origin: 'ai' });
+        const adopted = await caller.drafts.ensureEditableForReply({
+          threadId,
+          replyToMessageId: messageId,
+        });
+        expect(adopted.status).toBe('active');
+        await caller.drafts.update({
+          id: adopted.id,
+          subject: 'Re: Hello',
+          content: 'Edited by the reviewer',
+          html: '<p>Edited by the reviewer</p>',
+        });
+        const approval = await caller.drafts.approve({
+          draftId: adopted.id,
+          subject: 'Re: Hello',
+          html: '<p>Edited by the reviewer</p>',
+          text: 'Edited by the reviewer',
+          to: ['guest@example.com'],
+          cc: [],
+          bcc: [],
+          attachments: [],
+        });
+        expect(approval).toMatchObject({
+          routeBinding: expect.objectContaining({ routeId: route.routeId, purpose: 'draft' }),
+        });
+
+        const fake = new FakeSmtpTransport();
+        __setSmtpTransportForTests(fake);
+        const queued = await caller.mail.send({
+          threadId,
+          draftId: adopted.id,
+          to: ['guest@example.com'],
+          subject: 'Re: Hello',
+          message: '<p>Edited by the reviewer</p>',
+          text: 'Edited by the reviewer',
+          draftApproval: approval,
+        });
+        expect(queued).toMatchObject({ queued: true });
+        await __forceSendAtPastForTests(queued.messageId, TRANSPORT_ID, db);
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 1 });
+        expect(fake.sent).toHaveLength(1);
+        const [sent] = await db
+          .select({ status: mailDraft.status, isSent: mailDraft.isSent })
+          .from(mailDraft)
+          .where(eq(mailDraft.id, adopted.id));
+        expect(sent).toEqual({ status: 'sent', isSent: true });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 30000);
 
   it('returns manual review before transport initialization when the approved route is unavailable', async () => {
     let transportCalls = 0;

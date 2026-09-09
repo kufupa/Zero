@@ -22,6 +22,14 @@ import {
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
 import {
+  assertDraftApprovalCurrent,
+  claimDraftApprovalForSend,
+  DraftApprovalError,
+  getDraftApprovalSigningSecret,
+  parseDraftApproval,
+  type DraftApproval,
+} from '../../ai/draft-approval.js';
+import {
   cancelOutbound,
   enqueueOutbound,
   flushOne,
@@ -29,13 +37,6 @@ import {
   getUndoSendSeconds,
   OutboundDeliveryUncertainError,
 } from '../../mail/send/outbound-queue.js';
-import {
-  assertDraftApprovalCurrent,
-  DraftApprovalError,
-  getDraftApprovalSigningSecret,
-  parseDraftApproval,
-  type DraftApproval,
-} from '../../ai/draft-approval.js';
 import {
   mailThread,
   message,
@@ -81,8 +82,8 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
-import { getDb } from '../../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -1262,6 +1263,26 @@ export const mailRouter = tRouter({
       attachments: smtpAttachments,
     };
 
+    const approvalPayload = {
+      draftId: sendingDraft?.id,
+      generationId: sendingDraft?.generationId,
+      transportId,
+      threadId,
+      subject: input.subject,
+      html,
+      text: input.text,
+      to: input.to,
+      cc: input.cc,
+      // Self-BCC is a server-derived filing copy, not user-reviewed input.
+      bcc: input.bcc,
+      attachments: (input.attachments ?? []).map((attachment) => ({
+        filename: attachment.name,
+        mimeType: attachment.type,
+        sizeBytes: attachment.size,
+        contentBase64: attachment.base64,
+      })),
+    };
+
     let approvedDraft: DraftApproval | undefined;
     if (sendingDraft?.origin === 'ai') {
       try {
@@ -1273,25 +1294,7 @@ export const mailRouter = tRouter({
         await assertDraftApprovalCurrent({
           db,
           approval: approvedDraft,
-          payload: {
-            draftId: sendingDraft.id,
-            generationId: sendingDraft.generationId,
-            transportId,
-            threadId,
-            subject: input.subject,
-            html,
-            text: input.text,
-            to: input.to,
-            cc: input.cc,
-            // Self-BCC is a server-derived filing copy, not user-reviewed input.
-            bcc: input.bcc,
-            attachments: (input.attachments ?? []).map((attachment) => ({
-              filename: attachment.name,
-              mimeType: attachment.type,
-              sizeBytes: attachment.size,
-              contentBase64: attachment.base64,
-            })),
-          },
+          payload: approvalPayload,
           loadThreadStateVersion: loadLiveThreadStateVersion,
           signingSecret,
         });
@@ -1312,6 +1315,23 @@ export const mailRouter = tRouter({
       : new Date(now.getTime() + undoSecs * 1000);
 
     await db.transaction(async (tx) => {
+      if (approvedDraft && sendingDraft?.origin === 'ai') {
+        try {
+          await claimDraftApprovalForSend({
+            db: tx as unknown as DB,
+            approval: approvedDraft,
+            payload: approvalPayload,
+            queueMessageId: messageId,
+            loadThreadStateVersion: loadLiveThreadStateVersion,
+            signingSecret: getDraftApprovalSigningSecret(),
+          });
+        } catch (error) {
+          if (error instanceof DraftApprovalError) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+          }
+          throw error;
+        }
+      }
       await tx.insert(message).values({
         id: messageId,
         transportId,

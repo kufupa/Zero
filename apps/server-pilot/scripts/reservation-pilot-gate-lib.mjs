@@ -1144,7 +1144,10 @@ function collectPlaywrightSpecs(suites, parentTitle = '') {
   return specs;
 }
 
-export function validatePlaywrightReport(report, expectedTitle) {
+export function validatePlaywrightReport(report, expectedTitle, expectedCount = 1) {
+  if (!Number.isInteger(expectedCount) || expectedCount < 1) {
+    throw new Error(`required browser title has invalid expected test count: ${expectedCount}`);
+  }
   const matching = collectPlaywrightSpecs(report.suites).filter((spec) =>
     spec.fullTitle.includes(expectedTitle),
   );
@@ -1171,6 +1174,11 @@ export function validatePlaywrightReport(report, expectedTitle) {
     }
   }
   if (testCount < 1) throw new Error(`required browser title selected no tests: ${expectedTitle}`);
+  if (testCount !== expectedCount) {
+    throw new Error(
+      `required browser title selected ${testCount} tests; expected ${expectedCount}: ${expectedTitle}`,
+    );
+  }
   if (skipped || failed)
     throw new Error(`required browser title has skipped/failed tests: ${expectedTitle}`);
   return { testCount, skipped, failed };
@@ -1285,8 +1293,13 @@ function runCli(argv) {
     return;
   }
   if (command === 'validate-browser-report') {
-    if (argv.length !== 3) throw new Error('validate-browser-report requires report and title');
-    validatePlaywrightReport(readJsonFile(argv[1], 'browser report'), argv[2]);
+    if (argv.length < 3 || argv.length > 4) {
+      throw new Error(
+        'validate-browser-report requires report, title, and optional expected count',
+      );
+    }
+    const expectedCount = argv[3] === undefined ? 1 : Number(argv[3]);
+    validatePlaywrightReport(readJsonFile(argv[1], 'browser report'), argv[2], expectedCount);
     return;
   }
   if (command === 'check-browser-boundary') {

@@ -158,4 +158,31 @@ describe('draft approval token', () => {
       DraftApprovalError,
     );
   });
+
+  it('binds approval to the trusted draft route capability release', () => {
+    const routeBinding = {
+      routeId: 'u6-approved-draft-release-1',
+      modelId: 'u6-approved-draft-model-1',
+      purpose: 'draft' as const,
+      protocol: 'in_process' as const,
+      access: 'current_app' as const,
+      egress: 'none' as const,
+      retention: 'bounded' as const,
+      usage: 'reported' as const,
+    };
+    const approval = buildDraftApproval(
+      { ...base, routeBinding } as unknown as DraftApprovalPayload,
+      SIGNING_SECRET,
+    );
+    expect((approval as unknown as { routeBinding?: unknown }).routeBinding).toEqual(routeBinding);
+
+    const changedRoute = { ...routeBinding, routeId: 'u6-approved-draft-release-2' };
+    expect(() =>
+      assertDraftApprovalMatchesPayload(
+        approval,
+        { ...base, routeBinding: changedRoute } as unknown as DraftApprovalPayload,
+        SIGNING_SECRET,
+      ),
+    ).toThrow(/route|capability|approval/i);
+  });
 });

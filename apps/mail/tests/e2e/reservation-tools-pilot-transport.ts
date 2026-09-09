@@ -22,6 +22,8 @@ declare global {
     }>;
     __reservationToolsPilotFetchHandler?: typeof fetch;
     __u6DraftSafetyState?: U6DraftSafetyState;
+    __u6RefreshHold?: boolean;
+    __u6ReleaseRefresh?: () => void;
   }
 }
 
@@ -955,6 +957,12 @@ export function installReservationToolsPilotTransport(): void {
             'BAD_REQUEST',
             405,
           );
+        }
+        if (window.__u6RefreshHold) {
+          await new Promise<void>((resolve) => {
+            window.__u6ReleaseRefresh = resolve;
+          });
+          window.__u6ReleaseRefresh = undefined;
         }
         state.stale = false;
         emitU6DraftSafetyEvent('candidate-refreshed');

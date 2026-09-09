@@ -14,12 +14,18 @@ import {
   type DraftApprovalPayload,
   DraftApprovalError,
 } from '../../ai/draft-approval.js';
+import {
+  aiDraftGeneration,
+  mailDraft,
+  mailThread,
+  message,
+  outboundSendQueue,
+} from '../../db/schema/mail.js';
 import { getSmtpTransport, type OutboundMailPayload, type SmtpSendResult } from './smtp.js';
 import { persistMailBaselineProjection } from '../../metrics/mail-baseline-projection.js';
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
 import { refreshThreadAfterMessageRemoved } from '../../trpc/routes/mail-helpers.js';
 import { extractMailBaselineEvidence } from '../../ai/mail-baseline-extraction.js';
-import { mailDraft, message, outboundSendQueue } from '../../db/schema/mail.js';
 import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import { mailBaselineGenerationKey } from '../../ai/run-ledger.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
@@ -78,6 +84,14 @@ class OutboundClaimLostError extends Error {
     super('outbound queue claim lost');
     this.name = 'OutboundClaimLostError';
   }
+}
+
+type AttemptFenceHook = (input: { row: ClaimedQueueRow; db: DB }) => Promise<void>;
+let attemptFenceHookForTests: AttemptFenceHook | null = null;
+
+/** Deterministic lower-boundary interleaving seam; production leaves it unset. */
+export function __setOutboundAttemptFenceHookForTests(hook: AttemptFenceHook | null): void {
+  attemptFenceHookForTests = hook;
 }
 
 export class OutboundDeliveryUncertainError extends Error {
@@ -487,6 +501,84 @@ async function markSmtpAttemptStarted(row: ClaimedQueueRow, db: DB): Promise<boo
   return Boolean(marked);
 }
 
+/**
+ * Atomically validate and claim an approved AI delivery before SMTP.
+ *
+ * The queue row is the durable linearization point: this short transaction
+ * locks the queue, draft, generation, and thread rows, re-reads the exact
+ * approval, then marks smtpAttemptedAt.  No network work occurs while those
+ * locks are held.  Mutations that commit after this claim are ordered after
+ * the send attempt; edits cannot change the already-sent draft, and inbound
+ * or evidence changes are observed by the next approval rather than being
+ * retroactively applied to this claimed attempt.
+ */
+async function claimApprovedSmtpAttempt(
+  row: ClaimedQueueRow,
+  payload: OutboundMailPayload,
+  rawApproval: unknown,
+  db: DB,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [lockedQueue] = await tx
+      .select({ id: outboundSendQueue.id })
+      .from(outboundSendQueue)
+      .where(and(claimFence(row), isNull(outboundSendQueue.smtpAttemptedAt)))
+      .limit(1)
+      .for('update');
+    if (!lockedQueue) throw new OutboundClaimLostError();
+
+    const approval = parseDraftApproval(rawApproval, getDraftApprovalSigningSecret());
+    const [lockedDraft] = await tx
+      .select({ id: mailDraft.id })
+      .from(mailDraft)
+      .where(
+        and(
+          eq(mailDraft.id, approval.draftId),
+          eq(mailDraft.transportId, approval.transportId),
+          eq(mailDraft.threadId, approval.threadId),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!lockedDraft) throw new DraftApprovalInvalidError('approved draft disappeared');
+
+    const [lockedGeneration] = await tx
+      .select({ id: aiDraftGeneration.id })
+      .from(aiDraftGeneration)
+      .where(
+        and(
+          eq(aiDraftGeneration.id, approval.generationId),
+          eq(aiDraftGeneration.transportId, approval.transportId),
+          eq(aiDraftGeneration.threadId, approval.threadId),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!lockedGeneration) {
+      throw new DraftApprovalInvalidError('approved generation disappeared');
+    }
+
+    const [lockedThread] = await tx
+      .select({ id: mailThread.id })
+      .from(mailThread)
+      .where(
+        and(eq(mailThread.id, approval.threadId), eq(mailThread.transportId, approval.transportId)),
+      )
+      .limit(1)
+      .for('update');
+    if (!lockedThread) throw new DraftApprovalInvalidError('approved thread disappeared');
+
+    await assertQueuedDraftApproval(rawApproval, payload, tx as unknown as DB, row.messageId);
+
+    const [marked] = await tx
+      .update(outboundSendQueue)
+      .set({ smtpAttemptedAt: new Date(), updatedAt: new Date() })
+      .where(and(claimFence(row), isNull(outboundSendQueue.smtpAttemptedAt)))
+      .returning({ id: outboundSendQueue.id });
+    if (!marked) throw new OutboundClaimLostError();
+  });
+}
+
 async function clearSmtpAttemptStarted(row: ClaimedQueueRow, db: DB): Promise<boolean> {
   const now = new Date();
   const [cleared] = await db
@@ -769,8 +861,16 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
     await assertQueuedDraftApproval(queuedRecord.draftApproval, payload, db, row.messageId);
   }
 
+  if (Object.hasOwn(queuedRecord, 'draftApproval') && queuedRecord.draftApproval !== undefined) {
+    await claimApprovedSmtpAttempt(row, payload, queuedRecord.draftApproval, db);
+  } else {
+    if (!(await markSmtpAttemptStarted(row, db))) throw new OutboundClaimLostError();
+  }
+  // The hook runs after the durable claim and immediately before transport.
+  // It is test-only: production has no awaitable gap that can bypass the
+  // queue/draft/generation/thread claim protocol.
+  if (attemptFenceHookForTests) await attemptFenceHookForTests({ row, db });
   const smtpTransport = getSmtpTransport();
-  if (!(await markSmtpAttemptStarted(row, db))) throw new OutboundClaimLostError();
   const leaseRenewal = startClaimLeaseRenewal(row, db);
   let rawSmtpResult: SmtpSendResult | undefined;
   try {

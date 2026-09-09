@@ -1192,13 +1192,13 @@ export function EmailComposer({
       disabled={isLoading || settingsLoading || !isScheduleValid}
     >
       <div className="flex items-center justify-center">
-        <div className="text-center text-sm leading-none text-white dark:text-black">
+        <div className="text-primary-foreground text-center text-sm leading-none">
           <span>{sendButtonLabel} </span>
         </div>
       </div>
-      <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
-        <Command className="h-3.5 w-3.5 text-white dark:text-black" />
-        <CurvedArrow className="mt-1.5 h-4 w-4 fill-white dark:fill-black" />
+      <div className="bg-primary-foreground/10 flex h-5 items-center justify-center gap-1 rounded-sm px-1">
+        <Command className="text-primary-foreground h-3.5 w-3.5" />
+        <CurvedArrow className="fill-primary-foreground mt-1.5 h-4 w-4" />
       </div>
     </Button>
   );

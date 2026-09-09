@@ -19,13 +19,19 @@ import {
   aiDraftGeneration,
   aiWorkflowRun,
   attachment,
+  mailboxTransport,
   mailDraft,
   mailDraftRevision,
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
+import {
+  TEST_DB_AVAILABLE,
+  openTestDbSession,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
 import { RESERVATION_EVIDENCE_TTL_MS, QUOTE_EVIDENCE_TTL_MS } from '../src/hms/adapter.js';
-import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { computeThreadStateVersion } from '../src/ai/thread-context.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -72,6 +78,48 @@ function mailEvidence(partial: Record<string, unknown> = {}) {
   };
 }
 
+function holdConcurrentGenerationInserts(left: DB, right: DB): [DB, DB] {
+  let arrived = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const wrapBuilder = (builder: object): object =>
+    new Proxy(builder, {
+      get(target, property, receiver) {
+        if (property === 'then') {
+          return (onFulfilled: unknown, onRejected: unknown) => {
+            arrived += 1;
+            if (arrived === 2) release();
+            return (async () => {
+              await released;
+              const then = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+              return then.call(target, onFulfilled, onRejected);
+            })();
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => wrapBuilder(value.apply(target, args));
+      },
+    });
+
+  const wrapDb = (db: DB): DB =>
+    new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== 'insert' || typeof value !== 'function') return value;
+        return (table: unknown) => {
+          const builder = value.call(target, table);
+          return table === aiDraftGeneration ? wrapBuilder(builder) : builder;
+        };
+      },
+    });
+
+  return [wrapDb(left), wrapDb(right)];
+}
+
 describe('HMS candidate freshness helpers', () => {
   it('builds refresh idempotency key with thread + toolset versions', () => {
     expect(
@@ -83,9 +131,9 @@ describe('HMS candidate freshness helpers', () => {
     ).toBe(`hms-refresh:t1:th1:abc:${HMS_CANDIDATE_TOOLSET_VERSION}`);
   });
 
-  it('candidate-state activeRun query filters executorLane=hms', () => {
+  it('candidate-state activeRun query filters executorLane=default', () => {
     const source = readFileSync(new URL('../src/trpc/routes/drafts.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/eq\(aiWorkflowRun\.executorLane, 'hms'\)/);
+    expect(source).toMatch(/eq\(aiWorkflowRun\.executorLane, 'default'\)/);
   });
 
   it('shadow mode blocks enqueueHmsCandidateRefresh with HMS_MANUAL_OPS_REQUIRED', () => {
@@ -421,7 +469,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
     });
   });
 
-  it('concurrent Refresh idempotency returns same run', async () => {
+  it('concurrent Refresh idempotency returns one run and one bound generation', async () => {
     await withSeededTestDb(async (db) => {
       const { caller, threadId } = await seedThread(db);
       const first = await caller.ai.refreshHmsCandidate({ threadId });
@@ -441,8 +489,88 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
           ),
         );
       expect(runs).toHaveLength(1);
+      expect(runs[0]?.generationId).toBeTruthy();
+
+      const generations = await db
+        .select({ id: aiDraftGeneration.id })
+        .from(aiDraftGeneration)
+        .where(eq(aiDraftGeneration.id, runs[0]!.generationId!));
+      expect(generations).toHaveLength(1);
     });
   });
+
+  it('binds one generation when independent refresh callers race on one run', async () => {
+    const left = openTestDbSession();
+    const right = openTestDbSession();
+    const transportId = `u6-race-${randomUUID()}`;
+    const threadId = randomUUID();
+    const parentMessageId = randomUUID();
+    try {
+      await left.db.insert(mailboxTransport).values({
+        id: transportId,
+        email: `${transportId}@example.test`,
+        ownerHeaderValue: transportId,
+      });
+      await left.db.insert(mailThread).values({
+        id: threadId,
+        transportId,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Concurrent booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date('2026-07-30T10:00:00Z'),
+      });
+      await left.db.insert(message).values({
+        id: parentMessageId,
+        transportId,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['nava@example.com'],
+        subject: 'Concurrent booking',
+        textBody: 'Need help',
+        receivedAt: new Date('2026-07-30T10:00:00Z'),
+      });
+
+      const [leftDb, rightDb] = holdConcurrentGenerationInserts(left.db, right.db);
+      const [first, second] = await Promise.all([
+        enqueueHmsCandidateRefresh({
+          db: leftDb,
+          transportId,
+          threadId,
+          triggerMessageId: parentMessageId,
+          requestedByUserId: 'user-navaai',
+        }),
+        enqueueHmsCandidateRefresh({
+          db: rightDb,
+          transportId,
+          threadId,
+          triggerMessageId: parentMessageId,
+          requestedByUserId: 'user-navaai',
+        }),
+      ]);
+      expect(second.runId).toBe(first.runId);
+
+      const runs = await left.db
+        .select({ id: aiWorkflowRun.id, generationId: aiWorkflowRun.generationId })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, first.runId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.generationId).toBeTruthy();
+
+      const generations = await left.db
+        .select({ id: aiDraftGeneration.id })
+        .from(aiDraftGeneration)
+        .where(eq(aiDraftGeneration.id, runs[0]!.generationId!));
+      expect(generations).toHaveLength(1);
+    } finally {
+      await left.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.threadId, threadId));
+      await left.db.delete(aiDraftGeneration).where(eq(aiDraftGeneration.threadId, threadId));
+      await left.db.delete(message).where(eq(message.id, parentMessageId));
+      await left.db.delete(mailThread).where(eq(mailThread.id, threadId));
+      await left.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      await Promise.all([left.close(), right.close()]);
+    }
+  }, 30000);
 
   it('failed Refresh still exposes prior candidate without active run', async () => {
     await withSeededTestDb(async (db) => {
