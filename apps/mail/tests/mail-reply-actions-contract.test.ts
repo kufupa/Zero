@@ -206,7 +206,7 @@ describe('per-message reply actions', () => {
     expect(actionButton).not.toMatch(/<button[\s\S]*?className="[^"]*\bshrink-0\b/);
     expect(actionButton).toMatch(/hidden[^"]*md:inline|md:inline[^"]*hidden/);
     expect(actionButton).toContain('whitespace-nowrap');
-    expect(actionButton).toContain('aria-label={text}');
+    expect(actionButton).toMatch(/aria-label=\{(?:ariaLabelProp\s*\?\?\s*ariaLabel\s*\?\?\s*)?text\}/);
     expect(actionButton).not.toContain('shortcut?: string');
     expect(actionButton).not.toContain('shortcut &&');
     expect(actionButton).not.toContain('<kbd');
