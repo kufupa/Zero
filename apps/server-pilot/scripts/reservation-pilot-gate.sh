@@ -560,6 +560,9 @@ case "${MODE}:${SLICE}" in
       "tests/draft-approval.test.ts" \
       "tests/draft-refresh-generation.test.ts"
     ;;
+  db:integration)
+    run_db_slice "tests/reservation-tools-pilot-integration.test.ts"
+    ;;
   db:dashboard)
     run_db_slice "tests/admin-dashboard-query.test.ts"
     ;;

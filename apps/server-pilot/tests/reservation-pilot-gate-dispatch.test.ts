@@ -24,7 +24,21 @@ function runGate(mode: string, slice: string) {
   });
 }
 
-describe('candidate-drafting DB gate dispatch', () => {
+describe('reservation-pilot gate dispatch', () => {
+  it('dispatches the U11 integrated journey through one exact disposable-DB slice', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+
+    expect(() => gate.getServerTestFiles('unit', 'integration')).toThrow(
+      /unknown slice integration for mode unit/i,
+    );
+    expect(gate.getServerTestFiles('db', 'integration')).toEqual([
+      'tests/reservation-tools-pilot-integration.test.ts',
+    ]);
+    expect(readFileSync(gatePath, 'utf8')).toContain(
+      'run_db_slice "tests/reservation-tools-pilot-integration.test.ts"',
+    );
+  });
+
   it('dispatches the library-known named tests instead of reaching unconditional PASS', async () => {
     const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
 

@@ -221,6 +221,7 @@ const SLICE_PLANS = {
       ],
     },
     shadow: { server: ['tests/shadow-evaluation.test.ts'] },
+    integration: { server: ['tests/reservation-tools-pilot-integration.test.ts'] },
     outbox: {
       server: [
         'tests/outbound-queue.test.ts',
