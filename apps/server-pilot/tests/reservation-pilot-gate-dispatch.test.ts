@@ -1,7 +1,8 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,89 @@ function runGate(mode: string, slice: string) {
   });
 }
 
+function emptyPrivateV2Manifest(gate: any) {
+  const manifest = {
+    schemaVersion: 'u11-private-qualification.v2',
+    fixtureKind: 'private',
+    publicFixture: false,
+    source: {
+      name: 'test',
+      version: 'test',
+      contentHash: '',
+      mappingHash: '',
+      inputDigestSetHash: `sha256:${'c'.repeat(64)}`,
+      canonicalMap: {
+        path: 'private/map.json',
+        bytes: 0,
+        sha256: `sha256:${'a'.repeat(64)}`,
+      },
+      pointerDigests: Array.from({ length: 14 }, (_, index) => ({
+        name: `pointer-${index}`,
+        path: `private/pointer-${index}.json`,
+        bytes: 0,
+        sha256: `sha256:${'b'.repeat(64)}`,
+      })),
+    },
+    counts: {
+      mapRecords: 0,
+      original420: 0,
+      originalExternalMixedCandidates: 0,
+      originalOutboundExternalMixedCandidates: 0,
+      runnable: 0,
+      notRunnable: 0,
+      unscorable: 0,
+    },
+    privacy: {
+      rawCorpusIncluded: false,
+      targetReplyInToolInput: false,
+      targetReplyInFixture: false,
+      privatePaths: [],
+    },
+    phase2B: {
+      membershipFrozenBeforeResults: true,
+      caseIdentifiersFrozenBeforeResults: true,
+      evaluationModeFrozenBeforeResults: true,
+      selectionReasonsFrozenBeforeResults: true,
+      conversationSplitFrozen: true,
+      splitUnit: 'conversation',
+      goldTargetExposure: 'evaluator-only',
+      modeSpecificAggregation: true,
+      allowedOutcomes: [
+        'match',
+        'mismatch',
+        'changed_state',
+        'ambiguous',
+        'unscorable',
+        'denied',
+        'missing_capability',
+      ],
+      blockedPassOutcomes: [
+        'changed_state',
+        'unscorable',
+        'ambiguous',
+        'denied',
+        'missing_capability',
+      ],
+      mappingHash: '',
+      selectionHash: '',
+    },
+    laterInboundFirstHoldout: {
+      targetEpisodes: 200,
+      independentOfReplyExistence: true,
+      excludesTargetAndFutureContext: true,
+      includesNoReplyEpisode: true,
+    },
+    partitionSummary: gate.derivePrivateQualificationPartitions([]),
+    cases: [],
+  };
+  const digests = gate.computeManifestDigests(manifest);
+  manifest.source.contentHash = digests.contentHash;
+  manifest.source.mappingHash = digests.mappingHash;
+  manifest.phase2B.mappingHash = digests.mappingHash;
+  manifest.phase2B.selectionHash = digests.selectionHash;
+  return manifest;
+}
+
 describe('reservation-pilot gate dispatch', () => {
   it('dispatches the U11 integrated journey through one exact disposable-DB slice', async () => {
     const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
@@ -37,6 +121,289 @@ describe('reservation-pilot gate dispatch', () => {
     expect(readFileSync(gatePath, 'utf8')).toContain(
       'run_db_slice "tests/reservation-tools-pilot-integration.test.ts"',
     );
+  });
+
+  it('hashes real qualification inputs and rejects equal-size byte tampering', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'u11-v2-inputs-'));
+    try {
+      mkdirSync(path.join(root, 'private'), { recursive: true });
+      writeFileSync(path.join(root, 'private', 'map.json'), '{"map":true}\n');
+      writeFileSync(path.join(root, 'private', 'source.json'), '{"source":true}\n');
+      const mapBytes = readFileSync(path.join(root, 'private', 'map.json'));
+      const sourceBytes = readFileSync(path.join(root, 'private', 'source.json'));
+      const expected = gate.hashQualificationInputs({
+        root,
+        canonicalMap: {
+          path: 'private/map.json',
+          bytes: mapBytes.length,
+          sha256: gate.sha256Bytes(mapBytes),
+        },
+        pointers: [
+          {
+            name: 'source',
+            path: 'private/source.json',
+            bytes: sourceBytes.length,
+            sha256: gate.sha256Bytes(sourceBytes),
+          },
+        ],
+      });
+      expect(expected.pointers).toHaveLength(1);
+      expect(expected.digestSetHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+      writeFileSync(path.join(root, 'private', 'source.json'), '{"source":false}\n');
+      expect(() =>
+        gate.hashQualificationInputs({
+          root,
+          canonicalMap: {
+            path: 'private/map.json',
+            bytes: mapBytes.length,
+            sha256: expected.canonicalMap.sha256,
+          },
+          pointers: [
+            {
+              name: 'source',
+              path: 'private/source.json',
+              bytes: sourceBytes.length,
+              sha256: expected.pointers[0].sha256,
+            },
+          ],
+        }),
+      ).toThrow(/byte count|sha-256|digest|tamper/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires an independent fingerprint/thread join before assigning a conversation split', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const joined = gate.joinPrivateQualificationPointers({
+      mapRecords: [
+        { id: 'case-joined', cohort: 'original_420' },
+        { id: 'case-message-only', cohort: 'original_420' },
+      ],
+      reviewRecords: [
+        {
+          review_id: 'case-joined',
+          fp: 'fingerprint-joined',
+          source_message_id: 'message-joined',
+          source_thread_id: 'thread-joined',
+        },
+        {
+          review_id: 'case-message-only',
+          fp: 'fingerprint-message-only',
+          source_message_id: 'message-message-only',
+          source_thread_id: 'thread-message-only',
+        },
+      ],
+      extraRecords: [],
+      unionRecords: [
+        {
+          fp: 'fingerprint-joined',
+          message_id: 'message-joined',
+          thread_id: 'thread-joined',
+        },
+        {
+          fp: 'fingerprint-message-only',
+          message_id: 'message-message-only',
+          thread_id: 'other-thread',
+        },
+      ],
+      catchupRecords: [],
+    });
+    expect(joined).toEqual([
+      expect.objectContaining({
+        index: 0,
+        conversationBasis: 'verified-thread',
+        fingerprintJoin: 'verified',
+        sourceThreadBinding: 'verified',
+      }),
+      expect.objectContaining({
+        index: 1,
+        conversationBasis: 'unresolved',
+        fingerprintJoin: 'verified',
+        sourceThreadBinding: 'not-proven',
+      }),
+    ]);
+  });
+
+  it('derives canonical partition membership and enforces exact nesting', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const summary = gate.derivePrivateQualificationPartitions([
+      {
+        id: 'canonical-outbound',
+        cohort: 'original_420',
+        original_external_mixed_candidate: true,
+        physical_direction: 'outbound',
+      },
+      {
+        id: 'canonical-inbound',
+        cohort: 'original_420',
+        original_external_mixed_candidate: true,
+        physical_direction: 'inbound',
+      },
+      { id: 'canonical-other', cohort: 'original_420' },
+      { id: 'historical-only', cohort: 'later_snapshot_extension' },
+    ]);
+    expect(summary.partitions.canonical420.count).toBe(3);
+    expect(summary.partitions.externalMixed253.count).toBe(2);
+    expect(summary.partitions.strictOutbound251.count).toBe(1);
+    expect(
+      summary.partitions.strictOutbound251.memberSet.every((id) =>
+        summary.partitions.externalMixed253.memberSet.includes(id),
+      ),
+    ).toBe(true);
+    expect(
+      summary.partitions.externalMixed253.memberSet.every((id) =>
+        summary.partitions.canonical420.memberSet.includes(id),
+      ),
+    ).toBe(true);
+    expect(() =>
+      gate.assertPrivatePartitionSummary({
+        ...summary,
+        partitions: {
+          ...summary.partitions,
+          strictOutbound251: {
+            ...summary.partitions.strictOutbound251,
+            count: 2,
+          },
+        },
+      }),
+    ).toThrow(/partition|nest|count/i);
+  });
+
+  it('enforces the v2 pre-outcome holdout floor before accepting a manifest', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const manifest = emptyPrivateV2Manifest(gate);
+    expect(gate.assertPrivateQualificationV2Manifest(manifest)).toBe(true);
+    const belowFloor = structuredClone(manifest);
+    belowFloor.laterInboundFirstHoldout.targetEpisodes = 199;
+    const digests = gate.computeManifestDigests(belowFloor);
+    belowFloor.source.contentHash = digests.contentHash;
+    belowFloor.source.mappingHash = digests.mappingHash;
+    belowFloor.phase2B.mappingHash = digests.mappingHash;
+    belowFloor.phase2B.selectionHash = digests.selectionHash;
+    expect(() => gate.assertPrivateQualificationV2Manifest(belowFloor)).toThrow(
+      /holdout floor|isolation/i,
+    );
+  });
+
+  it('publishes a sealed run once, verifies bytes read-only, and rejects tamper/incomplete seals', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'u11-v2-seal-'));
+    try {
+      const manifest = {
+        schemaVersion: 'u11-private-qualification.v2',
+        fixtureKind: 'private',
+        publicFixture: false,
+        source: {
+          name: 'test',
+          version: 'test',
+          contentHash: 'sha256:' + 'a'.repeat(64),
+          mappingHash: 'sha256:' + 'b'.repeat(64),
+          inputDigestSetHash: 'sha256:' + 'c'.repeat(64),
+          canonicalMap: {
+            path: 'private/map.json',
+            bytes: 0,
+            sha256: 'sha256:' + '1'.repeat(64),
+          },
+          pointerDigests: Array.from({ length: 14 }, (_, index) => ({
+            name: `pointer-${index}`,
+            path: `private/pointer-${index}.json`,
+            bytes: 0,
+            sha256: 'sha256:' + `${index + 2}`.repeat(64).slice(0, 64),
+          })),
+        },
+        counts: {
+          mapRecords: 0,
+          original420: 0,
+          originalExternalMixedCandidates: 0,
+          originalOutboundExternalMixedCandidates: 0,
+          runnable: 0,
+          notRunnable: 0,
+          unscorable: 0,
+        },
+        privacy: {
+          rawCorpusIncluded: false,
+          targetReplyInToolInput: false,
+          targetReplyInFixture: false,
+          privatePaths: [],
+        },
+        phase2B: {
+          membershipFrozenBeforeResults: true,
+          caseIdentifiersFrozenBeforeResults: true,
+          evaluationModeFrozenBeforeResults: true,
+          selectionReasonsFrozenBeforeResults: true,
+          conversationSplitFrozen: true,
+          splitUnit: 'conversation',
+          goldTargetExposure: 'evaluator-only',
+          modeSpecificAggregation: true,
+          allowedOutcomes: [
+            'match',
+            'mismatch',
+            'changed_state',
+            'ambiguous',
+            'unscorable',
+            'denied',
+            'missing_capability',
+          ],
+          blockedPassOutcomes: [
+            'changed_state',
+            'unscorable',
+            'ambiguous',
+            'denied',
+            'missing_capability',
+          ],
+        },
+        laterInboundFirstHoldout: {
+          targetEpisodes: 200,
+          independentOfReplyExistence: true,
+          excludesTargetAndFutureContext: true,
+          includesNoReplyEpisode: true,
+        },
+        partitionSummary: gate.derivePrivateQualificationPartitions([]),
+        cases: [],
+      };
+      const digests = gate.computeManifestDigests(manifest);
+      manifest.source.contentHash = digests.contentHash;
+      manifest.source.mappingHash = digests.mappingHash;
+      manifest.phase2B.mappingHash = digests.mappingHash;
+      manifest.phase2B.selectionHash = digests.selectionHash;
+      const published = gate.publishPrivateQualificationSeal({
+        root,
+        runId: 'u11-test-run',
+        manifest,
+        aggregate: { schemaVersion: 'u11-private-qualification.aggregate.v2', counts: {} },
+        receipt: { inputDigestSetHash: manifest.source.inputDigestSetHash },
+      });
+      expect(gate.verifyPrivateQualificationSeal({ root, runId: 'u11-test-run' })).toEqual(
+        expect.objectContaining({ complete: true, runId: 'u11-test-run' }),
+      );
+      expect(() =>
+        gate.publishPrivateQualificationSeal({
+          root,
+          runId: 'u11-test-run',
+          manifest,
+          aggregate: {},
+          receipt: {},
+        }),
+      ).toThrow(/exists|sealed/i);
+      writeFileSync(path.join(published.path, 'aggregate.json'), '{"tampered":true}\n');
+      expect(() => gate.verifyPrivateQualificationSeal({ root, runId: 'u11-test-run' })).toThrow(
+        /hash|integrity|tamper/i,
+      );
+      mkdirSync(path.join(root, 'u11-incomplete-run'));
+      writeFileSync(
+        path.join(root, 'u11-incomplete-run', 'seal.json'),
+        JSON.stringify({ schemaVersion: 'u11-private-seal.v2', complete: false }),
+      );
+      expect(() =>
+        gate.verifyPrivateQualificationSeal({ root, runId: 'u11-incomplete-run' }),
+      ).toThrow(/complete|seal/i);
+      expect(existsSync(path.join(root, 'u11-test-run'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('freezes a private pre-outcome qualification manifest through the U1 session contract', async () => {

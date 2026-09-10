@@ -1,6 +1,16 @@
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 import path from 'node:path';
 
@@ -311,9 +321,21 @@ function digestInputs(manifest) {
       },
       cases,
       laterInboundFirstHoldout: manifest.laterInboundFirstHoldout,
+      ...(source.inputDigestSetHash ? { inputDigestSetHash: source.inputDigestSetHash } : {}),
+      ...(source.canonicalMap ? { canonicalMap: source.canonicalMap } : {}),
+      ...(source.pointerDigests ? { pointerDigests: source.pointerDigests } : {}),
+      ...(manifest.partitionSummary ? { partitionSummary: manifest.partitionSummary } : {}),
       browserSafety: manifest.browserSafety,
     },
-    mapping: { caseMapping },
+    mapping: {
+      caseMapping: caseMapping.map((entry, index) => ({
+        ...entry,
+        ...(cases[index]?.partitionLabels ? { partitionLabels: cases[index].partitionLabels } : {}),
+        ...(cases[index]?.conversationBasis
+          ? { conversationBasis: cases[index].conversationBasis }
+          : {}),
+      })),
+    },
     selection: {
       counts: manifest.counts,
       selectionHashScope: 'conversation-membership-before-outcomes',
@@ -328,6 +350,414 @@ export function computeManifestDigests(manifest) {
     contentHash: digest(inputs.content),
     mappingHash: digest(inputs.mapping),
     selectionHash: digest(inputs.selection),
+  };
+}
+
+/**
+ * Hash an opaque identifier without allowing private source identifiers into a
+ * qualification receipt. This is intentionally a one-way, canonical digest.
+ */
+export function hashOpaqueIdentifier(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('opaque qualification identifier must be a non-empty string');
+  }
+  return digest({ opaque: value });
+}
+
+/** Hash bytes as a transport-independent SHA-256 digest. */
+export function sha256Bytes(bytes) {
+  if (!Buffer.isBuffer(bytes) && !(bytes instanceof Uint8Array)) {
+    throw new Error('qualification input bytes are required');
+  }
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function normalizeSha256(value, label) {
+  const raw = typeof value === 'string' ? value.replace(/^sha256:/, '') : '';
+  if (!/^[a-f0-9]{64}$/i.test(raw)) throw new Error(`${label} must be a SHA-256 digest`);
+  return `sha256:${raw.toLowerCase()}`;
+}
+
+function qualificationFile(root, relativePath, label) {
+  if (typeof root !== 'string' || typeof relativePath !== 'string' || relativePath.length === 0) {
+    throw new Error(`${label} path is required`);
+  }
+  const rootPath = path.resolve(root);
+  const target = path.resolve(rootPath, relativePath);
+  if (target !== rootPath && !target.startsWith(`${rootPath}${path.sep}`)) {
+    throw new Error(`${label} path escapes the private root`);
+  }
+  let metadata;
+  try {
+    metadata = lstatSync(target);
+  } catch {
+    throw new Error(`${label} path is missing`);
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular non-symlink file`);
+  }
+  return target;
+}
+
+function qualificationInputDescriptor(input, label) {
+  if (!input || typeof input !== 'object') throw new Error(`${label} descriptor is required`);
+  if (typeof input.path !== 'string' || input.path.length === 0) {
+    throw new Error(`${label} path is required`);
+  }
+  if (!Number.isSafeInteger(input.bytes) || input.bytes < 0) {
+    throw new Error(`${label} byte count is invalid`);
+  }
+  return {
+    ...(typeof input.name === 'string' ? { name: input.name } : {}),
+    path: input.path,
+    bytes: input.bytes,
+    sha256: normalizeSha256(input.sha256, `${label} digest`),
+  };
+}
+
+/**
+ * Hash the actual bytes for the pinned canonical map and every declared source
+ * pointer. Expected byte counts/digests are never refreshed from disk.
+ */
+export function hashQualificationInputs({ root, canonicalMap, pointers }) {
+  const mapDescriptor = qualificationInputDescriptor(canonicalMap, 'canonical map');
+  const pointerDescriptors = (pointers ?? []).map((pointer, index) =>
+    qualificationInputDescriptor(pointer, `source pointer ${index}`),
+  );
+  if (pointerDescriptors.length === 0) throw new Error('at least one source pointer is required');
+  const names = new Set();
+  const paths = new Set([mapDescriptor.path]);
+  const verify = (descriptor, label) => {
+    if (descriptor.name) {
+      if (names.has(descriptor.name))
+        throw new Error(`duplicate source pointer ${descriptor.name}`);
+      names.add(descriptor.name);
+    }
+    if (paths.has(descriptor.path))
+      throw new Error(`duplicate qualification input path ${descriptor.path}`);
+    paths.add(descriptor.path);
+    const target = qualificationFile(root, descriptor.path, label);
+    const bytes = readFileSync(target);
+    const actualDigest = sha256Bytes(bytes);
+    if (bytes.length !== descriptor.bytes) {
+      throw new Error(`${label} byte count mismatch`);
+    }
+    if (actualDigest !== descriptor.sha256) {
+      throw new Error(`${label} SHA-256 digest mismatch`);
+    }
+    return descriptor;
+  };
+  const verifiedMap = (() => {
+    const target = qualificationFile(root, mapDescriptor.path, 'canonical map');
+    const bytes = readFileSync(target);
+    if (bytes.length !== mapDescriptor.bytes) throw new Error('canonical map byte count mismatch');
+    if (sha256Bytes(bytes) !== mapDescriptor.sha256) {
+      throw new Error('canonical map SHA-256 digest mismatch');
+    }
+    paths.delete(mapDescriptor.path);
+    return mapDescriptor;
+  })();
+  const verifiedPointers = pointerDescriptors.map((descriptor, index) =>
+    verify(descriptor, `source pointer ${index}`),
+  );
+  const digestSet = {
+    canonicalMap: verifiedMap,
+    pointers: [...verifiedPointers].sort((left, right) =>
+      `${left.name ?? ''}:${left.path}`.localeCompare(`${right.name ?? ''}:${right.path}`),
+    ),
+  };
+  return {
+    canonicalMap: verifiedMap,
+    pointers: verifiedPointers,
+    digestSetHash: digest(digestSet),
+  };
+}
+
+function dedupeExternalPointerRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = canonicalJson({
+      fp: row?.fp ?? null,
+      message_id: row?.message_id ?? null,
+      thread_id: row?.thread_id ?? null,
+    });
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeOpaqueReference(value) {
+  return typeof value === 'string' ? value.trim().replace(/^<|>$/g, '').toLowerCase() : '';
+}
+
+/**
+ * Join the map to independently pinned pointer metadata. The return value is
+ * receipt-safe: only array position and one-way digests leave this function.
+ * A thread split is verified only when the fingerprint, message, and thread
+ * all agree with an independent union/catch-up pointer.
+ */
+export function joinPrivateQualificationPointers({
+  mapRecords,
+  reviewRecords = [],
+  extraRecords = [],
+  unionRecords = [],
+  catchupRecords = [],
+}) {
+  if (!Array.isArray(mapRecords)) throw new Error('qualification map records are required');
+  const reviewById = new Map();
+  const extraById = new Map();
+  for (const record of reviewRecords) {
+    if (record?.review_id) reviewById.set(record.review_id, record);
+  }
+  for (const record of extraRecords) {
+    if (record?.review_id) extraById.set(record.review_id, record);
+  }
+  const externalByFingerprint = new Map();
+  for (const record of [...unionRecords, ...catchupRecords]) {
+    if (!record?.fp) continue;
+    const rows = externalByFingerprint.get(record.fp) ?? [];
+    rows.push(record);
+    externalByFingerprint.set(record.fp, rows);
+  }
+
+  return mapRecords.map((record, index) => {
+    const review = reviewById.get(record?.id);
+    const extra = extraById.get(record?.id);
+    if (review && extra) throw new Error(`ambiguous source pointer for map row ${index}`);
+    const pointer = review ?? extra;
+    const pointerKind = review ? 'review' : extra ? 'extra' : 'missing';
+    const externalRows = dedupeExternalPointerRows(
+      pointer?.fp ? (externalByFingerprint.get(pointer.fp) ?? []) : [],
+    );
+    const external = externalRows.length === 1 ? externalRows[0] : undefined;
+    const fingerprintJoin = external
+      ? 'verified'
+      : externalRows.length > 1
+        ? 'ambiguous'
+        : 'missing';
+    const sourceMessageBinding =
+      external && pointer?.source_message_id && external.message_id === pointer.source_message_id
+        ? 'verified'
+        : 'not-proven';
+    const sourceThreadBinding =
+      external && pointer?.source_thread_id && external.thread_id === pointer.source_thread_id
+        ? 'verified'
+        : 'not-proven';
+    const referenceBinding =
+      external &&
+      normalizeOpaqueReference(pointer?.rfc_message_id) &&
+      normalizeOpaqueReference(pointer.rfc_message_id) ===
+        normalizeOpaqueReference(external.message_id)
+        ? 'verified'
+        : 'not-proven';
+    const conversationBasis =
+      sourceThreadBinding === 'verified' && sourceMessageBinding === 'verified'
+        ? 'verified-thread'
+        : 'unresolved';
+    const sourceEvidence =
+      fingerprintJoin === 'verified'
+        ? sourceMessageBinding === 'verified' && sourceThreadBinding === 'verified'
+          ? 'verified-pointer-message-thread'
+          : sourceMessageBinding === 'verified'
+            ? 'verified-pointer-message-only'
+            : 'verified-pointer-fingerprint-only'
+        : pointer
+          ? 'pointer-only'
+          : 'missing';
+    return {
+      index,
+      idHash: record?.id ? hashOpaqueIdentifier(record.id) : null,
+      pointerKind,
+      fingerprintJoin,
+      sourceMessageBinding,
+      sourceThreadBinding,
+      referenceBinding,
+      conversationBasis,
+      sourceEvidence,
+      sourceMessageDigest: pointer?.source_message_id
+        ? hashOpaqueIdentifier(pointer.source_message_id)
+        : null,
+      sourceThreadDigest: pointer?.source_thread_id
+        ? hashOpaqueIdentifier(pointer.source_thread_id)
+        : null,
+      preReplyContextCount: Number.isInteger(
+        record?.source_evidence?.strict_earlier_nonidentical_context_count,
+      )
+        ? record.source_evidence.strict_earlier_nonidentical_context_count
+        : 0,
+    };
+  });
+}
+
+/** Derive hashed canonical partition sets without exposing private member IDs. */
+export function derivePrivateQualificationPartitions(records) {
+  if (!Array.isArray(records)) throw new Error('qualification records are required');
+  const hashed = (rows) => rows.map((row) => hashOpaqueIdentifier(row.id)).sort();
+  const canonical = records.filter((row) => row?.cohort === 'original_420');
+  const external = canonical.filter((row) => row?.original_external_mixed_candidate === true);
+  const strictOutbound = external.filter((row) => row?.physical_direction === 'outbound');
+  const partition = (rows) => {
+    const memberSet = hashed(rows);
+    return { count: memberSet.length, memberSet, memberSetDigest: digest(memberSet) };
+  };
+  const summary = {
+    partitions: {
+      canonical420: partition(canonical),
+      externalMixed253: partition(external),
+      strictOutbound251: partition(strictOutbound),
+      allRecords581: partition(records),
+    },
+  };
+  assertPrivatePartitionSummary(summary);
+  return summary;
+}
+
+export function assertPrivatePartitionSummary(summary) {
+  const partitions = summary?.partitions;
+  if (!partitions || typeof partitions !== 'object') {
+    throw new Error('private partition summary is required');
+  }
+  for (const key of ['canonical420', 'externalMixed253', 'strictOutbound251', 'allRecords581']) {
+    const value = partitions[key];
+    if (
+      !value ||
+      !Number.isInteger(value.count) ||
+      value.count < 0 ||
+      !Array.isArray(value.memberSet) ||
+      value.memberSet.length !== value.count ||
+      new Set(value.memberSet).size !== value.memberSet.length ||
+      !PRIVATE_SHA256.test(value.memberSetDigest) ||
+      digest([...value.memberSet].sort()) !== value.memberSetDigest
+    ) {
+      throw new Error(`private partition ${key} is invalid`);
+    }
+  }
+  const canonical = new Set(partitions.canonical420.memberSet);
+  const external = new Set(partitions.externalMixed253.memberSet);
+  if (!partitions.externalMixed253.memberSet.every((id) => canonical.has(id))) {
+    throw new Error('external/mixed partition is not nested in canonical420');
+  }
+  if (!partitions.strictOutbound251.memberSet.every((id) => external.has(id))) {
+    throw new Error('strict outbound partition is not nested in external/mixed');
+  }
+  return true;
+}
+
+function privateRunPath(root, runId) {
+  if (
+    typeof root !== 'string' ||
+    typeof runId !== 'string' ||
+    !/^u11-[a-z0-9][a-z0-9.-]*$/i.test(runId)
+  ) {
+    throw new Error('private qualification run ID is invalid');
+  }
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, runId);
+  if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error('private qualification run escapes its root');
+  }
+  return { resolvedRoot, target, temporary: `${target}.tmp` };
+}
+
+function writeQualificationJson(target, value) {
+  writeFileSync(target, `${canonicalJson(value)}\n`, { encoding: 'utf8', flag: 'wx' });
+}
+
+/** Atomically publish a versioned, immutable qualification run. */
+export function publishPrivateQualificationSeal({ root, runId, manifest, aggregate, receipt }) {
+  const paths = privateRunPath(root, runId);
+  if (existsSync(paths.target))
+    throw new Error(`private qualification run already exists: ${runId}`);
+  if (existsSync(paths.temporary))
+    throw new Error(`private qualification temporary run already exists: ${runId}`);
+  if (!manifest || manifest.schemaVersion !== 'u11-private-qualification.v2') {
+    throw new Error('private qualification v2 manifest is required for sealing');
+  }
+  assertPrivateQualificationV2Manifest(manifest);
+  mkdirSync(paths.resolvedRoot, { recursive: true });
+  mkdirSync(paths.temporary, { recursive: false });
+  try {
+    writeQualificationJson(path.join(paths.temporary, 'manifest.json'), manifest);
+    writeQualificationJson(path.join(paths.temporary, 'aggregate.json'), aggregate ?? {});
+    writeQualificationJson(path.join(paths.temporary, 'receipt.json'), receipt ?? {});
+    const outputByteHashes = Object.fromEntries(
+      ['manifest.json', 'aggregate.json', 'receipt.json'].map((name) => {
+        const bytes = readFileSync(path.join(paths.temporary, name));
+        return [name, { bytes: bytes.length, sha256: sha256Bytes(bytes) }];
+      }),
+    );
+    const seal = {
+      schemaVersion: 'u11-private-seal.v2',
+      runId,
+      sealedAt: new Date().toISOString(),
+      complete: true,
+      inputDigestSetHash:
+        receipt?.inputDigestSetHash ?? manifest.source?.inputDigestSetHash ?? null,
+      inputByteHashes: receipt?.inputByteHashes ?? manifest.source?.pointerDigests ?? null,
+      outputByteHashes,
+    };
+    writeQualificationJson(path.join(paths.temporary, 'seal.json'), seal);
+    renameSync(paths.temporary, paths.target);
+    return { runId, path: paths.target, seal };
+  } catch (error) {
+    if (existsSync(paths.temporary)) rmSync(paths.temporary, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** Verify a frozen qualification run without writing or changing it. */
+export function verifyPrivateQualificationSeal({
+  root,
+  runId,
+  expectedInputDigestSetHash,
+  inputs,
+}) {
+  const paths = privateRunPath(root, runId);
+  if (!existsSync(paths.target)) throw new Error(`private qualification run is missing: ${runId}`);
+  const sealPath = path.join(paths.target, 'seal.json');
+  let seal;
+  try {
+    seal = JSON.parse(readFileSync(sealPath, 'utf8'));
+  } catch {
+    throw new Error('private qualification seal is missing or invalid');
+  }
+  if (
+    seal?.schemaVersion !== 'u11-private-seal.v2' ||
+    seal.runId !== runId ||
+    seal.complete !== true ||
+    typeof seal.sealedAt !== 'string'
+  ) {
+    throw new Error('private qualification seal is incomplete or invalid');
+  }
+  const outputByteHashes = {};
+  for (const name of ['manifest.json', 'aggregate.json', 'receipt.json']) {
+    const target = qualificationFile(paths.target, name, `sealed ${name}`);
+    const bytes = readFileSync(target);
+    const expected = seal.outputByteHashes?.[name];
+    if (!expected || expected.bytes !== bytes.length || expected.sha256 !== sha256Bytes(bytes)) {
+      throw new Error(`sealed ${name} hash/integrity mismatch`);
+    }
+    outputByteHashes[name] = { bytes: bytes.length, sha256: sha256Bytes(bytes) };
+  }
+  if (
+    expectedInputDigestSetHash !== undefined &&
+    seal.inputDigestSetHash !== expectedInputDigestSetHash
+  ) {
+    throw new Error('sealed input digest-set mismatch');
+  }
+  if (inputs) {
+    const recomputed = hashQualificationInputs(inputs);
+    if (recomputed.digestSetHash !== seal.inputDigestSetHash) {
+      throw new Error('current qualification inputs no longer match the sealed digest-set');
+    }
+  }
+  return {
+    runId,
+    complete: true,
+    sealedAt: seal.sealedAt,
+    inputDigestSetHash: seal.inputDigestSetHash,
+    outputByteHashes,
   };
 }
 
@@ -683,6 +1113,238 @@ export function assertPrivateEvaluationManifest(manifest) {
       throw new Error(`private conversation split drift for ${pilotCase.conversationId}`);
     }
     splitByConversation.set(pilotCase.conversationId, pilotCase.split);
+  }
+  return true;
+}
+
+/**
+ * Validate the second, independent private qualification contract. It keeps
+ * the v1 assertion above intact for historical receipts while requiring v2 to
+ * bind source bytes, independent pointer joins, partition membership, and an
+ * explicit unresolved/unassigned state.
+ */
+export function assertPrivateQualificationV2Manifest(manifest) {
+  if (!manifest || manifest.fixtureKind !== 'private' || manifest.publicFixture !== false) {
+    throw new Error('private qualification v2 contract required');
+  }
+  if (manifest.schemaVersion !== 'u11-private-qualification.v2') {
+    throw new Error('unsupported private qualification v2 schema');
+  }
+  const source = manifest.source;
+  if (
+    !source ||
+    typeof source.name !== 'string' ||
+    typeof source.version !== 'string' ||
+    !PRIVATE_SHA256.test(source.inputDigestSetHash) ||
+    !source.canonicalMap ||
+    typeof source.canonicalMap.path !== 'string' ||
+    !Number.isSafeInteger(source.canonicalMap.bytes) ||
+    !PRIVATE_SHA256.test(source.canonicalMap.sha256) ||
+    !Array.isArray(source.pointerDigests) ||
+    source.pointerDigests.length !== 14
+  ) {
+    throw new Error('private v2 source digest set is incomplete');
+  }
+  const pointerNames = new Set();
+  const pointerPaths = new Set([source.canonicalMap.path]);
+  for (const [index, pointer] of source.pointerDigests.entries()) {
+    if (
+      !pointer ||
+      typeof pointer.name !== 'string' ||
+      pointerNames.has(pointer.name) ||
+      typeof pointer.path !== 'string' ||
+      pointerPaths.has(pointer.path) ||
+      !Number.isSafeInteger(pointer.bytes) ||
+      pointer.bytes < 0 ||
+      !PRIVATE_SHA256.test(pointer.sha256)
+    ) {
+      throw new Error(`private v2 source pointer ${index} is invalid`);
+    }
+    pointerNames.add(pointer.name);
+    pointerPaths.add(pointer.path);
+  }
+  if (
+    !manifest.counts ||
+    !Array.isArray(manifest.cases) ||
+    manifest.counts.mapRecords !== manifest.cases.length ||
+    manifest.counts.runnable + manifest.counts.notRunnable + manifest.counts.unscorable !==
+      manifest.counts.mapRecords
+  ) {
+    throw new Error('private v2 membership counts do not reconcile');
+  }
+  const privacy = manifest.privacy;
+  if (
+    !privacy ||
+    privacy.rawCorpusIncluded !== false ||
+    privacy.targetReplyInToolInput !== false ||
+    privacy.targetReplyInFixture !== false ||
+    !Array.isArray(privacy.privatePaths)
+  ) {
+    throw new Error('private v2 privacy boundary drift');
+  }
+  const phase2B = manifest.phase2B;
+  if (
+    !phase2B ||
+    phase2B.membershipFrozenBeforeResults !== true ||
+    phase2B.caseIdentifiersFrozenBeforeResults !== true ||
+    phase2B.evaluationModeFrozenBeforeResults !== true ||
+    phase2B.selectionReasonsFrozenBeforeResults !== true ||
+    phase2B.conversationSplitFrozen !== true ||
+    phase2B.splitUnit !== 'conversation' ||
+    phase2B.goldTargetExposure !== 'evaluator-only' ||
+    phase2B.modeSpecificAggregation !== true ||
+    canonicalJson(phase2B.allowedOutcomes) !== canonicalJson([...ALLOWED_OUTCOMES]) ||
+    canonicalJson(phase2B.blockedPassOutcomes) !== canonicalJson([...BLOCKED_OUTCOMES])
+  ) {
+    throw new Error('private v2 Phase 2/B freeze contract is not active');
+  }
+  const holdout = manifest.laterInboundFirstHoldout;
+  if (
+    !holdout ||
+    !Number.isInteger(holdout.targetEpisodes) ||
+    holdout.targetEpisodes < 200 ||
+    holdout.independentOfReplyExistence !== true ||
+    holdout.excludesTargetAndFutureContext !== true ||
+    holdout.includesNoReplyEpisode !== true
+  ) {
+    throw new Error('private v2 inbound-first holdout floor/isolation drift');
+  }
+  const partitionSummary = manifest.partitionSummary;
+  assertPrivatePartitionSummary(partitionSummary);
+  const partitionCounts = {
+    canonical420: partitionSummary.partitions.canonical420.count,
+    externalMixed253: partitionSummary.partitions.externalMixed253.count,
+    strictOutbound251: partitionSummary.partitions.strictOutbound251.count,
+    allRecords581: partitionSummary.partitions.allRecords581.count,
+  };
+  if (
+    manifest.counts.mapRecords !== partitionCounts.allRecords581 ||
+    manifest.counts.original420 !== partitionCounts.canonical420 ||
+    manifest.counts.originalExternalMixedCandidates !== partitionCounts.externalMixed253 ||
+    manifest.counts.originalOutboundExternalMixedCandidates !== partitionCounts.strictOutbound251
+  ) {
+    throw new Error('private v2 partition counts do not match membership');
+  }
+  const expectedLabels = {
+    canonical420: 'canonical-420',
+    externalMixed253: 'external-mixed-253',
+    strictOutbound251: 'strict-outbound-251',
+    allRecords581: 'all-581',
+  };
+  const labelCounts = Object.fromEntries(Object.keys(expectedLabels).map((key) => [key, 0]));
+  const ids = new Set();
+  const splitByConversation = new Map();
+  for (const pilotCase of manifest.cases) {
+    if (
+      typeof pilotCase.id !== 'string' ||
+      !PRIVATE_SHA256.test(pilotCase.id) ||
+      ids.has(pilotCase.id) ||
+      typeof pilotCase.conversationId !== 'string' ||
+      !PRIVATE_SHA256.test(pilotCase.conversationId)
+    ) {
+      throw new Error('private v2 case identifiers must be unique hashed values');
+    }
+    ids.add(pilotCase.id);
+    if (!ALLOWED_MODES.has(pilotCase.evaluationMode))
+      throw new Error('unknown private v2 evaluation mode');
+    if (!['runnable', 'not-runnable', 'unscorable'].includes(pilotCase.selectionStatus)) {
+      throw new Error('unknown private v2 selection status');
+    }
+    if (pilotCase.selectionStatus !== 'runnable' && !pilotCase.skipReason) {
+      throw new Error(`missing private v2 skip reason for ${pilotCase.id}`);
+    }
+    assertPrivateToolInput(pilotCase.toolInput, `${pilotCase.id}.toolInput`);
+    const qualification = pilotCase.sourceQualification;
+    if (!qualification || typeof qualification !== 'object') {
+      throw new Error(`private v2 source qualification is missing for ${pilotCase.id}`);
+    }
+    for (const key of [
+      'sameRequestIdentity',
+      'legitimateInboundBeforeTarget',
+      'sourceBinding',
+      'permission',
+    ]) {
+      if (!PRIVATE_QUALIFICATION_STATES.has(qualification[key])) {
+        throw new Error(`private v2 source qualification ${key} is invalid for ${pilotCase.id}`);
+      }
+    }
+    if (pilotCase.conversationBasis === 'verified-thread') {
+      if (!['development', 'holdout'].includes(pilotCase.split)) {
+        throw new Error(`verified private v2 case is not assigned a split ${pilotCase.id}`);
+      }
+      if (qualification.sourceBinding !== 'verified') {
+        throw new Error(`verified private v2 thread has unverified source binding ${pilotCase.id}`);
+      }
+      if (pilotCase.exposure?.state !== 'development' && pilotCase.exposure?.state !== 'sealed') {
+        throw new Error(`verified private v2 case exposure is invalid ${pilotCase.id}`);
+      }
+      const previousSplit = splitByConversation.get(pilotCase.conversationId);
+      if (previousSplit && previousSplit !== pilotCase.split) {
+        throw new Error(`private v2 conversation split drift for ${pilotCase.conversationId}`);
+      }
+      splitByConversation.set(pilotCase.conversationId, pilotCase.split);
+    } else if (pilotCase.conversationBasis === 'unresolved') {
+      if (pilotCase.split !== null || pilotCase.exposure?.state !== 'unassigned') {
+        throw new Error(`unresolved private v2 case must remain unassigned ${pilotCase.id}`);
+      }
+    } else {
+      throw new Error(`private v2 conversation basis is invalid for ${pilotCase.id}`);
+    }
+    if (pilotCase.selectionStatus === 'runnable') {
+      if (
+        pilotCase.conversationBasis !== 'verified-thread' ||
+        [
+          qualification.sameRequestIdentity,
+          qualification.legitimateInboundBeforeTarget,
+          qualification.sourceBinding,
+          qualification.permission,
+        ].some((state) => state !== 'verified')
+      ) {
+        throw new Error(`runnable private v2 case has unverified qualification ${pilotCase.id}`);
+      }
+    }
+    if (
+      !Array.isArray(pilotCase.partitionLabels) ||
+      !pilotCase.partitionLabels.includes(expectedLabels.allRecords581)
+    ) {
+      throw new Error(`private v2 case partition labels are incomplete ${pilotCase.id}`);
+    }
+    for (const [key, label] of Object.entries(expectedLabels)) {
+      if (pilotCase.partitionLabels.includes(label)) labelCounts[key] += 1;
+    }
+    const exposure = pilotCase.exposure;
+    if (
+      !exposure ||
+      exposure.target !== 'evaluator-only' ||
+      exposure.sealedBeforeOutcome !== true ||
+      exposure.outcomeMayInformTuning !== false ||
+      exposure.outcomeMayInformRepair !== false ||
+      exposure.outcomeMayChooseFixtures !== false ||
+      exposure.outcomeMayTriggerRetry !== false
+    ) {
+      throw new Error(`private v2 target exposure drift for ${pilotCase.id}`);
+    }
+    for (const outcome of Object.values(pilotCase.fieldOutcomes ?? {})) {
+      if (!ALLOWED_OUTCOMES.has(outcome))
+        throw new Error(`unknown private v2 field outcome for ${pilotCase.id}`);
+    }
+  }
+  if (
+    labelCounts.canonical420 !== partitionCounts.canonical420 ||
+    labelCounts.externalMixed253 !== partitionCounts.externalMixed253 ||
+    labelCounts.strictOutbound251 !== partitionCounts.strictOutbound251 ||
+    labelCounts.allRecords581 !== partitionCounts.allRecords581
+  ) {
+    throw new Error('private v2 partition label counts drifted');
+  }
+  const computed = computeManifestDigests(manifest);
+  if (
+    manifest.source.contentHash !== computed.contentHash ||
+    manifest.source.mappingHash !== computed.mappingHash ||
+    phase2B.mappingHash !== computed.mappingHash ||
+    phase2B.selectionHash !== computed.selectionHash
+  ) {
+    throw new Error('private v2 canonical digest mismatch');
   }
   return true;
 }
@@ -1555,7 +2217,10 @@ function runCli(argv) {
   throw new Error(`unknown gate helper command: ${command ?? ''}`);
 }
 
-if (process.argv[2]) {
+const invokedDirectly =
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (invokedDirectly && process.argv[2]) {
   try {
     runCli(process.argv.slice(2));
   } catch (error) {
