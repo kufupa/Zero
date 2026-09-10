@@ -226,20 +226,25 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
       expect(result.loaded.conversations.bucketTotals).toMatchObject({
         value: null,
         availability: 'unavailable',
+        denominator: null,
         availabilityReason: 'request_projection_unavailable',
       });
       expect(result.loaded.service.firstUsefulReply).toMatchObject({
         value: null,
         availability: 'unavailable',
+        denominator: null,
         availabilityReason: 'request_projection_unavailable',
       });
       expect(
         (
           result.exported as {
-            buckets: Record<string, { value: number | null; availability: string }>;
+            buckets: Record<
+              string,
+              { value: number | null; availability: string; denominator: number | null }
+            >;
           }
         ).buckets.answered,
-      ).toMatchObject({ value: null, availability: 'unavailable' });
+      ).toMatchObject({ value: null, availability: 'unavailable', denominator: null });
     }, 60000);
 
     const coverageEvidence = (threadId: string): MailBaselineEvidence[] => [
@@ -367,6 +372,11 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
           measurementConfigVersion: 'v1',
           captureBasis: 'configured-v1',
         });
+        expect(result.loaded.conversations.bucketTotals).toMatchObject({
+          availability: 'available',
+          value: expect.objectContaining({ answered: 1 }),
+          denominator: 1,
+        });
         expect(result.loaded.shadowScorecard).toMatchObject({
           admissionPopulation: {
             availability: 'available',
@@ -387,10 +397,18 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
               firstUsefulReply: expect.objectContaining({
                 availability: 'available',
                 value: 30,
+                denominator: 1,
                 measurementConfigVersion: 'v1',
                 captureBasis: 'configured-v1',
               }),
             },
+          },
+          buckets: {
+            answered: expect.objectContaining({
+              availability: 'available',
+              value: 1,
+              denominator: 1,
+            }),
           },
           provenance: {
             measurementConfigVersions: expect.arrayContaining(['v1']),
