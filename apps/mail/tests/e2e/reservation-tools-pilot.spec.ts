@@ -697,32 +697,31 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   const fixtureUrl = () =>
     `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=u6-draft-safety&mode=reply&threadId=u6-thread-1&activeReplyId=u6-message-1`;
   const editor = () => page.locator('[contenteditable="true"]').first();
+  const waitForEditableDraft = async () => {
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() =>
+            (window.__reservationToolsPilotRequests ?? []).some((request) =>
+              request.path.endsWith('/drafts.ensureEditableForReply'),
+            ),
+          ),
+        { message: 'the existing editable-draft promotion request should complete' },
+      )
+      .toBe(true);
+  };
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(fixtureUrl(), { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'U6 draft safety fixture' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Assisted candidate' })).toBeVisible();
-  await page.getByRole('button', { name: 'Adopt candidate', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'U6 reply review' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
-  await expect(editor()).toBeVisible();
 
   const candidateState = asU6Record(
     await readU6Procedure(page, 'ai.hmsCandidateState'),
     'candidate state',
   );
-  expect(Object.keys(candidateState).sort()).toEqual([
-    'activeRun',
-    'freshness',
-    'outcome',
-    'refreshedAt',
-    'threadId',
-    'unresolvedFields',
-    'visibleCandidate',
-  ]);
   expect(candidateState).toEqual(
     expect.objectContaining({
-      threadId: 'u6-thread-1',
       activeRun: null,
       outcome: 'candidate',
       freshness: 'fresh',
@@ -735,6 +734,84 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
       }),
     }),
   );
+
+  await page.evaluate(() => {
+    if (!window.__u6DraftSafetyState) throw new Error('U6 fixture state is unavailable');
+    window.__u6DraftSafetyState.stale = true;
+  });
+  const staleCandidateState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'stale candidate state before refresh',
+  );
+  expect(staleCandidateState).toEqual(
+    expect.objectContaining({
+      activeRun: null,
+      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: true }),
+      outcome: 'candidate',
+      freshness: 'stale_thread',
+    }),
+  );
+
+  const queuedRefreshResponse = asU6Record(
+    await readU6Procedure(page, 'ai.refreshHmsCandidate'),
+    'queued refresh response before promotion',
+  );
+  expect(queuedRefreshResponse).toEqual({
+    runId: 'u6-refresh-run',
+    runState: 'queued',
+    triggerMessageId: 'u6-message-1',
+    threadStateVersion: 'a'.repeat(64),
+    idempotencyKey: 'hms-refresh:transport-centurion:u6-thread-1:' + 'a'.repeat(64) + ':1.2.0',
+  });
+  const queuedStaleCandidateState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'queued stale candidate state',
+  );
+  expect(queuedStaleCandidateState).toEqual(
+    expect.objectContaining({
+      activeRun: { id: 'u6-refresh-run', state: 'queued' },
+      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: true }),
+      outcome: 'candidate',
+      freshness: 'stale_thread',
+    }),
+  );
+
+  await page.getByRole('button', { name: 'Adopt candidate', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'U6 reply review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
+  await expect(editor()).toBeVisible();
+  await waitForEditableDraft();
+
+  const promotedState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'promoted editor state',
+  );
+  expect(promotedState).toEqual({
+    visibleCandidate: null,
+    activeRun: { id: 'u6-refresh-run', state: 'queued' },
+    outcome: null,
+    freshness: 'unknown',
+    unresolvedFields: [],
+    refreshedAt: null,
+  });
+  expect(Object.keys(candidateState).sort()).toEqual([
+    'activeRun',
+    'freshness',
+    'outcome',
+    'refreshedAt',
+    'unresolvedFields',
+    'visibleCandidate',
+  ]);
+  expect(Object.keys(promotedState).sort()).toEqual([
+    'activeRun',
+    'freshness',
+    'outcome',
+    'refreshedAt',
+    'unresolvedFields',
+    'visibleCandidate',
+  ]);
+  expect(candidateState).not.toHaveProperty('threadId');
+  expect(promotedState).not.toHaveProperty('threadId');
   expect(candidateState).not.toHaveProperty('candidate');
   expect(candidateState).not.toHaveProperty('visible');
 
@@ -833,19 +910,21 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   await page.goto(fixtureUrl(), { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'Adopt candidate', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
+  await waitForEditableDraft();
   await editor().fill('Edited stale synthetic reply remains available after the fence.');
   await page.getByRole('button', { name: 'Simulate newer inbound', exact: true }).click();
   const staleState = asU6Record(
     await readU6Procedure(page, 'ai.hmsCandidateState'),
-    'stale candidate state',
+    'stale promoted-editor state',
   );
-  expect(staleState).toEqual(
-    expect.objectContaining({
-      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: true }),
-      outcome: 'candidate',
-      freshness: 'stale_thread',
-    }),
-  );
+  expect(staleState).toEqual({
+    visibleCandidate: null,
+    activeRun: null,
+    outcome: null,
+    freshness: 'unknown',
+    unresolvedFields: [],
+    refreshedAt: null,
+  });
   expect(staleState).not.toHaveProperty('candidate');
 
   await page.getByRole('button', { name: 'Review & Send', exact: true }).click();
@@ -882,9 +961,9 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   expect(refreshedState).toEqual(
     expect.objectContaining({
       activeRun: { id: 'u6-refresh-run', state: 'queued' },
-      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: false }),
-      outcome: 'candidate',
-      freshness: 'fresh',
+      visibleCandidate: null,
+      outcome: null,
+      freshness: 'unknown',
     }),
   );
 
@@ -899,9 +978,8 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
     'none candidate state',
   );
   expect(noneState).toEqual({
-    threadId: 'u6-thread-1',
     visibleCandidate: null,
-    activeRun: null,
+    activeRun: { id: 'u6-refresh-run', state: 'queued' },
     outcome: null,
     freshness: 'unknown',
     unresolvedFields: [],

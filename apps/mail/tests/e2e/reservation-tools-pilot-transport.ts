@@ -943,11 +943,10 @@ export function installReservationToolsPilotTransport(): void {
           );
         }
         u6Record(200);
-        const hasCandidate = state.mode === 'ai';
+        const hasCandidate = state.mode === 'ai' && !state.aiDraftActive;
         return trpcResponse({
-          threadId: U6_THREAD_ID,
           visibleCandidate: hasCandidate ? { ...u6DraftWire(), isStale: state.stale } : null,
-          activeRun: hasCandidate ? (state.activeRun ?? null) : null,
+          activeRun: state.activeRun ?? null,
           outcome: hasCandidate ? 'candidate' : null,
           freshness: hasCandidate ? (state.stale ? 'stale_thread' : 'fresh') : 'unknown',
           unresolvedFields: [],
@@ -972,7 +971,6 @@ export function installReservationToolsPilotTransport(): void {
           });
           window.__u6ReleaseRefresh = undefined;
         }
-        state.stale = false;
         emitU6DraftSafetyEvent('candidate-refreshed');
         u6Record(200);
         return trpcResponse({
