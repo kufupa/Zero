@@ -1,6 +1,7 @@
 ---
 title: Centurion Outlook Sent-Mail Forward VBA Broke RFC Threading — Auto-BCC Ingest Fix
 date: 2026-09-09
+last_updated: 2026-09-10
 category: integration-issues
 module: server-pilot / Centurion Outlook workstation sent-mail ingest
 problem_type: integration_issue
@@ -25,6 +26,7 @@ tags:
   - in-reply-to
   - rfc-threading
   - server-pilot
+  - sent-folder-parity
 ---
 
 # Centurion Outlook Sent-Mail Forward VBA Broke RFC Threading — Auto-BCC Ingest Fix
@@ -170,8 +172,9 @@ Auto-BCC hooks **before** the single SMTP send completes. Ingest receives one me
 - Historical Forward junk and pre-BCC Sent gaps remain in RDS; do not treat them as live regression after cutover.
 - **Residue (2026-09-10):** Pre-cutover Nava `FW:` clones from centurion@ are wrong-transport inbound with new Message-IDs. They do **not** pollute Centurion Sent. Do **not** Message-ID-rewrite them into Centurion outbound. Honest history densification = original Sent Items `.eml` catch-up only.
 - **Ops checklist:** Keep ItemSend Auto-BCC (no `SentItems_ItemAdd` Forward). Keep `INGEST_REQUIRE_OWNER_HEADER=false` on EC2. Weekly SSM run: `npx tsx scripts/audit-centurion-sent-parity.ts` (hard-fails on post-cutover Nava-from-centurion or owner-header true).
+- **Characterization lock (2026-09-10):** AE3 asserts empty `bccAddresses` still outbound; R6 PMBobo→Centurion stays inbound; R3 mixed thread appears in Inbox and Sent (`tests/folder-semantics.test.ts`, `tests/ingest-store.test.ts`). Do not extract a new hotel-sent classifier module — inline `isHotelSent` in `store.ts` is the source of truth.
 - **Deferred follow-on:** `Centurion server-side sent journal (Rocketseed/Exim) for OWA/mobile/non-VBA` — same hotel-sent ingest contract without desktop macro. Prefer envelope journaling / SMTP silent copy that preserves Message-ID over transport-rule BCC-to-inbox (archive RCPT looks inbound).
-- Optional future hardening (not required now): Thread-Index backup only if edge cases resurface after BCC cutover.
+- Plan: `docs/superpowers/plans/2026-09-10-centurion-sent-received-parity.md`
 
 ## Related Issues
 
