@@ -1,5 +1,52 @@
 # Dashboard tools pilot runbook
 
+## Latest local checkpoint — 2026-09-10
+
+Runtime/test source: `eff22bce3f9e675e7006c0757e3ed7c7274538ba`.
+The local verification sweep is complete; **the full three-phase plan is not**.
+
+| Phase             | What is available locally                                                                                                                           | What is not yet proved                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Dashboard         | Executive metrics, charts, cohorts, exports, and explicit unavailable states; server/DB and real-component browser checks pass.                     | Live-data/deployed readiness is not established by these fixture checks.                         |
+| Read-only toolkit | Independent typed reads and audited local/DB paths for reservation, finance, documents, rates/availability, linked context, and approved knowledge. | Current live PMS capability and the real-email Phase 2/B release gate remain unqualified.        |
+| Drafting agent    | Candidate/review UI, editor preservation, worker/approval safeguards, and synthetic private evaluation have local proof.                            | U5 PMS-to-prepared integration remains incomplete; no complete live drafting or Phase 2/B claim. |
+
+### Watch the current recordings
+
+These recordings use real components with synthetic loopback HTTP. They are
+separate from the disposable-DB proofs, not a joined live browser/server test.
+
+- Dashboard desktop: [video](../../.private/centurion-dashboard-tools-execution/final-browser-dashboard.UmKlRT/browser-artifacts/reservation-tools-pilot-re-667e8-ols-pilot-dashboard-desktop/video.webm) · [trace](../../.private/centurion-dashboard-tools-execution/final-browser-dashboard.UmKlRT/browser-artifacts/reservation-tools-pilot-re-667e8-ols-pilot-dashboard-desktop/trace.zip).
+- Dashboard mobile: [video](../../.private/centurion-dashboard-tools-execution/final-browser-dashboard.UmKlRT/browser-artifacts/reservation-tools-pilot-re-e608d-ools-pilot-dashboard-mobile/video.webm) · [trace](../../.private/centurion-dashboard-tools-execution/final-browser-dashboard.UmKlRT/browser-artifacts/reservation-tools-pilot-re-e608d-ools-pilot-dashboard-mobile/trace.zip).
+- Existing documents: [video](../../.private/centurion-dashboard-tools-execution/final-browser-documents.mKmWGq/browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-documents/video.webm) · [trace](../../.private/centurion-dashboard-tools-execution/final-browser-documents.mKmWGq/browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-documents/trace.zip).
+- Draft review and manual fallback: [video](../../.private/centurion-dashboard-tools-execution/final-browser-pilot.mDP4YW/browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-pilot/video.webm) · [trace](../../.private/centurion-dashboard-tools-execution/final-browser-pilot.mDP4YW/browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-pilot/trace.zip).
+
+Complete directories were copied and compared before the next browser run;
+video/trace hashes and exact command output are in the
+[private final verification receipt](../../.private/centurion-dashboard-tools-execution/final-verification.VE49VH/README.md).
+Representative screenshots were inspected; full videos were not manually watched.
+
+### Evidence and remaining work
+
+- Fresh checks passed: 13 guarded unit slices, 10 guarded disposable-PG16
+  slices, all 22 dashboard frontend tests, both builds, all three browser
+  slices, and the focused strict fixture-config typecheck. These are scoped
+  gates, not a claim that every monorepo test or the full mail typecheck ran.
+- The private historical receipt passes read-only integrity verification but
+  still contains **zero runnable cases**. Missing pinned pre-reply reference
+  matches and source/direction links are evidence gaps, not user-access denials.
+- All current authenticated application users have all configured tools/data,
+  including finance and Research. Owner double-check at handoff only; no extra
+  role/allowlist approval is pending.
+- U5 is parked under the plan's bounded retry/advisory policy. The previous
+  installed `asm-exec` pin mismatch also leaves remote capability unknown;
+  no remote repair, live activation, deployment, merge, push, or PR occurred.
+- See the [execution ledger](../superpowers/plans/handoff-reports/2026-09-07-centurion-dashboard-tools-execution.md)
+  for accepted repairs, remaining qualification requirements, and evidence
+  boundaries. The [export correctness note](../solutions/logic-errors/dashboard-cached-export-after-failed-refetch.md)
+  and [dashboard vocabulary](../../CONCEPTS.md#executive-dashboard-reports)
+  preserve the completed compounding work.
+
 ## Initial dashboard slice (U11-A)
 
 Status: current production-style browser proof GREEN. This slice exercises the reviewed
@@ -37,8 +84,9 @@ The journey covers:
   evidence;
 - a bounded 28-day outage/error state retaining the observed snapshot and
   stating that no demo data is substituted; and
-- unauthorized access redirecting to general settings without an aggregate
-  dashboard request.
+- all authenticated pilot users retaining aggregate-dashboard access. Missing
+  current identity/access remains separately covered by server/frontend tests;
+  the browser journey no longer treats an arbitrary authenticated user as denied.
 
 The transport validates the actual tRPC batch envelope and finite
 cohort/window/cutoff values. The latest/undefined SuperJSON form is accepted
@@ -58,12 +106,10 @@ Trace, video, and screenshots are written only under:
 .private/centurion-dashboard-tools-execution/u11a-browser-artifacts/
 ```
 
-Fresh production-theme screenshots are:
-
-```text
-.private/centurion-dashboard-tools-execution/u11a-browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-dashboard/dashboard-desktop.png
-.private/centurion-dashboard-tools-execution/u11a-browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-dashboard/dashboard-mobile.png
-```
+The shared directory is reused and replaced by subsequent browser slices.
+Use the preserved desktop/mobile directories linked in **Watch the current
+recordings** above for the latest production-theme screenshots, videos, and
+traces; do not infer freshness from this shared path.
 
 The focused metadata RED run was consumed as private diagnostic evidence before
 the fresh green rerun. The current desktop/mobile and test-finished captures
@@ -433,9 +479,11 @@ result for the real 420 selected records. Its own contract records synthetic
 freeze/hash/held-out safeguards only. The v3 private receipt establishes
 pre-outcome membership, hashed case IDs, independently supported development
 conversation assignments, unresolved unassigned cases, skip reasons, and
-selection/mapping hashes for the 581-row canonical map, while verified
-permission evidence, runnable eligibility, and current capability remain
-unproven. No historical holdout membership, real corpus outcome, current
+selection/mapping hashes for the 581-row canonical map, while pinned
+pre-reply reference/horizon evidence, runnable eligibility, and current audited
+capability remain unproven. User access is already settled by the owner;
+these are source/runtime proof gaps, not denied pilot-user permissions.
+No historical holdout membership, real corpus outcome, current
 capability, live release, or Phase 2/B readiness claim is made. Accepted normal
 paths remain linked rather
 than duplicated: U9's actual document producer →
@@ -541,10 +589,11 @@ undo.
 
 ### Limitations and owner assumptions
 
-- All current authorized pilot users retain all configured tools/data; current
-  authentication, configured source/property/ref binding, read-only PMS
-  boundaries, and human approval/send remain authoritative. No new role or
-  finance permission is implied.
+- All current authenticated application users have all configured tools/data,
+  including finance and Research. This is the owner's access assumption to
+  double-check at handoff, not a pending approval or a new role gate.
+  Authentication, configured source/property/ref binding, read-only PMS
+  boundaries, and human approval/send remain authoritative.
 - Browser proof is a loopback fake transport, separate from server/DB/outbox
   proof. The document DB test constructs its admission context rather than
   performing a browser login; the mail case uses an injected session user
@@ -558,8 +607,11 @@ undo.
   fixture, private data, inaccessible evidence, live model/PMS result, or
   Phase 2/B readiness status is promoted by this runbook. The private receipt
   freezes hashed map membership, mode/split, skip reasons, hashes, and
-  evaluator-only exposure before outcomes, but records zero runnable cases
-  because permission/current capability is not proven; this is not a full U11
-  or Phase 2/B completion claim. The diagnosed installed `asm-exec` pin
+  evaluator-only exposure before outcomes, but records zero runnable cases:
+  no pinned pre-reply reference match is established, and unresolved
+  source/direction linkages remain. Current live audited capability is also
+  unproven, separately from user access. These are evidence limitations, not
+  missing pilot-user permission or a full U11/Phase 2/B completion claim.
+  The diagnosed installed `asm-exec` pin
   mismatch is a runtime-capability unknown/block, not a user-access denial and
   not an explanation for missing source or horizon facts.

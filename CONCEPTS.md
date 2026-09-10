@@ -432,6 +432,28 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 
 *Avoid: keeping a disabled modal as the primary click target; flipping the whole SPA into frontend-only demo mode to recover demo chrome; conflating this with Compose-close honesty (draft Save/Discard/Keep editing).*
 
+## Executive dashboard reports
+
+### Dashboard cohort
+
+A named source population that determines which mail activity an executive dashboard report describes.
+
+### Observation cutoff
+
+The "as of" boundary attached to a dashboard report, distinct from the reporting window that selects the interval being measured.
+
+### Dashboard snapshot
+
+Metric values together with their Dashboard cohort, reporting window, Observation cutoff, and source context.
+
+A prior snapshot may remain visible during a refresh, but its original interpretation context and stale status remain attached; its presence does not prove a new refresh succeeded.
+
+### Dashboard export
+
+A user-requested portable report carrying a Dashboard snapshot and its interpretation context.
+
+A new export requires an accepted refresh for the requested report selection; a retained snapshot alone is not a successful new export.
+
 ## Connected mailbox commercial analysis
 
 Ops corpus analysis over connected-mailbox exports (not product mail UI). Used for client-facing daily charts and WINDOW commercial KPIs.

@@ -1,6 +1,97 @@
 # Centurion Dashboard, Read Tools and Drafting — Execution Ledger
 
-## Current checkpoint — whole-branch review complete; bounded caller repairs started (2026-09-10)
+## Current checkpoint — final local checks complete; full plan remains partial (2026-09-10)
+
+- Reviewed runtime/test source is `eff22bce3f9e675e7006c0757e3ed7c7274538ba`.
+  Final verification finished at 2026-09-10T18:02:43Z;
+  source and canonical plan hashes are unchanged. Only handoff/learning
+  documentation changes follow this source freeze.
+- Dashboard and the independent read-only toolkit have local implementation
+  and scoped verification. The complete drafting agent, live capability
+  activation, and full Phase 2/B/U11 qualification are **not done**.
+- All current authenticated application users retain all configured tools/data,
+  including finance and Research. This is recorded for the owner's handoff
+  double-check, not a pending permission question or per-user role gate.
+
+### Fresh verification
+
+| Check                                      | Result                       | Boundary                                                                     |
+| ------------------------------------------ | ---------------------------- | ---------------------------------------------------------------------------- |
+| Guarded unit matrix                        | All 13 slices PASS           | Exact guarded slices, not every monorepo test.                               |
+| Guarded disposable PG16 matrix             | All 10 slices PASS           | Owned local target; no pilot/production DB tests or migration reapplication. |
+| Full dashboard frontend directory          | 6 files / 22 tests PASS      | Includes access and actual-hook export regressions.                          |
+| Server and mail builds                     | Both PASS                    | Mail retains warnings; not a zero-warning/full-mail-typecheck claim.         |
+| Dashboard, documents, pilot browser        | All 3 slices PASS            | Real components with loopback fake HTTP; not joined browser/DB/live proof.   |
+| Focused fixture configuration typecheck    | PASS with strict settings    | Not the full mail TypeScript project.                                        |
+| Private v3 historical receipt verification | PASS; input digest unchanged | Integrity only; still zero runnable historical cases.                        |
+
+- Exact outputs, command/session receipts, frozen hashes, screenshots,
+  video/trace hashes, and limits:
+  [private final verification](../../../../.private/centurion-dashboard-tools-execution/final-verification.VE49VH/README.md).
+- Fresh recordings and a concise three-phase status:
+  [runbook checkpoint](../../../infor-hms/dashboard-tools-pilot-runbook.md#latest-local-checkpoint--2026-09-10).
+  Complete browser directories were copied and compared before every subsequent
+  slice. ROOT inspected representative screenshots, not the full videos.
+- All known test/build/browser sessions are closed. After `fuser` showed no
+  users, exactly the generated Mastra SQLite file and its WAL/SHM companions
+  were moved together to private `final-generated-mastra.6DxHh3`; they are
+  recoverable and not committed. The owned PG16 fixture container is retained.
+
+### Review disposition and remaining work
+
+- Ten validated caller repairs are accepted: #4/#8, #5/#11, #6/#9/#12,
+  #13/#14, and #15. Their independent scoped acceptance and failure/repair
+  chronology remain below; this does not rewrite the historical whole-branch
+  `Not ready` verdict at `ec8e3a0f` into a new full-plan clearance.
+- Structural #1/#2/#3/#7 remain report-only. Proposal #10 was rejected. The
+  twelve over-cap proposals #16–#27 remain **unvalidated**, not confirmed or
+  dismissed; no automatic structural rewrite or expanded review is implied.
+- **U5 I3: PARKED LOCAL/advisory-used.** Normal PMS-to-prepared integration
+  still lacks the accepted positive path: worker claim authorization is
+  omitted and internal requester authorization reaches the prepared-fact
+  sensitive-input boundary. This is a technical integration defect, not
+  missing user permission. The plan's bounded retry/advisory allowance is
+  consumed; passing candidate DB assertions does not resolve it.
+- **Phase 2/B and U11: incomplete.** The preserved 581-row membership includes
+  420 selected records, 92 development and 489 unassigned cases, zero holdout,
+  zero runnable, 92 unscorable and 489 not run. No pinned pre-reply reference
+  match is established. These are frozen receipt categories, not scored
+  outcomes or a conclusion that the source corpus can never qualify.
+- Current audited no-model positive/negative/ambiguity and field-level proof,
+  a disjoint historical holdout where eligible, and the separate 200-case
+  inbound-first target remain unproved. Historical/current/future modes and
+  evaluator-only outbound gold remain separate.
+- The prior read-only remote diagnosis found an installed `asm-exec` pin
+  mismatch before the signed doctor/sentinel. AWS transport/credentials were
+  not diagnosed as unavailable; remote activation remains unknown. No remote
+  repair/install/deploy or live PMS/model/mail operation was authorized or run.
+- Recommendation: retain the verified local slices and evidence, then allocate
+  a fresh bounded U5 repair and separately authorized runtime qualification
+  workflow. Do not enable the live drafting route or count unscorable cases as
+  passes. No new finer-grained user-access approval is needed.
+
+### Compounding and handoff
+
+- Exactly one headless Full `ce-compound` run completed:
+  `centurion-20260910.pTJ3xv`. Three serial Luna Max research artifacts were
+  fully read before ROOT assembled the
+  [dashboard export learning](../../../solutions/logic-errors/dashboard-cached-export-after-failed-refetch.md)
+  and four [shared dashboard terms](../../../../CONCEPTS.md#executive-dashboard-reports).
+  The verified failed-refetch repair is documented; the later race allegation
+  remains rejected/not established, not claimed fixed.
+- Parser-safety/schema checks used the documented manual fallback because the
+  bundled validator was not resolvable through its platform guard. No Phase 3
+  review, session-history scan, auto-memory use, refresh workflow, or instruction
+  file creation occurred. Unrelated `CONCEPTS.md` formatting was preserved.
+- Requested routine worker route remains Luna Max; effective usage totals are
+  unavailable, so no measured 90% token-share or cost claim is made.
+- Work remains on `feat/centurion-dashboard-tools` in its existing worktree.
+  Final documentation is saved locally; no feature merge, push, PR, deployment,
+  worktree deletion, or source-corpus commit is performed.
+
+## Checkpoint history — whole-branch review and bounded caller repairs
+
+- All ten validated caller functional/testing repairs are now accepted locally. Formal15 closes at `eff22bce3f9e675e7006c0757e3ed7c7274538ba` after ROOT fully reads the corrected53-line fresh nonauthor report: specification/task-quality PASS, explicit zero Critical/Important/Minor, unchanged loader and six verified hashes, clean snapshot. The review's initial C/I/M terminology was corrected from coverage counts to literal severity counts; ten coverage checks remain separately labelled. No real evaluation outcome is inferred. Structural1/2/3/7 remain report-only and the twelve over-cap proposals remain unvalidated. The single headless ce-compound run `centurion-20260910.pTJ3xv` now documents accepted dashboard #9 and the evidence-based rejected race allegation; serial Luna research preserves the existing provider-rate-limit mitigation. Final handoff clarification and verification follow, with U5/full U11 still partial.
 
 - Backtest formal15 is frozen for fresh nonauthor review: ROOT final unit gate(uAls1n), unit shadow(QBLAOh), three-path zero-warning/error lint/format, shell/MJS syntax, server TypeScript and diff checks PASS. MAIN fully read the94-line final report. The first shadow failure was a test-fixture error: parsed scalar42 lacks evaluationMode and correctly hits the unchanged mode fence. Luna removed it only from the matching-mode success case and added explicit missing-mode rejection coverage; no loader behavior changed. All loader/gate/test/plan hashes stay frozen, all sessions close and no generated material remains. Exact four-path scope includes pre-approved canonical test dispatch, with Luna authoring and ROOT executing. Receipt: `.private/centurion-dashboard-tools-execution/review-backtest-resume-root-verification.md`. Both earlier failures remain preserved; no final numeric wrapper count or real-corpus/live result is claimed. Formal15 acceptance is pending.
 
