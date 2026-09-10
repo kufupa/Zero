@@ -18,11 +18,11 @@ import postgres from 'postgres';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 
 function parseOwnerHeaderRequire(raw: string | undefined): boolean {
-  if (raw === undefined || raw === '') return true; // code default when unset
-  const n = raw.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(n)) return true;
-  if (['0', 'false', 'no', 'off'].includes(n)) return false;
-  throw new Error(`invalid INGEST_REQUIRE_OWNER_HEADER=${raw}`);
+  // Match apps/server-pilot/src/env.ts ingestRequireOwnerHeader / toBool exactly.
+  if (raw === undefined || raw === '') return true;
+  if (raw === 'true' || raw === '1') return true;
+  if (raw === 'false' || raw === '0') return false;
+  throw new Error(`env INGEST_REQUIRE_OWNER_HEADER must be boolean (true|false|1|0), got: ${raw}`);
 }
 
 function midShape(mid: string | null): 'outlook' | 'hms' | 'other' {
@@ -68,24 +68,15 @@ async function main(): Promise<void> {
       select m.direction, count(*)::int as n
       from message m
       where m.transport_id = 'transport-centurion'
-        and lower(m.from_address) like '%centurion@legacyhotels.co.za%'
         and coalesce(m.received_at, m.created_at) >= ${since}::timestamptz
       group by m.direction
     `;
     let centurionOutbound = 0;
-    let centurionInboundFromCenturion = 0;
+    let centurionInbound = 0;
     for (const row of dirCounts) {
       if (row.direction === 'outbound') centurionOutbound = row.n;
-      if (row.direction === 'inbound') centurionInboundFromCenturion = row.n;
+      if (row.direction === 'inbound') centurionInbound = row.n;
     }
-
-    const inboundAll = await sql<{ n: number }[]>`
-      select count(*)::int as n
-      from message m
-      where m.transport_id = 'transport-centurion'
-        and m.direction = 'inbound'
-        and coalesce(m.received_at, m.created_at) >= ${since}::timestamptz
-    `;
 
     const outs = await sql<
       {
@@ -99,7 +90,6 @@ async function main(): Promise<void> {
       from message m
       where m.transport_id = 'transport-centurion'
         and m.direction = 'outbound'
-        and lower(m.from_address) like '%centurion@legacyhotels.co.za%'
         and coalesce(m.received_at, m.created_at) >= ${cutover}::timestamptz
     `;
 
@@ -153,8 +143,7 @@ async function main(): Promise<void> {
     const info = {
       since,
       centurionOutbound,
-      centurionInbound: inboundAll[0]?.n ?? 0,
-      centurionInboundFromCenturion,
+      centurionInbound,
       midShape: midShapeCounts,
       emptyBccRate: Number(emptyBccRate.toFixed(4)),
       historicalFwResidue: residue[0]?.n ?? 0,

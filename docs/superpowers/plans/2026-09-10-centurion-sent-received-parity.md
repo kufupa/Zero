@@ -185,7 +185,7 @@ ItemSend Auto-BCC → single SMTP (same Message-ID)
 2. Live EC2 env read path: `INGEST_REQUIRE_OWNER_HEADER` parses true (when script run on EC2 with production env)
 3. Optional strict mode: `irtJoinRate < 0.90` on post-cutover outbound-with-IRT sample (default **warn only** — 84/87 baseline; References noise exists)
 
-**Informational only (never fail alone):** Outlook vs HMS MID shape counts; empty-bcc rate on Centurion outbound; historical FW residue count; outbound volume vs prior 7d median.
+**Informational only (never fail alone):** Outlook vs HMS MID shape counts; empty-bcc rate on Centurion outbound; historical FW residue count. (Optional ops: compare outbound volume to prior week ad-hoc — not a hard auditor field.)
 
 ### U3. Solutions-doc residue + ops (single surface)
 
