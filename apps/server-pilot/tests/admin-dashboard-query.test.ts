@@ -20,7 +20,6 @@ import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import { describe, expect, it } from 'vitest';
-import { TRPCError } from '@trpc/server';
 
 const CUTOFF = '2026-08-08T00:00:00.000Z';
 
@@ -51,16 +50,16 @@ describe('executive dashboard query and grants', () => {
       });
     }
 
-    expect(() => resolveAdminDashboardGrant('not-allowed@example.com', 'centurion')).toThrowError(
-      TRPCError,
-    );
+    expect(() =>
+      resolveAdminDashboardGrant('new-pilot-user@example.com', 'centurion'),
+    ).not.toThrow();
   });
 
-  it('rejects an unauthorized dashboard caller before resolving the database', async () => {
+  it('rejects a caller without an authenticated identity before resolving the database', async () => {
     const caller = appRouter.createCaller({
       auth: null as never,
       reqHeaders: new Headers(),
-      sessionUser: { id: 'u10a-unauthorized', email: 'not-allowed@example.com', name: null },
+      sessionUser: { id: 'u10a-unauthorized', email: '', name: null },
     });
     await expect(caller.adminDashboard.getMetrics({ operation: 'export' })).rejects.toMatchObject({
       code: 'FORBIDDEN',
@@ -138,6 +137,111 @@ describe('executive dashboard query and grants', () => {
 // and fails closed before Vitest if the profile is missing.
 if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_URL) {
   describe('executive dashboard bounded query (disposable DB)', () => {
+    it('marks request metrics unavailable when the baseline population exceeds the bounded loader cap', async () => {
+      const query = resolveExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          windowStart: '2026-09-01T00:00:00.000Z',
+          windowEnd: '2026-09-08T00:00:00.000Z',
+          observationCutoff: '2026-09-08T12:00:00.000Z',
+        },
+        new Date('2026-09-08T12:00:00.000Z'),
+      );
+      const result = await withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        try {
+          const threadId = 'u12-dashboard-over-cap-thread';
+          const threadAt = new Date('2026-09-02T09:00:00.000Z');
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: 'transport-centurion',
+            threadRootId: `${threadId}-root`,
+            subject: 'u12 over-cap fixture',
+            snippet: 'u12 over-cap fixture',
+            createdAt: threadAt,
+            updatedAt: threadAt,
+            latestMessageAt: threadAt,
+          });
+
+          const evidence = Array.from({ length: 10_001 }, (_, index): MailBaselineEvidence => {
+            const eventAt = new Date(threadAt.getTime() + index * 1000).toISOString();
+            return {
+              id: `u12-over-cap-evidence-${index}`,
+              requestId: `u12-over-cap-request-${index}`,
+              askId: `u12-over-cap-ask-${index}`,
+              threadId,
+              transportId: 'transport-centurion',
+              eventType: 'ask',
+              direction: 'inbound',
+              eventAt,
+              observedAt: eventAt,
+              source: 'mail_event',
+              sourceBasis: 'source_event',
+              requiresHotelResponse: true,
+              requiresCustomerInformation: false,
+              answerState: null,
+              workState: 'open',
+              substantive: false,
+              linkStrength: 'header',
+              delivery: null,
+              factKey: `u12-over-cap-fact-${index}`,
+            };
+          });
+          for (let offset = 0; offset < evidence.length; offset += 400) {
+            await persistMailBaselineProjection(db, {
+              transportId: 'transport-centurion',
+              threadId,
+              generationId: 'u12-over-cap-generation',
+              sourceVintage: 'u12-over-cap-vintage',
+              interpretationVersion: 'mail-baseline-interpretation-v1',
+              observationCutoff: query.observationCutoff,
+              evidence: evidence.slice(offset, offset + 400),
+            });
+          }
+
+          const loaded = await loadAdminDashboardMetrics(query);
+          const caller = appRouter.createCaller({
+            auth: null as never,
+            reqHeaders: new Headers(),
+            sessionUser: {
+              id: 'u12-over-cap-viewer',
+              email: 'ropperman@legacyhotels.co.za',
+              name: null,
+            },
+          });
+          const exported = await caller.adminDashboard.getMetrics({
+            cohortId: query.cohortId,
+            window: query.window,
+            windowStart: query.windowStart,
+            windowEnd: query.windowEnd,
+            observationCutoff: query.observationCutoff,
+            operation: 'export',
+          });
+          return { loaded, exported };
+        } finally {
+          __setDbForTests(null);
+        }
+      });
+
+      expect(result.loaded.conversations.bucketTotals).toMatchObject({
+        value: null,
+        availability: 'unavailable',
+        availabilityReason: 'request_projection_unavailable',
+      });
+      expect(result.loaded.service.firstUsefulReply).toMatchObject({
+        value: null,
+        availability: 'unavailable',
+        availabilityReason: 'request_projection_unavailable',
+      });
+      expect(
+        (
+          result.exported as {
+            buckets: Record<string, { value: number | null; availability: string }>;
+          }
+        ).buckets.answered,
+      ).toMatchObject({ value: null, availability: 'unavailable' });
+    }, 60000);
+
     const coverageEvidence = (threadId: string): MailBaselineEvidence[] => [
       {
         id: `u2-second-coverage-ask-${threadId}`,

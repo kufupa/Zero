@@ -532,11 +532,13 @@ test('reservation-tools-pilot/dashboard/mobile', async ({ page, browser }, testI
   const authPage = await context.newPage();
   const authRequests = () => authPage.evaluate(() => window.__reservationToolsPilotRequests ?? []);
   await authPage.goto(dashboardUrl('unauthorized'), { waitUntil: 'domcontentloaded' });
-  await expect(authPage).toHaveURL(/\/settings\/general/);
+  // This fixture supplies an authenticated but otherwise arbitrary email. All
+  // current authenticated users receive the same configured dashboard grant.
+  await expectDashboardReady(authPage);
   const deniedRequests = await authRequests();
   expect(
     deniedRequests.some((request) => request.path.endsWith('/api/trpc/adminDashboard.getMetrics')),
-  ).toBe(false);
+  ).toBe(true);
   await context.close();
 
   expectTouchTargetBoxes([

@@ -1,7 +1,4 @@
-/**
- * Server allowlist for admin dashboard metrics.
- * Keep in sync with apps/mail/lib/admin-dashboard/access.ts ALLOWED_ADMIN_EMAILS.
- */
+/** Server access guard for the configured executive dashboard metrics. */
 import { TRPCError } from '@trpc/server';
 
 export type AdminDashboardCohort = 'centurion' | 'research';
@@ -15,25 +12,18 @@ export type AdminDashboardGrant = {
   export: boolean;
 };
 
-export const ADMIN_DASHBOARD_ALLOWED_EMAILS = [
-  'navaai@legacyhotels.co.za',
-  'ropperman@legacyhotels.co.za',
-  'dbezuidenhout@legacyhotels.co.za',
-] as const;
-
 /**
- * Every configured pilot dashboard user receives the same configured cohort
+ * Every authenticated application user receives the same configured cohort
  * tools/data grant. There are no staff/finance or per-cohort user sub-roles;
- * tenant/source boundaries remain enforced by the selected cohort itself.
+ * authentication, tenant/source boundaries, and the selected cohort remain
+ * enforced by their existing callers and query scope.
  */
 function normalizeEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
 }
 
 export function isAdminDashboardEmail(email: string | null | undefined): boolean {
-  const normalized = normalizeEmail(email);
-  if (!normalized) return false;
-  return (ADMIN_DASHBOARD_ALLOWED_EMAILS as readonly string[]).includes(normalized);
+  return normalizeEmail(email).length > 0;
 }
 
 export function resolveAdminDashboardGrant(

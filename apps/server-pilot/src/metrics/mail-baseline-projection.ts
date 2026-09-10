@@ -155,10 +155,17 @@ export type MailBaselineProjectionQuery = {
   limit?: number;
 };
 
-/** Bounded, body-free projection read used by dashboard queries. */
-export async function queryMailBaselineProjection(
+export const MAIL_BASELINE_PROJECTION_QUERY_CAP = 10_000;
+
+export type MailBaselineProjectionPage = {
+  rows: MailBaselineProjectionRow[];
+  hasMore: boolean;
+};
+
+async function selectMailBaselineProjectionRows(
   db: DB = getDb(),
   query: MailBaselineProjectionQuery,
+  limit: number,
 ): Promise<MailBaselineProjectionRow[]> {
   const cutoff = asDate(query.observationCutoff);
   if (!cutoff) throw new Error('mail baseline query cutoff must be a valid instant');
@@ -176,13 +183,36 @@ export async function queryMailBaselineProjection(
     conditions.push(
       or(isNull(mailBaselineProjection.eventAt), gt(mailBaselineProjection.eventAt, since)),
     );
-  const limit = Math.min(Math.max(query.limit ?? 2000, 1), 10_000);
   return db
     .select()
     .from(mailBaselineProjection)
     .where(and(...conditions))
     .orderBy(asc(mailBaselineProjection.eventAt), asc(mailBaselineProjection.id))
     .limit(limit);
+}
+
+/**
+ * Read a bounded page plus one lookahead row so callers can distinguish a
+ * complete population from a prefix that reached the safety cap.
+ */
+export async function queryMailBaselineProjectionPage(
+  db: DB = getDb(),
+  query: MailBaselineProjectionQuery,
+): Promise<MailBaselineProjectionPage> {
+  const limit = Math.min(Math.max(query.limit ?? 2000, 1), MAIL_BASELINE_PROJECTION_QUERY_CAP);
+  const rows = await selectMailBaselineProjectionRows(db, query, limit + 1);
+  return {
+    rows: rows.slice(0, limit),
+    hasMore: rows.length > limit,
+  };
+}
+
+/** Bounded, body-free projection read used by non-paginated consumers. */
+export async function queryMailBaselineProjection(
+  db: DB = getDb(),
+  query: MailBaselineProjectionQuery,
+): Promise<MailBaselineProjectionRow[]> {
+  return (await queryMailBaselineProjectionPage(db, query)).rows;
 }
 
 /**

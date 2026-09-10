@@ -11,6 +11,11 @@ import {
   type AdminDashboardGrant,
 } from '../../metrics/admin-dashboard-access.js';
 import {
+  MAIL_BASELINE_PROJECTION_QUERY_CAP,
+  queryMailBaselineProjectionPage,
+  reduceProjectedMailBaseline,
+} from '../../metrics/mail-baseline-repository.js';
+import {
   mailCategory,
   mailThread,
   mailThreadCategory,
@@ -22,10 +27,6 @@ import {
   parseMailboxMeasurementConfig,
   type MailboxMeasurementConfig,
 } from '../../metrics/mail-measurement-config.js';
-import {
-  queryMailBaselineProjection,
-  reduceProjectedMailBaseline,
-} from '../../metrics/mail-baseline-repository.js';
 import { loadShadowScorecard, SHADOW_EVALUATION_MODE } from '../../ai/shadow-evaluation.js';
 import { serializeAdminDashboardExport } from '../../metrics/admin-dashboard-export.js';
 import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
@@ -421,13 +422,14 @@ export async function loadAdminDashboardMetrics(
   const measurementConfig: MailboxMeasurementConfig | null = parseMailboxMeasurementConfig(
     process.env.MAIL_MEASUREMENT_CONFIG_JSON,
   );
-  const projectionRows = await queryMailBaselineProjection(db, {
+  const projectionPage = await queryMailBaselineProjectionPage(db, {
     transportIds: selectedTransportIds,
     observationCutoff: new Date(query.observationCutoff),
     // No lower bound is applied: pre-T0 rows are retained so the reducer can
     // expose left-censored backlog instead of silently treating it as new.
-    limit: 10_000,
+    limit: MAIL_BASELINE_PROJECTION_QUERY_CAP,
   });
+  const projectionRows = projectionPage.rows;
   const projectionsByScope = new Map<string, typeof projectionRows>();
   for (const row of projectionRows) {
     const key = `${row.transportId}:${row.threadId}`;
@@ -435,21 +437,23 @@ export async function loadAdminDashboardMetrics(
     scoped.push(row);
     projectionsByScope.set(key, scoped);
   }
-  const requestBaselines = [...projectionsByScope.values()].map((rows) => {
-    const first = rows[0]!;
-    const sourceVintage =
-      rows
-        .map((row) => row.sourceVintage)
-        .sort()
-        .at(-1) ?? first.sourceVintage;
-    return reduceProjectedMailBaseline(rows, {
-      transportId: first.transportId,
-      threadId: first.threadId,
-      observationCutoff: query.observationCutoff,
-      sourceVintage,
-      interpretationVersion: first.interpretationVersion,
-    });
-  });
+  const requestBaselines = projectionPage.hasMore
+    ? []
+    : [...projectionsByScope.values()].map((rows) => {
+        const first = rows[0]!;
+        const sourceVintage =
+          rows
+            .map((row) => row.sourceVintage)
+            .sort()
+            .at(-1) ?? first.sourceVintage;
+        return reduceProjectedMailBaseline(rows, {
+          transportId: first.transportId,
+          threadId: first.threadId,
+          observationCutoff: query.observationCutoff,
+          sourceVintage,
+          interpretationVersion: first.interpretationVersion,
+        });
+      });
   const aggregate = aggregateAdminDashboardMetrics({
     cohortId: query.cohortId,
     observationCutoff: new Date(query.observationCutoff),

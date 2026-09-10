@@ -9,9 +9,9 @@ import type {
 import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
 import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { normalizeAdminDashboardSelection } from '@/lib/admin-dashboard/types';
 import { downloadAdminDashboardExport } from '@/lib/admin-dashboard/export';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useTRPC } from '@/providers/query-provider';
@@ -165,16 +165,64 @@ export function useAdminDashboardExport(queryInput?: AdminDashboardQueryInput): 
   const canAccess = isAdminDashboardEnabled(session);
   const demoMode = isFrontendOnlyDemo();
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const cacheScope = useSyncExternalStore(
+    subscribeMailCacheScope,
+    getMailCacheScope,
+    getMailCacheScope,
+  );
+  const viewerScopeKey = JSON.stringify({
+    sessionUserId: session?.user?.id ?? null,
+    cacheUserId: cacheScope.userId,
+    activeTransportId: cacheScope.activeTransportId,
+  });
+  const requestedSelection = normalizeAdminDashboardSelection(queryInput);
   const exportInput = { ...queryInput, operation: 'export' as const };
   const exportQueryOptions = trpc.adminDashboard.getMetrics.queryOptions(exportInput, {
     enabled: false,
   });
-  const exportQuery = useQuery({ ...exportQueryOptions });
+  const exportQueryKey = [
+    ...(exportQueryOptions.queryKey as readonly unknown[]),
+    ADMIN_DASHBOARD_REPORT_VERSION,
+    viewerScopeKey,
+  ] as typeof exportQueryOptions.queryKey;
+  const exportQuery = useQuery({ ...exportQueryOptions, queryKey: exportQueryKey });
+  const clearCachedExport = () => {
+    queryClient.removeQueries({ queryKey: exportQueryKey, exact: true });
+  };
   const download = async (): Promise<boolean> => {
     if (demoMode || !canAccess || isSessionLoading || isSessionError) return false;
-    const result = await exportQuery.refetch();
+    let result: Awaited<ReturnType<typeof exportQuery.refetch>>;
+    try {
+      result = await exportQuery.refetch();
+    } catch {
+      clearCachedExport();
+      return false;
+    }
     const payload = result.data as AdminDashboardExport | undefined;
-    if (!payload || payload.schemaVersion !== 'admin-dashboard-export-v1') return false;
+    const payloadQuery = payload?.query;
+    const queryMatchesSelection =
+      payloadQuery !== undefined &&
+      payloadQuery.cohortId === requestedSelection.cohortId &&
+      payloadQuery.window === requestedSelection.window &&
+      (requestedSelection.observationCutoff === undefined ||
+        payloadQuery.observationCutoff === requestedSelection.observationCutoff);
+    const scopeStillMatches =
+      JSON.stringify({
+        sessionUserId: session?.user?.id ?? null,
+        cacheUserId: getMailCacheScope().userId,
+        activeTransportId: getMailCacheScope().activeTransportId,
+      }) === viewerScopeKey;
+    if (
+      result.isError ||
+      !payload ||
+      payload.schemaVersion !== 'admin-dashboard-export-v1' ||
+      !queryMatchesSelection ||
+      !scopeStillMatches
+    ) {
+      clearCachedExport();
+      return false;
+    }
     downloadAdminDashboardExport(payload);
     return true;
   };
