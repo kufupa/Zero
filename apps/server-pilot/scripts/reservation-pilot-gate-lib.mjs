@@ -324,6 +324,9 @@ function digestInputs(manifest) {
       ...(source.inputDigestSetHash ? { inputDigestSetHash: source.inputDigestSetHash } : {}),
       ...(source.canonicalMap ? { canonicalMap: source.canonicalMap } : {}),
       ...(source.pointerDigests ? { pointerDigests: source.pointerDigests } : {}),
+      ...(source.sourceVintage ? { sourceVintage: source.sourceVintage } : {}),
+      ...(source.modeContract ? { modeContract: source.modeContract } : {}),
+      ...(manifest.runId ? { runId: manifest.runId } : {}),
       ...(manifest.partitionSummary ? { partitionSummary: manifest.partitionSummary } : {}),
       browserSafety: manifest.browserSafety,
     },
@@ -491,6 +494,94 @@ function normalizeOpaqueReference(value) {
   return typeof value === 'string' ? value.trim().replace(/^<|>$/g, '').toLowerCase() : '';
 }
 
+function normalizeOpaqueReferences(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map(normalizeOpaqueReference).filter(Boolean))];
+}
+
+function normalizePrivateDirection(value) {
+  if (typeof value !== 'string') return 'unknown';
+  const direction = value.trim().toLowerCase();
+  if (['inbound', 'incoming', 'in'].includes(direction)) return 'inbound';
+  if (['outbound', 'outgoing', 'out'].includes(direction)) return 'outbound';
+  return 'unknown';
+}
+
+function parsePrivateTimestamp(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+/**
+ * Evaluate the pinned, metadata-only horizon for one joined pointer. This
+ * deliberately returns states and counts, never source IDs, subjects, or
+ * message bodies. A prereply is verified only when an inbound context row is
+ * on the same source thread, strictly before the target, and contains one of
+ * the target's independently pinned RFC references.
+ */
+function evaluatePrivatePreReplyEvidence(pointer, external) {
+  const targetTime = parsePrivateTimestamp(pointer?.sent);
+  const targetThread = pointer?.source_thread_id;
+  const references = normalizeOpaqueReferences(pointer?.rfc_message_id);
+  const contexts = Array.isArray(pointer?.pre_reply_local_context)
+    ? pointer.pre_reply_local_context
+    : [];
+  const earlierSameThread = contexts.filter((context) => {
+    const contextTime = parsePrivateTimestamp(context?.sent);
+    return (
+      contextTime !== null &&
+      targetTime !== null &&
+      contextTime < targetTime &&
+      typeof targetThread === 'string' &&
+      targetThread.length > 0 &&
+      context?.thread_id === targetThread
+    );
+  });
+  const inboundEarlier = earlierSameThread.filter(
+    (context) => normalizePrivateDirection(context?.direction) === 'inbound',
+  );
+  const referencedInboundEarlier = inboundEarlier.find((context) =>
+    references.includes(normalizeOpaqueReference(context?.message_id)),
+  );
+  const sourceDirection = normalizePrivateDirection(
+    external?.direction ?? external?.physical_direction ?? pointer?.direction,
+  );
+  let preReplyReason;
+  if (sourceDirection !== 'inbound') {
+    preReplyReason = sourceDirection === 'unknown' ? 'source-direction-missing' : 'wrong-direction';
+  } else if (contexts.length === 0) {
+    preReplyReason = 'missing-context';
+  } else if (inboundEarlier.length === 0) {
+    preReplyReason = 'late-or-no-prereply';
+  } else if (!referencedInboundEarlier) {
+    preReplyReason = 'ref-not-in-prereply';
+  } else {
+    preReplyReason = 'verified';
+  }
+  return {
+    sourceDirection,
+    preReplyTimeBinding:
+      inboundEarlier.length > 0 ? 'verified' : contexts.length > 0 ? 'not-proven' : 'missing',
+    preReplyReferenceBinding: referencedInboundEarlier
+      ? 'verified'
+      : references.length > 0
+        ? 'not-proven'
+        : 'missing',
+    preReplyReason,
+    preReplyContextDigest: contexts.length
+      ? digest(
+          contexts.map((context) => ({
+            direction: normalizePrivateDirection(context?.direction),
+            message: normalizeOpaqueReference(context?.message_id),
+            sent: context?.sent ?? null,
+            thread: normalizeOpaqueReference(context?.thread_id),
+          })),
+        )
+      : null,
+  };
+}
+
 /**
  * Join the map to independently pinned pointer metadata. The return value is
  * receipt-safe: only array position and one-way digests leave this function.
@@ -546,11 +637,12 @@ export function joinPrivateQualificationPointers({
         : 'not-proven';
     const referenceBinding =
       external &&
-      normalizeOpaqueReference(pointer?.rfc_message_id) &&
-      normalizeOpaqueReference(pointer.rfc_message_id) ===
-        normalizeOpaqueReference(external.message_id)
+      normalizeOpaqueReferences(pointer?.rfc_message_id).includes(
+        normalizeOpaqueReference(external.message_id),
+      )
         ? 'verified'
         : 'not-proven';
+    const preReply = evaluatePrivatePreReplyEvidence(pointer, external);
     const conversationBasis =
       sourceThreadBinding === 'verified' && sourceMessageBinding === 'verified'
         ? 'verified-thread'
@@ -573,6 +665,7 @@ export function joinPrivateQualificationPointers({
       sourceMessageBinding,
       sourceThreadBinding,
       referenceBinding,
+      ...preReply,
       conversationBasis,
       sourceEvidence,
       sourceMessageDigest: pointer?.source_message_id
@@ -664,6 +757,103 @@ function writeQualificationJson(target, value) {
   writeFileSync(target, `${canonicalJson(value)}\n`, { encoding: 'utf8', flag: 'wx' });
 }
 
+const PRIVATE_SEAL_OUTPUT_CONTRACT = Object.freeze([
+  'manifest.json',
+  'aggregate.json',
+  'receipt.json',
+  'seal.json',
+]);
+
+export function privateQualificationManifestDigest(manifest) {
+  return sha256Bytes(Buffer.from(`${canonicalJson(manifest)}\n`, 'utf8'));
+}
+
+function privateQualificationSchemaVersion(manifest) {
+  if (manifest?.schemaVersion === 'u11-private-qualification.v3') return 'v3';
+  if (manifest?.schemaVersion === 'u11-private-qualification.v2') return 'v2';
+  throw new Error('private qualification seal requires a v2 or v3 manifest');
+}
+
+function assertPrivateQualificationSealPayload({ runId, manifest, aggregate, receipt }) {
+  const version = privateQualificationSchemaVersion(manifest);
+  const manifestDigest = privateQualificationManifestDigest(manifest);
+  const expectedInputDigestSetHash = manifest.source?.inputDigestSetHash;
+  const expectedOutputContract = PRIVATE_SEAL_OUTPUT_CONTRACT;
+  if (manifest.runId !== runId) throw new Error('private qualification manifest run ID mismatch');
+  if (!aggregate || typeof aggregate !== 'object' || Array.isArray(aggregate)) {
+    throw new Error('private qualification aggregate contract is required');
+  }
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    throw new Error('private qualification receipt contract is required');
+  }
+  if (aggregate.schemaVersion !== `u11-private-qualification.aggregate.${version}`) {
+    throw new Error('private qualification aggregate schema does not match the manifest');
+  }
+  if (receipt.schemaVersion !== `u11-private-qualification.receipt.${version}`) {
+    throw new Error('private qualification receipt schema does not match the manifest');
+  }
+  if (aggregate.runId !== runId || receipt.runId !== runId) {
+    throw new Error('private qualification aggregate/receipt run ID mismatch');
+  }
+  if (aggregate.manifestDigest !== manifestDigest || receipt.manifestDigest !== manifestDigest) {
+    throw new Error('private qualification aggregate/receipt manifest digest mismatch');
+  }
+  if (
+    aggregate.inputDigestSetHash !== expectedInputDigestSetHash ||
+    receipt.inputDigestSetHash !== expectedInputDigestSetHash
+  ) {
+    throw new Error('private qualification aggregate/receipt input digest mismatch');
+  }
+  if (
+    !aggregate.counts ||
+    typeof aggregate.counts !== 'object' ||
+    Array.isArray(aggregate.counts)
+  ) {
+    throw new Error('private qualification aggregate counts are required');
+  }
+  if (!receipt.counts || typeof receipt.counts !== 'object' || Array.isArray(receipt.counts)) {
+    throw new Error('private qualification receipt counts are required');
+  }
+  for (const key of ['mapRecords', 'runnable', 'notRunnable', 'unscorable']) {
+    if (
+      aggregate.counts[key] !== manifest.counts[key] ||
+      receipt.counts[key] !== manifest.counts[key]
+    ) {
+      throw new Error(`private qualification ${key} count does not match the manifest`);
+    }
+  }
+  if (canonicalJson(receipt.counts) !== canonicalJson(aggregate.counts)) {
+    throw new Error('private qualification aggregate/receipt counts mismatch');
+  }
+  if (canonicalJson(aggregate.outputContract) !== canonicalJson(expectedOutputContract)) {
+    throw new Error('private qualification aggregate output contract is incomplete');
+  }
+  if (canonicalJson(receipt.outputContract) !== canonicalJson(expectedOutputContract)) {
+    throw new Error('private qualification receipt output contract is incomplete');
+  }
+  if (
+    !receipt.inputByteHashes ||
+    typeof receipt.inputByteHashes !== 'object' ||
+    canonicalJson(receipt.inputByteHashes) !==
+      canonicalJson({
+        canonicalMap: manifest.source.canonicalMap,
+        pointers: manifest.source.pointerDigests,
+      })
+  ) {
+    throw new Error('private qualification receipt input byte hashes do not match the manifest');
+  }
+  if (receipt.targetOutcomeProcessing !== false || receipt.liveCapabilityClaim !== false) {
+    throw new Error('private qualification receipt outcome/capability boundary drift');
+  }
+  if (aggregate.targetOutcomeProcessing !== false || aggregate.liveCapabilityClaim !== false) {
+    throw new Error('private qualification aggregate outcome/capability boundary drift');
+  }
+  if (typeof receipt.verifyCommand !== 'string' || receipt.verifyCommand.length === 0) {
+    throw new Error('private qualification receipt verify command is required');
+  }
+  return { version, manifestDigest };
+}
+
 /** Atomically publish a versioned, immutable qualification run. */
 export function publishPrivateQualificationSeal({ root, runId, manifest, aggregate, receipt }) {
   const paths = privateRunPath(root, runId);
@@ -671,10 +861,25 @@ export function publishPrivateQualificationSeal({ root, runId, manifest, aggrega
     throw new Error(`private qualification run already exists: ${runId}`);
   if (existsSync(paths.temporary))
     throw new Error(`private qualification temporary run already exists: ${runId}`);
-  if (!manifest || manifest.schemaVersion !== 'u11-private-qualification.v2') {
-    throw new Error('private qualification v2 manifest is required for sealing');
+  if (
+    !manifest ||
+    !['u11-private-qualification.v2', 'u11-private-qualification.v3'].includes(
+      manifest.schemaVersion,
+    )
+  ) {
+    throw new Error('private qualification v2 or v3 manifest is required for sealing');
   }
-  assertPrivateQualificationV2Manifest(manifest);
+  if (manifest.schemaVersion === 'u11-private-qualification.v3') {
+    assertPrivateQualificationV3Manifest(manifest);
+  } else {
+    assertPrivateQualificationV2Manifest(manifest);
+  }
+  const { version } = assertPrivateQualificationSealPayload({
+    runId,
+    manifest,
+    aggregate,
+    receipt,
+  });
   mkdirSync(paths.resolvedRoot, { recursive: true });
   mkdirSync(paths.temporary, { recursive: false });
   try {
@@ -688,7 +893,7 @@ export function publishPrivateQualificationSeal({ root, runId, manifest, aggrega
       }),
     );
     const seal = {
-      schemaVersion: 'u11-private-seal.v2',
+      schemaVersion: `u11-private-seal.${version}`,
       runId,
       sealedAt: new Date().toISOString(),
       complete: true,
@@ -723,7 +928,7 @@ export function verifyPrivateQualificationSeal({
     throw new Error('private qualification seal is missing or invalid');
   }
   if (
-    seal?.schemaVersion !== 'u11-private-seal.v2' ||
+    !['u11-private-seal.v2', 'u11-private-seal.v3'].includes(seal?.schemaVersion) ||
     seal.runId !== runId ||
     seal.complete !== true ||
     typeof seal.sealedAt !== 'string'
@@ -731,6 +936,7 @@ export function verifyPrivateQualificationSeal({
     throw new Error('private qualification seal is incomplete or invalid');
   }
   const outputByteHashes = {};
+  const sealedJson = {};
   for (const name of ['manifest.json', 'aggregate.json', 'receipt.json']) {
     const target = qualificationFile(paths.target, name, `sealed ${name}`);
     const bytes = readFileSync(target);
@@ -739,7 +945,36 @@ export function verifyPrivateQualificationSeal({
       throw new Error(`sealed ${name} hash/integrity mismatch`);
     }
     outputByteHashes[name] = { bytes: bytes.length, sha256: sha256Bytes(bytes) };
+    try {
+      sealedJson[name] = JSON.parse(bytes.toString('utf8'));
+    } catch {
+      throw new Error(`sealed ${name} is not valid JSON`);
+    }
   }
+  const manifest = sealedJson['manifest.json'];
+  if (
+    !manifest ||
+    !['u11-private-qualification.v2', 'u11-private-qualification.v3'].includes(
+      manifest.schemaVersion,
+    )
+  ) {
+    throw new Error('sealed manifest schema is invalid');
+  }
+  const expectedSealSchema = `u11-private-seal.${privateQualificationSchemaVersion(manifest)}`;
+  if (seal.schemaVersion !== expectedSealSchema) {
+    throw new Error('private qualification seal schema does not match the manifest');
+  }
+  if (manifest.schemaVersion === 'u11-private-qualification.v3') {
+    assertPrivateQualificationV3Manifest(manifest);
+  } else {
+    assertPrivateQualificationV2Manifest(manifest);
+  }
+  assertPrivateQualificationSealPayload({
+    runId,
+    manifest,
+    aggregate: sealedJson['aggregate.json'],
+    receipt: sealedJson['receipt.json'],
+  });
   if (
     expectedInputDigestSetHash !== undefined &&
     seal.inputDigestSetHash !== expectedInputDigestSetHash
@@ -1123,12 +1358,14 @@ export function assertPrivateEvaluationManifest(manifest) {
  * bind source bytes, independent pointer joins, partition membership, and an
  * explicit unresolved/unassigned state.
  */
-export function assertPrivateQualificationV2Manifest(manifest) {
+export function assertPrivateQualificationV2Manifest(manifest, options = {}) {
+  const expectedSchema = options.schemaVersion ?? 'u11-private-qualification.v2';
+  const isV3 = expectedSchema === 'u11-private-qualification.v3';
   if (!manifest || manifest.fixtureKind !== 'private' || manifest.publicFixture !== false) {
     throw new Error('private qualification v2 contract required');
   }
-  if (manifest.schemaVersion !== 'u11-private-qualification.v2') {
-    throw new Error('unsupported private qualification v2 schema');
+  if (manifest.schemaVersion !== expectedSchema) {
+    throw new Error(`unsupported private qualification ${isV3 ? 'v3' : 'v2'} schema`);
   }
   const source = manifest.source;
   if (
@@ -1144,6 +1381,16 @@ export function assertPrivateQualificationV2Manifest(manifest) {
     source.pointerDigests.length !== 14
   ) {
     throw new Error('private v2 source digest set is incomplete');
+  }
+  const historicalSource = source.sourceVintage === 'historical-corpus-2026-09-07';
+  if (historicalSource && source.modeContract !== 'historical-replay-only') {
+    throw new Error('historical source-vintage requires the historical-replay-only mode contract');
+  }
+  if (
+    isV3 &&
+    (manifest.runId === undefined || source.sourceVintage !== 'historical-corpus-2026-09-07')
+  ) {
+    throw new Error('private v3 requires a historical source vintage and run ID');
   }
   const pointerNames = new Set();
   const pointerPaths = new Set([source.canonicalMap.path]);
@@ -1247,6 +1494,9 @@ export function assertPrivateQualificationV2Manifest(manifest) {
     ids.add(pilotCase.id);
     if (!ALLOWED_MODES.has(pilotCase.evaluationMode))
       throw new Error('unknown private v2 evaluation mode');
+    if (historicalSource && pilotCase.evaluationMode !== 'historical-replay') {
+      throw new Error('historical source-vintage cannot use current-state or future-shadow mode');
+    }
     if (!['runnable', 'not-runnable', 'unscorable'].includes(pilotCase.selectionStatus)) {
       throw new Error('unknown private v2 selection status');
     }
@@ -1266,6 +1516,28 @@ export function assertPrivateQualificationV2Manifest(manifest) {
     ]) {
       if (!PRIVATE_QUALIFICATION_STATES.has(qualification[key])) {
         throw new Error(`private v2 source qualification ${key} is invalid for ${pilotCase.id}`);
+      }
+    }
+    if (isV3) {
+      for (const key of ['reference', 'preReplyTime', 'preReplyReference']) {
+        if (!PRIVATE_QUALIFICATION_STATES.has(qualification[key])) {
+          throw new Error(`private v3 source qualification ${key} is invalid for ${pilotCase.id}`);
+        }
+      }
+      if (!['inbound', 'outbound', 'unknown'].includes(qualification.sourceDirection)) {
+        throw new Error(`private v3 source direction is invalid for ${pilotCase.id}`);
+      }
+      if (
+        ![
+          'verified',
+          'wrong-direction',
+          'missing-context',
+          'late-or-no-prereply',
+          'ref-not-in-prereply',
+          'source-direction-missing',
+        ].includes(qualification.preReplyReason)
+      ) {
+        throw new Error(`private v3 prereply reason is invalid for ${pilotCase.id}`);
       }
     }
     if (pilotCase.conversationBasis === 'verified-thread') {
@@ -1298,9 +1570,20 @@ export function assertPrivateQualificationV2Manifest(manifest) {
           qualification.legitimateInboundBeforeTarget,
           qualification.sourceBinding,
           qualification.permission,
+          ...(isV3
+            ? [qualification.reference, qualification.preReplyTime, qualification.preReplyReference]
+            : []),
         ].some((state) => state !== 'verified')
       ) {
         throw new Error(`runnable private v2 case has unverified qualification ${pilotCase.id}`);
+      }
+      if (
+        isV3 &&
+        (qualification.sourceDirection !== 'inbound' || qualification.preReplyReason !== 'verified')
+      ) {
+        throw new Error(
+          `runnable private v3 case lacks verified inbound prereply evidence ${pilotCase.id}`,
+        );
       }
     }
     if (
@@ -1349,6 +1632,12 @@ export function assertPrivateQualificationV2Manifest(manifest) {
   return true;
 }
 
+export function assertPrivateQualificationV3Manifest(manifest) {
+  return assertPrivateQualificationV2Manifest(manifest, {
+    schemaVersion: 'u11-private-qualification.v3',
+  });
+}
+
 function hasBlockedFieldOutcome(pilotCase) {
   return Object.values(pilotCase.fieldOutcomes ?? {}).some((outcome) =>
     BLOCKED_OUTCOMES.has(outcome),
@@ -1361,6 +1650,7 @@ function isEligibleEvaluationCase(pilotCase) {
 
 export function createEvaluationSession(manifest, options = {}) {
   if (options.contract === 'private') assertPrivateEvaluationManifest(manifest);
+  else if (options.contract === 'private-v3') assertPrivateQualificationV3Manifest(manifest);
   else assertManifestContract(manifest);
   let current = clone(manifest);
   const frozenMembership = new Map(
@@ -1400,6 +1690,14 @@ export function createEvaluationSession(manifest, options = {}) {
     },
     aggregate(evaluationMode, split = 'development') {
       if (!ALLOWED_MODES.has(evaluationMode)) throw new Error('unknown evaluation mode');
+      if (
+        current.source?.modeContract === 'historical-replay-only' &&
+        evaluationMode !== 'historical-replay'
+      ) {
+        throw new Error(
+          'historical source-vintage cannot aggregate outside historical-replay mode',
+        );
+      }
       if (split !== 'development') {
         throw new Error('holdout outcomes cannot be aggregated into a release score');
       }

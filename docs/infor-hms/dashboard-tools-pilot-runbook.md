@@ -126,19 +126,20 @@ and U5 PMS-to-prepared remains incomplete and PARKED LOCAL/advisory-used.
 
 ### Kill-switch, rollback, and limitations
 
-The v2 qualifier is a one-shot local Node process with no daemon, model,
+The v3 qualifier is a one-shot local Node process with no daemon, model,
 network, PMS, mail, registry, or production-write path. Stop an in-progress
 `build` or `verify` with `Ctrl-C`; publication occurs only after all four files
-and hashes validate. An existing sealed run ID is refused, and an interrupted
-build cannot replace the historical v1 outputs. Preserve any exact `.tmp`
+and semantic contracts/hashes validate. An existing sealed run ID is refused,
+and an interrupted build cannot replace the historical v1/v2 outputs. Preserve any exact `.tmp`
 directory for review rather than broad-cleaning it. The local kill switch is
 therefore process termination; there is no live activation to disable.
 
-Rollback means retaining the immutable v2 receipt and stopping the local gate;
-no production or remote state was changed. Do not delete or rerun the v1 helper
-or overwrite its archived outputs. This handoff proves byte integrity,
-metadata joins, partition nesting, and privacy/holdout boundaries only. It does
-not prove same-request eligibility, a runnable holdout, live runtime authority,
+Rollback means retaining the immutable v3 receipt and stopping the local gate;
+no production or remote state was changed. Do not delete, rerun, or overwrite
+the v1/v2 helpers, their sealed outputs, or their archives. This handoff proves
+byte and semantic seal integrity, metadata joins, partition nesting, and
+privacy/holdout boundaries only. It does not prove same-request eligibility, a
+runnable holdout, live runtime authority,
 PMS-positive preparation, model quality, mail delivery, login authentication,
 or remote activation. Remote live enablement remains unknown; the diagnosed
 installed `asm-exec` pin mismatch is a separate read-authority limitation.
@@ -156,18 +157,20 @@ env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=test CI=1 \
   AWS_EC2_METADATA_DISABLED=1 \
   bash apps/server-pilot/scripts/reservation-pilot-gate.sh unit gate
 
-# One-time private v2 pre-outcome publication; metadata-only, no model or target
-# body. Reusing this sealed run ID intentionally refuses to overwrite it.
+# One-time private v3 pre-outcome publication; metadata-only, no model or target
+# body. The sealed run ID intentionally refuses to overwrite an existing run.
 env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=test CI=1 \
   AWS_EC2_METADATA_DISABLED=1 \
-  node .private/centurion-dashboard-tools-execution/u11-private-qualification-v2.mjs \
-  build u11-v2-20260910-r2
+  node .private/centurion-dashboard-tools-execution/u11-private-qualification-v3.mjs \
+  build u11-v3-20260910-r2
 
-# Read-only verification; recomputes the pinned input digest-set and output hashes.
+# Read-only verification; recomputes the pinned input digest-set, semantic
+# cross-file contract, and output hashes. Use a new unique run ID for any
+# future build; never reuse the sealed ID above.
 env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=test CI=1 \
   AWS_EC2_METADATA_DISABLED=1 \
-  node .private/centurion-dashboard-tools-execution/u11-private-qualification-v2.mjs \
-  verify u11-v2-20260910-r2
+  node .private/centurion-dashboard-tools-execution/u11-private-qualification-v3.mjs \
+  verify u11-v3-20260910-r2
 
 # Sole DB runner; use the literal owned PG16 wrapper and no direct Vitest.
 sudo -n bash -c 'set -a; source /home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/.private/centurion-dashboard-tools-execution/pg16/disposable-postgres-connection.env; set +a; NAVA_TEST_DATABASE_PROFILE=pg16 CONFIRM_DISPOSABLE_TEST_DB=1 bash /home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/apps/server-pilot/scripts/reservation-pilot-gate.sh db integration'
@@ -243,6 +246,7 @@ git diff --check
 ### Exact receipts and artifact locations
 
 - Worker receipt and path map: `.private/centurion-dashboard-tools-execution/u11-final-report.md` (final `wc -l`: 250; report line-count receipt recorded at closure).
+- Third-repair writer unit receipt: the exact `bash apps/server-pilot/scripts/reservation-pilot-gate.sh unit gate` returned `PASS` and printed `/tmp/reservation-pilot-vitest.OV9Z5s.json` (the wrapper's transient report was consumed/removed after validation). The preserved causal RED is `/tmp/reservation-pilot-vitest.UQZKbc.json`; no root transient numeric receipt is attributed here.
 - DB proof: `reservation-pilot-gate: PASS mode=db slice=integration`; transient JSON is intentionally removed by the gate after the nonempty/non-skipped check.
 - Root post-format receipts are distinct from the writer's pre-format gates: unit gate `Dtpmdt` PASS, `db:integration` `tmNbq1` PASS, and post-format static checks PASS. The earlier writer browser/build receipts remain pre-format evidence; no repeat browser/build/DB run is claimed here.
 - Browser dashboard archive (2 selected tests): `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022555Z-u11-dashboard-pass/` (desktop/mobile screenshots, traces, videos, completion captures).
@@ -250,17 +254,18 @@ git diff --check
 - Browser pilot archive (1 selected test): `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022453Z-u11-pilot-pass/`; pre-run output: `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022307Z-u11-integrated/`.
 - Accepted boundaries: `.private/centurion-dashboard-tools-execution/u6-third-repair-review.md`, `.private/centurion-dashboard-tools-execution/u13-status-filter-review.md`, and `.private/centurion-dashboard-tools-execution/u5-advisory-review.md`. The superseded `u13-coverage-review.md` and `u5-advisory-repair-report.md` remain historical only.
 - Synthetic disposition source: `apps/server-pilot/tests/fixtures/reservation-tools-pilot.json` (`420/253/251`, `eligibleGoldCases=0`).
-- Private v2 qualification: `.private/centurion-dashboard-tools-execution/u11-private-qualification-v2/u11-v2-20260910-r2/{manifest.json,aggregate.json,receipt.json,seal.json}`; these contain hashed IDs, pinned source-pointer metadata, counts, field reasons, and byte hashes only. The sealed input digest-set is `sha256:0f5c581b2fa9db1b4de66323e0ed3f3a02ddf7cdb2e5c3a312ff4f0390f4b5f2`; verify-only recomputation passes. The superseded v2 `r1` and historical v1 paths remain preserved, with the `u11r1-private-freeze.I5cDLp` archive retained for review.
+- Private v3 qualification: `.private/centurion-dashboard-tools-execution/u11-private-qualification-v3/u11-v3-20260910-r2/{manifest.json,aggregate.json,receipt.json,seal.json}`; these contain hashed IDs, pinned source-pointer metadata, historical-replay mode, per-case reference/time/direction states, semantic counts, and byte hashes only. The sealed input digest-set is `sha256:0f5c581b2fa9db1b4de66323e0ed3f3a02ddf7cdb2e5c3a312ff4f0390f4b5f2`; verify-only recomputation passes. The intermediate v3 `r1`, superseded v2 `r2`, and historical v1 paths remain preserved in their named directories and `u11r2-private-freeze.ZZZWSZ`/`u11r1-private-freeze.I5cDLp` archives.
+- v3 immutable byte receipt (strict same-thread final): `manifest.json` `907657` bytes `sha256:3b0113178c70f1cf8fd98f0297cb17420ba710f23cf867daff0a31b7cc31b4b1`; `aggregate.json` `1815` bytes `sha256:12bef7815119950a4f92b93dc3f2f4a97610a6a2f68aff9d26b99e05b54fe909`; `receipt.json` `4107` bytes `sha256:747ee371b5a3740522fdbdbb2c1cdca34ad7933dff5fb8d528acff1d48ebb210`; `seal.json` `3694` bytes `sha256:aabf4e3e972996f9ce5ef6d8bfa6662c9b9d7d2159bca2725df40a9e30539a7a`. The manifest digest is `sha256:3b0113178c70f1cf8fd98f0297cb17420ba710f23cf867daff0a31b7cc31b4b1`; the exact read-only verifier is the v3 `verify u11-v3-20260910-r2` command above.
 
 ### Artifact ownership, access, and retention
 
-| Artifact family                                                             | Owner and scope                                                      | Privacy / fetch rule                                                                                                                                                                                                                | Retention and expiry                                                                                                                                                                |
-| --------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Dashboard/documents/pilot screenshots, traces, videos, and `.last-run.json` | Dashboard owner; private U11 reviewer/operator scope only.           | Fetch from the named private archive paths; do not copy cookies, response bodies, mailbox content, or credentials. Raw media fetch requires the existing `--confirm-sensitive` operator control.                                    | Existing browser/archive expiry applies; raw capture is subject to the operator runbook's short retention (24h for raw media). This checkout does not enforce local TTLs.           |
-| Unit/DB/build/static gate receipts                                          | Read-only toolkit owner; private reviewer scope.                     | Gate JSON is transient and consumed by the wrapper; retain only sanitized report counts and exact command/exit receipts. Never export DB URLs, rows, or raw fixture payloads.                                                       | Transient JSON is removed by the gate after validation; retained reports follow the private evidence policy. No local expiry job is asserted.                                       |
-| Private qualification manifest, aggregate, receipt, and seal                | Read-only toolkit/U1 qualification owner; private reviewer scope.    | Fetch only the four named v2 private paths. They contain hashed IDs, pinned source-pointer metadata, counts, hashes, and field reasons; no raw record, gold/target body, or target-only reference is fetched into tool/model input. | Proposed evaluation retention is 30 days after sealing, subject to policy; this checkout has no expiry enforcement. Preserve the sealed receipt until independent review completes. |
-| Phase B read operation receipts/artifacts                                   | Phase B read operator; authorized read-only operator/reviewer scope. | Use `status`, `artifacts --latest-usable`, and `fetch-artifact <uuid> receipt`; trace/video fetch requires `--confirm-sensitive`. Do not fetch raw media into reports.                                                              | Existing artifact controls and expiry apply; raw capture is 24h in the operator contract. Missing local proof is reported, not replaced.                                            |
-| Accepted U6/U13 and parked-U5 reviews                                       | Drafting/release owner; private reviewer scope.                      | Link the final U6/U13 and independent parked-U5 reports only; superseded reports are historical. No source corpus or credentials are copied.                                                                                        | Preserve immutable review receipts for the handoff; no local deletion or TTL enforcement is claimed.                                                                                |
+| Artifact family                                                             | Owner and scope                                                      | Privacy / fetch rule                                                                                                                                                                                                                                                       | Retention and expiry                                                                                                                                                                |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard/documents/pilot screenshots, traces, videos, and `.last-run.json` | Dashboard owner; private U11 reviewer/operator scope only.           | Fetch from the named private archive paths; do not copy cookies, response bodies, mailbox content, or credentials. Raw media fetch requires the existing `--confirm-sensitive` operator control.                                                                           | Existing browser/archive expiry applies; raw capture is subject to the operator runbook's short retention (24h for raw media). This checkout does not enforce local TTLs.           |
+| Unit/DB/build/static gate receipts                                          | Read-only toolkit owner; private reviewer scope.                     | Gate JSON is transient and consumed by the wrapper; retain only sanitized report counts and exact command/exit receipts. Never export DB URLs, rows, or raw fixture payloads.                                                                                              | Transient JSON is removed by the gate after validation; retained reports follow the private evidence policy. No local expiry job is asserted.                                       |
+| Private qualification manifest, aggregate, receipt, and seal                | Read-only toolkit/U1 qualification owner; private reviewer scope.    | Fetch only the four named v3 private paths. They contain hashed IDs, pinned source-pointer metadata, counts, hashes, mode/ref/time/direction states, and semantic seal fields; no raw record, gold/target body, or target-only reference is fetched into tool/model input. | Proposed evaluation retention is 30 days after sealing, subject to policy; this checkout has no expiry enforcement. Preserve the sealed receipt until independent review completes. |
+| Phase B read operation receipts/artifacts                                   | Phase B read operator; authorized read-only operator/reviewer scope. | Use `status`, `artifacts --latest-usable`, and `fetch-artifact <uuid> receipt`; trace/video fetch requires `--confirm-sensitive`. Do not fetch raw media into reports.                                                                                                     | Existing artifact controls and expiry apply; raw capture is 24h in the operator contract. Missing local proof is reported, not replaced.                                            |
+| Accepted U6/U13 and parked-U5 reviews                                       | Drafting/release owner; private reviewer scope.                      | Link the final U6/U13 and independent parked-U5 reports only; superseded reports are historical. No source corpus or credentials are copied.                                                                                                                               | Preserve immutable review receipts for the handoff; no local deletion or TTL enforcement is claimed.                                                                                |
 
 The owner labels are handoff ownership, not new permissions. All current
 authorized application users retain their configured tools/data; a private
@@ -289,18 +294,24 @@ claim:
   repair, choose a fixture, or trigger a retry. Once exposed, it retires to
   development/regression while preserving the original outcome and exposure.
 
-The v2 private qualification freezes 581 map members (420/253/251 distinctions
+The v3 private qualification freezes 581 map members (420/253/251 distinctions
 retained), with 440 unique fingerprint joins, 92 independently verified source
 threads, 489 unresolved/unassigned cases, 92 unscorable cases, 489
-not-runnable cases, and zero runnable cases. It therefore satisfies none of
-the fresh-run/family floors and does not establish real eligibility or Phase
-2/B readiness. Only the verified threads were assigned to development; no
-historical holdout membership was established, while unresolved rows remain
-unassigned. The later inbound-first `targetEpisodes >= 200` floor is a
-separate future holdout requirement, not a condition on historical development
-membership. The synthetic fixture's `eligibleGoldCases=0` remains a synthetic
-contract value, not the real-corpus result. The earlier v1 `581/579/2/0`
-receipt is historical and superseded, not reused as evidence.
+not-runnable cases, and zero runnable cases. Its metadata-only prereply
+classification records 72 strict earlier same-thread context candidates,
+zero pinned prereply-reference matches, 60 wrong-direction joins, 20
+reference-not-in-prereply joins, 12 missing-context inbound joins, and 489
+source-direction-missing unresolved rows. These are qualification states, not
+outcome results. The v3 source is explicitly historical-replay; current-state
+and future-shadow aggregation is rejected. It therefore satisfies none of the
+fresh-run/family floors and does not establish real eligibility or Phase 2/B
+readiness. Only verified threads were assigned to development; no historical
+holdout membership was established, while unresolved rows remain unassigned.
+The later inbound-first `targetEpisodes >= 200` floor is a separate future
+holdout requirement, not a condition on historical development membership. The
+synthetic fixture's `eligibleGoldCases=0` remains a synthetic contract value,
+not the real-corpus result. The earlier v1/v2 receipts are historical and
+superseded, not reused as evidence.
 
 ### Current readiness / Phase 2B read-only audit
 
@@ -394,31 +405,32 @@ reported separately as zero. The aggregate still reports zero runnable
 outcomes/full reply input sets.
 
 The initial bounded pass did not open the map records array or any gold/target
-body; the later v2 pass parsed only metadata fields (keys, counts, hashes,
-timestamps, and linkage) from the bounded source rows and the pinned map. The
-new deterministic private qualification helper
-`.private/centurion-dashboard-tools-execution/u11-private-qualification-v2.mjs`
-then emitted the immutable v2 pre-outcome manifest/aggregate/receipt/seal from
+body; the later qualification passes parsed only metadata fields (keys, counts,
+hashes, timestamps, direction, and linkage) from the bounded source rows and
+the pinned map. The new deterministic private qualification helper
+`.private/centurion-dashboard-tools-execution/u11-private-qualification-v3.mjs`
+then emitted the immutable v3 pre-outcome manifest/aggregate/receipt/seal from
 those bounded fields. Explicit existence checks for the bounded named paths
 `phase2b-manifest.json`, `phase2b-corpus-manifest.json`,
 `eligibility-manifest.json`, `holdout-freeze.json`, and `selection-freeze.json`
-were absent. The helper instead froze 581 hashed members, independently
-supported development conversation assignments, unresolved unassigned cases,
-explicit skip reasons, source qualification fields, mapping/selection hashes,
-evaluator-only target exposure, and blocked outcome semantics before outcomes.
-It recorded 440 unique fingerprint joins, 92 verified source threads, 489
-unresolved/unassigned cases, 489 not-runnable, 92 unscorable, and zero runnable
-cases; no historical holdout membership was established. The 200-episode
-inbound-first target is a separate future holdout floor with zero selected
-runnable episodes. This is a partial local qualification receipt, not an
-external blocker and not evidence that the real corpus is ineligible. It is
+were absent. The v3 helper instead froze 581 hashed members, historical-replay
+mode, independently supported development conversation assignments, unresolved
+unassigned cases, explicit per-case reference/time/direction reasons,
+mapping/selection hashes, evaluator-only target exposure, and blocked outcome
+semantics before outcomes. It recorded 440 unique fingerprint joins, 92
+verified source threads, 489 unresolved/unassigned cases, 489 not-runnable, 92
+unscorable, and zero runnable cases; no historical holdout membership was
+established. The 200-episode inbound-first target is a separate future holdout
+floor with zero selected runnable episodes. This is a partial local
+qualification receipt, not an external blocker and not evidence that the real
+corpus is ineligible. It is
 not inferred from the synthetic `eligibleGoldCases=0`.
 
 #### Phase 2B truth boundary
 
 The public manifest's synthetic `eligibleGoldCases=0` is not the eligibility
 result for the real 420 selected records. Its own contract records synthetic
-freeze/hash/held-out safeguards only. The v2 private receipt establishes
+freeze/hash/held-out safeguards only. The v3 private receipt establishes
 pre-outcome membership, hashed case IDs, independently supported development
 conversation assignments, unresolved unassigned cases, skip reasons, and
 selection/mapping hashes for the 581-row canonical map, while verified
@@ -448,18 +460,17 @@ metadata diagnosis, not a complete current/live Phase 2/B proof or a joined AI
 draft/approval/send journey. U5 remains PARKED LOCAL/advisory-used, and accepted
 U6/U13 evidence remains separate.
 
-### Final five-path edit inventory
+### Final third-repair edit inventory
 
-The final U11 branch edit inventory is exactly:
+The final bounded third-repair tracked edit inventory is exactly:
 
 1. `apps/server-pilot/scripts/reservation-pilot-gate-lib.mjs`
-2. `apps/server-pilot/scripts/reservation-pilot-gate.sh`
-3. `apps/server-pilot/tests/reservation-pilot-gate-dispatch.test.ts`
-4. `apps/server-pilot/tests/reservation-tools-pilot-integration.test.ts`
-5. `docs/infor-hms/dashboard-tools-pilot-runbook.md`
+2. `apps/server-pilot/tests/reservation-pilot-gate-dispatch.test.ts`
+3. `docs/infor-hms/dashboard-tools-pilot-runbook.md`
 
-The private report and archived receipts are ignored evidence, not branch
-edits; accepted U6/U13 source paths remain unchanged.
+The private v3 helper and sealed run are ignored evidence, not tracked branch
+edits; the earlier five-path integrated U11 inventory, accepted U6/U13 source
+paths, and frozen v1/v2 artifacts remain unchanged.
 
 ### Kill switch and rollback
 

@@ -108,6 +108,102 @@ function emptyPrivateV2Manifest(gate: any) {
   return manifest;
 }
 
+function historicalModeManifest(gate: any) {
+  const manifest = emptyPrivateV2Manifest(gate);
+  const record = { id: 'historical-case', cohort: 'later_snapshot_extension' };
+  const caseId = gate.hashOpaqueIdentifier(record.id);
+  manifest.runId = 'u11-mode-test';
+  manifest.source.sourceVintage = 'historical-corpus-2026-09-07';
+  manifest.source.modeContract = 'historical-replay-only';
+  manifest.partitionSummary = gate.derivePrivateQualificationPartitions([record]);
+  manifest.counts = {
+    mapRecords: 1,
+    original420: 0,
+    originalExternalMixedCandidates: 0,
+    originalOutboundExternalMixedCandidates: 0,
+    runnable: 0,
+    notRunnable: 1,
+    unscorable: 0,
+  };
+  manifest.cases = [
+    {
+      id: caseId,
+      conversationId: caseId,
+      evaluationMode: 'current-state',
+      split: null,
+      conversationBasis: 'unresolved',
+      partitionLabels: ['all-581'],
+      selectionStatus: 'not-runnable',
+      skipReason: 'mode test unresolved case',
+      toolInput: {
+        requestContextDigest: caseId,
+        evaluationMode: 'current-state',
+      },
+      sourceQualification: {
+        sameRequestIdentity: 'missing',
+        legitimateInboundBeforeTarget: 'missing',
+        sourceBinding: 'not-proven',
+        permission: 'missing',
+        reference: 'not-proven',
+        preReplyTime: 'missing',
+        preReplyReference: 'missing',
+        sourceDirection: 'unknown',
+        preReplyReason: 'missing-context',
+      },
+      fieldOutcomes: { qualification: 'unscorable' },
+      exposure: {
+        target: 'evaluator-only',
+        sealedBeforeOutcome: true,
+        outcomeMayInformTuning: false,
+        outcomeMayInformRepair: false,
+        outcomeMayChooseFixtures: false,
+        outcomeMayTriggerRetry: false,
+        state: 'unassigned',
+      },
+    },
+  ];
+  const digests = gate.computeManifestDigests(manifest);
+  manifest.source.contentHash = digests.contentHash;
+  manifest.source.mappingHash = digests.mappingHash;
+  manifest.phase2B.mappingHash = digests.mappingHash;
+  manifest.phase2B.selectionHash = digests.selectionHash;
+  return manifest;
+}
+
+function semanticSealPayload(gate: any, manifest: any, runId: string) {
+  const version = manifest.schemaVersion.endsWith('.v3') ? 'v3' : 'v2';
+  const outputContract = ['manifest.json', 'aggregate.json', 'receipt.json', 'seal.json'];
+  const manifestDigest = gate.privateQualificationManifestDigest(manifest);
+  const counts = { ...manifest.counts };
+  return {
+    aggregate: {
+      schemaVersion: `u11-private-qualification.aggregate.${version}`,
+      runId,
+      manifestDigest,
+      inputDigestSetHash: manifest.source.inputDigestSetHash,
+      counts,
+      outputContract,
+      targetOutcomeProcessing: false,
+      liveCapabilityClaim: false,
+    },
+    receipt: {
+      schemaVersion: `u11-private-qualification.receipt.${version}`,
+      runId,
+      manifestDigest,
+      inputDigestSetHash: manifest.source.inputDigestSetHash,
+      inputByteHashes: {
+        canonicalMap: manifest.source.canonicalMap,
+        pointers: manifest.source.pointerDigests,
+      },
+      counts,
+      outputContract,
+      verifyCommand: `node verify ${runId}`,
+      liveCapabilityClaim: false,
+      targetOutcomeProcessing: false,
+    },
+  };
+}
+
 describe('reservation-pilot gate dispatch', () => {
   it('dispatches the U11 integrated journey through one exact disposable-DB slice', async () => {
     const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
@@ -227,6 +323,80 @@ describe('reservation-pilot gate dispatch', () => {
     ]);
   });
 
+  it('requires pinned prereply direction/time and reference-chain evidence per case', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const joined = gate.joinPrivateQualificationPointers({
+      mapRecords: [
+        { id: 'case-inbound', source_evidence: { strict_earlier_nonidentical_context_count: 1 } },
+        { id: 'case-outbound', source_evidence: { strict_earlier_nonidentical_context_count: 1 } },
+      ],
+      reviewRecords: [
+        {
+          review_id: 'case-inbound',
+          fp: 'fingerprint-inbound',
+          source_message_id: 'message-inbound',
+          source_thread_id: 'thread-inbound',
+          rfc_message_id: ['prior-message'],
+          sent: '2026-09-01T10:00:00.000Z',
+          pre_reply_local_context: [
+            {
+              message_id: 'prior-message',
+              thread_id: 'thread-inbound',
+              direction: 'inbound',
+              sent: '2026-09-01T09:00:00.000Z',
+            },
+          ],
+        },
+        {
+          review_id: 'case-outbound',
+          fp: 'fingerprint-outbound',
+          source_message_id: 'message-outbound',
+          source_thread_id: 'thread-outbound',
+          rfc_message_id: ['prior-outbound'],
+          sent: '2026-09-01T10:00:00.000Z',
+          pre_reply_local_context: [
+            {
+              message_id: 'prior-outbound',
+              thread_id: 'thread-outbound',
+              direction: 'inbound',
+              sent: '2026-09-01T09:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      unionRecords: [
+        {
+          fp: 'fingerprint-inbound',
+          message_id: 'message-inbound',
+          thread_id: 'thread-inbound',
+          direction: 'inbound',
+          sent: '2026-09-01T10:00:00.000Z',
+        },
+        {
+          fp: 'fingerprint-outbound',
+          message_id: 'message-outbound',
+          thread_id: 'thread-outbound',
+          direction: 'outbound',
+          sent: '2026-09-01T10:00:00.000Z',
+        },
+      ],
+    });
+    expect(joined[0]).toEqual(
+      expect.objectContaining({
+        sourceDirection: 'inbound',
+        preReplyTimeBinding: 'verified',
+        preReplyReferenceBinding: 'verified',
+        preReplyReason: 'verified',
+      }),
+    );
+    expect(joined[1]).toEqual(
+      expect.objectContaining({
+        sourceDirection: 'outbound',
+        preReplyReason: 'wrong-direction',
+      }),
+    );
+  });
+
   it('derives canonical partition membership and enforces exact nesting', async () => {
     const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
     const summary = gate.derivePrivateQualificationPartitions([
@@ -286,6 +456,57 @@ describe('reservation-pilot gate dispatch', () => {
     expect(() => gate.assertPrivateQualificationV2Manifest(belowFloor)).toThrow(
       /holdout floor|isolation/i,
     );
+  });
+
+  it('rejects current-state aggregation for a historical source-vintage manifest', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const manifest = historicalModeManifest(gate);
+    expect(() => gate.assertPrivateQualificationV2Manifest(manifest)).toThrow(/historical|mode/i);
+  });
+
+  it('keeps historical replay consumers separate from current and future-shadow modes', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const manifest = historicalModeManifest(gate);
+    manifest.schemaVersion = 'u11-private-qualification.v3';
+    manifest.cases[0].evaluationMode = 'historical-replay';
+    manifest.cases[0].toolInput.evaluationMode = 'historical-replay';
+    const digests = gate.computeManifestDigests(manifest);
+    manifest.source.contentHash = digests.contentHash;
+    manifest.source.mappingHash = digests.mappingHash;
+    manifest.phase2B.mappingHash = digests.mappingHash;
+    manifest.phase2B.selectionHash = digests.selectionHash;
+    expect(gate.assertPrivateQualificationV3Manifest(manifest)).toBe(true);
+    const session = gate.createEvaluationSession(manifest, { contract: 'private-v3' });
+    expect(session.aggregate('historical-replay')).toEqual(
+      expect.objectContaining({ evaluationMode: 'historical-replay', eligibleCount: 0 }),
+    );
+    expect(() => session.aggregate('current-state')).toThrow(/historical|mode/i);
+    expect(() => session.aggregate('future-shadow')).toThrow(/historical|mode/i);
+  });
+
+  it('rejects semantically incomplete aggregate and receipt sets before publication', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'u11-v3-semantic-red-'));
+    try {
+      const manifest = emptyPrivateV2Manifest(gate);
+      manifest.runId = 'u11-semantic-red';
+      const digests = gate.computeManifestDigests(manifest);
+      manifest.source.contentHash = digests.contentHash;
+      manifest.source.mappingHash = digests.mappingHash;
+      manifest.phase2B.mappingHash = digests.mappingHash;
+      manifest.phase2B.selectionHash = digests.selectionHash;
+      expect(() =>
+        gate.publishPrivateQualificationSeal({
+          root,
+          runId: manifest.runId,
+          manifest,
+          aggregate: { schemaVersion: 'u11-private-qualification.aggregate.v2', counts: {} },
+          receipt: { inputDigestSetHash: manifest.source.inputDigestSetHash },
+        }),
+      ).toThrow(/aggregate|receipt|semantic|contract/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('publishes a sealed run once, verifies bytes read-only, and rejects tamper/incomplete seals', async () => {
@@ -364,21 +585,58 @@ describe('reservation-pilot gate dispatch', () => {
         partitionSummary: gate.derivePrivateQualificationPartitions([]),
         cases: [],
       };
+      manifest.runId = 'u11-test-run';
       const digests = gate.computeManifestDigests(manifest);
       manifest.source.contentHash = digests.contentHash;
       manifest.source.mappingHash = digests.mappingHash;
       manifest.phase2B.mappingHash = digests.mappingHash;
       manifest.phase2B.selectionHash = digests.selectionHash;
+      const payload = semanticSealPayload(gate, manifest, 'u11-test-run');
       const published = gate.publishPrivateQualificationSeal({
         root,
         runId: 'u11-test-run',
         manifest,
-        aggregate: { schemaVersion: 'u11-private-qualification.aggregate.v2', counts: {} },
-        receipt: { inputDigestSetHash: manifest.source.inputDigestSetHash },
+        ...payload,
       });
       expect(gate.verifyPrivateQualificationSeal({ root, runId: 'u11-test-run' })).toEqual(
         expect.objectContaining({ complete: true, runId: 'u11-test-run' }),
       );
+
+      const foreignManifest = structuredClone(manifest);
+      foreignManifest.runId = 'u11-foreign-run';
+      const foreignDigests = gate.computeManifestDigests(foreignManifest);
+      foreignManifest.source.contentHash = foreignDigests.contentHash;
+      foreignManifest.source.mappingHash = foreignDigests.mappingHash;
+      foreignManifest.phase2B.mappingHash = foreignDigests.mappingHash;
+      foreignManifest.phase2B.selectionHash = foreignDigests.selectionHash;
+      const foreignPayload = semanticSealPayload(gate, foreignManifest, 'u11-foreign-run');
+      const foreignPublished = gate.publishPrivateQualificationSeal({
+        root,
+        runId: 'u11-foreign-run',
+        manifest: foreignManifest,
+        ...foreignPayload,
+      });
+      const foreignAggregate = {
+        ...JSON.parse(readFileSync(path.join(foreignPublished.path, 'aggregate.json'), 'utf8')),
+        runId: 'u11-foreign-other',
+      };
+      const foreignAggregateBytes = Buffer.from(`${gate.canonicalJson(foreignAggregate)}\n`);
+      writeFileSync(path.join(foreignPublished.path, 'aggregate.json'), foreignAggregateBytes);
+      const foreignSeal = JSON.parse(
+        readFileSync(path.join(foreignPublished.path, 'seal.json'), 'utf8'),
+      );
+      foreignSeal.outputByteHashes['aggregate.json'] = {
+        bytes: foreignAggregateBytes.length,
+        sha256: gate.sha256Bytes(foreignAggregateBytes),
+      };
+      writeFileSync(
+        path.join(foreignPublished.path, 'seal.json'),
+        `${gate.canonicalJson(foreignSeal)}\n`,
+      );
+      expect(() => gate.verifyPrivateQualificationSeal({ root, runId: 'u11-foreign-run' })).toThrow(
+        /run ID|semantic|aggregate/i,
+      );
+
       expect(() =>
         gate.publishPrivateQualificationSeal({
           root,
