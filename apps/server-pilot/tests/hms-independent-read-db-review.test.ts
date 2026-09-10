@@ -1021,6 +1021,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
     });
   });
 
+  it('selects the newer valid inbound instead of an older clockless import', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const newerMessageId = randomUUID();
+      const clocklessOlderMessageId = randomUUID();
+      await db.insert(message).values([
+        {
+          id: newerMessageId,
+          transportId: context.transportId,
+          threadId: context.threadId,
+          direction: 'inbound',
+          fromAddress: 'newer@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'newer causal inbound',
+          textBody: 'newer causal inbound confirmation CONF-NEWER',
+          receivedAt: new Date('2026-09-07T12:02:00.000Z'),
+          createdAt: new Date('2026-09-07T12:02:00.000Z'),
+        },
+        {
+          id: clocklessOlderMessageId,
+          transportId: context.transportId,
+          threadId: context.threadId,
+          direction: 'inbound',
+          fromAddress: 'import@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'older imported inbound',
+          textBody: 'older imported inbound confirmation CONF-OLDER',
+          receivedAt: null,
+          createdAt: new Date('2026-09-07T11:59:00.000Z'),
+        },
+      ]);
+
+      const issued = await issueReadAdmissionFromMailbox({
+        db,
+        userId: CENTURION_USER_ID,
+        transportId: context.transportId,
+        threadId: context.threadId,
+        toolId: 'hms_find_reservation',
+        releaseId: 'release-red',
+        requestBranchId: 'guest_stay_search',
+        manifestSha256: READ_MANIFEST_SHA256,
+        captureBindingRef: `u8-nullable-clock-${randomUUID()}`,
+        now: new Date(observedAt),
+      });
+
+      const expectedCandidate = filterExactReservationCandidates(
+        extractLookupCandidates('newer causal inbound confirmation CONF-NEWER'),
+      )[0];
+      expect(expectedCandidate).toBeDefined();
+      expect(issued.triggerMessageId).toBe(newerMessageId);
+      expect(issued.issuer.triggerMessageId).toBe(newerMessageId);
+      expect(issued.candidateId).toBe(expectedCandidate?.id);
+      expect(issued.triggerMessageId).not.toBe(clocklessOlderMessageId);
+    });
+  });
+
   it('creates a fresh read attempt after terminal failure and deduplicates concurrent retriggers', async () => {
     await withWorkerDb(async (db) => {
       const context = await seededMailContext(db);
@@ -2559,6 +2615,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
         const contextObservedAt = '2099-09-07T12:00:00.000Z';
         const contextExpiresAt = '2099-09-07T12:05:00.000Z';
         let lockDepth = 0;
+        const lockAcquisitionOptions: Array<{ signal?: AbortSignal; deadlineAt?: number }> = [];
         const externalBoundary = vi.fn(async () => ({
           ...(() => {
             expect(lockDepth).toBe(1);
@@ -2610,7 +2667,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
             authorizedAttachmentIds: new Set(),
             propertyReadLock: {
               key: '1',
-              withLock: async (callback) => {
+              withLock: async (callback, acquisitionOptions) => {
+                lockAcquisitionOptions.push(acquisitionOptions ?? {});
                 lockDepth += 1;
                 try {
                   return await callback({
@@ -2626,6 +2684,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
         });
         expect(result.state).toBe('succeeded');
         expect(externalBoundary).toHaveBeenCalledOnce();
+        const outerLockOptions = lockAcquisitionOptions.find(
+          (options) => typeof options.deadlineAt === 'number',
+        );
+        expect(outerLockOptions?.signal).toBeDefined();
+        expect(outerLockOptions?.deadlineAt).toEqual(expect.any(Number));
         const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
         expect(stored?.readResult).toMatchObject({
           toolId: 'hms_read_reservation',
@@ -2903,5 +2966,59 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
         return 'unexpected-success';
       }),
     ).rejects.toMatchObject({ code: 'PROPERTY_READ_LOCK_LOST' });
+  });
+
+  it('cancels a waiting independent PG connection before the holder releases', async () => {
+    const databaseUrl = process.env.TEST_DATABASE_URL;
+    if (!databaseUrl) throw new Error('owned disposable TEST_DATABASE_URL is required');
+    const firstLock = createPostgresPropertyReadLock({
+      tenantId: 'tenant-u8-cancellation',
+      propertyCode: 'HRCEN',
+      databaseUrl,
+    });
+    const secondLock = createPostgresPropertyReadLock({
+      tenantId: 'tenant-u8-cancellation',
+      propertyCode: 'HRCEN',
+      databaseUrl,
+    });
+
+    let releaseFirst = () => undefined;
+    const firstEntered = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let enteredFirst = false;
+    const first = firstLock.withLock(async () => {
+      enteredFirst = true;
+      await firstEntered;
+      return 'first';
+    });
+    while (!enteredFirst) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const controller = new AbortController();
+    let enteredSecond = false;
+    const second = secondLock.withLock(
+      async () => {
+        enteredSecond = true;
+        return 'second';
+      },
+      { signal: controller.signal },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controller.abort(new Error('read deadline expired'));
+    const outcome = await Promise.race([
+      second.then(
+        () => 'resolved' as const,
+        () => 'rejected' as const,
+      ),
+      new Promise<'timed_out'>((resolve) => setTimeout(() => resolve('timed_out'), 250)),
+    ]);
+
+    try {
+      expect(outcome).toBe('rejected');
+      expect(enteredSecond).toBe(false);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled([first, second]);
+    }
   });
 });

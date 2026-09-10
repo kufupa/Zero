@@ -2,8 +2,6 @@
  * Canonical Guest Stay live driver — login, binding, exact search, not-found canary.
  * Probe and worker share this surface; request policy uses exact candidate binding.
  */
-import { createHash } from 'node:crypto';
-import * as cheerio from 'cheerio';
 import {
   liveGuestStayRowFingerprintV2Schema,
   liveGuestStayRowFingerprintV1Schema,
@@ -18,15 +16,13 @@ import {
   type ExactReservationCandidate,
 } from './live-read-manifest.js';
 import {
-  HmsRuntimeError,
-  type HmsReadSession,
-  type HmsRuntime,
-} from './runtime.js';
-import {
   createFindReservationFacade,
   type FindReservationFacade,
 } from './find-reservation-facade.js';
+import { HmsRuntimeError, type HmsReadSession, type HmsRuntime } from './runtime.js';
 import type { PropertyReadLock } from './property-read-lock.js';
+import { createHash } from 'node:crypto';
+import * as cheerio from 'cheerio';
 
 export type { ExactReservationCandidate };
 
@@ -81,9 +77,7 @@ export type GuestStaySearchResult =
       capped: boolean;
     };
 
-export type AuditedSearchMapper<T> = (
-  result: GuestStaySearchResult,
-) => T | Promise<T>;
+export type AuditedSearchMapper<T> = (result: GuestStaySearchResult) => T | Promise<T>;
 
 export interface LiveGuestStayDriver {
   loginAndVerifyBinding(signal: AbortSignal): Promise<void>;
@@ -158,10 +152,7 @@ function parseIsoDateOrNull(raw: string | undefined | null): string | null {
   return `${mon[3]}-${mm}-${mon[1]}`;
 }
 
-function attrOrNull(
-  el: { attr(name: string): string | undefined },
-  attr: string,
-): string | null {
+function attrOrNull(el: { attr(name: string): string | undefined }, attr: string): string | null {
   const raw = el.attr(attr);
   if (raw == null) return null;
   const trimmed = raw.trim();
@@ -275,11 +266,7 @@ export function parseLiveOsressGridRows(
   const records = (metadata as Record<string, unknown>).RECORDS;
   const data = grid.DATA;
   if (!Array.isArray(data)) return null;
-  if (
-    typeof records !== 'string' ||
-    !/^\d+$/.test(records) ||
-    Number(records) !== data.length
-  ) {
+  if (typeof records !== 'string' || !/^\d+$/.test(records) || Number(records) !== data.length) {
     schemaDrift();
   }
 
@@ -329,9 +316,7 @@ function correlateObservations(
   const minimized = correlated.map((row) => ({ ...row, guestName: null }));
   return {
     outcome: 'ambiguous',
-    observations: capped
-      ? minimized.slice(0, RESERVATION_MATCH_CAP)
-      : minimized,
+    observations: capped ? minimized.slice(0, RESERVATION_MATCH_CAP) : minimized,
     capped,
   };
 }
@@ -452,19 +437,13 @@ export function parseAndCorrelateGuestStayHtml(
     }
   }
   if (options.requireLiveEnvelope) {
-    throw new HmsRuntimeError(
-      'SCHEMA_DRIFT',
-      'live OSRESS grid envelope missing',
-    );
+    throw new HmsRuntimeError('SCHEMA_DRIFT', 'live OSRESS grid envelope missing');
   }
 
   const sel = LIVE_GUEST_STAY_ROW_SELECTORS;
   const $ = cheerio.load(html);
   if ($(sel.correlationFailed).length > 0) {
-    throw new HmsRuntimeError(
-      'SCHEMA_DRIFT',
-      'search correlation failed',
-    );
+    throw new HmsRuntimeError('SCHEMA_DRIFT', 'search correlation failed');
   }
 
   const fresh = parseAllFreshRows(html).filter(
@@ -481,8 +460,7 @@ export function createLiveGuestStayDriver(
   options: LiveGuestStayDriverOptions,
 ): LiveGuestStayDriver {
   const { runtime, transportId } = options;
-  let lastAuditReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null =
-    null;
+  let lastAuditReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null = null;
 
   async function withSession<T>(
     signal: AbortSignal,
@@ -495,15 +473,14 @@ export function createLiveGuestStayDriver(
     lockHeld = false,
   ): Promise<T> {
     if (!lockHeld && options.propertyReadLock) {
-      return options.propertyReadLock.withLock(() =>
-        withSession(signal, candidate, fn, receiptForResult, true),
+      return options.propertyReadLock.withLock(
+        () => withSession(signal, candidate, fn, receiptForResult, true),
+        { signal },
       );
     }
     const canary = liveNotFoundCanaryCandidate();
     const inputClass =
-      candidate &&
-      candidate.kind === canary.kind &&
-      candidate.value === canary.value
+      candidate && candidate.kind === canary.kind && candidate.value === canary.value
         ? 'synthetic_not_found'
         : 'authorized_exact';
     const auditSpec = options.auditSpecFor?.({ candidate, inputClass });
@@ -552,18 +529,12 @@ export function createLiveGuestStayDriver(
     }
     lastAuditReceipt = session.lastReceipt();
     if (fnError && closeError) {
-      throw new AggregateError(
-        [fnError, closeError],
-        'HMS session tool and close failed',
-      );
+      throw new AggregateError([fnError, closeError], 'HMS session tool and close failed');
     }
     if (fnError) throw fnError;
     if (closeError) throw closeError;
     if (blocked) {
-      throw new HmsRuntimeError(
-        'POLICY_BLOCK',
-        'request policy blocked during read session',
-      );
+      throw new HmsRuntimeError('POLICY_BLOCK', 'request policy blocked during read session');
     }
     if (lastAuditReceipt) {
       const unsafe =
@@ -575,19 +546,13 @@ export function createLiveGuestStayDriver(
         lastAuditReceipt.downloadCount > 0 ||
         lastAuditReceipt.webSocketCount > 0;
       if (unsafe) {
-        throw new HmsRuntimeError(
-          'POLICY_BLOCK',
-          'unsafe browser event in audit receipt',
-        );
+        throw new HmsRuntimeError('POLICY_BLOCK', 'unsafe browser event in audit receipt');
       }
       if (
         lastAuditReceipt.operationOutcome !== expectedReceipt.outcome ||
         lastAuditReceipt.terminalCode !== expectedReceipt.terminalCode
       ) {
-        throw new HmsRuntimeError(
-          'AUDIT_CAPTURE',
-          'audit receipt terminal state invalid',
-        );
+        throw new HmsRuntimeError('AUDIT_CAPTURE', 'audit receipt terminal state invalid');
       }
     }
     return result as T;
@@ -602,44 +567,38 @@ export function createLiveGuestStayDriver(
 
     async runNotFoundCanary(signal) {
       const canary = liveNotFoundCanaryCandidate();
-      const result = await withSession(signal, canary, async (facade) => {
-        const html = await facade.searchExact(canary);
-        if (
-          /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(
-            html,
-          )
-        ) {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'Guest Stay search component not ready',
-          );
-        }
-        const search = parseAndCorrelateGuestStayHtml(
-          html,
-          canary,
-          signal,
-          {
-            requireLiveEnvelope:
-              facade.requireLiveEnvelope,
-          },
-        );
-        if (search.outcome !== 'not_found') {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'not-found canary expected empty Guest Stay result',
-          );
-        }
-        if (/hasNewRecord|new record/i.test(html) && /data-has-new-record="true"/i.test(html)) {
-          throw new HmsRuntimeError(
-            'ROLE_SCOPE_INVALID',
-            'New Record control present during canary',
-          );
-        }
-        return html;
-      }, () => ({
-        outcome: 'unverified_negative',
-        terminalCode: 'UNVERIFIED_NEGATIVE',
-      }));
+      const result = await withSession(
+        signal,
+        canary,
+        async (facade) => {
+          const html = await facade.searchExact(canary);
+          if (
+            /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(html)
+          ) {
+            throw new HmsRuntimeError('SCHEMA_DRIFT', 'Guest Stay search component not ready');
+          }
+          const search = parseAndCorrelateGuestStayHtml(html, canary, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
+          if (search.outcome !== 'not_found') {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'not-found canary expected empty Guest Stay result',
+            );
+          }
+          if (/hasNewRecord|new record/i.test(html) && /data-has-new-record="true"/i.test(html)) {
+            throw new HmsRuntimeError(
+              'ROLE_SCOPE_INVALID',
+              'New Record control present during canary',
+            );
+          }
+          return html;
+        },
+        () => ({
+          outcome: 'unverified_negative',
+          terminalCode: 'UNVERIFIED_NEGATIVE',
+        }),
+      );
       void result;
       void LIVE_NOTFOUND_CANARY;
     },
@@ -677,14 +636,9 @@ export function createLiveGuestStayDriver(
         candidate,
         async (facade) => {
           const html = await facade.searchExact(candidate);
-          const search = await parseAndCorrelateGuestStayHtml(
-            html,
-            candidate,
-            signal,
-            {
-              requireLiveEnvelope: facade.requireLiveEnvelope,
-            },
-          );
+          const search = await parseAndCorrelateGuestStayHtml(html, candidate, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
           return { search, mapped: await mapResult(search) };
         },
         ({ search }) =>

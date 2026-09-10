@@ -2472,15 +2472,17 @@ async function executeProductionReadTool(input: {
       requireCurrentAppAccess: true,
       currentAppAccessProof,
     };
-    const receipt = await mailReadLock.withLock(async (propertyReadLockConnection) =>
-      executeReadToolRun({
-        runKind: input.run.runKind,
-        executorLane: input.run.executorLane,
-        draftingEnabled: false,
-        request,
-        context: { ...readContext, propertyReadLockConnection },
-        resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
-      }),
+    const receipt = await mailReadLock.withLock(
+      async (propertyReadLockConnection) =>
+        executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: { ...readContext, propertyReadLockConnection },
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        }),
+      { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
     );
     return {
       result: receipt.result,
@@ -2706,15 +2708,17 @@ async function executeProductionReadTool(input: {
       },
     };
     try {
-      const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) =>
-        executeReadToolRun({
-          runKind: input.run.runKind,
-          executorLane: input.run.executorLane,
-          draftingEnabled: false,
-          request,
-          context: { ...readContext, propertyReadLockConnection },
-          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
-        }),
+      const receipt = await propertyReadLock.withLock(
+        async (propertyReadLockConnection) =>
+          executeReadToolRun({
+            runKind: input.run.runKind,
+            executorLane: input.run.executorLane,
+            draftingEnabled: false,
+            request,
+            context: { ...readContext, propertyReadLockConnection },
+            resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+          }),
+        { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
       );
       return { result: receipt.result, readResultRef: receipt.readResultRef };
     } finally {
@@ -2871,15 +2875,17 @@ async function executeProductionReadTool(input: {
       },
     };
     try {
-      const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) =>
-        executeReadToolRun({
-          runKind: input.run.runKind,
-          executorLane: input.run.executorLane,
-          draftingEnabled: false,
-          request,
-          context: { ...readContext, propertyReadLockConnection },
-          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
-        }),
+      const receipt = await propertyReadLock.withLock(
+        async (propertyReadLockConnection) =>
+          executeReadToolRun({
+            runKind: input.run.runKind,
+            executorLane: input.run.executorLane,
+            draftingEnabled: false,
+            request,
+            context: { ...readContext, propertyReadLockConnection },
+            resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+          }),
+        { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
       );
       return { result: receipt.result, readResultRef: receipt.readResultRef };
     } finally {
@@ -3287,34 +3293,40 @@ async function executeProductionReadTool(input: {
     },
   };
   try {
-    const receipt = await propertyReadLock.withLock(async (propertyReadLockConnection) => {
-      const lockedReadContext = { ...readContext, propertyReadLockConnection };
-      if (reservationFacade) {
-        const resolved = await reservationFacade.findReservation(toLookup(candidateId));
-        if (resolved.status !== 'ok' || !resolved.data?.matches[0]?.reservationRef) {
-          throw Object.assign(
-            new Error('reservation context could not resolve an entitled exact match'),
-            {
+    const receipt = await propertyReadLock.withLock(
+      async (propertyReadLockConnection) => {
+        const lockedReadContext = { ...readContext, propertyReadLockConnection };
+        if (reservationFacade) {
+          const resolved = await reservationFacade.findReservation(toLookup(candidateId));
+          if (resolved.status !== 'ok' || !resolved.data?.matches[0]?.reservationRef) {
+            throw Object.assign(
+              new Error('reservation context could not resolve an entitled exact match'),
+              {
+                failureClass: 'AUTH' as const,
+              },
+            );
+          }
+          const expiresAt = Date.parse(resolved.evidence[0]?.expiresAt ?? '');
+          if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            throw Object.assign(new Error('reservation context reference is expired'), {
               failureClass: 'AUTH' as const,
-            },
-          );
+            });
+          }
         }
-        const expiresAt = Date.parse(resolved.evidence[0]?.expiresAt ?? '');
-        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-          throw Object.assign(new Error('reservation context reference is expired'), {
-            failureClass: 'AUTH' as const,
-          });
-        }
-      }
-      return executeReadToolRun({
-        runKind: input.run.runKind,
-        executorLane: input.run.executorLane,
-        draftingEnabled: false,
-        request,
-        context: lockedReadContext,
-        resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
-      });
-    });
+        return executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: lockedReadContext,
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        });
+      },
+      {
+        signal: input.signal,
+        deadlineAt: input.fence.deadlineAt.getTime(),
+      },
+    );
     return {
       result: receipt.result,
       readResultRef: receipt.readResultRef,

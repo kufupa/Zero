@@ -42,7 +42,7 @@ import {
 import { extractLookupCandidates, filterExactReservationCandidates } from '../ai/thread-context.js';
 import { DOCUMENT_LIST_MAX_ROWS } from './document-list-contract.js';
 import { normalizeMessageText } from '../ai/thread-context.js';
-import { and, asc, desc, eq, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, lte, or, sql } from 'drizzle-orm';
 import { readAiRunReceipt } from '../ai/run-ledger.js';
 import { readRequestSchema } from './read-service.js';
 import type { DB } from '../db/client.js';
@@ -166,7 +166,7 @@ async function loadTrigger(
     })
     .from(message)
     .where(and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)))
-    .orderBy(desc(message.receivedAt), desc(message.id));
+    .orderBy(sql`${message.receivedAt} DESC NULLS LAST`, desc(message.createdAt), desc(message.id));
   const trigger = rows.find((row) => row.direction === 'inbound');
   if (!trigger) throw authError('READ_TRIGGER_MISSING', 'thread has no inbound trigger');
 
@@ -206,7 +206,7 @@ async function loadTrigger(
       candidateId: null,
       quoteRequest: normalized.request,
       text: triggerText,
-      observedAt: trigger.receivedAt ?? trigger.createdAt,
+      observedAt: trigger.receivedAt,
     };
   }
   const exact = filterExactReservationCandidates(extractLookupCandidates(triggerText));
@@ -224,7 +224,7 @@ async function loadTrigger(
     triggerMessageId: trigger.id,
     candidateId: exact.length === 1 ? exact[0]!.id : null,
     text: triggerText,
-    observedAt: trigger.receivedAt ?? trigger.createdAt,
+    observedAt: trigger.receivedAt,
     quoteRequest: null,
   };
 }

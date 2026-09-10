@@ -5,16 +5,16 @@
  * read surface is proven.
  */
 import type {
-  ExactReservationCandidate,
-  GuestStaySearchResult,
-  LiveGuestStayDriver,
-} from './live-guest-stay-driver.js';
-import type {
   ReservationContextLookup,
   ReservationContextReader,
   ReservationLookupResult,
   ReservationRow,
 } from './reservation-context-facade.js';
+import type {
+  ExactReservationCandidate,
+  GuestStaySearchResult,
+  LiveGuestStayDriver,
+} from './live-guest-stay-driver.js';
 import type { PropertyReadLock } from './property-read-lock.js';
 
 export interface LiveReservationContextDriver {
@@ -33,7 +33,9 @@ export interface LiveReservationContextDriverOptions {
   propertyReadLock?: PropertyReadLock;
 }
 
-function rowFromObservation(observation: GuestStaySearchResult['observations'][number]): ReservationRow {
+function rowFromObservation(
+  observation: GuestStaySearchResult['observations'][number],
+): ReservationRow {
   return {
     confirmationNumber: observation.confirmationNumber,
     externalReference: observation.externalReference,
@@ -57,7 +59,7 @@ export function createLiveReservationContextDriver(
     async findReservation(input, signal) {
       const search = () => options.guestStay.searchExact(options.candidateFor(input), signal);
       const result = options.propertyReadLock
-        ? await options.propertyReadLock.withLock(() => search())
+        ? await options.propertyReadLock.withLock(() => search(), { signal })
         : await search();
       const observedAt = now();
       const expiresAt = new Date(observedAt.getTime() + 5 * 60_000);

@@ -29,10 +29,17 @@ export interface PropertyReadLockOptions {
   connectionFactory: () => Promise<PropertyReadConnection>;
 }
 
+export interface PropertyReadLockAcquisitionOptions {
+  /** Abort the acquisition while it is waiting for another property read. */
+  signal?: AbortSignal;
+  /** Optional absolute deadline in epoch milliseconds. */
+  deadlineAt?: number;
+}
+
+const PROPERTY_READ_LOCK_POLL_MS = 25;
+
 export function propertyReadLockKey(tenantId: string, propertyCode: string): string {
-  const digest = createHash('sha256')
-    .update(`${tenantId}\0${propertyCode}`, 'utf8')
-    .digest();
+  const digest = createHash('sha256').update(`${tenantId}\0${propertyCode}`, 'utf8').digest();
   // Keep the decimal representation explicit in SQL and in receipts.  A
   // signed 32-bit value is accepted by PostgreSQL's advisory-lock overload.
   return String(digest.readInt32BE(0));
@@ -46,43 +53,205 @@ function lockError(cause?: unknown): Error & { code: string; cause?: unknown } {
   return error;
 }
 
+function acquisitionDeadlineAt(options: PropertyReadLockAcquisitionOptions): number | undefined {
+  if (options.deadlineAt !== undefined) return options.deadlineAt;
+  const signal = options.signal as
+    | (AbortSignal & { deadlineAt?: number; deadlineMs?: number })
+    | undefined;
+  return signal?.deadlineAt ?? signal?.deadlineMs;
+}
+
+function assertAcquisitionActive(options: PropertyReadLockAcquisitionOptions): void {
+  if (options.signal?.aborted) {
+    throw lockError(options.signal.reason);
+  }
+  const deadlineAt = acquisitionDeadlineAt(options);
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+    throw lockError(new Error('property read advisory lock acquisition deadline exceeded'));
+  }
+}
+
+function withAcquisitionBounds<T>(
+  operation: () => Promise<T>,
+  options: PropertyReadLockAcquisitionOptions,
+  onLateResolution?: (value: T) => void | Promise<void>,
+): Promise<T> {
+  assertAcquisitionActive(options);
+  const deadlineAt = acquisitionDeadlineAt(options);
+  if (!options.signal && deadlineAt === undefined) return operation();
+
+  let pending: Promise<T>;
+  try {
+    pending = operation();
+  } catch (cause) {
+    return Promise.reject(cause);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(lockError(options.signal?.reason));
+    };
+    if (deadlineAt !== undefined) {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        settled = true;
+        cleanup();
+        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+        return;
+      }
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+      }, remaining);
+      timer.unref?.();
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+    pending.then(
+      (value) => {
+        if (settled) {
+          if (onLateResolution)
+            void Promise.resolve(onLateResolution(value)).catch(() => undefined);
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (cause: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(cause);
+      },
+    );
+  });
+}
+
+function waitForAcquisitionPoll(options: PropertyReadLockAcquisitionOptions): Promise<void> {
+  assertAcquisitionActive(options);
+  const deadlineAt = acquisitionDeadlineAt(options);
+  const remaining = deadlineAt === undefined ? PROPERTY_READ_LOCK_POLL_MS : deadlineAt - Date.now();
+  if (remaining <= 0) {
+    return Promise.reject(
+      lockError(new Error('property read advisory lock acquisition deadline exceeded')),
+    );
+  }
+  const waitMs = Math.min(PROPERTY_READ_LOCK_POLL_MS, remaining);
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+      } else {
+        resolve();
+      }
+    }, waitMs);
+    timer.unref?.();
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(lockError(options.signal?.reason));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+  });
+}
+
+function advisoryLockWasAcquired(result: unknown): boolean {
+  if (!Array.isArray(result)) return false;
+  const row = result[0];
+  return (
+    !!row &&
+    typeof row === 'object' &&
+    Object.values(row as Record<string, unknown>).some((value) => value === true)
+  );
+}
+
+async function acquireAdvisoryLock(
+  connection: PropertyReadConnection,
+  key: string,
+  options: PropertyReadLockAcquisitionOptions,
+): Promise<void> {
+  for (;;) {
+    const result = await withAcquisitionBounds(
+      () =>
+        connection.query<ReadonlyArray<Record<string, unknown>>>(
+          `SELECT pg_try_advisory_lock(${key})`,
+        ),
+      options,
+    );
+    if (advisoryLockWasAcquired(result)) return;
+    await waitForAcquisitionPoll(options);
+  }
+}
+
 export function createPropertyReadLock(options: PropertyReadLockOptions) {
   const key = propertyReadLockKey(options.tenantId, options.propertyCode);
 
   return {
     key,
-    async withLock<T>(callback: (connection: PropertyReadConnection) => Promise<T>): Promise<T> {
-      let connection: PropertyReadConnection;
+    async withLock<T>(
+      callback: (connection: PropertyReadConnection) => Promise<T>,
+      acquisitionOptions: PropertyReadLockAcquisitionOptions = {},
+    ): Promise<T> {
+      let connection: PropertyReadConnection | undefined;
       try {
-        connection = await options.connectionFactory();
+        connection = await withAcquisitionBounds(
+          options.connectionFactory,
+          acquisitionOptions,
+          (lateConnection) => lateConnection.close(),
+        );
       } catch (cause) {
+        if (connection) await connection.close().catch(() => undefined);
         throw lockError(cause);
       }
-      let held = true;
+      if (!connection) throw lockError(new Error('property read connection was not created'));
+      const acquiredConnection = connection;
+      let held = false;
       let result: T | undefined;
       let callbackError: unknown;
       try {
-        await connection.query(`SELECT pg_advisory_lock(${key})`);
+        await acquireAdvisoryLock(acquiredConnection, key, acquisitionOptions);
+        held = true;
       } catch (cause) {
-        held = false;
-        await connection.close().catch(() => undefined);
+        await acquiredConnection.close().catch(() => undefined);
         throw lockError(cause);
       }
       try {
-        activePropertyReadConnections.set(connection, key);
+        activePropertyReadConnections.set(acquiredConnection, key);
         try {
-          result = await callback(connection);
+          result = await callback(acquiredConnection);
         } catch (cause) {
           callbackError = cause;
         }
       } finally {
-        activePropertyReadConnections.delete(connection);
+        activePropertyReadConnections.delete(acquiredConnection);
       }
 
-      let releaseError: Error & { code: string; cause?: unknown } | undefined;
+      let releaseError: (Error & { code: string; cause?: unknown }) | undefined;
       if (held) {
         try {
-          const released = await connection.query<ReadonlyArray<Record<string, unknown>>>(
+          const released = await acquiredConnection.query<ReadonlyArray<Record<string, unknown>>>(
             `SELECT pg_advisory_unlock(${key})`,
           );
           const releaseRow = Array.isArray(released) ? released[0] : undefined;
@@ -97,7 +266,7 @@ export function createPropertyReadLock(options: PropertyReadLockOptions) {
       }
       let closeError: unknown;
       try {
-        await connection.close();
+        await acquiredConnection.close();
       } catch (cause) {
         closeError = cause;
       }

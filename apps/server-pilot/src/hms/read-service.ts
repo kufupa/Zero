@@ -749,8 +749,9 @@ export async function executeRead(
     !!context.propertyReadLockConnection &&
     isPropertyReadConnectionHeld(context.propertyReadLockConnection, context.propertyReadLock.key);
   if (context.propertyReadLock && !lockHeld) {
-    return context.propertyReadLock.withLock((connection) =>
-      dispatchRead({ ...context, propertyReadLockConnection: connection }, parsed),
+    return context.propertyReadLock.withLock(
+      (connection) => dispatchRead({ ...context, propertyReadLockConnection: connection }, parsed),
+      { signal: context.signal },
     );
   }
   return dispatchRead(context, parsed);
