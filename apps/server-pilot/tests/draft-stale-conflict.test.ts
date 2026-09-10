@@ -14,30 +14,479 @@ import {
 } from '../src/mail/send/outbound-queue.js';
 import { __setSmtpTransportForTests, type SmtpTransport } from '../src/mail/send/smtp.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
+import { __setDraftCreateConflictHookForTests } from '../src/trpc/routes/drafts.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyFileSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import * as draftApprovalModule from '../src/ai/draft-approval.js';
 import { loadLiveThreadStateVersion } from '../src/ai/drafts.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import { callerFor } from './helpers/trpc-caller';
 import { TRANSPORT_ID } from '../src/db/seed.js';
+import type { DB } from '../src/db/client.js';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const reachable = await probeTestDb();
 
 const previousUndoSendSeconds = process.env.UNDO_SEND_SECONDS;
 const previousSelfBcc = process.env.MAIL_SELF_BCC;
+const initialModelRoute = process.env.AI_MODEL_ROUTE;
+const initialDraftConfig = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+const initialDraftsEnabled = process.env.AI_DRAFTS_ENABLED;
+
+const TRUSTED_DRAFT_MODULE = new URL('./fixtures/u6-approved-local-draft.cjs', import.meta.url)
+  .pathname;
+const TRUSTED_DRAFT_ROUTE = {
+  routeId: 'u6-configured-draft-route',
+  modelId: 'u6-configured-draft-model',
+  purpose: 'draft' as const,
+  protocol: 'in_process' as const,
+  access: 'current_app' as const,
+  egress: 'none' as const,
+  retention: 'bounded' as const,
+  usage: 'reported' as const,
+};
+const TRUSTED_DRAFT_RELEASE = {
+  releaseId: 'u6-stale-conflict-release-a',
+  releaseVersion: '2026.09.10.1',
+  sourceRevision: 'u6-stale-conflict-source-a',
+  fingerprint: 'd'.repeat(64),
+  purpose: 'draft' as const,
+  capabilityFamilyVersions: { draft: 'u6-draft-v1' },
+  issuedAt: '2026-09-01T00:00:00.000Z',
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  withdrawn: false,
+};
+
+function trustedDraftConfig(): string {
+  return JSON.stringify({
+    module: TRUSTED_DRAFT_MODULE,
+    route: TRUSTED_DRAFT_ROUTE,
+    release: TRUSTED_DRAFT_RELEASE,
+  });
+}
+
+async function insertTrustedCandidateRun(
+  db: DB,
+  input: { generationId: string; threadId: string; triggerMessageId: string },
+): Promise<void> {
+  const runId = randomUUID();
+  await db.insert(aiWorkflowRun).values({
+    id: runId,
+    transportId: TRANSPORT_ID,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    runKind: 'candidate_draft',
+    idempotencyKey: `u6-trusted-candidate:${runId}`,
+    modelId: TRUSTED_DRAFT_ROUTE.modelId,
+    promptVersion: 'draft-v1',
+    state: 'succeeded',
+    executorLane: 'default',
+    generationId: input.generationId,
+    metrics: { routeBinding: { ...TRUSTED_DRAFT_ROUTE, release: TRUSTED_DRAFT_RELEASE } },
+    finishedAt: new Date(),
+  });
+}
+
+async function seedIdlessConflictDraft(db: DB): Promise<{
+  threadId: string;
+  draftId: string;
+}> {
+  const threadId = randomUUID();
+  const draftId = randomUUID();
+  await db.insert(mailThread).values({
+    id: threadId,
+    transportId: TRANSPORT_ID,
+    threadRootId: `<${threadId}@example.com>`,
+    subject: 'Booking',
+    snippet: 'Please confirm',
+    latestMessageAt: new Date('2026-09-10T10:00:00Z'),
+  });
+  await db.insert(mailDraft).values({
+    id: draftId,
+    transportId: TRANSPORT_ID,
+    threadId,
+    createdByUserId: 'user-navaai',
+    status: 'active',
+    origin: 'manual',
+    toAddresses: ['guest@example.com'],
+    subject: 'Re: Booking',
+    textBody: 'Original body',
+    htmlBody: '<p>Original body</p>',
+  });
+  return { threadId, draftId };
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
+  __setDraftCreateConflictHookForTests(null);
   __setOutboundAttemptFenceHookForTests(null);
   __setSmtpTransportForTests(null);
   if (previousUndoSendSeconds === undefined) delete process.env.UNDO_SEND_SECONDS;
   else process.env.UNDO_SEND_SECONDS = previousUndoSendSeconds;
   if (previousSelfBcc === undefined) delete process.env.MAIL_SELF_BCC;
   else process.env.MAIL_SELF_BCC = previousSelfBcc;
+  if (initialModelRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+  else process.env.AI_MODEL_ROUTE = initialModelRoute;
+  if (initialDraftConfig === undefined) delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+  else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = initialDraftConfig;
+  if (initialDraftsEnabled === undefined) delete process.env.AI_DRAFTS_ENABLED;
+  else process.env.AI_DRAFTS_ENABLED = initialDraftsEnabled;
+});
+
+beforeEach(() => {
+  process.env.AI_DRAFTS_ENABLED = 'true';
+  process.env.AI_MODEL_ROUTE = 'approved-local';
+  process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = trustedDraftConfig();
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => {
+  it('records an edited revision when an id-less threaded save resolves an active conflict', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const draftId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Please confirm',
+        latestMessageAt: new Date('2026-09-10T10:00:00Z'),
+      });
+      await db.insert(mailDraft).values({
+        id: draftId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        createdByUserId: 'user-navaai',
+        status: 'active',
+        origin: 'manual',
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Original body',
+        htmlBody: '<p>Original body</p>',
+      });
+
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
+      await expect(
+        caller.drafts.create({
+          id: null,
+          threadId,
+          to: 'guest@example.com',
+          subject: 'Re: Booking',
+          message: '<p>Edited body</p>',
+          body: '<p>Edited body</p>',
+          attachments: [],
+        }),
+      ).resolves.toEqual({ id: draftId });
+
+      const [draft] = await db
+        .select({ textBody: mailDraft.textBody, htmlBody: mailDraft.htmlBody })
+        .from(mailDraft)
+        .where(eq(mailDraft.id, draftId));
+      expect(draft).toEqual({ textBody: '<p>Edited body</p>', htmlBody: '<p>Edited body</p>' });
+      const [revision] = await db
+        .select({ kind: mailDraftRevision.kind, textBody: mailDraftRevision.textBody })
+        .from(mailDraftRevision)
+        .where(eq(mailDraftRevision.draftId, draftId));
+      expect(revision).toEqual({ kind: 'edited', textBody: '<p>Edited body</p>' });
+    });
+  }, 30000);
+
+  it('rejects an id-less conflict save after the actual draft is enqueued', async () => {
+    await withSeededTestDb(async (db) => {
+      process.env.UNDO_SEND_SECONDS = '30';
+      process.env.MAIL_SELF_BCC = 'false';
+      const { threadId, draftId } = await seedIdlessConflictDraft(db);
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
+      let queuedMessageId: string | undefined;
+      __setDraftCreateConflictHookForTests(async () => {
+        const queued = await caller.mail.send({
+          threadId,
+          draftId,
+          to: ['guest@example.com'],
+          subject: 'Re: Booking',
+          message: '<p>Original body</p>',
+        });
+        expect(queued).toMatchObject({ queued: true });
+        queuedMessageId = queued.messageId;
+      });
+
+      await expect(
+        caller.drafts.create({
+          id: null,
+          threadId,
+          to: 'guest@example.com',
+          subject: 'Re: Booking edited',
+          message: '<p>Edited after enqueue</p>',
+          body: '<p>Edited after enqueue</p>',
+          attachments: [],
+        }),
+      ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+
+      expect(queuedMessageId).toBeTruthy();
+      const [draft] = await db
+        .select({
+          status: mailDraft.status,
+          isSent: mailDraft.isSent,
+          htmlBody: mailDraft.htmlBody,
+        })
+        .from(mailDraft)
+        .where(eq(mailDraft.id, draftId));
+      expect(draft).toEqual({
+        status: 'sent',
+        isSent: true,
+        htmlBody: '<p>Original body</p>',
+      });
+      const editedRevisions = await db
+        .select({ id: mailDraftRevision.id })
+        .from(mailDraftRevision)
+        .where(and(eq(mailDraftRevision.draftId, draftId), eq(mailDraftRevision.kind, 'edited')));
+      expect(editedRevisions).toHaveLength(0);
+      const [queue] = await db
+        .select({ status: outboundSendQueue.status })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, queuedMessageId!));
+      expect(queue?.status).toBe('pending');
+    });
+  }, 30000);
+
+  it('rejects an id-less conflict save after one unknown SMTP attempt', async () => {
+    await withSeededTestDb(async (db) => {
+      process.env.UNDO_SEND_SECONDS = '0';
+      process.env.MAIL_SELF_BCC = 'false';
+      const { threadId, draftId } = await seedIdlessConflictDraft(db);
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
+      const smtpSend = vi
+        .fn<SmtpTransport['send']>()
+        .mockRejectedValue(new Error('synthetic idless SMTP outcome unknown'));
+      __setSmtpTransportForTests({ kind: 'fake', send: smtpSend });
+      let attemptResult: unknown;
+      __setDraftCreateConflictHookForTests(async () => {
+        attemptResult = await caller.mail.send({
+          threadId,
+          draftId,
+          to: ['guest@example.com'],
+          subject: 'Re: Booking',
+          message: '<p>Original body</p>',
+        });
+      });
+
+      await expect(
+        caller.drafts.create({
+          id: null,
+          threadId,
+          to: 'guest@example.com',
+          subject: 'Re: Booking edited',
+          message: '<p>Edited after attempt</p>',
+          body: '<p>Edited after attempt</p>',
+          attachments: [],
+        }),
+      ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+
+      expect(attemptResult).toMatchObject({ sent: false, delivery: 'unknown' });
+      expect(smtpSend).toHaveBeenCalledTimes(1);
+      const [draft] = await db
+        .select({
+          status: mailDraft.status,
+          isSent: mailDraft.isSent,
+          htmlBody: mailDraft.htmlBody,
+        })
+        .from(mailDraft)
+        .where(eq(mailDraft.id, draftId));
+      expect(draft).toEqual({
+        status: 'sent',
+        isSent: true,
+        htmlBody: '<p>Original body</p>',
+      });
+      const editedRevisions = await db
+        .select({ id: mailDraftRevision.id })
+        .from(mailDraftRevision)
+        .where(and(eq(mailDraftRevision.draftId, draftId), eq(mailDraftRevision.kind, 'edited')));
+      expect(editedRevisions).toHaveLength(0);
+      const [queue] = await db
+        .select({ status: outboundSendQueue.status, lastError: outboundSendQueue.lastError })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.transportId, TRANSPORT_ID));
+      expect(queue?.status).toBe('sending');
+      expect(queue?.lastError).toContain('SMTP_DELIVERY_OUTCOME_UNKNOWN');
+    });
+  }, 30000);
+
+  it('rejects an AI approval when the succeeded run has no trusted route release', async () => {
+    const previousModelRoute = process.env.AI_MODEL_ROUTE;
+    const previousDraftConfig = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+    delete process.env.AI_MODEL_ROUTE;
+    delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+    try {
+      await withSeededTestDb(async (db) => {
+        const threadId = randomUUID();
+        const parentMessageId = randomUUID();
+        const draftId = randomUUID();
+        const generationId = randomUUID();
+        const runId = randomUUID();
+        const revisionId = randomUUID();
+        const body = '<p>Legacy approval body</p>';
+        const evidence = {
+          kind: 'hms' as const,
+          id: `evidence-${generationId}`,
+          toolId: 'hms_quote_stay',
+          toolVersion: '1',
+          propertyCode: 'HRCEN',
+          observedAt: '2026-09-09T10:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          claimKeys: ['rate'],
+          sourceHash: '1'.repeat(64),
+          scopeVerified: true,
+        };
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Booking',
+          snippet: 'Legacy approval',
+          latestMessageAt: new Date('2026-09-10T10:00:00Z'),
+        });
+        await db.insert(message).values({
+          id: parentMessageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Booking',
+          textBody: 'Please confirm the reservation.',
+          receivedAt: new Date('2026-09-10T10:00:00Z'),
+        });
+        const threadStateVersion = await loadLiveThreadStateVersion(db, {
+          transportId: TRANSPORT_ID,
+          threadId,
+        });
+        await db.insert(aiDraftGeneration).values({
+          id: generationId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          requestedByUserId: 'user-navaai',
+          contextMessageIds: [parentMessageId],
+          model: 'legacy-route-model',
+          promptVersion: 'draft-v1',
+          status: 'succeeded',
+          outcome: 'candidate',
+          threadStateVersion,
+          evidence: [evidence],
+        });
+        await db.insert(mailDraft).values({
+          id: draftId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          createdByUserId: 'user-navaai',
+          status: 'active',
+          origin: 'ai',
+          generationId,
+          replyToMessageId: parentMessageId,
+          toAddresses: ['guest@example.com'],
+          subject: 'Re: Booking',
+          textBody: 'Legacy approval body',
+          htmlBody: body,
+        });
+        await db.insert(mailDraftRevision).values({
+          id: revisionId,
+          draftId,
+          generationId,
+          actorUserId: 'user-navaai',
+          kind: 'ai_generated',
+          toAddresses: ['guest@example.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Re: Booking',
+          textBody: 'Legacy approval body',
+          htmlBody: body,
+          attachments: [],
+        });
+        const coarseRoute = {
+          routeId: 'legacy-coarse-route',
+          modelId: 'legacy-coarse-model',
+          purpose: 'draft' as const,
+          protocol: 'in_process' as const,
+          access: 'current_app' as const,
+          egress: 'none' as const,
+          retention: 'bounded' as const,
+          usage: 'reported' as const,
+        };
+        await db.insert(aiWorkflowRun).values({
+          id: runId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: parentMessageId,
+          runKind: 'candidate_draft',
+          idempotencyKey: `u6-legacy-route:${runId}`,
+          modelId: 'legacy-route-model',
+          promptVersion: 'draft-v1',
+          state: 'succeeded',
+          executorLane: 'default',
+          generationId,
+          metrics: { routeBinding: coarseRoute },
+          finishedAt: new Date(),
+        });
+
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: TRANSPORT_ID,
+        });
+        await expect(
+          caller.drafts.approve({
+            draftId,
+            subject: 'Re: Booking',
+            html: body,
+            text: '',
+            to: ['guest@example.com'],
+            cc: [],
+            bcc: [],
+            attachments: [],
+          }),
+        ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+
+        // A generation with no succeeded candidate run is equally unable to
+        // establish trusted AI provenance; do not let the server signer turn
+        // the legacy draft into an approval.
+        await db
+          .update(aiWorkflowRun)
+          .set({ state: 'dead_letter' })
+          .where(eq(aiWorkflowRun.id, runId));
+        await expect(
+          caller.drafts.approve({
+            draftId,
+            subject: 'Re: Booking',
+            html: body,
+            text: '',
+            to: ['guest@example.com'],
+            cc: [],
+            bcc: [],
+            attachments: [],
+          }),
+        ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+        await db
+          .update(aiWorkflowRun)
+          .set({ state: 'succeeded' })
+          .where(eq(aiWorkflowRun.id, runId));
+      });
+    } finally {
+      if (previousModelRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+      else process.env.AI_MODEL_ROUTE = previousModelRoute;
+      if (previousDraftConfig === undefined) delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+      else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = previousDraftConfig;
+    }
+  }, 30000);
+
   it('rejects stale draft send until caller confirms, then writes sent revision', async () => {
     await withSeededTestDb(async (db) => {
       process.env.UNDO_SEND_SECONDS = '0';
@@ -385,6 +834,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         htmlBody: body,
         attachments: [],
       });
+      await insertTrustedCandidateRun(db, {
+        generationId,
+        threadId,
+        triggerMessageId: parentMessageId,
+      });
 
       const caller = await callerFor('user-navaai', {
         db,
@@ -529,6 +983,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         textBody: 'Candidate',
         htmlBody: body,
         attachments: [],
+      });
+      await insertTrustedCandidateRun(db, {
+        generationId,
+        threadId,
+        triggerMessageId: parentMessageId,
       });
 
       const caller = await callerFor('user-navaai', {
@@ -675,6 +1134,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         htmlBody: body,
         attachments: [],
       });
+      await insertTrustedCandidateRun(db, {
+        generationId,
+        threadId,
+        triggerMessageId: parentMessageId,
+      });
 
       const caller = await callerFor('user-navaai', {
         db,
@@ -773,16 +1237,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
     const previousDraftConfig = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
     process.env.AI_DRAFTS_ENABLED = 'true';
     process.env.AI_MODEL_ROUTE = 'approved-local';
-    const route = {
-      routeId: 'u6-current-authority-route',
-      modelId: 'u6-current-authority-model',
-      purpose: 'draft' as const,
-      protocol: 'in_process' as const,
-      access: 'current_app' as const,
-      egress: 'none' as const,
-      retention: 'bounded' as const,
-      usage: 'reported' as const,
-    };
+    const route = { ...TRUSTED_DRAFT_ROUTE };
+    const temporaryAuthorityDirectory = mkdtempSync(join(tmpdir(), 'u6-authority-'));
+    const temporaryAuthorityModule = join(temporaryAuthorityDirectory, 'configured.cjs');
+    const temporarilyRemovedAuthorityModule = `${temporaryAuthorityModule}.removed`;
+    copyFileSync(TRUSTED_DRAFT_MODULE, temporaryAuthorityModule);
     const release = {
       releaseId: 'u6-draft-release-a',
       releaseVersion: '2026.09.09.1',
@@ -795,7 +1254,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
       withdrawn: false,
     };
     const descriptor = {
-      module: 'node:missing-u6-authority-module',
+      module: TRUSTED_DRAFT_MODULE,
       route,
       release,
     };
@@ -951,6 +1410,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
           routeBinding: expect.objectContaining({ routeId: route.routeId }),
         });
 
+        // Keep the descriptor unchanged while its configured local module is
+        // unavailable; approval revalidation checks path presence only and
+        // never initializes the factory/model.
+        const unavailableDescriptor = {
+          ...descriptor,
+          module: temporaryAuthorityModule,
+        };
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify(unavailableDescriptor);
+        renameSync(temporaryAuthorityModule, temporarilyRemovedAuthorityModule);
+        try {
+          await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
+            code: 'CONFLICT',
+            message: 'DRAFT_APPROVAL_INVALID',
+          });
+        } finally {
+          renameSync(temporarilyRemovedAuthorityModule, temporaryAuthorityModule);
+        }
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify(descriptor);
+
         process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
           ...descriptor,
           route: { ...route, routeId: 'u6-current-authority-route-b' },
@@ -959,6 +1437,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
             releaseId: 'u6-draft-release-b',
             sourceRevision: 'source-b',
             fingerprint: 'b'.repeat(64),
+          },
+        });
+        await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
+          code: 'CONFLICT',
+          message: 'DRAFT_APPROVAL_INVALID',
+        });
+
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          ...descriptor,
+          release: {
+            ...release,
+            capabilityFamilyVersions: { draft: 'u6-draft-v2' },
           },
         });
         await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
@@ -1005,6 +1495,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
           JSON.stringify({
             ...descriptor,
             release: { ...release, expiresAt: '2020-01-01T00:00:00.000Z' },
+          }),
+          JSON.stringify({
+            ...descriptor,
+            release: {
+              ...release,
+              capabilityFamilyVersions: { draft: 'u6-draft-v2' },
+            },
           }),
         ] as const;
         for (const invalidDescriptor of invalidMailAuthorities) {
@@ -1056,6 +1553,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
           .from(mailDraft)
           .where(eq(mailDraft.id, draftId));
         expect(restored).toEqual({ status: 'active', isSent: false });
+
+        // Re-queue the same signed review and change only the capability
+        // family at the final SMTP-attempt fence.
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify(descriptor);
+        const familyApproval = await caller.drafts.approve(approvalInput);
+        const familyQueued = await caller.mail.send({
+          threadId,
+          draftId,
+          to: ['guest@example.com'],
+          subject: 'Re: Booking',
+          message: body,
+          draftApproval: familyApproval,
+        });
+        expect(familyQueued).toMatchObject({ queued: true });
+        await __forceSendAtPastForTests(familyQueued.messageId, TRANSPORT_ID, db);
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          ...descriptor,
+          release: {
+            ...release,
+            capabilityFamilyVersions: { draft: 'u6-draft-v2' },
+          },
+        });
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+        expect(smtpSend).not.toHaveBeenCalled();
+        const [familyQueue] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.messageId, familyQueued.messageId));
+        expect(familyQueue).toBeUndefined();
       });
     } finally {
       if (previousDraftsEnabled === undefined) delete process.env.AI_DRAFTS_ENABLED;
@@ -1064,6 +1590,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
       else process.env.AI_MODEL_ROUTE = previousModelRoute;
       if (previousDraftConfig === undefined) delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
       else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = previousDraftConfig;
+      rmSync(temporaryAuthorityDirectory, { recursive: true, force: true });
     }
   }, 30000);
 
@@ -1149,6 +1676,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         textBody: 'Candidate',
         htmlBody: body,
         attachments: [],
+      });
+      await insertTrustedCandidateRun(db, {
+        generationId,
+        threadId,
+        triggerMessageId: parentMessageId,
       });
       const caller = await callerFor('user-navaai', {
         db,
@@ -1283,6 +1815,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         textBody: 'Candidate',
         htmlBody: body,
         attachments: [],
+      });
+      await insertTrustedCandidateRun(db, {
+        generationId,
+        threadId,
+        triggerMessageId: parentMessageId,
       });
       const caller = await callerFor('user-navaai', {
         db,

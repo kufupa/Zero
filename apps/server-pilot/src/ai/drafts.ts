@@ -1,4 +1,15 @@
-import { aiDraftGeneration, mailDraft, mailDraftRevision, message } from '../db/schema/mail.js';
+import {
+  canonicalJson,
+  resolveDraftApprovalRouteBinding,
+  type DraftApprovalRouteBinding,
+} from './draft-approval.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  mailDraft,
+  mailDraftRevision,
+  message,
+} from '../db/schema/mail.js';
 import { and, desc, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
 import { computeThreadStateVersion } from './thread-context.js';
 import type { DB } from '../db/client.js';
@@ -8,6 +19,14 @@ export class ThreadStateStaleError extends Error {
   constructor(message = 'thread state version stale') {
     super(message);
     this.name = 'ThreadStateStaleError';
+  }
+}
+
+/** A retry must not reuse an edited body under a different AI release. */
+export class DraftGenerationRouteMismatchError extends Error {
+  constructor(message = 'draft generation route release changed') {
+    super(message);
+    this.name = 'DraftGenerationRouteMismatchError';
   }
 }
 
@@ -142,6 +161,8 @@ export interface PersistAiCandidateDraftInput {
    * no mailDraft / revision rows.
    */
   persistDraft?: boolean;
+  /** Complete trusted route/release provenance for a normal candidate run. */
+  routeBinding?: DraftApprovalRouteBinding;
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
@@ -166,7 +187,30 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         ),
       )
       .limit(1);
-    if (existingDraft[0]) return existingDraft[0];
+    if (existingDraft[0]) {
+      if (persistDraft && input.routeBinding && existingDraft[0].origin === 'ai') {
+        const [previousRun] = await input.db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.generationId, input.generationId),
+              eq(aiWorkflowRun.runKind, 'candidate_draft'),
+              eq(aiWorkflowRun.state, 'succeeded'),
+            ),
+          )
+          .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+          .limit(1);
+        const previousBinding = resolveDraftApprovalRouteBinding(previousRun?.metrics);
+        if (
+          !previousBinding ||
+          canonicalJson(previousBinding) !== canonicalJson(input.routeBinding)
+        ) {
+          throw new DraftGenerationRouteMismatchError();
+        }
+      }
+      return existingDraft[0];
+    }
 
     const existingRevision = await input.db
       .select({ draftId: mailDraftRevision.draftId })

@@ -74,8 +74,7 @@ const draftApprovalInput = z
             expiresAt: z.string(),
             withdrawn: z.boolean(),
           })
-          .strict()
-          .optional(),
+          .strict(),
       })
       .strict()
       .optional(),

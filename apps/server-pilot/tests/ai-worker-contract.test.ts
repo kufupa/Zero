@@ -905,6 +905,159 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     }
   });
 
+  it('does not reuse an A-generation body after a normal worker retry binds release B', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+      AI_APPROVED_LOCAL_DRAFT_CONFIG: process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG,
+    };
+    const route = {
+      routeId: 'u6-configured-draft-route',
+      purpose: 'draft' as const,
+      protocol: 'in_process' as const,
+      access: 'current_app' as const,
+      egress: 'none' as const,
+      retention: 'bounded' as const,
+      usage: 'reported' as const,
+      modelId: 'u6-configured-draft-model',
+    };
+    const releaseA = {
+      releaseId: 'u6-a-to-b-release-a',
+      releaseVersion: '2026.09.10.1',
+      sourceRevision: 'u6-a-to-b-source-a',
+      fingerprint: 'a'.repeat(64),
+      purpose: 'draft' as const,
+      capabilityFamilyVersions: { draft: 'u6-draft-v1' },
+      issuedAt: '2026-09-09T10:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      withdrawn: false,
+    };
+    const releaseB = {
+      ...releaseA,
+      releaseId: 'u6-a-to-b-release-b',
+      releaseVersion: '2026.09.10.2',
+      sourceRevision: 'u6-a-to-b-source-b',
+      fingerprint: 'b'.repeat(64),
+      capabilityFamilyVersions: { draft: 'u6-draft-v2' },
+    };
+    const fixturePath = join(here, 'fixtures', 'u6-approved-local-draft.cjs');
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+    process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+      module: fixturePath,
+      route,
+      release: releaseA,
+    });
+
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'A to B release retry',
+          snippet: 'Please confirm the reservation.',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'A to B release retry',
+          textBody: 'Please confirm the reservation.',
+          receivedAt: new Date(),
+        });
+
+        const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: 'user-navaai', email: '', name: null },
+          ...mailbox,
+        });
+        const first = await caller.ai.refreshHmsCandidate({ threadId });
+        expect(await runAiWorkerOnce()).toBe(true);
+        const [firstRun] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, first.runId));
+        expect(firstRun?.state).toBe('succeeded');
+        expect(firstRun?.generationId).toBeTruthy();
+
+        const adopted = await caller.drafts.ensureEditableForReply({
+          threadId,
+          replyToMessageId: messageId,
+        });
+        await caller.drafts.update({
+          id: adopted.id,
+          subject: 'Re: A to B release retry',
+          content: 'Body written under release A.',
+          html: '<p>Body written under release A.</p>',
+        });
+        const revisionsBeforeRetry = await db
+          .select()
+          .from(mailDraftRevision)
+          .where(eq(mailDraftRevision.draftId, adopted.id));
+
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          module: fixturePath,
+          route,
+          release: releaseB,
+        });
+        const second = await caller.ai.refreshHmsCandidate({ threadId });
+        await db
+          .update(aiWorkflowRun)
+          .set({ generationId: firstRun!.generationId })
+          .where(eq(aiWorkflowRun.id, second.runId));
+        expect(await runAiWorkerOnce()).toBe(true);
+
+        const [secondRun] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, second.runId));
+        expect(secondRun?.generationId).toBe(firstRun?.generationId);
+        expect(secondRun?.state).not.toBe('succeeded');
+        expect(secondRun?.metrics).not.toMatchObject({
+          routeBinding: { release: releaseB },
+        });
+
+        const [draft] = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+        expect(draft?.generationId).toBe(firstRun?.generationId);
+        const revisions = await db
+          .select()
+          .from(mailDraftRevision)
+          .where(eq(mailDraftRevision.draftId, draft!.id));
+        expect(revisions).toHaveLength(revisionsBeforeRetry.length);
+        await expect(
+          caller.drafts.approve({
+            draftId: adopted.id,
+            subject: 'Re: A to B release retry',
+            html: '<p>Body written under release A.</p>',
+            text: 'Body written under release A.',
+            to: ['guest@example.com'],
+            cc: [],
+            bcc: [],
+            attachments: [],
+          }),
+        ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 30000);
+
   it('normal refresh keeps unavailable or invalid configured routes manual-only', async () => {
     const prior = {
       AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
@@ -1049,6 +1202,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
       AI_WORKER_LANE: process.env.AI_WORKER_LANE,
       HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+      AI_APPROVED_LOCAL_DRAFT_CONFIG: process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG,
       UNDO_SEND_SECONDS: process.env.UNDO_SEND_SECONDS,
       MAIL_SELF_BCC: process.env.MAIL_SELF_BCC,
     };
@@ -1100,9 +1254,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           usage: 'reported' as const,
           modelId: 'u6-joined-draft-model',
         };
+        const release = {
+          releaseId: 'u6-joined-draft-release',
+          releaseVersion: '2026.09.10.1',
+          sourceRevision: 'u6-joined-draft-source',
+          fingerprint: 'e'.repeat(64),
+          purpose: 'draft' as const,
+          capabilityFamilyVersions: { draft: 'u6-draft-v1' },
+          issuedAt: '2026-09-09T10:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          withdrawn: false,
+        };
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          module: join(here, 'fixtures', 'u6-approved-local-draft.cjs'),
+          route,
+          release,
+        });
         let transportCalls = 0;
         const candidateDraftRouteFactory = () => ({
           route,
+          release,
           transport: async () => {
             transportCalls += 1;
             return {

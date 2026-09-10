@@ -197,6 +197,14 @@ export function resolveCurrentDraftRouteAuthority(): DraftRouteAuthority | undef
   if (process.env.AI_MODEL_ROUTE !== 'approved-local') return undefined;
   const descriptor = parseConfiguredDraftRouteDescriptor();
   if (!descriptor || !isActiveDraftRouteRelease(descriptor.release)) return undefined;
+  // Approval revalidation must not initialize a provider/model or invoke the
+  // route factory. Resolve only the explicitly configured local module path;
+  // a removed module means current authority is unavailable and fails closed.
+  try {
+    createRequire(import.meta.url).resolve(descriptor.module);
+  } catch {
+    return undefined;
+  }
   return { route: descriptor.route, release: descriptor.release };
 }
 

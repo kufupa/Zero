@@ -4116,6 +4116,14 @@ export async function executeAiRun(
           textBody: preparedReply.textBody,
           htmlBody: preparedReply.htmlBody,
           outcome: persistedOutcome,
+          ...(options.candidateDraftRoute?.release
+            ? {
+                routeBinding: {
+                  ...options.candidateDraftRoute.route,
+                  release: options.candidateDraftRoute.release,
+                },
+              }
+            : {}),
           persistDraft: true,
         });
         const marked = await markAiRunSucceeded({

@@ -60,6 +60,19 @@ function isPostgresUniqueViolation(err: unknown): boolean {
   return false;
 }
 
+type DraftCreateConflictHook = (input: {
+  db: DB;
+  draftId: string;
+  transportId: string;
+}) => Promise<void>;
+
+let draftCreateConflictHookForTests: DraftCreateConflictHook | null = null;
+
+/** Deterministic test seam for the id-less unique-conflict select→update gap. */
+export function __setDraftCreateConflictHookForTests(hook: DraftCreateConflictHook | null): void {
+  draftCreateConflictHookForTests = hook;
+}
+
 /** Bump when candidate tool registry / claim schemas change. */
 export { HMS_CANDIDATE_TOOLSET_VERSION } from '../../ai/candidate-draft-agent.js';
 import { HMS_CANDIDATE_TOOLSET_VERSION } from '../../ai/candidate-draft-agent.js';
@@ -718,6 +731,9 @@ export const draftsRouter = tRouter({
         .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
         .limit(1);
       const routeBinding = resolveDraftApprovalRouteBinding(candidateRun?.metrics);
+      if (!routeBinding?.release) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+      }
 
       const threadStateVersion = await loadLiveThreadStateVersion(db, {
         transportId,
@@ -982,29 +998,31 @@ export const draftsRouter = tRouter({
     }
 
     try {
-      await db.insert(mailDraft).values({
-        id: draftId,
-        transportId,
-        createdByUserId: ctx.sessionUser.id,
-        isSent: false,
-        status: 'active',
-        origin: 'manual',
-        ...row,
+      return await db.transaction(async (tx) => {
+        await tx.insert(mailDraft).values({
+          id: draftId,
+          transportId,
+          createdByUserId: ctx.sessionUser.id,
+          isSent: false,
+          status: 'active',
+          origin: 'manual',
+          ...row,
+        });
+        await tx.insert(mailDraftRevision).values({
+          id: randomUUID(),
+          draftId,
+          actorUserId: ctx.sessionUser.id,
+          kind: 'created',
+          toAddresses: input.to,
+          ccAddresses: input.cc,
+          bccAddresses: input.bcc,
+          subject: input.subject || null,
+          textBody: input.html || null,
+          htmlBody: input.html || null,
+          attachments: [],
+        });
+        return { id: draftId };
       });
-      await db.insert(mailDraftRevision).values({
-        id: randomUUID(),
-        draftId,
-        actorUserId: ctx.sessionUser.id,
-        kind: 'created',
-        toAddresses: input.to,
-        ccAddresses: input.cc,
-        bccAddresses: input.bcc,
-        subject: input.subject || null,
-        textBody: input.html || null,
-        htmlBody: input.html || null,
-        attachments: [],
-      });
-      return { id: draftId };
     } catch (error) {
       // One active draft per thread — FE may omit draftId while latestDraft already exists.
       if (!isPostgresUniqueViolation(error) || !input.threadId) throw error;
@@ -1023,11 +1041,66 @@ export const draftsRouter = tRouter({
         .limit(1);
       const activeId = activeRows[0]?.id;
       if (!activeId) throw error;
-      await db
-        .update(mailDraft)
-        .set(row)
-        .where(and(eq(mailDraft.id, activeId), eq(mailDraft.transportId, transportId)));
-      return { id: activeId };
+      if (draftCreateConflictHookForTests) {
+        await draftCreateConflictHookForTests({
+          db,
+          draftId: activeId,
+          transportId,
+        });
+      }
+      return await db.transaction(async (tx) => {
+        const [prior] = await tx
+          .select()
+          .from(mailDraft)
+          .where(and(eq(mailDraft.id, activeId), eq(mailDraft.transportId, transportId)))
+          .limit(1)
+          .for('update');
+        if (!prior || prior.isSent || prior.status !== 'active') {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
+
+        const [updated] = await tx
+          .update(mailDraft)
+          .set({ ...row, status: 'active' as const })
+          .where(
+            and(
+              eq(mailDraft.id, activeId),
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .returning({ id: mailDraft.id });
+        if (!updated) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
+
+        const changed =
+          JSON.stringify(prior.toAddresses ?? []) !== JSON.stringify(row.toAddresses) ||
+          JSON.stringify(prior.ccAddresses ?? []) !== JSON.stringify(row.ccAddresses) ||
+          JSON.stringify(prior.bccAddresses ?? []) !== JSON.stringify(row.bccAddresses) ||
+          prior.subject !== row.subject ||
+          prior.textBody !== row.textBody ||
+          prior.htmlBody !== row.htmlBody ||
+          JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
+        if (changed) {
+          await tx.insert(mailDraftRevision).values({
+            id: randomUUID(),
+            draftId: activeId,
+            generationId: prior.generationId,
+            actorUserId: ctx.sessionUser.id,
+            kind: 'edited',
+            toAddresses: row.toAddresses,
+            ccAddresses: row.ccAddresses,
+            bccAddresses: row.bccAddresses,
+            subject: row.subject,
+            textBody: row.textBody,
+            htmlBody: row.htmlBody,
+            attachments: row.attachments,
+          });
+        }
+        return { id: activeId };
+      });
     }
   }),
 

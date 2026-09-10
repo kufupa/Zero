@@ -46,7 +46,7 @@ export type DraftApprovalRouteBinding = {
   egress: 'none';
   retention: 'bounded';
   usage: 'reported';
-  release?: DraftRouteReleaseDescriptor;
+  release: DraftRouteReleaseDescriptor;
 };
 
 export type DraftApprovalPayload = {
@@ -106,7 +106,7 @@ function isDraftRouteBinding(value: unknown): value is DraftApprovalRouteBinding
     candidate.egress === 'none' &&
     candidate.retention === 'bounded' &&
     candidate.usage === 'reported' &&
-    (candidate.release === undefined || isDraftRouteReleaseDescriptor(candidate.release))
+    isDraftRouteReleaseDescriptor(candidate.release)
   );
 }
 
@@ -313,8 +313,7 @@ const draftApprovalSchema = z
             expiresAt: z.string().datetime(),
             withdrawn: z.boolean(),
           })
-          .strict()
-          .optional(),
+          .strict(),
       })
       .strict()
       .optional(),
@@ -561,28 +560,19 @@ export async function assertDraftApprovalCurrent(input: {
     throw new DraftApprovalError('approved draft route unavailable');
   }
 
-  if (approval.routeBinding) {
-    const currentAuthority = resolveCurrentDraftRouteAuthority();
-    if (currentAuthority || approval.routeBinding.release) {
-      const currentRoute = currentAuthority
-        ? { ...currentAuthority.route, release: currentAuthority.release }
-        : undefined;
-      if (
-        !approval.routeBinding.release ||
-        !currentRoute ||
-        canonicalJson(currentRoute) !== canonicalJson(approval.routeBinding)
-      ) {
-        throw new DraftApprovalError('approved draft route release changed');
-      }
-    } else {
-      const persistedRoute = resolveDraftApprovalRouteBinding(run?.metrics);
-      if (
-        !persistedRoute ||
-        canonicalJson(persistedRoute) !== canonicalJson(approval.routeBinding)
-      ) {
-        throw new DraftApprovalError('approved draft route release changed');
-      }
-    }
+  if (!approval.routeBinding?.release) {
+    throw new DraftApprovalError('approved draft route release unavailable');
+  }
+  const persistedRoute = resolveDraftApprovalRouteBinding(run?.metrics);
+  if (!persistedRoute || canonicalJson(persistedRoute) !== canonicalJson(approval.routeBinding)) {
+    throw new DraftApprovalError('approved draft route release changed');
+  }
+  const currentAuthority = resolveCurrentDraftRouteAuthority();
+  const currentRoute = currentAuthority
+    ? { ...currentAuthority.route, release: currentAuthority.release }
+    : undefined;
+  if (!currentRoute || canonicalJson(currentRoute) !== canonicalJson(approval.routeBinding)) {
+    throw new DraftApprovalError('approved draft route release changed');
   }
 
   const liveThreadStateVersion = await input.loadThreadStateVersion(input.db, {
