@@ -767,6 +767,51 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
     });
   });
 
+  it('creates a fresh read attempt after terminal failure and deduplicates concurrent retriggers', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const firstInput = await readRunInput(context, 'terminal-retry-first');
+      const first = await enqueueAiRun(firstInput, db);
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'dead_letter',
+          failureClass: 'POLICY_BLOCK',
+          lastError: 'synthetic terminal read failure',
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(aiWorkflowRun.id, first.id));
+
+      const retryInput = await readRunInput(context, 'terminal-retry-second');
+      retryInput.idempotencyKey = firstInput.idempotencyKey;
+      const retry = await enqueueAiRun(retryInput, db);
+
+      expect(retry.id).not.toBe(first.id);
+      expect(retry.state).toBe('queued');
+      expect(retry.readResultRef).toBe(retryInput.readResultRef);
+
+      const concurrentInputs = await Promise.all([
+        readRunInput(context, 'terminal-retry-concurrent-a'),
+        readRunInput(context, 'terminal-retry-concurrent-b'),
+      ]);
+      concurrentInputs[0].idempotencyKey = firstInput.idempotencyKey;
+      concurrentInputs[1].idempotencyKey = firstInput.idempotencyKey;
+      const [concurrentA, concurrentB] = await Promise.all(
+        concurrentInputs.map((input) => enqueueAiRun(input, db)),
+      );
+
+      expect(concurrentA.id).toBe(retry.id);
+      expect(concurrentB.id).toBe(retry.id);
+      const rows = await db
+        .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.threadId, context.threadId));
+      expect(rows.filter((row) => row.id === first.id || row.id === retry.id)).toHaveLength(2);
+      expect(rows.find((row) => row.id === first.id)?.state).toBe('dead_letter');
+    });
+  });
+
   it.each(['serialized', 'object-spread', 'raw-object'] as const)(
     'rejects a %s issuer ticket before inserting a queued run',
     async (variant) => {
@@ -924,6 +969,79 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           toolId: 'hms_read_reservation',
           status: expect.any(String),
         });
+      });
+    });
+  });
+
+  it('binds identical read requests to each authorized mailbox access and preserves receipt guards', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        installActiveFindReleaseForTests();
+        const firstCaller = createInjectedReadCaller(CENTURION_USER_ID, context.transportId);
+        const secondCaller = createInjectedReadCaller(MARTHA_USER_ID, context.transportId);
+
+        const [first, second] = await Promise.all([
+          firstCaller.ai.enqueueHmsRead({ threadId: context.threadId }),
+          secondCaller.ai.enqueueHmsRead({ threadId: context.threadId }),
+        ]);
+
+        expect(first.runId).not.toBe(second.runId);
+        expect(first.readResultRef).not.toBe(second.readResultRef);
+        const firstDuplicate = await firstCaller.ai.enqueueHmsRead({
+          threadId: context.threadId,
+        });
+        expect(firstDuplicate.runId).toBe(first.runId);
+        expect(firstDuplicate.readResultRef).toBe(first.readResultRef);
+
+        const [firstRow, secondRow] = await Promise.all(
+          [first.runId, second.runId].map(async (runId) => {
+            const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+            return row;
+          }),
+        );
+        expect(firstRow?.metrics).toMatchObject({
+          readAdmissionIssuer: { userId: CENTURION_USER_ID },
+        });
+        expect(secondRow?.metrics).toMatchObject({
+          readAdmissionIssuer: { userId: MARTHA_USER_ID },
+        });
+
+        await db
+          .update(aiWorkflowRun)
+          .set({
+            state: 'succeeded',
+            readResult: positiveFindResult,
+            readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+          })
+          .where(eq(aiWorkflowRun.id, first.runId));
+        await db
+          .update(aiWorkflowRun)
+          .set({
+            state: 'succeeded',
+            readResult: positiveFindResult,
+            readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+          })
+          .where(eq(aiWorkflowRun.id, second.runId));
+
+        await expect(
+          firstCaller.ai.readHmsReceipt({
+            threadId: context.threadId,
+            readResultRef: first.readResultRef,
+          }),
+        ).resolves.toMatchObject({ result: { toolId: 'hms_find_reservation' } });
+        await expect(
+          secondCaller.ai.readHmsReceipt({
+            threadId: context.threadId,
+            readResultRef: second.readResultRef,
+          }),
+        ).resolves.toMatchObject({ result: { toolId: 'hms_find_reservation' } });
+        await expect(
+          secondCaller.ai.readHmsReceipt({
+            threadId: context.threadId,
+            readResultRef: first.readResultRef,
+          }),
+        ).rejects.toThrow(/READ_RECEIPT_NOT_FOUND/);
       });
     });
   });

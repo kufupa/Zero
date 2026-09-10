@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
@@ -85,6 +85,20 @@ export const NONTERMINAL_AI_RUN_STATES = [
   'running',
   'retry_wait',
 ] as const satisfies readonly AiWorkflowRunState[];
+
+const NONTERMINAL_AI_RUN_STATE_SET = new Set<AiWorkflowRunState>(NONTERMINAL_AI_RUN_STATES);
+
+function isTerminalReadRun(run: AiWorkflowRun): boolean {
+  return (
+    run.runKind === READ_TOOL_RUN_KIND &&
+    !NONTERMINAL_AI_RUN_STATE_SET.has(run.state) &&
+    run.state !== 'succeeded'
+  );
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
 
 export type AiRunFence = {
   runId: string;
@@ -425,48 +439,102 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   }
   const now = new Date();
   const id = randomUUID();
+  const values = {
+    id,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    runKind: input.runKind,
+    idempotencyKey: input.idempotencyKey,
+    modelId: input.modelId,
+    promptVersion: input.promptVersion,
+    promptHash: input.promptHash,
+    readRequest: input.readRequest,
+    readResultRef: input.readResultRef,
+    ...(readAdmissionBinding || readAdmissionIssuer
+      ? {
+          metrics: {
+            ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
+            ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
+          },
+        }
+      : {}),
+    executorLane: input.executorLane ?? 'default',
+    state: 'queued' as const,
+    createdAt: now,
+    updatedAt: now,
+  };
 
-  const [inserted] = await db
-    .insert(aiWorkflowRun)
-    .values({
-      id,
-      transportId: input.transportId,
-      threadId: input.threadId,
-      triggerMessageId: input.triggerMessageId,
-      runKind: input.runKind,
-      idempotencyKey: input.idempotencyKey,
-      modelId: input.modelId,
-      promptVersion: input.promptVersion,
-      promptHash: input.promptHash,
-      readRequest: input.readRequest,
-      readResultRef: input.readResultRef,
-      ...(readAdmissionBinding || readAdmissionIssuer
-        ? {
-            metrics: {
-              ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
-              ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
-            },
-          }
-        : {}),
-      executorLane: input.executorLane ?? 'default',
-      state: 'queued',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
-    .returning();
+  if (input.runKind !== READ_TOOL_RUN_KIND) {
+    const [inserted] = await db
+      .insert(aiWorkflowRun)
+      .values(values)
+      .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
+      .returning();
 
-  if (inserted) return inserted;
+    if (inserted) return inserted;
 
-  const [existing] = await db
-    .select()
-    .from(aiWorkflowRun)
-    .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
-    .limit(1);
-  if (!existing) {
-    throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    const [existing] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
+      .limit(1);
+    if (!existing) {
+      throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    }
+    return existing;
   }
-  return existing;
+
+  return db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(aiWorkflowRun)
+      .values(values)
+      .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
+      .returning();
+    if (inserted) return inserted;
+
+    const [existing] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
+      .limit(1)
+      .for('update');
+    if (!existing) {
+      throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    }
+    if (!isTerminalReadRun(existing)) return existing;
+
+    const retryPrefix = `${escapeLikePrefix(input.idempotencyKey)}:attempt:`;
+    const [latestAttempt] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.runKind, READ_TOOL_RUN_KIND),
+          like(aiWorkflowRun.idempotencyKey, `${retryPrefix}%`),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+      .limit(1)
+      .for('update');
+    if (latestAttempt && !isTerminalReadRun(latestAttempt)) return latestAttempt;
+
+    const retryKey = `${input.idempotencyKey}:attempt:${randomUUID()}`;
+    const [retry] = await tx
+      .insert(aiWorkflowRun)
+      .values({
+        ...values,
+        id: randomUUID(),
+        idempotencyKey: retryKey,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+    if (!retry) {
+      throw new Error(`failed to enqueue retry for key ${input.idempotencyKey}`);
+    }
+    return retry;
+  });
 }
 
 export async function claimNextAiRun(input: ClaimNextAiRunInput) {

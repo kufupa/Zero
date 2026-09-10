@@ -55,6 +55,10 @@ function existingDocumentAdmissionRelease() {
   };
 }
 
+function requesterScopedReadKey(baseKey: string, accessId: string): string {
+  return `${baseKey}:access:${accessId}`;
+}
+
 async function activeFindAdmission() {
   let active = getCachedActiveReadRuntime();
   if (!active) {
@@ -339,9 +343,12 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: isQuote
-            ? `hms-read-quote:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.quoteRequestRef}`
-            : `hms-read-find:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.candidateId}`,
+          idempotencyKey: requesterScopedReadKey(
+            isQuote
+              ? `hms-read-quote:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.quoteRequestRef}`
+              : `hms-read-find:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.candidateId}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -400,7 +407,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-context:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}:${input.detail}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-context:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}:${input.detail}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -455,7 +465,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-folio:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-folio:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -510,7 +523,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-company:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.reservationRef}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-company:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.reservationRef}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -568,7 +584,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-group:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.groupRef}:${input.sections.join(',')}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-group:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.groupRef}:${input.sections.join(',')}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -620,7 +639,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-event:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.eventRef}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-event:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.eventRef}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -684,7 +706,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-notes:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.resourceRef}:${input.states.join(',')}:${input.limit}:${input.cursor ?? ''}:${input.audience}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-notes:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.resourceRef}:${input.states.join(',')}:${input.limit}:${input.cursor ?? ''}:${input.audience}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -740,7 +765,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-doc-list:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${input.source}:${input.kind ?? ''}:${input.limit ?? 20}:${input.cursor ?? ''}:${input.requestedPriceVisibility}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-doc-list:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${input.source}:${input.kind ?? ''}:${input.limit ?? 20}:${input.cursor ?? ''}:${input.requestedPriceVisibility}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
@@ -786,7 +814,10 @@ export const aiRouter = tRouter({
           threadId: input.threadId,
           triggerMessageId: issued.triggerMessageId,
           runKind: 'read_tool',
-          idempotencyKey: `hms-read-doc-read:${ctx.activeTransportId}:${input.threadId}:${input.documentRef}:${input.format}`,
+          idempotencyKey: requesterScopedReadKey(
+            `hms-read-doc-read:${ctx.activeTransportId}:${input.threadId}:${input.documentRef}:${input.format}`,
+            issued.accessId,
+          ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
           executorLane: 'hms',
