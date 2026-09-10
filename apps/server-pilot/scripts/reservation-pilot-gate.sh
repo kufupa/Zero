@@ -553,7 +553,8 @@ case "${MODE}:${SLICE}" in
     run_vitest \
       "tests/shadow-evaluation.test.ts" \
       "tests/shadow-reference-matcher.test.ts" \
-      "tests/shadow-scorecard.test.ts"
+      "tests/shadow-scorecard.test.ts" \
+      "tests/draft-backtest-scorer.test.ts"
     ;;
   unit:approval)
     run_vitest \

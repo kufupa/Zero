@@ -1,10 +1,12 @@
 import {
+  appendEvalRecord,
   assertBacktestSourceSafe,
   aggregateRecords,
   compareDraftToGold,
   draftFromInboundSignals,
   extractCriticalTokens,
   isCenturionMailboxFrom,
+  loadScoredHashes,
   pairCenturionFromReply,
   pairCenturionGold,
   renderOfflineBracketDraft,
@@ -12,8 +14,17 @@ import {
   scoreDraftAgainstEvidence,
   type DraftEvalRecord,
 } from '../src/ai/draft-backtest.js';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 describe('pairCenturionGold', () => {
   it('pairs earliest later Centurion outbound on same thread', () => {
@@ -416,5 +427,131 @@ describe('aggregate + safety', () => {
         { ...records[0], inboundMessageIdHash: 'mode-b', evaluationMode: 'current-state' },
       ]),
     ).toThrow(/evaluation mode/i);
+  });
+});
+
+describe('loadScoredHashes', () => {
+  it('resumes matching-mode rows, skips corrupt input, and prefers gold hashes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zero-draft-backtest-resume-'));
+    const runId = 'matching-mode';
+    const resultsPath = join(root, runId, 'results.jsonl');
+    try {
+      appendEvalRecord(root, runId, {
+        runId,
+        inboundMessageIdHash: 'inbound-with-gold',
+        threadIdHash: 'thread-a',
+        goldKind: 'centurion_outbound',
+        draftText: 'draft-a',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'historical-replay',
+        goldMessageIdHash: 'gold-preferred',
+      });
+      appendEvalRecord(root, runId, {
+        runId,
+        inboundMessageIdHash: 'inbound-only',
+        threadIdHash: 'thread-b',
+        goldKind: 'no_gold_reply',
+        draftText: 'draft-b',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'historical-replay',
+      });
+      appendFileSync(resultsPath, 'not-json\n');
+      appendFileSync(resultsPath, `${JSON.stringify({ evaluationMode: 'historical-replay' })}\n`);
+      appendFileSync(resultsPath, '\n  \r\n');
+
+      expect(loadScoredHashes(root, runId, 'historical-replay')).toEqual(
+        new Set(['gold-preferred', 'inbound-only']),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a mixed-mode file when resuming with an explicit mode', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zero-draft-backtest-resume-'));
+    const runId = 'mixed-mode';
+    try {
+      appendEvalRecord(root, runId, {
+        runId,
+        inboundMessageIdHash: 'historical-row',
+        threadIdHash: 'thread-a',
+        goldKind: 'centurion_outbound',
+        draftText: 'draft-a',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'historical-replay',
+      });
+      appendEvalRecord(root, runId, {
+        runId,
+        inboundMessageIdHash: 'current-row',
+        threadIdHash: 'thread-b',
+        goldKind: 'centurion_outbound',
+        draftText: 'draft-b',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'current-state',
+      });
+
+      expect(() => loadScoredHashes(root, runId, 'historical-replay')).toThrow(
+        'persisted evaluation mode does not match requested mode',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a parsed row missing evaluation mode when resuming explicitly', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zero-draft-backtest-resume-'));
+    const runId = 'missing-mode';
+    try {
+      appendEvalRecord(root, runId, {
+        runId,
+        inboundMessageIdHash: 'historical-row',
+        threadIdHash: 'thread-a',
+        goldKind: 'centurion_outbound',
+        draftText: 'draft-a',
+        evidenceTokens: [],
+        bracketLines: [],
+        failureClasses: [],
+        scoredAt: '2026-08-07T00:00:00.000Z',
+        evaluationMode: 'historical-replay',
+      });
+      appendFileSync(
+        join(root, runId, 'results.jsonl'),
+        `${JSON.stringify({ inboundMessageIdHash: 'missing-mode-row' })}\n`,
+      );
+
+      expect(() => loadScoredHashes(root, runId, 'historical-replay')).toThrow(
+        'persisted evaluation mode does not match requested mode',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty set for an absent or empty results file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zero-draft-backtest-resume-'));
+    try {
+      expect(loadScoredHashes(root, 'absent-run', 'future-shadow')).toEqual(new Set());
+
+      const emptyRun = 'empty-run';
+      const emptyDir = join(root, emptyRun);
+      mkdirSync(emptyDir, { recursive: true });
+      writeFileSync(join(emptyDir, 'results.jsonl'), '\n  \r\n', 'utf8');
+
+      expect(loadScoredHashes(root, emptyRun, 'future-shadow')).toEqual(new Set());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

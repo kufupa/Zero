@@ -209,6 +209,7 @@ const SLICE_PLANS = {
         'tests/shadow-evaluation.test.ts',
         'tests/shadow-reference-matcher.test.ts',
         'tests/shadow-scorecard.test.ts',
+        'tests/draft-backtest-scorer.test.ts',
       ],
     },
     approval: {
