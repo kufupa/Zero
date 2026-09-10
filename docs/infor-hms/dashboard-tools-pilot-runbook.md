@@ -94,28 +94,33 @@ now fresh green for this slice; later activation bounds remain unchanged.
 ## U11 final integrated handoff (2026-09-10)
 
 Disposition: local proof only. The integrated DB slice reuses existing
-server-pilot admission, read, document, shadow, authenticated mail, and queue
+server-pilot admission, read, document, shadow, mailbox-context-authorized mail, and queue
 components. It does not enable a live model/PMS route, promote fixtures, or
 join browser output to a production server session.
 
 ### Three-phase owner check
 
-| Phase                    | Owner check                                                                                                                                                        | Implemented                                                                                                   | Locally verified / current proof                                                                                                                                                                | Live enablement                                                                                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Read-only surface     | Confirm dashboard cutoff/cohort and document receipts remain source-bound and manual when evidence is unavailable.                                                 | Existing dashboard/document UI, read admission, document service, and loopback fixture.                       | `browser dashboard` (desktop + mobile) and `browser documents`; model-free document DB slice.                                                                                                   | Not enabled; browser transport is loopback-only and synthetic.                                                                                                                        |
-| 2. Integrated boundaries | Confirm read receipts, causal shadow separation, and human mail send/queue receipts before any release decision.                                                   | `apps/server-pilot/tests/reservation-tools-pilot-integration.test.ts`; exact `db:integration` gate.           | Three DB cases pass on owned disposable PG16: model-free document/manual fallback, private future-shadow matching/scorecard, and authenticated manual `mail.send` → outbound queue → fake SMTP. | Not enabled; the SMTP edge, document bytes, shadow model/labels, and seeded rows are synthetic/local.                                                                                 |
-| 3. Assistance/release    | Require accepted normal worker + approval/current-authority evidence and resolve parked PMS-to-prepared work before claiming an AI journey or Phase 2/B readiness. | Accepted U6 local worker/approval evidence and existing browser pilot remain separate; U13 is synthetic-only. | `browser pilot` and retained U6 receipts; no new joined browser/server proof in U11. U5 I3 remains PARKED LOCAL/advisory-used.                                                                  | No live enablement proved; this checkout has no live activation and remote state is unknown. No live model, PMS, production outbox, autonomous sender, or Phase 2/B capability claim. |
+Owner check: the Dashboard owner owns the read-only surface, the Read-only
+toolkit owner owns the integrated read boundaries, and the Drafting agent owner
+owns assistance/release disposition. Each owner preserves the named evidence
+scope and cannot promote a later phase from a lower-phase fixture receipt.
+
+| Phase                    | Owner check                                                                                                                                                                               | Implemented                                                                                                   | Locally verified / current proof                                                                                                                                                            | Live enablement                                                                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Read-only surface     | Dashboard owner confirms dashboard cutoff/cohort and document receipts remain source-bound and manual when evidence is unavailable.                                                       | Existing dashboard/document UI, read admission, document service, and loopback fixture.                       | `browser dashboard` (desktop + mobile) and `browser documents`; model-free document DB slice.                                                                                               | Not enabled; browser transport is loopback-only and synthetic.                                                                                                                        |
+| 2. Integrated boundaries | Read-only toolkit owner confirms read receipts, causal shadow separation, and mailbox-context mail send/queue receipts before any release decision.                                       | `apps/server-pilot/tests/reservation-tools-pilot-integration.test.ts`; exact `db:integration` gate.           | Three DB cases pass on owned disposable PG16: model-free document/manual fallback, private future-shadow matching/scorecard, and injected-session `mail.send` → outbound queue → fake SMTP. | Not enabled; the SMTP edge, document bytes, shadow model/labels, and seeded rows are synthetic/local.                                                                                 |
+| 3. Assistance/release    | Drafting agent owner requires accepted normal worker + approval/current-authority evidence and resolves parked PMS-to-prepared work before claiming an AI journey or Phase 2/B readiness. | Accepted U6 local worker/approval evidence and existing browser pilot remain separate; U13 is synthetic-only. | `browser pilot` and retained U6 receipts; no new joined browser/server proof in U11. U5 I3 remains PARKED LOCAL/advisory-used.                                                              | No live enablement proved; this checkout has no live activation and remote state is unknown. No live model, PMS, production outbox, autonomous sender, or Phase 2/B capability claim. |
 
 ### Path and proof boundaries
 
-| Journey                | Actual path                                                                                                                            | Seeded/direct lower edge                                                                                      | Claim allowed                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Dashboard              | Authenticated UI/provider → `adminDashboard` reads.                                                                                    | Vite loopback fixture; no DB/outbox.                                                                          | Desktop/mobile UI and transport contract only.                                                           |
-| Documents              | `issueReadAdmission` → `executeReadToolRun` → `createExistingDocumentService` → authorized artifact reader.                            | Constructed test admission/context and `FakeS3Storage`; existing browser UI uses its own fixture HTTP bridge. | Typed model-free read and `SOURCE_UNAVAILABLE`/`manual_required`; no PMS-positive or draft claim.        |
-| Shadow                 | `freezeShadowInput` → seal → later-thread matcher → mode-specific scorecard.                                                           | Direct production pure functions with synthetic in-process route/model/label.                                 | Causal nondisplay and mode separation; U13 local synthetic only.                                         |
-| Mail-only manual send  | Seeded thread/inbound message → `callerFor('user-navaai')` → actual `caller.mail.send` → message/outbound queue → `FakeSmtpTransport`. | Owned disposable PG16 and fake SMTP; `UNDO_SEND_SECONDS=0` is scoped/restored.                                | Manual authenticated send/queue boundary only. This is not the supported AI draft/approval/send journey. |
-| AI draft/approval/send | Accepted U6 configured worker/factory/caller and approval/send receipts; separate browser fixture pilot.                               | Lower synthetic model/SMTP in accepted U6 receipts.                                                           | U6 local-only evidence; never call it a joined browser-to-production proof.                              |
-| PMS/manual             | Existing source-unavailable/manual surface.                                                                                            | No PMS-positive fixture.                                                                                      | U5 PMS-to-prepared positive remains incomplete and parked.                                               |
+| Journey                | Actual path                                                                                                                                                                              | Seeded/direct lower edge                                                                                      | Claim allowed                                                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard              | Fixture-session UI/provider → `adminDashboard` reads.                                                                                                                                    | Vite loopback fixture; no DB/outbox.                                                                          | Desktop/mobile UI and transport contract only; no login-authentication claim.                                                                               |
+| Documents              | `issueReadAdmission` → `executeReadToolRun` → `createExistingDocumentService` → authorized artifact reader.                                                                              | Constructed test admission/context and `FakeS3Storage`; existing browser UI uses its own fixture HTTP bridge. | Typed model-free read and `SOURCE_UNAVAILABLE`/`manual_required`; no PMS-positive or draft claim.                                                           |
+| Shadow                 | `freezeShadowInput` → seal → later-thread matcher → mode-specific scorecard.                                                                                                             | Direct production pure functions with synthetic in-process route/model/label.                                 | Causal nondisplay and mode separation; U13 local synthetic only.                                                                                            |
+| Mail-only manual send  | Seeded thread/inbound message → `callerFor('user-navaai')` with injected session user and no login transport → actual `caller.mail.send` → message/outbound queue → `FakeSmtpTransport`. | Owned disposable PG16 and fake SMTP; `UNDO_SEND_SECONDS=0` is scoped/restored.                                | Mailbox-context authorization plus the real route/queue boundary only; it is not login authentication and not the supported AI draft/approval/send journey. |
+| AI draft/approval/send | Accepted U6 configured worker/factory/caller and approval/send receipts; separate browser fixture pilot.                                                                                 | Lower synthetic model/SMTP in accepted U6 receipts.                                                           | U6 local-only evidence; never call it a joined browser-to-production proof.                                                                                 |
+| PMS/manual             | Existing source-unavailable/manual surface.                                                                                                                                              | No PMS-positive fixture.                                                                                      | U5 PMS-to-prepared positive remains incomplete and parked.                                                                                                  |
 
 ### Exact proof commands
 
@@ -129,6 +134,11 @@ prior archive.
 env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=test CI=1 \
   AWS_EC2_METADATA_DISABLED=1 \
   bash apps/server-pilot/scripts/reservation-pilot-gate.sh unit gate
+
+# Private pre-outcome qualification/freeze; metadata-only, no model or target body.
+env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=test CI=1 \
+  AWS_EC2_METADATA_DISABLED=1 \
+  node .private/centurion-dashboard-tools-execution/u11-private-qualification.mjs
 
 # Sole DB runner; use the literal owned PG16 wrapper and no direct Vitest.
 sudo -n bash -c 'set -a; source /home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/.private/centurion-dashboard-tools-execution/pg16/disposable-postgres-connection.env; set +a; NAVA_TEST_DATABASE_PROFILE=pg16 CONFIRM_DISPOSABLE_TEST_DB=1 bash /home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/apps/server-pilot/scripts/reservation-pilot-gate.sh db integration'
@@ -209,8 +219,53 @@ git diff --check
 - Browser dashboard archive (2 selected tests): `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022555Z-u11-dashboard-pass/` (desktop/mobile screenshots, traces, videos, completion captures).
 - Browser documents archive (1 selected test): `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022515Z-u11-documents-pass/`.
 - Browser pilot archive (1 selected test): `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022453Z-u11-pilot-pass/`; pre-run output: `.private/centurion-dashboard-tools-execution/u11a-browser-archive-20260910T022307Z-u11-integrated/`.
-- Accepted boundaries: `.private/centurion-dashboard-tools-execution/u6-third-repair-review.md`, `.private/centurion-dashboard-tools-execution/u13-coverage-review.md`, and `.private/centurion-dashboard-tools-execution/u5-advisory-repair-report.md`.
+- Accepted boundaries: `.private/centurion-dashboard-tools-execution/u6-third-repair-review.md`, `.private/centurion-dashboard-tools-execution/u13-status-filter-review.md`, and `.private/centurion-dashboard-tools-execution/u5-advisory-review.md`. The superseded `u13-coverage-review.md` and `u5-advisory-repair-report.md` remain historical only.
 - Synthetic disposition source: `apps/server-pilot/tests/fixtures/reservation-tools-pilot.json` (`420/253/251`, `eligibleGoldCases=0`).
+- Private pre-outcome qualification: `.private/centurion-dashboard-tools-execution/u11-private-qualification/manifest.json`, `aggregate.json`, and `receipt.json`; these contain hashed IDs and field/count metadata only. Receipt digests are `contentHash=sha256:10023ce3b51f9b999614b4ceeeec3f12e36dac39c1ac48f145258520bf98f271`, `mappingHash=sha256:422232120b8e7eba91ca33fd0d18808547c927413d29d1fc2be853188dba13bb`, and `selectionHash=sha256:e42fde4a37d1ad77389ea07193e72baf52382c08892deecbc0be002886e860a8`.
+
+### Artifact ownership, access, and retention
+
+| Artifact family                                                             | Owner and scope                                                      | Privacy / fetch rule                                                                                                                                                                                                       | Retention and expiry                                                                                                                                                                |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard/documents/pilot screenshots, traces, videos, and `.last-run.json` | Dashboard owner; private U11 reviewer/operator scope only.           | Fetch from the named private archive paths; do not copy cookies, response bodies, mailbox content, or credentials. Raw media fetch requires the existing `--confirm-sensitive` operator control.                           | Existing browser/archive expiry applies; raw capture is subject to the operator runbook's short retention (24h for raw media). This checkout does not enforce local TTLs.           |
+| Unit/DB/build/static gate receipts                                          | Read-only toolkit owner; private reviewer scope.                     | Gate JSON is transient and consumed by the wrapper; retain only sanitized report counts and exact command/exit receipts. Never export DB URLs, rows, or raw fixture payloads.                                              | Transient JSON is removed by the gate after validation; retained reports follow the private evidence policy. No local expiry job is asserted.                                       |
+| Private qualification manifest, aggregate, and receipt                      | Read-only toolkit/U1 qualification owner; private reviewer scope.    | Fetch only the three named private paths. They contain hashed IDs, source-pointer metadata, counts, hashes, and field reasons; no raw record, gold/target body, or target-only reference is fetched into tool/model input. | Proposed evaluation retention is 30 days after sealing, subject to policy; this checkout has no expiry enforcement. Preserve the sealed receipt until independent review completes. |
+| Phase B read operation receipts/artifacts                                   | Phase B read operator; authorized read-only operator/reviewer scope. | Use `status`, `artifacts --latest-usable`, and `fetch-artifact <uuid> receipt`; trace/video fetch requires `--confirm-sensitive`. Do not fetch raw media into reports.                                                     | Existing artifact controls and expiry apply; raw capture is 24h in the operator contract. Missing local proof is reported, not replaced.                                            |
+| Accepted U6/U13 and parked-U5 reviews                                       | Drafting/release owner; private reviewer scope.                      | Link the final U6/U13 and independent parked-U5 reports only; superseded reports are historical. No source corpus or credentials are copied.                                                                               | Preserve immutable review receipts for the handoff; no local deletion or TTL enforcement is claimed.                                                                                |
+
+The owner labels are handoff ownership, not new permissions. All current
+authorized application users retain their configured tools/data; a private
+scope or expiry statement does not establish live activation or external
+authority.
+
+### Launch floors and release disposition
+
+The proposed release slice stays shadow-only unless every floor below is
+independently evidenced. These are operating floors, not a statistical accuracy
+claim:
+
+- Zero critical fixture escapes.
+- At least 30 fresh eligible request runs across the proposed slice, with at
+  least five per released family, sampled before generation outcomes are known.
+- At least 90% useful supported complete or correctly-partial outcomes overall
+  and within every released family; failed generation and missing output are
+  not useful, and unscorable/denied/unknown/changed/not-runnable cases never
+  enter the success numerator.
+- Zero critical recipient, action, or fact errors.
+- The 25/25 good-family plus 2/5 weak-family pooled 90% case does not promote
+  the weak family. If independent review is unavailable, remain shadow-only.
+- Historical replay, current-state, and future-shadow modes stay separate.
+  The independent inbound-first holdout is sampled without conditioning on a
+  reply and excludes target/future context; a held-out outcome cannot tune,
+  repair, choose a fixture, or trigger a retry. Once exposed, it retires to
+  development/regression while preserving the original outcome and exposure.
+
+Current private qualification has 581 frozen map members (420/253/251
+distinctions retained), 579 not-runnable cases, 2 unscorable cases, and zero
+runnable cases. It therefore satisfies none of the fresh-run/family floors and
+does not establish real eligibility or Phase 2/B readiness. The synthetic
+fixture's `eligibleGoldCases=0` remains a synthetic contract value, not the
+real-corpus result.
 
 ### Current readiness / Phase 2B read-only audit
 
@@ -299,28 +354,37 @@ outbound-gold indexes. The aggregate validation still reports zero verified
 independent execution outcomes and zero verified full reply input sets.
 
 The initial bounded pass did not open the map records array or any gold/target
-body; the later pass parsed only record keys, counts, hashes, timestamps, and
-linkage metadata. Explicit existence checks for the bounded named paths
+body; the later pass parsed only metadata fields (keys, counts, hashes,
+timestamps, and linkage) from the bounded source rows. The deterministic
+private qualification helper
+`.private/centurion-dashboard-tools-execution/u11-private-qualification.mjs`
+then emitted the pre-outcome manifest/aggregate/receipt from those bounded
+fields. Explicit existence checks for the bounded named paths
 `phase2b-manifest.json`, `phase2b-corpus-manifest.json`,
 `eligibility-manifest.json`, `holdout-freeze.json`, and `selection-freeze.json`
-were absent. The accessible source pointers therefore establish only a partial
-offline field join, not the required verified same-request identity,
-inbound-before-gold horizon, evaluation mode, explicit skip reasons,
-development/held-out membership, permission proof, or pre-outcome selection/
-hash freeze. Real eligibility and freeze remain unassessed; this is an
-insufficient local metadata join, not an external blocker and not evidence
-that the real corpus is ineligible. It is not inferred from the synthetic
+were absent. The helper instead froze 581 hashed members, historical-replay
+mode, conversation development/holdout split, explicit skip reasons, source
+qualification fields, mapping/selection hashes, evaluator-only target
+exposure, and blocked outcome semantics before outcomes. It recorded 579
+not-runnable cases and 2 unscorable cases; no runnable case or real eligible
+gold count is asserted. Verified permission evidence and a runnable current
+capability remain unproven, and the 200-episode inbound-first target remains a
+frozen plan boundary with zero selected runnable episodes. This is a partial
+local qualification receipt, not an external blocker and not evidence that the
+real corpus is ineligible. It is not inferred from the synthetic
 `eligibleGoldCases=0`.
 
 #### Phase 2B truth boundary
 
 The public manifest's synthetic `eligibleGoldCases=0` is not the eligibility
 result for the real 420 selected records. Its own contract records synthetic
-freeze/hash/held-out safeguards, but real membership, eligibility, legitimate
-inbound-before-target horizon, skip reasons, selection/held-out hashes and
-pre-outcome freeze are unassessed here. No real corpus outcome, current
-capability, live release, or Phase 2/B readiness claim is made. Accepted normal
-paths remain linked rather than duplicated: U9's actual document producer →
+freeze/hash/held-out safeguards only. The private receipt establishes
+pre-outcome membership, hashed case IDs, mode, conversation split, skip
+reasons, and selection/mapping hashes for the 581-row canonical map, while
+verified permission evidence, runnable eligibility, and current capability
+remain unproven. No real corpus outcome, current capability, live release, or
+Phase 2/B readiness claim is made. Accepted normal paths remain linked rather
+than duplicated: U9's actual document producer →
 queue/worker → authorized service DB receipts are in
 `.private/centurion-dashboard-tools-execution/u9-backend-review.md` (review
 range `87920e22..2a2fde12`); U6's configured worker/approval/outbox receipts at
@@ -359,13 +423,62 @@ edits; accepted U6/U13 source paths remain unchanged.
 
 1. Stop the browser gate/local Vite/Chromium process; no persistent runtime is
    created by this handoff.
-2. Before any live consideration, disable the existing read/admission and
-   shadow release controls and stop new candidate/queue work. Preserve receipts
-   and unknown states; do not retry or resend from an ambiguous SMTP result.
-3. Drain, cancel, or quarantine pending read jobs and unsent AI candidates
-   under the existing approval-aware queue procedure. Keep human manual mail
-   available; do not convert a manual path into an autonomous sender.
-4. Roll back only after pending rows, receipts, and provider-attempt state are
+2. Before any live consideration, inspect the exact current read state and
+   latest receipt without mutating it:
+
+   ```bash
+   for tool_id in hms_find_reservation mail_read_artifact hms_quote_stay \
+     hms_sent_email_audit hms_list_documents hms_read_folio; do
+     bash apps/server-pilot/deploy/ops-hms-proof.sh status \
+       --tool "$tool_id" --json || exit $?
+   done
+   bash apps/server-pilot/deploy/ops-hms-proof.sh artifacts \
+     hms_find_reservation --latest-usable --json
+   ```
+
+   The `status`/`artifacts` commands are read-only. Do not treat a missing
+   local registry or an unknown remote state as a successful rollback.
+
+3. After an approved quiesce and authoritative receipt reconciliation, use the
+   existing Phase B rollback grammar for each affected tool; no new command or
+   release ID is invented:
+
+   ```bash
+   bash apps/server-pilot/deploy/ops-hms-proof.sh read-rollback \
+     <tool-id> --json
+   rollback_exit=$?
+   case "$rollback_exit" in
+     0)  ;; # COMPLETE / NOOP_ALREADY_APPLIED / NEXT_ACTION_READY
+     2)  echo 'USAGE_ERROR: repair the command; do not retry blindly' >&2; exit 2 ;;
+     3)  echo 'AGENT_OR_EXTERNAL_BLOCK: follow the returned next action' >&2; exit 3 ;;
+     10) echo 'POLICY_OR_EVIDENCE_REJECTED: stop and preserve evidence' >&2; exit 10 ;;
+     20) echo 'ROLLBACK_INCOMPLETE: halt; do not promote or resend' >&2; exit 20 ;;
+     70) echo 'TRANSPORT_UNCERTAIN: reconcile the same operation metadata only' >&2; exit 70 ;;
+     *)  echo "unexpected rollback exit=$rollback_exit; halt" >&2; exit 1 ;;
+   esac
+   ```
+
+   `read-wave <subwave-id> --json`, `status --operation <operation-id> --json`,
+   `artifacts <tool-id> --operation <operation-id> --json`, and
+   `fetch-artifact <uuid> receipt` are the existing operation/receipt links.
+   `read-rollback` remains unavailable for this handoff while remote state is
+   unknown; it was not executed.
+
+4. For unsent AI work, the existing approval-aware candidate procedure is
+   `node apps/server-pilot/scripts/supersede-centurion-ai-runs.mjs` (dry-run by
+   default), followed only by its explicitly controlled `--apply --reason
+"<reason>"` form after quiesce, snapshot, and owner approval. The script
+   scopes `transport-centurion` to `inbound_triage` and `candidate_draft` in
+   `queued|claimed|running|retry_wait`; it is not a read-job rollback command.
+   Poll its existing key-prefix drain with
+   `node apps/server-pilot/scripts/poll-quality-retag-status.mjs <key-prefix>`.
+   Preserve receipts and unknown states; do not retry or resend from an
+   ambiguous SMTP result.
+5. Drain, cancel, or quarantine pending read jobs only through the existing
+   read-wave/worker owner procedure after it reports the operation ID. Keep
+   human manual mail available; do not convert a manual path into an
+   autonomous sender.
+6. Roll back only after pending rows, receipts, and provider-attempt state are
    reconciled. Restore the last reviewed worker/release descriptor; do not
    reinterpret old workers as understanding a new `read_tool` contract.
 
@@ -381,8 +494,8 @@ undo.
   finance permission is implied.
 - Browser proof is a loopback fake transport, separate from server/DB/outbox
   proof. The document DB test constructs its admission context rather than
-  performing a browser login; the mail case does use the real authenticated
-  caller against seeded disposable rows.
+  performing a browser login; the mail case uses an injected session user
+  through the real route/queue path, not a login-authentication proof.
 - U6 is local accepted proof only (`f8fdd2f4`, PASS/PASS with zero Important
   findings at its final line 171). U13 is local synthetic only (`ee01228d`).
   U5 I3 is incomplete and PARKED LOCAL/advisory-used; no PMS-to-prepared
@@ -390,7 +503,8 @@ undo.
 - The public fixture is synthetic and has zero eligible gold cases. Historical
   replay, future shadow, and current state remain mode-separated. No corpus
   fixture, private data, inaccessible evidence, live model/PMS result, or
-  Phase 2/B readiness status is promoted by this runbook. The source-pointer
-  audit found accessible partial metadata but no complete real-corpus
-  eligibility/freeze join, so this is not a full U11 or Phase 2/B completion
-  claim.
+  Phase 2/B readiness status is promoted by this runbook. The private receipt
+  freezes hashed map membership, mode/split, skip reasons, hashes, and
+  evaluator-only exposure before outcomes, but records zero runnable cases
+  because permission/current capability is not proven; this is not a full U11
+  or Phase 2/B completion claim.

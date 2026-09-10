@@ -473,6 +473,220 @@ export function assertManifestContract(manifest) {
   return true;
 }
 
+const PRIVATE_SHA256 = /^sha256:[a-f0-9]{64}$/;
+const PRIVATE_QUALIFICATION_STATES = new Set([
+  'missing',
+  'not-proven',
+  'candidate-only',
+  'source-message-only',
+  'partial',
+  'verified',
+]);
+const PRIVATE_TOOL_INPUT_KEYS = new Set([
+  'requestContextDigest',
+  'sourceMessageDigest',
+  'sourceThreadDigest',
+  'preReplyContextDigest',
+  'preReplyContextCount',
+  'evaluationMode',
+]);
+
+function assertPrivateToolInput(value, pathName = 'toolInput') {
+  assertNoForbiddenToolInput(value, pathName);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertPrivateToolInput(item, `${pathName}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (!PRIVATE_TOOL_INPUT_KEYS.has(key))
+      throw new Error(`private tool input contains unapproved field ${pathName}.${key}`);
+    if (typeof nested === 'string') {
+      if (
+        !PRIVATE_SHA256.test(nested) &&
+        !ALLOWED_MODES.has(nested) &&
+        !['development', 'holdout'].includes(nested)
+      ) {
+        throw new Error(`private tool input contains unbounded string ${pathName}.${key}`);
+      }
+    }
+    assertPrivateToolInput(nested, `${pathName}.${key}`);
+  }
+}
+
+/**
+ * Validate the private, pre-outcome qualification contract. This is separate
+ * from the public synthetic fixture contract: private source membership may
+ * be frozen with zero runnable cases while identity, horizon, permission or
+ * runtime capability remains explicitly unproven.
+ */
+export function assertPrivateEvaluationManifest(manifest) {
+  if (!manifest || manifest.fixtureKind !== 'private' || manifest.publicFixture !== false) {
+    throw new Error('private qualification contract required');
+  }
+  if (manifest.schemaVersion !== 'u11-private-qualification.v1') {
+    throw new Error('unsupported private qualification schema');
+  }
+  if (!manifest.source || typeof manifest.source.name !== 'string') {
+    throw new Error('private qualification source metadata is required');
+  }
+  if (!manifest.counts || !Array.isArray(manifest.cases)) {
+    throw new Error('private qualification counts and cases are required');
+  }
+  const countKeys = [
+    'mapRecords',
+    'original420',
+    'originalExternalMixedCandidates',
+    'originalOutboundExternalMixedCandidates',
+    'runnable',
+    'notRunnable',
+    'unscorable',
+  ];
+  for (const key of countKeys) {
+    if (!Number.isInteger(manifest.counts[key]) || manifest.counts[key] < 0) {
+      throw new Error(`private qualification count ${key} is invalid`);
+    }
+  }
+  if (
+    manifest.counts.mapRecords !== manifest.cases.length ||
+    manifest.counts.runnable + manifest.counts.notRunnable + manifest.counts.unscorable !==
+      manifest.counts.mapRecords
+  ) {
+    throw new Error('private qualification counts do not reconcile with membership');
+  }
+  if (
+    !manifest.privacy ||
+    manifest.privacy.rawCorpusIncluded !== false ||
+    manifest.privacy.targetReplyInToolInput !== false ||
+    manifest.privacy.targetReplyInFixture !== false ||
+    !Array.isArray(manifest.privacy.privatePaths)
+  ) {
+    throw new Error('private qualification privacy boundary drift');
+  }
+
+  const computed = computeManifestDigests(manifest);
+  if (
+    manifest.source.contentHash !== computed.contentHash ||
+    manifest.source.mappingHash !== computed.mappingHash ||
+    manifest.phase2B?.mappingHash !== computed.mappingHash ||
+    manifest.phase2B?.selectionHash !== computed.selectionHash
+  ) {
+    throw new Error('private qualification canonical digest mismatch');
+  }
+  const phase2B = manifest.phase2B;
+  if (
+    !phase2B ||
+    phase2B.membershipFrozenBeforeResults !== true ||
+    phase2B.caseIdentifiersFrozenBeforeResults !== true ||
+    phase2B.evaluationModeFrozenBeforeResults !== true ||
+    phase2B.selectionReasonsFrozenBeforeResults !== true ||
+    phase2B.conversationSplitFrozen !== true ||
+    phase2B.splitUnit !== 'conversation' ||
+    phase2B.goldTargetExposure !== 'evaluator-only' ||
+    phase2B.modeSpecificAggregation !== true ||
+    canonicalJson(phase2B.allowedOutcomes) !== canonicalJson([...ALLOWED_OUTCOMES]) ||
+    canonicalJson(phase2B.blockedPassOutcomes) !== canonicalJson([...BLOCKED_OUTCOMES]) ||
+    phase2B.blockedPassOutcomes.includes('match')
+  ) {
+    throw new Error('private Phase 2/B freeze contract is not active');
+  }
+  const holdout = manifest.laterInboundFirstHoldout;
+  if (
+    !holdout ||
+    !Number.isInteger(holdout.targetEpisodes) ||
+    holdout.targetEpisodes < 0 ||
+    holdout.independentOfReplyExistence !== true ||
+    holdout.excludesTargetAndFutureContext !== true ||
+    holdout.includesNoReplyEpisode !== true
+  ) {
+    throw new Error('private inbound-first holdout isolation drift');
+  }
+
+  const ids = new Set();
+  const splitByConversation = new Map();
+  for (const pilotCase of manifest.cases) {
+    if (
+      typeof pilotCase.id !== 'string' ||
+      !PRIVATE_SHA256.test(pilotCase.id) ||
+      ids.has(pilotCase.id) ||
+      typeof pilotCase.conversationId !== 'string' ||
+      !PRIVATE_SHA256.test(pilotCase.conversationId)
+    ) {
+      throw new Error('private case identifiers must be unique hashed values');
+    }
+    ids.add(pilotCase.id);
+    if (!ALLOWED_MODES.has(pilotCase.evaluationMode))
+      throw new Error('unknown private evaluation mode');
+    if (!['development', 'holdout'].includes(pilotCase.split)) {
+      throw new Error('unknown private case split');
+    }
+    if (!['runnable', 'not-runnable', 'unscorable'].includes(pilotCase.selectionStatus)) {
+      throw new Error('unknown private case selection status');
+    }
+    if (pilotCase.selectionStatus !== 'runnable' && !pilotCase.skipReason) {
+      throw new Error(`missing private skip reason for ${pilotCase.id}`);
+    }
+    if (Object.hasOwn(pilotCase.retirement ?? {}, 'originalOutcome')) {
+      throw new Error(`private retirement outcome must remain evaluator-only for ${pilotCase.id}`);
+    }
+    assertPrivateToolInput(pilotCase.toolInput, `${pilotCase.id}.toolInput`);
+    const qualification = pilotCase.sourceQualification;
+    if (!qualification || typeof qualification !== 'object') {
+      throw new Error(`private source qualification is missing for ${pilotCase.id}`);
+    }
+    for (const key of [
+      'sameRequestIdentity',
+      'legitimateInboundBeforeTarget',
+      'sourceBinding',
+      'permission',
+    ]) {
+      if (!PRIVATE_QUALIFICATION_STATES.has(qualification[key])) {
+        throw new Error(`private source qualification ${key} is invalid for ${pilotCase.id}`);
+      }
+    }
+    for (const outcome of Object.values(pilotCase.fieldOutcomes ?? {})) {
+      if (!ALLOWED_OUTCOMES.has(outcome)) {
+        throw new Error(`unknown private field outcome for ${pilotCase.id}`);
+      }
+    }
+    if (
+      pilotCase.selectionStatus === 'runnable' &&
+      [
+        qualification.sameRequestIdentity,
+        qualification.legitimateInboundBeforeTarget,
+        qualification.sourceBinding,
+        qualification.permission,
+      ].some((state) => state !== 'verified')
+    ) {
+      throw new Error(`runnable private case has unverified qualification for ${pilotCase.id}`);
+    }
+    const exposure = pilotCase.exposure;
+    if (
+      !exposure ||
+      exposure.target !== 'evaluator-only' ||
+      exposure.sealedBeforeOutcome !== true ||
+      exposure.outcomeMayInformTuning !== false ||
+      exposure.outcomeMayInformRepair !== false ||
+      exposure.outcomeMayChooseFixtures !== false ||
+      exposure.outcomeMayTriggerRetry !== false
+    ) {
+      throw new Error(`private target exposure drift for ${pilotCase.id}`);
+    }
+    if (pilotCase.split === 'holdout' && exposure.state !== 'sealed') {
+      throw new Error(`private held-out case is not sealed for ${pilotCase.id}`);
+    }
+    if (pilotCase.split === 'development' && exposure.state !== 'development') {
+      throw new Error(`private development exposure state drift for ${pilotCase.id}`);
+    }
+    const previousSplit = splitByConversation.get(pilotCase.conversationId);
+    if (previousSplit && previousSplit !== pilotCase.split) {
+      throw new Error(`private conversation split drift for ${pilotCase.conversationId}`);
+    }
+    splitByConversation.set(pilotCase.conversationId, pilotCase.split);
+  }
+  return true;
+}
+
 function hasBlockedFieldOutcome(pilotCase) {
   return Object.values(pilotCase.fieldOutcomes ?? {}).some((outcome) =>
     BLOCKED_OUTCOMES.has(outcome),
@@ -483,8 +697,9 @@ function isEligibleEvaluationCase(pilotCase) {
   return pilotCase.selectionStatus === 'runnable' && !hasBlockedFieldOutcome(pilotCase);
 }
 
-export function createEvaluationSession(manifest) {
-  assertManifestContract(manifest);
+export function createEvaluationSession(manifest, options = {}) {
+  if (options.contract === 'private') assertPrivateEvaluationManifest(manifest);
+  else assertManifestContract(manifest);
   let current = clone(manifest);
   const frozenMembership = new Map(
     current.cases.map((pilotCase) => [

@@ -39,6 +39,126 @@ describe('reservation-pilot gate dispatch', () => {
     );
   });
 
+  it('freezes a private pre-outcome qualification manifest through the U1 session contract', async () => {
+    const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
+    const caseId = `sha256:${'a'.repeat(64)}`;
+    const conversationId = `sha256:${'b'.repeat(64)}`;
+    const requestContextDigest = `sha256:${'c'.repeat(64)}`;
+    const manifest = {
+      schemaVersion: 'u11-private-qualification.v1',
+      fixtureKind: 'private',
+      publicFixture: false,
+      source: {
+        name: 'u11-private-canonical-map',
+        version: '2026-09-10',
+        contentHash: '',
+        mappingHash: '',
+      },
+      counts: {
+        mapRecords: 1,
+        original420: 1,
+        originalExternalMixedCandidates: 1,
+        originalOutboundExternalMixedCandidates: 1,
+        runnable: 0,
+        notRunnable: 1,
+        unscorable: 0,
+      },
+      privacy: {
+        rawCorpusIncluded: false,
+        targetReplyInToolInput: false,
+        targetReplyInFixture: false,
+        privatePaths: [],
+      },
+      phase2B: {
+        selectionHash: '',
+        mappingHash: '',
+        membershipFrozenBeforeResults: true,
+        caseIdentifiersFrozenBeforeResults: true,
+        evaluationModeFrozenBeforeResults: true,
+        selectionReasonsFrozenBeforeResults: true,
+        conversationSplitFrozen: true,
+        splitUnit: 'conversation',
+        goldTargetExposure: 'evaluator-only',
+        modeSpecificAggregation: true,
+        allowedOutcomes: [
+          'match',
+          'mismatch',
+          'changed_state',
+          'ambiguous',
+          'unscorable',
+          'denied',
+          'missing_capability',
+        ],
+        blockedPassOutcomes: [
+          'changed_state',
+          'unscorable',
+          'ambiguous',
+          'denied',
+          'missing_capability',
+        ],
+      },
+      cases: [
+        {
+          id: caseId,
+          conversationId,
+          evaluationMode: 'current-state',
+          split: 'development',
+          selectionStatus: 'not-runnable',
+          skipReason: 'missing verified same-request identity',
+          toolInput: { requestContextDigest },
+          sourceQualification: {
+            sameRequestIdentity: 'missing',
+            legitimateInboundBeforeTarget: 'missing',
+            sourceBinding: 'missing',
+            permission: 'missing',
+          },
+          fieldOutcomes: { qualification: 'unscorable' },
+          exposure: {
+            target: 'evaluator-only',
+            sealedBeforeOutcome: true,
+            outcomeMayInformTuning: false,
+            outcomeMayInformRepair: false,
+            outcomeMayChooseFixtures: false,
+            outcomeMayTriggerRetry: false,
+            state: 'development',
+          },
+        },
+      ],
+      laterInboundFirstHoldout: {
+        targetEpisodes: 0,
+        independentOfReplyExistence: true,
+        excludesTargetAndFutureContext: true,
+        includesNoReplyEpisode: true,
+      },
+    };
+    const digests = gate.computeManifestDigests(manifest);
+    manifest.source.contentHash = digests.contentHash;
+    manifest.source.mappingHash = digests.mappingHash;
+    manifest.phase2B.mappingHash = digests.mappingHash;
+    manifest.phase2B.selectionHash = digests.selectionHash;
+
+    expect(gate.assertPrivateEvaluationManifest(manifest)).toBe(true);
+    const session = gate.createEvaluationSession(manifest, { contract: 'private' });
+    expect(session.aggregate('current-state')).toEqual({
+      evaluationMode: 'current-state',
+      split: 'development',
+      caseIds: [],
+      eligibleCount: 0,
+    });
+    expect(() => session.recordOutcome(caseId, 'current-state', 'match')).toThrow(/not eligible/i);
+
+    const leaked = structuredClone(manifest);
+    leaked.cases[0].toolInput.targetReplyDigest = requestContextDigest;
+    const leakedDigests = gate.computeManifestDigests(leaked);
+    leaked.source.contentHash = leakedDigests.contentHash;
+    leaked.source.mappingHash = leakedDigests.mappingHash;
+    leaked.phase2B.mappingHash = leakedDigests.mappingHash;
+    leaked.phase2B.selectionHash = leakedDigests.selectionHash;
+    expect(() => gate.assertPrivateEvaluationManifest(leaked)).toThrow(
+      /target leakage|unapproved field/i,
+    );
+  });
+
   it('dispatches the library-known named tests instead of reaching unconditional PASS', async () => {
     const gate = await import('../scripts/reservation-pilot-gate-lib.mjs');
 
