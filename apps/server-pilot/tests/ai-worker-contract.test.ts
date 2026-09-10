@@ -37,6 +37,7 @@ import { resolveMailboxContext } from '../src/trpc/context.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { appRouter } from '../src/trpc/router.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +46,7 @@ import { eq, sql } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
+const requireFixture = createRequire(import.meta.url);
 
 async function claimForExecute(runId: string, lane: 'default' | 'hms' = 'default') {
   const claimed = await claimNextAiRun({
@@ -796,6 +798,242 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           routeId: route.routeId,
           provenance: expect.objectContaining({ routeId: route.routeId, purpose: 'draft' }),
         });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('normal configured factory persists the same server-owned release binding', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+      AI_APPROVED_LOCAL_DRAFT_CONFIG: process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG,
+    };
+    const route = {
+      routeId: 'u6-configured-draft-route',
+      purpose: 'draft' as const,
+      protocol: 'in_process' as const,
+      access: 'current_app' as const,
+      egress: 'none' as const,
+      retention: 'bounded' as const,
+      usage: 'reported' as const,
+      modelId: 'u6-configured-draft-model',
+    };
+    const release = {
+      releaseId: 'u6-configured-release-a',
+      releaseVersion: '2026.09.09.1',
+      sourceRevision: 'source-configured-a',
+      fingerprint: 'c'.repeat(64),
+      purpose: 'draft' as const,
+      capabilityFamilyVersions: { draft: 'u6-draft-v1' },
+      issuedAt: '2026-09-09T10:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      withdrawn: false,
+    };
+    const fixturePath = join(here, 'fixtures', 'u6-approved-local-draft.cjs');
+    const fixture = requireFixture(fixturePath) as {
+      resetTransportCalls: () => void;
+      getTransportCalls: () => number;
+    };
+    fixture.resetTransportCalls();
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+    process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+      module: fixturePath,
+      route,
+      release,
+    });
+
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Configured release',
+          snippet: 'Please confirm the reservation.',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Configured release',
+          textBody: 'Please confirm the reservation.',
+          receivedAt: new Date(),
+        });
+
+        const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: 'user-navaai', email: '', name: null },
+          ...mailbox,
+        });
+        const refresh = await caller.ai.refreshHmsCandidate({ threadId });
+        expect(await runAiWorkerOnce()).toBe(true);
+        expect(fixture.getTransportCalls()).toBe(1);
+
+        const [draft] = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+        expect(draft).toMatchObject({ status: 'candidate', origin: 'ai' });
+        const [completed] = await db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, refresh.runId));
+        expect(completed?.metrics).toMatchObject({
+          routeBinding: { ...route, release },
+        });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('normal refresh keeps unavailable or invalid configured routes manual-only', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+      AI_APPROVED_LOCAL_DRAFT_CONFIG: process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG,
+    };
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+
+    const wrongPurposeDescriptor = JSON.stringify({
+      module: 'node:missing-u6-draft-route-fixture',
+      route: {
+        routeId: 'u6-invalid-purpose-route',
+        purpose: 'extraction',
+        protocol: 'in_process',
+        access: 'current_app',
+        egress: 'none',
+        retention: 'bounded',
+        usage: 'reported',
+        modelId: 'u6-invalid-purpose-model',
+      },
+    });
+    const cases = [
+      { name: 'missing', descriptor: undefined },
+      { name: 'malformed', descriptor: '{' },
+      { name: 'wrong-purpose', descriptor: wrongPurposeDescriptor },
+    ] as const;
+
+    try {
+      await withWorkerDb(async (db) => {
+        const observations: Array<{
+          name: string;
+          worked: boolean;
+          draftCount: number;
+          approvalRejected: boolean;
+          metrics: Record<string, unknown> | null;
+        }> = [];
+        for (const testCase of cases) {
+          if (testCase.descriptor === undefined) {
+            delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+          } else {
+            process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = testCase.descriptor;
+          }
+          const threadId = randomUUID();
+          const messageId = randomUUID();
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: TRANSPORT_ID,
+            threadRootId: `<${threadId}@example.com>`,
+            subject: `Unavailable route ${testCase.name}`,
+            snippet: 'Please confirm the reservation.',
+            latestMessageAt: new Date(),
+          });
+          await db.insert(message).values({
+            id: messageId,
+            transportId: TRANSPORT_ID,
+            threadId,
+            direction: 'inbound',
+            fromAddress: 'guest@example.com',
+            toAddresses: ['nava@example.com'],
+            subject: `Unavailable route ${testCase.name}`,
+            textBody: 'Please confirm the reservation.',
+            receivedAt: new Date(),
+          });
+
+          const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
+          const caller = appRouter.createCaller({
+            auth: null as never,
+            reqHeaders: new Headers(),
+            sessionUser: { id: 'user-navaai', email: '', name: null },
+            ...mailbox,
+          });
+          const refresh = await caller.ai.refreshHmsCandidate({ threadId });
+          const worked = await runAiWorkerOnce();
+          const drafts = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+          const [run] = await db
+            .select({ metrics: aiWorkflowRun.metrics })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, refresh.runId));
+          let approvalRejected = false;
+          if (drafts[0]) {
+            const editable = await caller.drafts.ensureEditableForReply({
+              threadId,
+              replyToMessageId: messageId,
+            });
+            await expect(
+              caller.drafts.approve({
+                draftId: editable.id,
+                subject: editable.subject ?? `Re: Unavailable route ${testCase.name}`,
+                html: editable.message ?? 'Manual review required.',
+                text: editable.message ?? 'Manual review required.',
+                to: ['guest@example.com'],
+                cc: [],
+                bcc: [],
+                attachments: [],
+              }),
+            ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+            approvalRejected = true;
+          }
+          observations.push({
+            name: testCase.name,
+            worked,
+            draftCount: drafts.length,
+            approvalRejected,
+            metrics: (run?.metrics as Record<string, unknown> | null) ?? null,
+          });
+        }
+
+        expect(observations).toEqual(
+          cases.map(({ name }) => ({
+            name,
+            worked: true,
+            draftCount: 1,
+            approvalRejected: true,
+            metrics: expect.objectContaining({
+              modelRouteUnavailable: true,
+              manualReview: true,
+              modelRoutePurpose: 'draft',
+            }),
+          })),
+        );
+        for (const observation of observations) {
+          expect(observation.metrics).not.toHaveProperty('routeId');
+          expect(observation.metrics).not.toHaveProperty('routeBinding');
+        }
       });
     } finally {
       for (const [key, value] of Object.entries(prior)) {

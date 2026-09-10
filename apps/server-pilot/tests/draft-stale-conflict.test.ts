@@ -1,5 +1,6 @@
 import {
   aiDraftGeneration,
+  aiWorkflowRun,
   mailDraft,
   mailDraftRevision,
   mailThread,
@@ -549,26 +550,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
       vi.spyOn(draftApprovalModule, 'assertDraftApprovalCurrent').mockImplementation(
         async (input) => {
           const result = await originalAssert(input);
-          // Deterministically mutate the reviewed revision after the final
-          // pre-enqueue read. The production caller must linearize/reject.
-          await db
-            .update(mailDraft)
-            .set({ updatedAt: new Date(Date.now() + 1_000) })
-            .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, TRANSPORT_ID)));
-          await db.insert(mailDraftRevision).values({
-            id: randomUUID(),
-            draftId,
-            generationId,
-            actorUserId: 'user-navaai',
-            kind: 'edited',
-            toAddresses: ['guest@example.com'],
-            ccAddresses: [],
-            bccAddresses: [],
-            subject: 'Re: Booking (edited)',
-            textBody: 'Edited after review',
-            htmlBody: '<p>Edited after review</p>',
-            attachments: [],
-          });
+          // Deterministically invoke the actual EmailComposer save caller
+          // after the final pre-enqueue read. The production caller must
+          // linearize/reject the now-stale approval before queue insertion.
+          await expect(
+            caller.drafts.create({
+              id: draftId,
+              threadId,
+              replyToMessageId: parentMessageId,
+              to: 'guest@example.com',
+              subject: 'Re: Booking (edited)',
+              message: '<p>Edited after review</p>',
+              body: '<p>Edited after review</p>',
+              attachments: [],
+            }),
+          ).resolves.toEqual({ id: draftId });
           return result;
         },
       );
@@ -592,7 +588,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
     });
   }, 30000);
 
-  it('orders post-claim draft, thread, and evidence mutations after fake transport', async () => {
+  it('keeps post-claim editor state coherent when SMTP outcome is unknown', async () => {
     await withSeededTestDb(async (db) => {
       process.env.UNDO_SEND_SECONDS = '30';
       process.env.MAIL_SELF_BCC = 'false';
@@ -694,11 +690,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         bcc: [],
         attachments: [],
       });
-      const smtpSend = vi.fn<SmtpTransport['send']>().mockResolvedValue({
-        messageId: 'attempt-fence@zero.test',
-        accepted: ['guest@example.com'],
-        rejected: [],
-      });
+      const smtpSend = vi
+        .fn<SmtpTransport['send']>()
+        .mockRejectedValue(new Error('synthetic SMTP outcome unknown'));
       __setSmtpTransportForTests({ kind: 'fake', send: smtpSend });
       const queuedResult = await caller.mail.send({
         threadId,
@@ -713,15 +707,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
 
       const postClaimMessageId = randomUUID();
       __setOutboundAttemptFenceHookForTests(async ({ db: fencedDb }) => {
-        // The queue claim is already durable.  A real editor caller cannot
-        // rewrite the claimed/sent draft; concurrent thread/evidence writes
-        // are ordered after this send attempt and affect the next approval.
+        // The queue claim is already durable. A real EmailComposer save uses
+        // drafts.create with the existing id; it must not rewrite the
+        // claimed/sent draft or append an edited revision. Concurrent
+        // thread/evidence writes are ordered after this send attempt and
+        // affect the next approval.
         await expect(
-          caller.drafts.update({
+          caller.drafts.create({
             id: draftId,
+            threadId,
+            replyToMessageId: parentMessageId,
+            to: 'guest@example.com',
             subject: 'Re: Booking (edited)',
-            content: 'Edited after attempt claim',
-            html: '<p>Edited after attempt claim</p>',
+            message: '<p>Edited after attempt claim</p>',
+            body: '<p>Edited after attempt claim</p>',
+            attachments: [],
           }),
         ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
         await fencedDb.insert(message).values({
@@ -741,19 +741,330 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
           .where(eq(aiDraftGeneration.id, generationId));
       });
 
-      await expect(flushDue({ db })).resolves.toEqual({ flushed: 1 });
+      await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
       expect(smtpSend).toHaveBeenCalledTimes(1);
       const [queue] = await db
-        .select({ status: outboundSendQueue.status })
+        .select({ status: outboundSendQueue.status, lastError: outboundSendQueue.lastError })
         .from(outboundSendQueue)
         .where(eq(outboundSendQueue.messageId, queuedResult.messageId));
-      expect(queue?.status).toBe('sent');
+      expect(queue?.status).toBe('sending');
+      expect(queue?.lastError).toContain('SMTP_DELIVERY_OUTCOME_UNKNOWN');
+      const [sentDraft] = await db
+        .select({ status: mailDraft.status, isSent: mailDraft.isSent })
+        .from(mailDraft)
+        .where(eq(mailDraft.id, draftId));
+      expect(sentDraft).toEqual({ status: 'sent', isSent: true });
+      const editedRevisions = await db
+        .select({ id: mailDraftRevision.id })
+        .from(mailDraftRevision)
+        .where(and(eq(mailDraftRevision.draftId, draftId), eq(mailDraftRevision.kind, 'edited')));
+      expect(editedRevisions).toHaveLength(0);
       const [postClaimMessage] = await db
         .select({ id: message.id })
         .from(message)
         .where(eq(message.id, postClaimMessageId));
       expect(postClaimMessage?.id).toBe(postClaimMessageId);
     });
+  }, 30000);
+
+  it('rejects an approval when the server-owned draft release changes', async () => {
+    const previousDraftsEnabled = process.env.AI_DRAFTS_ENABLED;
+    const previousModelRoute = process.env.AI_MODEL_ROUTE;
+    const previousDraftConfig = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    const route = {
+      routeId: 'u6-current-authority-route',
+      modelId: 'u6-current-authority-model',
+      purpose: 'draft' as const,
+      protocol: 'in_process' as const,
+      access: 'current_app' as const,
+      egress: 'none' as const,
+      retention: 'bounded' as const,
+      usage: 'reported' as const,
+    };
+    const release = {
+      releaseId: 'u6-draft-release-a',
+      releaseVersion: '2026.09.09.1',
+      sourceRevision: 'source-a',
+      fingerprint: 'a'.repeat(64),
+      purpose: 'draft' as const,
+      capabilityFamilyVersions: { draft: 'u6-draft-v1' },
+      issuedAt: '2026-09-09T10:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      withdrawn: false,
+    };
+    const descriptor = {
+      module: 'node:missing-u6-authority-module',
+      route,
+      release,
+    };
+    process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify(descriptor);
+
+    try {
+      await withSeededTestDb(async (db) => {
+        process.env.MAIL_SELF_BCC = 'false';
+        const threadId = randomUUID();
+        const parentMessageId = randomUUID();
+        const draftId = randomUUID();
+        const generationId = randomUUID();
+        const revisionId = randomUUID();
+        const runId = randomUUID();
+        const body = '<p>Current release proof</p>';
+        const evidence = {
+          kind: 'hms' as const,
+          id: `evidence-${generationId}`,
+          toolId: 'hms_quote_stay',
+          toolVersion: '1',
+          propertyCode: 'HRCEN',
+          observedAt: '2026-07-06T10:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          claimKeys: ['rate'],
+          sourceHash: 'a'.repeat(64),
+          scopeVerified: true,
+        };
+
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Booking',
+          snippet: 'Need a current route proof',
+          latestMessageAt: new Date('2026-07-06T10:00:00Z'),
+        });
+        await db.insert(message).values({
+          id: parentMessageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Booking',
+          textBody: 'Need a current route proof',
+          receivedAt: new Date('2026-07-06T10:00:00Z'),
+        });
+        const threadStateVersion = await loadLiveThreadStateVersion(db, {
+          transportId: TRANSPORT_ID,
+          threadId,
+        });
+        await db.insert(aiDraftGeneration).values({
+          id: generationId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          requestedByUserId: 'user-navaai',
+          contextMessageIds: [parentMessageId],
+          model: route.modelId,
+          promptVersion: 'draft-v1',
+          status: 'succeeded',
+          outcome: 'candidate',
+          threadStateVersion,
+          evidence: [evidence],
+        });
+        await db.insert(mailDraft).values({
+          id: draftId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          createdByUserId: 'user-navaai',
+          status: 'active',
+          origin: 'ai',
+          generationId,
+          replyToMessageId: parentMessageId,
+          toAddresses: ['guest@example.com'],
+          subject: 'Re: Booking',
+          textBody: 'Current release proof',
+          htmlBody: body,
+        });
+        await db.insert(mailDraftRevision).values({
+          id: revisionId,
+          draftId,
+          generationId,
+          actorUserId: 'user-navaai',
+          kind: 'ai_generated',
+          toAddresses: ['guest@example.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Re: Booking',
+          textBody: 'Current release proof',
+          htmlBody: body,
+          attachments: [],
+        });
+        await db.insert(aiWorkflowRun).values({
+          id: runId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: parentMessageId,
+          runKind: 'candidate_draft',
+          idempotencyKey: `u6-current-release:${runId}`,
+          modelId: route.modelId,
+          promptVersion: 'draft-v1',
+          state: 'succeeded',
+          executorLane: 'default',
+          generationId,
+          metrics: { routeBinding: { ...route, release } },
+          finishedAt: new Date(),
+        });
+
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: TRANSPORT_ID,
+        });
+        const approvalInput = {
+          draftId,
+          subject: 'Re: Booking',
+          html: body,
+          text: '',
+          to: ['guest@example.com'],
+          cc: [],
+          bcc: [],
+          attachments: [],
+        };
+        const approvalPayload = {
+          ...approvalInput,
+          generationId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          revisionId,
+          threadStateVersion,
+          evidence: [evidence],
+          policyVersion: draftApprovalModule.DRAFT_APPROVAL_POLICY_VERSION,
+          approvedByUserId: 'user-navaai',
+          approvedAt: new Date().toISOString(),
+          origin: 'ai' as const,
+          routeBinding: { ...route, release },
+        };
+        const signingSecret = draftApprovalModule.getDraftApprovalSigningSecret();
+        const directApproval = draftApprovalModule.buildDraftApproval(
+          approvalPayload,
+          signingSecret,
+        );
+        await expect(
+          draftApprovalModule.assertDraftApprovalCurrent({
+            db,
+            approval: directApproval,
+            payload: approvalPayload,
+            loadThreadStateVersion: loadLiveThreadStateVersion,
+            signingSecret,
+          }),
+        ).resolves.toBeDefined();
+        const approval = await caller.drafts.approve(approvalInput);
+        expect(approval).toMatchObject({
+          routeBinding: expect.objectContaining({ routeId: route.routeId }),
+        });
+
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          ...descriptor,
+          route: { ...route, routeId: 'u6-current-authority-route-b' },
+          release: {
+            ...release,
+            releaseId: 'u6-draft-release-b',
+            sourceRevision: 'source-b',
+            fingerprint: 'b'.repeat(64),
+          },
+        });
+        await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
+          code: 'CONFLICT',
+          message: 'DRAFT_APPROVAL_INVALID',
+        });
+
+        delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+        await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
+          code: 'CONFLICT',
+          message: 'DRAFT_APPROVAL_INVALID',
+        });
+
+        for (const releaseState of [
+          { withdrawn: true, expiresAt: release.expiresAt },
+          { withdrawn: false, expiresAt: '2020-01-01T00:00:00.000Z' },
+        ]) {
+          process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+            ...descriptor,
+            release: { ...release, ...releaseState },
+          });
+          await expect(caller.drafts.approve(approvalInput)).rejects.toMatchObject({
+            code: 'CONFLICT',
+            message: 'DRAFT_APPROVAL_INVALID',
+          });
+        }
+
+        const invalidMailAuthorities = [
+          JSON.stringify({
+            ...descriptor,
+            route: { ...route, routeId: 'u6-current-authority-route-b' },
+            release: {
+              ...release,
+              releaseId: 'u6-draft-release-b',
+              sourceRevision: 'source-b',
+              fingerprint: 'b'.repeat(64),
+            },
+          }),
+          undefined,
+          JSON.stringify({
+            ...descriptor,
+            release: { ...release, withdrawn: true },
+          }),
+          JSON.stringify({
+            ...descriptor,
+            release: { ...release, expiresAt: '2020-01-01T00:00:00.000Z' },
+          }),
+        ] as const;
+        for (const invalidDescriptor of invalidMailAuthorities) {
+          if (invalidDescriptor === undefined) delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+          else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = invalidDescriptor;
+          await expect(
+            caller.mail.send({
+              threadId,
+              draftId,
+              to: ['guest@example.com'],
+              subject: 'Re: Booking',
+              message: body,
+              draftApproval: approval,
+            }),
+          ).rejects.toMatchObject({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+        }
+
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify(descriptor);
+        process.env.UNDO_SEND_SECONDS = '30';
+        const smtpSend = vi.fn<SmtpTransport['send']>().mockResolvedValue({
+          messageId: 'authority-expiry@zero.test',
+          accepted: ['guest@example.com'],
+          rejected: [],
+        });
+        __setSmtpTransportForTests({ kind: 'fake', send: smtpSend });
+        const queued = await caller.mail.send({
+          threadId,
+          draftId,
+          to: ['guest@example.com'],
+          subject: 'Re: Booking',
+          message: body,
+          draftApproval: approval,
+        });
+        expect(queued).toMatchObject({ queued: true });
+        await __forceSendAtPastForTests(queued.messageId, TRANSPORT_ID, db);
+        process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = JSON.stringify({
+          ...descriptor,
+          release: { ...release, expiresAt: '2020-01-01T00:00:00.000Z' },
+        });
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+        expect(smtpSend).not.toHaveBeenCalled();
+        const [removedQueue] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.messageId, queued.messageId));
+        expect(removedQueue).toBeUndefined();
+        const [restored] = await db
+          .select({ status: mailDraft.status, isSent: mailDraft.isSent })
+          .from(mailDraft)
+          .where(eq(mailDraft.id, draftId));
+        expect(restored).toEqual({ status: 'active', isSent: false });
+      });
+    } finally {
+      if (previousDraftsEnabled === undefined) delete process.env.AI_DRAFTS_ENABLED;
+      else process.env.AI_DRAFTS_ENABLED = previousDraftsEnabled;
+      if (previousModelRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+      else process.env.AI_MODEL_ROUTE = previousModelRoute;
+      if (previousDraftConfig === undefined) delete process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
+      else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = previousDraftConfig;
+    }
   }, 30000);
 
   it('keeps AI-bound Send anyway blocked after approval when the thread changes', async () => {

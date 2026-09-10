@@ -1,4 +1,9 @@
 import {
+  isDraftRouteReleaseDescriptor,
+  resolveCurrentDraftRouteAuthority,
+  type DraftRouteReleaseDescriptor,
+} from './draft-route-factory.js';
+import {
   aiDraftGeneration,
   aiWorkflowRun,
   mailDraft,
@@ -41,6 +46,7 @@ export type DraftApprovalRouteBinding = {
   egress: 'none';
   retention: 'bounded';
   usage: 'reported';
+  release?: DraftRouteReleaseDescriptor;
 };
 
 export type DraftApprovalPayload = {
@@ -99,7 +105,8 @@ function isDraftRouteBinding(value: unknown): value is DraftApprovalRouteBinding
     candidate.access === 'current_app' &&
     candidate.egress === 'none' &&
     candidate.retention === 'bounded' &&
-    candidate.usage === 'reported'
+    candidate.usage === 'reported' &&
+    (candidate.release === undefined || isDraftRouteReleaseDescriptor(candidate.release))
   );
 }
 
@@ -294,6 +301,20 @@ const draftApprovalSchema = z
         egress: z.literal('none'),
         retention: z.literal('bounded'),
         usage: z.literal('reported'),
+        release: z
+          .object({
+            releaseId: z.string().min(1),
+            releaseVersion: z.string().min(1),
+            sourceRevision: z.string().min(1),
+            fingerprint: z.string().min(1),
+            purpose: z.literal('draft'),
+            capabilityFamilyVersions: z.record(z.string().min(1)),
+            issuedAt: z.string().datetime(),
+            expiresAt: z.string().datetime(),
+            withdrawn: z.boolean(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -522,22 +543,45 @@ export async function assertDraftApprovalCurrent(input: {
     throw new DraftApprovalError('draft evidence is no longer fresh');
   }
 
+  const [run] = await input.db
+    .select({ metrics: aiWorkflowRun.metrics })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.generationId, approval.generationId),
+        eq(aiWorkflowRun.runKind, 'candidate_draft'),
+        eq(aiWorkflowRun.state, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+    .limit(1);
+  if (
+    (run?.metrics as { modelRouteUnavailable?: unknown } | null)?.modelRouteUnavailable === true
+  ) {
+    throw new DraftApprovalError('approved draft route unavailable');
+  }
+
   if (approval.routeBinding) {
-    const [run] = await input.db
-      .select({ metrics: aiWorkflowRun.metrics })
-      .from(aiWorkflowRun)
-      .where(
-        and(
-          eq(aiWorkflowRun.generationId, approval.generationId),
-          eq(aiWorkflowRun.runKind, 'candidate_draft'),
-          eq(aiWorkflowRun.state, 'succeeded'),
-        ),
-      )
-      .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
-      .limit(1);
-    const currentRoute = resolveDraftApprovalRouteBinding(run?.metrics);
-    if (!currentRoute || canonicalJson(currentRoute) !== canonicalJson(approval.routeBinding)) {
-      throw new DraftApprovalError('approved draft route release changed');
+    const currentAuthority = resolveCurrentDraftRouteAuthority();
+    if (currentAuthority || approval.routeBinding.release) {
+      const currentRoute = currentAuthority
+        ? { ...currentAuthority.route, release: currentAuthority.release }
+        : undefined;
+      if (
+        !approval.routeBinding.release ||
+        !currentRoute ||
+        canonicalJson(currentRoute) !== canonicalJson(approval.routeBinding)
+      ) {
+        throw new DraftApprovalError('approved draft route release changed');
+      }
+    } else {
+      const persistedRoute = resolveDraftApprovalRouteBinding(run?.metrics);
+      if (
+        !persistedRoute ||
+        canonicalJson(persistedRoute) !== canonicalJson(approval.routeBinding)
+      ) {
+        throw new DraftApprovalError('approved draft route release changed');
+      }
     }
   }
 

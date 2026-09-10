@@ -286,7 +286,14 @@ export async function runPreparedWorkerCandidateReply(
     ...result,
     metrics: {
       ...result.metrics,
-      ...(input.route?.route ? { routeBinding: input.route.route } : {}),
+      ...(input.route?.route
+        ? {
+            routeBinding: {
+              ...input.route.route,
+              ...(input.route.release ? { release: input.route.release } : {}),
+            },
+          }
+        : {}),
     },
   };
 }

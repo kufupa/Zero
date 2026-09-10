@@ -926,36 +926,59 @@ export const draftsRouter = tRouter({
       updatedAt: new Date(),
     };
     if (existing.length > 0) {
-      const prior = existing[0]!;
-      await db
-        .update(mailDraft)
-        .set({ ...row, status: 'active' as const })
-        .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)));
-      const changed =
-        JSON.stringify(prior.toAddresses ?? []) !== JSON.stringify(row.toAddresses) ||
-        JSON.stringify(prior.ccAddresses ?? []) !== JSON.stringify(row.ccAddresses) ||
-        JSON.stringify(prior.bccAddresses ?? []) !== JSON.stringify(row.bccAddresses) ||
-        prior.subject !== row.subject ||
-        prior.textBody !== row.textBody ||
-        prior.htmlBody !== row.htmlBody ||
-        JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-      if (changed) {
-        await db.insert(mailDraftRevision).values({
-          id: randomUUID(),
-          draftId,
-          generationId: prior.generationId,
-          actorUserId: ctx.sessionUser.id,
-          kind: 'edited',
-          toAddresses: row.toAddresses,
-          ccAddresses: row.ccAddresses,
-          bccAddresses: row.bccAddresses,
-          subject: row.subject,
-          textBody: row.textBody,
-          htmlBody: row.htmlBody,
-          attachments: row.attachments,
-        });
-      }
-      return { id: draftId };
+      return await db.transaction(async (tx) => {
+        const [prior] = await tx
+          .select()
+          .from(mailDraft)
+          .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)))
+          .limit(1)
+          .for('update');
+        if (!prior || prior.isSent || prior.status !== 'active') {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
+
+        const [updated] = await tx
+          .update(mailDraft)
+          .set({ ...row, status: 'active' as const })
+          .where(
+            and(
+              eq(mailDraft.id, draftId),
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .returning({ id: mailDraft.id });
+        if (!updated) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
+
+        const changed =
+          JSON.stringify(prior.toAddresses ?? []) !== JSON.stringify(row.toAddresses) ||
+          JSON.stringify(prior.ccAddresses ?? []) !== JSON.stringify(row.ccAddresses) ||
+          JSON.stringify(prior.bccAddresses ?? []) !== JSON.stringify(row.bccAddresses) ||
+          prior.subject !== row.subject ||
+          prior.textBody !== row.textBody ||
+          prior.htmlBody !== row.htmlBody ||
+          JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
+        if (changed) {
+          await tx.insert(mailDraftRevision).values({
+            id: randomUUID(),
+            draftId,
+            generationId: prior.generationId,
+            actorUserId: ctx.sessionUser.id,
+            kind: 'edited',
+            toAddresses: row.toAddresses,
+            ccAddresses: row.ccAddresses,
+            bccAddresses: row.bccAddresses,
+            subject: row.subject,
+            textBody: row.textBody,
+            htmlBody: row.htmlBody,
+            attachments: row.attachments,
+          });
+        }
+        return { id: draftId };
+      });
     }
 
     try {

@@ -62,6 +62,20 @@ const draftApprovalInput = z
         egress: z.literal('none'),
         retention: z.literal('bounded'),
         usage: z.literal('reported'),
+        release: z
+          .object({
+            releaseId: z.string(),
+            releaseVersion: z.string(),
+            sourceRevision: z.string(),
+            fingerprint: z.string(),
+            purpose: z.literal('draft'),
+            capabilityFamilyVersions: z.record(z.string()),
+            issuedAt: z.string(),
+            expiresAt: z.string(),
+            withdrawn: z.boolean(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

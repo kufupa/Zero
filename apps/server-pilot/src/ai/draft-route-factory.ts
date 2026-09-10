@@ -1,10 +1,30 @@
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
 import { createRequire } from 'node:module';
 
+/** Server-owned release identity for the configured draft-purpose route. */
+export type DraftRouteReleaseDescriptor = {
+  releaseId: string;
+  releaseVersion: string;
+  sourceRevision: string;
+  fingerprint: string;
+  purpose: 'draft';
+  capabilityFamilyVersions: Record<string, string>;
+  issuedAt: string;
+  expiresAt: string;
+  withdrawn: boolean;
+};
+
+export type DraftRouteAuthority = {
+  route: DraftModelRouteConfig['route'];
+  release: DraftRouteReleaseDescriptor;
+};
+
 /** Explicitly configured lower edge for the normal draft-purpose route. */
 export type DraftModelRouteConfig = {
   route: LocalModelRouteEvidence & { purpose: 'draft' };
   transport: LocalModelTransport;
+  /** Present on the normal configured factory; test-only injected routes may omit it. */
+  release?: DraftRouteReleaseDescriptor;
 };
 
 export type DraftModelRouteFactory = () => DraftModelRouteConfig | undefined;
@@ -18,7 +38,67 @@ type ConfiguredDraftRouteModule = {
 type ConfiguredDraftRouteDescriptor = {
   module: string;
   route: DraftModelRouteConfig['route'];
+  release: DraftRouteReleaseDescriptor;
 };
+
+export function isDraftRouteReleaseDescriptor(
+  value: unknown,
+): value is DraftRouteReleaseDescriptor {
+  if (typeof value !== 'object' || value === null) return false;
+  const release = value as Partial<DraftRouteReleaseDescriptor>;
+  const capabilityVersions = release.capabilityFamilyVersions;
+  return (
+    typeof release.releaseId === 'string' &&
+    release.releaseId.trim().length > 0 &&
+    typeof release.releaseVersion === 'string' &&
+    release.releaseVersion.trim().length > 0 &&
+    typeof release.sourceRevision === 'string' &&
+    release.sourceRevision.trim().length > 0 &&
+    typeof release.fingerprint === 'string' &&
+    release.fingerprint.trim().length > 0 &&
+    release.purpose === 'draft' &&
+    typeof capabilityVersions === 'object' &&
+    capabilityVersions !== null &&
+    !Array.isArray(capabilityVersions) &&
+    Object.keys(capabilityVersions).length > 0 &&
+    Object.values(capabilityVersions).every(
+      (version) => typeof version === 'string' && version.trim().length > 0,
+    ) &&
+    typeof release.issuedAt === 'string' &&
+    !Number.isNaN(Date.parse(release.issuedAt)) &&
+    typeof release.expiresAt === 'string' &&
+    !Number.isNaN(Date.parse(release.expiresAt)) &&
+    typeof release.withdrawn === 'boolean'
+  );
+}
+
+function isActiveDraftRouteRelease(
+  release: DraftRouteReleaseDescriptor,
+  now = new Date(),
+): boolean {
+  return (
+    !release.withdrawn &&
+    Date.parse(release.issuedAt) <= now.getTime() &&
+    Date.parse(release.expiresAt) > now.getTime()
+  );
+}
+
+function sameDraftRouteRelease(
+  left: DraftRouteReleaseDescriptor,
+  right: DraftRouteReleaseDescriptor,
+): boolean {
+  return (
+    left.releaseId === right.releaseId &&
+    left.releaseVersion === right.releaseVersion &&
+    left.sourceRevision === right.sourceRevision &&
+    left.fingerprint === right.fingerprint &&
+    left.purpose === right.purpose &&
+    left.issuedAt === right.issuedAt &&
+    left.expiresAt === right.expiresAt &&
+    left.withdrawn === right.withdrawn &&
+    JSON.stringify(left.capabilityFamilyVersions) === JSON.stringify(right.capabilityFamilyVersions)
+  );
+}
 
 function isDraftRouteEvidence(value: unknown): value is DraftModelRouteConfig['route'] {
   if (typeof value !== 'object' || value === null) return false;
@@ -63,17 +143,22 @@ function parseConfiguredDraftRouteDescriptor(): ConfiguredDraftRouteDescriptor |
   const raw = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG?.trim();
   if (!raw) return undefined;
   try {
-    const parsed = JSON.parse(raw) as { module?: unknown; route?: unknown };
+    const parsed = JSON.parse(raw) as {
+      module?: unknown;
+      route?: unknown;
+      release?: unknown;
+    };
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
       typeof parsed.module !== 'string' ||
       parsed.module.trim().length === 0 ||
-      !isDraftRouteEvidence(parsed.route)
+      !isDraftRouteEvidence(parsed.route) ||
+      !isDraftRouteReleaseDescriptor(parsed.release)
     ) {
       return undefined;
     }
-    return { module: parsed.module.trim(), route: parsed.route };
+    return { module: parsed.module.trim(), route: parsed.route, release: parsed.release };
   } catch {
     return undefined;
   }
@@ -87,7 +172,7 @@ function parseConfiguredDraftRouteDescriptor(): ConfiguredDraftRouteDescriptor |
 export function loadConfiguredDraftModelRoute(): DraftModelRouteConfig | undefined {
   if (process.env.AI_MODEL_ROUTE !== 'approved-local') return undefined;
   const descriptor = parseConfiguredDraftRouteDescriptor();
-  if (!descriptor) return undefined;
+  if (!descriptor || !isActiveDraftRouteRelease(descriptor.release)) return undefined;
   try {
     const loaded = createRequire(import.meta.url)(descriptor.module) as ConfiguredDraftRouteModule;
     const configured = loaded.createDraftModelRoute
@@ -95,12 +180,24 @@ export function loadConfiguredDraftModelRoute(): DraftModelRouteConfig | undefin
       : loaded.createApprovedLocalDraftRoute
         ? loaded.createApprovedLocalDraftRoute()
         : (loaded.default ?? loaded);
-    return isDraftRouteConfig(configured) && sameRouteEvidence(configured.route, descriptor.route)
-      ? configured
-      : undefined;
+    if (!isDraftRouteConfig(configured) || !sameRouteEvidence(configured.route, descriptor.route)) {
+      return undefined;
+    }
+    if (configured.release && !sameDraftRouteRelease(configured.release, descriptor.release)) {
+      return undefined;
+    }
+    return { ...configured, release: descriptor.release };
   } catch {
     return undefined;
   }
+}
+
+/** Current server-owned authority used when revalidating a reviewed draft. */
+export function resolveCurrentDraftRouteAuthority(): DraftRouteAuthority | undefined {
+  if (process.env.AI_MODEL_ROUTE !== 'approved-local') return undefined;
+  const descriptor = parseConfiguredDraftRouteDescriptor();
+  if (!descriptor || !isActiveDraftRouteRelease(descriptor.release)) return undefined;
+  return { route: descriptor.route, release: descriptor.release };
 }
 
 export function createDraftModelRouteFactory(
