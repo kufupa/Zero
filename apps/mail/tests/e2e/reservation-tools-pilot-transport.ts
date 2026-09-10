@@ -41,6 +41,10 @@ export type U6DraftSafetyState = {
   mode: U6FixtureMode;
   aiDraftActive: boolean;
   stale: boolean;
+  activeRun?: {
+    id: string;
+    state: 'queued' | 'claimed' | 'running' | 'retry_wait';
+  } | null;
   draftBody: string;
   approvalCalls: number;
   sendCalls: number;
@@ -595,6 +599,8 @@ const U6_MESSAGE_ID = 'u6-message-1';
 const U6_AI_DRAFT_ID = 'u6-ai-draft';
 const U6_MANUAL_DRAFT_ID = 'u6-manual-draft';
 const U6_HEX = 'a'.repeat(64);
+const U6_THREAD_STATE_VERSION = U6_HEX;
+const U6_REFRESH_IDEMPOTENCY_KEY = `hms-refresh:transport-centurion:${U6_THREAD_ID}:${U6_THREAD_STATE_VERSION}:1.2.0`;
 
 function u6DraftSafetyState(): U6DraftSafetyState {
   const existing = window.__u6DraftSafetyState;
@@ -603,6 +609,7 @@ function u6DraftSafetyState(): U6DraftSafetyState {
     mode: 'ai',
     aiDraftActive: false,
     stale: false,
+    activeRun: null,
     draftBody:
       '<p>Hello guest,</p><p>We can confirm the requested synthetic stay details for review.</p>',
     approvalCalls: 0,
@@ -936,15 +943,15 @@ export function installReservationToolsPilotTransport(): void {
           );
         }
         u6Record(200);
+        const hasCandidate = state.mode === 'ai';
         return trpcResponse({
           threadId: U6_THREAD_ID,
-          visible: true,
-          candidate: state.mode === 'ai' ? u6DraftWire() : null,
-          activeRun: null,
-          outcome: state.mode === 'ai' ? 'candidate' : 'none',
-          freshness: state.stale ? 'stale' : 'fresh',
+          visibleCandidate: hasCandidate ? { ...u6DraftWire(), isStale: state.stale } : null,
+          activeRun: hasCandidate ? (state.activeRun ?? null) : null,
+          outcome: hasCandidate ? 'candidate' : null,
+          freshness: hasCandidate ? (state.stale ? 'stale_thread' : 'fresh') : 'unknown',
           unresolvedFields: [],
-          refreshedAt: '2026-09-09T12:01:00.000Z',
+          refreshedAt: hasCandidate ? '2026-09-09T12:01:00.000Z' : null,
         });
       }
 
@@ -958,6 +965,7 @@ export function installReservationToolsPilotTransport(): void {
             405,
           );
         }
+        state.activeRun = { id: 'u6-refresh-run', state: 'queued' };
         if (window.__u6RefreshHold) {
           await new Promise<void>((resolve) => {
             window.__u6ReleaseRefresh = resolve;
@@ -969,9 +977,10 @@ export function installReservationToolsPilotTransport(): void {
         u6Record(200);
         return trpcResponse({
           runId: 'u6-refresh-run',
-          idempotencyKey: 'u6-refresh-idempotency',
-          status: 'queued',
-          threadId: U6_THREAD_ID,
+          runState: 'queued',
+          triggerMessageId: U6_MESSAGE_ID,
+          threadStateVersion: U6_THREAD_STATE_VERSION,
+          idempotencyKey: U6_REFRESH_IDEMPOTENCY_KEY,
         });
       }
 

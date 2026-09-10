@@ -25,6 +25,34 @@ type RecordedFixtureRequest = {
   query?: DashboardQueryMetadata | DocumentQueryMetadata | null;
 };
 
+type FixtureTrpcPayload = {
+  result?: {
+    data?: {
+      json?: unknown;
+    };
+  };
+};
+
+async function readU6Procedure(page: Page, procedure: string): Promise<unknown> {
+  const response = await page.evaluate(async (nextProcedure) => {
+    const result = await fetch(`/api/trpc/${nextProcedure}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify([{ json: { threadId: 'u6-thread-1' } }]),
+    });
+    return { status: result.status, body: (await result.json()) as unknown };
+  }, procedure);
+  expect(response.status, `${procedure} fixture status`).toBe(200);
+  const envelope = response.body as FixtureTrpcPayload[];
+  expect(envelope).toHaveLength(1);
+  return envelope[0]?.result?.data?.json;
+}
+
+function asU6Record(value: unknown, label: string): Record<string, unknown> {
+  expect(value, `${label} fixture payload`).toEqual(expect.any(Object));
+  return value as Record<string, unknown>;
+}
+
 type CssColor = { red: number; green: number; blue: number; alpha: number };
 
 type ReviewSendContrast = {
@@ -679,6 +707,37 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
   await expect(editor()).toBeVisible();
 
+  const candidateState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'candidate state',
+  );
+  expect(Object.keys(candidateState).sort()).toEqual([
+    'activeRun',
+    'freshness',
+    'outcome',
+    'refreshedAt',
+    'threadId',
+    'unresolvedFields',
+    'visibleCandidate',
+  ]);
+  expect(candidateState).toEqual(
+    expect.objectContaining({
+      threadId: 'u6-thread-1',
+      activeRun: null,
+      outcome: 'candidate',
+      freshness: 'fresh',
+      unresolvedFields: [],
+      refreshedAt: '2026-09-09T12:01:00.000Z',
+      visibleCandidate: expect.objectContaining({
+        id: 'u6-ai-draft',
+        origin: 'ai',
+        isStale: false,
+      }),
+    }),
+  );
+  expect(candidateState).not.toHaveProperty('candidate');
+  expect(candidateState).not.toHaveProperty('visible');
+
   const reviewButton = page.getByRole('button', { name: 'Review & Send', exact: true });
   await reviewButton.focus();
   await page.keyboard.press('Tab');
@@ -776,6 +835,19 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toBeVisible();
   await editor().fill('Edited stale synthetic reply remains available after the fence.');
   await page.getByRole('button', { name: 'Simulate newer inbound', exact: true }).click();
+  const staleState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'stale candidate state',
+  );
+  expect(staleState).toEqual(
+    expect.objectContaining({
+      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: true }),
+      outcome: 'candidate',
+      freshness: 'stale_thread',
+    }),
+  );
+  expect(staleState).not.toHaveProperty('candidate');
+
   await page.getByRole('button', { name: 'Review & Send', exact: true }).click();
   await expect(page.getByTestId('u6-status')).toHaveText(
     'Approval blocked before SMTP; the edited draft remains available.',
@@ -783,11 +855,59 @@ test('reservation-tools-pilot/pilot', async ({ page }, testInfo: TestInfo) => {
   await expect(page.getByTestId('u6-audit')).toContainText('Blocked sends: 1');
   await expect(page.getByTestId('u6-audit')).toContainText('Fake SMTP attempts: 0');
 
+  const refreshResponse = asU6Record(
+    await readU6Procedure(page, 'ai.refreshHmsCandidate'),
+    'refresh response',
+  );
+  expect(Object.keys(refreshResponse).sort()).toEqual([
+    'idempotencyKey',
+    'runId',
+    'runState',
+    'threadStateVersion',
+    'triggerMessageId',
+  ]);
+  expect(refreshResponse).toEqual({
+    runId: 'u6-refresh-run',
+    runState: 'queued',
+    triggerMessageId: 'u6-message-1',
+    threadStateVersion: 'a'.repeat(64),
+    idempotencyKey: 'hms-refresh:transport-centurion:u6-thread-1:' + 'a'.repeat(64) + ':1.2.0',
+  });
+  expect(refreshResponse).not.toHaveProperty('status');
+
+  const refreshedState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'refreshed candidate state',
+  );
+  expect(refreshedState).toEqual(
+    expect.objectContaining({
+      activeRun: { id: 'u6-refresh-run', state: 'queued' },
+      visibleCandidate: expect.objectContaining({ id: 'u6-ai-draft', isStale: false }),
+      outcome: 'candidate',
+      freshness: 'fresh',
+    }),
+  );
+
   const actionBoxes = await readTouchTargetBoxes(page.locator('[data-u6-action]'));
   expectTouchTargetBoxes([{ label: 'U6 desktop safety actions', boxes: actionBoxes }]);
   await page.getByRole('button', { name: 'Use manual fallback', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Review & Send', exact: true })).toHaveCount(0);
+
+  const noneState = asU6Record(
+    await readU6Procedure(page, 'ai.hmsCandidateState'),
+    'none candidate state',
+  );
+  expect(noneState).toEqual({
+    threadId: 'u6-thread-1',
+    visibleCandidate: null,
+    activeRun: null,
+    outcome: null,
+    freshness: 'unknown',
+    unresolvedFields: [],
+    refreshedAt: null,
+  });
+  expect(noneState).not.toHaveProperty('candidate');
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(editor()).toBeVisible();

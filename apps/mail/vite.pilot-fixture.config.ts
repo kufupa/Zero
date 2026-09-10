@@ -4,9 +4,10 @@ import {
   type ExistingDocumentSource,
 } from '../server-pilot/src/mail/artifacts/existing-document-service.js';
 import type { ArtifactReadResult } from '../server-pilot/src/mail/artifacts/read-artifact.js';
+import { defineConfig as defineViteConfig, type Plugin, type UserConfig } from 'vite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { PlaywrightTestConfig } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
-import { defineConfig, type Plugin } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 
 export const pilotFixtureContract = {
@@ -294,6 +295,10 @@ function documentServiceFixturePlugin(): Plugin {
   };
 }
 
+function defineConfig<T extends UserConfig & PlaywrightTestConfig>(config: T): T {
+  return Object.assign(defineViteConfig(config), config);
+}
+
 export default defineConfig({
   envDir: '/dev/null',
   root: 'tests/e2e/fixture',
@@ -329,4 +334,4 @@ export default defineConfig({
     timeout: 30_000,
     reuseExistingServer: false,
   },
-} as any);
+} satisfies UserConfig & PlaywrightTestConfig);
