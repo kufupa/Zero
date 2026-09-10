@@ -31,7 +31,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { cn, formatDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
+import { cn, formatDate, formatMessageHeaderDate } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -66,6 +67,11 @@ import {
   setHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
 import { MailContent } from './mail-content';
+import { useTRPC } from '@/providers/query-provider';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ReactionPicker } from './reactions/reaction-picker';
+import { ReactionBadges } from './reactions/reaction-badges';
+import { ReactionBanner, detectReactionNotification } from './reactions/reaction-banner';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { FileText } from 'lucide-react';
@@ -478,8 +484,15 @@ const openAttachment = async (
 
 const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
+  const timezone = useTimezone();
   const { data: threadData } = useThread(emailData.threadId ?? null);
   const { data: messageAttachments } = useAttachments(emailData.id);
+
+  const headerDate = useMemo(() => {
+    return emailData?.receivedOn
+      ? formatMessageHeaderDate(emailData.receivedOn, timezone)
+      : { display: '', tooltip: '' };
+  }, [emailData?.receivedOn, timezone]);
   //   const [unsubscribed, setUnsubscribed] = useState(false);
   //   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const [preventCollapse, setPreventCollapse] = useState(false);
@@ -520,7 +533,97 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
     setHeaderDebugEnabledState(next);
   }, [headerDebugEnabled]);
 
-  //   const trpc = useTRPC();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  const [reactions, setReactions] = useState(emailData.reactions ?? []);
+
+  useEffect(() => {
+    setReactions(emailData.reactions ?? []);
+  }, [emailData.reactions]);
+
+  const toggleReactionMutation = useMutation(
+    trpc.mail.toggleReaction.mutationOptions(),
+  );
+
+  const handleToggleReaction = useCallback(
+    async (emoji: string) => {
+      setReactions((prev) => {
+        const existingIdx = prev.findIndex((g) => g.emoji === emoji);
+        if (existingIdx >= 0) {
+          const group = prev[existingIdx];
+          if (group.hasReacted) {
+            const newCount = group.count - 1;
+            if (newCount <= 0) {
+              return prev.filter((_, i) => i !== existingIdx);
+            }
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...group,
+              count: newCount,
+              hasReacted: false,
+              users: group.users.filter(
+                (u) => u.email.toLowerCase() !== (activeConnection?.email ?? '').toLowerCase(),
+              ),
+            };
+            return updated;
+          } else {
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...group,
+              count: group.count + 1,
+              hasReacted: true,
+              users: [
+                ...group.users,
+                {
+                  email: activeConnection?.email ?? '',
+                  userName: activeConnection?.name ?? null,
+                },
+              ],
+            };
+            return updated;
+          }
+        } else {
+          return [
+            ...prev,
+            {
+              emoji,
+              count: 1,
+              hasReacted: true,
+              users: [
+                {
+                  email: activeConnection?.email ?? '',
+                  userName: activeConnection?.name ?? null,
+                },
+              ],
+            },
+          ];
+        }
+      });
+
+      try {
+        const res = await toggleReactionMutation.mutateAsync({
+          messageId: emailData.id,
+          reaction: emoji,
+        });
+        if (res && res.reactions) {
+          setReactions(res.reactions);
+        }
+        if (emailData.threadId) {
+          void queryClient.invalidateQueries({
+            queryKey: trpc.mail.get.queryKey({ id: emailData.threadId }),
+          });
+        }
+      } catch {
+        setReactions(emailData.reactions ?? []);
+      }
+    },
+    [emailData.id, emailData.threadId, emailData.reactions, activeConnection, toggleReactionMutation, trpc, queryClient],
+  );
+
+  const reactionNotification = useMemo(() => {
+    return emailData ? detectReactionNotification(emailData) : null;
+  }, [emailData]);
 
   const isLastEmail = useMemo(
     () => emailData.id === threadData?.latest?.id,
@@ -1346,14 +1449,16 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
 
                         <div className="flex shrink-0 items-center justify-center">
                           <div className="text-muted-foreground flex-nowrap! mr-2 flex flex-col items-end text-sm font-medium dark:text-[#8C8C8C]">
-                            <time className="whitespace-nowrap">
-                              {emailData?.receivedOn ? formatDate(emailData.receivedOn) : ''}
+                            <time
+                              className="whitespace-nowrap cursor-default"
+                              title={headerDate.tooltip}
+                            >
+                              {headerDate.display}
                             </time>
-                            {shouldShowSeparateTime(emailData?.receivedOn) && (
-                              <time className="whitespace-nowrap text-xs opacity-75">
-                                {emailData?.receivedOn && formatTime(emailData.receivedOn)}
-                              </time>
-                            )}
+                            <ReactionBadges
+                              reactions={reactions}
+                              onToggleReaction={handleToggleReaction}
+                            />
                           </div>
 
                           {/* options menu */}
@@ -1478,29 +1583,33 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
                           />
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <ActionButton
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDownloadEml();
-                                }}
-                                disabled={isDownloadingEml}
-                                icon={
-                                  isDownloadingEml ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                                  ) : (
-                                    <FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />
-                                  )
-                                }
-                                text={isDownloadingEml ? '...' : '.eml'}
-                                aria-label="Download .eml"
-                                title="Download .eml file (drag into Infor PMS)"
-                              />
-                            </TooltipTrigger>
-                            <TooltipContent>Download .eml file (drag into Infor PMS)</TooltipContent>
-                          </Tooltip>
                         </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <ActionButton
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDownloadEml();
+                              }}
+                              disabled={isDownloadingEml}
+                              icon={
+                                isDownloadingEml ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                ) : (
+                                  <FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />
+                                )
+                              }
+                              text={isDownloadingEml ? '...' : '.eml'}
+                              aria-label="Download .eml"
+                              title="Download .eml file (drag into Infor PMS)"
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>Download .eml file (drag into Infor PMS)</TooltipContent>
+                        </Tooltip>
+                        <ReactionPicker
+                          onSelectEmoji={handleToggleReaction}
+                          activeEmojis={reactions.filter((r) => r.hasReacted).map((r) => r.emoji)}
+                        />
                       </div>
                     </div>
 
@@ -1607,6 +1716,14 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
             <div className="min-h-0 overflow-hidden">
               <div className="h-fit w-full p-0">
                 {/* mail main body */}
+                {reactionNotification && (
+                  <ReactionBanner
+                    emoji={reactionNotification.emoji}
+                    reactorName={reactionNotification.reactorName}
+                    quotedSnippet={reactionNotification.quotedSnippet}
+                    className="mx-4 mt-2 mb-3"
+                  />
+                )}
                 {emailData?.decodedBody ? (
                   <MailContent
                     id={emailData.id}

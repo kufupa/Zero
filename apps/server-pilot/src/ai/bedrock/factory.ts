@@ -16,6 +16,11 @@ export function resolveModelAdapter(env: Pick<
   }
 
   if (!env.AI_ENABLED) {
+    if (env.NODE_ENV === 'production') {
+      throw new Error(
+        'AI_ENABLED is false or missing in production: refusing silent FakeModelAdapter fallback',
+      );
+    }
     return createFakeModelAdapter();
   }
 

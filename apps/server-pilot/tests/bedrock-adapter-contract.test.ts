@@ -67,6 +67,28 @@ describe('bedrock adapter contract', () => {
     expect(adapter).toBeInstanceOf(BedrockModelAdapter);
   });
 
+  it('resolveModelAdapter throws in production when AI_ENABLED is false', () => {
+    expect(() =>
+      resolveModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: false,
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+        BEDROCK_REGION: 'us-east-1',
+      }),
+    ).toThrow(/refusing silent FakeModelAdapter fallback/i);
+  });
+
+  it('resolveModelAdapter throws in production when AI_ENABLED is undefined', () => {
+    expect(() =>
+      resolveModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: undefined as unknown as boolean,
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+        BEDROCK_REGION: 'us-east-1',
+      }),
+    ).toThrow(/refusing silent FakeModelAdapter fallback/i);
+  });
+
   it('mocked converse returns parsed JSON with token counts', async () => {
     const send = vi.fn().mockResolvedValue({
       output: {

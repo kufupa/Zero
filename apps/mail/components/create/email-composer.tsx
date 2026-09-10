@@ -19,9 +19,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useTRPC } from '@/providers/query-provider';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
+import { useThread } from '@/hooks/use-threads';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoUpsertDraft } from '@/lib/demo/local-actions';
+import { QuoteHistoryExpander } from './quote-history-expander';
+import type { ParsedMessage } from '@/types';
 
 import { cn, formatFileSize } from '@/lib/utils';
 import { serializeFiles } from '@/lib/schemas';
@@ -87,6 +90,7 @@ interface EmailComposerProps {
     fromEmail?: string;
     scheduleAt?: string;
     draftId?: string;
+    excludeQuotedHistory?: boolean;
   }) => Promise<boolean>;
   onClose?: () => void;
   className?: string;
@@ -96,6 +100,7 @@ interface EmailComposerProps {
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
   replyToMessageId?: string | null;
+  replyToMessage?: ParsedMessage | null;
   headerPreview?: HeaderDebugLine[];
 }
 
@@ -136,6 +141,7 @@ export function EmailComposer({
   editorClassName,
   syncReplyHeadersFromProps = false,
   replyToMessageId = null,
+  replyToMessage = null,
   headerPreview = [],
 }: EmailComposerProps) {
   const { data: settings } = useSettings();
@@ -162,6 +168,20 @@ export function EmailComposer({
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [draftId, setDraftId] = useQueryState('draftId');
   const { data: serverDraft } = useDraft(draftId ?? null);
+  const { data: threadData } = useThread(threadId ?? null);
+
+  const resolvedReplyToMessage = useMemo(() => {
+    if (replyToMessage) return replyToMessage;
+    if (replyToMessageId && threadData?.messages) {
+      return (
+        threadData.messages.find((m) => m.id === replyToMessageId) ??
+        (threadData.latest?.id === replyToMessageId ? threadData.latest : null)
+      );
+    }
+    return null;
+  }, [replyToMessage, replyToMessageId, threadData?.messages, threadData?.latest]);
+
+  const [isQuoteExcluded, setIsQuoteExcluded] = useState(false);
 
   useEffect(() => {
     if (draftId) {
@@ -725,6 +745,7 @@ export function EmailComposer({
         fromEmail: values.fromEmail,
         scheduleAt,
         draftId: activeDraftIdRef.current ?? undefined,
+        excludeQuotedHistory: isQuoteExcluded,
       });
       if (!sent) return;
 
@@ -781,8 +802,8 @@ export function EmailComposer({
   const persistDraftOnce = useCallback((): Promise<'saved' | 'skipped' | 'failed'> => {
     if (saveInFlightRef.current) return saveInFlightRef.current;
 
-    let savePromiseRef: Promise<'saved' | 'skipped' | 'failed'> | null = null;
-    const savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
+    let savePromise: Promise<'saved' | 'skipped' | 'failed'> | null = null;
+    savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
       try {
         await drainComposeFileWork();
         const capturedRevision = revisionRef.current.localRevision;
@@ -875,14 +896,13 @@ export function EmailComposer({
         setAutosaveSuppressedAfterFailure(true);
         return 'failed';
       } finally {
-        if (saveInFlightRef.current === savePromiseRef) {
+        if (saveInFlightRef.current === savePromise) {
           saveInFlightRef.current = null;
         }
         setIsSavingDraft(false);
       }
     })();
 
-    savePromiseRef = savePromise;
     saveInFlightRef.current = savePromise;
     return savePromise;
   }, [
@@ -1377,6 +1397,13 @@ export function EmailComposer({
           >
             <EditorContent editor={editor} className="h-full w-full max-w-full overflow-x-auto" />
           </div>
+          {resolvedReplyToMessage && (
+            <QuoteHistoryExpander
+              replyToMessage={resolvedReplyToMessage}
+              isExcluded={isQuoteExcluded}
+              onExcludeChange={setIsQuoteExcluded}
+            />
+          )}
         </div>
       </div>
 

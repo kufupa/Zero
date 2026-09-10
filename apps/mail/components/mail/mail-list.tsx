@@ -40,7 +40,8 @@ import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-row
 import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
 import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
-import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
+import { cn, FOLDERS, formatThreadListDate } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import type { FileDragData } from '@/lib/mail/file-drag';
 import { useTRPC } from '@/providers/query-provider';
 import { useLabels, useThreadLabels } from '@/hooks/use-labels';
@@ -136,6 +137,7 @@ const Thread = memo(
     index,
   }: ThreadProps & { index?: number }) {
     const [searchValue] = useSearchValue();
+    const timezone = useTimezone();
     const { folder } = useParams<{ folder: string }>();
     const [, threads] = useThreads();
     const { userLabels } = useLabels();
@@ -627,11 +629,7 @@ const Thread = memo(
                           isMailSelected && 'opacity-100',
                         )}
                       >
-                        {formatDateWithWeekdayAndTime(
-                          typeof latestMessage.receivedOn === 'string'
-                            ? latestMessage.receivedOn.split('.')[0] || ''
-                            : latestMessage.receivedOn,
-                        )}
+                        {formatThreadListDate(latestMessage.receivedOn, timezone)}
                       </p>
                     ) : null}
                   </div>
@@ -769,6 +767,7 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
   const [, setDraftId] = useQueryState('draftId');
   const { optimisticDeleteDraft } = useOptimisticActions();
   const optimisticState = useOptimisticThreadState(message.id);
+  const timezone = useTimezone();
 
   const handleMailClick = useCallback(() => {
     if (draft?.threadId) {
@@ -885,7 +884,7 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
                       'text-muted-foreground text-nowrap text-xs font-normal opacity-70 transition-opacity group-hover:opacity-100 dark:text-[#8C8C8C]',
                     )}
                   >
-                    {formatDateWithWeekdayAndTime(Date.parse(draft.updatedAt))}
+                    {formatThreadListDate(draft.updatedAt, timezone)}
                   </p>
                 )}
               </div>

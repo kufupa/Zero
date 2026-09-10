@@ -49,6 +49,7 @@ import {
   hmsCandidateNotice,
 } from '@/lib/mail/thread-draft-view-model';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import { m } from '@/paraglide/messages';
 import MailDisplay, { ThreadAttachments } from './mail-display';
 import { useParams } from 'react-router';
@@ -181,6 +182,7 @@ function ThreadActionButton({
 const isFullscreen = false;
 export function ThreadDisplay() {
   const isMobile = useIsMobile();
+  const timezone = useTimezone();
   const params = useParams<{ folder: string }>();
 
   const folder = params?.folder ?? 'inbox';
@@ -843,7 +845,7 @@ export function ThreadDisplay() {
             bodyPreview={draftVm.bodyPreview}
             savedAtLabel={
               m['common.threadDisplay.draftSavedPrefix']() +
-              formatDateWithWeekdayAndTime(draftVm.savedAtIso)
+              formatDateWithWeekdayAndTime(draftVm.savedAtIso, timezone)
             }
             draftBadge={m['common.threadDisplay.draftBadge']()}
             unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
@@ -877,7 +879,7 @@ export function ThreadDisplay() {
                 bodyPreview={candidateVm.bodyPreview}
                 savedAtLabel={
                   m['common.threadDisplay.draftSavedPrefix']() +
-                  formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
+                  formatDateWithWeekdayAndTime(candidateVm.savedAtIso, timezone)
                 }
                 draftBadge="AI draft"
                 unsentNotice={notice}
@@ -1121,8 +1123,8 @@ export function ThreadDisplay() {
                           <ArchiveX className="fill-iconLight dark:fill-iconDark mr-2" />
                           <span>{m['common.threadDisplay.moveToSpam']()}</span>
                         </DropdownMenuItem>
-                        {emailData.latest?.listUnsubscribe ||
-                        emailData.latest?.listUnsubscribePost ? (
+                        {emailData?.latest?.listUnsubscribe ||
+                        emailData?.latest?.listUnsubscribePost ? (
                           <DropdownMenuItem onClick={handleUnsubscribeProcess}>
                             <Folders className="fill-iconLight dark:fill-iconDark mr-2" />
                             <span>{m['common.mailDisplay.unsubscribe']()}</span>
@@ -1175,7 +1177,7 @@ export function ThreadDisplay() {
                     className="h-full w-full"
                   >
                     <MessageList
-                      messages={emailData.messages}
+                      messages={emailData?.messages ?? []}
                       isFullscreen={isFullscreen}
                       totalReplies={emailData?.totalReplies}
                       allThreadAttachments={allThreadAttachments}
@@ -1183,8 +1185,8 @@ export function ThreadDisplay() {
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
                       leading={threadDraftSection}
-                      linkedThreadIds={emailData.linkedThreadIds}
-                      conversationMessageCount={emailData.conversationMessageCount}
+                      linkedThreadIds={emailData?.linkedThreadIds}
+                      conversationMessageCount={emailData?.conversationMessageCount}
                       onOpenLinkedThread={(threadId) => {
                         void clearComposeContext().then(() => setThreadId(threadId));
                       }}
@@ -1193,7 +1195,7 @@ export function ThreadDisplay() {
                 </AnimatePresence>
               ) : (
                 <MessageList
-                  messages={emailData.messages}
+                  messages={emailData?.messages ?? []}
                   isFullscreen={isFullscreen}
                   totalReplies={emailData?.totalReplies}
                   allThreadAttachments={allThreadAttachments}
@@ -1201,8 +1203,8 @@ export function ThreadDisplay() {
                   activeReplyId={activeReplyId || undefined}
                   isMobile={isMobile}
                   leading={threadDraftSection}
-                  linkedThreadIds={emailData.linkedThreadIds}
-                  conversationMessageCount={emailData.conversationMessageCount}
+                  linkedThreadIds={emailData?.linkedThreadIds}
+                  conversationMessageCount={emailData?.conversationMessageCount}
                   onOpenLinkedThread={(threadId) => {
                     void clearComposeContext().then(() => setThreadId(threadId));
                   }}
@@ -1243,6 +1245,7 @@ const MessageList = ({
   conversationMessageCount,
   onOpenLinkedThread,
 }: MessageListProps) => {
+  const timezone = useTimezone();
   const displayMessages = orderMessagesNewestFirst(messages || []);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
@@ -1302,11 +1305,7 @@ const MessageList = ({
                 <div className="border-border text-muted-foreground border-t px-4 py-2 text-xs">
                   Earlier thread
                   {message.receivedOn
-                    ? ` · ${formatDateWithWeekdayAndTime(
-                        typeof message.receivedOn === 'string'
-                          ? message.receivedOn.split('.')[0] || message.receivedOn
-                          : message.receivedOn,
-                      )}`
+                    ? ` · ${formatDateWithWeekdayAndTime(message.receivedOn, timezone)}`
                     : ''}
                 </div>
               ) : null}

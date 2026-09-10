@@ -2,13 +2,16 @@
  * FE ↔ pilot wire format helpers — ParsedMessage shape and send input coercion.
  */
 import { z } from 'zod';
-import type { ParsedMessage } from '../lib/driver/types.js';
+import type { ParsedMessage, MessageReactionGroup, MessageReactionUser } from '../lib/driver/types.js';
 import type { message } from '../db/schema/mail.js';
 import { sanitizeEmailHtml } from '../mail/sanitize-email-html.js';
 
 export type MessageRow = typeof message.$inferSelect;
 
 export type MailDebugHeaderLine = { key: string; line: string };
+
+export type MessageReactionWire = MessageReactionGroup;
+export type { MessageReactionUser };
 
 export interface AttachmentMeta {
   attachmentId: string;
@@ -200,10 +203,59 @@ function plainTextToDisplayHtml(text: string): string {
   return `<div>${escaped.replaceAll('\n', '<br />')}</div>`;
 }
 
+/** Group raw reaction rows into wire format grouped by emoji. */
+export function groupReactions(
+  rows: Array<{
+    reaction: string;
+    userId?: string | null;
+    userEmail: string;
+    userName?: string | null;
+    createdAt?: Date | null;
+  }>,
+  currentUserEmail?: string,
+): MessageReactionWire[] {
+  const groups = new Map<
+    string,
+    {
+      emoji: string;
+      count: number;
+      users: MessageReactionUser[];
+      hasReacted: boolean;
+    }
+  >();
+
+  const normalizedCurrent = currentUserEmail?.trim().toLowerCase();
+
+  for (const row of rows) {
+    let group = groups.get(row.reaction);
+    if (!group) {
+      group = {
+        emoji: row.reaction,
+        count: 0,
+        users: [],
+        hasReacted: false,
+      };
+      groups.set(row.reaction, group);
+    }
+    group.count += 1;
+    group.users.push({
+      userId: row.userId ?? null,
+      email: row.userEmail,
+      userName: row.userName ?? null,
+    });
+    if (normalizedCurrent && row.userEmail.trim().toLowerCase() === normalizedCurrent) {
+      group.hasReacted = true;
+    }
+  }
+
+  return Array.from(groups.values());
+}
+
 /** Map a DB message row (+ optional attachment metadata) to FE ParsedMessage. */
 export function toParsedMessage(
   row: MessageRow,
   attachments: AttachmentMeta[] = [],
+  reactions: MessageReactionWire[] = [],
 ): ParsedMessageWire {
   const bodyText = row.textBody ?? '';
   const rawHtml = row.htmlBody?.trim() ? row.htmlBody : plainTextToDisplayHtml(bodyText);
@@ -241,6 +293,7 @@ export function toParsedMessage(
     references:
       row.references && row.references.length > 0 ? row.references.join(' ') : undefined,
     isDraft: false,
+    reactions,
     attachments: attachments.map((a) => ({
       attachmentId: a.attachmentId,
       filename: a.filename,

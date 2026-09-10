@@ -64,6 +64,8 @@ The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pi
 
 When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` still routes: direct-To an active transport email (e.g. `navaai@`) wins first; else To/Cc/Bcc/From matching the Centurion transport email or its `send_from_config.aliases` lands on Centurion. Unknown unstamped mail still quarantines. Stamp present → header/alias lookup unchanged. Pilot deferral until IT stamps; not a replacement for relay stamp/strip.
 
+*Avoid: Forwarding hotel Sent to the ingest address as To — direct-To wins and parks the clone on the ingest transport instead of Centurion. Prefer ItemSend Auto-BCC so To stays the guest and Centurion equated From routing applies.*
+
 ### Quarantine promote
 
 Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME through `persistInboundMessage` (atomic quarantine delete) so backlog leaves quarantine into the correct transport and inbound triage enqueues normally.
@@ -104,9 +106,15 @@ Hotel SMTP branding relay (`172.24.0.8` / `branding.legacyhotels.co.za`) that in
 
 ### Audit self-BCC
 
-Outbound practice of BCC'ing the active mailbox transport address on every `mail.send` so Zimbra/Outlook can file a Sent copy and the POP3 sink can ingest a return for reconciliation. Orthogonal to Rocketseed branding. Working-tree killswitch `MAIL_SELF_BCC=false|0|off` may disable it for testing once that gate is committed/deployed; until then, omit BCC on direct probe sends.
+Outbound practice of BCC'ing the active mailbox transport address on every Nava `mail.send` so Zimbra/Outlook can file a Sent copy and the POP3 sink can ingest a return for reconciliation. Orthogonal to Rocketseed branding. Working-tree killswitch `MAIL_SELF_BCC=false|0|off` may disable it for testing once that gate is committed/deployed; until then, omit BCC on direct probe sends.
 
-*Avoid: assuming the Centurion BCC causes Centurion banners; banners require a provisioned From on the Rocketseed path.*
+*Avoid: assuming the Centurion BCC causes Centurion banners; banners require a provisioned From on the Rocketseed path. Distinct from ItemSend Auto-BCC (hotel Outlook workstation VBA).*
+
+### ItemSend Auto-BCC
+
+Workstation Classic Outlook VBA that, on `Application_ItemSend`, adds the ingest mailbox as BCC on the **same** SMTP send the guest receives. Preserves Message-ID, In-Reply-To, References, and subject so POP3 ingest can store hotel-sent outbound on the Centurion transport and join threads. Distinct from Audit self-BCC (Nava app send path) and from SentItems Forward clones (second SMTP send that breaks threading).
+
+*Avoid: SentItems ItemAdd + Forward / Copy-then-Send shadow patterns; New Outlook / OWA / phone (no reliable VBA hook).*
 
 ### MAIL_TRANSPORT_MODE
 
@@ -150,9 +158,9 @@ Shared-inbox product rule that greying means “ball not with us”: when the ma
 
 ### Hotel-sent
 
-Inbound POP3/MIME copy whose From matches the active mailbox transport (or its send-from aliases)—typically an Outlook/Zimbra Sent copy filed back through the ingest sink. Persisted as outbound direction for the logical mailbox so shared-inbox reply state and Ball-in-court auto-read can treat it like a Nava send. Excludes self-recipient loopback copies that are not hotel-sent.
+Inbound POP3/MIME copy whose From matches the active mailbox transport (or its send-from aliases)—typically an Outlook/Zimbra Sent copy filed back through the ingest sink (including ItemSend Auto-BCC copies). Persisted as outbound direction for the logical mailbox so shared-inbox reply state and Ball-in-court auto-read can treat it like a Nava send. Excludes self-recipient loopback copies that are not hotel-sent.
 
-*Avoid: treating hotel-sent as a second POP3 account; the sink remains the Ingest mailbox.*
+*Avoid: treating hotel-sent as a second POP3 account; the sink remains the Ingest mailbox. Forward clones To=ingest are usually routed off Centurion and are not hotel-sent.*
 
 ### Draft lifecycle status
 

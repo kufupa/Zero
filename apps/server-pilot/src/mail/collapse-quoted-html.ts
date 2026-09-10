@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 
-const QUOTE_ROOT_SELECTOR = 'blockquote, .gmail_quote';
+const QUOTE_ROOT_SELECTOR =
+  'blockquote, .gmail_quote, #divRplyFwdMsg, [id="divRplyFwdMsg"], .OutlookMessageHeader';
 
 /** Inline ThreeDots path matching apps/mail icons — shadow DOM can't use React/lucide. */
 const ELLIPSIS_ICON = `<svg class="quoted-toggle-icon" width="12" height="4" viewBox="0 0 12 4" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M0 2C0 1.17157 0.671573 0.5 1.5 0.5C2.32843 0.5 3 1.17157 3 2C3 2.82843 2.32843 3.5 1.5 3.5C0.671573 3.5 0 2.82843 0 2Z"/><path d="M4.5 2C4.5 1.17157 5.17157 0.5 6 0.5C6.82843 0.5 7.5 1.17157 7.5 2C7.5 2.82843 6.82843 3.5 6 3.5C5.17157 3.5 4.5 2.82843 4.5 2Z"/><path d="M10.5 0.5C9.67157 0.5 9 1.17157 9 2C9 2.82843 9.67157 3.5 10.5 3.5C11.3284 3.5 12 2.82843 12 2C12 1.17157 11.3284 0.5 10.5 0.5Z"/></svg>`;
@@ -16,6 +17,20 @@ export function collapseQuotedHtml(html: string): string {
   if (!html || !html.includes('<')) return html;
 
   const $ = cheerio.load(html, null, false);
+
+  // Group loose Outlook hr separators and following header siblings into divRplyFwdMsg
+  $('hr').each((_, hrEl) => {
+    const $hr = $(hrEl);
+    if ($hr.parents(QUOTE_ROOT_SELECTOR).length || $hr.parents('details.quoted-toggle').length) return;
+    const nextText = $hr.nextAll().text();
+    if (/From:[\s\S]*?(?:Sent|Date):/i.test(nextText)) {
+      const siblings = $hr.nextAll();
+      const quoteContainer = $('<div id="divRplyFwdMsg" class="gmail_quote"></div>');
+      $hr.before(quoteContainer);
+      quoteContainer.append($hr);
+      quoteContainer.append(siblings);
+    }
+  });
 
   $(QUOTE_ROOT_SELECTOR).each((_, el) => {
     const $el = $(el);

@@ -15,7 +15,7 @@ const WORK = path.join(
 async function main(): Promise<void> {
   const outDir = path.join(WORK, 'thread-linkage-audit-2026-09-02');
   const { reportPath, summaryPath } = await writeCenturionThreadLinkageAudit({
-    defensiblePath: path.join(WORK, 'defensible-daily-chart-2026-09-01-eod-threads.json'),
+    defensiblePath: path.join(WORK, 'defensible-daily-chart-2026-09-01.json'),
     walkthroughPath: path.join(WORK, 'thread-walkthrough-2026-09-01.json'),
     staffBriefPath: path.join(WORK, 'staff-email-brief-analysis-2026-09-01.json'),
     outDir,

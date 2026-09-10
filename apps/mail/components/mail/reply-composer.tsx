@@ -1,5 +1,6 @@
 import { useUndoSend } from '@/hooks/use-undo-send';
 import { constructReplyBody, constructForwardBody } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { EmailComposer } from '../create/email-composer';
 import { useHotkeysContext } from 'react-hotkeys-hook';
@@ -64,6 +65,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
   const { handleUndoSend } = useUndoSend();
+  const timezone = useTimezone();
 
   // Find the specific message to reply to
   const replyToMessage =
@@ -151,6 +153,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     attachments: File[];
     scheduleAt?: string;
     draftId?: string;
+    excludeQuotedHistory?: boolean;
   }): Promise<boolean> => {
     if (!replyToMessage) {
       toast.error('No message available to reply to.');
@@ -197,21 +200,27 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             ? [replyToMessage.sender]
             : [];
 
-      const emailBody =
-        mode === 'forward'
+      const emailBody = data.excludeQuotedHistory
+        ? data.message
+        : mode === 'forward'
           ? constructForwardBody(
               data.message,
-              new Date(replyToMessage.receivedOn || '').toLocaleString(),
+              replyToMessage.receivedOn || '',
               { ...replyToMessage.sender, subject: replyToMessage.subject },
               quoteAttributionRecipients,
               replyToMessage.decodedBody,
+              data.subject,
+              timezone,
             )
           : constructReplyBody(
               data.message,
-              new Date(replyToMessage.receivedOn || '').toLocaleString(),
+              replyToMessage.receivedOn || '',
               replyToMessage.sender,
               quoteAttributionRecipients,
               replyToMessage.decodedBody,
+              data.subject,
+              timezone,
+              replyToMessage.cc,
             );
 
       const sendInput = {
@@ -409,6 +418,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         autofocus={true}
         settingsLoading={settingsLoading}
         replyToMessageId={replyToMessage?.id ?? null}
+        replyToMessage={replyToMessage}
         headerPreview={headerPreview}
       />
       <Dialog open={showStaleDraftConfirmation} onOpenChange={setShowStaleDraftConfirmation}>

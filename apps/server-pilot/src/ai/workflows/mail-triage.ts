@@ -566,6 +566,7 @@ const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   manual_review_required: 'review_required',
   mark_as_spam: 'review_required',
   'mark-as-spam': 'review_required',
+  read: 'review_required',
 };
 
 const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
@@ -626,20 +627,18 @@ function normalizeNovaOverlays(value: unknown): unknown {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase();
     if (!normalized || normalized === 'none') return {};
-    const alias = NOVA_OVERLAY_ALIASES[normalized];
-    if (!alias) throw new Error('model output contains an unknown overlay tag');
+    const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+    if (!alias) return {};
     return { [alias]: true };
   }
   if (!Array.isArray(value)) return value;
   const overlays: Record<string, boolean> = {};
   for (const overlay of value) {
-    if (
-      typeof overlay !== 'string' ||
-      !TRIAGE_OVERLAYS.includes(overlay as (typeof TRIAGE_OVERLAYS)[number])
-    ) {
-      throw new Error('model output contains an unknown overlay tag');
+    if (typeof overlay === 'string') {
+      const normalized = overlay.trim().toLowerCase();
+      const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+      if (alias) overlays[alias] = true;
     }
-    overlays[overlay] = true;
   }
   return overlays;
 }
@@ -665,11 +664,17 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   if (typeof structured.sourceScope === 'string') {
     structured.sourceScope =
       NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
+    if (!TRIAGE_SOURCE_SCOPES.includes(structured.sourceScope as (typeof TRIAGE_SOURCE_SCOPES)[number])) {
+      structured.sourceScope = 'external';
+    }
   }
   if (typeof structured.automationState === 'string') {
     structured.automationState =
       NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ??
       structured.automationState;
+    if (!TRIAGE_AUTOMATION_STATES.includes(structured.automationState as (typeof TRIAGE_AUTOMATION_STATES)[number])) {
+      structured.automationState = 'unknown';
+    }
   }
   if (typeof structured.humanAction === 'boolean') {
     // Observed Nova dialect: boolean humanAction means "needs human?" rather
@@ -678,6 +683,9 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   } else if (typeof structured.humanAction === 'string') {
     structured.humanAction =
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
+    if (!TRIAGE_HUMAN_ACTIONS.includes(structured.humanAction as (typeof TRIAGE_HUMAN_ACTIONS)[number])) {
+      structured.humanAction = 'review_required';
+    }
   }
   // The planner, not the model, owns the final read-only tag set. Nova's
   // observed markers and folder leaks are dropped; remaining unknown tags are

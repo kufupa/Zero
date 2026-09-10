@@ -1,7 +1,6 @@
-import { isToday, isThisMonth, differenceInCalendarMonths } from 'date-fns';
-import { getBrowserTimezone } from './timezones';
+import { isToday, isThisMonth, differenceInCalendarMonths, isThisYear } from 'date-fns';
+import { getBrowserTimezone, isValidTimezone } from './timezones';
 import { formatInTimeZone } from 'date-fns-tz';
-import { MAX_URL_LENGTH } from './constants';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import type { Sender } from '@/types';
@@ -35,9 +34,9 @@ export const FOLDER_NAMES = [
   'starred',
   'important',
   'sent',
+  'archive',
   'draft',
-  'snoozed',
-];
+] as const;
 
 export const FOLDER_TAGS: Record<string, string[]> = {
   [FOLDERS.SPAM]: [LABELS.SPAM],
@@ -52,11 +51,22 @@ export const getFolderTags = (folder: string): string[] => {
   return FOLDER_TAGS[folder] || [];
 };
 
-export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export const getGravatarUrl = (_email: string, _size = 80) => {
+  return '';
+};
+
+export const getInitial = (name?: string, email?: string) => {
+  if (name) return name.charAt(0).toUpperCase();
+  if (email) return email.charAt(0).toUpperCase();
+  return '?';
+};
 
 export const compressText = (text: string): string => {
-  const compressed = LZString.compressToEncodedURIComponent(text);
-  return compressed.slice(0, MAX_URL_LENGTH);
+  return LZString.compressToEncodedURIComponent(text);
 };
 
 export const decompressText = (compressed: string): string => {
@@ -70,26 +80,129 @@ export const getCookie = (key: string): string | null => {
   return cookies?.[key] ?? null;
 };
 
-export const parseAndValidateDate = (dateString: string): Date | null => {
+/**
+ * Resolves the effective IANA timezone for formatting dates:
+ * 1. Explicit user setting from userSettings if valid and not 'UTC'.
+ * 2. Detected browser timezone from Intl.DateTimeFormat.
+ * 3. Fallback to 'Africa/Johannesburg' for Nava/Legacy Hotels pilot.
+ */
+export const resolveEffectiveTimezone = (
+  configuredTimezone?: string | null,
+  options?: { fallbackIfUtc?: boolean },
+): string => {
+  if (configuredTimezone && isValidTimezone(configuredTimezone)) {
+    if (!options?.fallbackIfUtc || configuredTimezone !== 'UTC') {
+      return configuredTimezone;
+    }
+  }
   try {
-    // Handle empty input
-    if (!dateString) {
+    const browserTz =
+      typeof window !== 'undefined'
+        ? getBrowserTimezone()
+        : Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (browserTz && isValidTimezone(browserTz) && (!options?.fallbackIfUtc || browserTz !== 'UTC')) {
+      return browserTz;
+    }
+  } catch {
+    // fallback if lookup fails
+  }
+  return 'Africa/Johannesburg';
+};
+
+/**
+ * Robust ISO date parsing that guarantees UTC anchor if missing.
+ */
+export const parseAndValidateDate = (
+  dateInput: string | Date | number | undefined | null,
+): Date | null => {
+  try {
+    if (!dateInput && dateInput !== 0) {
+      return null;
+    }
+    if (dateInput instanceof Date) {
+      return isNaN(dateInput.getTime()) ? null : dateInput;
+    }
+    if (typeof dateInput === 'number') {
+      const d = new Date(dateInput);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    const trimmed = String(dateInput).trim();
+    if (!trimmed) {
       return null;
     }
 
-    // Parse the date string to a Date object
-    const dateObj = new Date(dateString);
+    // If string has T but no timezone indicator (Z or + / - offset), anchor to UTC
+    const hasTimezone = /Z|[+-]\d{2}(?::?\d{2})?$/i.test(trimmed);
+    const normalized = !hasTimezone && trimmed.includes('T') ? `${trimmed}Z` : trimmed;
 
-    // Check if the date is valid
+    const dateObj = new Date(normalized);
     if (isNaN(dateObj.getTime())) {
-      console.error('Invalid date', dateString);
       return null;
     }
-
     return dateObj;
-  } catch (error) {
-    console.error('Error parsing date', error);
+  } catch {
     return null;
+  }
+};
+
+/**
+ * Header Date & Time (Outlook Screenshot 3 parity):
+ * Always returns full Date AND Time, e.g. "Wed 9/9/2026 2:00 PM".
+ */
+export const formatMessageHeaderDate = (
+  dateInput: string | Date | number | undefined | null,
+  timezone?: string,
+): { display: string; tooltip: string } => {
+  const dateObj = parseAndValidateDate(dateInput);
+  if (!dateObj) {
+    return { display: '', tooltip: '' };
+  }
+
+  const tz = timezone ? resolveEffectiveTimezone(timezone) : resolveEffectiveTimezone(undefined);
+  try {
+    const display = formatInTimeZone(dateObj, tz, 'EEE M/d/yyyy h:mm a');
+    const tooltip = formatInTimeZone(dateObj, tz, "EEEE, MMMM d, yyyy 'at' h:mm:ss a (zzz)");
+    return { display, tooltip };
+  } catch (error) {
+    console.error('Error formatting header date', error);
+    return { display: '', tooltip: '' };
+  }
+};
+
+/**
+ * Thread List Date Formatting (replaces .split('.')[0]):
+ */
+export const formatThreadListDate = (
+  dateInput: string | Date | number | undefined | null,
+  timezone?: string,
+): string => {
+  const dateObj = parseAndValidateDate(dateInput);
+  if (!dateObj) {
+    return '';
+  }
+
+  const tz = resolveEffectiveTimezone(timezone);
+  const now = new Date();
+
+  try {
+    // If today: 2:00 PM
+    if (isToday(dateObj)) {
+      return formatInTimeZone(dateObj, tz, 'h:mm a');
+    }
+    // If within last 6 days: Wed 2:00 PM
+    const daysDiff = (now.getTime() - dateObj.getTime()) / (1000 * 60 * 60 * 24);
+    if (daysDiff < 6 && daysDiff > 0) {
+      return formatInTimeZone(dateObj, tz, 'EEE h:mm a');
+    }
+    // If current year: Sep 9, 2:00 PM
+    if (isThisYear(dateObj)) {
+      return formatInTimeZone(dateObj, tz, 'MMM d, h:mm a');
+    }
+    // Older: 9/9/2026
+    return formatInTimeZone(dateObj, tz, 'M/d/yyyy');
+  } catch (error) {
+    console.error('Error formatting thread list date', error);
+    return '';
   }
 };
 
@@ -120,15 +233,15 @@ export const shouldShowSeparateTime = (dateString: string | undefined): boolean 
  * Formats a date with different formatting logic based on parameters
  * Overloaded to handle both mail date formatting and notes date formatting
  */
-export function formatDate(dateInput: string | Date | number): string {
-  if (typeof dateInput === 'number') {
-    dateInput = new Date(dateInput).toISOString();
+export function formatDate(dateInput: string | Date | number, configuredTimezone?: string): string {
+  const dateObj = parseAndValidateDate(dateInput);
+  if (!dateObj) {
+    return '';
   }
 
   // Notes formatting logic (when date is a Date object)
   if (dateInput instanceof Date) {
-    const date = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput as Date);
-    return date.toLocaleString(undefined, {
+    return dateInput.toLocaleString(undefined, {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -137,14 +250,8 @@ export function formatDate(dateInput: string | Date | number): string {
     });
   }
 
-  // Original mail formatting logic
-  const dateObj = parseAndValidateDate(dateInput as string);
-  if (!dateObj) {
-    return '';
-  }
-
   try {
-    const timezone = getBrowserTimezone();
+    const timezone = resolveEffectiveTimezone(configuredTimezone);
     const now = new Date();
 
     // If it's today, always show the time
@@ -173,19 +280,17 @@ export function formatDate(dateInput: string | Date | number): string {
   }
 }
 
-export function formatDateWithWeekdayAndTime(dateInput: string | Date | number): string {
-  if (typeof dateInput === 'number') {
-    dateInput = new Date(dateInput);
-  }
-
-  const dateObj = dateInput instanceof Date ? dateInput : parseAndValidateDate(dateInput);
+export function formatDateWithWeekdayAndTime(
+  dateInput: string | Date | number,
+  configuredTimezone?: string,
+): string {
+  const dateObj = parseAndValidateDate(dateInput);
   if (!dateObj) {
     return '';
   }
 
   try {
-    const timezone = getBrowserTimezone();
-
+    const timezone = resolveEffectiveTimezone(configuredTimezone);
     return formatInTimeZone(dateObj, timezone, 'EEE MMMM d HH:mm');
   } catch (error) {
     console.error('Error formatting date with weekday and time', error);
@@ -193,16 +298,14 @@ export function formatDateWithWeekdayAndTime(dateInput: string | Date | number):
   }
 }
 
-export const formatTime = (date: string) => {
+export const formatTime = (date: string, configuredTimezone?: string) => {
   const dateObj = parseAndValidateDate(date);
   if (!dateObj) {
     return '';
   }
 
   try {
-    const timezone = getBrowserTimezone();
-
-    // Always return the time in h:mm a format
+    const timezone = resolveEffectiveTimezone(configuredTimezone);
     return formatInTimeZone(dateObj, timezone, 'h:mm a');
   } catch (error) {
     console.error('Error formatting time', error);
@@ -371,64 +474,73 @@ export const contentToHTML = (content: string) => `
 ${content}
 </body></html>`;
 
-export const constructReplyBody = (
-  formattedMessage: string,
-  originalDate: string,
-  originalSender: Sender | undefined,
-  _otherRecipients: Sender[],
-  quotedMessage?: string,
-) => {
-  const senderName = originalSender?.name || originalSender?.email || 'Unknown Sender';
-  const senderEmail = originalSender?.email ? `&lt;${originalSender.email}&gt;` : '';
+export { constructOutlookReplyHtml, formatOutlookHeaderDate } from './mail/outlook-quote-formatter';
+import { constructOutlookReplyHtml } from './mail/outlook-quote-formatter';
 
-  // class=gmail_quote: Gmail/Outlook trim signal + one outermost collapse root in Zero.
-  // nava-mail-body: Outlook Calibri 11pt; mail.send skips re-wrap when class present.
-  return `
-    <div class="nava-mail-body" style="font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
-      <div style="">
-        ${formattedMessage}
-      </div>
-      <div class="gmail_quote" style="padding-left: 16px; border-left: 3px solid #e2e8f0; color: #64748b;">
-        <div style="font-size: 12px;">
-          On ${originalDate}, ${senderName} ${senderEmail} wrote:
-        </div>
-        <div style="">
-          ${quotedMessage || ''}
-        </div>
-      </div>
-    </div>
-  `;
+export const constructReplyBody = (
+  arg1: string | any,
+  arg2?: string | Date | number,
+  originalSender?: Sender | null,
+  otherRecipients?: Sender[] | null,
+  quotedMessage?: string | null,
+  subject?: string | null,
+  timezone?: string,
+  ccRecipients?: Sender[] | null,
+) => {
+  if (arg1 && typeof arg1 === 'object' && ('sender' in arg1 || 'decodedBody' in arg1)) {
+    const tz = typeof arg2 === 'string' ? arg2 : undefined;
+    const body = typeof originalSender === 'string' ? (originalSender as string) : '';
+    return constructOutlookReplyHtml(arg1, {
+      isForward: false,
+      userTimezone: tz,
+      formattedMessage: body,
+    });
+  }
+
+  return constructOutlookReplyHtml({
+    formattedMessage: typeof arg1 === 'string' ? arg1 : '',
+    originalDate: arg2 ?? '',
+    originalSender,
+    toRecipients: otherRecipients || [],
+    ccRecipients,
+    subject: subject || originalSender?.subject,
+    quotedMessage: quotedMessage || '',
+    isForward: false,
+    timezone,
+  });
 };
 
 export const constructForwardBody = (
-  formattedMessage: string,
-  originalDate: string,
-  originalSender: Sender | undefined,
-  otherRecipients: Sender[],
-  quotedMessage?: string,
+  arg1: string | any,
+  arg2?: string | Date | number,
+  originalSender?: Sender | null,
+  otherRecipients?: Sender[] | null,
+  quotedMessage?: string | null,
+  subject?: string | null,
+  timezone?: string,
+  ccRecipients?: Sender[] | null,
 ) => {
-  const senderName = originalSender?.name || originalSender?.email || 'Unknown Sender';
-  const recipientEmails = otherRecipients.map((r) => r.email).join(', ');
+  if (arg1 && typeof arg1 === 'object' && ('sender' in arg1 || 'decodedBody' in arg1)) {
+    const tz = typeof arg2 === 'string' ? arg2 : undefined;
+    const body = typeof originalSender === 'string' ? (originalSender as string) : '';
+    return constructOutlookReplyHtml(arg1, {
+      isForward: true,
+      userTimezone: tz,
+      formattedMessage: body,
+    });
+  }
 
-  return `
-    <div class="nava-mail-body" style="font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
-      <div style="">
-        ${formattedMessage}
-      </div>
-      <div class="gmail_quote" style="margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
-        <div style="font-size: 12px; color: #64748b; margin-bottom: 10px;">
-          ---------- Forwarded message ----------<br/>
-          From: ${senderName} ${originalSender?.email ? `&lt;${originalSender.email}&gt;` : ''}<br/>
-          Date: ${originalDate}<br/>
-          Subject: ${originalSender?.subject || 'No Subject'}<br/>
-          To: ${recipientEmails || 'No Recipients'}
-        </div>
-        <div style="">
-          ${quotedMessage || ''}
-        </div>
-      </div>
-    </div>
-  `;
+  return constructOutlookReplyHtml({
+    formattedMessage: typeof arg1 === 'string' ? arg1 : '',
+    originalDate: arg2 ?? '',
+    originalSender,
+    toRecipients: otherRecipients || [],
+    ccRecipients,
+    subject: subject || originalSender?.subject,
+    quotedMessage: quotedMessage || '',
+    isForward: true,
+    timezone,
+  });
 };
 
 export const getMainSearchTerm = (searchQuery: string): string => {
