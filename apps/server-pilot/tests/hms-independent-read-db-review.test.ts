@@ -17,22 +17,39 @@ import {
   HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES,
 } from '../src/hms/browser-artifacts.js';
 import {
+  existingDocumentRefForRecord,
+  existingDocumentScopeRef,
+  mailAttachmentRecord,
+} from '../src/mail/artifacts/existing-document-service.js';
+import {
+  linkedContextReferenceSchema,
+  mintLinkedContextReference,
+  type LinkedContextReference,
+} from '../src/hms/context-read-reference.js';
+import {
+  __clearQuoteReferenceAuthorityLoaderForTests,
+  __setQuoteReferenceAuthorityLoaderForTests,
+} from '../src/hms/read-admission-issuer.js';
+import {
   aiWorkflowRun,
+  attachment,
   mailboxAccess,
   mailboxTransport,
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
 import {
-  linkedContextReferenceSchema,
-  type LinkedContextReference,
-} from '../src/hms/context-read-reference.js';
+  TEST_DB_AVAILABLE,
+  openTestDbSession,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db.js';
 import {
   extractLookupCandidates,
   filterExactReservationCandidates,
 } from '../src/ai/thread-context.js';
 import { executeAiRun, runAiWorkerOnce, type CandidateSessionFactory } from '../src/ai/worker.js';
-import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { syntheticQuoteReferenceAuthorityLoader } from './helpers/quote-reference-authority.js';
 import { issueReadAdmissionFromMailbox } from '../src/hms/read-admission-issuer.js';
 import { CENTURION_USER_ID, MARTHA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { buildLiveGroupBlockListManifest } from '../src/hms/live-read-manifest.js';
@@ -40,6 +57,7 @@ import { createPostgresPropertyReadLock } from '../src/hms/property-read-lock.js
 import type { CandidateToolSession } from '../src/ai/candidate-draft-agent.js';
 import { GROUP_BLOCK_READ_IMPL_V1 } from '../src/hms/read-handler-index.js';
 import { __setDbForTests, getDb, type DB } from '../src/db/client.js';
+import { issueReadAdmission } from '../src/hms/read-admission.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -55,6 +73,8 @@ const observedAt = '2026-09-07T12:00:00.000Z';
 const expiresAt = '2026-09-07T12:05:00.000Z';
 const REQUESTER_AUTHORIZATION_ID = `access-${CENTURION_USER_ID}-${TRANSPORT_ID}`;
 const READ_MANIFEST_SHA256 = 'a'.repeat(64);
+const QUOTE_REQUEST_TEXT =
+  'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.';
 const GROUP_MANIFEST_SHA256 = createHash('sha256')
   .update(JSON.stringify(buildLiveGroupBlockListManifest('https://appsrv-1.legacyhotels.co.za')))
   .digest('hex');
@@ -384,6 +404,26 @@ const positiveFindResult = {
   issues: [],
 };
 
+function syntheticManualReadResult(toolId: string) {
+  return {
+    toolId,
+    schemaVersion:
+      toolId === 'hms_read_reservation'
+        ? 'reservation-context/1'
+        : toolId === 'hms_find_reservation'
+          ? 'reservation-find/1'
+          : 'u8-i3/1',
+    status: 'manual_required' as const,
+    data: null,
+    completeness: 'unknown' as const,
+    unavailableSections: [],
+    scopeRef: `u8-i3-scope-${toolId}`,
+    evidence: [],
+    page: null,
+    issues: [],
+  };
+}
+
 async function readRunInput(
   context: Awaited<ReturnType<typeof seededMailContext>>,
   suffix: string,
@@ -411,6 +451,126 @@ async function readRunInput(
     readAdmissionIssuer: issued.issuer,
     readResultRef,
   };
+}
+
+async function withIndependentReadRaceDb<T>(
+  callback: (input: {
+    inspectDb: DB;
+    leftDb: DB;
+    rightDb: DB;
+    base: Awaited<ReturnType<typeof enqueueAiRun>>;
+    baseInput: Awaited<ReturnType<typeof readRunInput>>;
+    leftInput: Awaited<ReturnType<typeof readRunInput>>;
+    rightInput: Awaited<ReturnType<typeof readRunInput>>;
+    transportId: string;
+  }) => Promise<T>,
+): Promise<T> {
+  const fixtureId = `u8-followup-race-${randomUUID()}`;
+  const transportId = `${fixtureId}-transport`;
+  const threadId = `${fixtureId}-thread`;
+  const triggerMessageId = `${fixtureId}-message`;
+  const setupSession = openTestDbSession();
+  let leftSession: ReturnType<typeof openTestDbSession> | undefined;
+  let rightSession: ReturnType<typeof openTestDbSession> | undefined;
+
+  const makeInput = (suffix: string) => {
+    const readResultRef = `${fixtureId}-${suffix}-ref`;
+    const issued = issueReadAdmission({
+      source: {
+        userId: `${fixtureId}-user`,
+        mailboxAccessId: `${fixtureId}-access`,
+        transportId,
+        threadId,
+        triggerMessageId,
+        releaseId: 'release-red',
+        requestBranchId: 'guest_stay_search',
+        manifestSha256: READ_MANIFEST_SHA256,
+        captureBindingRef: readResultRef,
+      },
+      now: new Date(observedAt),
+      toolId: 'hms_find_reservation',
+      candidateId: 'CONF-RACE-0001',
+    });
+    return {
+      transportId,
+      threadId,
+      triggerMessageId,
+      runKind: 'read_tool' as const,
+      idempotencyKey: `${fixtureId}:logical`,
+      modelId: NOT_APPLICABLE_MODEL_ID,
+      promptVersion: READ_TOOL_PROMPT_VERSION,
+      executorLane: 'hms' as const,
+      readRequest: issued.readRequest,
+      readAdmissionIssuer: issued.issuer,
+      readResultRef,
+    };
+  };
+
+  try {
+    await setupSession.db.insert(mailboxTransport).values({
+      id: transportId,
+      email: `${fixtureId}@example.com`,
+      ownerHeaderValue: `${fixtureId}@example.com`,
+      mailboxType: 'shared',
+      displayName: 'U8 independent retry race fixture',
+      isActive: true,
+    });
+    await setupSession.db.insert(mailThread).values({
+      id: threadId,
+      transportId,
+      threadRootId: `<${fixtureId}@example.com>`,
+      subject: 'U8 independent retry race fixture',
+      snippet: 'U8 independent retry race fixture',
+      latestMessageAt: new Date(observedAt),
+    });
+    await setupSession.db.insert(message).values({
+      id: triggerMessageId,
+      transportId,
+      threadId,
+      direction: 'inbound',
+      fromAddress: `${fixtureId}@example.com`,
+      toAddresses: ['nava@example.com'],
+      subject: 'U8 independent retry race fixture',
+      textBody: 'U8 independent retry race fixture',
+      receivedAt: new Date(observedAt),
+    });
+
+    const baseInput = makeInput('base');
+    const base = await enqueueAiRun(baseInput, setupSession.db);
+    await setupSession.db
+      .update(aiWorkflowRun)
+      .set({
+        state: 'dead_letter',
+        failureClass: 'POLICY_BLOCK',
+        lastError: 'synthetic terminal read failure',
+        finishedAt: new Date(observedAt),
+        updatedAt: new Date(observedAt),
+      })
+      .where(eq(aiWorkflowRun.id, base.id));
+
+    leftSession = openTestDbSession();
+    rightSession = openTestDbSession();
+    return await callback({
+      inspectDb: setupSession.db,
+      leftDb: leftSession.db,
+      rightDb: rightSession.db,
+      base,
+      baseInput,
+      leftInput: makeInput('left'),
+      rightInput: makeInput('right'),
+      transportId,
+    });
+  } finally {
+    await Promise.all([
+      leftSession?.close() ?? Promise.resolve(),
+      rightSession?.close() ?? Promise.resolve(),
+    ]);
+    await setupSession.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
+    await setupSession.db.delete(message).where(eq(message.id, triggerMessageId));
+    await setupSession.db.delete(mailThread).where(eq(mailThread.id, threadId));
+    await setupSession.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+    await setupSession.close();
+  }
 }
 
 async function contextReadRunInput(
@@ -619,6 +779,99 @@ function installActiveFindReleaseForTests(): void {
   } as unknown as ActiveReadRuntimeState);
 }
 
+function installAllReadReleasesForTests(): void {
+  __setCachedActiveReadRuntimeForTests({
+    releases: new Map([
+      [
+        'hms_find_reservation',
+        {
+          releaseId: 'u8-i3-find-release',
+          toolId: 'hms_find_reservation',
+          evidenceKind: 'hms',
+          sourceRevision: 'u8-i3-source',
+          requestBranches: [{ id: 'guest_stay_search', manifestSha256: READ_MANIFEST_SHA256 }],
+        },
+      ],
+      [
+        'hms_quote_stay',
+        {
+          releaseId: 'u8-i3-quote-release',
+          toolId: 'hms_quote_stay',
+          evidenceKind: 'hms',
+          sourceRevision: 'u8-i3-source',
+          requestBranches: [{ id: 'quote_availability_search', manifestSha256: 'b'.repeat(64) }],
+        },
+      ],
+      [
+        'hms_read_folio',
+        {
+          releaseId: 'u8-i3-folio-release',
+          toolId: 'hms_read_folio',
+          evidenceKind: 'hms',
+          requestBranches: [
+            { id: 'folio_summary', manifestSha256: 'c'.repeat(64) },
+            { id: 'deposit_ledger_summary', manifestSha256: 'd'.repeat(64) },
+          ],
+        },
+      ],
+      [
+        'hms_company_account_read',
+        {
+          releaseId: 'u8-i3-company-release',
+          toolId: 'hms_company_account_read',
+          evidenceKind: 'hms',
+          requestBranches: [
+            { id: 'reservation_linked_company_billing', manifestSha256: 'e'.repeat(64) },
+          ],
+        },
+      ],
+      [
+        'hms_group_block_read',
+        {
+          releaseId: 'u8-i3-group-release',
+          toolId: 'hms_group_block_read',
+          evidenceKind: 'hms',
+          requestBranches: [{ id: 'group_block_list', manifestSha256: GROUP_MANIFEST_SHA256 }],
+        },
+      ],
+      [
+        'hms_event_read',
+        {
+          releaseId: 'u8-i3-event-release',
+          toolId: 'hms_event_read',
+          evidenceKind: 'hms',
+          requestBranches: [{ id: 'event_list', manifestSha256: 'f'.repeat(64) }],
+        },
+      ],
+      [
+        'hms_read_notes_traces',
+        {
+          releaseId: 'u8-i3-notes-release',
+          toolId: 'hms_read_notes_traces',
+          evidenceKind: 'hms',
+          requestBranches: [{ id: 'notes_traces_list', manifestSha256: '1'.repeat(64) }],
+        },
+      ],
+    ]),
+    predecessors: new Map(),
+    toolIds: new Set([
+      'hms_find_reservation',
+      'hms_quote_stay',
+      'hms_read_reservation',
+      'hms_read_folio',
+      'hms_company_account_read',
+      'hms_group_block_read',
+      'hms_event_read',
+      'hms_read_notes_traces',
+      'documents_list_existing',
+      'documents_read_existing',
+    ]),
+    registry: null,
+    handlerPathActive: true,
+    cutoverComplete: false,
+  } as unknown as ActiveReadRuntimeState);
+}
+
 function createInjectedReadCaller(userId: string, transportId: string) {
   return appRouter.createCaller({
     auth: null as never,
@@ -709,6 +962,7 @@ const parentIssuerMutations: readonly ParentIssuerMutation[] = [
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED contracts', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    __clearQuoteReferenceAuthorityLoaderForTests();
     clearCachedActiveReadRuntimeForTests();
   });
 
@@ -810,6 +1064,145 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
       expect(rows.filter((row) => row.id === first.id || row.id === retry.id)).toHaveLength(2);
       expect(rows.find((row) => row.id === first.id)?.state).toBe('dead_letter');
     });
+  });
+
+  it('reuses a nonterminal retry when terminal and active siblings tie on createdAt', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const firstInput = await readRunInput(context, 'timestamp-tie-base');
+      const first = await enqueueAiRun(firstInput, db);
+      const tiedCreatedAt = new Date('2026-09-07T12:01:00.000Z');
+      await db
+        .update(aiWorkflowRun)
+        .set({ state: 'dead_letter', updatedAt: tiedCreatedAt })
+        .where(eq(aiWorkflowRun.id, first.id));
+
+      const activeId = '00000000-0000-0000-0000-000000000001';
+      const terminalId = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      await db.insert(aiWorkflowRun).values([
+        {
+          ...first,
+          id: activeId,
+          idempotencyKey: `${firstInput.idempotencyKey}:attempt:active`,
+          readResultRef: 'receipt-red-timestamp-tie-active',
+          state: 'queued' as const,
+          createdAt: tiedCreatedAt,
+          updatedAt: tiedCreatedAt,
+        },
+        {
+          ...first,
+          id: terminalId,
+          idempotencyKey: `${firstInput.idempotencyKey}:attempt:terminal`,
+          readResultRef: 'receipt-red-timestamp-tie-terminal',
+          state: 'dead_letter' as const,
+          createdAt: tiedCreatedAt,
+          updatedAt: tiedCreatedAt,
+        },
+      ]);
+
+      const retryInput = await readRunInput(context, 'timestamp-tie-retrigger');
+      retryInput.idempotencyKey = firstInput.idempotencyKey;
+      const retry = await enqueueAiRun(retryInput, db);
+
+      expect(retry.id).toBe(activeId);
+      expect(retry.state).toBe('queued');
+      const tiedRows = await db
+        .select({
+          id: aiWorkflowRun.id,
+          idempotencyKey: aiWorkflowRun.idempotencyKey,
+          readResultRef: aiWorkflowRun.readResultRef,
+          state: aiWorkflowRun.state,
+        })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.threadId, context.threadId));
+      expect(
+        tiedRows.filter((row) => row.idempotencyKey.startsWith(firstInput.idempotencyKey)),
+      ).toHaveLength(3);
+      expect(tiedRows).toContainEqual({
+        id: first.id,
+        idempotencyKey: firstInput.idempotencyKey,
+        readResultRef: firstInput.readResultRef,
+        state: 'dead_letter',
+      });
+      expect(tiedRows).toContainEqual({
+        id: terminalId,
+        idempotencyKey: `${firstInput.idempotencyKey}:attempt:terminal`,
+        readResultRef: 'receipt-red-timestamp-tie-terminal',
+        state: 'dead_letter',
+      });
+    });
+  });
+
+  it('deduplicates terminal-to-first-retry calls across independent DB sessions', async () => {
+    await withIndependentReadRaceDb(
+      async ({
+        inspectDb,
+        leftDb,
+        rightDb,
+        base,
+        baseInput,
+        leftInput,
+        rightInput,
+        transportId,
+      }) => {
+        await Promise.all([
+          leftDb
+            .select({ id: aiWorkflowRun.id })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, base.id)),
+          rightDb
+            .select({ id: aiWorkflowRun.id })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, base.id)),
+        ]);
+
+        let readyCount = 0;
+        let release!: () => void;
+        const bothReady = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const enqueueAfterBarrier = async (db: DB, input: typeof leftInput) => {
+          readyCount += 1;
+          if (readyCount === 2) release();
+          await bothReady;
+          return enqueueAiRun(input, db);
+        };
+
+        const [leftRetry, rightRetry] = await Promise.all([
+          enqueueAfterBarrier(leftDb, leftInput),
+          enqueueAfterBarrier(rightDb, rightInput),
+        ]);
+
+        expect(leftRetry.id).toBe(rightRetry.id);
+        expect(leftRetry.state).toBe('queued');
+        expect(leftRetry.readResultRef).toBe(rightRetry.readResultRef);
+        expect([leftInput.readResultRef, rightInput.readResultRef]).toContain(
+          leftRetry.readResultRef,
+        );
+
+        const rows = await inspectDb
+          .select({
+            id: aiWorkflowRun.id,
+            idempotencyKey: aiWorkflowRun.idempotencyKey,
+            readResultRef: aiWorkflowRun.readResultRef,
+            state: aiWorkflowRun.state,
+          })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.transportId, transportId));
+        const logicalRows = rows.filter(
+          (row) =>
+            row.idempotencyKey === baseInput.idempotencyKey ||
+            row.idempotencyKey.startsWith(`${baseInput.idempotencyKey}:attempt:`),
+        );
+        expect(logicalRows).toHaveLength(2);
+        expect(logicalRows).toContainEqual({
+          id: base.id,
+          idempotencyKey: baseInput.idempotencyKey,
+          readResultRef: baseInput.readResultRef,
+          state: 'dead_letter',
+        });
+      },
+    );
   });
 
   it.each(['serialized', 'object-spread', 'raw-object'] as const)(
@@ -1043,6 +1436,277 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
           }),
         ).rejects.toThrow(/READ_RECEIPT_NOT_FOUND/);
       });
+    });
+  });
+
+  it('binds all ten normal read route families to each actor and receipt', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const quoteContext = await seededMailContext(db);
+      await db
+        .update(message)
+        .set({ subject: 'Quote request U8 I3', textBody: QUOTE_REQUEST_TEXT })
+        .where(eq(message.id, quoteContext.triggerMessageId));
+      const attachmentId = `u8-i3-attachment-${randomUUID()}`;
+      const attachmentKey = `attachments/${context.triggerMessageId}/u8-i3-document.txt`;
+      await db.insert(attachment).values({
+        id: attachmentId,
+        messageId: context.triggerMessageId,
+        filename: 'u8-i3-document.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 32,
+        s3Key: attachmentKey,
+      });
+      const documentScope = {
+        scopeRef: existingDocumentScopeRef({
+          transportId: context.transportId,
+          threadId: context.threadId,
+          triggerMessageId: context.triggerMessageId,
+        }),
+        propertyRef: 'unknown',
+        guestRef: null,
+        stayStart: null,
+        stayEnd: null,
+        payerRef: null,
+        requestedKind: null,
+        requestedPriceVisibility: 'allowed' as const,
+      };
+      const documentRef = existingDocumentRefForRecord(
+        mailAttachmentRecord({
+          scope: documentScope,
+          source: 'mail_attachment',
+          attachmentId,
+          authorizedAttachmentIds: new Set([attachmentId]),
+          messageId: context.triggerMessageId,
+          filename: 'u8-i3-document.txt',
+          mimeType: 'text/plain',
+          sizeBytes: 32,
+          s3Key: attachmentKey,
+          text: 'u8-i3-document.txt',
+          observedAt,
+        }),
+      );
+
+      installAllReadReleasesForTests();
+      __setQuoteReferenceAuthorityLoaderForTests(syntheticQuoteReferenceAuthorityLoader());
+      const actors = [
+        {
+          userId: CENTURION_USER_ID,
+          caller: createInjectedReadCaller(CENTURION_USER_ID, context.transportId),
+        },
+        {
+          userId: MARTHA_USER_ID,
+          caller: createInjectedReadCaller(MARTHA_USER_ID, context.transportId),
+        },
+      ];
+      const parents = await Promise.all(
+        actors.map(async (actor) => {
+          const parent = await actor.caller.ai.enqueueHmsRead({
+            threadId: context.threadId,
+            toolId: 'hms_find_reservation',
+          });
+          const contextRefs = {} as Record<LinkedContextReference['kind'], LinkedContextReference>;
+          const contextIssuedAt = new Date();
+          const contextExpiresAt = new Date(contextIssuedAt.getTime() + 4 * 60_000);
+          for (const kind of ['company', 'group', 'event', 'notes'] as const) {
+            contextRefs[kind] = mintLinkedContextReference({
+              kind,
+              sourceRef: `u8-i3-${kind}-source`,
+              parentReadResultRef: parent.readResultRef,
+              propertyCode: 'HRCEN',
+              requestBranchId: 'guest_stay_search',
+              sourceRevision: 'u8-i3-source',
+              issuedAt: contextIssuedAt,
+              expiresAt: contextExpiresAt,
+            });
+          }
+          const [storedParent] = await db
+            .select({ metrics: aiWorkflowRun.metrics })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, parent.runId));
+          const metrics =
+            storedParent?.metrics && typeof storedParent.metrics === 'object'
+              ? storedParent.metrics
+              : {};
+          await db
+            .update(aiWorkflowRun)
+            .set({
+              state: 'succeeded',
+              readResult: positiveFindResult,
+              readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+              metrics: { ...metrics, linkedContextReferences: Object.values(contextRefs) },
+            })
+            .where(eq(aiWorkflowRun.id, parent.runId));
+          return { ...actor, parent, contextRefs };
+        }),
+      );
+
+      type Actor = (typeof parents)[number];
+      type EnqueuedRead = { runId: string; readResultRef: string };
+      type RouteFamily = {
+        toolId: string;
+        threadId: string;
+        enqueue: (actor: Actor) => Promise<EnqueuedRead>;
+      };
+      const families: RouteFamily[] = [
+        {
+          toolId: 'hms_find_reservation',
+          threadId: context.threadId,
+          enqueue: async (actor) => actor.parent,
+        },
+        {
+          toolId: 'hms_quote_stay',
+          threadId: quoteContext.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsRead({
+              threadId: quoteContext.threadId,
+              toolId: 'hms_quote_stay',
+              detail: 'detail',
+            }),
+        },
+        {
+          toolId: 'hms_read_reservation',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsContextRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              sections: ['core'],
+              detail: 'summary',
+            }),
+        },
+        {
+          toolId: 'hms_read_folio',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsFolioRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              sections: ['balance'],
+            }),
+        },
+        {
+          toolId: 'hms_company_account_read',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsCompanyRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              reservationRef: actor.contextRefs.company.reference,
+            }),
+        },
+        {
+          toolId: 'hms_group_block_read',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsGroupRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              groupRef: actor.contextRefs.group.reference,
+              sections: ['summary'],
+            }),
+        },
+        {
+          toolId: 'hms_event_read',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsEventRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              eventRef: actor.contextRefs.event.reference,
+            }),
+        },
+        {
+          toolId: 'hms_read_notes_traces',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueHmsNotesRead({
+              threadId: context.threadId,
+              findResultRef: actor.parent.readResultRef,
+              resourceRef: actor.contextRefs.notes.reference,
+              states: ['open'],
+              limit: 20,
+              audience: 'staff',
+            }),
+        },
+        {
+          toolId: 'documents_list_existing',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueExistingDocumentList({
+              threadId: context.threadId,
+              source: 'mail_attachment',
+              requestedPriceVisibility: 'allowed',
+            }),
+        },
+        {
+          toolId: 'documents_read_existing',
+          threadId: context.threadId,
+          enqueue: (actor) =>
+            actor.caller.ai.enqueueExistingDocumentRead({
+              threadId: context.threadId,
+              documentRef,
+              format: 'text',
+            }),
+        },
+      ];
+      expect(families.map((family) => family.toolId)).toEqual([
+        'hms_find_reservation',
+        'hms_quote_stay',
+        'hms_read_reservation',
+        'hms_read_folio',
+        'hms_company_account_read',
+        'hms_group_block_read',
+        'hms_event_read',
+        'hms_read_notes_traces',
+        'documents_list_existing',
+        'documents_read_existing',
+      ]);
+
+      for (const family of families) {
+        const runs = await Promise.all(
+          parents.map(async (actor) => ({ actor, run: await family.enqueue(actor) })),
+        );
+        expect(runs[0]!.run.runId).not.toBe(runs[1]!.run.runId);
+        expect(runs[0]!.run.readResultRef).not.toBe(runs[1]!.run.readResultRef);
+
+        for (const entry of runs) {
+          const [stored] = await db
+            .select({ metrics: aiWorkflowRun.metrics })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.id, entry.run.runId));
+          const metrics =
+            stored?.metrics && typeof stored.metrics === 'object'
+              ? (stored.metrics as Record<string, unknown>)
+              : {};
+          expect(metrics.readAdmissionIssuer).toMatchObject({
+            userId: entry.actor.userId,
+            mailboxAccessId: `access-${entry.actor.userId}-${TRANSPORT_ID}`,
+          });
+          if (family.toolId !== 'hms_find_reservation') {
+            await db
+              .update(aiWorkflowRun)
+              .set({
+                state: 'succeeded',
+                readResult: syntheticManualReadResult(family.toolId),
+                readResultExpiresAt: new Date('2099-09-07T12:05:00.000Z'),
+              })
+              .where(eq(aiWorkflowRun.id, entry.run.runId));
+          }
+          await expect(
+            entry.actor.caller.ai.readHmsReceipt({
+              threadId: family.threadId,
+              readResultRef: entry.run.readResultRef,
+            }),
+          ).resolves.toMatchObject({ result: { toolId: family.toolId } });
+        }
+        await expect(
+          runs[1]!.actor.caller.ai.readHmsReceipt({
+            threadId: family.threadId,
+            readResultRef: runs[0]!.run.readResultRef,
+          }),
+        ).rejects.toThrow(/READ_RECEIPT_NOT_FOUND/);
+      }
     });
   });
 

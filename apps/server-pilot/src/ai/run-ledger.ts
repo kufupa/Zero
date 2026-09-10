@@ -505,19 +505,35 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     if (!isTerminalReadRun(existing)) return existing;
 
     const retryPrefix = `${escapeLikePrefix(input.idempotencyKey)}:attempt:`;
-    const [latestAttempt] = await tx
+    const [succeededAttempt] = await tx
       .select()
       .from(aiWorkflowRun)
       .where(
         and(
           eq(aiWorkflowRun.runKind, READ_TOOL_RUN_KIND),
           like(aiWorkflowRun.idempotencyKey, `${retryPrefix}%`),
+          eq(aiWorkflowRun.state, 'succeeded'),
         ),
       )
       .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
       .limit(1)
       .for('update');
-    if (latestAttempt && !isTerminalReadRun(latestAttempt)) return latestAttempt;
+    if (succeededAttempt) return succeededAttempt;
+
+    const [activeAttempt] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.runKind, READ_TOOL_RUN_KIND),
+          like(aiWorkflowRun.idempotencyKey, `${retryPrefix}%`),
+          inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+      .limit(1)
+      .for('update');
+    if (activeAttempt) return activeAttempt;
 
     const retryKey = `${input.idempotencyKey}:attempt:${randomUUID()}`;
     const [retry] = await tx
