@@ -470,7 +470,60 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           if (result.kind !== 'stored') return;
           expect(result.transportId).toBe('transport-centurion');
           expect(stored?.direction).toBe('outbound');
+          // BCC sink copies routinely arrive with Bcc: stripped — Sent must not depend on it.
+          expect(stored?.bccAddresses).toEqual([]);
           expect(triageRuns.length).toBe(0);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'R6: pmbobo@ From to Centurion is inbound, not hotel-sent outbound',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: pmbobo@legacyhotels.co.za',
+            'To: centurion@legacyhotels.co.za',
+            'Subject: staff note to shared inbox',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Not a Centurion hotel-sent outbound.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-r6-pmbobo-from',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-centurion');
+          expect(stored?.direction).toBe('inbound');
         });
       },
       30000,
