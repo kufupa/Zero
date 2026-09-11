@@ -54,10 +54,28 @@ Prior analysis (local only): `augsep-fp-*.json`, `augsep-vs-nava-catchup-overlap
 | Overlap PST ∩ catchup (`day`+norm subj) | **270** | Same mail, two extracts |
 | PST-only (no catchup twin) | **1295** | New PST coverage |
 | Of PST-only already in RDS (subj+minute) | **191** | Live/prior outbound dups |
-| Of PST-only day-only near-dup | **59** | Soft collision; treat as near-dup |
-| Of PST-only **truly new** | **1045** | Expected new stores |
+| Of PST-only day-only near-dup | **59** | Exhaustive verdict below |
+| → day-only **SKIP** | **24** | ≤20m clock skew + conf# empty-body twins |
+| → day-only **STORE** | **35** | Generic/template subject collisions (not same mail) |
+| Of PST-only **truly new** (pre bodyhash) | **1045** | +35 day-only STORE ≈ **1080** |
+| TZ body-sha true-dup beyond minute | **4** | SKIP — already in RDS (±2h SA vs UTC) |
+| Expected new stores (post skips) | **~1076** | Dry-run owns exact |
 | Catchup already in RDS | **308** total / **279** Aug–Sep | Do not re-ingest |
 | RDS Centurion outbound Aug–Sep now | **1069** | Baseline before PST complement |
+
+### Day-only 59 + body-hash beyond minute (locked)
+
+- Day-only verdict artifact: `.private/backup-zip-2026-09-10/augsep-dayonly-verdict.json` (24 SKIP / 35 STORE).
+- Content-hash check (HTML-stripped): **301** sha hits without subj+minute — **296** confirmation-letter **template** collisions (must STORE); **4** true dups with ±3h TZ + same stem (must SKIP).
+- Blind body-sha SKIP forbidden. Only the 4 fps below are extra SKIPs.
+- Skip list: `.private/backup-zip-2026-09-10/augsep-tz-bodyhash-skip.json`
+
+| fp | PST minute | Already in RDS (UTC minute) | Subject stem |
+|----|------------|-----------------------------|--------------|
+| `b92d86951a98` | 2026-09-02T10:35 | 08:35 / 08:45 | group offer_beal travel_collegiate (ref.3875054) |
+| `f72cfa890dbd` | 2026-09-02T10:45 | 08:35 / 08:45 | same Beal Travel offer |
+| `da1df70b917d` | 2026-09-02T11:07 | 08:35 / 08:45 | same Beal Travel offer |
+| `82f249e7e17f` | 2026-08-27T15:03 | 13:03 | group offer_amazing africa amafrica tours |
 
 ### Richness on the 270 overlaps (evidence)
 
@@ -75,7 +93,8 @@ Prior analysis (local only): `augsep-fp-*.json`, `augsep-vs-nava-catchup-overlap
 Sources: Nava.zip catchup (already in RDS) + PST Aug–Sep Sent eml
     → classify each PST eml: overlap | near-dup | truly-new
     → skip overlap/near-dup (keep catchup/live row); optional rare MID upgrade if PST has real MID + RDS synthetic
-    → ingest truly-new PST (~1045) as outbound (preserve real MID when present)
+    → also SKIP day-only 24 + TZ bodyhash 4 (`augsep-tz-bodyhash-skip.json`)
+    → ingest truly-new PST (~1076) as outbound (preserve real MID when present)
     → recomputeConversationLinksForTransport(transport-centurion)
     → re-enqueue inbound_triage on threads that gained new catchup/PST outbound + have inbound
     → verify counts + spot-checks
@@ -145,4 +164,4 @@ Sources: Nava.zip catchup (already in RDS) + PST Aug–Sep Sent eml
 
 ## Success
 
-Aug–Sep Sent visible in Nava Centurion with **no double-stored twins**; Nava.zip catchup rows kept; ~**1045** new PST-only rows stored (subject to dry-run); links only via existing discovery; linked conversations re-triaged; dangerous over-link patterns remain blocked.
+Aug–Sep Sent visible in Nava Centurion with **no double-stored twins**; Nava.zip catchup rows kept; ~**1076** new PST-only rows stored (subject to dry-run; excludes day-only 24 + TZ bodyhash 4); links only via existing discovery; linked conversations re-triaged; dangerous over-link patterns remain blocked.
