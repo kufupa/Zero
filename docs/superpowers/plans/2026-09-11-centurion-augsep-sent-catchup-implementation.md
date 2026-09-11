@@ -1,6 +1,6 @@
 # Centurion Aug–Sep Sent Catchup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or execute inline when SDD unavailable. Checkbox (`- [ ]`) per step. `/autonomous-plan` + `/continue-autonomously` binding.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or execute inline when SDD unavailable. Checkbox (`- [x]`) per step. `/autonomous-plan` + `/continue-autonomously` binding.
 
 **Goal:** Ingest all Aug–Sep 2026 Centurion Sent from PST extract into pilot RDS (~1076 new outbound), keep existing catchup/live dups, preserve real Message-IDs, recompute conversation links with current gates, re-enqueue `inbound_triage` on affected inbound-bearing threads.
 
@@ -89,15 +89,15 @@ Exact string `Execution backend unavailable…` → backoff-retry Shell/Write/St
 
 ### Done criteria
 
-- [ ] Ingest script preserves real Message-ID when MIME has one; synthesizes only when missing
-- [ ] Dry-run store-candidate count within ~5% of ~1076 (or explained divergence logged)
-- [ ] New outbound rows written for STORE set; skip lists honored (day-only 24 + TZ 4 + catchup overlap + subj+minute dups)
-- [ ] Existing catchup-gold / live Nava MIDs not overwritten
-- [ ] `recomputeConversationLinksForTransport('transport-centurion')` completed; no mega-merge of handover/Nedbank/generic quotation in spot-check
-- [ ] `inbound_triage` enqueued (or already present via idempotency) for inbound-bearing threads that gained new catchup outbound
-- [ ] Handoff report with counts under `docs/superpowers/plans/handoff-reports/`
-- [ ] No unresolved blocker affecting plan goal
-- [ ] S3 `tmp/operator/augsep-*` staging cleaned up
+- [x] Ingest script preserves real Message-ID when MIME has one; synthesizes only when missing
+- [x] Dry-run store-candidate count within ~5% of ~1076 (or explained divergence logged)
+- [x] New outbound rows written for STORE set; skip lists honored (day-only 24 + TZ 4 + catchup overlap + subj+minute dups)
+- [x] Existing catchup-gold / live Nava MIDs not overwritten
+- [x] `recomputeConversationLinksForTransport('transport-centurion')` completed; no mega-merge of handover/Nedbank/generic quotation in spot-check
+- [x] `inbound_triage` enqueued (or already present via idempotency) for inbound-bearing threads that gained new catchup outbound
+- [x] Handoff report with counts under `docs/superpowers/plans/handoff-reports/`
+- [x] No unresolved blocker affecting plan goal
+- [x] S3 `tmp/operator/augsep-*` staging cleaned up
 
 ### True blockers
 
@@ -127,40 +127,40 @@ Autonomous overnight — no user checkpoint. Resume from first incomplete task. 
 - Modify: `apps/server-pilot/scripts/ingest-centurion-catchup-gold.ts`
 - Test: disposable-DB unit if feasible; else dry-run proof on EC2 only (no pilot Vitest)
 
-- [ ] **Step 1:** Change MID assignment so parsed real Message-ID wins; synthetic only when missing/empty
-- [ ] **Step 2:** Add `--skip-fps PATH` loading `{ skip_fps: string[] }` or bare string[]; skip those fps before store (count as `skippedFp`)
-- [ ] **Step 3:** Support nested eml paths in manifest (`eml` may include subdirs) OR flatten staging — pick one and document in handoff
-- [ ] **Step 4:** Commit script change (no `.private/`)
+- [x] **Step 1:** Change MID assignment so parsed real Message-ID wins; synthetic only when missing/empty
+- [x] **Step 2:** Add `--skip-fps PATH` loading `{ skip_fps: string[] }` or bare string[]; skip those fps before store (count as `skippedFp`)
+- [x] **Step 3:** Support nested eml paths in manifest (`eml` may include subdirs) OR flatten staging — pick one and document in handoff
+- [x] **Step 4:** Commit script change (no `.private/`)
 
 ### Task 2: Build STORE manifest + stage to EC2
 
-- [ ] **Step 1:** Build Aug–Sep Sent manifest from `eml-full` with fp=`sha1(day|norm|basename)[:12]`
-- [ ] **Step 2:** Exclude: catchup day+norm overlap; day-only `skip_fps`; TZ `skip_fps`
-- [ ] **Step 3:** Stage flat eml dir + manifest → S3 → EC2 `/tmp/augsep-catchup/`
-- [ ] **Step 4:** Dry-run ingest; record wouldStore / dups; expect ~1076 ±5% after content-dup
+- [x] **Step 1:** Build Aug–Sep Sent manifest from `eml-full` with fp=`sha1(day|norm|basename)[:12]`
+- [x] **Step 2:** Exclude: catchup day+norm overlap; day-only `skip_fps`; TZ `skip_fps`
+- [x] **Step 3:** Stage flat eml dir + manifest → S3 → EC2 `/tmp/augsep-catchup/`
+- [x] **Step 4:** Dry-run ingest; record wouldStore / dups; expect ~1076 ±5% after content-dup
 
 ### Task 3: Write ingest
 
-- [ ] **Step 1:** Run ingest without `--dry-run`
-- [ ] **Step 2:** Read-only SQL: new `catchup-gold-*` count since batch; Aug–Sep outbound total
-- [ ] **Step 3:** Spot-check: sample Nava AI Sent with real MID retained; TZ-4 fps absent as new uidls
+- [x] **Step 1:** Run ingest without `--dry-run`
+- [x] **Step 2:** Read-only SQL: new `catchup-gold-*` count since batch; Aug–Sep outbound total
+- [x] **Step 3:** Spot-check: sample Nava AI Sent with real MID retained; TZ-4 fps absent as new uidls
 
 ### Task 4: Link recompute
 
-- [ ] **Step 1:** Run `recomputeConversationLinksForTransport` for `transport-centurion`
-- [ ] **Step 2:** Spot-check: no absurd mega-cluster on handover / Nedbank / generic quotation norms
+- [x] **Step 1:** Run `recomputeConversationLinksForTransport` for `transport-centurion`
+- [x] **Step 2:** Spot-check: no absurd mega-cluster on handover / Nedbank / generic quotation norms
 
 ### Task 5: Re-triage enqueue
 
-- [ ] **Step 1:** Identify inbound-bearing threads per design (own thread with inbound+new outbound, or active link to new outbound thread)
-- [ ] **Step 2:** `enqueueAiRun` with key `inbound-triage:catchup-augsep-2026:<threadId>`
-- [ ] **Step 3:** Count inserted vs already-present
+- [x] **Step 1:** Identify inbound-bearing threads per design (own thread with inbound+new outbound, or active link to new outbound thread)
+- [x] **Step 2:** `enqueueAiRun` with key `inbound-triage:catchup-augsep-2026:<threadId>`
+- [x] **Step 3:** Count inserted vs already-present
 
 ### Task 6: Handoff + cleanup
 
-- [ ] **Step 1:** Write handoff report with all counts + divergences
-- [ ] **Step 2:** Clean S3 `tmp/operator/augsep-*` and EC2 `/tmp/augsep-catchup`
-- [ ] **Step 3:** Mark plan checkboxes complete
+- [x] **Step 1:** Write handoff report with all counts + divergences
+- [x] **Step 2:** Clean S3 `tmp/operator/augsep-*` and EC2 `/tmp/augsep-catchup`
+- [x] **Step 3:** Mark plan checkboxes complete
 
 ## Progress ledger
 
