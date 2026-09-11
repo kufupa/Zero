@@ -116,7 +116,7 @@ async function main(): Promise<void> {
       .where(
         and(
           eq(mailConversationLink.transportId, TRANSPORT),
-          isNull(mailConversationLink.deactivatedAt),
+          isNull(mailConversationLink.supersededAt),
           or(
             inArray(mailConversationLink.srcThreadId, outboundThreadIds),
             inArray(mailConversationLink.dstThreadId, outboundThreadIds),
