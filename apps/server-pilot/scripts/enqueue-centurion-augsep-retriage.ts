@@ -22,8 +22,8 @@ import {
   enqueueAiRun,
 } from '../src/ai/run-ledger.js';
 import * as schema from '../src/db/schema/index.js';
-import { message } from '../src/db/schema/mail.js';
-import { aiWorkflowRun } from '../src/db/schema/mail.js';
+import { message, aiWorkflowRun } from '../src/db/schema/mail.js';
+import { mailConversationLink } from '../src/db/schema/mail-conversation-link.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import { parseEnv } from '../src/env.js';
 
