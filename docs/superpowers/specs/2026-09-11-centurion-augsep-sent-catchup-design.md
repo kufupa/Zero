@@ -16,7 +16,7 @@ Copy **all Aug–Sep 2026 Sent** mail from the Outlook PST extract into Centurio
 | 2 | Ingest filter | **All** of them (no true-positive filter on store) |
 | 3 | Direction / transport | `outbound` / `transport-centurion` |
 | 4 | Message-ID | Preserve real header when present; stable synthetic only when missing |
-| 5 | Dedupe | Skip existing catchup uidl; skip outbound subject+minute content dup |
+| 5 | Dedupe | Multi-source: keep existing `catchup-gold-*` rows; skip PST twins via uidl + subject+minute (+ day+norm near-dup); prefer richer body only when upgrading an existing row |
 | 6 | Thread matching | After ingest: `recomputeConversationLinksForTransport` with **current** gates |
 | 7 | Soft subject / staff-only | Still stored; linked only if current `subject_cluster` gates pass |
 | 8 | AI / triage | After ingest + link: re-enqueue `inbound_triage` on threads that gained catchup outbound |
@@ -35,19 +35,49 @@ Copy **all Aug–Sep 2026 Sent** mail from the Outlook PST extract into Centurio
 
 ## Source artifacts
 
-- Extract root: `.private/backup-zip-2026-09-10/eml-full/` (local; not committed)
-- Date window: `2026-08-01` … `2026-09-30` (inclusive), folders under Sent Items
-- Prior analysis (local only): `augsep-fp-audit.json`, `augsep-fp-deep.json`, `augsep-fp-external.json`, `augsep-fp-deeper-report.json`
+| Source | Path | Size / count | Role |
+|--------|------|-------------:|------|
+| **Earlier Bongi zip** | [`.private/Nava.zip`](.private/Nava.zip) | 181MB / **362** `.msg` | Smaller Sent export (Jul 30–Sep 4) |
+| Converted catchup | [`.private/both-outbound-emails-gold/`](.private/both-outbound-emails-gold/) | **328** eml / 362 msg | Already processed; README + indexes |
+| Prior RDS ingest (2026-09-04) | `catchup-gold-*` on pilot | **308** stored (+20 content-dup) | Already in RDS; `skipAiEnqueue: true` at the time |
+| **New PST backup** | [`.private/backup-zip-2026-09-10/`](.private/backup-zip-2026-09-10/) | ~6.3GiB PST / **1571** Aug–Sep Sent eml | Larger archive; desk + Nava AI Sent |
+| Date window | — | `2026-08-01` … `2026-09-30` | Locked scope A |
+
+Prior analysis (local only): `augsep-fp-*.json`, `augsep-vs-nava-catchup-overlap.json`, `augsep-overlap-richness.json`, `augsep-pst-only-vs-rds.json`.
+
+## Multi-source duplicate map (measured)
+
+| Bucket | Count | Meaning |
+|--------|------:|---------|
+| PST Aug–Sep Sent | **1571** | Ingest target universe |
+| Nava.zip catchup eml | **328** (Aug–Sep ~299) | Earlier smaller set |
+| Overlap PST ∩ catchup (`day`+norm subj) | **270** | Same mail, two extracts |
+| PST-only (no catchup twin) | **1295** | New PST coverage |
+| Of PST-only already in RDS (subj+minute) | **191** | Live/prior outbound dups |
+| Of PST-only day-only near-dup | **59** | Soft collision; treat as near-dup |
+| Of PST-only **truly new** | **1045** | Expected new stores |
+| Catchup already in RDS | **308** total / **279** Aug–Sep | Do not re-ingest |
+| RDS Centurion outbound Aug–Sep now | **1069** | Baseline before PST complement |
+
+### Richness on the 270 overlaps (evidence)
+
+| Signal | Catchup (Nava.zip→eml) | PST twin | Winner |
+|--------|------------------------|----------|--------|
+| Real SMTP Message-ID | **0%** (100% synthetic `catchup-gold-…`) | **1.9%** real on overlap | PST rare win |
+| File bytes larger | **87.8%** of pairs | 12.2% | Catchup usually |
+| Prefer-score (MID≫att≫text≫bytes) | **179** | **23** (68 tie) | Catchup body/size |
+
+**Claim check:** “earlier zip has more information” → **partly true for body/size**, **false for RFC Message-ID** (synthetics injected at convert/ingest). Prefer **keeping existing catchup rows**; do not blindly overwrite with PST.
 
 ## Architecture / flow
 
 ```
-Aug–Sep Sent .eml
-    → selective catchup ingest (preserve MID; outbound; dedupe)
-    → message rows in RDS (each gets resolveThreadId at persist)
+Sources: Nava.zip catchup (already in RDS) + PST Aug–Sep Sent eml
+    → classify each PST eml: overlap | near-dup | truly-new
+    → skip overlap/near-dup (keep catchup/live row); optional rare MID upgrade if PST has real MID + RDS synthetic
+    → ingest truly-new PST (~1045) as outbound (preserve real MID when present)
     → recomputeConversationLinksForTransport(transport-centurion)
-    → collect thread_ids that contain new catchup outbound and ≥1 inbound
-    → enqueueAiRun(inbound_triage) once per such thread
+    → re-enqueue inbound_triage on threads that gained new catchup/PST outbound + have inbound
     → verify counts + spot-checks
 ```
 
@@ -115,4 +145,4 @@ Aug–Sep Sent .eml
 
 ## Success
 
-Aug–Sep Sent visible in Nava Centurion; links only via existing discovery; linked conversations re-triaged; dangerous over-link patterns remain blocked.
+Aug–Sep Sent visible in Nava Centurion with **no double-stored twins**; Nava.zip catchup rows kept; ~**1045** new PST-only rows stored (subject to dry-run); links only via existing discovery; linked conversations re-triaged; dangerous over-link patterns remain blocked.
