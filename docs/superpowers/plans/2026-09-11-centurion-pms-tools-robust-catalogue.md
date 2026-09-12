@@ -6,7 +6,7 @@ Type: feat / programme plan.
 **Inventory source (do not redesign schemas):** `2026-09-11-write-tools-kickoff-from-3949-gold.md`, Astra 12-read catalogue, 3949 pending-write rank.
 **Process learning:** `docs/solutions/workflow-issues/hms-live-proof-packaging-vs-payload-completeness.md`.
 
-**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. **Wave A Wave-0 repair complete 2026-09-12** — batch HITL rewritten at Wave-0 grade (ready for human sign-off). Prior skip-packet “HITL” remains non-material. Do **not** start Wave B until the rewritten HITL is signed.
+**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. **Wave A UNDERWORK TWICE (2026-09-12)** — first skip packets, then soft-capture/`BLOCKED` HITL without per-tool packaging videos. **HITL is NOT ready.** Agent must keep iterating at **Wave 0 find depth** (hours/tool when needed; soft overlays + SSM) until each A tool has **compare-green + packaging video (or mail proof)** or a **true hard blocker** after exhausted soft-overlay RCA. Do **not** start Wave B. Do **not** offer HITL until the per-tool video/mail checklist below is green.
 
 **HITL policy (binding):** human review only at **wave boundaries**, not between tools inside a wave. Inside a wave: agent runs full autonomous chain (contract → fixture → packaging + payload gates → video per tool) with **no pause**. After the wave finishes, human reviews **all** that wave’s videos + result JSON in one batch. Exception: write **execute** still needs proposal approve (mutation safety) — that is not Tool promotion HITL.
 
@@ -72,7 +72,7 @@ Before a field or search axis is **required** in a tool DoD / compare oracle:
 1. Capture a **same-run live dump** of the owner surface (GRID `DATA[0]` / filter scaffold / detail network body / list API / mail bytes — whatever that tool owns).
 2. Required fields ⊆ keys/filters **actually present** on that dump.
 3. Catalogue / Infor docs / demand ranks may **suggest** fields; they do **not** force required.
-4. If dump omits a hoped-for key: **amend DoD** (allowed-null, move to owner tool, or `SURFACE_UNPROVEN` / `BLOCKED_*`) — **stop hunting**. ≤5 RCA then escalate.
+4. If dump omits a hoped-for **invented claim field**: **amend DoD** (allowed-null, move to owner tool, or `SURFACE_UNPROVEN`) — **stop inventing fields**. ≤5 RCA on field invention only. This does **not** authorize stopping soft-overlay packaging / menu-code harvest / Wave-0-depth surface work after a few soft-capture probes.
 5. Unit fixtures must be cut from live dump shapes — never invent `roomtype`/`rateplan`/firstname-filter/etc. because a test wanted them.
 6. Search axes (confirm / external / surname+dates / …): only fill filter aliases proved on **this** dataspy/scaffold; do not assume UI labels ≡ posted alias names.
 
@@ -111,7 +111,22 @@ Private dumps stay under `.private/`; sanitized fixtures may land in tests. Lear
 
 ## Overnight Autonomous Execution Mandate
 
-**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). **Reopened same day:** human refused Wave A sign-off — skip packets ≠ working PMS tools. Agent must finish A1–A11 at **Wave 0 quality** with no mid-wave human pause. Stop only for a **Wave-0-grade** Wave A batch HITL packet **or** a true blocker after live RCA. Do **not** start Wave B.
+**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). **Reopened twice same day:** (1) skip packets ≠ working tools; (2) soft-capture/`BLOCKED` HITL without Wave-0 packaging videos = same premature stop. Agent must finish A1–A11 at **Wave 0 find depth** with no mid-wave human pause. **Stop for HITL only when every tool has packaging video (or mail proof) + compare.v1 all-required-pass for its claimed sections** — not when a blocker JSON exists. Do **not** start Wave B.
+
+### Anti-underwork rule (binding — learned 2026-09-12 ×2)
+
+**Root failure:** plan text allowed `compare green OR this-wave BLOCKED` as done, and “≤5 RCA then stop hunting” as an exit. Agents interpreted that as “one soft probe → BLOCKED → rewrite HITL → mark goal complete.” That is **forbidden**.
+
+| Forbidden exit (underwork) | Required instead |
+|---|---|
+| Skip JSON / DRAFT HITL | Live dump + video/mail |
+| Soft-capture menu probe alone as tool done | Soft-overlay **packaging** run like find/A1 (`HMS_PROOF_*`, compare, video digests) |
+| Guessed function codes once → HTTP 400 → BLOCKED | Harvest real codes from expanded module / BSSTRT / Infor notes; retry soft overlay |
+| Piggyback A1 dump as A2/A9 “packaging video” without recording that tool’s proof | Per-tool packaging artifact id + video (or explicit mail proof path) |
+| Mark HITL READY while any PASS/PARTIAL lacks video/mail proof | HITL stays **DO NOT SIGN** |
+| Mark `/goal` complete because HITL markdown exists | Goal complete only when HITL checklist videos present |
+
+**BLOCKED is not a participation trophy.** `BLOCKED_*` may appear in private RCA notes while iterating. It may enter the **final HITL** only if soft-overlay packaging was attempted, RCA depth matches Wave 0 (not a 30-minute probe), and remaining gap is invent-forbidden or entitlement-hard (credential cannot open surface after soft overlay + code harvest). Shallow `BLOCKED` ≠ wave done.
 
 Wave 0 + 0b find work is **done** (live compare green + human video pass). Do not redo unless a Wave A tool regresses find. **A1 detail dump PASS_CORE_STAY is scaffolding only** until production `readContext` uses detail dump (not grid-row fake-available).
 
@@ -129,9 +144,11 @@ implement/wire → unit (live-faithful) → live HMS dump on EC2 → sanitize fi
 - Writing `BLOCKED_*` / `SURFACE_UNPROVEN` skip JSON **without** a fresh live attempt + dump/RCA on Centurion this wave
 - Treating expired `/etc/nava/hms-read-role-proof.v1.json` as a stop (A1 soft overlays already proved live work without it)
 - Claiming unit-green drivers = Wave A complete
-- Offering HITL for tools that never got compare green
+- Offering HITL for tools that never got compare green **and packaging video (or mail proof)**
+- Offering HITL because every tool has *some* private compare JSON (BLOCKED/PARTIAL without video)
+- Using “≤5 RCA” as a stop after soft-capture only — ≤5 applies to **invented field hunting**, not to “did we try soft-overlay packaging”
 
-**Allowed honest terminal (rare):** after **live** menu/dump proves surface absent or invent-forbidden (e.g. CON/BLK math), ship `BLOCKED_*` with that dump cited — still listed in HITL. Mail-only tools (A10/A11) use mail/knowledge oracle instead of PMS video, but still need fixture + compare.
+**Honest terminal (narrow):** after **soft-overlay packaging attempt** + live dump proves surface absent or invent-forbidden (e.g. CON/BLK math), ship `BLOCKED_*` with that dump cited. Mail-only tools (A10/A11) use mail/knowledge oracle **plus** fixture compare — still need packaging-class mail proof artifact, not unit green alone. Shallow menu probe ≠ honest terminal.
 
 ### Role-proof — what it is (agent owns this)
 
@@ -203,30 +220,32 @@ Implement → focused tests (live-faithful fixture) → live run → **oracle ca
 - [x] Find HITL (0+0b) packet ready + **human video pass 2026-09-12**
 - [x] No unresolved blocker affecting Wave 0 goal
 
-### Done criteria (autonomous Wave A) — REOPENED 2026-09-12
+### Done criteria (autonomous Wave A) — REOPENED ×2 2026-09-12
 
-Prior skip-packet completion **revoked**. 2026-09-12 handoff rewritten to Wave-0-grade evidence (`docs/superpowers/plans/handoff-reports/2026-09-12-wave-a-batch-hitl.md` — **READY FOR HUMAN SIGN-OFF**).
+Prior skip-packet completion **revoked**. Soft-capture/`BLOCKED` HITL **also revoked** (`docs/superpowers/plans/handoff-reports/2026-09-12-wave-a-batch-hitl.md` — **DO NOT SIGN** until videos below exist).
 
-Repair order (Wave-0 depth each; soft overlay OK):
+**Remaining Wave A work (Wave-0 find depth — soft overlay + packaging video per tool):**
 
-1. **A1** — wire `detailDumpFor` / live detail into production `readContext`; core/stay compare from detail not grid; rates/policies/ops stay unavailable until Rate Details dump
-2. **A9** — replace Notes/Traces stub; open tabs from Guest Stay detail; dump → compare
-3. **A2** — live folio **balance** soft proof (OSRESS/`foliobalance`); deposits stay blocked only after live deposit-scope RCA
-4. **A5** — live OSRRAV soft capture (deny CRS); nightly compare
-5. **A3/A4** — mail compare packets + HMS docs dump if menu exists
-6. **A10** — bind available property corpus or prove none after search (agent searches; human only if no docs exist anywhere)
-7. **A11** — implement `mail_parse_channel_payload` + channel_fw fixture compare (greenfield OK)
-8. **A6/A7/A8** — live menu probe first; BLOCKED only with **this-wave** dump citing missing surface
+1. **A1** — finish remaining SURFACE_UNPROVEN sections (rates/policies/ops) **or** amend DoD; deepen packaging until compare claims match video
+2. **A2** — dedicated packaging video (not piggyback-only); deposits/transactions only if dump supports
+3. **A3** — Sent Email list driver → compare → packaging video (PSSNEL.HDR structure already proved)
+4. **A4** — mail fixture path with packaging-class mail proof
+5. **A5** — soft-overlay **quote packaging** like A1 (soft-capture alone ≠ done); CRS deny stays
+6. **A6/A7/A8** — harvest real Group Sales / Profiles function codes; soft-overlay dumps; packaging videos or true hard BLOCKED after that depth
+7. **A9** — dedicated packaging video; traces only if dump supports
+8. **A10** — approved knowledge corpus on EC2 **or** hard BLOCKED after corpus hunt exhausted
+9. **A11** — mail_parse_channel_payload packaging-class mail proof (units alone ≠ HITL)
 
-Checklist:
+Checklist (**no OR escape**):
 
-- [x] Each A1–A11 tool: Wave-0 loop green (`compare.v1` + packaging/mail proof) **or** this-wave live-cited `BLOCKED_*` after ≤5 RCA
+- [ ] Each A1–A11 tool claimed PASS/PARTIAL: `compare.v1` all-required-pass **and** packaging video digests (or mail proof artifact for A4/A10/A11)
+- [ ] Any final `BLOCKED_*` in HITL: soft-overlay packaging attempted + Wave-0-depth RCA cited (soft-capture-only BLOCKED forbidden)
 - [x] A1 production path uses detail dump for core/stay (not grid-row false available)
-- [x] Role-proof v1 renewed and/or soft path used; v2 minted per tool when promoting release — **agent-owned**, not a human gate
-- [x] Per-tool private evidence under `.private/wave-a-*/` (video/mail + result/oracle/compare) — skip JSON alone insufficient
-- [x] Wave A batch HITL packet rewritten listing **only** Wave-0-grade evidence (replace DRAFT)
+- [ ] Role-proof v1 renewed and/or soft path used; v2 minted per tool when promoting release — **agent-owned**, not a human gate
+- [ ] Per-tool private evidence under `.private/wave-a-*/` includes **video/mail digests** for PASS rows — compare JSON alone insufficient
+- [ ] Wave A batch HITL packet lists per-tool video/mail proof ids; status READY only when checklist green
 - [x] Wave B **not** started
-- [x] No unresolved agent-fixable gap parked as “needs human”
+- [ ] No unresolved agent-fixable gap parked as “needs human” / premature HITL
 
 ### True blockers
 
@@ -236,11 +255,11 @@ Stop only for missing credentials/access that cannot be obtained safely (e.g. HM
 
 ## Execution Mode
 
-Autonomous for **Wave A repair (Wave-0 quality)**. Resume A1 production wiring then A9→A2→A5→…. After Wave-0-grade HITL packet ready, **end autonomous run** and wait for human sign-off before Wave B. REQUIRED SUB-SKILL: superpowers:subagent-driven-development + TDD for parser/claim fixes.
+Autonomous for **Wave A at Wave-0 find depth**. Priority unfinished: A5 soft-overlay packaging → A3 Sent Email video → A2/A9 dedicated videos → A6–A8 code harvest + soft overlay → A1 remaining sections → A10/A11 mail proof. HITL stays DO NOT SIGN until per-tool videos exist. Do **not** end run early because a BLOCKED JSON exists. After true Wave-0-grade HITL packet ready, **end autonomous run** and wait for human sign-off before Wave B. REQUIRED SUB-SKILL: superpowers:subagent-driven-development + TDD for parser/claim fixes.
 
 `/goal` text for operators:
 
-> Repair Wave A of `docs/superpowers/plans/2026-09-11-centurion-pms-tools-robust-catalogue.md` under Overnight Autonomous Execution Mandate at Wave-0 quality (live PMS iterate per tool). Do not treat 2026-09-12 skip packets as done. Do not start Wave B.
+> Repair Wave A of `docs/superpowers/plans/2026-09-11-centurion-pms-tools-robust-catalogue.md` under Overnight Autonomous Execution Mandate at **Wave-0 find depth**. Soft overlays + SSM OK. HITL is DO NOT SIGN. Forbidden: skip packets, soft-capture-only BLOCKED as done, READY HITL without per-tool packaging video/mail proof. Build A1–A11 until compare green + packaging video (or mail proof) each; hard BLOCKED only after soft-overlay packaging depth. Do not start Wave B. Keep iterating — do not end because a blocker JSON exists.
 
 ---
 
@@ -484,11 +503,11 @@ Find named **2115**; read named **223**. Most mail only needs “is this the sta
 
 ## After Wave 0 (human-gated → Wave A full auton)
 
-1. `/continue-autonomously` or `/goal` with **Wave A** authority (Wave-0 quality; live PMS always).
+1. `/continue-autonomously` or `/goal` with **Wave A** authority (Wave-0 find depth; live PMS always; soft overlays OK).
 2. Each A tool: Autonomous expected-vs-actual loop + packaging video; **no human pause**. Soft overlays + role-proof mint = **agent work**.
-3. Surface truly absent **after this-wave live dump/probe** → honest `BLOCKED_*` (cite dump). **Not** after reading old RCA / expired role-proof file.
-4. Wave A done = every non-deferred tool has compare green + video/mail proof (skip JSON alone ≠ done).
-5. Batch HITL packet → stop. Wave B blocked until sign-off. Prior 2026-09-12 skip HITL = DRAFT only.
+3. Surface truly absent **after soft-overlay packaging attempt + this-wave live dump** → honest `BLOCKED_*` (cite dump). Soft-capture menu probe alone ≠ absent. **Not** after reading old RCA / expired role-proof file.
+4. Wave A done = every non-deferred tool has compare green + **packaging video/mail proof** (skip JSON / soft-capture BLOCKED alone ≠ done).
+5. Batch HITL packet → stop **only** when per-tool packaging videos/mail proofs exist (or hard BLOCKED after soft-overlay depth). Wave B blocked until sign-off. Prior skip HITL + soft-capture HITL = DO NOT SIGN.
 6. Wave B: same loop; oracle = post-write reread; execute approve still required for mutations.
 
 ---
@@ -520,7 +539,7 @@ Companion contains: A/B/C evidence classes, **Surface availability matrix**, imp
 
 ### Impossible-schema stop (binding)
 
-Demand cite alone **never** forces a required field. Grabability = class B (Infor surface + matrix) then **live dump**. If dump omits: amend DoD (allowed-null / move to owner tool) or ship `SURFACE_UNPROVEN`/`BLOCKED_*` after ≤5 RCA — **stop hunting**. Worked example: catalogue “room type/rate” on find → live GRID lacked `rateplan` → ratePlan **out of find**, owned by `hms_read_reservation`.
+Demand cite alone **never** forces a required field. Grabability = class B (Infor surface + matrix) then **live dump**. If dump omits a hoped-for **claim field**: amend DoD (allowed-null / move to owner tool) or `SURFACE_UNPROVEN` after ≤5 **field-invention** RCA — stop inventing fields. That ceiling does **not** authorize ending soft-overlay packaging / menu-code harvest. Worked example: catalogue “room type/rate” on find → live GRID lacked `rateplan` → ratePlan **out of find**, owned by `hms_read_reservation`.
 
 Sources re-checked into companion:
 
