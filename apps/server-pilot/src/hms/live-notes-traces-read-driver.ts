@@ -1,13 +1,15 @@
 /**
- * Live notes/traces adapter. The current approved HMS release has no verified
- * bounded notes source, so this adapter emits a typed unavailable section and
- * never turns note text into an action or an authorization.
+ * Live notes/traces adapter.
+ * Guest Stay detail dump proves reservationnote/cancellationnote (2026-09-12).
+ * Dedicated Traces tab remains SURFACE_UNPROVEN until a separate dump.
  */
 import {
   NOTES_TRACES_READ_MAX_ROWS,
   NOTES_TRACES_READ_SURFACE_BLOCKER,
   type NotesTracesReadData,
 } from './notes-traces-read-contract.js';
+import { projectNotesFromDetailDump } from './notes-detail-projection.js';
+import type { ReservationDetailDumpV1 } from './reservation-detail-projection.js';
 import { readRefSchema, readResultSchema } from './read-service-contracts.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import type { ReadResult } from './read-service-contracts.js';
@@ -58,10 +60,19 @@ function assertNotesAuthorization(authorization: NotesSessionAuthorization): voi
   }
 }
 
+export type LiveNotesTracesReadDriverOptions = {
+  /** Wave A9: Guest Stay detail dump that includes reservationnote keys. */
+  detailDumpFor?: (
+    input: NotesTracesReadInput,
+    signal: AbortSignal,
+  ) => Promise<ReservationDetailDumpV1 | null>;
+};
+
 export async function observeNotesTraces(
   authorization: NotesSessionAuthorization,
   rawInput: NotesTracesReadInput,
   signal: AbortSignal,
+  options: LiveNotesTracesReadDriverOptions = {},
 ): Promise<ReadResult<NotesTracesReadData>> {
   if (signal.aborted) {
     const err = new Error('notes trace observe aborted');
@@ -73,6 +84,61 @@ export async function observeNotesTraces(
   const observedAt = new Date();
   const expiresAt = new Date(observedAt.getTime() + 5 * 60_000);
   const evidenceRef = `notes-${randomUUID()}`;
+
+  const dump = options.detailDumpFor ? await options.detailDumpFor(input, signal) : null;
+  if (dump) {
+    const projected = projectNotesFromDetailDump(dump, {
+      resourceRef: input.resourceRef,
+      evidenceRef,
+      observedAt,
+      expiresAt,
+      limit: input.limit,
+    });
+    const notesAvailable =
+      !('state' in projected.data.notes) || projected.data.notes.state !== 'unavailable';
+    if (notesAvailable) {
+      const sourceSeed = projected.claimKeys.join('|') || 'notes-empty';
+      return readResultSchema.parse({
+        toolId: 'hms_read_notes_traces',
+        schemaVersion: 'hms-notes/1',
+        status: 'partial',
+        data: projected.data,
+        completeness: 'partial',
+        unavailableSections: [
+          { section: 'traces', reasonCode: projected.tracesReasonCode },
+        ],
+        scopeRef: input.resourceRef,
+        evidence: [
+          {
+            evidenceRef,
+            sourceSystem: 'hms' as const,
+            sourceSurface: 'guest-stay-detail-notes',
+            requestBranchId: authorization.requestBranchId,
+            observedAt: observedAt.toISOString(),
+            sourceUpdatedAt: null,
+            expiresAt: expiresAt.toISOString(),
+            scopeVerified: true,
+            artifactRef: null,
+            sourceHash: createHash('sha256').update(sourceSeed).digest('hex'),
+          },
+        ],
+        page: {
+          returnedCount:
+            'items' in projected.data.notes ? projected.data.notes.items.length : 0,
+          hasMore: false,
+          nextCursor: null,
+        },
+        issues: [
+          {
+            code: 'PARTIAL_WINDOW',
+            retryable: false,
+            safeNextAction: 'manual_review',
+          },
+        ],
+      }) as ReadResult<NotesTracesReadData>;
+    }
+  }
+
   const data = {
     notes: {
       state: 'unavailable' as const,
@@ -120,8 +186,17 @@ export async function observeNotesTraces(
   }) as ReadResult<NotesTracesReadData>;
 }
 
-export function createLiveNotesTracesReadDriver(): {
-  observeNotesTraces: typeof observeNotesTraces;
+export function createLiveNotesTracesReadDriver(
+  options: LiveNotesTracesReadDriverOptions = {},
+): {
+  observeNotesTraces: (
+    authorization: NotesSessionAuthorization,
+    rawInput: NotesTracesReadInput,
+    signal: AbortSignal,
+  ) => Promise<ReadResult<NotesTracesReadData>>;
 } {
-  return { observeNotesTraces };
+  return {
+    observeNotesTraces: (authorization, rawInput, signal) =>
+      observeNotesTraces(authorization, rawInput, signal, options),
+  };
 }

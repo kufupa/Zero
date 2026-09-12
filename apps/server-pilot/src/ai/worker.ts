@@ -1484,19 +1484,28 @@ export function createLiveHmsCandidateSessionFactory(
                 observedAt: new Date(),
                 expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
               });
-            const authorization = contextAuthorization({
-              toolId: 'hms_event_read',
-              discoveryOperationId: 'event_list',
-              release: notesRelease as NonNullable<typeof companyRelease>,
-              branchId: branch.id,
-            }) as unknown as Parameters<typeof observeNotesTraces>[0];
             const { signal: notesSignal, ...notesRequest } = notesInput;
+            const exactCandidate = exact[0];
             return observeNotesTraces(
               {
-                ...authorization,
+                operationId,
                 toolId: 'hms_read_notes_traces',
                 discoveryOperationId: 'notes_traces_list',
+                releaseId: notesRelease.releaseId,
                 requestBranchId: branch.id,
+                manifest: buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+                manifestSha256: branch.manifestSha256,
+                roleProofPath: config.roleProofPath,
+                roleProofSha256: notesRelease.roleProofSha256 ?? placeholderDigest('notes-role'),
+                credentialVersionHmacSha256:
+                  notesRelease.credentialVersionHmacSha256 ??
+                  placeholderDigest('notes-credential'),
+                runtimeFingerprintSha256: notesRelease.runtimeFingerprintSha256 ?? runtimeFp,
+                privateDigestKeyVersion: notesRelease.privateDigestKeyVersion ?? 'v1',
+                sourceRevision: notesRelease.sourceRevision ?? sourceRevision,
+                expiresAt:
+                  input.readFence?.deadlineAt.toISOString() ??
+                  new Date(Date.now() + 60_000).toISOString(),
               },
               {
                 ...notesRequest,
@@ -1504,6 +1513,13 @@ export function createLiveHmsCandidateSessionFactory(
                 states: [...notesInput.states] as ('open' | 'completed')[],
               },
               notesSignal,
+              {
+                detailDumpFor: async (_notes, signal) => {
+                  if (!exactCandidate || exactCandidate.kind === 'surname_dates') return null;
+                  const { dump } = await driver.searchExactThenDetailDump(exactCandidate, signal);
+                  return dump;
+                },
+              },
             );
           }
         : undefined;
