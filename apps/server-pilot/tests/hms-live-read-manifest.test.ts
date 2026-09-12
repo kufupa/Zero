@@ -112,7 +112,7 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       confirmationnumber: '',
       reservationstayid: '',
       propertycode: '',
-      guestfullname: '',
+      guestNumber: '',
       account: '',
       guestid: '',
       hoteldate: '',
@@ -570,7 +570,11 @@ describe('exact OSRESS.search candidate binding', () => {
       },
       postData: hdrChromeBody,
     };
-    expect(evaluateObservedRequest(findOnly, hdrChromeReq).action).toBe('block');
+    // Shell find HDR must allow Guest Stay navigate (camelCase guestNumber + MENU).
+    expect(evaluateObservedRequest(findOnly, hdrChromeReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr',
+    });
     expect(evaluateObservedRequest(detail, hdrChromeReq)).toEqual({
       action: 'allow',
       ruleId: 'live-osresv-hdr-detail-open-chrome',

@@ -648,7 +648,8 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         confirmationnumber: VAR64,
         facebookid: VAR64,
         firstname: VAR64,
-        guestfullname: VAR64,
+        // Live ExtJS camelCase (Wave A1 2026-09-12).
+        guestNumber: VAR64,
         guestid: VAR64,
         hoteldate: VAR32,
         lastname: VAR64,

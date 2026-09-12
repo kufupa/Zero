@@ -1716,6 +1716,25 @@ function createHmsRuntimeInternal(
         input.exactSearchCandidate,
       );
     }
+    if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
+      const hdrIds = sessionManifest.rules
+        .filter((rule) => rule.path === '/web/base/OSRESV.HDR')
+        .map((rule) => rule.id);
+      process.stderr.write(
+        `${JSON.stringify({
+          type: 'HMS_PROOF_DIAGNOSTIC',
+          stage: 'session_manifest',
+          code: hdrIds.includes('live-osresv-hdr-detail-open-chrome')
+            ? 'SESSION_HAS_HDR_DETAIL_CHROME'
+            : hdrIds.includes('live-osresv-hdr')
+              ? 'SESSION_HAS_SHELL_HDR_ONLY'
+              : 'SESSION_HDR_UNEXPECTED',
+          hdrRuleIds: hdrIds,
+          hasSessionAuthorization: Boolean(input.sessionAuthorization),
+          hasExactSearchCandidate: Boolean(input.exactSearchCandidate),
+        })}\n`,
+      );
+    }
 
     let capture: HmsBrowserCaptureHandle | null = null;
     let lastReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null =
@@ -3281,6 +3300,8 @@ function createHmsRuntimeInternal(
         exactSearchCandidate: input.exactSearchCandidate,
         allowUnstarted: input.allowUnstarted,
         auditSpec: input.auditSpec,
+        // Explicit: never drop plan-scoped lease when spreading input.
+        sessionAuthorization: input.sessionAuthorization,
       });
     },
 
