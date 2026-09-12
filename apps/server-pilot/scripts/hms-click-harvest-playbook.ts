@@ -55,30 +55,6 @@ function parseBody(postData: string | null): {
   };
 }
 
-async function clickPath(page: Page, labels: string[]): Promise<string[]> {
-  const log: string[] = [];
-  for (const label of labels) {
-    const loc = page.getByText(label, { exact: true }).first();
-    const visible = await loc.isVisible().catch(() => false);
-    if (!visible) {
-      // fallback: partial text
-      const soft = page.locator(`text=${label}`).first();
-      const softVis = await soft.isVisible().catch(() => false);
-      if (!softVis) {
-        log.push(`miss:${label}`);
-        continue;
-      }
-      await soft.click({ force: true, timeout: 8_000 }).catch(() => undefined);
-      log.push(`click-soft:${label}`);
-    } else {
-      await loc.click({ force: true, timeout: 8_000 }).catch(() => undefined);
-      log.push(`click:${label}`);
-    }
-    await page.waitForTimeout(2_000);
-  }
-  return log;
-}
-
 async function softOpen(page: Page, fn: string): Promise<{
   status: number;
   bytes: number;
@@ -248,7 +224,180 @@ async function main(): Promise<void> {
     });
     await page.waitForTimeout(1_500);
 
-    // A5: ALT+Z shortcut then menu path
+    // EARLY soft-open BEFORE any menu clicks (A3 unlock). Include CSVAVL from Alt+Z capture.
+    async function earlyOpen(
+      fn: string,
+      opts?: { viaEwsweb?: boolean },
+    ): Promise<{
+      status: number;
+      bytes: number;
+      stub813: boolean;
+      hasRoomtypes: boolean;
+      path: string;
+      title: string | null;
+      inputSample: string[];
+    }> {
+      return page.evaluate(
+        async ({ functionName, viaEwsweb }) => {
+          const path = viaEwsweb
+            ? '/web/base/EWSWEB?FUNCTION_CLASS=WEBL'
+            : `/web/base/${functionName}?FUNCTION_CLASS=WEBL`;
+          const body = new URLSearchParams({
+            SYSTEM_FUNCTION_NAME: viaEwsweb ? 'EWSWEB' : functionName,
+            USER_FUNCTION_NAME: functionName,
+            FUNCTION_CLASS: 'WEBL',
+            CURRENT_TAB_NAME: '',
+            MENU_MODULE_KEY: '0',
+            removescreenflows: 'yes',
+          });
+          try {
+            const res = await fetch(path, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+            });
+            const text = await res.text();
+            const inputs = [
+              ...new Set(
+                [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!),
+              ),
+            ].slice(0, 40);
+            return {
+              status: res.status,
+              bytes: text.length,
+              stub813: text.length === 813,
+              hasRoomtypes: /roomtypes|rateplans|ROOMTYPE|RATEPLAN|availability/i.test(
+                text,
+              ),
+              path,
+              title: (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] ?? null,
+              inputSample: inputs,
+            };
+          } catch {
+            return {
+              status: 0,
+              bytes: 0,
+              stub813: false,
+              hasRoomtypes: false,
+              path,
+              title: null,
+              inputSample: [],
+            };
+          }
+        },
+        { functionName: fn, viaEwsweb: !!opts?.viaEwsweb },
+      );
+    }
+
+    const earlyOpens: Record<string, Awaited<ReturnType<typeof earlyOpen>>> = {};
+    for (const fn of [
+      'OSRESS',
+      'PSSNEL',
+      'OSRRAV',
+      'OSRTAV',
+      'OSRPAV',
+      'CSVAVL',
+    ]) {
+      earlyOpens[fn] = await earlyOpen(fn);
+    }
+    earlyOpens['EWSWEB:CSVAVL'] = await earlyOpen('CSVAVL', { viaEwsweb: true });
+    // HDR chrome for quote
+    earlyOpens['OSRRAV.HDR'] = await page.evaluate(async () => {
+      try {
+        const res = await fetch('/web/base/OSRRAV.HDR?FUNCTION_CLASS=WEBL', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            SYSTEM_FUNCTION_NAME: 'OSRRAV',
+            USER_FUNCTION_NAME: 'OSRRAV',
+            CURRENT_TAB_NAME: 'HDR',
+            FUNCTION_CLASS: 'WEBL',
+          }).toString(),
+        });
+        const text = await res.text();
+        return {
+          status: res.status,
+          bytes: text.length,
+          stub813: text.length === 813,
+          hasRoomtypes: /roomtypes|rateplans/i.test(text),
+          path: '/web/base/OSRRAV.HDR',
+          title: (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] ?? null,
+          inputSample: [
+            ...new Set(
+              [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!),
+            ),
+          ].slice(0, 40),
+        };
+      } catch {
+        return {
+          status: 0,
+          bytes: 0,
+          stub813: false,
+          hasRoomtypes: false,
+          path: '/web/base/OSRRAV.HDR',
+          title: null,
+          inputSample: [],
+        };
+      }
+    });
+    clickLog.push(
+      `earlyOpens:real=${
+        Object.entries(earlyOpens).filter(([, v]) => v.bytes > 2000 && !v.stub813).length
+      }`,
+    );
+
+    // Dump top-level menu bar labels before clicks
+    const menuBar = await page.evaluate(() => {
+      const nodes = [
+        ...document.querySelectorAll(
+          '.x-menu-item-text, .x-btn-inner, .x-tab-inner, [role="menuitem"], .mainMenu, .menu-item, a.x-menu-item',
+        ),
+      ];
+      return [...new Set(nodes.map((n) => (n.textContent ?? '').trim()).filter((t) => t.length > 1 && t.length < 64))].slice(0, 100);
+    });
+    clickLog.push(`menuBarSample:${menuBar.slice(0, 20).join('|')}`);
+
+    async function goStartCenter(): Promise<void> {
+      await page.keyboard.press('Escape').catch(() => undefined);
+      const sc = page.getByText('Start Center', { exact: true }).first();
+      if (await sc.isVisible().catch(() => false)) {
+        await sc.click({ force: true }).catch(() => undefined);
+        clickLog.push('click:Start Center');
+        await page.waitForTimeout(1_500);
+      }
+    }
+
+    async function hoverClickMenu(pathLabels: string[]): Promise<void> {
+      await goStartCenter();
+      for (let i = 0; i < pathLabels.length; i++) {
+        const label = pathLabels[i]!;
+        // Prefer menu-item text nodes
+        const menuItem = page.locator('.x-menu-item-text', { hasText: label }).first();
+        const btn = page.locator('.x-btn-inner', { hasText: label }).first();
+        const any = page.getByText(label, { exact: true }).first();
+        let done = false;
+        for (const loc of [menuItem, btn, any]) {
+          const vis = await loc.isVisible().catch(() => false);
+          if (!vis) continue;
+          if (i < pathLabels.length - 1) {
+            await loc.hover({ force: true }).catch(() => undefined);
+            await page.waitForTimeout(800);
+            await loc.click({ force: true }).catch(() => undefined);
+          } else {
+            await loc.click({ force: true }).catch(() => undefined);
+          }
+          clickLog.push(`nav:${label}`);
+          done = true;
+          await page.waitForTimeout(1_800);
+          break;
+        }
+        if (!done) clickLog.push(`miss:${label}`);
+      }
+    }
+
+    // A5: ALT+Z then menu path (after early opens already recorded)
     try {
       await page.keyboard.press('Alt+KeyZ');
       clickLog.push('shortcut:Alt+Z');
@@ -257,30 +406,14 @@ async function main(): Promise<void> {
       clickLog.push('shortcut:Alt+Z:fail');
     }
 
-    clickLog.push(
-      ...(await clickPath(page, [
-        'Front Desk',
-        'Availability',
-        'Room Type and Rate Availability',
-      ])),
-    );
-    await page.waitForTimeout(2_500);
-
-    // A6 Group Booking
-    clickLog.push(...(await clickPath(page, ['Group Sales', 'Group Booking'])));
-    await page.waitForTimeout(2_500);
-
-    // A7 Events
-    clickLog.push(
-      ...(await clickPath(page, ['Group Sales', 'Events', 'Event Reservations'])),
-    );
-    await page.waitForTimeout(2_000);
-
-    // A8 Organization Profiles
-    clickLog.push(
-      ...(await clickPath(page, ['Profiles', 'Organization Profiles'])),
-    );
-    await page.waitForTimeout(2_000);
+    await hoverClickMenu([
+      'Front Desk',
+      'Availability',
+      'Room Type and Rate Availability',
+    ]);
+    await hoverClickMenu(['Group Sales', 'Group Booking']);
+    await hoverClickMenu(['Group Sales', 'Events', 'Event Reservations']);
+    await hoverClickMenu(['Profiles', 'Organization Profiles']);
 
     // Collect unique SYSTEM/USER function names from capture
     const harvested = [
@@ -288,32 +421,29 @@ async function main(): Promise<void> {
         captured
           .flatMap((c) =>
             [c.systemFn, c.userFn, ...c.functionTokens].filter(
-              (x): x is string => !!x && /^(OS|PS|AR)[A-Z0-9]{3,10}$/.test(x),
+              (x): x is string =>
+                !!x && /^(OS|PS|AR|CS)[A-Z0-9]{3,10}$/.test(x.toUpperCase()),
             ),
           )
           .map((x) => x.toUpperCase()),
       ),
     ].sort();
 
-    // Soft-open harvested BEFORE more menu pollution; also try known alts from Infor path.
-    const openCandidates = [
-      ...new Set([
-        ...harvested,
-        'OSRRAV',
-        'OSRTAV',
-        'OSRPAV',
-        'OSMPAV',
-        'OSNRAV',
-        'OSRESS',
-        'PSSNEL',
-      ]),
-    ].slice(0, 40);
-
+    // Soft-open newly harvested codes not already early-opened
     const opens: Record<string, Awaited<ReturnType<typeof softOpen>>> = {};
-    for (const fn of openCandidates) {
+    for (const fn of harvested.slice(0, 30)) {
+      if (earlyOpens[fn]) continue;
       opens[fn] = await softOpen(page, fn);
     }
 
+    const realEarly = Object.entries(earlyOpens)
+      .filter(([, v]) => v.status === 200 && v.bytes > 2000 && !v.stub813)
+      .map(([k, v]) => ({
+        fn: k,
+        bytes: v.bytes,
+        hasRoomtypes: v.hasRoomtypes,
+        inputs: v.inputSample.slice(0, 15),
+      }));
     const realOpens = Object.entries(opens)
       .filter(([, v]) => v.status === 200 && v.bytes > 2000 && !v.stub813)
       .map(([k, v]) => ({ fn: k, bytes: v.bytes, hasRoomtypes: v.hasRoomtypes }));
@@ -362,6 +492,20 @@ async function main(): Promise<void> {
         a8: 'Profiles > Organization Profiles',
       },
       clickLog,
+      menuBarSample: menuBar,
+      earlyOpens: Object.fromEntries(
+        Object.entries(earlyOpens).map(([k, v]) => [
+          k,
+          {
+            status: v.status,
+            bytes: v.bytes,
+            stub813: v.stub813,
+            hasRoomtypes: v.hasRoomtypes,
+            path: v.path,
+            inputSample: v.inputSample.slice(0, 20),
+          },
+        ]),
+      ),
       captureCount: captured.length,
       capturedSample: captured.slice(0, 80).map((c) => ({
         method: c.method,
@@ -385,6 +529,7 @@ async function main(): Promise<void> {
           },
         ]),
       ),
+      realEarly,
       realOpens,
       video,
     };
@@ -399,9 +544,16 @@ async function main(): Promise<void> {
         outPath,
         clickLog,
         harvestedFns: harvested,
+        realEarly,
         realOpens,
         video,
         captureCount: captured.length,
+        earlySummary: Object.fromEntries(
+          Object.entries(earlyOpens).map(([k, v]) => [
+            k,
+            { status: v.status, bytes: v.bytes, stub813: v.stub813 },
+          ]),
+        ),
       }) + '\n',
     );
   } finally {
