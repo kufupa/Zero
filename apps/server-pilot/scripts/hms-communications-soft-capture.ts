@@ -58,8 +58,10 @@ function redact(req: Request): Omit<RedactedSig, 'decision' | 'abortReason'> {
 }
 
 function shouldAbort(path: string, method: string): string | null {
+  // Do not treat bare "email" substring as mutation — PSSNEL / Sent Email paths
+  // must stay soft-open. Match delivery/mutation verbs only.
   if (
-    /(save|delete|duplicate|checkin|checkout|amend|cancel|post|settle|refund|send|resend|print|export|generate|submit|email|finalize|void)/i.test(
+    /(save|delete|duplicate|checkin|checkout|amend|cancel|settle|refund|resend|print|export|generate|submit|finalize|void|\/send(?:\/|$))/i.test(
       path,
     )
   ) {
@@ -224,16 +226,24 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
         await route.continue();
         return;
       }
+      // Chrome hydration: continue same-origin non-search POSTs that look like
+      // shell/module open. Aborting these earlier produced 813B tenant stubs
+      // instead of the proven ~28kB PSSNEL.HDR envelope.
       const shellOrLogin = isShellOrLoginPost(path, body);
-      if (!shellOrLogin) {
-        signatures.push({
-          ...redact(req),
-          decision: 'abort',
-          abortReason: 'unknown_post_pending_evidence',
-        });
-        await route.abort();
+      const moduleOpen =
+        /^\/web\/base\/[A-Z0-9.]+$/i.test(path) && !/\.search/i.test(path);
+      if (shellOrLogin || moduleOpen) {
+        signatures.push({ ...redact(req), decision: 'continue' });
+        await route.continue();
         return;
       }
+      signatures.push({
+        ...redact(req),
+        decision: 'abort',
+        abortReason: 'unknown_post_pending_evidence',
+      });
+      await route.abort();
+      return;
     }
     signatures.push({ ...redact(req), decision: 'continue' });
     await route.continue();
