@@ -271,48 +271,32 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
       }),
     ]);
 
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(4_000);
     structure.pageTitle = await page.title();
 
-    // Expand Front Desk then open target — force click for ExtJS tree.
-    for (const label of targetLabels) {
-      const loc = page.getByText(label, { exact: true }).first();
-      const visible = await loc.isVisible().catch(() => false);
-      if (visible) {
-        await loc.click({ force: true, timeout: 8_000 }).catch(() => undefined);
-        await page.waitForTimeout(2_500);
-      } else {
-        // Fallback substring match for ExtJS menu paint.
-        await page
-          .locator(`text=${label}`)
-          .first()
-          .click({ force: true, timeout: 5_000 })
-          .catch(() => undefined);
-        await page.waitForTimeout(2_000);
-      }
-    }
-
-    // Collect tree/menu node texts (structure labels only).
-    const treeLabels = await page.evaluate(() => {
-      const nodes = [
-        ...document.querySelectorAll(
-          '.x-tree-node-text, .x-menu-item-text, .x-btn-inner, a, span',
-        ),
-      ];
-      return nodes
-        .map((el) => (el.textContent ?? '').trim())
-        .filter((t) => t.length > 2 && t.length < 64)
-        .filter((t) =>
-          /Front Desk|Sent Email|Tax Invoice|Email|Invoice|Guest Stay|Folio|Availability/i.test(
-            t,
-          ),
-        )
-        .slice(0, 80);
-    });
-    structure.menuLabelsSeen = [...new Set(treeLabels)];
-
-    // Soft-probe PSSNEL OPEN + HDR structure inventory (no .search, no row values).
+    // Warm start-center like menu-codes (proven ~28kB PSSNEL.HDR) BEFORE menu
+    // clicks — clicking Front Desk first left HDR as an 813B tenant stub.
     if (surface === 'sent_email') {
+      await page.evaluate(async () => {
+        for (const path of ['/web/base/BSSTRT.HDR', '/web/base/BSSTRT']) {
+          try {
+            await fetch(path, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({
+                SYSTEM_FUNCTION_NAME: 'BSSTRT',
+                USER_FUNCTION_NAME: 'BSSTRT',
+                manurefresh: 'yes',
+              }).toString(),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+      await page.waitForTimeout(1_500);
+
       const openProbe = await page.evaluate(async () => {
         const body = new URLSearchParams({
           SYSTEM_FUNCTION_NAME: 'PSSNEL',
@@ -381,7 +365,116 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
         ok: hdrText.ok,
         status: hdrText.status,
         ...hdrStructure,
-        // Drop raw text — structure inventory only.
+      };
+    }
+
+    // Expand Front Desk then open target — force click for ExtJS tree (video).
+    for (const label of targetLabels) {
+      const loc = page.getByText(label, { exact: true }).first();
+      const visible = await loc.isVisible().catch(() => false);
+      if (visible) {
+        await loc.click({ force: true, timeout: 8_000 }).catch(() => undefined);
+        await page.waitForTimeout(2_500);
+      } else {
+        // Fallback substring match for ExtJS menu paint.
+        await page
+          .locator(`text=${label}`)
+          .first()
+          .click({ force: true, timeout: 5_000 })
+          .catch(() => undefined);
+        await page.waitForTimeout(2_000);
+      }
+    }
+
+    // Collect tree/menu node texts (structure labels only).
+    const treeLabels = await page.evaluate(() => {
+      const nodes = [
+        ...document.querySelectorAll(
+          '.x-tree-node-text, .x-menu-item-text, .x-btn-inner, a, span',
+        ),
+      ];
+      return nodes
+        .map((el) => (el.textContent ?? '').trim())
+        .filter((t) => t.length > 2 && t.length < 64)
+        .filter((t) =>
+          /Front Desk|Sent Email|Tax Invoice|Email|Invoice|Guest Stay|Folio|Availability/i.test(
+            t,
+          ),
+        )
+        .slice(0, 80);
+    });
+    structure.menuLabelsSeen = [...new Set(treeLabels)];
+
+    // Legacy late PSSNEL probe kept only when early open missing (non-sent surfaces).
+    if (surface === 'sent_email' && !structure.pssnelHdrProbe) {
+      const openProbe = await page.evaluate(async () => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: 'PSSNEL',
+          USER_FUNCTION_NAME: 'PSSNEL',
+          FUNCTION_CLASS: 'WEBL',
+        });
+        try {
+          const res = await fetch(
+            '/web/base/PSSNEL?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=PSSNEL',
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+            },
+          );
+          const text = await res.text();
+          return {
+            ok: res.ok,
+            status: res.status,
+            bytes: text.length,
+            hasPssnelToken: /PSSNEL/i.test(text),
+            hasLoginFields:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+            hasErrorMarker:
+              /not authorised|not authorized|access denied|permission|function not available|no authority/i.test(
+                text,
+              ),
+          };
+        } catch {
+          return {
+            ok: false,
+            status: 0,
+            bytes: 0,
+            hasPssnelToken: false,
+            hasLoginFields: false,
+            hasErrorMarker: false,
+            error: 'fetch_failed',
+          };
+        }
+      });
+      structure.pssnelOpenProbe = openProbe;
+
+      const hdrText = await page.evaluate(async () => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: 'PSSNEL',
+          USER_FUNCTION_NAME: 'PSSNEL',
+          CURRENT_TAB_NAME: 'HDR',
+        });
+        try {
+          const res = await fetch('/web/base/PSSNEL.HDR', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+          });
+          const text = await res.text();
+          return { ok: res.ok, status: res.status, text };
+        } catch {
+          return { ok: false, status: 0, text: '' };
+        }
+      });
+      const hdrStructure = extractPssnelHdrStructure(hdrText.text);
+      structure.pssnelHdrProbe = {
+        ok: hdrText.ok,
+        status: hdrText.status,
+        ...hdrStructure,
       };
     }
 
