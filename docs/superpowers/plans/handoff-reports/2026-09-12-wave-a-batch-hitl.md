@@ -3,7 +3,7 @@
 **Date:** 2026-09-12  
 **Branch:** `feat/centurion-dashboard-tools`  
 **Authority:** Overnight Autonomous Execution Mandate (Wave A) — Wave-0 find depth  
-**Status:** **READY** — per-tool packaging video / mail proof checklist green. Human batch sign-off next. **Do not start Wave B until signed.**
+**Status:** **DO NOT SIGN** — payload-completion reopen. Packaging videos exist but DoD-required sections still open (rates/folio/quote/group/traces/live A4/A10). Absence videos ≠ success. **Do not start Wave B.**
 
 ## Per-tool packaging checklist
 
