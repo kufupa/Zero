@@ -85,9 +85,83 @@ async function main(): Promise<void> {
         await page.locator('input[name=password]').press('Enter');
       }),
     ]);
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(4_000);
+
+    // Warm BSSTRT before module clicks (A3/A5 lesson — avoid 813B tenant stubs).
+    await page.evaluate(async () => {
+      for (const path of ['/web/base/BSSTRT.HDR', '/web/base/BSSTRT']) {
+        try {
+          await fetch(path, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              SYSTEM_FUNCTION_NAME: 'BSSTRT',
+              USER_FUNCTION_NAME: 'BSSTRT',
+              manurefresh: 'yes',
+            }).toString(),
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    await page.waitForTimeout(1_500);
+
+    // Harvest label↔fn pairs from start-center scripts before guessing codes.
+    const harvest = await page.evaluate(async () => {
+      const blobs: string[] = [];
+      for (const s of document.scripts) {
+        if (s.textContent) blobs.push(s.textContent.slice(0, 400_000));
+      }
+      for (const path of ['/web/base/BSSTRT.HDR', '/web/base/BSSTRT']) {
+        try {
+          const r = await fetch(path, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              SYSTEM_FUNCTION_NAME: 'BSSTRT',
+              USER_FUNCTION_NAME: 'BSSTRT',
+              manurefresh: 'yes',
+            }).toString(),
+          });
+          blobs.push(await r.text());
+        } catch {
+          /* ignore */
+        }
+      }
+      const pairs: Array<{ label: string; fn: string }> = [];
+      const labels: string[] = [];
+      for (const text of blobs) {
+        for (const m of text.matchAll(/"itemLabel"\s*:\s*"([^"]+)"/g)) labels.push(m[1]!);
+        for (const hit of text.matchAll(
+          /(Group(?:\s*Sales)?|Event|Company|Account|Allotment|Block|Banquet|Profile)[^A-Z0-9]{0,160}\b((?:OS|PS|AR)[A-Z0-9]{3,10})\b|\b((?:OS|PS|AR)[A-Z0-9]{3,10})\b[^A-Z0-9]{0,160}(Group|Event|Company|Allotment|Block|Banquet)/gi,
+        )) {
+          const label = (hit[1] || hit[4] || '').trim();
+          const fn = (hit[2] || hit[3] || '').trim().toUpperCase();
+          if (label && fn) pairs.push({ label, fn });
+        }
+      }
+      const uniq: Array<{ label: string; fn: string }> = [];
+      const seen = new Set<string>();
+      for (const p of pairs) {
+        const k = `${p.label}|${p.fn}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        uniq.push(p);
+      }
+      return {
+        labelSample: [...new Set(labels)].filter((l) =>
+          /group|event|compan|account|allot|block|banquet|profile/i.test(l),
+        ).slice(0, 60),
+        pairs: uniq.slice(0, 80),
+        blobBytes: blobs.reduce((n, t) => n + t.length, 0),
+      };
+    });
 
     const navProbe: string[] = [];
+    navProbe.push(`harvest:pairs=${harvest.pairs.length}:blobBytes=${harvest.blobBytes}`);
     for (const label of [
       'Group Sales',
       'Profiles',
