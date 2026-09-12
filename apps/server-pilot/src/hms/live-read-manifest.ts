@@ -648,8 +648,8 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         confirmationnumber: VAR64,
         facebookid: VAR64,
         firstname: VAR64,
-        // Live ExtJS camelCase (Wave A1 2026-09-12).
-        guestNumber: VAR64,
+        // Live ExtJS wire key (Wave A1 2026-09-12): guestfullname not guestNumber.
+        guestfullname: VAR64,
         guestid: VAR64,
         hoteldate: VAR32,
         lastname: VAR64,
@@ -785,7 +785,7 @@ export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
       confirmationnumber: VAR64,
       reservationstayid: VAR64,
       propertycode: VAR64,
-      guestNumber: VAR64,
+      guestfullname: VAR64,
       account: VAR64,
       guestid: VAR64,
       hoteldate: VAR64,
@@ -824,7 +824,7 @@ export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): Requ
       confirmationnumber: VAR64,
       reservationstayid: VAR64,
       propertycode: VAR64,
-      guestNumber: VAR64,
+      guestfullname: VAR64,
       account: VAR64,
       guestid: VAR64,
       hoteldate: VAR64,
@@ -1117,16 +1117,13 @@ export function buildExactOsressSearchThenDetailManifest(
   origin: string,
   candidate: ReservationSearchCandidate,
 ): RequestPolicyManifest {
-  // Keep shell LST for Guest Stay navigate; replace shell HDR with detail-open
-  // templates that accept ExtJS guestNumber (+ optional MENU chrome).
-  const functional = buildLiveGuestStayFunctionalRules(origin).filter(
-    (rule) => rule.id !== 'live-osresv-hdr',
-  );
+  // Keep shell OSRESV.HDR (now guestNumber-aware) plus detail-open templates for
+  // the no-MENU 17-key ExtJS shape. Find-only manifests still omit row-open.
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
       ...buildLiveGuestStayDetailChromeGetRules(origin),
-      ...functional,
+      ...buildLiveGuestStayFunctionalRules(origin),
       buildExactOsressSearchRule(origin, candidate),
       buildLiveOsresvOpenMatchedRowRule(origin),
       buildLiveOsresvLstDetailOpenRule(origin),

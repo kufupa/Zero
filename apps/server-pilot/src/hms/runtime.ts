@@ -2626,6 +2626,14 @@ function createHmsRuntimeInternal(
               lastViolation = d;
               if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
                 const sig = d.redactedSignature;
+                const chrome = sessionManifest.rules.find(
+                  (rule) => rule.id === 'live-osresv-hdr-detail-open-chrome',
+                );
+                const allowed = new Set([
+                  ...Object.keys(chrome?.fixedBody ?? {}),
+                  ...Object.keys(chrome?.variableBody ?? {}),
+                ]);
+                const extraKeys = sig.bodyKeys.filter((key) => !allowed.has(key));
                 process.stderr.write(
                   `${JSON.stringify({
                     type: 'HMS_PROOF_DIAGNOSTIC',
@@ -2637,6 +2645,9 @@ function createHmsRuntimeInternal(
                     queryKeys: sig.queryKeys.slice(0, 12),
                     bodyKeys: sig.bodyKeys.slice(0, 64),
                     bodyKeyCount: sig.bodyKeys.length,
+                    chromeVariableCount: Object.keys(chrome?.variableBody ?? {}).length,
+                    chromeFixedCount: Object.keys(chrome?.fixedBody ?? {}).length,
+                    extraKeysVsChrome: extraKeys.slice(0, 16),
                   })}\n`,
                 );
               }
