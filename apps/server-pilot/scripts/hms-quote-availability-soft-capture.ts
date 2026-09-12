@@ -187,17 +187,15 @@ async function main(): Promise<void> {
         await route.continue();
         return;
       }
-      if (!knownLogin && !knownAvail) {
-        signatures.push({
-          ...redact(req),
-          decision: 'abort',
-          abortReason: 'unknown_post_pending_evidence',
-        });
-        await route.abort();
+      // Soft-allow chrome/module OPEN (A3 lesson). Abort only .search / mutations.
+      const moduleOpen =
+        /^\/web\/base\/[A-Z0-9.]+$/i.test(path) && !/\.search/i.test(path);
+      if (knownLogin || moduleOpen) {
+        signatures.push({ ...redact(req), decision: 'continue' });
+        await route.continue();
         return;
       }
-      // Still record — do not transmit availability/search POST without evidence.
-      if (knownAvail && !knownLogin) {
+      if (knownAvail) {
         signatures.push({
           ...redact(req),
           decision: 'abort',
@@ -206,6 +204,13 @@ async function main(): Promise<void> {
         await route.abort();
         return;
       }
+      signatures.push({
+        ...redact(req),
+        decision: 'abort',
+        abortReason: 'unknown_post_pending_evidence',
+      });
+      await route.abort();
+      return;
     }
     signatures.push({ ...redact(req), decision: 'continue' });
     await route.continue();
