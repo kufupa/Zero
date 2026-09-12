@@ -30,7 +30,7 @@ export type HmsEvidenceRef = {
 export type MailEvidenceRef = {
   kind: 'mail_attachment';
   id: string;
-  toolId: 'mail_read_artifact';
+  toolId: 'mail_read_artifact' | 'mail_parse_channel_payload';
   toolVersion: string;
   attachmentId: string;
   observedAt: string;
@@ -143,7 +143,7 @@ export const MailEvidenceRefSchema = z
   .object({
     kind: z.literal('mail_attachment'),
     id: z.string().min(1),
-    toolId: z.literal('mail_read_artifact'),
+    toolId: z.enum(['mail_read_artifact', 'mail_parse_channel_payload']),
     toolVersion: z.string().min(1),
     attachmentId: z.string().min(1),
     observedAt: z.string().min(1),
