@@ -135,10 +135,39 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
       ? ['Front Desk', 'Sent Email', 'Email']
       : ['Front Desk', 'Tax Invoice', 'Invoice'];
 
+  const { access } = await import('node:fs/promises');
+  const { constants: fsConstants } = await import('node:fs');
   const videoDir =
     process.env.HMS_COMMS_CAPTURE_VIDEO_DIR?.trim() ||
     `${outPath.replace(/\.json$/i, '')}-video`;
   await mkdir(videoDir, { recursive: true, mode: 0o700 });
+
+  let wantVideo = process.env.HMS_COMMS_CAPTURE_VIDEO !== '0';
+  if (wantVideo) {
+    const ffmpegCandidates = [
+      process.env.PLAYWRIGHT_FFMPEG_PATH,
+      '/home/ubuntu/.cache/ms-playwright/ffmpeg-1011/ffmpeg-linux',
+      '/opt/nava/playwright-browsers/ffmpeg-1011/ffmpeg-linux',
+      '/usr/bin/ffmpeg',
+    ].filter((p): p is string => Boolean(p && p.trim()));
+    let ffmpegOk = false;
+    for (const p of ffmpegCandidates) {
+      try {
+        await access(p, fsConstants.X_OK);
+        process.env.PLAYWRIGHT_FFMPEG_PATH = p;
+        ffmpegOk = true;
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    if (!ffmpegOk) {
+      wantVideo = false;
+      process.stderr.write(
+        'HMS_COMMS_CAPTURE_WARN code=FFMPEG_MISSING falling_back_no_video\n',
+      );
+    }
+  }
 
   const browser = await chromium.launch({
     headless: true,
@@ -148,7 +177,9 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
     acceptDownloads: false,
     serviceWorkers: 'block',
     ignoreHTTPSErrors: true,
-    recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } },
+    ...(wantVideo
+      ? { recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } } }
+      : {}),
   });
 
   await ctx.route('**/*', async (route) => {

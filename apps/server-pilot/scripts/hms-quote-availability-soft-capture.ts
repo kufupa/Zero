@@ -234,6 +234,8 @@ async function main(): Promise<void> {
     structure.pageTitle = await page.title();
     // Establish property/session chrome the way Guest Stay soft overlays do —
     // some Rate surfaces return tenant stub until a Front Desk context exists.
+    await page.click('text=Front Desk', { timeout: 8_000 }).catch(() => undefined);
+    await page.waitForTimeout(2_000);
     const guestStayVisible = await page
       .locator('text=Guest Stay')
       .first()
@@ -244,7 +246,44 @@ async function main(): Promise<void> {
       await page.waitForTimeout(3_000);
       structure.guestStayContextOpened = true;
     } else {
-      structure.guestStayContextOpened = false;
+      // Soft-open OSRESS (Guest Stay search) if label hidden.
+      const osressOpen = await page.evaluate(async () => {
+        try {
+          const res = await fetch('/web/base/OSRESS?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESS', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              SYSTEM_FUNCTION_NAME: 'OSRESS',
+              USER_FUNCTION_NAME: 'OSRESS',
+              FUNCTION_CLASS: 'WEBL',
+              removescreenflows: 'yes',
+            }).toString(),
+          });
+          const text = await res.text();
+          return {
+            status: res.status,
+            bytes: text.length,
+            hasSearch:
+              /name\s*=\s*["']confirmationnumber["']/i.test(text) ||
+              /OSRESS/i.test(text),
+            hasLogin:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+          };
+        } catch (e) {
+          return {
+            status: 0,
+            bytes: 0,
+            hasSearch: false,
+            hasLogin: false,
+            error: e instanceof Error ? e.name : 'fetch_failed',
+          };
+        }
+      });
+      structure.osressOpenProbe = osressOpen;
+      structure.guestStayContextOpened = Boolean(osressOpen.hasSearch);
+      await page.waitForTimeout(1_500);
     }
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 8000) ?? '');
     structure.hasRoomRateAvailabilityText =
