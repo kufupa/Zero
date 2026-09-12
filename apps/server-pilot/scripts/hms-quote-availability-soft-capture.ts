@@ -94,6 +94,40 @@ async function main(): Promise<void> {
     hasCrsText: false,
   };
 
+  const { mkdir, access } = await import('node:fs/promises');
+  const { constants: fsConstants } = await import('node:fs');
+  const videoDir =
+    process.env.HMS_QUOTE_CAPTURE_VIDEO_DIR?.trim() ||
+    `${outPath.replace(/\.json$/i, '')}-video`;
+  await mkdir(videoDir, { recursive: true, mode: 0o700 });
+
+  let wantVideo = process.env.HMS_QUOTE_CAPTURE_VIDEO !== '0';
+  if (wantVideo) {
+    const ffmpegCandidates = [
+      process.env.PLAYWRIGHT_FFMPEG_PATH,
+      '/home/ubuntu/.cache/ms-playwright/ffmpeg-1011/ffmpeg-linux',
+      '/opt/nava/playwright-browsers/ffmpeg-1011/ffmpeg-linux',
+      '/usr/bin/ffmpeg',
+    ].filter((p): p is string => Boolean(p && p.trim()));
+    let ffmpegOk = false;
+    for (const p of ffmpegCandidates) {
+      try {
+        await access(p, fsConstants.X_OK);
+        process.env.PLAYWRIGHT_FFMPEG_PATH = p;
+        ffmpegOk = true;
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    if (!ffmpegOk) {
+      wantVideo = false;
+      process.stderr.write(
+        'HMS_QUOTE_CAPTURE_WARN code=FFMPEG_MISSING falling_back_no_video\n',
+      );
+    }
+  }
+
   const browser = await chromium.launch({
     headless: true,
     executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
@@ -102,6 +136,9 @@ async function main(): Promise<void> {
     acceptDownloads: false,
     serviceWorkers: 'block',
     ignoreHTTPSErrors: true,
+    ...(wantVideo
+      ? { recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } } }
+      : {}),
   });
 
   await ctx.route('**/*', async (route) => {
@@ -136,13 +173,16 @@ async function main(): Promise<void> {
           /\/login|\/BSS?TRT|COMMON/i.test(path));
       // Soft-allow OSRRAV surface OPEN only. Never allow .search without
       // preTransmissionEvidence (production driver owns that path).
-      const osrravSurfaceOpen =
-        /^\/web\/base\/OSRRAV\/?$/i.test(path) ||
-        (/^\/web\/base\/OSRRAV/i.test(path) && !/\.search/i.test(path) && !/\.HDR/i.test(path));
+      // Soft-allow OSRRAV / OSR* availability surface OPEN (no .search).
+      // Production driver owns exact .search binds with preTransmissionEvidence.
+      const osSurfaceOpen =
+        /^\/web\/base\/OS[A-Z0-9]{3,12}\/?$/i.test(path) ||
+        /^\/web\/base\/OS[A-Z0-9]{3,12}\.HDR\/?$/i.test(path) ||
+        (/^\/web\/base\/OS[A-Z0-9]/i.test(path) && !/\.search/i.test(path));
       const knownAvail =
-        /avail|rate|OSRAT|OSRAV|room.?rate|room.?type/i.test(path) ||
+        /avail|rate|OSRAT|OSRAV|OSRRAV|room.?rate|room.?type/i.test(path) ||
         /avail|rate|roomtype|rateplan/i.test(req.postData() ?? '');
-      if (osrravSurfaceOpen) {
+      if (osSurfaceOpen) {
         signatures.push({ ...redact(req), decision: 'continue' });
         await route.continue();
         return;
@@ -192,6 +232,20 @@ async function main(): Promise<void> {
 
     await page.waitForTimeout(3_000);
     structure.pageTitle = await page.title();
+    // Establish property/session chrome the way Guest Stay soft overlays do —
+    // some Rate surfaces return tenant stub until a Front Desk context exists.
+    const guestStayVisible = await page
+      .locator('text=Guest Stay')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (guestStayVisible) {
+      await page.click('text=Guest Stay', { timeout: 8_000 }).catch(() => undefined);
+      await page.waitForTimeout(3_000);
+      structure.guestStayContextOpened = true;
+    } else {
+      structure.guestStayContextOpened = false;
+    }
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 8000) ?? '');
     structure.hasRoomRateAvailabilityText =
       /Room Type and Rate Availability|Room Rate Availability|Rate Availability/i.test(
@@ -343,6 +397,283 @@ async function main(): Promise<void> {
       `osrravFetch:${fetchProbe.status}:roomtypes=${fetchProbe.hasRoomtypes}:login=${fetchProbe.hasLoginFields}`,
     );
 
+    // Soft-probe OSRRAV.HDR open (production facade also hits HDR chrome).
+    const hdrProbe = await page.evaluate(async () => {
+      const body = new URLSearchParams({
+        SYSTEM_FUNCTION_NAME: 'OSRRAV',
+        USER_FUNCTION_NAME: 'OSRRAV',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        FUNCTION_CLASS: 'WEBL',
+        removescreenflows: 'yes',
+      });
+      try {
+        const res = await fetch('/web/base/OSRRAV.HDR?FUNCTION_CLASS=WEBL', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        });
+        const text = await res.text();
+        const names = [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+        return {
+          ok: res.ok,
+          status: res.status,
+          bytes: text.length,
+          hasRoomtypes: /name\s*=\s*["']roomtypes["']/i.test(text),
+          hasLoginFields:
+            /name\s*=\s*["']userid["']/i.test(text) &&
+            /name\s*=\s*["']password["']/i.test(text),
+          inputNames: [...new Set(names)].slice(0, 80),
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          status: 0,
+          bytes: 0,
+          hasRoomtypes: false,
+          hasLoginFields: false,
+          inputNames: [],
+          error: e instanceof Error ? e.name : 'fetch_failed',
+        };
+      }
+    });
+    structure.osrravHdrFetchProbe = hdrProbe;
+    navProbe.push(
+      `osrravHdrFetch:${hdrProbe.status}:roomtypes=${hdrProbe.hasRoomtypes}:login=${hdrProbe.hasLoginFields}`,
+    );
+
+    // After Rate and Sales expand: harvest all short menu-like labels + OS* codes.
+    await page.click('text=Rate and Sales', { timeout: 5_000 }).catch(() => undefined);
+    await page.waitForTimeout(2_000);
+    const rateSalesHarvest = await page.evaluate(() => {
+      const text = document.body?.innerText?.slice(0, 12_000) ?? '';
+      const html = document.documentElement?.innerHTML?.slice(0, 80_000) ?? '';
+      const labels = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 2 && l.length < 90)
+        .filter((l) => /rate|avail|room|quote|plan|sales|inventory|price/i.test(l))
+        .slice(0, 60);
+      const functionNames = [
+        ...new Set([...text.matchAll(/\b((?:OS|PS|AR)[A-Z0-9]{3,8})\b/g)].map((m) => m[1]!)),
+      ].slice(0, 40);
+      const hrefFns = [
+        ...new Set(
+          [...html.matchAll(/USER_FUNCTION_NAME[=:]["']?([A-Z0-9]{4,12})/gi)].map((m) =>
+            m[1]!.toUpperCase(),
+          ),
+        ),
+      ].slice(0, 40);
+      return { labels, functionNames, hrefFns };
+    });
+    structure.rateSalesHarvest = rateSalesHarvest;
+    navProbe.push(
+      `rateSalesHarvest:labels=${rateSalesHarvest.labels.length}:fns=${rateSalesHarvest.functionNames.join(',')}`,
+    );
+
+    // Soft-open any harvested OS*RAV / OS*RAT / avail-looking codes (surface OPEN only).
+    const candidateFns = [
+      ...new Set([
+        ...(rateSalesHarvest.functionNames as string[]),
+        ...(rateSalesHarvest.hrefFns as string[]),
+      ]),
+    ].filter((fn) => /RAV|RAT|AVL|RATES|ROOM/i.test(fn)).slice(0, 8);
+    const altOpenProbes: Record<string, unknown>[] = [];
+    for (const fn of candidateFns) {
+      const probe = await page.evaluate(async (functionName) => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: functionName,
+          USER_FUNCTION_NAME: functionName,
+          CURRENT_TAB_NAME: '',
+          MENU_MODULE_KEY: '0',
+          FUNCTION_CLASS: 'WEBL',
+          removescreenflows: 'yes',
+        });
+        try {
+          const res = await fetch(
+            `/web/base/${functionName}?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=${functionName}`,
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+            },
+          );
+          const text = await res.text();
+          const names = [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+          return {
+            functionName,
+            status: res.status,
+            bytes: text.length,
+            hasRoomtypes: /name\s*=\s*["']roomtypes["']/i.test(text),
+            hasRateplans: /name\s*=\s*["']rateplans["']/i.test(text),
+            hasLoginFields:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+            inputNames: [...new Set(names)].slice(0, 40),
+          };
+        } catch (e) {
+          return {
+            functionName,
+            status: 0,
+            bytes: 0,
+            hasRoomtypes: false,
+            hasRateplans: false,
+            hasLoginFields: false,
+            inputNames: [],
+            error: e instanceof Error ? e.name : 'fetch_failed',
+          };
+        }
+      }, fn);
+      altOpenProbes.push(probe);
+      navProbe.push(
+        `altOpen:${fn}:${probe.status}:roomtypes=${probe.hasRoomtypes}:rateplans=${probe.hasRateplans}`,
+      );
+    }
+    structure.altOpenProbes = altOpenProbes;
+
+    // ROOM PLAN — visible sibling; may expose rate/inventory chrome without OSRRAV.
+    const roomPlanVisible = await page
+      .locator('text=ROOM PLAN')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (roomPlanVisible) {
+      await page.click('text=ROOM PLAN', { timeout: 5_000 }).catch(() => undefined);
+      await page.waitForTimeout(2_500);
+      const roomPlanProbe = await page.evaluate(() => {
+        const text = document.body?.innerText?.slice(0, 8_000) ?? '';
+        const html = document.documentElement?.innerHTML?.slice(0, 80_000) ?? '';
+        const names = [...html.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+        return {
+          title: document.title,
+          hasRoomtypes: /name\s*=\s*["']roomtypes["']/i.test(html),
+          hasRateplans: /name\s*=\s*["']rateplans["']/i.test(html),
+          hasLogin: /name\s*=\s*["']userid["']/i.test(html),
+          functionNames: [
+            ...new Set([...text.matchAll(/\b((?:OS|PS|AR)[A-Z0-9]{3,8})\b/g)].map((m) => m[1]!)),
+          ].slice(0, 30),
+          hrefFns: [
+            ...new Set(
+              [...html.matchAll(/USER_FUNCTION_NAME[=:]["']?([A-Z0-9]{4,12})/gi)].map((m) =>
+                m[1]!.toUpperCase(),
+              ),
+            ),
+          ].slice(0, 40),
+          inputNames: [...new Set(names)].slice(0, 60),
+          labels: text
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => /rate|avail|room|plan|inventory|price/i.test(l) && l.length < 90)
+            .slice(0, 40),
+        };
+      });
+      structure.roomPlanProbe = roomPlanProbe;
+      navProbe.push(
+        `roomPlan:roomtypes=${roomPlanProbe.hasRoomtypes}:fns=${(roomPlanProbe.functionNames || []).join(',')}`,
+      );
+    }
+
+    // BSSTRT menu harvest — structural menu keys only (no values).
+    const bsstrtProbe = await page.evaluate(async () => {
+      try {
+        const res = await fetch('/web/base/BSSTRT?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=BSSTRT', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            SYSTEM_FUNCTION_NAME: 'BSSTRT',
+            USER_FUNCTION_NAME: 'BSSTRT',
+            FUNCTION_CLASS: 'WEBL',
+            removescreenflows: 'yes',
+          }).toString(),
+        });
+        const text = await res.text();
+        const fns = [
+          ...new Set(
+            [...text.matchAll(/\b((?:OS|PS|AR)[A-Z0-9]{3,10})\b/g)].map((m) => m[1]!.toUpperCase()),
+          ),
+        ].slice(0, 80);
+        const rateish = fns.filter((f) => /RAV|RAT|AVL|RATE|ROOM|PLAN|QUOT|AVAIL/i.test(f));
+        return {
+          status: res.status,
+          bytes: text.length,
+          functionNameCount: fns.length,
+          rateishFns: rateish,
+          sampleFns: fns.slice(0, 40),
+        };
+      } catch (e) {
+        return {
+          status: 0,
+          bytes: 0,
+          functionNameCount: 0,
+          rateishFns: [],
+          sampleFns: [],
+          error: e instanceof Error ? e.name : 'fetch_failed',
+        };
+      }
+    });
+    structure.bsstrtProbe = bsstrtProbe;
+    navProbe.push(
+      `bsstrt:${bsstrtProbe.status}:fns=${bsstrtProbe.functionNameCount}:rateish=${(bsstrtProbe.rateishFns || []).join(',')}`,
+    );
+
+    // Soft-open any BSSTRT rateish functions (surface OPEN only).
+    const bsstrtAlt: Record<string, unknown>[] = [];
+    for (const fn of (bsstrtProbe.rateishFns || []).slice(0, 10)) {
+      const probe = await page.evaluate(async (functionName) => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: functionName,
+          USER_FUNCTION_NAME: functionName,
+          CURRENT_TAB_NAME: '',
+          MENU_MODULE_KEY: '0',
+          FUNCTION_CLASS: 'WEBL',
+          removescreenflows: 'yes',
+        });
+        try {
+          const res = await fetch(
+            `/web/base/${functionName}?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=${functionName}`,
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+            },
+          );
+          const text = await res.text();
+          const names = [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+          return {
+            functionName,
+            status: res.status,
+            bytes: text.length,
+            hasRoomtypes: /name\s*=\s*["']roomtypes["']/i.test(text),
+            hasRateplans: /name\s*=\s*["']rateplans["']/i.test(text),
+            hasLoginFields:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+            inputNames: [...new Set(names)].slice(0, 40),
+          };
+        } catch (e) {
+          return {
+            functionName,
+            status: 0,
+            bytes: 0,
+            hasRoomtypes: false,
+            hasRateplans: false,
+            hasLoginFields: false,
+            inputNames: [],
+            error: e instanceof Error ? e.name : 'fetch_failed',
+          };
+        }
+      }, fn);
+      bsstrtAlt.push(probe);
+      navProbe.push(
+        `bsstrtOpen:${fn}:${probe.status}:roomtypes=${probe.hasRoomtypes}:rateplans=${probe.hasRateplans}`,
+      );
+    }
+    structure.bsstrtAltOpenProbes = bsstrtAlt;
+
     // Also probe visible AVAILABILITY SUMMARY label (may be non-OSRRAV sibling).
     const availSummaryVisible = await page
       .locator('text=AVAILABILITY SUMMARY')
@@ -439,11 +770,24 @@ async function main(): Promise<void> {
       valuesCaptured: false,
     };
     await writeFile(outPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    // stdout: counts only
+    // Finalize video: capture handle before close, then close page.
+    const videoHandle = page.video();
+    await page.close().catch(() => undefined);
+    const videoPath = videoHandle ? await videoHandle.path().catch(() => null) : null;
+    let videoSha256: string | null = null;
+    if (videoPath) {
+      const { createHash } = await import('node:crypto');
+      const { readFile } = await import('node:fs/promises');
+      const bytes = await readFile(videoPath);
+      videoSha256 = createHash('sha256').update(bytes).digest('hex');
+    }
+    // stdout: counts + digests only (no PII)
     process.stdout.write(
       JSON.stringify({
         ok: true,
         outPath,
+        videoDir,
+        videoSha256,
         signatureCount: signatures.length,
         abortCount: signatures.filter((s) => s.decision === 'abort').length,
         hasRoomRateAvailabilityText: structure.hasRoomRateAvailabilityText,
@@ -460,6 +804,21 @@ async function main(): Promise<void> {
           (structure.osrravFetchProbe as { hasLoginFields?: boolean } | undefined)
             ?.hasLoginFields,
         ),
+        osrravHdrFetchStatus: Number(
+          (structure.osrravHdrFetchProbe as { status?: number } | undefined)?.status ?? 0,
+        ),
+        osrravHdrHasRoomtypes: Boolean(
+          (structure.osrravHdrFetchProbe as { hasRoomtypes?: boolean } | undefined)
+            ?.hasRoomtypes,
+        ),
+        altOpenCount: Array.isArray(structure.altOpenProbes)
+          ? structure.altOpenProbes.length
+          : 0,
+        altOpenWithRoomtypes: Array.isArray(structure.altOpenProbes)
+          ? structure.altOpenProbes.filter(
+              (p) => (p as { hasRoomtypes?: boolean }).hasRoomtypes,
+            ).length
+          : 0,
         functionNameCount: (structure.functionNames as string[]).length,
         toolbarIconCount: (structure.toolbarIconPaths as string[]).length,
         navProbeCount: Array.isArray(structure.navProbe)
