@@ -6,7 +6,7 @@ Type: feat / programme plan.
 **Inventory source (do not redesign schemas):** `2026-09-11-write-tools-kickoff-from-3949-gold.md`, Astra 12-read catalogue, 3949 pending-write rank.
 **Process learning:** `docs/solutions/workflow-issues/hms-live-proof-packaging-vs-payload-completeness.md`.
 
-**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. **Wave A REOPENED 2026-09-12 (Wave-0 quality bar)** — prior A2–A11 skip-packet “HITL” is **not** sign-off material; human correctly refused. Current `/goal`: finish A1 production wiring + **A2–A11 at Wave 0 depth** (live PMS iterate → dump → fixture → compare → video) → only then Wave A batch HITL. Do **not** start Wave B until that HITL is signed.
+**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. **Wave A Wave-0 repair complete 2026-09-12** — batch HITL rewritten at Wave-0 grade (ready for human sign-off). Prior skip-packet “HITL” remains non-material. Do **not** start Wave B until the rewritten HITL is signed.
 
 **HITL policy (binding):** human review only at **wave boundaries**, not between tools inside a wave. Inside a wave: agent runs full autonomous chain (contract → fixture → packaging + payload gates → video per tool) with **no pause**. After the wave finishes, human reviews **all** that wave’s videos + result JSON in one batch. Exception: write **execute** still needs proposal approve (mutation safety) — that is not Tool promotion HITL.
 
@@ -205,7 +205,7 @@ Implement → focused tests (live-faithful fixture) → live run → **oracle ca
 
 ### Done criteria (autonomous Wave A) — REOPENED 2026-09-12
 
-Prior skip-packet completion **revoked**. 2026-09-12 handoff `…-wave-a-batch-hitl.md` = **DRAFT / insufficient** (do not present for sign-off).
+Prior skip-packet completion **revoked**. 2026-09-12 handoff rewritten to Wave-0-grade evidence (`docs/superpowers/plans/handoff-reports/2026-09-12-wave-a-batch-hitl.md` — **READY FOR HUMAN SIGN-OFF**).
 
 Repair order (Wave-0 depth each; soft overlay OK):
 
