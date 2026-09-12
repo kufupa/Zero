@@ -3682,17 +3682,48 @@ async function executeProductionReadTool(input: {
     return readResultSchema.parse(result) as ReadResult<unknown>;
   };
   const { createReservationContextFacade } = await import('../hms/reservation-context-facade.js');
+  const { projectReservationDetailDump } = await import('../hms/reservation-detail-projection.js');
   const reservationFacade =
     request.toolId === 'hms_read_reservation'
       ? createReservationContextFacade({
           now: () => new Date(),
           reservationRefFor: () => trustedReservationRef!,
           lookup: mapSessionResult,
-          readContext: async () => ({
-            rates: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
-            policies: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
-            operations: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
-          }),
+          readContext: async (lookup, row) => {
+            const dump =
+              session.readReservationDetailDump != null
+                ? await session.readReservationDetailDump(lookup.candidateId, input.signal)
+                : null;
+            if (!dump) {
+              return {
+                core: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                stay: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                rates: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                policies: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                operations: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+              };
+            }
+            const projected = projectReservationDetailDump(dump);
+            return {
+              core: {
+                status: projected.core.status,
+                confirmation: projected.core.confirmation ?? row.confirmationNumber,
+                externalReference: projected.core.externalReference ?? row.externalReference,
+                reservationStatus: projected.core.reservationStatus ?? row.reservationStatus,
+              },
+              stay: {
+                status: projected.stay.status,
+                arrival: projected.stay.arrival ?? row.arrivalDate,
+                departure: projected.stay.departure ?? row.departureDate,
+                roomType: projected.stay.roomType ?? row.roomType,
+                roomQuantity: projected.stay.roomQuantity,
+                adults: projected.stay.adults,
+              },
+              rates: projected.rates,
+              policies: projected.policies,
+              operations: projected.operations,
+            };
+          },
         })
       : undefined;
   const readContext: ReadExecutionContext = {

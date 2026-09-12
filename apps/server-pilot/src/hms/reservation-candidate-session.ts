@@ -412,6 +412,18 @@ export function createReservationCandidateSession(
     ...(input.groupBlockRead ? { readGroupBlock: input.groupBlockRead } : {}),
     ...(input.eventRead ? { readEvent: input.eventRead } : {}),
     ...(input.notesTracesRead ? { readNotesTraces: input.notesTracesRead } : {}),
+    readReservationDetailDump: async (candidateId, signal) => {
+      if (signal.aborted) {
+        const err = new Error('reservation detail dump aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      const candidate = lookupCandidates.get(candidateId);
+      if (!candidate || candidate.kind === 'surname_dates') return null;
+      const exact: ExactReservationCandidate = candidate;
+      const { dump } = await input.driver.searchExactThenDetailDump(exact, signal);
+      return dump;
+    },
     close: input.close,
   };
 }

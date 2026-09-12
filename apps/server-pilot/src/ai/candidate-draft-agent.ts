@@ -138,6 +138,14 @@ export type CandidateToolSession = {
     audience: 'staff' | 'customer';
     signal: AbortSignal;
   }) => Promise<ReadResult<unknown>>;
+  /**
+   * Wave A1: exact search → inert Guest Stay detail open → sanitized key dump.
+   * Production `hms_read_reservation` readContext must use this (not GRID row alone).
+   */
+  readReservationDetailDump?: (
+    candidateId: string,
+    signal: AbortSignal,
+  ) => Promise<import('../hms/reservation-detail-projection.js').ReservationDetailDumpV1 | null>;
   /** Opaque lookup map — raw guest values never accepted from model. */
   lookupCandidates: ReadonlyMap<string, LookupCandidate>;
   /** Attachment IDs authorized for this thread context only. */

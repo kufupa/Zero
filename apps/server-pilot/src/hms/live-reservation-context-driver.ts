@@ -100,8 +100,10 @@ export function createLiveReservationContextDriver(
     async readContext(input, row) {
       const dump = options.detailDumpFor ? await options.detailDumpFor(input, row) : null;
       if (!dump) {
-        // List-row only: core/stay fall back to row via facade normalize; rates+ unavailable.
+        // No Guest Stay detail dump ⇒ do not imply core/stay from find GRID row.
         return {
+          core: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+          stay: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
           rates: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
           policies: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
           operations: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
