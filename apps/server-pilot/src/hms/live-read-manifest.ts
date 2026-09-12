@@ -841,8 +841,15 @@ export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): Requ
   };
 }
 
-/** Detail chrome assets observed after OSRESV tab strip paints. */
+/** Detail chrome assets observed after OSRESV tab strip / Guest Stay detail paints. */
 export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestRule[] {
+  const toolbar = (id: string, file: string): RequestRule =>
+    getStaticRule(
+      origin,
+      id,
+      `/web/resources/inforhms/images/toolbar/${file}`,
+      ['image', 'other'],
+    );
   return [
     getStaticRule(
       origin,
@@ -856,6 +863,21 @@ export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestR
       '/web/resources/inforhms/images/tab-bar/default-scroll-right-top.png',
       ['image'],
     ),
+    // Wave A1 live 2026-09-12: Guest Stay detail toolbar icons (OSRESV open).
+    toolbar('live-osresv-tb-luxury', 'luxury.svg'),
+    toolbar('live-osresv-tb-travel-plan', 'travel-plan.svg'),
+    toolbar('live-osresv-tb-confidential-rate', 'confidential-rate.svg'),
+    toolbar('live-osresv-tb-mail', 'mail.svg'),
+    toolbar('live-osresv-tb-tack', 'tack.svg'),
+    toolbar('live-osresv-tb-rate-details', 'rate-details.svg'),
+    toolbar('live-osresv-tb-add-ons', 'add-ons.svg'),
+    toolbar('live-osresv-tb-employee-directory', 'employee-directory.svg'),
+    toolbar('live-osresv-tb-search-organization', 'search-organization.svg'),
+    toolbar('live-osresv-tb-success-solid', 'success-solid.svg'),
+    toolbar('live-osresv-tb-passport', 'passport.svg'),
+    toolbar('live-osresv-tb-remove-passport', 'remove-passport.svg'),
+    toolbar('live-osresv-tb-add-passport', 'add-passport.svg'),
+    toolbar('live-osresv-tb-user-profile', 'user-profile.svg'),
   ];
 }
 
