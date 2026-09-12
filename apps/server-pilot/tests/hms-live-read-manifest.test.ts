@@ -435,4 +435,146 @@ describe('exact OSRESS.search candidate binding', () => {
     });
     expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
+  it('Wave A1 detail manifest allows ExtJS OSRESV row-open; find manifest blocks it', async () => {
+    const {
+      buildExactOsressSearchManifest,
+      buildExactOsressSearchThenDetailManifest,
+    } = await import('../src/hms/live-read-manifest.js');
+    const candidate = {
+      id: 'c1',
+      kind: 'confirmation' as const,
+      value: 'CONF-42',
+    };
+    const findOnly = buildExactOsressSearchManifest(ORIGIN, candidate);
+    const detail = buildExactOsressSearchThenDetailManifest(ORIGIN, candidate);
+    const openBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: '',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      DEFAULT_VIEW: 'HDR',
+      SAVE_FOR_HEADER: 'true',
+      confirmationnumber: 'CONF-42',
+      startUpView: 'HDR',
+      GRIDPARAM_ADDON_SORT_ELEMENT_ALIAS_NAME: '',
+      GRIDPARAM_ADDON_SORT_ELEMENT_TYPE: '',
+    });
+    const req = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV?USER_FUNCTION_NAME=OSRESV`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: openBody,
+    };
+    const blocked = evaluateObservedRequest(findOnly, req);
+    expect(blocked.action).toBe('block');
+    const allowed = evaluateObservedRequest(detail, req);
+    expect(allowed).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-open-matched-row',
+    });
+
+    const lstBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'LST',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      ADDONS_REQUIRED: 'true',
+      RUN_DS: 'true',
+      filterfields: 'confirmationnumber',
+      filteroperator: '=',
+      filtervalue: 'CONF-42',
+      ADDON_SORT_ELEMENT_ALIAS_NAME: '',
+      ADDON_SORT_ELEMENT_TYPE: '',
+    });
+    const lstReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.LST`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: lstBody,
+    };
+    expect(evaluateObservedRequest(findOnly, lstReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, lstReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-lst-detail-open',
+    });
+
+    const hdrBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+      propertycode: 'HRCEN',
+      guestNumber: '',
+      account: '',
+      guestid: '',
+      hoteldate: '',
+      lastname: '',
+      firstname: '',
+      twitterid: '',
+      facebookid: '',
+      tripadvisorid: '',
+      bookingdotcomid: '',
+      room: '',
+    });
+    const hdrReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.HDR`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: hdrBody,
+    };
+    expect(evaluateObservedRequest(findOnly, hdrReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, hdrReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open',
+    });
+
+    const hdrChromeBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+      propertycode: 'HRCEN',
+      guestNumber: '',
+      account: '',
+      guestid: '',
+      hoteldate: '',
+      lastname: '',
+      firstname: '',
+      twitterid: '',
+      facebookid: '',
+      tripadvisorid: '',
+      bookingdotcomid: '',
+      room: '',
+    });
+    const hdrChromeReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.HDR`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: hdrChromeBody,
+    };
+    expect(evaluateObservedRequest(findOnly, hdrChromeReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, hdrChromeReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open-chrome',
+    });
+  });
+
 });

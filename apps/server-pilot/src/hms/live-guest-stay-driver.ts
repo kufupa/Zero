@@ -13,6 +13,7 @@ import {
   buildExactOsressSearchManifest,
   liveNotFoundCanaryCandidate,
   LIVE_NOTFOUND_CANARY,
+  osressSearchFillValue,
   type ExactReservationCandidate,
   type ReservationSearchCandidate,
 } from './live-read-manifest.js';
@@ -238,6 +239,36 @@ export function extractOsressPageData(text: string): Record<string, unknown> | n
     }
   }
   return null;
+}
+
+export function extractOsressDetailOpenHints(html: string): {
+  confirmationNumber: string | null;
+  externalReference: string | null;
+  reservationStayId: string | null;
+} {
+  const empty = {
+    confirmationNumber: null as string | null,
+    externalReference: null as string | null,
+    reservationStayId: null as string | null,
+  };
+  const pageData = extractOsressPageData(html);
+  if (!pageData) return empty;
+  const gridWrap = pageData.grid;
+  if (gridWrap == null || typeof gridWrap !== 'object') return empty;
+  const gridResult = (gridWrap as Record<string, unknown>).GRIDRESULT;
+  if (gridResult == null || typeof gridResult !== 'object') return empty;
+  const inner = (gridResult as Record<string, unknown>).GRID;
+  if (inner == null || typeof inner !== 'object') return empty;
+  const data = (inner as Record<string, unknown>).DATA;
+  if (!Array.isArray(data) || data.length < 1) return empty;
+  const row = data[0];
+  if (!row || typeof row !== 'object') return empty;
+  const rec = row as Record<string, unknown>;
+  return {
+    confirmationNumber: strOrNull(rec.confirmationnumber),
+    externalReference: strOrNull(rec.externalconfirmation),
+    reservationStayId: strOrNull(rec.id) ?? strOrNull(rec.reservationstayid),
+  };
 }
 
 function isUsableGuestDisplayName(value: string): boolean {
@@ -749,29 +780,60 @@ export function createLiveGuestStayDriver(
               'detail dump requires a unique matched search row',
             );
           }
-          // ExtJS grid may lag pageData; wait for a visible row before detail open.
+          // XHR pageData match does not always hydrate ExtJS grid. Wait, then
+          // Enter-refresh search so a visible row exists for inert dblclick open.
           const page = session.page;
-          const rowDeadline = Date.now() + 10_000;
-          let rowCount = 0;
-          while (Date.now() < rowDeadline) {
-            rowCount = await page.evaluateStableDom(() => {
+          const countRows = async (): Promise<number> =>
+            page.evaluateStableDom(() => {
               const doc = (globalThis as unknown as {
                 document?: { querySelectorAll(sel: string): { length: number } };
               }).document;
               if (!doc) return 0;
-              return doc.querySelectorAll('.x-grid3-row, .x-grid-row, tr.x-grid3-row').length;
+              return doc.querySelectorAll('.x-grid3-row, .x-grid-row, tr.x-grid3-row')
+                .length;
             });
-            if (rowCount > 0) break;
-            await new Promise((resolve) => setTimeout(resolve, 400));
-          }
+          const waitRows = async (budgetMs: number): Promise<number> => {
+            const deadline = Date.now() + budgetMs;
+            let rowCount = 0;
+            while (Date.now() < deadline) {
+              rowCount = await countRows();
+              if (rowCount > 0) return rowCount;
+              await new Promise((resolve) => setTimeout(resolve, 400));
+            }
+            return rowCount;
+          };
+          let rowCount = await waitRows(6_000);
           if (rowCount < 1) {
+            const htmlNow = await page.content().catch(() => '');
+            const selector = /name="search"/i.test(htmlNow)
+              ? 'input[name="search"]'
+              : 'input[name="ff_confirmationnumber"]';
+            await page
+              .fill(selector, osressSearchFillValue(candidate))
+              .catch(() => undefined);
+            await page.press(selector, 'Enter').catch(() => undefined);
+            rowCount = await waitRows(10_000);
+          }
+          const obs = search.observations[0]!;
+          const hints = extractOsressDetailOpenHints(html);
+          const matchToken =
+            (obs.confirmationNumber ||
+              obs.externalReference ||
+              hints.confirmationNumber ||
+              hints.externalReference ||
+              '').trim();
+          if (rowCount < 1 && !matchToken && !hints.reservationStayId) {
             throw new HmsRuntimeError(
               'SCHEMA_DRIFT',
               'detail dump: matched pageData but grid row not rendered',
             );
           }
           const detail = createReservationDetailFacade({ session });
-          const dump = await detail.openMatchedRowAndDump({ captureValues: true });
+          const dump = await detail.openMatchedRowAndDump({
+            captureValues: true,
+            matchToken: matchToken || undefined,
+            reservationStayId: hints.reservationStayId,
+          });
           return { search, dump };
         },
         () => ({ outcome: 'succeeded', terminalCode: 'OK' }),

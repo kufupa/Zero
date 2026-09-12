@@ -2443,7 +2443,7 @@ async function runDetailDump(): Promise<void> {
       '/opt/nava/shared/hms-browser-artifacts',
   });
   const runtime = runtimeBinding.runtime;
-  const { buildExactOsressSearchManifest } = await import(
+  const { buildExactOsressSearchThenDetailManifest } = await import(
     '../hms/live-read-manifest.js'
   );
   const { CENTURION_HMS_PRODUCTION_ORIGIN } = await import(
@@ -2466,7 +2466,7 @@ async function runDetailDump(): Promise<void> {
         threadId: anchor.threadId,
         triggerMessageId: anchor.messageId,
         candidate: anchor.candidate,
-        manifest: buildExactOsressSearchManifest(
+        manifest: buildExactOsressSearchThenDetailManifest(
           CENTURION_HMS_PRODUCTION_ORIGIN,
           anchor.candidate,
         ),
@@ -2482,6 +2482,22 @@ async function runDetailDump(): Promise<void> {
           Math.min(Date.parse(role.expiresAt), Date.now() + hmsConfig.runDeadlineMs),
         ).toISOString(),
       });
+      if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
+        const ids = proofAuthorization.sessionAuthorization.manifest.rules
+          .filter((r) => r.path.includes('OSRESV'))
+          .map((r) => r.id);
+        process.stderr.write(
+          `${JSON.stringify({
+            type: 'HMS_PROOF_DIAGNOSTIC',
+            stage: 'detail_manifest',
+            code: ids.includes('live-osresv-hdr-detail-open')
+              ? 'HAS_HDR_DETAIL_OPEN'
+              : 'MISSING_HDR_DETAIL_OPEN',
+            osresvRuleIds: ids,
+            ruleCount: proofAuthorization.sessionAuthorization.manifest.rules.length,
+          })}\n`,
+        );
+      }
       const driver = createLiveGuestStayDriver({
         runtime,
         transportId: hmsConfig.expectedTransportId,
@@ -2489,6 +2505,8 @@ async function runDetailDump(): Promise<void> {
         sessionAuthorizationFor: () => proofAuthorization.sessionAuthorization,
         auditSpecFor: ({ inputClass }) => ({
           operationId,
+          // Capture registry still closed; detail dump reuses find capture lane
+          // while request policy uses search+detail manifest.
           toolId: 'hms_find_reservation',
           toolVersion: '1.2.0',
           dependencyRevision: HMS_DEPENDENCY_REVISION,

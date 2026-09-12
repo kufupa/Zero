@@ -118,6 +118,11 @@ export type HmsPage = {
   click(selector: string): Promise<void>;
   /** Constrained dblclick — selector must be a reviewed static string. */
   dblclick(selector: string): Promise<void>;
+  /**
+   * Dblclick first visible ExtJS grid row whose text contains `token`.
+   * Used to open the matched Guest Stay result (not shell chrome grids).
+   */
+  dblclickRowContaining?(token: string): Promise<void>;
   /** Constrained fill — selector must be a reviewed static string. */
   fill(selector: string, value: string): Promise<void>;
   press(selector: string, key: string): Promise<void>;
@@ -3743,10 +3748,47 @@ function wrapPlaywrightPage(page: {
     },
     async dblclick(selector) {
       // Prefer Playwright locator.dblclick (ExtJS grid). Soft-capture typings omit dblclick.
-      const loc = page.locator(selector) as unknown as {
+      const loc = page.locator(selector);
+      const count = await loc.count().catch(() => 0);
+      for (let i = 0; i < count; i += 1) {
+        const el = loc.nth(i) as unknown as {
+          isVisible(): Promise<boolean>;
+          scrollIntoViewIfNeeded(): Promise<void>;
+          dblclick: (opts?: { force?: boolean; timeout?: number }) => Promise<void>;
+        };
+        const visible = await el.isVisible().catch(() => false);
+        if (!visible) continue;
+        await el.scrollIntoViewIfNeeded().catch(() => undefined);
+        await el.dblclick({ force: true, timeout: 8_000 });
+        return;
+      }
+      const first = loc.first() as unknown as {
         dblclick: (opts?: { force?: boolean; timeout?: number }) => Promise<void>;
       };
-      await loc.dblclick({ force: true, timeout: 8_000 });
+      await first.dblclick({ force: true, timeout: 8_000 });
+    },
+    async dblclickRowContaining(token) {
+      const needle = String(token || '').trim();
+      if (!needle || needle.length > 64) {
+        throw new Error('dblclickRowContaining token invalid');
+      }
+      const rows = page.locator('.x-grid3-row, .x-grid-row, tr.x-grid3-row') as unknown as {
+        filter: (opts: { hasText: string | RegExp }) => {
+          first: () => {
+            scrollIntoViewIfNeeded(): Promise<void>;
+            dblclick: (opts?: { force?: boolean; timeout?: number }) => Promise<void>;
+            isVisible(): Promise<boolean>;
+          };
+          count(): Promise<number>;
+        };
+      };
+      const matched = rows.filter({ hasText: needle });
+      if ((await matched.count().catch(() => 0)) < 1) {
+        throw new Error('no grid row containing match token');
+      }
+      const first = matched.first();
+      await first.scrollIntoViewIfNeeded().catch(() => undefined);
+      await first.dblclick({ force: true, timeout: 8_000 });
     },
     async fill(selector, value) {
       await page.locator(selector).fill(value);

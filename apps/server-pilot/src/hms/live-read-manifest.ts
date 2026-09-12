@@ -686,6 +686,178 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
   ];
 }
 
+/**
+ * ExtJS Guest Stay result-row open (dblclick). Live proof 2026-09-12:
+ * POST /web/base/OSRESV?USER_FUNCTION_NAME=OSRESV with confirmationnumber +
+ * DEFAULT_VIEW / SAVE_FOR_HEADER / startUpView chrome. Inert read open only —
+ * never on find-only manifests.
+ */
+export function buildLiveOsresvOpenMatchedRowRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-open-matched-row',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {
+      USER_FUNCTION_NAME: { pattern: 'OSRESV', maxLength: 16 },
+    },
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+    },
+    variableBody: {
+      CURRENT_TAB_NAME: VAR64,
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      DEFAULT_VIEW: VAR64,
+      SAVE_FOR_HEADER: VAR64,
+      confirmationnumber: VAR64,
+      startUpView: VAR64,
+      GRIDPARAM_ADDON_SORT_ELEMENT_ALIAS_NAME: VAR64,
+      GRIDPARAM_ADDON_SORT_ELEMENT_TYPE: VAR64,
+    },
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/**
+ * Post-open LST hydrate after matched-row open (Wave A1 live 2026-09-12).
+ * Broader than shell COMPONENT_INFO_TYPE LST — detail-only manifests.
+ */
+export function buildLiveOsresvLstDetailOpenRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-lst-detail-open',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.LST',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'LST',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      ADDONS_REQUIRED: VAR64,
+      RUN_DS: VAR64,
+      filterfields: { pattern: '.{0,512}', maxLength: 512 },
+      filteroperator: { pattern: '.{0,128}', maxLength: 128 },
+      filtervalue: { pattern: '.{0,512}', maxLength: 512 },
+      ADDON_SORT_ELEMENT_ALIAS_NAME: VAR64,
+      ADDON_SORT_ELEMENT_TYPE: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/**
+ * Post-open HDR load after matched-row open (Wave A1 live 2026-09-12).
+ * ExtJS sometimes omits MENU_MODULE_KEY / removescreenflows (17 keys) and
+ * sometimes includes them (19 keys). Variable keys are required when declared,
+ * so keep two reviewed templates.
+ */
+export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+    },
+    variableBody: {
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: VAR64,
+      guestNumber: VAR64,
+      account: VAR64,
+      guestid: VAR64,
+      hoteldate: VAR64,
+      lastname: VAR64,
+      firstname: VAR64,
+      twitterid: VAR64,
+      facebookid: VAR64,
+      tripadvisorid: VAR64,
+      bookingdotcomid: VAR64,
+      room: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Same open with shell chrome keys present (MENU_MODULE_KEY / removescreenflows). */
+export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open-chrome',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: VAR64,
+      guestNumber: VAR64,
+      account: VAR64,
+      guestid: VAR64,
+      hoteldate: VAR64,
+      lastname: VAR64,
+      firstname: VAR64,
+      twitterid: VAR64,
+      facebookid: VAR64,
+      tripadvisorid: VAR64,
+      bookingdotcomid: VAR64,
+      room: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Detail chrome assets observed after OSRESV tab strip paints. */
+export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestRule[] {
+  return [
+    getStaticRule(
+      origin,
+      'live-osresv-tab-scroll-left',
+      '/web/resources/inforhms/images/tab-bar/default-scroll-left-top.png',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-osresv-tab-scroll-right',
+      '/web/resources/inforhms/images/tab-bar/default-scroll-right-top.png',
+      ['image'],
+    ),
+  ];
+}
+
 /** Request-policy-only manifest for unit tests / production live sessions. */
 export function buildLiveGuestStayReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
@@ -932,6 +1104,33 @@ export function buildExactOsressSearchManifest(
       ...buildLiveGuestStayChromeGetRules(origin),
       ...buildLiveGuestStayFunctionalRules(origin),
       buildExactOsressSearchRule(origin, candidate),
+    ],
+  });
+}
+
+/**
+ * Wave A1: exact OSRESS.search + inert ExtJS OSRESV row-open (detail dump).
+ * Must not be used for find Wave 0 — find denies detail open.
+ */
+export function buildExactOsressSearchThenDetailManifest(
+  origin: string,
+  candidate: ReservationSearchCandidate,
+): RequestPolicyManifest {
+  // Keep shell LST for Guest Stay navigate; replace shell HDR with detail-open
+  // templates that accept ExtJS guestNumber (+ optional MENU chrome).
+  const functional = buildLiveGuestStayFunctionalRules(origin).filter(
+    (rule) => rule.id !== 'live-osresv-hdr',
+  );
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveGuestStayDetailChromeGetRules(origin),
+      ...functional,
+      buildExactOsressSearchRule(origin, candidate),
+      buildLiveOsresvOpenMatchedRowRule(origin),
+      buildLiveOsresvLstDetailOpenRule(origin),
+      buildLiveOsresvHdrDetailOpenRule(origin),
+      buildLiveOsresvHdrDetailOpenWithChromeRule(origin),
     ],
   });
 }
