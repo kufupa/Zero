@@ -6,9 +6,11 @@ Type: feat / programme plan.
 **Inventory source (do not redesign schemas):** `2026-09-11-write-tools-kickoff-from-3949-gold.md`, Astra 12-read catalogue, 3949 pending-write rank.
 **Process learning:** `docs/solutions/workflow-issues/hms-live-proof-packaging-vs-payload-completeness.md`.
 
-**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. Current `/goal`: **Wave A full auton** (all remaining reads) → Wave A batch HITL. Do **not** start Wave B until Wave A HITL signed.
+**Execution posture:** `/autonomous-plan` + Zero overlay. Find HITL (Wave 0 + 0b) **human-passed 2026-09-12**. **Wave A REOPENED 2026-09-12 (Wave-0 quality bar)** — prior A2–A11 skip-packet “HITL” is **not** sign-off material; human correctly refused. Current `/goal`: finish A1 production wiring + **A2–A11 at Wave 0 depth** (live PMS iterate → dump → fixture → compare → video) → only then Wave A batch HITL. Do **not** start Wave B until that HITL is signed.
 
 **HITL policy (binding):** human review only at **wave boundaries**, not between tools inside a wave. Inside a wave: agent runs full autonomous chain (contract → fixture → packaging + payload gates → video per tool) with **no pause**. After the wave finishes, human reviews **all** that wave’s videos + result JSON in one batch. Exception: write **execute** still needs proposal approve (mutation safety) — that is not Tool promotion HITL.
+
+**PMS exploration (binding):** agent **always** iterates on live Centurion HMS (EC2 + overlays + SSM + soft capture scripts + MCP/docs as needed). Soft overlay proofs that worked for find/A1 are **first-class**. Do not wait for human “permission to click HMS.”
 
 ---
 
@@ -109,9 +111,39 @@ Private dumps stay under `.private/`; sanitized fixtures may land in tests. Lear
 
 ## Overnight Autonomous Execution Mandate
 
-**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). Run **all remaining reads** A1–A11 end-to-end with no mid-wave human pause. Stop only for Wave A batch Tool promotion HITL packet **or** a true blocker. Do **not** start Wave B.
+**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). **Reopened same day:** human refused Wave A sign-off — skip packets ≠ working PMS tools. Agent must finish A1–A11 at **Wave 0 quality** with no mid-wave human pause. Stop only for a **Wave-0-grade** Wave A batch HITL packet **or** a true blocker after live RCA. Do **not** start Wave B.
 
-Wave 0 + 0b find work is **done** (live compare green + human video pass). Do not redo unless a Wave A tool regresses find.
+Wave 0 + 0b find work is **done** (live compare green + human video pass). Do not redo unless a Wave A tool regresses find. **A1 detail dump PASS_CORE_STAY is scaffolding only** until production `readContext` uses detail dump (not grid-row fake-available).
+
+### Wave-0 quality bar (binding — supersedes skip-as-done)
+
+For **each** A1–A11 tool, same loop as find:
+
+```text
+implement/wire → unit (live-faithful) → live HMS dump on EC2 → sanitize fixture
+→ oracle + result + compare.v1 (required fields) → packaging video → RCA ≤5 → green
+```
+
+**Forbidden as “done”:**
+
+- Writing `BLOCKED_*` / `SURFACE_UNPROVEN` skip JSON **without** a fresh live attempt + dump/RCA on Centurion this wave
+- Treating expired `/etc/nava/hms-read-role-proof.v1.json` as a stop (A1 soft overlays already proved live work without it)
+- Claiming unit-green drivers = Wave A complete
+- Offering HITL for tools that never got compare green
+
+**Allowed honest terminal (rare):** after **live** menu/dump proves surface absent or invent-forbidden (e.g. CON/BLK math), ship `BLOCKED_*` with that dump cited — still listed in HITL. Mail-only tools (A10/A11) use mail/knowledge oracle instead of PMS video, but still need fixture + compare.
+
+### Role-proof — what it is (agent owns this)
+
+**Not** “ask hotel admin for a new password.” HMS login already on EC2.
+
+| Artifact | Meaning | Who |
+|---|---|---|
+| Role-proof **v1** | JSON at `/etc/nava/hms-read-role-proof.v1.json`: property + `allowedSurfaces` + denied mutations + TTL | Agent can **restage/extend** via SSM (root-owned `0444`); currently Guest Stay–only and **expired** — agent must renew or bypass via soft overlay like A1 |
+| Role-proof **v2** | Per-tool attestation (`operator_observed_runtime`) under release `role-proofs/<toolId>.v2.json`: binds tool + surfaces (`folio`, `room_type_rate_availability`, …) + HMAC digests from live observation | Agent **mints after observing** menus/surfaces on live HMS (see Phase B handoff Aug-06). Uses evidence HMAC on box — **not** a human click in Cursor |
+| Soft overlay proof | Wave 0 / A1 path: overlay dist + `HMS_PROOF_*` env; may run with `allowUnstarted` / soft finalize | **Preferred** for Wave A packaging until v2 release materialize; **do not** refuse live work waiting for v2 |
+
+**Rule:** missing/expired role-proof ⇒ **agent fixes attestation or uses soft path**, then continues live dump. Never park tool as “human must refresh role proof” without trying soft path + mint.
 
 ### Communication
 
@@ -147,7 +179,7 @@ Tests requiring databases use disposable non-production databases only. Pilot ve
 | RDS | `nava-zero-mail-pilot` (Postgres 16) — **not** for Vitest |
 | S3 | `nava-zero-mail-845242190536-af-south-1` |
 | Repo on EC2 | `/home/ubuntu/repos/zero` |
-| Live proof | Overlay / SSM / private `.private/` — prefer **no** ops-deploy/restart for Wave 0 |
+| Live proof | Overlay / SSM / private `.private/` — prefer **no** ops-deploy/restart; **always** use live HMS for dumps |
 
 **Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds in Git, Vitest pointed at pilot/production RDS, `VITEST_ALLOW_PILOT_RDS=1`, sourcing `.env.production` into a test process.
 
@@ -171,25 +203,44 @@ Implement → focused tests (live-faithful fixture) → live run → **oracle ca
 - [x] Find HITL (0+0b) packet ready + **human video pass 2026-09-12**
 - [x] No unresolved blocker affecting Wave 0 goal
 
-### Done criteria (autonomous Wave A)
+### Done criteria (autonomous Wave A) — REOPENED 2026-09-12
 
-- [x] Each A1–A11 tool: contract + live surface dump + fixtures/unit + packaging + payload compare green **or** honest `BLOCKED_*` / `SURFACE_UNPROVEN` skip packet — **2026-09-12**: A1 PASS_CORE_STAY; A2–A11 under `.private/wave-a-20260912/skips/`
-- [x] Per-tool private evidence (video/mail proof + `result`/`oracle`/`compare`) under `.private/` — A1 packaging + skip packets for remaining
-- [x] Wave A batch HITL packet ready (all tools listed) — `docs/superpowers/plans/handoff-reports/2026-09-12-wave-a-batch-hitl.md`
-- [x] Wave B **not** started
-- [x] No unresolved blocker affecting Wave A goal — remaining gaps documented as honest skips; wave-boundary HITL is human gate
+Prior skip-packet completion **revoked**. 2026-09-12 handoff `…-wave-a-batch-hitl.md` = **DRAFT / insufficient** (do not present for sign-off).
+
+Repair order (Wave-0 depth each; soft overlay OK):
+
+1. **A1** — wire `detailDumpFor` / live detail into production `readContext`; core/stay compare from detail not grid; rates/policies/ops stay unavailable until Rate Details dump
+2. **A9** — replace Notes/Traces stub; open tabs from Guest Stay detail; dump → compare
+3. **A2** — live folio **balance** soft proof (OSRESS/`foliobalance`); deposits stay blocked only after live deposit-scope RCA
+4. **A5** — live OSRRAV soft capture (deny CRS); nightly compare
+5. **A3/A4** — mail compare packets + HMS docs dump if menu exists
+6. **A10** — bind available property corpus or prove none after search (agent searches; human only if no docs exist anywhere)
+7. **A11** — implement `mail_parse_channel_payload` + channel_fw fixture compare (greenfield OK)
+8. **A6/A7/A8** — live menu probe first; BLOCKED only with **this-wave** dump citing missing surface
+
+Checklist:
+
+- [ ] Each A1–A11 tool: Wave-0 loop green (`compare.v1` + packaging/mail proof) **or** this-wave live-cited `BLOCKED_*` after ≤5 RCA
+- [ ] A1 production path uses detail dump for core/stay (not grid-row false available)
+- [ ] Role-proof v1 renewed and/or soft path used; v2 minted per tool when promoting release — **agent-owned**, not a human gate
+- [ ] Per-tool private evidence under `.private/wave-a-*/` (video/mail + result/oracle/compare) — skip JSON alone insufficient
+- [ ] Wave A batch HITL packet rewritten listing **only** Wave-0-grade evidence (replace DRAFT)
+- [ ] Wave B **not** started
+- [ ] No unresolved agent-fixable gap parked as “needs human”
 
 ### True blockers
 
-Stop only for missing credentials/access that cannot be obtained safely, required human-only interaction (wave-boundary HITL itself), destructive ambiguity, safety-policy conflict, or external outage that prevents required proof.
+Stop only for missing credentials/access that cannot be obtained safely (e.g. HMS password vault empty), required human-only interaction (**wave-boundary HITL after green tools**, write execute approve), destructive ambiguity, safety-policy conflict, or external outage that prevents required proof.
+
+**Not true blockers:** expired role-proof file, missing v2 attestation, “scared of live PMS,” stub driver, unit tests green, prior skip packets.
 
 ## Execution Mode
 
-Autonomous for **Wave A**. Resume from first incomplete A1–A11 tool. After Wave A HITL packet ready, **end autonomous run** and wait for human sign-off before Wave B. REQUIRED SUB-SKILL: superpowers:subagent-driven-development + TDD for parser/claim fixes.
+Autonomous for **Wave A repair (Wave-0 quality)**. Resume A1 production wiring then A9→A2→A5→…. After Wave-0-grade HITL packet ready, **end autonomous run** and wait for human sign-off before Wave B. REQUIRED SUB-SKILL: superpowers:subagent-driven-development + TDD for parser/claim fixes.
 
 `/goal` text for operators:
 
-> Complete Wave A of `docs/superpowers/plans/2026-09-11-centurion-pms-tools-robust-catalogue.md` under its Overnight Autonomous Execution Mandate until the Wave A batch Tool promotion HITL packet exists. Do not start Wave B.
+> Repair Wave A of `docs/superpowers/plans/2026-09-11-centurion-pms-tools-robust-catalogue.md` under Overnight Autonomous Execution Mandate at Wave-0 quality (live PMS iterate per tool). Do not treat 2026-09-12 skip packets as done. Do not start Wave B.
 
 ---
 
@@ -433,11 +484,11 @@ Find named **2115**; read named **223**. Most mail only needs “is this the sta
 
 ## After Wave 0 (human-gated → Wave A full auton)
 
-1. `/continue-autonomously` or `/goal` with **Wave A** authority.
-2. Each A tool: Autonomous expected-vs-actual loop + packaging video; **no human pause**.
-3. Role-blocked → honest `BLOCKED_*` skip packet (still listed in batch HITL).
-4. Wave A done = every non-deferred tool has compare green + video/mail proof.
-5. Batch HITL packet → stop. Wave B blocked until sign-off.
+1. `/continue-autonomously` or `/goal` with **Wave A** authority (Wave-0 quality; live PMS always).
+2. Each A tool: Autonomous expected-vs-actual loop + packaging video; **no human pause**. Soft overlays + role-proof mint = **agent work**.
+3. Surface truly absent **after this-wave live dump/probe** → honest `BLOCKED_*` (cite dump). **Not** after reading old RCA / expired role-proof file.
+4. Wave A done = every non-deferred tool has compare green + video/mail proof (skip JSON alone ≠ done).
+5. Batch HITL packet → stop. Wave B blocked until sign-off. Prior 2026-09-12 skip HITL = DRAFT only.
 6. Wave B: same loop; oracle = post-write reread; execute approve still required for mutations.
 
 ---

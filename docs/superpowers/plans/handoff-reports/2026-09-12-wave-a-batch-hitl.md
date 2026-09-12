@@ -3,11 +3,13 @@
 **Date:** 2026-09-12  
 **Branch:** `feat/centurion-dashboard-tools`  
 **Authority:** Overnight Autonomous Execution Mandate (Wave A)  
-**Stop:** Wave B not started — wait for human sign-off
+**Status:** **DRAFT / INSUFFICIENT — DO NOT SIGN** (revoked 2026-09-12). Human correctly refused. Agent must re-run A2–A11 at Wave-0 quality; replace this packet when compare-green evidence exists.
+
+**Stop:** Wave B not started.
 
 ## Human ask
 
-Batch-review each tool row. Sign Wave A only if every row has either **PASS** evidence or an accepted **BLOCKED_*/SURFACE_UNPROVEN** skip. Do not authorize Wave B until signed.
+**None yet.** This draft listed skip packets instead of live working tools. Ignore for promotion. Wait for a rewritten packet after Wave A repair.
 
 Private skip index (operator box / worktree): `.private/wave-a-20260912/skips/index.v1.json`
 
