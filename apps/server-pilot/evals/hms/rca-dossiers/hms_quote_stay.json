@@ -1,32 +1,37 @@
 {
   "toolId": "hms_quote_stay",
   "toolVersion": "2.0.0",
-  "symptom": "fixture_verified awaiting discovery",
+  "symptom": "discovery_verified awaiting live proof; OSRRAV surface unavailable",
   "structuralObservation": {
     "routeClass": "quote_stay_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "osrrav_open_stub_no_roomtypes"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "reviewed_request_manifest_present",
+    "crs_check_availability_denied_by_soft_abort",
+    "live_soft_capture_2026-09-12"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "role_proof_v2_absent_was_sole_blocker",
+    "minting_osrrav_on_role_proof_clears_blocker"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "role_proof_v2_absent",
-    "discovery_operator_latched"
+    "view_only_login_reaches_hrcen_chrome",
+    "room_type_and_rate_availability_menu_label_absent",
+    "credentialed_osrrav_open_returns_stub_shell_not_roomtypes_form",
+    "fresh_role_proof_v1_guest_stay_only_matches_live_acl",
+    "nightly_observations_unproven_until_osrrav_entitlement"
   ],
-  "prediction": "Minted role-proof-v2 plus reviewed request manifest clears BLOCKED_QUOTE_DISCOVERY_ROLE_PROOF_UNAVAILABLE",
+  "prediction": "HMS entitlement for Room Type and Rate Availability (OSRRAV) on the view_only account, then soft-overlay search dump unlocks PASS",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "npx vitest run tests/hms-rca-dossier.test.ts tests/hms-live-quote-stay.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
-    "BLOCKED_QUOTE_DISCOVERY_ROLE_PROOF_UNAVAILABLE",
-    "BLOCKED_NO_ROLE_PROOF_V2",
-    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
-    "BLOCKED_TOOL_FIXTURE_ONLY"
+    "BLOCKED_ROLE_SURFACE_UNAVAILABLE",
+    "BLOCKED_NIGHTLY_SCHEDULE_UNPROVEN"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-09-12T10:40:00.000Z"
 }
