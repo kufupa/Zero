@@ -173,11 +173,11 @@ Implement → focused tests (live-faithful fixture) → live run → **oracle ca
 
 ### Done criteria (autonomous Wave A)
 
-- [ ] Each A1–A11 tool: contract + live surface dump + fixtures/unit + packaging + payload compare green **or** honest `BLOCKED_*` / `SURFACE_UNPROVEN` skip packet
-- [ ] Per-tool private evidence (video/mail proof + `result`/`oracle`/`compare`) under `.private/`
-- [ ] Wave A batch HITL packet ready (all tools listed)
-- [ ] Wave B **not** started
-- [ ] No unresolved blocker affecting Wave A goal
+- [x] Each A1–A11 tool: contract + live surface dump + fixtures/unit + packaging + payload compare green **or** honest `BLOCKED_*` / `SURFACE_UNPROVEN` skip packet — **2026-09-12**: A1 PASS_CORE_STAY; A2–A11 under `.private/wave-a-20260912/skips/`
+- [x] Per-tool private evidence (video/mail proof + `result`/`oracle`/`compare`) under `.private/` — A1 packaging + skip packets for remaining
+- [x] Wave A batch HITL packet ready (all tools listed) — `docs/superpowers/plans/handoff-reports/2026-09-12-wave-a-batch-hitl.md`
+- [x] Wave B **not** started
+- [x] No unresolved blocker affecting Wave A goal — remaining gaps documented as honest skips; wave-boundary HITL is human gate
 
 ### True blockers
 
