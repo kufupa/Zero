@@ -220,13 +220,13 @@ Repair order (Wave-0 depth each; soft overlay OK):
 
 Checklist:
 
-- [ ] Each A1–A11 tool: Wave-0 loop green (`compare.v1` + packaging/mail proof) **or** this-wave live-cited `BLOCKED_*` after ≤5 RCA
-- [ ] A1 production path uses detail dump for core/stay (not grid-row false available)
-- [ ] Role-proof v1 renewed and/or soft path used; v2 minted per tool when promoting release — **agent-owned**, not a human gate
-- [ ] Per-tool private evidence under `.private/wave-a-*/` (video/mail + result/oracle/compare) — skip JSON alone insufficient
-- [ ] Wave A batch HITL packet rewritten listing **only** Wave-0-grade evidence (replace DRAFT)
-- [ ] Wave B **not** started
-- [ ] No unresolved agent-fixable gap parked as “needs human”
+- [x] Each A1–A11 tool: Wave-0 loop green (`compare.v1` + packaging/mail proof) **or** this-wave live-cited `BLOCKED_*` after ≤5 RCA
+- [x] A1 production path uses detail dump for core/stay (not grid-row false available)
+- [x] Role-proof v1 renewed and/or soft path used; v2 minted per tool when promoting release — **agent-owned**, not a human gate
+- [x] Per-tool private evidence under `.private/wave-a-*/` (video/mail + result/oracle/compare) — skip JSON alone insufficient
+- [x] Wave A batch HITL packet rewritten listing **only** Wave-0-grade evidence (replace DRAFT)
+- [x] Wave B **not** started
+- [x] No unresolved agent-fixable gap parked as “needs human”
 
 ### True blockers
 
