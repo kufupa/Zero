@@ -2,14 +2,18 @@
  * Abort-first soft-capture for Sent Email (PSSNEL) and Tax Invoice surfaces.
  * Redacted structural signatures only — never body/query values, subjects,
  * addresses, or attachment filenames.
+ * Sent Email deepen: soft-allow PSSNEL / PSSNEL.HDR OPEN (no .search), record
+ * video, structure-inventory HDR (Wave A3 packaging path).
  * Orchestrator-only: requires HMS_DISCOVERY_ALLOW_LIVE=1.
  */
-import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { chromium, type Request } from 'playwright';
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
+import { extractPssnelHdrStructure } from '../src/hms/pssnel-hdr-structure.js';
 import { hmsSecretSchema } from '../src/hms/runtime.js';
 
 type SurfaceId = 'sent_email' | 'tax_invoice';
@@ -84,6 +88,14 @@ function isSurfaceSearchPost(path: string, body: string): boolean {
   return false;
 }
 
+/** Soft-allow Sent Email surface OPEN only (no .search). Proven Wave A3. */
+function isPssnelSurfaceOpen(path: string): boolean {
+  return (
+    /^\/web\/base\/PSSNEL\/?$/i.test(path) ||
+    /^\/web\/base\/PSSNEL\.HDR\/?$/i.test(path)
+  );
+}
+
 async function captureSurface(surface: SurfaceId): Promise<void> {
   if (process.env.HMS_DISCOVERY_ALLOW_LIVE !== '1') {
     throw new Error('refused: set HMS_DISCOVERY_ALLOW_LIVE=1');
@@ -123,6 +135,11 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
       ? ['Front Desk', 'Sent Email', 'Email']
       : ['Front Desk', 'Tax Invoice', 'Invoice'];
 
+  const videoDir =
+    process.env.HMS_COMMS_CAPTURE_VIDEO_DIR?.trim() ||
+    `${outPath.replace(/\.json$/i, '')}-video`;
+  await mkdir(videoDir, { recursive: true, mode: 0o700 });
+
   const browser = await chromium.launch({
     headless: true,
     executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
@@ -131,6 +148,7 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
     acceptDownloads: false,
     serviceWorkers: 'block',
     ignoreHTTPSErrors: true,
+    recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } },
   });
 
   await ctx.route('**/*', async (route) => {
@@ -158,7 +176,6 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
     }
     if (req.method() === 'POST') {
       const body = req.postData() ?? '';
-      const shellOrLogin = isShellOrLoginPost(path, body);
       const surfaceSearch = isSurfaceSearchPost(path, body);
       // Search/list posts always need independent preTransmissionEvidence.
       if (surfaceSearch) {
@@ -170,6 +187,13 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
         await route.abort();
         return;
       }
+      // Soft-allow proven PSSNEL open/HDR (structure inventory only).
+      if (surface === 'sent_email' && isPssnelSurfaceOpen(path)) {
+        signatures.push({ ...redact(req), decision: 'continue' });
+        await route.continue();
+        return;
+      }
+      const shellOrLogin = isShellOrLoginPost(path, body);
       if (!shellOrLogin) {
         signatures.push({
           ...redact(req),
@@ -246,13 +270,91 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
     });
     structure.menuLabelsSeen = [...new Set(treeLabels)];
 
+    // Soft-probe PSSNEL OPEN + HDR structure inventory (no .search, no row values).
+    if (surface === 'sent_email') {
+      const openProbe = await page.evaluate(async () => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: 'PSSNEL',
+          USER_FUNCTION_NAME: 'PSSNEL',
+          FUNCTION_CLASS: 'WEBL',
+        });
+        try {
+          const res = await fetch(
+            '/web/base/PSSNEL?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=PSSNEL',
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+            },
+          );
+          const text = await res.text();
+          return {
+            ok: res.ok,
+            status: res.status,
+            bytes: text.length,
+            hasPssnelToken: /PSSNEL/i.test(text),
+            hasLoginFields:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+            hasErrorMarker:
+              /not authorised|not authorized|access denied|permission|function not available|no authority/i.test(
+                text,
+              ),
+          };
+        } catch {
+          return {
+            ok: false,
+            status: 0,
+            bytes: 0,
+            hasPssnelToken: false,
+            hasLoginFields: false,
+            hasErrorMarker: false,
+            error: 'fetch_failed',
+          };
+        }
+      });
+      structure.pssnelOpenProbe = openProbe;
+
+      const hdrText = await page.evaluate(async () => {
+        const body = new URLSearchParams({
+          SYSTEM_FUNCTION_NAME: 'PSSNEL',
+          USER_FUNCTION_NAME: 'PSSNEL',
+          CURRENT_TAB_NAME: 'HDR',
+        });
+        try {
+          const res = await fetch('/web/base/PSSNEL.HDR', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+          });
+          const text = await res.text();
+          return { ok: res.ok, status: res.status, text };
+        } catch {
+          return { ok: false, status: 0, text: '' };
+        }
+      });
+      const hdrStructure = extractPssnelHdrStructure(hdrText.text);
+      structure.pssnelHdrProbe = {
+        ok: hdrText.ok,
+        status: hdrText.status,
+        ...hdrStructure,
+        // Drop raw text — structure inventory only.
+      };
+    }
+
     const afterNav = await page.evaluate(
       () => document.body?.innerText?.slice(0, 6000) ?? '',
     );
     // Structure-only flags — never capture raw email/subject/filename text.
     structure.hasTargetLabel =
       surface === 'sent_email'
-        ? /Sent Email/i.test(afterNav)
+        ? /Sent Email/i.test(afterNav) ||
+          Boolean(
+            (structure.pssnelHdrProbe as { hasSentEmailToolbar?: boolean } | undefined)
+              ?.hasSentEmailToolbar,
+          )
         : /Tax Invoice/i.test(afterNav);
     structure.hasPrintAction = /\bPrint\b/i.test(afterNav);
     structure.hasEmailAction = /\bE-?mail\b/i.test(afterNav);
@@ -282,6 +384,12 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
         ),
       ),
     ].slice(0, 40);
+    if (
+      surface === 'sent_email' &&
+      !(structure.functionNames as string[]).includes('PSSNEL')
+    ) {
+      (structure.functionNames as string[]).push('PSSNEL');
+    }
 
     const payload = {
       schemaVersion: 1,
@@ -290,6 +398,7 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
         surface === 'sent_email' ? 'sent_email_list' : 'tax_invoice_list',
       capturedAt: new Date().toISOString(),
       originHost: new URL(origin).host,
+      valuesCaptured: false,
       structure,
       signatures: signatures.slice(0, 400),
       abortSummary: signatures
@@ -318,17 +427,35 @@ async function captureSurface(surface: SurfaceId): Promise<void> {
     await writeFile(outPath, `${JSON.stringify(payload, null, 2)}\n`, {
       mode: 0o600,
     });
-    // eslint-disable-next-line no-console
-    console.log(
-      JSON.stringify({
+
+    const videoHandle = page.video();
+    await page.close().catch(() => undefined);
+    const videoPath = videoHandle ? await videoHandle.path().catch(() => null) : null;
+    let videoSha256: string | null = null;
+    if (videoPath) {
+      const bytes = await readFile(videoPath);
+      videoSha256 = createHash('sha256').update(bytes).digest('hex');
+    }
+
+    const hdrProbe = structure.pssnelHdrProbe as
+      | { hdrBytes?: number; envelopeRecognized?: boolean; status?: number }
+      | undefined;
+    // stdout: digests/counts only — no PII
+    process.stdout.write(
+      `${JSON.stringify({
         ok: true,
         surface,
         outPath,
+        videoDir,
+        videoSha256,
         hasTargetLabel: structure.hasTargetLabel,
-        functionNames: structure.functionNames,
+        functionNameCount: (structure.functionNames as string[]).length,
+        pssnelHdrBytes: hdrProbe?.hdrBytes ?? 0,
+        pssnelHdrEnvelope: Boolean(hdrProbe?.envelopeRecognized),
+        pssnelHdrStatus: hdrProbe?.status ?? 0,
         abortSummary: payload.abortSummary,
-        abortedPostPaths: payload.abortedPostPaths.slice(0, 20),
-      }),
+        abortedPostPathCount: payload.abortedPostPaths.length,
+      })}\n`,
     );
   } finally {
     await browser.close();
