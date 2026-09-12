@@ -497,7 +497,9 @@ export async function issuePhaseAProofAuthorization(
     issued,
     expiresAt: input.expiresAt,
     now,
-    allowCandidateIdMismatch: input.candidate.kind === 'surname_dates',
+    allowCandidateIdMismatch:
+      input.candidate.kind === 'surname_dates' ||
+      process.env.HMS_PROOF_ALLOW_CANDIDATE_ID_MISMATCH === '1',
   });
   if (
     issued.admission.releaseId !== PHASE_A_FIND_LEASE_RELEASE_ID ||
@@ -563,7 +565,9 @@ export async function issuePhaseAProofAuthorization(
     candidateId: input.candidate.id,
     propertyCode: input.propertyCode,
     now,
-    allowCandidateIdMismatch: input.candidate.kind === 'surname_dates',
+    allowCandidateIdMismatch:
+      input.candidate.kind === 'surname_dates' ||
+      process.env.HMS_PROOF_ALLOW_CANDIDATE_ID_MISMATCH === '1',
   });
   return authorization;
 }

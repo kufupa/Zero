@@ -116,6 +116,8 @@ export type HmsPage = {
    */
   postForm(url: string, fields: Record<string, string>): Promise<string>;
   click(selector: string): Promise<void>;
+  /** Constrained dblclick — selector must be a reviewed static string. */
+  dblclick(selector: string): Promise<void>;
   /** Constrained fill — selector must be a reviewed static string. */
   fill(selector: string, value: string): Promise<void>;
   press(selector: string, key: string): Promise<void>;
@@ -835,6 +837,12 @@ export function createFetchBrowserFactory(
       }
 
       async click(selector: string) {
+        this.#assertOpen();
+        void selector;
+        void this.#defaultTimeout;
+      }
+
+      async dblclick(selector: string) {
         this.#assertOpen();
         void selector;
         void this.#defaultTimeout;
@@ -3732,6 +3740,13 @@ function wrapPlaywrightPage(page: {
         return;
       }
       await page.locator(selector).first().click({ force: true, timeout: 5_000 });
+    },
+    async dblclick(selector) {
+      // Prefer Playwright locator.dblclick (ExtJS grid). Soft-capture typings omit dblclick.
+      const loc = page.locator(selector) as unknown as {
+        dblclick: (opts?: { force?: boolean; timeout?: number }) => Promise<void>;
+      };
+      await loc.dblclick({ force: true, timeout: 8_000 });
     },
     async fill(selector, value) {
       await page.locator(selector).fill(value);

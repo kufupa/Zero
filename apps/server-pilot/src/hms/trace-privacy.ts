@@ -803,7 +803,7 @@ function sanitizeNode(
 function sanitizeTraceUrl(value: string, variants: readonly SecretVariant[]): string {
   try {
     const url = new URL(value);
-    for (const key of url.searchParams.keys()) {
+    for (const key of Array.from(url.searchParams.keys())) {
       if (isSensitiveName(key)) url.searchParams.delete(key);
     }
     return redactText(url.toString(), variants);

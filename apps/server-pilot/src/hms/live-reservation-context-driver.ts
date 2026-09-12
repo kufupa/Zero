@@ -1,8 +1,8 @@
 /**
  * Typed adapter from the existing audited Guest Stay driver to U8's
- * reservation-context facade.  It deliberately exposes only list-row facts;
- * detail sections remain explicitly unavailable until their own reviewed
- * read surface is proven.
+ * reservation-context facade. Core/stay may use list-row facts; detail dump
+ * upgrades stay.roomType and related fields when proved. Rates/policies/ops
+ * stay unavailable until their surfaces are dump-proved.
  */
 import type {
   ReservationContextLookup,
@@ -16,6 +16,10 @@ import type {
   LiveGuestStayDriver,
 } from './live-guest-stay-driver.js';
 import type { PropertyReadLock } from './property-read-lock.js';
+import {
+  projectReservationDetailDump,
+  type ReservationDetailDumpV1,
+} from './reservation-detail-projection.js';
 
 export interface LiveReservationContextDriver {
   findReservation(
@@ -31,6 +35,14 @@ export interface LiveReservationContextDriverOptions {
   now?: () => Date;
   evidenceRefFor?: (input: ReservationContextLookup) => string;
   propertyReadLock?: PropertyReadLock;
+  /**
+   * Optional live detail dump (Wave A1). When provided, projects dump-proved
+   * fields into core/stay; never invents keys absent from dump.
+   */
+  detailDumpFor?: (
+    input: ReservationContextLookup,
+    row: ReservationRow,
+  ) => Promise<ReservationDetailDumpV1 | null>;
 }
 
 function rowFromObservation(
@@ -85,13 +97,35 @@ export function createLiveReservationContextDriver(
       };
     },
 
-    async readContext(_input, _row) {
-      // Guest Stay list results are enough for core/stay.  Do not fabricate
-      // rates, policies, operations, or zero-valued financial facts.
+    async readContext(input, row) {
+      const dump = options.detailDumpFor ? await options.detailDumpFor(input, row) : null;
+      if (!dump) {
+        // List-row only: core/stay fall back to row via facade normalize; rates+ unavailable.
+        return {
+          rates: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+          policies: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+          operations: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+        };
+      }
+      const projected = projectReservationDetailDump(dump);
       return {
-        rates: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
-        policies: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
-        operations: { status: 'unavailable', reasonCode: 'ROLE_UNAVAILABLE' },
+        core: {
+          status: projected.core.status,
+          confirmation: projected.core.confirmation ?? row.confirmationNumber,
+          externalReference: projected.core.externalReference ?? row.externalReference,
+          reservationStatus: projected.core.reservationStatus ?? row.reservationStatus,
+        },
+        stay: {
+          status: projected.stay.status,
+          arrival: projected.stay.arrival ?? row.arrivalDate,
+          departure: projected.stay.departure ?? row.departureDate,
+          roomType: projected.stay.roomType ?? row.roomType,
+          roomQuantity: projected.stay.roomQuantity,
+          adults: projected.stay.adults,
+        },
+        rates: projected.rates,
+        policies: projected.policies,
+        operations: projected.operations,
       };
     },
   };

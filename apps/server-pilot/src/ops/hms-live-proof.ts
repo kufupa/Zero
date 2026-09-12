@@ -1,6 +1,6 @@
 /**
  * Purpose-built HMS live proof CLI (compiled to dist/ops/hms-live-proof.js).
- * Phase A: canary | start | status | stop | rearm | proof-video | purge-artifacts | accept-g1.
+ * Phase A: canary | start | status | stop | rearm | proof-video | detail-dump | purge-artifacts | accept-g1.
  * Phase B: shared argv via phase-b-operation (doctor, status, read-*, artifacts, rearm, ...).
  * No tsx. Never accepts raw lookup / thread / message ID via argv.
  * Public proof files store digests only; the completed live proof also retains
@@ -2352,6 +2352,206 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
   return completedEvidence;
 }
 
+/**
+ * Wave A1 surface dump: exact search → inert detail open → form-key inventory.
+ * Writes sanitized keys (+ private values file under attempt dir). No video required.
+ */
+async function runDetailDump(): Promise<void> {
+  if (startsDisabled()) emitFail('RUN_ISOLATION_BLOCKED');
+  const hms = pm2DescribeHms();
+  if (hms.present) emitFail('RUN_ISOLATION_BLOCKED');
+  assertDependenciesOk();
+  const role = loadRoleProofDigest();
+  const commit =
+    process.env.NAVA_PROOF_SOURCE_REVISION?.trim() || buildCommit();
+  const env = parseEnv(process.env);
+  if (process.env.HMS_DRAFT_ENRICHMENT_MODE === 'enabled') {
+    emitFail('MODE_ENABLED_FORBIDDEN');
+  }
+  process.env.DATABASE_URL = env.DATABASE_URL;
+  const nonterminal = await countNonterminalHmsLane();
+  if (nonterminal > 0) emitFail('RUN_ISOLATION_BLOCKED');
+  const hmsConfig = requireHmsWorkerRuntimeConfig({
+    ...process.env,
+    HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+  });
+  if (hmsConfig.expectedTransportId !== CENTURION_TRANSPORT_ID) {
+    emitFail('PROPERTY_MISMATCH');
+  }
+  await assertServiceUserMailboxGrant(
+    env.DATABASE_URL,
+    hmsConfig.expectedTransportId,
+  );
+  const discoveryDeadline = Date.now() + 300_000;
+  const forcedExactPath = process.env.HMS_PROOF_EXACT_CANDIDATE_PATH?.trim();
+  let anchors: ExactMailAnchor[] = [];
+  if (forcedExactPath) {
+    const raw = JSON.parse(readFileSync(forcedExactPath, 'utf8')) as {
+      kind?: string;
+      value?: string;
+      id?: string;
+    };
+    if (
+      (raw.kind !== 'confirmation' && raw.kind !== 'external_reference') ||
+      !raw.value?.trim()
+    ) {
+      emitFail('POLICY_BLOCK');
+    }
+    const mailAnchors = await selectCurrentInboundExactCandidates(
+      env.DATABASE_URL,
+      hmsConfig.expectedTransportId,
+      24,
+      5000,
+      Math.max(1, discoveryDeadline - Date.now()),
+    );
+    if (mailAnchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
+    const exactCandidate = {
+      id:
+        raw.id?.trim() ||
+        createHash('sha256')
+          .update(`exact:${raw.kind}:${raw.value}`)
+          .digest('hex')
+          .slice(0, 16),
+      kind: raw.kind as 'confirmation' | 'external_reference',
+      value: raw.value!.trim(),
+    };
+    anchors = [{ ...mailAnchors[0]!, candidate: exactCandidate }];
+    process.stdout.write('HMS_OK code=EXACT_FORCE_AXIS\n');
+  } else {
+    anchors = await selectCurrentInboundExactCandidates(
+      env.DATABASE_URL,
+      hmsConfig.expectedTransportId,
+      24,
+      5000,
+      Math.max(1, discoveryDeadline - Date.now()),
+    );
+  }
+  if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
+  const proofUserId = process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
+  if (!proofUserId) emitFail('POLICY_BLOCK');
+  const propertyReadLock = createPostgresPropertyReadLock({
+    tenantId: hmsConfig.expectedTenant,
+    propertyCode: hmsConfig.expectedPropertyCode,
+    databaseUrl: env.DATABASE_URL,
+  });
+  assertPhaseAProofPropertyReadLock(propertyReadLock);
+  const proofDb = getDb();
+  const runtimeBinding = await createPhaseAProofRuntime(hmsConfig, {
+    sourceRevision: commit,
+    artifactRoot:
+      process.env.HMS_BROWSER_ARTIFACT_ROOT?.trim() ||
+      '/opt/nava/shared/hms-browser-artifacts',
+  });
+  const runtime = runtimeBinding.runtime;
+  const { buildExactOsressSearchManifest } = await import(
+    '../hms/live-read-manifest.js'
+  );
+  const { CENTURION_HMS_PRODUCTION_ORIGIN } = await import(
+    '../hms/browser-artifacts.js'
+  );
+  const { writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  let closeFailed = false;
+  let runtimeError: unknown;
+  try {
+    await runtime.start(AbortSignal.timeout(60_000));
+    let dumped = false;
+    for (const anchor of anchors!) {
+      if (Date.now() > discoveryDeadline) emitWait('NO_EXACT_CANDIDATE');
+      const operationId = randomUUID();
+      const proofAuthorization = await issuePhaseAProofAuthorization({
+        db: proofDb,
+        userId: proofUserId!,
+        transportId: hmsConfig.expectedTransportId,
+        threadId: anchor.threadId,
+        triggerMessageId: anchor.messageId,
+        candidate: anchor.candidate,
+        manifest: buildExactOsressSearchManifest(
+          CENTURION_HMS_PRODUCTION_ORIGIN,
+          anchor.candidate,
+        ),
+        operationId,
+        propertyCode: hmsConfig.expectedPropertyCode,
+        sourceRevision: commit,
+        roleProofPath: roleProofPath(),
+        roleProofSha256: role.sha256,
+        credentialVersionHmacSha256: runtimeBinding.credentialVersionHmacSha256,
+        runtimeFingerprintSha256: runtimeBinding.runtimeFingerprintSha256,
+        privateDigestKeyVersion: runtimeBinding.privateDigestKeyVersion,
+        expiresAt: new Date(
+          Math.min(Date.parse(role.expiresAt), Date.now() + hmsConfig.runDeadlineMs),
+        ).toISOString(),
+      });
+      const driver = createLiveGuestStayDriver({
+        runtime,
+        transportId: hmsConfig.expectedTransportId,
+        propertyReadLock,
+        sessionAuthorizationFor: () => proofAuthorization.sessionAuthorization,
+        auditSpecFor: ({ inputClass }) => ({
+          operationId,
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: HMS_DEPENDENCY_REVISION,
+          executionClass: 'live_proof',
+          inputClass,
+          roleProofSha256: role.sha256,
+          roleProofExpiresAt: role.expiresAt,
+        }),
+      });
+      try {
+        const { search, dump } = await driver.searchExactThenDetailDump(
+          anchor.candidate,
+          AbortSignal.timeout(Math.max(1, discoveryDeadline - Date.now())),
+        );
+        if (search.outcome !== 'matched') continue;
+        const keyCount = dump.keys.length;
+        const hasRoomType = dump.keys.some((k) => /roomtype|room_type/i.test(k));
+        const hasRatePlan = dump.keys.some((k) => /rateplan|rate_plan/i.test(k));
+        process.stdout.write(
+          `HMS_OK code=DETAIL_DUMP keys=${keyCount} roomTypeKey=${hasRoomType ? 1 : 0} ratePlanKey=${hasRatePlan ? 1 : 0}\n`,
+        );
+        const attemptDir = process.env.HMS_PROOF_ATTEMPT_DIR?.trim();
+        if (attemptDir && /^\/tmp\/nava-fast-find\.[A-Za-z0-9]+$/.test(attemptDir)) {
+          const sanitized = {
+            schemaVersion: 1 as const,
+            surface: 'guest_stay_detail' as const,
+            keys: dump.keys,
+          };
+          await writeFile(
+            join(attemptDir, 'detail-dump.keys.v1.json'),
+            `${JSON.stringify(sanitized, null, 2)}\n`,
+            { encoding: 'utf8', mode: 0o600 },
+          );
+          // Private values stay on EC2 attempt dir only — never SSM stdout.
+          if (dump.values) {
+            await writeFile(
+              join(attemptDir, 'detail-dump.values.private.json'),
+              `${JSON.stringify({ keys: dump.keys, values: dump.values }, null, 2)}\n`,
+              { encoding: 'utf8', mode: 0o600 },
+            );
+          }
+        }
+        dumped = true;
+        break;
+      } catch (err) {
+        proofDiagnostic('detail_dump', err);
+      }
+    }
+    if (!dumped) emitFail('SCHEMA_DRIFT');
+  } catch (err) {
+    if (err instanceof OperatorExit) throw err;
+    runtimeError = err;
+  } finally {
+    try {
+      await runtime.close();
+    } catch {
+      closeFailed = true;
+    }
+  }
+  if (closeFailed) emitFail('ROLLBACK_INCOMPLETE');
+  if (runtimeError) throw runtimeError;
+}
+
 async function runPurgeArtifacts(): Promise<void> {
   const root =
     process.env.HMS_BROWSER_ARTIFACT_ROOT?.trim() ||
@@ -2448,6 +2648,7 @@ async function main(): Promise<void> {
     action !== 'stop' &&
     action !== 'rearm' &&
     action !== 'proof-video' &&
+    action !== 'detail-dump' &&
     action !== 'purge-artifacts' &&
     action !== 'accept-g1'
   ) {
@@ -2466,6 +2667,7 @@ async function main(): Promise<void> {
       action === 'stop' ||
       action === 'rearm' ||
       action === 'proof-video' ||
+      action === 'detail-dump' ||
       action === 'accept-g1'
     ) {
       releaseOperationLock = acquireHmsOperationLock();
@@ -2476,10 +2678,11 @@ async function main(): Promise<void> {
     else if (action === 'stop') await runStop();
     else if (action === 'rearm') runRearm();
     else if (action === 'proof-video') proofEvidence = await runProofVideo();
+    else if (action === 'detail-dump') await runDetailDump();
     else if (action === 'purge-artifacts') await runPurgeArtifacts();
     else if (action === 'accept-g1') runAcceptG1();
   } catch (err) {
-    if (action === 'proof-video') proofDiagnostic('operation', err);
+    if (action === 'proof-video' || action === 'detail-dump') proofDiagnostic('operation', err);
     if (err instanceof OperatorExit) {
       operatorExit = err;
     } else {

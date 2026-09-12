@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "surface": "guest_stay_detail",
+  "source": "INVALID-search-chrome-false-positive-20260912",
+  "valid": false,
+  "keys": [],
+  "notes": "Prior dump collected OSRESS search filter names only (dblclick did not open detail). Superseded when a true detail dump lands."
+}

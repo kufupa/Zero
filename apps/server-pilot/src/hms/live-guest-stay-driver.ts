@@ -20,6 +20,7 @@ import {
   createFindReservationFacade,
   type FindReservationFacade,
 } from './find-reservation-facade.js';
+import { createReservationDetailFacade } from './reservation-detail-facade.js';
 import { HmsRuntimeError, type HmsReadSession, type HmsRuntime } from './runtime.js';
 import type { PropertyReadLock } from './property-read-lock.js';
 import { createHash } from 'node:crypto';
@@ -92,6 +93,17 @@ export interface LiveGuestStayDriver {
     signal: AbortSignal,
     mapResult: AuditedSearchMapper<T>,
   ): Promise<T>;
+  /**
+   * Wave A1: exact search then inert open of matched grid row; return search +
+   * detail form-key dump. Never save.
+   */
+  searchExactThenDetailDump(
+    candidate: ReservationSearchCandidate,
+    signal: AbortSignal,
+  ): Promise<{
+    search: GuestStaySearchResult;
+    dump: import('./reservation-detail-projection.js').ReservationDetailDumpV1;
+  }>;
   /** Digests-only receipt from most recent audited session close. */
   lastAuditReceipt(): import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null;
 }
@@ -512,7 +524,7 @@ export function createLiveGuestStayDriver(
   async function withSession<T>(
     signal: AbortSignal,
     candidate: ReservationSearchCandidate | null,
-    fn: (facade: FindReservationFacade) => Promise<T>,
+    fn: (facade: FindReservationFacade, session: HmsReadSession) => Promise<T>,
     receiptForResult?: (result: T) => {
       outcome: 'succeeded' | 'unverified_negative';
       terminalCode: 'OK' | 'UNVERIFIED_NEGATIVE';
@@ -551,7 +563,7 @@ export function createLiveGuestStayDriver(
     let fnError: unknown;
     let result: T | undefined;
     try {
-      result = await fn(createFindReservationFacade(session));
+      result = await fn(createFindReservationFacade(session), session);
     } catch (err) {
       fnError = err;
     }
@@ -719,6 +731,51 @@ export function createLiveGuestStayDriver(
             : { outcome: 'succeeded', terminalCode: 'OK' },
       );
       return wrapped.mapped;
+    },
+
+    async searchExactThenDetailDump(candidate, signal) {
+      assertSearchCandidate(candidate);
+      return withSession(
+        signal,
+        candidate,
+        async (facade, session) => {
+          const html = await facade.searchExact(candidate);
+          const search = parseAndCorrelateGuestStayHtml(html, candidate, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
+          if (search.outcome !== 'matched' || search.observations.length !== 1) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'detail dump requires a unique matched search row',
+            );
+          }
+          // ExtJS grid may lag pageData; wait for a visible row before detail open.
+          const page = session.page;
+          const rowDeadline = Date.now() + 10_000;
+          let rowCount = 0;
+          while (Date.now() < rowDeadline) {
+            rowCount = await page.evaluateStableDom(() => {
+              const doc = (globalThis as unknown as {
+                document?: { querySelectorAll(sel: string): { length: number } };
+              }).document;
+              if (!doc) return 0;
+              return doc.querySelectorAll('.x-grid3-row, .x-grid-row, tr.x-grid3-row').length;
+            });
+            if (rowCount > 0) break;
+            await new Promise((resolve) => setTimeout(resolve, 400));
+          }
+          if (rowCount < 1) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'detail dump: matched pageData but grid row not rendered',
+            );
+          }
+          const detail = createReservationDetailFacade({ session });
+          const dump = await detail.openMatchedRowAndDump({ captureValues: true });
+          return { search, dump };
+        },
+        () => ({ outcome: 'succeeded', terminalCode: 'OK' }),
+      );
     },
 
     lastAuditReceipt() {
