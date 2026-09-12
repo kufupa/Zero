@@ -22,6 +22,7 @@ import type { HmsSessionAuthorization } from './release-kernel.js';
 import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createFolioReadFacade } from './folio-read-facade.js';
+import { projectFolioBalanceFromDetailDump } from './folio-detail-projection.js';
 import type { ReadCandidateChild } from './candidate-graph.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1289,6 +1290,14 @@ export type LiveFolioReadDriverInput = {
   auditSpecFor?: (input: {
     branchId: 'folio_summary' | 'deposit_ledger_summary';
   }) => HmsBrowserAuditSpec | undefined;
+  /**
+   * Wave A2 soft path: Guest Stay detail dump with balance/balancecurr
+   * (proved 2026-09-12). Used for balance-only when present; deposits still
+   * require deposit ledger surface.
+   */
+  detailDumpFor?: () => Promise<
+    import('./reservation-detail-projection.js').ReservationDetailDumpV1 | null
+  >;
 };
 
 export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
@@ -1307,6 +1316,30 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
       const observedAt = new Date();
       const started = observedAt.getTime();
+
+      if (input.detailDumpFor) {
+        const dump = await input.detailDumpFor();
+        if (dump) {
+          const projected = projectFolioBalanceFromDetailDump(dump);
+          const durationMs = Date.now() - started;
+          if (projected.status === 'available' && projected.currency && projected.totalBalance) {
+            return {
+              status: 'ok' as const,
+              currency: projected.currency,
+              totalBalance: projected.totalBalance,
+              evidenceId: `folio-detail-${randomUUID()}`,
+              blocker: null,
+              observedAt: observedAt.toISOString(),
+              durationMs,
+              bytesObserved: Buffer.byteLength(JSON.stringify(projected.claimKeys)),
+              rowsScanned: 1,
+              reservationScopeProven: true,
+              sourceSurface: 'guest_stay_detail_balance',
+            };
+          }
+        }
+      }
+
       const auditSpec = input.auditSpecFor?.({ branchId: 'folio_summary' });
       const session = await runtime.openReadSession({
         transportId,
