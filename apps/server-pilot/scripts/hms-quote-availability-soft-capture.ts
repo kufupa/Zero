@@ -230,8 +230,28 @@ async function main(): Promise<void> {
       }),
     ]);
 
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(4_000);
     structure.pageTitle = await page.title();
+    // Warm BSSTRT like menu-codes / A3 Sent Email — unwarmed OSRRAV opens returned 813B stubs.
+    await page.evaluate(async () => {
+      for (const path of ['/web/base/BSSTRT.HDR', '/web/base/BSSTRT']) {
+        try {
+          await fetch(path, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              SYSTEM_FUNCTION_NAME: 'BSSTRT',
+              USER_FUNCTION_NAME: 'BSSTRT',
+              manurefresh: 'yes',
+            }).toString(),
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    await page.waitForTimeout(1_500);
     // Establish property/session chrome the way Guest Stay soft overlays do —
     // some Rate surfaces return tenant stub until a Front Desk context exists.
     await page.click('text=Front Desk', { timeout: 8_000 }).catch(() => undefined);
