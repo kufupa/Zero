@@ -266,10 +266,11 @@ async function main(): Promise<void> {
       }, fn);
     }
 
-    // Candidate function codes from prior catalogue / Infor naming.
-    const opens: Record<string, FetchProbe> = {};
-    for (const fn of [
-      'PSSNEL',
+    // Candidate function codes: harvested first, then catalogue guesses.
+    const harvestedFns = [
+      ...new Set(harvest.pairs.map((p) => p.fn).filter((fn) => /^(OS|PS|AR)[A-Z0-9]{3,10}$/.test(fn))),
+    ].slice(0, 12);
+    const guessFns = [
       'OSGRP',
       'OSGBLK',
       'OSALLT',
@@ -278,7 +279,9 @@ async function main(): Promise<void> {
       'OSACCT',
       'ARACCT',
       'OSCOMP',
-    ]) {
+    ];
+    const opens: Record<string, FetchProbe> = {};
+    for (const fn of new Set([...harvestedFns, ...guessFns])) {
       opens[fn] = await probeOpen(fn);
     }
 
@@ -290,6 +293,7 @@ async function main(): Promise<void> {
       valuesCaptured: false,
       navProbe,
       menuLabels,
+      harvest,
       opens,
     };
     await writeFile(outPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
@@ -298,6 +302,8 @@ async function main(): Promise<void> {
         ok: true,
         outPath,
         menuLabelCount: menuLabels.length,
+        harvestPairCount: harvest.pairs.length,
+        harvestedFns,
         openSummary: Object.fromEntries(
           Object.entries(opens).map(([k, v]) => [
             k,
