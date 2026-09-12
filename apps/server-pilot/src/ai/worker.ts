@@ -1148,11 +1148,15 @@ export function createLiveHmsCandidateSessionFactory(
             const sessionId = randomUUID();
             const parentEvidenceId = randomUUID();
             const expiresAt = input.readFence?.deadlineAt ?? new Date(Date.now() + 15 * 60_000);
-            const driver = createLiveFolioReadDriver({
+            const folioDriver = createLiveFolioReadDriver({
               runtime,
               transportId: input.transportId,
               expectedConfirmationToken: candidate.value,
               expectedPropertyCode: propertyCode,
+              detailDumpFor: async () => {
+                const { dump } = await driver.searchExactThenDetailDump(candidate, signal);
+                return dump;
+              },
               auditSpecFor: ({ branchId }) => ({
                 operationId,
                 toolId: 'hms_read_folio',
@@ -1164,8 +1168,8 @@ export function createLiveHmsCandidateSessionFactory(
               }),
             });
             const steps: Array<
-              | Awaited<ReturnType<typeof driver.observeFolioBalance>>
-              | Awaited<ReturnType<typeof driver.observeDepositSummary>>
+              | Awaited<ReturnType<typeof folioDriver.observeFolioBalance>>
+              | Awaited<ReturnType<typeof folioDriver.observeDepositSummary>>
             > = [];
 
             const observe = async (branchId: 'folio_summary' | 'deposit_ledger_summary') => {
@@ -1204,9 +1208,9 @@ export function createLiveHmsCandidateSessionFactory(
               });
               createReadToolHandler(folioRelease, authorization);
               if (branchId === 'folio_summary') {
-                return driver.observeFolioBalance(authorization, child, signal);
+                return folioDriver.observeFolioBalance(authorization, child, signal);
               }
-              return driver.observeDepositSummary(authorization, child, signal);
+              return folioDriver.observeDepositSummary(authorization, child, signal);
             };
 
             if (sections.includes('balance')) steps.push(await observe('folio_summary'));
