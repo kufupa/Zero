@@ -187,15 +187,17 @@ async function main(): Promise<void> {
         await route.continue();
         return;
       }
-      // Soft-allow chrome/module OPEN (A3 lesson). Abort only .search / mutations.
-      const moduleOpen =
-        /^\/web\/base\/[A-Z0-9.]+$/i.test(path) && !/\.search/i.test(path);
-      if (knownLogin || moduleOpen) {
-        signatures.push({ ...redact(req), decision: 'continue' });
-        await route.continue();
+      if (!knownLogin && !knownAvail) {
+        signatures.push({
+          ...redact(req),
+          decision: 'abort',
+          abortReason: 'unknown_post_pending_evidence',
+        });
+        await route.abort();
         return;
       }
-      if (knownAvail) {
+      // Still record — do not transmit availability/search POST without evidence.
+      if (knownAvail && !knownLogin) {
         signatures.push({
           ...redact(req),
           decision: 'abort',
@@ -204,13 +206,6 @@ async function main(): Promise<void> {
         await route.abort();
         return;
       }
-      signatures.push({
-        ...redact(req),
-        decision: 'abort',
-        abortReason: 'unknown_post_pending_evidence',
-      });
-      await route.abort();
-      return;
     }
     signatures.push({ ...redact(req), decision: 'continue' });
     await route.continue();
@@ -257,6 +252,69 @@ async function main(): Promise<void> {
       }
     });
     await page.waitForTimeout(1_500);
+
+    // Probe OSRRAV / OSRRAV.HDR IMMEDIATELY after warm (before Front Desk clicks).
+    // A3 proved menu clicks first left PSSNEL as tenant stub.
+    const earlyOsrrav = await page.evaluate(async () => {
+      const body = new URLSearchParams({
+        SYSTEM_FUNCTION_NAME: 'OSRRAV',
+        USER_FUNCTION_NAME: 'OSRRAV',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        FUNCTION_CLASS: 'WEBL',
+        removescreenflows: 'yes',
+      });
+      async function probe(path: string) {
+        try {
+          const res = await fetch(path, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+          });
+          const text = await res.text();
+          const names = [...text.matchAll(/\bname\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+          return {
+            status: res.status,
+            bytes: text.length,
+            hasRoomtypes: /name\s*=\s*["']roomtypes["']/i.test(text),
+            hasRateplans: /name\s*=\s*["']rateplans["']/i.test(text),
+            hasLoginFields:
+              /name\s*=\s*["']userid["']/i.test(text) &&
+              /name\s*=\s*["']password["']/i.test(text),
+            inputNames: [...new Set(names)].slice(0, 40),
+          };
+        } catch (e) {
+          return {
+            status: 0,
+            bytes: 0,
+            hasRoomtypes: false,
+            hasRateplans: false,
+            hasLoginFields: false,
+            inputNames: [],
+            error: e instanceof Error ? e.name : 'fetch_failed',
+          };
+        }
+      }
+      return {
+        open: await probe('/web/base/OSRRAV?FUNCTION_CLASS=WEBL'),
+        hdr: await probe('/web/base/OSRRAV.HDR?FUNCTION_CLASS=WEBL'),
+      };
+    });
+    structure.earlyOsrravProbe = earlyOsrrav;
+    // Seed primary probes from early path so compare sees pre-nav evidence.
+    structure.osrravFetchProbe = {
+      ok: earlyOsrrav.open.status === 200,
+      ...earlyOsrrav.open,
+      hasOsrravToken: false,
+      hasErrorMarker: false,
+      titleMatch: null,
+    };
+    structure.osrravHdrFetchProbe = {
+      ok: earlyOsrrav.hdr.status === 200,
+      ...earlyOsrrav.hdr,
+    };
+
     // Establish property/session chrome the way Guest Stay soft overlays do —
     // some Rate surfaces return tenant stub until a Front Desk context exists.
     await page.click('text=Front Desk', { timeout: 8_000 }).catch(() => undefined);
