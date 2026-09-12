@@ -201,7 +201,8 @@ export function normalizeMessageText(input: {
   return collapseQuotedHtml(sanitized).trim();
 }
 
-function candidateId(kind: string, value: string): string {
+/** Canonical opaque ID for a server-derived lookup candidate. */
+export function canonicalLookupCandidateId(kind: LookupCandidate['kind'], value: string): string {
   return createHash('sha256').update(`${kind}:${value}`).digest('hex').slice(0, 16);
 }
 
@@ -223,7 +224,11 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
     while ((m = re.exec(normalizedText)) !== null) {
       const value = m[1]!.toUpperCase();
       if (!isPlausibleExactReservationValue(value)) continue;
-      push({ id: candidateId('confirmation', value), kind: 'confirmation', value });
+      push({
+        id: canonicalLookupCandidateId('confirmation', value),
+        kind: 'confirmation',
+        value,
+      });
     }
   }
 
@@ -234,7 +239,7 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
       const value = m[1]!.toUpperCase();
       if (!isPlausibleExactReservationValue(value)) continue;
       push({
-        id: candidateId('external_reference', value),
+        id: canonicalLookupCandidateId('external_reference', value),
         kind: 'external_reference',
         value,
       });
@@ -248,7 +253,7 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
     const arrivalDate = sm[2]!;
     const departureDate = sm[3]!;
     push({
-      id: candidateId('surname_dates', `${surname}|${arrivalDate}|${departureDate}`),
+      id: canonicalLookupCandidateId('surname_dates', `${surname}|${arrivalDate}|${departureDate}`),
       kind: 'surname_dates',
       surname,
       arrivalDate,

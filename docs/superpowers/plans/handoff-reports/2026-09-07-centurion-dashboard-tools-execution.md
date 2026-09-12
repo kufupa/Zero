@@ -1,5 +1,29 @@
 # Centurion Dashboard, Read Tools and Drafting — Execution Ledger
 
+## Owner correction — live PMS proof and recordings take priority
+
+- The owner clarified that the acceptance target is actual read-only tool
+  execution inside the live PMS, with recordings from that live PMS workflow.
+  The synthetic videos from the previous handoff do not satisfy the request;
+  retain them as historical test evidence, not delivery evidence. Do not make
+  further synthetic recording deliverables unless explicitly requested.
+- Existing PMS credentials and read-only exploration are authorized. All
+  current application users have all configured tools/data access; no new
+  role/allowlist approval is pending. Read-only controls and credential safety
+  still apply.
+- Current live progress for the new toolkit is **not done**: no fresh live-PMS
+  tool execution or live-PMS videos were completed in this run. One remote
+  operator preflight stopped before PMS access at an installed-binary pin
+  mismatch; it does not prove the approved Playwright route is inaccessible.
+- The earlier "implemented and locally verified" summary overstated delivery:
+  some capabilities are partial integrations, unavailable responses, or missing
+  live-source wiring. Local tests cannot promote them to working live readers.
+- Live PMS exploration, tool runs, result verification, and actual PMS recordings
+  are the next priority. Historical email qualification is a separate comparison
+  task, not a prerequisite for directly exercising read-only tools in the PMS.
+- This status-clarification turn records the owner's correction; it does not
+  claim a new live attempt, runtime repair, deployment, or code change.
+
 ## Current checkpoint — final local checks complete; full plan remains partial (2026-09-10)
 
 - Reviewed runtime/test source is `eff22bce3f9e675e7006c0757e3ed7c7274538ba`.

@@ -3,6 +3,15 @@
  * Credential-grade — digests/paths only in receipts; never guest/mail/credential values.
  */
 import {
+  collectHmsStorageStateSecretValues,
+  HMS_TRACE_SANITIZER_VERSION,
+  HmsTracePrivacyError,
+  removeNewTraceFiles,
+  sanitizePlaywrightTraceFile,
+  unzipBoundedTraceArchive,
+  type HmsTraceSanitizationResult,
+} from './trace-privacy.js';
+import {
   chmod,
   lstat,
   mkdir,
@@ -24,9 +33,15 @@ import { ExclusiveReceiptError, resolveExclusiveReceiptFile } from './receipt-ex
 import { dirname, isAbsolute, join, parse, relative, sep } from 'node:path';
 import type { DiscoveryOperationId, HmsReadToolId } from './read-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { platform } from 'node:os';
+
+export {
+  collectHmsStorageStateSecretValues,
+  HMS_TRACE_SANITIZER_VERSION,
+  sanitizePlaywrightTraceFile,
+};
+export type { HmsTraceSanitizationResult };
 
 export const HMS_BROWSER_ARTIFACT_TTL_MS = 24 * 60 * 60 * 1000;
 export const HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS = 30_000;
@@ -276,6 +291,7 @@ export class HmsBrowserArtifactError extends Error {
     | 'TRACE_START_FAILED'
     | 'TRACE_FINALIZE_FAILED'
     | 'VIDEO_FINALIZE_FAILED'
+    | 'TRACE_PRIVACY_FAILED'
     | 'CAPTURE_CAPACITY_EXCEEDED'
     | 'PRODUCTION_ORIGIN_MISMATCH';
 
@@ -315,11 +331,20 @@ export type HmsBrowserCaptureHandle = {
   artifactId: string;
   stagingDir: string;
   videoDir: string | null;
+  /** Operation-owned offline/native staging namespace. */
   tracesDir: string;
+  /** Launch-level native namespace used by the reused browser process. */
+  nativeTracesDir: string;
+  /** Stable per-capture native trace name used to claim launch-level files. */
+  nativeTraceName: string;
+  addSecretValues(values: readonly string[]): void;
+  /** Synchronously poison publication before a timed-out producer can win. */
+  invalidate(): void;
   markMilestone(key: keyof HmsBrowserArtifactReceiptBaseV1['milestones'], at?: Date): void;
   observeStagedBytes(): Promise<number>;
   observeFreeBytes(): Promise<number>;
   finalize(input: {
+    signal?: AbortSignal;
     outcome: HmsBrowserArtifactReceiptBaseV1['operationOutcome'];
     terminalCode: HmsBrowserArtifactReceiptBaseV1['terminalCode'];
     terminalStage: HmsBrowserArtifactReceiptBaseV1['terminalStage'];
@@ -465,6 +490,102 @@ async function directoryFileSizes(
     }
   }
   return out;
+}
+
+type TraceFileFingerprint = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+};
+
+async function directoryFileFingerprints(
+  dir: string,
+  out = new Map<string, TraceFileFingerprint>(),
+): Promise<Map<string, TraceFileFingerprint>> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await directoryFileFingerprints(full, out);
+    } else if (entry.isFile()) {
+      const info = await lstat(full);
+      out.set(full, {
+        dev: info.dev,
+        ino: info.ino,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+      });
+    } else if (entry.isSymbolicLink()) {
+      throw new HmsBrowserArtifactError(
+        'TRACE_STORAGE_UNAVAILABLE',
+        'symbolic link in native trace namespace',
+      );
+    }
+  }
+  return out;
+}
+
+function sameTraceFileFingerprint(
+  left: TraceFileFingerprint | undefined,
+  right: TraceFileFingerprint | undefined,
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      left.dev === right.dev &&
+      left.ino === right.ino &&
+      left.size === right.size &&
+      left.mtimeMs === right.mtimeMs,
+  );
+}
+
+async function removeOwnedCaptureFiles(input: {
+  operationDir: string;
+  nativeDir: string;
+  artifactId: string;
+  baseline: ReadonlyMap<string, TraceFileFingerprint>;
+  activeOwnerIds: ReadonlySet<string>;
+  allowOtherOwners: boolean;
+}): Promise<void> {
+  // The operation namespace is exclusively owned. A missing namespace is a
+  // failed cleanup proof, not an empty directory to silently accept.
+  await removeNewTraceFiles(input.operationDir, new Map());
+  await rm(input.operationDir, { recursive: true, force: false });
+
+  const current = await directoryFileFingerprints(input.nativeDir);
+  const operationPrefix = `${input.operationDir}${sep}`;
+  for (const [path, fingerprint] of current) {
+    if (path.startsWith(operationPrefix)) continue;
+    const baseline = input.baseline.get(path);
+    const changed = baseline !== undefined && !sameTraceFileFingerprint(baseline, fingerprint);
+    const created = baseline === undefined;
+    const ownerMatch = path.includes(input.artifactId);
+    if (ownerMatch && (created || changed)) {
+      await rm(path, { force: false });
+      continue;
+    }
+    if (!created && !changed) continue;
+
+    const belongsToAnotherOwner = [...input.activeOwnerIds].some(
+      (ownerId) => ownerId !== input.artifactId && path.includes(ownerId),
+    );
+    if (belongsToAnotherOwner || input.allowOtherOwners) continue;
+    throw new HmsBrowserArtifactError(
+      'TRACE_FINALIZE_FAILED',
+      'native trace ownership or cleanup could not be proven',
+    );
+  }
+
+  const remaining = await directoryFileFingerprints(input.nativeDir);
+  for (const path of remaining.keys()) {
+    if (path.includes(input.artifactId)) {
+      throw new HmsBrowserArtifactError(
+        'TRACE_FINALIZE_FAILED',
+        'owned native trace remained after cleanup',
+      );
+    }
+  }
 }
 
 async function directoryGrowthBytes(
@@ -738,133 +859,46 @@ export async function validateWebmFile(path: string): Promise<boolean> {
   }
 }
 
-function commandSucceeds(command: string, args: readonly string[]): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(ok);
-    };
-    const child = spawn(command, [...args], { stdio: 'ignore' });
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(false);
-    }, 30_000);
-    child.once('error', () => finish(false));
-    child.once('close', (code) => finish(code === 0));
-  });
-}
-
-function commandOutput(command: string, args: readonly string[]): Promise<string | null> {
-  return new Promise((resolveOutput) => {
-    let settled = false;
-    let stdout = '';
-    const child = spawn(command, [...args], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolveOutput(value);
-    };
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(null);
-    }, 30_000);
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-      if (stdout.length > 1024 * 1024) {
-        child.kill('SIGKILL');
-        finish(null);
-      }
-    });
-    child.once('error', () => finish(null));
-    child.once('close', (code) => finish(code === 0 ? stdout : null));
-  });
-}
-
-function validateTraceJsonLines(
-  unzip: string,
-  path: string,
-  entry: 'trace.trace' | 'trace.network',
-): Promise<boolean> {
-  return new Promise((resolveValidation) => {
-    let settled = false;
-    let buffer = '';
-    let seenEvent = false;
-    const child = spawn(unzip, ['-p', path, entry], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const finish = (valid: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolveValidation(valid);
-    };
-    const parseLine = (line: string): boolean => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
+export async function validatePlaywrightTraceFile(path: string): Promise<boolean> {
+  try {
+    const info = await stat(path);
+    if (info.size <= 0 || info.size > HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) return false;
+    const archive = unzipBoundedTraceArchive(await readFile(path));
+    for (const name of ['trace.trace', 'trace.network'] as const) {
+      const bytes = archive[name];
+      if (!bytes || bytes.byteLength > 32 * 1024 ** 2) return false;
+      let text: string;
       try {
-        const event = JSON.parse(trimmed) as { type?: unknown } | null;
-        if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
-          return false;
-        }
-        seenEvent = true;
-        return true;
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       } catch {
         return false;
       }
-    };
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(false);
-    }, 30_000);
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      buffer += chunk;
-      if (buffer.length > 32 * 1024 * 1024 && !buffer.includes('\n')) {
-        child.kill('SIGKILL');
-        finish(false);
-        return;
-      }
-      let newline = buffer.indexOf('\n');
-      while (newline >= 0) {
-        if (!parseLine(buffer.slice(0, newline))) {
-          child.kill('SIGKILL');
-          finish(false);
-          return;
+      let seenEvent = false;
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let event: { type?: unknown; version?: unknown } | null;
+        try {
+          event = JSON.parse(trimmed) as { type?: unknown; version?: unknown };
+        } catch {
+          return false;
         }
-        buffer = buffer.slice(newline + 1);
-        newline = buffer.indexOf('\n');
+        if (
+          !event ||
+          typeof event !== 'object' ||
+          (typeof event.type !== 'string' &&
+            !(name === 'trace.trace' && typeof event.version === 'number'))
+        ) {
+          return false;
+        }
+        seenEvent = true;
       }
-    });
-    child.once('error', () => finish(false));
-    child.once('close', (code) => {
-      finish(code === 0 && parseLine(buffer) && seenEvent);
-    });
-  });
-}
-
-export async function validatePlaywrightTraceFile(path: string): Promise<boolean> {
-  const unzip = process.env.HMS_UNZIP_EXECUTABLE_PATH?.trim() || 'unzip';
-  if (!(await commandSucceeds(unzip, ['-tqq', path]))) return false;
-  const listing = await commandOutput(unzip, ['-Z1', path]);
-  if (listing == null) return false;
-  const entries = new Set(
-    listing
-      .split(/\r?\n/)
-      .map((entry) => entry.trim())
-      .filter(Boolean),
-  );
-  if (!entries.has('trace.trace') || !entries.has('trace.network')) return false;
-  return (
-    (await validateTraceJsonLines(unzip, path, 'trace.trace')) &&
-    (await validateTraceJsonLines(unzip, path, 'trace.network'))
-  );
+      if (!seenEvent) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function defaultGetFreeBytes(path: string): Promise<number> {
@@ -1022,6 +1056,7 @@ export async function createHmsBrowserArtifactStore(input: {
       throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
     }
   };
+  const activeCaptureIds = new Set<string>();
 
   return {
     root,
@@ -1078,9 +1113,32 @@ export async function createHmsBrowserArtifactStore(input: {
           await chmod(videoDir, 0o700);
         }
       }
-      // Playwright's launch-level tracesDir is shared across serialized
-      // sessions. Old raw traces are not part of this capture's capacity.
-      const intermediateFilesAtStart = await directoryFileSizes(intermediateDir);
+      // Playwright's launch-level tracesDir is shared by the reused browser.
+      // Keep a private operation namespace for offline/native producers while
+      // claiming the launch-level files with this capture's stable name.
+      const tracesDir = join(intermediateDir, `.capture-${artifactId}`);
+      await mkdir(tracesDir, { recursive: true, mode: 0o700 });
+      if (platform() !== 'win32') await chmod(tracesDir, 0o700);
+      await writeFile(
+        join(tracesDir, '.capture-owner.v1.json'),
+        `${JSON.stringify({ schemaVersion: 1, artifactId, pid: process.pid })}\n`,
+        { mode: 0o600 },
+      );
+      const intermediateFilesAtStart = await directoryFileFingerprints(intermediateDir);
+      const intermediateSizesAtStart = new Map(
+        [...intermediateFilesAtStart].map(([path, fingerprint]) => [path, fingerprint.size]),
+      );
+      activeCaptureIds.add(artifactId);
+      const secretValues = new Set<string>();
+      let publicationInvalidated = false;
+      let retainedDir: string | null = null;
+      let committedDir: string | null = null;
+      let committedReceipt: HmsBrowserArtifactReceiptV1 | null = null;
+      // Installed before publication and retained for late abandon retries.
+      let quarantineCommittedTarget: (
+        receipt: HmsBrowserArtifactReceiptV1,
+      ) => Promise<{ receipt: HmsBrowserArtifactReceiptV1; targetDir: string }>;
+      let finalized = false;
 
       const milestones: HmsBrowserArtifactReceiptBaseV1['milestones'] = {};
 
@@ -1088,7 +1146,19 @@ export async function createHmsBrowserArtifactStore(input: {
         artifactId,
         stagingDir,
         videoDir,
-        tracesDir: intermediateDir,
+        tracesDir,
+        nativeTracesDir: intermediateDir,
+        nativeTraceName: artifactId,
+
+        invalidate() {
+          publicationInvalidated = true;
+        },
+
+        addSecretValues(values) {
+          for (const value of values) {
+            if (typeof value === 'string' && value.length > 0) secretValues.add(value);
+          }
+        },
 
         markMilestone(key, at = new Date()) {
           milestones[key] = at.toISOString();
@@ -1098,7 +1168,7 @@ export async function createHmsBrowserArtifactStore(input: {
           const staged = await directoryBytes(stagingDir);
           const intermediate = await directoryGrowthBytes(
             intermediateDir,
-            intermediateFilesAtStart,
+            intermediateSizesAtStart,
           );
           return staged + intermediate;
         },
@@ -1108,135 +1178,609 @@ export async function createHmsBrowserArtifactStore(input: {
         },
 
         async finalize(input) {
+          if (retainedDir) {
+            try {
+              const body = await readFile(join(retainedDir, 'receipt.v1.json'), 'utf8');
+              return JSON.parse(body) as HmsBrowserArtifactReceiptV1;
+            } catch {
+              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+            }
+          }
           const expiresAt = new Date(Date.now() + HMS_BROWSER_ARTIFACT_TTL_MS).toISOString();
-
+          const currentInput = (): typeof input =>
+            publicationInvalidated
+              ? {
+                  ...input,
+                  complete: false,
+                  outcome: input.outcome === 'succeeded' ? 'aborted' as const : input.outcome,
+                  terminalCode: 'ABORTED' as const,
+                  terminalStage: 'context_close' as const,
+                }
+              : input;
+          const tracePath = join(stagingDir, 'trace.zip');
+          const reviewTracePath = join(stagingDir, '.trace-review.zip');
           let traceDigest: { sha256: string; bytes: number } | null = null;
           let videoDigest: { sha256: string; bytes: number } | null = null;
+          let traceProvenance: HmsTraceSanitizationResult | null = null;
 
-          const tracePath = join(stagingDir, 'trace.zip');
-          try {
-            const traceInfo = await stat(tracePath);
-            if (traceInfo.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) {
-              throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
+          const removeIfPresent = async (path: string): Promise<void> => {
+            try {
+              await rm(path, { force: false });
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
             }
-            traceDigest = await fileDigest(tracePath);
-            if (
-              input.complete &&
-              (!(await isTraceZip(tracePath)) || !(await validateTraceFile(tracePath)))
-            ) {
-              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
-            }
-            if (platform() !== 'win32') {
-              await chmod(tracePath, 0o600);
-            }
-          } catch (error) {
-            if (error instanceof HmsBrowserArtifactError) throw error;
-            if (input.complete) {
-              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
-            }
-          }
+          };
 
-          const videoPath = join(stagingDir, 'video.webm');
-          try {
-            const videoInfo = await stat(videoPath);
-            if (
-              (traceDigest?.bytes ?? 0) + videoInfo.size >=
-              HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES
-            ) {
-              throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
+          const cleanupNative = async (allowOtherOwners: boolean): Promise<void> => {
+            try {
+              await removeOwnedCaptureFiles({
+                operationDir: tracesDir,
+                nativeDir: intermediateDir,
+                artifactId,
+                baseline: intermediateFilesAtStart,
+                activeOwnerIds: activeCaptureIds,
+                allowOtherOwners,
+              });
+              activeCaptureIds.delete(artifactId);
+            } catch (error) {
+              if (error instanceof HmsBrowserArtifactError) throw error;
+              throw new HmsBrowserArtifactError(
+                'TRACE_FINALIZE_FAILED',
+                'native trace cleanup could not be verified',
+              );
             }
-            videoDigest = await fileDigest(videoPath);
-            if (
-              spec.executionClass === 'live_proof' &&
-              input.complete &&
-              (!(await validateWebmFile(videoPath)) || !(await validateVideoFile(videoPath)))
-            ) {
-              throw new HmsBrowserArtifactError('VIDEO_FINALIZE_FAILED');
-            }
-            if (platform() !== 'win32') {
-              await chmod(videoPath, 0o600);
-            }
-          } catch (error) {
-            if (error instanceof HmsBrowserArtifactError) throw error;
-            if (spec.executionClass === 'live_proof' && input.complete) {
-              throw new HmsBrowserArtifactError('VIDEO_FINALIZE_FAILED');
-            }
-          }
+          };
 
-          const base: HmsBrowserArtifactReceiptBaseV1 = {
+          const buildBase = (
+            effectiveInput = currentInput(),
+          ): HmsBrowserArtifactReceiptBaseV1 => ({
             schemaVersion: 1,
             artifactId,
             operationId: spec.operationId,
-            sourceRevision: input.sourceRevision,
+            sourceRevision: effectiveInput.sourceRevision,
             toolId: captureToolId,
             toolVersion: spec.toolVersion,
             dependencyRevision: spec.dependencyRevision,
-            playwrightRevision: input.playwrightRevision,
-            chromiumRevision: input.chromiumRevision,
+            playwrightRevision: effectiveInput.playwrightRevision,
+            chromiumRevision: effectiveInput.chromiumRevision,
             executionClass: spec.executionClass,
             inputClass: spec.inputClass,
             credentialMode: 'view_only',
             roleProofSha256: spec.roleProofSha256 ?? null,
             roleProofExpiresAt: spec.roleProofExpiresAt ?? null,
             requestBranchId: spec.requestBranchId ?? null,
-            operationOutcome: input.outcome,
-            requestRules: input.requestRules,
-            blockedRequests: input.blockedRequests,
-            mutationRequests: input.mutationRequests,
-            popupCount: input.popupCount,
-            downloadCount: input.downloadCount,
-            webSocketCount: input.webSocketCount,
+            operationOutcome: effectiveInput.outcome,
+            requestRules: effectiveInput.requestRules,
+            blockedRequests: effectiveInput.blockedRequests,
+            mutationRequests: effectiveInput.mutationRequests,
+            popupCount: effectiveInput.popupCount,
+            downloadCount: effectiveInput.downloadCount,
+            webSocketCount: effectiveInput.webSocketCount,
             milestones: { ...milestones },
-            terminalCode: input.terminalCode,
-            terminalStage: input.terminalStage,
+            terminalCode: effectiveInput.terminalCode,
+            terminalStage: effectiveInput.terminalStage,
             expiresAt,
+          });
+
+          const writeReceiptAt = async (
+            receiptPath: string,
+            receipt: HmsBrowserArtifactReceiptV1,
+          ): Promise<void> => {
+            const body = `${JSON.stringify(receipt)}\n`;
+            const fh = await open(receiptPath, 'w', 0o600);
+            try {
+              await fh.writeFile(body, 'utf8');
+              await fh.sync();
+            } finally {
+              await fh.close();
+            }
+          };
+          const writeReceiptFile = async (
+            directory: string,
+            receipt: HmsBrowserArtifactReceiptV1,
+          ): Promise<void> => writeReceiptAt(join(directory, 'receipt.v1.json'), receipt);
+          const rewritePrivateReceipt = async (
+            directory: string,
+            receipt: HmsBrowserArtifactReceiptV1,
+          ): Promise<void> => {
+            const receiptPath = join(directory, 'receipt.v1.json');
+            try {
+              await writeReceiptFile(directory, receipt);
+              if (platform() !== 'win32') await chmod(receiptPath, 0o600);
+              return;
+            } catch {
+              const temporaryPath = `${receiptPath}.tmp-${randomUUID()}`;
+              try {
+                await writeReceiptAt(temporaryPath, receipt);
+                await rename(temporaryPath, receiptPath);
+                if (platform() !== 'win32') await chmod(receiptPath, 0o600);
+              } finally {
+                await rm(temporaryPath, { force: true }).catch(() => undefined);
+              }
+            }
+          };
+          quarantineCommittedTarget = async (
+            receipt: HmsBrowserArtifactReceiptV1,
+          ): Promise<{
+            receipt: HmsBrowserArtifactReceiptV1;
+            targetDir: string;
+          }> => {
+            const sourceDir = committedDir;
+            if (!sourceDir) throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+            const incompleteTarget = join(root, `.incomplete-${artifactId}`);
+            try {
+              if (sourceDir !== incompleteTarget) {
+                await rename(sourceDir, incompleteTarget);
+                committedDir = incompleteTarget;
+              }
+              const invalidated = publicationInvalidated;
+              const retainedInput = {
+                ...currentInput(),
+                complete: false,
+                outcome: invalidated || currentInput().outcome === 'aborted'
+                  ? 'aborted' as const
+                  : 'failed' as const,
+                terminalCode: invalidated ? 'ABORTED' as const : 'TRACE_FINALIZE_FAILED' as const,
+                terminalStage: invalidated ? 'context_close' as const : 'receipt_finalize' as const,
+              };
+              const incompleteReceipt: HmsBrowserArtifactReceiptV1 = {
+                ...buildBase(retainedInput),
+                artifactState: 'incomplete',
+                trace: receipt.trace,
+                video: receipt.video,
+              };
+              assertNoForbiddenKeys(incompleteReceipt);
+              await rewritePrivateReceipt(incompleteTarget, incompleteReceipt);
+              committedReceipt = incompleteReceipt;
+              retainedDir = incompleteTarget;
+              return { receipt: incompleteReceipt, targetDir: incompleteTarget };
+            } catch (error) {
+              await rm(join(committedDir ?? sourceDir, 'receipt.v1.json'), { force: false }).catch(
+                () => undefined,
+              );
+              throw error;
+            }
           };
 
-          const receipt: HmsBrowserArtifactReceiptV1 = input.complete
-            ? {
-                ...base,
-                artifactState: 'complete',
-                trace: traceDigest!,
-                video: spec.executionClass === 'live_proof' ? videoDigest : null,
-              }
-            : {
-                ...base,
+          const writeReceipt = async (
+            receipt: HmsBrowserArtifactReceiptV1,
+            targetDir: string,
+            allowIncompleteCleanup = false,
+          ): Promise<{
+            receipt: HmsBrowserArtifactReceiptV1;
+            targetDir: string;
+            cleanupError: unknown;
+          }> => {
+            let writeCleanupError: unknown;
+            let publicationReceipt = receipt;
+            const makeIncomplete = (): void => {
+              if (publicationReceipt.artifactState !== 'complete') return;
+              publicationReceipt = {
+                ...buildBase(currentInput()),
                 artifactState: 'incomplete',
-                trace: traceDigest,
-                video: videoDigest,
+                trace: publicationReceipt.trace,
+                video: publicationReceipt.video,
               };
+            };
+            // Cancellation is monotonic. Re-check before writing and again at
+            // the publication boundary so an in-flight finalizer cannot rename
+            // a complete capture after invalidation.
+            if (publicationInvalidated) makeIncomplete();
+            if (traceProvenance) {
+              const provenancePath = join(stagingDir, '.trace-provenance.v1.json');
+              const provenance = {
+                schemaVersion: 1,
+                sanitizerVersion: traceProvenance.sanitizerVersion,
+                raw: traceProvenance.raw,
+                review: traceProvenance.review,
+              } as const;
+              try {
+                await writeFile(provenancePath, `${JSON.stringify(provenance)}\n`, {
+                  mode: 0o600,
+                });
+                if (platform() !== 'win32') await chmod(provenancePath, 0o600);
+              } catch (error) {
+                if (!allowIncompleteCleanup) throw error;
+                writeCleanupError = error;
+              }
+            }
+            try {
+              await removeIfPresent(join(stagingDir, '.capture-owner.v1.json'));
+            } catch (error) {
+              if (!allowIncompleteCleanup) throw error;
+              writeCleanupError ??= error;
+            }
+            if (allowIncompleteCleanup && writeCleanupError) {
+              publicationReceipt = {
+                ...buildBase({
+                  ...currentInput(),
+                  complete: false,
+                  outcome: currentInput().outcome === 'aborted' ? 'aborted' : 'failed',
+                  terminalCode: 'TRACE_FINALIZE_FAILED',
+                  terminalStage: 'receipt_finalize',
+                }),
+                artifactState: 'incomplete',
+                trace: null,
+                video: publicationReceipt.video,
+              };
+            }
+            assertNoForbiddenKeys(publicationReceipt);
+            const receiptPath = join(stagingDir, 'receipt.v1.json');
+            await writeReceiptFile(stagingDir, publicationReceipt);
+            if (publicationInvalidated) {
+              makeIncomplete();
+              assertNoForbiddenKeys(publicationReceipt);
+              await writeReceiptFile(stagingDir, publicationReceipt);
+            }
+            if (platform() !== 'win32') {
+              try {
+                await chmod(receiptPath, 0o600);
+              } catch (error) {
+                if (!allowIncompleteCleanup) throw error;
+                writeCleanupError ??= error;
+                publicationReceipt = {
+                  ...buildBase({
+                    ...currentInput(),
+                    complete: false,
+                    outcome: currentInput().outcome === 'aborted' ? 'aborted' : 'failed',
+                    terminalCode: 'TRACE_FINALIZE_FAILED',
+                    terminalStage: 'receipt_finalize',
+                  }),
+                  artifactState: 'incomplete',
+                  trace: null,
+                  video: publicationReceipt.video,
+                };
+                assertNoForbiddenKeys(publicationReceipt);
+                await writeReceiptFile(stagingDir, publicationReceipt);
+              }
+            }
+            if (publicationInvalidated) {
+              makeIncomplete();
+              assertNoForbiddenKeys(publicationReceipt);
+              await writeReceiptFile(stagingDir, publicationReceipt);
+            }
+            const finalTarget =
+              publicationReceipt.artifactState === 'complete' && !publicationInvalidated
+                ? targetDir
+                : join(root, `.incomplete-${artifactId}`);
+            await rename(stagingDir, finalTarget);
+            committedDir = finalTarget;
+            committedReceipt = publicationReceipt;
+            // Failed-complete retention also crosses this asynchronous boundary;
+            // its already-incomplete receipt must reflect a late invalidation.
+            if (input.complete && publicationInvalidated) {
+              const quarantined = await quarantineCommittedTarget(publicationReceipt);
+              return {
+                receipt: quarantined.receipt,
+                targetDir: quarantined.targetDir,
+                cleanupError: writeCleanupError,
+              };
+            }
+            return {
+              receipt: publicationReceipt,
+              targetDir: finalTarget,
+              cleanupError: writeCleanupError,
+            };
+          };
 
-          assertNoForbiddenKeys(receipt);
+          const retainIncomplete = async (): Promise<HmsBrowserArtifactReceiptV1> => {
+            if (retainedDir) {
+              try {
+                const body = await readFile(join(retainedDir, 'receipt.v1.json'), 'utf8');
+                return JSON.parse(body) as HmsBrowserArtifactReceiptV1;
+              } catch {
+                throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+              }
+            }
+            if (committedDir && committedReceipt) {
+              try {
+                const quarantined = await quarantineCommittedTarget(committedReceipt);
+                activeCaptureIds.delete(artifactId);
+                finalized = true;
+                return quarantined.receipt;
+              } catch {
+                throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+              }
+            }
+            const cleanupErrors: unknown[] = [];
+            const attemptCleanup = async (operation: () => Promise<void>): Promise<void> => {
+              try {
+                await operation();
+              } catch (error) {
+                cleanupErrors.push(error);
+              }
+            };
+            await attemptCleanup(() => removeIfPresent(reviewTracePath));
+            // The trace is removed from staging on every incomplete path. Its
+            // digest must never describe bytes no longer retained.
+            traceDigest = null;
+            await attemptCleanup(() => removeIfPresent(tracePath));
+            await attemptCleanup(() => cleanupNative(false));
+            const retentionFailedComplete = input.complete && !publicationInvalidated;
+            const retentionAborted = publicationInvalidated || currentInput().outcome === 'aborted';
+            const receiptInput = cleanupErrors.length > 0 || retentionFailedComplete
+              ? {
+                  ...currentInput(),
+                  complete: false,
+                  outcome: retentionAborted ? 'aborted' as const : 'failed' as const,
+                  terminalCode: retentionAborted ? 'ABORTED' as const : 'TRACE_FINALIZE_FAILED' as const,
+                  terminalStage: retentionAborted ? 'context_close' as const : 'receipt_finalize' as const,
+                }
+              : currentInput();
+            const receipt: HmsBrowserArtifactReceiptV1 = {
+              ...buildBase(receiptInput),
+              artifactState: 'incomplete',
+              trace: null,
+              video: videoDigest,
+            };
+            const targetDir = join(root, `.incomplete-${artifactId}`);
+            let published: {
+              receipt: HmsBrowserArtifactReceiptV1;
+              targetDir: string;
+              cleanupError: unknown;
+            };
+            try {
+              published = await writeReceipt(receipt, targetDir, true);
+            } catch (writeError) {
+              cleanupErrors.push(writeError);
+              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+            }
+            activeCaptureIds.delete(artifactId);
+            retainedDir = published.targetDir;
+            finalized = true;
+            if (cleanupErrors.length > 0 || published.cleanupError) {
+              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+            }
+            return published.receipt;
+          };
 
-          await rm(join(stagingDir, '.capture-owner.v1.json'), { force: true });
-          const receiptPath = join(stagingDir, 'receipt.v1.json');
-          const body = `${JSON.stringify(receipt)}\n`;
-          const fh = await open(receiptPath, 'w', 0o600);
           try {
-            await fh.writeFile(body, 'utf8');
-            await fh.sync();
-          } finally {
-            await fh.close();
-          }
-          if (platform() !== 'win32') {
-            await chmod(receiptPath, 0o600);
-          }
+            try {
+              const traceInfo = await stat(tracePath);
+              if (traceInfo.size >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) {
+                throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
+              }
+              try {
+                traceProvenance = await sanitizePlaywrightTraceFile(
+                  tracePath,
+                  reviewTracePath,
+                  [...secretValues],
+                  { signal: input.signal },
+                );
+              } catch (error) {
+                if (error instanceof HmsTracePrivacyError) {
+                  throw new HmsBrowserArtifactError('TRACE_PRIVACY_FAILED');
+                }
+                throw error;
+              }
+              await removeIfPresent(tracePath);
+              await rename(reviewTracePath, tracePath);
+              traceDigest = await fileDigest(tracePath);
+              if (traceDigest.bytes >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES) {
+                throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
+              }
+              const traceValid =
+                (await isTraceZip(tracePath)) && (await validateTraceFile(tracePath));
+              if (!traceValid) {
+                await removeIfPresent(tracePath);
+                traceDigest = null;
+                if (currentInput().complete) {
+                  throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+                }
+              } else if (platform() !== 'win32') {
+                await chmod(tracePath, 0o600);
+              }
+            } catch (error) {
+              traceDigest = null;
+              await removeIfPresent(tracePath);
+              if (error instanceof HmsBrowserArtifactError) throw error;
+              if (currentInput().complete) {
+                throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+              }
+            }
 
-          const finalDir = join(root, artifactId);
-          await rename(stagingDir, finalDir);
-          return receipt;
+            const videoPath = join(stagingDir, 'video.webm');
+            try {
+              const videoInfo = await stat(videoPath);
+              if (
+                (traceDigest?.bytes ?? 0) + videoInfo.size >=
+                HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES
+              ) {
+                throw new HmsBrowserArtifactError('CAPTURE_CAPACITY_EXCEEDED');
+              }
+              videoDigest = await fileDigest(videoPath);
+              if (
+                spec.executionClass === 'live_proof' &&
+                currentInput().complete &&
+                (!(await validateWebmFile(videoPath)) || !(await validateVideoFile(videoPath)))
+              ) {
+                throw new HmsBrowserArtifactError('VIDEO_FINALIZE_FAILED');
+              }
+              if (platform() !== 'win32') await chmod(videoPath, 0o600);
+            } catch (error) {
+              if (error instanceof HmsBrowserArtifactError) throw error;
+              if (spec.executionClass === 'live_proof' && currentInput().complete) {
+                throw new HmsBrowserArtifactError('VIDEO_FINALIZE_FAILED');
+              }
+            }
+
+            const effectiveInput = currentInput();
+            const receipt: HmsBrowserArtifactReceiptV1 = effectiveInput.complete
+              ? {
+                  ...buildBase(),
+                  artifactState: 'complete',
+                  trace: traceDigest!,
+                  video: spec.executionClass === 'live_proof' ? videoDigest : null,
+                }
+              : {
+                  ...buildBase(),
+                  artifactState: 'incomplete',
+                  trace: traceDigest,
+                  video: videoDigest,
+                };
+            assertNoForbiddenKeys(receipt);
+            await removeIfPresent(reviewTracePath);
+            await cleanupNative(false);
+            const targetDir = effectiveInput.complete
+              ? join(root, artifactId)
+              : join(root, `.incomplete-${artifactId}`);
+            const published = await writeReceipt(receipt, targetDir);
+            retainedDir = published.receipt.artifactState === 'complete' ? null : published.targetDir;
+            finalized = true;
+            return published.receipt;
+          } catch (error) {
+            if (finalized) throw error;
+            await retainIncomplete();
+            if (error instanceof HmsBrowserArtifactError) throw error;
+            throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+          }
         },
 
         async abandon() {
-          const incomplete = join(root, `.incomplete-${artifactId}`);
-          await rm(join(stagingDir, '.capture-owner.v1.json'), {
-            force: true,
-          }).catch(() => undefined);
-          try {
-            await rename(stagingDir, incomplete);
-          } catch {
-            await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+          publicationInvalidated = true;
+          if (retainedDir) return;
+          if (committedDir && committedReceipt) {
+            try {
+              try {
+                await quarantineCommittedTarget(committedReceipt);
+              } catch {
+                await quarantineCommittedTarget(committedReceipt);
+              }
+              activeCaptureIds.delete(artifactId);
+              finalized = true;
+              return;
+            } catch {
+              throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+            }
           }
+          const expiresAt = new Date(Date.now() + HMS_BROWSER_ARTIFACT_TTL_MS).toISOString();
+          const tracePath = join(stagingDir, 'trace.zip');
+          const reviewTracePath = join(stagingDir, '.trace-review.zip');
+          const removeIfPresent = async (path: string): Promise<void> => {
+            try {
+              await rm(path, { force: false });
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+          };
+          let cleanupError: unknown;
+          const attemptCleanup = async (operation: () => Promise<void>): Promise<void> => {
+            try {
+              await operation();
+            } catch (error) {
+              cleanupError ??= error;
+            }
+          };
+          await attemptCleanup(() => removeIfPresent(reviewTracePath));
+          await attemptCleanup(() => removeIfPresent(tracePath));
+          await attemptCleanup(async () => {
+            try {
+              await removeOwnedCaptureFiles({
+                operationDir: tracesDir,
+                nativeDir: intermediateDir,
+                artifactId,
+                baseline: intermediateFilesAtStart,
+                activeOwnerIds: activeCaptureIds,
+                allowOtherOwners: true,
+              });
+            } catch (error) {
+              if (error instanceof HmsBrowserArtifactError) throw error;
+              throw new HmsBrowserArtifactError(
+                'TRACE_FINALIZE_FAILED',
+                'native trace cleanup could not be verified',
+              );
+            }
+          });
+          activeCaptureIds.delete(artifactId);
+          let receipt: HmsBrowserArtifactReceiptV1 = {
+            schemaVersion: 1,
+            artifactId,
+            operationId: spec.operationId,
+            sourceRevision: 'unknown',
+            toolId: captureToolId,
+            toolVersion: spec.toolVersion,
+            dependencyRevision: spec.dependencyRevision,
+            playwrightRevision: 'unknown',
+            chromiumRevision: 'unknown',
+            executionClass: spec.executionClass,
+            inputClass: spec.inputClass,
+            credentialMode: 'view_only',
+            roleProofSha256: spec.roleProofSha256 ?? null,
+            roleProofExpiresAt: spec.roleProofExpiresAt ?? null,
+            requestBranchId: spec.requestBranchId ?? null,
+            operationOutcome: 'aborted',
+            requestRules: [],
+            blockedRequests: 0,
+            mutationRequests: 0,
+            popupCount: 0,
+            downloadCount: 0,
+            webSocketCount: 0,
+            milestones: { ...milestones },
+            terminalCode: cleanupError ? 'TRACE_FINALIZE_FAILED' : 'ABORTED',
+            terminalStage: cleanupError ? 'receipt_finalize' : 'context_close',
+            expiresAt,
+            artifactState: 'incomplete',
+            trace: null,
+            video: null,
+          };
+          assertNoForbiddenKeys(receipt);
+          await attemptCleanup(() => removeIfPresent(join(stagingDir, '.capture-owner.v1.json')));
+          if (cleanupError) {
+            receipt = {
+              ...receipt,
+              terminalCode: 'TRACE_FINALIZE_FAILED',
+              terminalStage: 'receipt_finalize',
+            };
+            assertNoForbiddenKeys(receipt);
+          }
+          const receiptPath = join(stagingDir, 'receipt.v1.json');
+          let writeError: unknown;
+          try {
+            const fh = await open(receiptPath, 'w', 0o600);
+            try {
+              await fh.writeFile(`${JSON.stringify(receipt)}\n`, 'utf8');
+              await fh.sync();
+            } finally {
+              await fh.close();
+            }
+          } catch (error) {
+            writeError = error;
+          }
+          if (!writeError && platform() !== 'win32') {
+            await attemptCleanup(() => chmod(receiptPath, 0o600));
+            if (cleanupError) {
+              receipt = {
+                ...receipt,
+                terminalCode: 'TRACE_FINALIZE_FAILED',
+                terminalStage: 'receipt_finalize',
+              };
+              try {
+                const fh = await open(receiptPath, 'w', 0o600);
+                try {
+                  await fh.writeFile(`${JSON.stringify(receipt)}\n`, 'utf8');
+                  await fh.sync();
+                } finally {
+                  await fh.close();
+                }
+              } catch (error) {
+                writeError = error;
+              }
+            }
+          }
+          const targetDir = join(root, `.incomplete-${artifactId}`);
+          if (!writeError) {
+            try {
+              await rename(stagingDir, targetDir);
+              retainedDir = targetDir;
+            } catch (error) {
+              writeError = error;
+            }
+          }
+          if (writeError) {
+            throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
+          }
+          finalized = true;
+          if (cleanupError) throw new HmsBrowserArtifactError('TRACE_FINALIZE_FAILED');
         },
       };
 

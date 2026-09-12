@@ -21,6 +21,7 @@ import type {
   ExactReservationCandidate,
   GuestStaySearchResult,
   LiveGuestStayDriver,
+  ReservationSearchCandidate,
 } from './live-guest-stay-driver.js';
 import type { MapEnvelopeRequesterAuthorization } from './claim-envelope.js';
 import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
@@ -95,6 +96,10 @@ function mapMatchedRow(
   if (!row.arrivalDate) unresolvedFields.push('arrivalDate');
   if (!row.departureDate) unresolvedFields.push('departureDate');
   if (!row.reservationStatus) unresolvedFields.push('reservationStatus');
+  if (!row.guestName) unresolvedFields.push('guestName');
+  // Search-grid roomType is optional (dataspy 1941 often omits roomtype).
+  // ratePlan is never a find claim — owned by hms_read_reservation.
+  if (!row.roomType) unresolvedFields.push('roomType');
 
   const statusLower = (row.reservationStatus ?? '').toLowerCase();
   const canceled = CANCELED_STATUSES.has(statusLower);
@@ -114,25 +119,32 @@ function mapMatchedRow(
 
   const draftReady = status === 'ok' && unresolvedFields.length === 0 && !canceled && active;
 
+  const claimKeys: string[] = [];
+  if (row.confirmationNumber) claimKeys.push('matches.0.confirmationNumber');
+  if (row.externalReference) claimKeys.push('matches.0.externalReference');
+  if (row.guestName) claimKeys.push('matches.0.guestName');
+  if (row.reservationStatus) claimKeys.push('matches.0.reservationStatus');
+  if (row.arrivalDate) claimKeys.push('matches.0.arrivalDate');
+  if (row.departureDate) claimKeys.push('matches.0.departureDate');
+  if (row.roomType) claimKeys.push('matches.0.roomType');
+  // Never claim ratePlan on find — even if a fixture invents rateplan.
+
   return reservationResult({
     status,
     data: reservationReadDataSchema.parse({
-      matches: [row],
+      matches: [
+        {
+          ...row,
+          // Do not surface find-owned rate claims from GRID.
+          ratePlan: null,
+        },
+      ],
       matchCount: 1,
       capped: false,
     }),
     unresolvedFields: [...new Set(unresolvedFields)],
     observedAt,
-    claimKeys: [
-      'matches.0.confirmationNumber',
-      'matches.0.externalReference',
-      'matches.0.guestName',
-      'matches.0.reservationStatus',
-      'matches.0.arrivalDate',
-      'matches.0.departureDate',
-      'matches.0.roomType',
-      'matches.0.ratePlan',
-    ],
+    claimKeys,
     sourceSeed: `one:${row.confirmationNumber ?? row.externalReference ?? 'unknown'}`,
     draftReady,
   });
@@ -177,9 +189,9 @@ function mapSearchResult(
 
 export type CreateReservationCandidateSessionInput = {
   driver: LiveGuestStayDriver;
-  candidates: ReadonlyMap<string, ExactReservationCandidate>;
+  candidates: ReadonlyMap<string, ReservationSearchCandidate>;
   close: () => Promise<void>;
-  /** Test-only: inject non-exact lookup rows to prove manual_required gate. */
+  /** Additional lookup rows (e.g. surname_dates) merged into the session map. */
   extraLookupCandidates?: ReadonlyMap<string, LookupCandidate>;
   now?: () => Date;
   propertyCode?: string;
@@ -281,18 +293,12 @@ export function createReservationCandidateSession(
           propertyCode: input.propertyCode,
         });
       }
-      // surname_dates never opens browser in production shadow.
+      // Wave 0b: surname_dates opens browser via dump-proved lastname filters.
       if (candidate.kind === 'surname_dates') {
-        return reservationResult({
-          status: 'manual_required',
-          data: emptyReservationData(),
-          unresolvedFields: ['surname_dates'],
-          observedAt: now(),
-          claimKeys: [],
-          sourceSeed: 'surname_dates_manual',
-          draftReady: false,
-          propertyCode: input.propertyCode,
-        });
+        const searchCandidate: ReservationSearchCandidate = candidate;
+        return input.driver.searchExactAndMap(searchCandidate, signal, (search) =>
+          mapSearchResult(search, now()),
+        );
       }
       const exact: ExactReservationCandidate = candidate;
       const result = await input.driver.searchExactAndMap(exact, signal, (search) =>

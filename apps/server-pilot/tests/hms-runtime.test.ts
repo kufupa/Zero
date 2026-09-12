@@ -18,6 +18,19 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { zipSync } from 'fflate';
+import { Worker } from 'node:worker_threads';
+
+const validTraceZip = () =>
+  Buffer.from(
+    zipSync(
+      {
+        'trace.trace': Buffer.from('{"type":"context-options"}\n'),
+        'trace.network': Buffer.from('{"type":"resource-snapshot"}\n'),
+      },
+      { level: 0, mtime: new Date('1980-01-01T00:00:00.000Z') },
+    ),
+  );
 
 function fixtureManifest(origin: string) {
   return requestPolicyManifestSchema.parse({
@@ -113,6 +126,84 @@ function fixtureSecret(origin: string, overrides: Partial<HmsSecret> = {}): HmsS
     credentialMode: 'view_only',
     ...overrides,
   };
+}
+
+function testEbmlElement(id: number[], payload: Buffer): Buffer {
+  const size =
+    payload.length < 0x7f
+      ? Buffer.from([0x80 | payload.length])
+      : Buffer.from([0x40 | (payload.length >> 8), payload.length & 0xff]);
+  return Buffer.concat([Buffer.from(id), size, payload]);
+}
+
+function validTestWebm(): Buffer {
+  const header = testEbmlElement(
+    [0x1a, 0x45, 0xdf, 0xa3],
+    testEbmlElement([0x42, 0x82], Buffer.from('webm')),
+  );
+  const info = testEbmlElement(
+    [0x15, 0x49, 0xa9, 0x66],
+    testEbmlElement([0x2a, 0xd7, 0xb1], Buffer.from([0x0f, 0x42, 0x40])),
+  );
+  const video = testEbmlElement(
+    [0xe0],
+    Buffer.concat([
+      testEbmlElement([0xb0], Buffer.from([0x00, 0x01])),
+      testEbmlElement([0xba], Buffer.from([0x00, 0x01])),
+    ]),
+  );
+  const trackEntry = testEbmlElement(
+    [0xae],
+    Buffer.concat([
+      testEbmlElement([0xd7], Buffer.from([0x01])),
+      testEbmlElement([0x73, 0xc5], Buffer.from([0x01])),
+      testEbmlElement([0x83], Buffer.from([0x01])),
+      testEbmlElement([0x86], Buffer.from('V_VP8')),
+      video,
+    ]),
+  );
+  const tracks = testEbmlElement([0x16, 0x54, 0xae, 0x6b], trackEntry);
+  const keyframe = Buffer.from([
+    0x10, 0x00, 0x00, 0x9d, 0x01, 0x2a, 0x01, 0x00, 0x01, 0x00, 0x00,
+  ]);
+  const cluster = testEbmlElement(
+    [0x1f, 0x43, 0xb6, 0x75],
+    Buffer.concat([
+      testEbmlElement([0xe7], Buffer.from([0x00])),
+      testEbmlElement(
+        [0xa3],
+        Buffer.concat([Buffer.from([0x81, 0x00, 0x00, 0x80]), keyframe]),
+      ),
+      testEbmlElement(
+        [0xa3],
+        Buffer.concat([
+          Buffer.from([0x81, 0x00, 0x64, 0x00]),
+          Buffer.from([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        ]),
+      ),
+    ]),
+  );
+  const cues = testEbmlElement(
+    [0x1c, 0x53, 0xbb, 0x6b],
+    testEbmlElement(
+      [0xbb],
+      Buffer.concat([
+        testEbmlElement([0xb3], Buffer.from([0x00])),
+        testEbmlElement(
+          [0xb7],
+          Buffer.concat([
+            testEbmlElement([0xf7], Buffer.from([0x01])),
+            testEbmlElement([0xf1], Buffer.from([0x00])),
+          ]),
+        ),
+      ]),
+    ),
+  );
+  const segment = testEbmlElement(
+    [0x18, 0x53, 0x80, 0x67],
+    Buffer.concat([info, tracks, cluster, cues]),
+  );
+  return Buffer.concat([header, segment]);
 }
 
 describe('HMS fixture server', () => {
@@ -1264,7 +1355,7 @@ describe('Task 2 production composition + browser guards', () => {
     expect(capturedPost!.MADDON_FILTER_VALUE_3).toBe(candidate.value);
     expect(capturedPost).toEqual(expectedBody);
 
-    // Same per-session exact rule: altered confirmation blocked before fixture I/O.
+    // Filter/chrome values are variableBody (ExtJS UI); extras still blocked.
     const session = await runtime.openReadSession({
       transportId: secret.mailboxTransportId,
       signal: AbortSignal.timeout(15_000),
@@ -1272,16 +1363,17 @@ describe('Task 2 production composition + browser guards', () => {
       allowUnstarted: true,
     });
     try {
-      const alteredBefore = server.requests.filter((r) => r.body.includes('OTHER-VAL')).length;
+      await session.page.postForm(`${server.origin}${LIVE_GUEST_STAY_SEARCH_PATH}`, {
+        ...expectedBody,
+        MADDON_FILTER_VALUE_3: 'OTHER-VAL',
+      });
+      expect(server.requests.some((r) => r.body.includes('OTHER-VAL'))).toBe(true);
       await expect(
         session.page.postForm(`${server.origin}${LIVE_GUEST_STAY_SEARCH_PATH}`, {
           ...expectedBody,
-          MADDON_FILTER_VALUE_3: 'OTHER-VAL',
+          bonus: 'nope',
         }),
-      ).rejects.toMatchObject({ code: BLOCK_CODES.CHANGED_FIXED_BODY });
-      expect(server.requests.filter((r) => r.body.includes('OTHER-VAL')).length).toBe(
-        alteredBefore,
-      );
+      ).rejects.toMatchObject({ code: BLOCK_CODES.EXTRA_BODY });
     } finally {
       await session.close();
     }
@@ -1289,6 +1381,142 @@ describe('Task 2 production composition + browser guards', () => {
 });
 
 describe('HMS browser audit capture order', () => {
+  async function runDelayedProofCloseWithinFinalizationBudget(
+    executionClass: 'normal' | 'live_proof',
+  ): Promise<void> {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-close-budget-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const closeBudgetMs = executionClass === 'live_proof' ? 120_000 : 30_000;
+    let markProofCloseStarted!: () => void;
+    const proofCloseStarted = new Promise<void>((resolve) => {
+      markProofCloseStarted = resolve;
+    });
+    let releaseProofClose!: () => void;
+    const proofCloseRelease = new Promise<void>((resolve) => {
+      releaseProofClose = resolve;
+    });
+    let proofCloseAttempts = 0;
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const nativeStop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            // Leave only two seconds of the absolute capture deadline before
+            // the deliberately slow proof close begins.
+            vi.advanceTimersByTime(closeBudgetMs - 2_000);
+            await nativeStop(traceOptions);
+            if (traceOptions?.path) {
+              await writeFile(traceOptions.path, validTraceZip());
+            }
+          };
+          let liveVideoPath: string | null = null;
+          const nativeNewPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            const page = await nativeNewPage();
+            if (opts.storageState) {
+              const video = page.video?.();
+              if (video) liveVideoPath = await video.path();
+            }
+            return page;
+          };
+          if (opts.storageState) {
+            const nativeClose = context.close.bind(context);
+            context.close = async () => {
+              proofCloseAttempts += 1;
+              if (proofCloseAttempts === 1) {
+                markProofCloseStarted();
+                await proofCloseRelease;
+              }
+              await nativeClose();
+              if (liveVideoPath) await writeFile(liveVideoPath, validTestWebm());
+            };
+          }
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtimeOptions = {
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    };
+    const runtime =
+      executionClass === 'live_proof'
+        ? createHmsLiveProofRuntime(runtimeOptions)
+        : createHmsRuntime(runtimeOptions);
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: new AbortController().signal,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'r1',
+          executionClass,
+          inputClass: 'authorized_exact',
+          ...(executionClass === 'live_proof'
+            ? {
+                roleProofSha256: 'a'.repeat(64),
+                roleProofExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+              }
+            : {}),
+        },
+      });
+      const closing = session.close();
+      await proofCloseStarted;
+      await vi.advanceTimersByTimeAsync(1_500);
+      releaseProofClose();
+
+      await expect(closing).resolves.toBeUndefined();
+      expect(session.lastReceipt()).toMatchObject({
+        artifactState: 'complete',
+        operationOutcome: 'succeeded',
+      });
+      expect(proofCloseAttempts).toBe(1);
+      expect(runtime.stats().contextsCreated).toBe(2);
+      expect(runtime.stats().contextsClosed).toBe(2);
+      expect(runtime.health().activeSessions).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      releaseProofClose();
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it('normal capture gives proof close the remaining finalization budget', async () => {
+    await runDelayedProofCloseWithinFinalizationBudget('normal');
+  }, 15_000);
+
+  it('live proof capture gives proof close the remaining finalization budget', async () => {
+    await runDelayedProofCloseWithinFinalizationBudget('live_proof');
+  }, 15_000);
+
   it('withholds a successful session when capture finalizes incomplete', async () => {
     const { randomUUID } = await import('node:crypto');
     const { rm } = await import('node:fs/promises');
@@ -1355,6 +1583,548 @@ describe('HMS browser audit capture order', () => {
     }
   });
 
+  it.each(['deadline', 'parent abort'] as const)(
+    'cancels active sanitizer work on the runtime finalization %s and joins teardown',
+    async (trigger) => {
+      const { readdir, rm } = await import('node:fs/promises');
+      const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+        '../src/hms/browser-artifacts.js'
+      );
+      const server = await startHmsFixtureServer();
+      const root = await mkdtemp(join(tmpdir(), 'hms-cap-worker-budget-'));
+      await ensureHmsBrowserArtifactRoot(root);
+      const store = await createHmsBrowserArtifactStore({ root });
+      const parent = new AbortController();
+      let finalizeSignal: (AbortSignal & { deadlineMs?: number }) | undefined;
+      const beginCapture = store.beginCapture.bind(store);
+      store.beginCapture = async (spec) => {
+        const capture = await beginCapture(spec);
+        const finalize = capture.finalize.bind(capture);
+        capture.finalize = (input) => {
+          finalizeSignal = input.signal;
+          return finalize(input);
+        };
+        return capture;
+      };
+      const secret = fixtureSecret(server.origin);
+      const runtime = createHmsRuntime({
+        manifest: fixtureManifest(server.origin),
+        secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+        loadSecret: async () => secret,
+        browserFactory: createFetchBrowserFactory(),
+        requireViewOnly: true,
+        runStartupCanary: false,
+        artifactStore: store,
+        requireAuditCapture: true,
+        sourceRevision: 'test-source',
+      });
+      let markWorkerOnline!: () => void;
+      const workerOnline = new Promise<void>((resolve) => { markWorkerOnline = resolve; });
+      let worker: Worker | undefined;
+      const emit = Worker.prototype.emit;
+      const emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (event, ...args) {
+        const result = emit.call(this, event, ...args);
+        if (event === 'online') {
+          worker = this;
+          markWorkerOnline();
+        }
+        return result;
+      });
+      let closingResult: Promise<unknown> | undefined;
+      try {
+        const session = await runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: parent.signal,
+          allowUnstarted: true,
+          auditSpec: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            toolVersion: '1.2.0',
+            dependencyRevision: 'test-dependency',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+          },
+        });
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        const startedAt = Date.now();
+        closingResult = session.close().then(() => null, (error: unknown) => error);
+        await workerOnline;
+        if (trigger === 'deadline') vi.advanceTimersByTime(30_001);
+        else parent.abort();
+        expect(finalizeSignal?.aborted).toBe(true);
+        expect(finalizeSignal).not.toBe(parent.signal);
+        expect(finalizeSignal?.deadlineMs).toBe(startedAt + 30_000);
+        if (trigger === 'deadline') expect(parent.signal.aborted).toBe(false);
+        vi.useRealTimers();
+        expect(await closingResult).toMatchObject({ code: 'AUDIT_CAPTURE' });
+        await expect(runtime.close()).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+        expect(worker?.threadId).toBe(-1);
+        const entries = await readdir(root);
+        expect(entries.some((entry) => /^[0-9a-f-]{36}$/.test(entry))).toBe(false);
+        expect(session.lastReceipt()?.artifactState).not.toBe('complete');
+      } finally {
+        vi.useRealTimers();
+        parent.abort();
+        await closingResult;
+        await runtime.close().catch(() => undefined);
+        emitSpy.mockRestore();
+        await server.close();
+        await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+      }
+    },
+    15_000,
+  );
+
+  it('quarantines a native trace stop that settles after the finalize deadline', async () => {
+    const { readdir, rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js',
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-late-stop-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({ root });
+    let markStopStarted!: () => void;
+    const stopStarted = new Promise<void>((resolve) => {
+      markStopStarted = resolve;
+    });
+    let releaseStop!: () => void;
+    const stopRelease = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const nativeStop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            markStopStarted();
+            await stopRelease;
+            await nativeStop(traceOptions);
+            if (traceOptions?.path) await writeFile(traceOptions.path, validTraceZip());
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    let runtimeClosed = false;
+    try {
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'test-dependency',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      });
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const closing = session.close();
+      const closingResult = closing.then(
+        () => null,
+        (error) => error,
+      );
+      await stopStarted;
+      await vi.advanceTimersByTimeAsync(30_001);
+      await vi.advanceTimersByTimeAsync(5_001);
+      releaseStop();
+      vi.useRealTimers();
+      const closeError = await closingResult;
+      expect(closeError).toBeTruthy();
+      runtimeClosed = true;
+      await expect(runtime.close()).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+      const entries = await readdir(root);
+      expect(entries.some((entry) => entry.startsWith('.incomplete-'))).toBe(true);
+      expect(entries.some((entry) => /^[0-9a-f-]{36}$/.test(entry))).toBe(false);
+      expect(session.lastReceipt()?.artifactState).not.toBe('complete');
+    } finally {
+      vi.useRealTimers();
+      releaseStop();
+      if (!runtimeClosed) await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  }, 15_000);
+
+  it('invalidates a late finalizer so it cannot publish a successful artifact', async () => {
+    const { readdir, rm } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js',
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-late-finalizer-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({ root });
+    let markFinalizeStarted!: () => void;
+    const finalizeStarted = new Promise<void>((resolve) => {
+      markFinalizeStarted = resolve;
+    });
+    let releaseFinalize!: () => void;
+    const finalizeRelease = new Promise<void>((resolve) => {
+      releaseFinalize = resolve;
+    });
+    let lateFinalizeDone: Promise<unknown> = Promise.resolve();
+    const beginCapture = store.beginCapture.bind(store);
+    store.beginCapture = async (spec) => {
+      const handle = await beginCapture(spec);
+      const nativeFinalize = handle.finalize.bind(handle);
+      handle.finalize = async (input) => {
+        markFinalizeStarted();
+        await finalizeRelease;
+        lateFinalizeDone = nativeFinalize(input);
+        return lateFinalizeDone;
+      };
+      return handle;
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    let runtimeClosed = false;
+    try {
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'test-dependency',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      });
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const closing = session.close();
+      const closingResult = closing.then(
+        () => null,
+        (error) => error,
+      );
+      await finalizeStarted;
+      await vi.advanceTimersByTimeAsync(30_001);
+      const closeError = await closingResult;
+      expect(closeError).toMatchObject({ code: 'AUDIT_CAPTURE' });
+
+      releaseFinalize();
+      vi.useRealTimers();
+      runtimeClosed = true;
+      await expect(runtime.close()).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+      await lateFinalizeDone.catch(() => undefined);
+      const entries = await readdir(root);
+      expect(entries.some((entry) => /^[0-9a-f-]{36}$/.test(entry))).toBe(false);
+      expect(entries.some((entry) => entry.startsWith('.incomplete-'))).toBe(true);
+      expect(session.lastReceipt()?.artifactState).not.toBe('complete');
+    } finally {
+      vi.useRealTimers();
+      releaseFinalize();
+      if (!runtimeClosed) await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  }, 15_000);
+
+  it('invalidates capture publication when abort arrives during finalization', async () => {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js',
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-abort-finalize-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    let markValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => {
+      markValidationStarted = resolve;
+    });
+    let releaseValidation!: () => void;
+    const validationRelease = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => {
+        markValidationStarted();
+        await validationRelease;
+        return true;
+      },
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const nativeStop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            await nativeStop(traceOptions);
+            if (traceOptions?.path) await writeFile(traceOptions.path, validTraceZip());
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    const operationAbort = new AbortController();
+    try {
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: operationAbort.signal,
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'test-dependency',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      });
+      const closing = session.close();
+      await validationStarted;
+      operationAbort.abort();
+      releaseValidation();
+      await expect(closing).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+      expect(session.lastReceipt()).toMatchObject({
+        artifactState: 'incomplete',
+        operationOutcome: 'aborted',
+      });
+    } finally {
+      releaseValidation();
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('runtime close drains a late producer added during concurrent shutdown', async () => {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js',
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-concurrent-close-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({ root });
+    let markStopStarted!: () => void;
+    const stopStarted = new Promise<void>((resolve) => {
+      markStopStarted = resolve;
+    });
+    let releaseStop!: () => void;
+    const stopRelease = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const nativeStop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            markStopStarted();
+            await stopRelease;
+            await nativeStop(traceOptions);
+            if (traceOptions?.path) await writeFile(traceOptions.path, validTraceZip());
+          };
+          return context;
+        },
+        close: async () => {
+          await browser.close();
+        },
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    let runtimeClosed = false;
+    try {
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'test-dependency',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      });
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const sessionClosing = session.close().then(
+        () => null,
+        (error) => error,
+      );
+      await stopStarted;
+      const runtimeClosing = runtime.close().then(
+        () => null,
+        (error) => error,
+      );
+      let runtimeCloseSettled = false;
+      void runtimeClosing.then(
+        () => {
+          runtimeCloseSettled = true;
+        },
+        () => {
+          runtimeCloseSettled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(30_001);
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect(runtimeCloseSettled).toBe(false);
+
+      releaseStop();
+      vi.useRealTimers();
+      expect(await sessionClosing).toBeTruthy();
+      expect(await runtimeClosing).toMatchObject({ code: 'AUDIT_CAPTURE' });
+      runtimeClosed = true;
+    } finally {
+      vi.useRealTimers();
+      releaseStop();
+      if (!runtimeClosed) await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  }, 15_000);
+
+  it('owns launch-level native trace files across sequential captures on one browser', async () => {
+    const { lstat, readdir, rm, writeFile } = await import('node:fs/promises');
+    const {
+      createHmsBrowserArtifactStore,
+      ensureHmsBrowserArtifactRoot,
+    } = await import('../src/hms/browser-artifacts.js');
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-native-launch-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const launchTraceDirs: string[] = [];
+    const nativeTraceNames: string[] = [];
+    const nativeTracePaths: string[] = [];
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      launchTraceDirs.push(input.tracesDir ?? '');
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts);
+          const nativeStart = context.tracing.start.bind(context.tracing);
+          context.tracing.start = async (traceOptions) => {
+            if (!input.tracesDir || !traceOptions?.name) {
+              throw new Error('launch-level native trace namespace missing');
+            }
+            const nativePath = join(input.tracesDir, `${traceOptions.name}.trace`);
+            nativeTraceNames.push(traceOptions.name);
+            nativeTracePaths.push(nativePath);
+            await writeFile(nativePath, Buffer.from('native-trace-fixture'));
+            return nativeStart(traceOptions);
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      for (const toolVersion of ['1.0.0', '1.0.1']) {
+        const session = await runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+          auditSpec: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            toolVersion,
+            dependencyRevision: 'test-dependency',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+          },
+        });
+        await session.close();
+        expect(session.lastReceipt()).toMatchObject({
+          artifactState: 'complete',
+          operationOutcome: 'succeeded',
+        });
+      }
+
+      expect(runtime.stats().browserLaunches).toBe(1);
+      expect(launchTraceDirs).toEqual([store.intermediateDir]);
+      expect(nativeTraceNames).toHaveLength(2);
+      expect(new Set(nativeTraceNames).size).toBe(2);
+      for (const nativePath of nativeTracePaths) {
+        await expect(lstat(nativePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      expect(await readdir(store.intermediateDir)).toEqual([]);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('composes a normal finance capture through the runtime and durable store', async () => {
     const { rm, writeFile } = await import('node:fs/promises');
     const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
@@ -1378,15 +2148,7 @@ describe('HMS browser audit capture order', () => {
           context.tracing.stop = async (traceOptions) => {
             await stop(traceOptions);
             if (traceOptions?.path) {
-              await writeFile(
-                traceOptions.path,
-                Buffer.concat([
-                  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-                  Buffer.alloc(26),
-                  Buffer.from([0x50, 0x4b, 0x05, 0x06]),
-                  Buffer.alloc(18),
-                ]),
-              );
+              await writeFile(traceOptions.path, validTraceZip());
             }
           };
           return context;
@@ -1529,15 +2291,7 @@ describe('HMS browser audit capture order', () => {
           context.tracing.stop = async (traceOptions) => {
             await stop(traceOptions);
             if (traceOptions?.path) {
-              await writeFile(
-                traceOptions.path,
-                Buffer.concat([
-                  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-                  Buffer.alloc(26),
-                  Buffer.from([0x50, 0x4b, 0x05, 0x06]),
-                  Buffer.alloc(18),
-                ]),
-              );
+              await writeFile(traceOptions.path, validTraceZip());
             }
           };
           const newPage = context.newPage.bind(context);
@@ -1608,6 +2362,876 @@ describe('HMS browser audit capture order', () => {
       await runtime.close().catch(() => undefined);
       await server.close();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps credential entry outside the recorded context and transfers native storage state', async () => {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
+      '../src/hms/browser-artifacts.js'
+    );
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-auth-split-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const events: string[] = [];
+    let authStorageState: unknown;
+    const capturedSecretSets: string[][] = [];
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const beginCapture = store.beginCapture.bind(store);
+    store.beginCapture = async (spec) => {
+      const handle = await beginCapture(spec);
+      const addSecretValues = handle.addSecretValues.bind(handle);
+      handle.addSecretValues = (values) => {
+        capturedSecretSets.push([...values]);
+        addSecretValues(values);
+      };
+      return handle;
+    };
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      events.push('browser:launch');
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const kind = (opts as typeof opts & { storageState?: unknown }).storageState
+            ? 'proof'
+            : 'auth';
+          events.push(`${kind}:context`);
+          events.push(opts.recordVideo ? `${kind}:video` : `${kind}:no-video`);
+          const context = await browser.newContext(opts);
+          const originalRoute = context.route.bind(context);
+          context.route = async (url, handler) => {
+            events.push(`${kind}:request-guard`);
+            return originalRoute(url, handler);
+          };
+          const originalRouteWebSocket = context.routeWebSocket.bind(context);
+          context.routeWebSocket = async (url, handler) => {
+            events.push(`${kind}:websocket-guard`);
+            return originalRouteWebSocket(url, handler);
+          };
+          const originalNewPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            events.push(`${kind}:page`);
+            const page = await originalNewPage();
+            const originalGoto = page.goto.bind(page);
+            page.goto = async (url, options) => {
+              events.push(`${kind}:goto:${new URL(url).pathname}`);
+              return originalGoto(url, options);
+            };
+            const originalFillLogin = page.fillLogin.bind(page);
+            page.fillLogin = async (username, password) => {
+              events.push(`${kind}:fill-login`);
+              return originalFillLogin(username, password);
+            };
+            return page;
+          };
+          const originalTracingStart = context.tracing.start.bind(context.tracing);
+          context.tracing.start = async (traceOptions) => {
+            events.push(`${kind}:trace-start`);
+            return originalTracingStart(traceOptions);
+          };
+          const originalTracingStop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            await originalTracingStop(traceOptions);
+            if (traceOptions?.path) {
+              await writeFile(traceOptions.path, validTraceZip());
+            }
+          };
+          const originalClose = context.close.bind(context);
+          context.close = async () => {
+            events.push(`${kind}:close`);
+            return originalClose();
+          };
+          const nativeState = {
+            cookies: [],
+            origins: [{ origin: server.origin, localStorage: [{ name: 'sid', value: 'opaque' }] }],
+          };
+          (context as typeof context & {
+            storageState(): Promise<unknown>;
+          }).storageState = async () => {
+            events.push('auth:storage-state');
+            authStorageState = nativeState;
+            return nativeState;
+          };
+          if (kind === 'proof') {
+            events.push(
+              opts.storageState === authStorageState
+                ? 'proof:storage-state-transferred'
+                : 'proof:storage-state-mismatch',
+            );
+          }
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsLiveProofRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.2.0',
+          dependencyRevision: 'r1',
+          executionClass: 'live_proof',
+          inputClass: 'authorized_exact',
+          roleProofSha256: 'a'.repeat(64),
+          roleProofExpiresAt: '2026-09-17T21:39:12.921Z',
+        },
+      });
+      await expect(session.close()).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+
+      const authContext = events.indexOf('auth:context');
+      const authPage = events.indexOf('auth:page');
+      const authLogin = events.indexOf('auth:fill-login');
+      const authState = events.indexOf('auth:storage-state');
+      const authClose = events.indexOf('auth:close');
+      const proofContext = events.indexOf('proof:context');
+      const proofTrace = events.indexOf('proof:trace-start');
+      const proofPage = events.indexOf('proof:page');
+      expect(events.filter((event) => event === 'browser:launch')).toHaveLength(1);
+      expect(events.filter((event) => event === 'auth:context')).toHaveLength(1);
+      expect(events.filter((event) => event === 'proof:context')).toHaveLength(1);
+      expect(events).toContain('auth:no-video');
+      expect(events).toContain('proof:video');
+      expect(events).not.toContain('auth:trace-start');
+      expect(events.indexOf('auth:websocket-guard')).toBeGreaterThan(authContext);
+      expect(events.indexOf('auth:request-guard')).toBeGreaterThan(authContext);
+      expect(events.indexOf('auth:websocket-guard')).toBeLessThan(authPage);
+      expect(events.indexOf('auth:request-guard')).toBeLessThan(authPage);
+      expect(authLogin).toBeGreaterThan(authPage);
+      expect(authState).toBeGreaterThan(authLogin);
+      expect(proofContext).toBeGreaterThan(authState);
+      expect(events.indexOf('proof:storage-state-transferred')).toBeGreaterThan(authState);
+      expect(events).not.toContain('proof:storage-state-mismatch');
+      expect(events.indexOf('proof:websocket-guard')).toBeGreaterThan(proofContext);
+      expect(events.indexOf('proof:request-guard')).toBeGreaterThan(proofContext);
+      expect(events.indexOf('proof:websocket-guard')).toBeLessThan(proofTrace);
+      expect(events.indexOf('proof:request-guard')).toBeLessThan(proofTrace);
+      expect(proofTrace).toBeLessThan(proofPage);
+      expect(events).not.toContain('proof:fill-login');
+      expect(events).toContain('proof:goto:/property');
+      // Auth context stays open until proof shell is verified (live Infor session).
+      expect(authClose).toBeGreaterThan(proofPage);
+      expect(capturedSecretSets.some((values) => values.includes(secret.username))).toBe(true);
+      expect(capturedSecretSets.some((values) => values.includes(secret.password))).toBe(true);
+      expect(capturedSecretSets.some((values) => values.includes('opaque'))).toBe(true);
+      expect(runtime.stats().contextsCreated).toBe(2);
+      expect(runtime.stats().contextsClosed).toBe(2);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('revalidates the lease before the recorded context and closes auth when that check expires', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          events.push(opts.storageState ? 'proof:context' : 'auth:context');
+          return browser.newContext(opts);
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    let roleChecks = 0;
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      loadRoleProof: async () => {
+        roleChecks += 1;
+        events.push(`role:${roleChecks}`);
+        if (roleChecks === 3) {
+          throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'lease expired');
+        }
+        return {} as never;
+      },
+      browserFactory,
+      requireSessionAuthorization: true,
+      runStartupCanary: false,
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+          sessionAuthorization: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            discoveryOperationId: 'guest_stay_search',
+            releaseId: randomUUID(),
+            requestBranchId: 'guest_stay_search',
+            manifest: fixtureManifest(server.origin),
+            manifestSha256: 'a'.repeat(64),
+            roleProofPath: '/tmp/fixture-role-proof',
+            roleProofSha256: 'b'.repeat(64),
+            credentialVersionHmacSha256: 'c'.repeat(64),
+            runtimeFingerprintSha256: 'd'.repeat(64),
+            privateDigestKeyVersion: 'v1',
+            sourceRevision: 'test',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'ROLE_PROOF_EXPIRED' });
+      expect(roleChecks).toBe(3);
+      expect(events.indexOf('role:3')).toBeGreaterThan(events.indexOf('auth:context'));
+      expect(events).not.toContain('proof:context');
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('fails closed on non-portable auth state and leaves no live context behind', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          events.push(opts.storageState ? 'proof:context' : 'auth:context');
+          const context = await browser.newContext(opts);
+          if (!opts.storageState) {
+            (context as typeof context & {
+              storageState(): Promise<unknown>;
+            }).storageState = async () => null;
+          }
+          const close = context.close.bind(context);
+          context.close = async () => {
+            events.push(opts.storageState ? 'proof:close' : 'auth:close');
+            return close();
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+        }),
+      ).rejects.toMatchObject({ code: 'AUTH_STATE_NOT_PORTABLE' });
+      expect(events).toEqual(['auth:context', 'auth:close']);
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('closes auth and skips proof creation when cancellation arrives during state export', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          events.push(opts.storageState ? 'proof:context' : 'auth:context');
+          const context = await browser.newContext(opts);
+          const nativeStorageState = context.storageState.bind(context);
+          if (!opts.storageState) {
+            context.storageState = async () => {
+              events.push('auth:storage-state');
+              operationAbort.abort();
+              return nativeStorageState();
+            };
+          }
+          const close = context.close.bind(context);
+          context.close = async () => {
+            events.push(opts.storageState ? 'proof:close' : 'auth:close');
+            return close();
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: operationAbort.signal,
+        }),
+      ).rejects.toMatchObject({ code: 'aborted' });
+      expect(events).toEqual(['auth:context', 'auth:storage-state', 'auth:close']);
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('bounds a hanging native auth close and retains session ownership until late cleanup', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    let markAuthCloseStarted!: () => void;
+    const authCloseStarted = new Promise<void>((resolve) => {
+      markAuthCloseStarted = resolve;
+    });
+    let releaseAuthClose!: () => void;
+    const authCloseRelease = new Promise<void>((resolve) => {
+      releaseAuthClose = resolve;
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const isAuth = !opts.storageState;
+          events.push(isAuth ? 'auth:context' : 'proof:context');
+          const context = await browser.newContext(opts);
+          const nativeClose = context.close.bind(context);
+          if (isAuth) {
+            context.close = async () => {
+              events.push('auth:close');
+              markAuthCloseStarted();
+              await authCloseRelease;
+              await nativeClose();
+            };
+          }
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    let opened: Promise<Awaited<ReturnType<typeof runtime.openReadSession>>> | undefined;
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      opened = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: operationAbort.signal,
+      });
+      await authCloseStarted;
+      const observed = await Promise.race([
+        opened.then(
+          (session) => ({ kind: 'resolved' as const, session }),
+          (error) => ({ kind: 'rejected' as const, error }),
+        ),
+        new Promise<{ kind: 'timed_out' }>((resolve) =>
+          setTimeout(() => resolve({ kind: 'timed_out' }), 1_500),
+        ),
+      ]);
+      expect(observed.kind).toBe('rejected');
+      if (observed.kind === 'rejected') {
+        const authErrors =
+          observed.error instanceof AggregateError
+            ? observed.error.errors
+            : [observed.error];
+        expect(authErrors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'AUDIT_CAPTURE' }),
+          ]),
+        );
+      }
+      expect(events).toContain('auth:close');
+      expect(events).not.toContain('proof:context');
+      expect(runtime.stats().contextsClosed).toBe(0);
+      expect(runtime.health().activeSessions).toBe(1);
+      expect(runtime.health().state).toBe('degraded');
+
+      operationAbort.abort();
+      releaseAuthClose();
+      await opened.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(250),
+        }),
+      ).rejects.toMatchObject({ code: 'not_started' });
+    } finally {
+      operationAbort.abort();
+      releaseAuthClose();
+      await opened?.then(
+        async (session) => session.close().catch(() => undefined),
+        () => undefined,
+      );
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('retries a rejected native auth close during cancellation teardown', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    let closeAttempts = 0;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const isAuth = !opts.storageState;
+          events.push(isAuth ? 'auth:context' : 'proof:context');
+          const context = await browser.newContext(opts);
+          const nativeClose = context.close.bind(context);
+          if (isAuth) {
+            const nativeStorageState = context.storageState.bind(context);
+            context.storageState = async () => {
+              events.push('auth:storage-state');
+              operationAbort.abort();
+              return nativeStorageState();
+            };
+            context.close = async () => {
+              closeAttempts += 1;
+              events.push(`auth:close:${closeAttempts}`);
+              if (closeAttempts === 1) {
+                throw new Error('partial native auth close');
+              }
+              await nativeClose();
+            };
+          }
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: operationAbort.signal,
+        }),
+      ).rejects.toMatchObject({ code: 'aborted' });
+      expect(events).toEqual([
+        'auth:context',
+        'auth:storage-state',
+        'auth:close:1',
+        'auth:close:2',
+      ]);
+      expect(events).not.toContain('proof:context');
+      expect(closeAttempts).toBe(2);
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      operationAbort.abort();
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('retains auth ownership while native context creation and late close are pending', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    let markAuthCreateStarted!: () => void;
+    const authCreateStarted = new Promise<void>((resolve) => {
+      markAuthCreateStarted = resolve;
+    });
+    let releaseAuthCreate!: () => void;
+    const authCreateRelease = new Promise<void>((resolve) => {
+      releaseAuthCreate = resolve;
+    });
+    let markAuthCloseStarted!: () => void;
+    const authCloseStarted = new Promise<void>((resolve) => {
+      markAuthCloseStarted = resolve;
+    });
+    let releaseAuthClose!: () => void;
+    const authCloseRelease = new Promise<void>((resolve) => {
+      releaseAuthClose = resolve;
+    });
+    let delayedAuthCreationUsed = false;
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        newContext(opts) {
+          const isAuth = !opts.storageState;
+          if (isAuth && !delayedAuthCreationUsed) {
+            delayedAuthCreationUsed = true;
+            events.push('auth:create-start');
+            markAuthCreateStarted();
+            return authCreateRelease.then(async () => {
+              const context = await browser.newContext(opts);
+              const nativeClose = context.close.bind(context);
+              context.close = async () => {
+                events.push('auth:close-start');
+                markAuthCloseStarted();
+                await authCloseRelease;
+                await nativeClose();
+                events.push('auth:close-done');
+              };
+              return context;
+            });
+          }
+          events.push(isAuth ? 'auth:create-late' : 'proof:create');
+          return browser.newContext(opts);
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    let first: ReturnType<typeof runtime.openReadSession> | undefined;
+    let second: ReturnType<typeof runtime.openReadSession> | undefined;
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      first = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: operationAbort.signal,
+      });
+      await authCreateStarted;
+      operationAbort.abort();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(events).toContain('auth:create-start');
+      expect(runtime.health().activeSessions).toBe(1);
+      expect(runtime.stats().contextsCreated).toBe(0);
+      expect(runtime.stats().contextsClosed).toBe(0);
+
+      second = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(100),
+      });
+      await expect(second).rejects.toMatchObject({ code: 'aborted' });
+      expect(events).not.toContain('auth:create-late');
+      expect(events).not.toContain('proof:create');
+      expect(runtime.health().activeSessions).toBe(1);
+
+      const boundedFirst = await Promise.race([
+        first.then(
+          () => 'resolved' as const,
+          () => 'rejected' as const,
+        ),
+        new Promise<'timed_out'>((resolve) =>
+          setTimeout(() => resolve('timed_out'), 1_500),
+        ),
+      ]);
+      expect(boundedFirst).toBe('rejected');
+
+      releaseAuthCreate();
+      await authCloseStarted;
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(0);
+      expect(runtime.health().activeSessions).toBe(1);
+
+      second = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(100),
+      });
+      await expect(second).rejects.toMatchObject({ code: 'not_started' });
+      expect(events).not.toContain('proof:create');
+      expect(runtime.health().activeSessions).toBe(1);
+
+      releaseAuthClose();
+      await first.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(events).toContain('auth:close-done');
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      operationAbort.abort();
+      releaseAuthCreate();
+      releaseAuthClose();
+      await first?.then(
+        (session) => session.close().catch(() => undefined),
+        () => undefined,
+      );
+      await second?.catch(() => undefined);
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('retains auth ownership until a delayed native context creation rejects', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    let markAuthCreateStarted!: () => void;
+    const authCreateStarted = new Promise<void>((resolve) => {
+      markAuthCreateStarted = resolve;
+    });
+    let rejectAuthCreate!: (reason?: unknown) => void;
+    const authCreate = new Promise<never>((_, reject) => {
+      rejectAuthCreate = reject;
+    });
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      let delayed = false;
+      return {
+        newContext(opts) {
+          if (!opts.storageState && !delayed) {
+            delayed = true;
+            events.push('auth:create-start');
+            markAuthCreateStarted();
+            return authCreate;
+          }
+          events.push(opts.storageState ? 'proof:create' : 'auth:create-late');
+          return browser.newContext(opts);
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    let first: ReturnType<typeof runtime.openReadSession> | undefined;
+    let second: ReturnType<typeof runtime.openReadSession> | undefined;
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      first = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: operationAbort.signal,
+      });
+      await authCreateStarted;
+      operationAbort.abort();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(runtime.health().activeSessions).toBe(1);
+      expect(runtime.stats().contextsCreated).toBe(0);
+      expect(runtime.stats().contextsClosed).toBe(0);
+
+      second = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(100),
+      });
+      await expect(second).rejects.toMatchObject({ code: 'aborted' });
+      expect(events).not.toContain('auth:create-late');
+      expect(events).not.toContain('proof:create');
+      expect(runtime.health().activeSessions).toBe(1);
+
+      rejectAuthCreate(new Error('late auth context creation failed'));
+      await first.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(runtime.stats().contextsCreated).toBe(0);
+      expect(runtime.stats().contextsClosed).toBe(0);
+      expect(runtime.health().activeSessions).toBe(0);
+      expect(events).not.toContain('proof:create');
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      operationAbort.abort();
+      rejectAuthCreate(new Error('test cleanup'));
+      await first?.catch(() => undefined);
+      await second?.catch(() => undefined);
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('retains proof ownership across delayed creation and retries a failed late close', async () => {
+    const server = await startHmsFixtureServer();
+    const events: string[] = [];
+    const operationAbort = new AbortController();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    let markProofCreateStarted!: () => void;
+    const proofCreateStarted = new Promise<void>((resolve) => {
+      markProofCreateStarted = resolve;
+    });
+    let releaseProofCreate!: () => void;
+    const proofCreateRelease = new Promise<void>((resolve) => {
+      releaseProofCreate = resolve;
+    });
+    let markProofCloseRetryStarted!: () => void;
+    const proofCloseRetryStarted = new Promise<void>((resolve) => {
+      markProofCloseRetryStarted = resolve;
+    });
+    let releaseProofClose!: () => void;
+    const proofCloseRelease = new Promise<void>((resolve) => {
+      releaseProofClose = resolve;
+    });
+    let delayedProofCreationUsed = false;
+    let proofCloseAttempts = 0;
+    const baseFactory = createFetchBrowserFactory();
+    const browserFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        newContext(opts) {
+          if (opts.storageState && !delayedProofCreationUsed) {
+            delayedProofCreationUsed = true;
+            events.push('proof:create-start');
+            markProofCreateStarted();
+            return proofCreateRelease.then(async () => {
+              const context = await browser.newContext(opts);
+              const nativeClose = context.close.bind(context);
+              context.close = async () => {
+                proofCloseAttempts += 1;
+                events.push(`proof:close:${proofCloseAttempts}`);
+                if (proofCloseAttempts === 1) {
+                  throw new Error('partial proof close');
+                }
+                markProofCloseRetryStarted();
+                await proofCloseRelease;
+                await nativeClose();
+              };
+              return context;
+            });
+          }
+          events.push(opts.storageState ? 'proof:create-late' : 'auth:create');
+          return browser.newContext(opts);
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory,
+      runStartupCanary: false,
+    });
+    let first: ReturnType<typeof runtime.openReadSession> | undefined;
+    let second: ReturnType<typeof runtime.openReadSession> | undefined;
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      first = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: operationAbort.signal,
+      });
+      await proofCreateStarted;
+      operationAbort.abort();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(runtime.health().activeSessions).toBe(1);
+      expect(runtime.stats().contextsCreated).toBe(1);
+      expect(runtime.stats().contextsClosed).toBe(1);
+
+      second = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(100),
+      });
+      await expect(second).rejects.toMatchObject({ code: 'aborted' });
+      expect(runtime.health().activeSessions).toBe(1);
+
+      releaseProofCreate();
+      await proofCloseRetryStarted;
+      expect(events).toContain('proof:close:1');
+      expect(events).toContain('proof:close:2');
+      expect(runtime.stats().contextsCreated).toBe(2);
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(1);
+
+      second = runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(100),
+      });
+      await expect(second).rejects.toMatchObject({ code: 'aborted' });
+      expect(runtime.stats().contextsClosed).toBe(1);
+      expect(runtime.health().activeSessions).toBe(1);
+
+      releaseProofClose();
+      await first.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(runtime.stats().contextsCreated).toBe(2);
+      expect(runtime.stats().contextsClosed).toBe(2);
+      expect(runtime.health().activeSessions).toBe(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      operationAbort.abort();
+      releaseProofCreate();
+      releaseProofClose();
+      await first?.then(
+        (session) => session.close().catch(() => undefined),
+        () => undefined,
+      );
+      await second?.catch(() => undefined);
+      await runtime.close().catch(() => undefined);
+      await server.close();
     }
   });
 

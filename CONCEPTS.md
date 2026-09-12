@@ -252,6 +252,18 @@ Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as 
 
 *Avoid: reading fixture-green as live-green; concluding "PMS has no record" from a single candidate over a narrow window with no positive control.*
 
+### Packaging gate
+
+Proof that the live HMS runner authenticated, stayed `view_only`, produced digests/receipts, and captured a playable video. Necessary but not sufficient for tool promotion. Distinct from Payload gate.
+
+### Payload gate
+
+Proof that `result.v1.json` (or equivalent) satisfies the tool's field contract: required values present, allowed nulls explicit, forbidden sentinels rejected, and `claimKeys` honest relative to `unresolvedFields`. Requires a recorded live response fixture, not only synthetic happy-path GRID rows. Distinct from Packaging gate.
+
+### Tool promotion HITL
+
+Human batch review at a **wave boundary** after every tool in that wave has passed Packaging gate and Payload gate: watch the wave’s videos and check result payloads before the next wave may start. Inside a wave there is no human pause. Distinct from write-tool HITL proposal approve/execute.
+
 ### HOST_ROUTE
 
 The instance default IPv4 route via the VPC gateway on the ENI (not via `tun`). Used as the live proof that split tunnel has not hijacked AWS egress.
@@ -535,4 +547,5 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
+- **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.

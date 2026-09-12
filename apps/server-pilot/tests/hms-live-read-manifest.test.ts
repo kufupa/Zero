@@ -262,7 +262,7 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(good).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
 
-  it('blocks altered value, extra key, alias drift, operator drift, mutation path', async () => {
+  it('allows ExtJS filter value/alias/operator drift; still blocks extras + chrome drift', async () => {
     const {
       buildExactOsressSearchManifest,
       buildExactOsressSearchBody,
@@ -279,6 +279,7 @@ describe('exact OSRESS.search candidate binding', () => {
       'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
     };
 
+    // Live ExtJS quick-search varies filter values/operators; those are variableBody.
     const altered = evaluateObservedRequest(bound, {
       method: 'POST',
       url: `${ORIGIN}${searchPath}`,
@@ -286,10 +287,7 @@ describe('exact OSRESS.search candidate binding', () => {
       headers,
       postData: formBody({ ...base, MADDON_FILTER_VALUE_3: 'OTHER-VAL' }),
     });
-    expect(altered.action).toBe('block');
-    if (altered.action === 'block') {
-      expect(altered.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const extra = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -313,10 +311,7 @@ describe('exact OSRESS.search candidate binding', () => {
         MADDON_FILTER_ALIAS_NAME_3: 'confirmationNumber',
       }),
     });
-    expect(aliasDrift.action).toBe('block');
-    if (aliasDrift.action === 'block') {
-      expect(aliasDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(aliasDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const opDrift = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -328,10 +323,20 @@ describe('exact OSRESS.search candidate binding', () => {
         MADDON_FILTER_OPERATOR_3: 'contains',
       }),
     });
-    expect(opDrift.action).toBe('block');
-    if (opDrift.action === 'block') {
-      expect(opDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(opDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
+
+    // Chrome also variable — ExtJS may omit/alter dataspy ids vs soft-capture.
+    const chromeDrift = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        ...base,
+        DATASPY_ID: '9999',
+      }),
+    });
+    expect(chromeDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const mutation = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -363,6 +368,26 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(body.MADDON_FILTER_VALUE_2).toBe('+365');
   });
 
+  it('surname_dates fills lastname family; conf/ext unused', async () => {
+    const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
+    const body = buildExactOsressSearchBody({
+      id: 's1',
+      kind: 'surname_dates',
+      surname: 'Syntherson',
+      arrivalDate: '2099-01-15',
+      departureDate: '2099-01-18',
+    });
+    expect(body.MADDON_FILTER_VALUE_5).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_6).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_7).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_8).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_3).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_10).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_4).toBe(OSRESS_OR_UNUSED_TOKEN);
+  });
+
   it('external_reference fills external slots; confirmation OR unused', async () => {
     const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
       '../src/hms/live-read-manifest.js'
@@ -377,7 +402,7 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(body.MADDON_FILTER_VALUE_3).toBe(OSRESS_OR_UNUSED_TOKEN);
   });
 
-  it('binds external_reference candidate to externalconfirmation fixed value', async () => {
+  it('allows external_reference body including altered externalconfirmation (variableBody)', async () => {
     const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
       await import('../src/hms/live-read-manifest.js');
     const candidate = {
@@ -408,6 +433,6 @@ describe('exact OSRESS.search candidate binding', () => {
       },
       postData: formBody({ ...body, externalconfirmation: 'WRONG' }),
     });
-    expect(altered.action).toBe('block');
+    expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
 });

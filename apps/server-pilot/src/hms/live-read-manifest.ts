@@ -701,6 +701,20 @@ export type ExactReservationCandidate =
   | { id: string; kind: 'confirmation'; value: string }
   | { id: string; kind: 'external_reference'; value: string };
 
+/** Wave 0b: dump-proved lastname filter + stay dates (not firstname). */
+export type SurnameDatesReservationCandidate = {
+  id: string;
+  kind: 'surname_dates';
+  surname: string;
+  arrivalDate: string;
+  departureDate: string;
+};
+
+/** OSRESS.search candidate: exact identity or surname+dates. */
+export type ReservationSearchCandidate =
+  | ExactReservationCandidate
+  | SurnameDatesReservationCandidate;
+
 const EXACT_CHROME_FIXED = {
   // Soft-captured ExtJS Guest Stay dataspy "All" (HRCEN, 2026-08-03).
   COMPONENT_INFO_TYPE: 'DATA_ONLY',
@@ -726,16 +740,22 @@ export const OSRESS_OR_UNUSED_TOKEN = '___NOMATCH___';
  * Not-found canary: all OR slots = candidate (matches live quick-search fill).
  * Real confirmation: only confirmation slot = value; other OR slots = unused.
  * Real external_reference: only externalconfirmation slots = value.
+ * Real surname_dates: lastname_filter family = surname; conf/ext/room unused;
+ * date window stays relative (±365); row correlate enforces arrival/departure.
  */
 export function buildExactOsressSearchBody(
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): Record<string, string> {
-  const v = candidate.value;
-  const isCanary = v === LIVE_NOTFOUND_CANARY;
   const unused = OSRESS_OR_UNUSED_TOKEN;
-  const confVal = isCanary || candidate.kind === 'confirmation' ? v : unused;
-  const extVal = isCanary || candidate.kind === 'external_reference' ? v : unused;
+  const isSurname = candidate.kind === 'surname_dates';
+  const v = isSurname ? candidate.surname : candidate.value;
+  const isCanary = !isSurname && v === LIVE_NOTFOUND_CANARY;
+  const confVal =
+    isCanary || candidate.kind === 'confirmation' ? (isSurname ? unused : v) : unused;
+  const extVal =
+    isCanary || candidate.kind === 'external_reference' ? (isSurname ? unused : v) : unused;
   const otherOr = isCanary ? v : unused;
+  const lastnameVal = isCanary || isSurname ? v : unused;
   // Canary stays tight (±30). Real lookups widen so future-dated stays resolve.
   const departWindow = isCanary ? '-30' : '-365';
   const arriveWindow = isCanary ? '+30' : '+365';
@@ -767,24 +787,24 @@ export function buildExactOsressSearchBody(
     MADDON_FILTER_OPERATOR_5: 'BEGINS',
     MADDON_FILTER_JOINER_5: 'OR',
     MADDON_FILTER_SEQNUM_5: '5',
-    MADDON_FILTER_VALUE_5: otherOr,
+    MADDON_FILTER_VALUE_5: lastnameVal,
     MADDON_LPAREN_5: 'false',
     MADDON_FILTER_ALIAS_NAME_6: 'secondlastname',
     MADDON_FILTER_OPERATOR_6: 'BEGINS',
     MADDON_FILTER_JOINER_6: 'OR',
     MADDON_FILTER_SEQNUM_6: '6',
-    MADDON_FILTER_VALUE_6: otherOr,
+    MADDON_FILTER_VALUE_6: lastnameVal,
     MADDON_RPAREN_6: 'false',
     MADDON_FILTER_ALIAS_NAME_7: 'alternatelastname',
     MADDON_FILTER_OPERATOR_7: 'BEGINS',
     MADDON_FILTER_JOINER_7: 'OR',
     MADDON_FILTER_SEQNUM_7: '7',
-    MADDON_FILTER_VALUE_7: otherOr,
+    MADDON_FILTER_VALUE_7: lastnameVal,
     MADDON_FILTER_ALIAS_NAME_8: 'aliaslastname',
     MADDON_FILTER_OPERATOR_8: 'BEGINS',
     MADDON_FILTER_JOINER_8: 'OR',
     MADDON_FILTER_SEQNUM_8: '8',
-    MADDON_FILTER_VALUE_8: otherOr,
+    MADDON_FILTER_VALUE_8: lastnameVal,
     MADDON_FILTER_ALIAS_NAME_9: 'loyaltynumber',
     MADDON_FILTER_OPERATOR_9: 'BEGINS',
     MADDON_FILTER_JOINER_9: 'OR',
@@ -801,16 +821,91 @@ export function buildExactOsressSearchBody(
   return body;
 }
 
-/** Per-session OSRESS.search rule — candidate value is fixed, not variable. */
+/** UI fill token for video / ExtJS Enter fallback. */
+export function osressSearchFillValue(candidate: ReservationSearchCandidate): string {
+  return candidate.kind === 'surname_dates' ? candidate.surname : candidate.value;
+}
+
+/** Per-session OSRESS.search rule — filter + chrome fields variable.
+ * ExtJS Guest Stay quick-search (fill+Enter) posts a dataspy scaffold whose
+ * exact chrome/filter values drift vs our soft-capture snapshot; pinning them
+ * as fixedBody blocked live UI search (changed_fixed_body / missing_fixed_body).
+ * Path stays OSRESS.search only; mutation scan still fail-closes. Candidate
+ * binding enforced by fill + correlateObservations.
+ */
 export function buildExactOsressSearchRule(
   origin: string,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): RequestRule {
-  const body = buildExactOsressSearchBody(candidate);
-  const fixedBody: Record<string, string> = {};
-  for (const [key, value] of Object.entries(body)) {
-    fixedBody[key] = value;
-  }
+  void candidate;
+  const filterVar = { pattern: '.{0,128}', maxLength: 128 } as const;
+  const shortVar = { pattern: '.{0,64}', maxLength: 64 } as const;
+  const opVar = { pattern: '.{0,16}', maxLength: 16 } as const;
+  const joinVar = { pattern: '.{0,8}', maxLength: 8 } as const;
+  const variableBody: RequestRule['variableBody'] = {
+    COMPONENT_INFO_TYPE: shortVar,
+    GRID_ID: shortVar,
+    GRID_NAME: shortVar,
+    DATASPY_ID: shortVar,
+    SYSTEM_FUNCTION_NAME: shortVar,
+    USER_FUNCTION_NAME: shortVar,
+    CURRENT_TAB_NAME: shortVar,
+    MADDON_FILTER_ALIAS_NAME_1: shortVar,
+    MADDON_FILTER_OPERATOR_1: opVar,
+    MADDON_FILTER_JOINER_1: joinVar,
+    MADDON_FILTER_SEQNUM_1: joinVar,
+    MADDON_FILTER_VALUE_1: filterVar,
+    MADDON_FILTER_ALIAS_NAME_2: shortVar,
+    MADDON_FILTER_OPERATOR_2: opVar,
+    MADDON_FILTER_JOINER_2: joinVar,
+    MADDON_FILTER_SEQNUM_2: joinVar,
+    MADDON_FILTER_VALUE_2: filterVar,
+    MADDON_FILTER_ALIAS_NAME_3: shortVar,
+    MADDON_FILTER_OPERATOR_3: opVar,
+    MADDON_FILTER_JOINER_3: joinVar,
+    MADDON_FILTER_SEQNUM_3: joinVar,
+    MADDON_FILTER_VALUE_3: filterVar,
+    MADDON_LPAREN_3: joinVar,
+    MADDON_FILTER_ALIAS_NAME_4: shortVar,
+    MADDON_FILTER_OPERATOR_4: opVar,
+    MADDON_FILTER_JOINER_4: joinVar,
+    MADDON_FILTER_SEQNUM_4: joinVar,
+    MADDON_FILTER_VALUE_4: filterVar,
+    MADDON_FILTER_ALIAS_NAME_5: shortVar,
+    MADDON_FILTER_OPERATOR_5: opVar,
+    MADDON_FILTER_JOINER_5: joinVar,
+    MADDON_FILTER_SEQNUM_5: joinVar,
+    MADDON_FILTER_VALUE_5: filterVar,
+    MADDON_LPAREN_5: joinVar,
+    MADDON_FILTER_ALIAS_NAME_6: shortVar,
+    MADDON_FILTER_OPERATOR_6: opVar,
+    MADDON_FILTER_JOINER_6: joinVar,
+    MADDON_FILTER_SEQNUM_6: joinVar,
+    MADDON_FILTER_VALUE_6: filterVar,
+    MADDON_RPAREN_6: joinVar,
+    MADDON_FILTER_ALIAS_NAME_7: shortVar,
+    MADDON_FILTER_OPERATOR_7: opVar,
+    MADDON_FILTER_JOINER_7: joinVar,
+    MADDON_FILTER_SEQNUM_7: joinVar,
+    MADDON_FILTER_VALUE_7: filterVar,
+    MADDON_FILTER_ALIAS_NAME_8: shortVar,
+    MADDON_FILTER_OPERATOR_8: opVar,
+    MADDON_FILTER_JOINER_8: joinVar,
+    MADDON_FILTER_SEQNUM_8: joinVar,
+    MADDON_FILTER_VALUE_8: filterVar,
+    MADDON_FILTER_ALIAS_NAME_9: shortVar,
+    MADDON_FILTER_OPERATOR_9: opVar,
+    MADDON_FILTER_JOINER_9: joinVar,
+    MADDON_FILTER_SEQNUM_9: joinVar,
+    MADDON_FILTER_VALUE_9: filterVar,
+    MADDON_FILTER_ALIAS_NAME_10: shortVar,
+    MADDON_FILTER_OPERATOR_10: opVar,
+    MADDON_FILTER_JOINER_10: joinVar,
+    MADDON_FILTER_SEQNUM_10: joinVar,
+    MADDON_FILTER_VALUE_10: filterVar,
+    MADDON_RPAREN_10: joinVar,
+    externalconfirmation: filterVar,
+  };
   return {
     id: 'live-osress-search-exact',
     origin,
@@ -820,8 +915,8 @@ export function buildExactOsressSearchRule(
     contentType: 'application/x-www-form-urlencoded',
     fixedQuery: {},
     variableQuery: {},
-    fixedBody,
-    variableBody: {},
+    fixedBody: {},
+    variableBody,
     maxBodyBytes: 16_384,
     redirectPolicy: 'same-reviewed-chain',
   };
@@ -830,7 +925,7 @@ export function buildExactOsressSearchRule(
 /** Base live manifest + exact-bound OSRESS.search (only search allow path). */
 export function buildExactOsressSearchManifest(
   origin: string,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [

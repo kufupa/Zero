@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Sanitized live-shape OSRESS GRIDRESULT fixture (dataspy 1941). Keys and sentinel patterns from live Centurion proof; no real guest PII.",
+  "source": "Derived from .private/hms-find-reservation-live-20260911/evidence-20260911-run5 result shape + live-guest-stay-row-fingerprint.v2 aliases",
+  "dataspy": { "id": "1941", "label": "All" },
+  "gridName": "OSRESS",
+  "rowAliasKeysPresentOnLive": [
+    "arrivaldate",
+    "confirmationnumber",
+    "departuredate",
+    "externalconfirmation",
+    "firstname",
+    "lastname",
+    "primaryguest",
+    "room",
+    "status"
+  ],
+  "rowAliasKeysAbsentOnLiveSearchGrid": ["roomtype", "rateplan"],
+  "filterAliasesOnExactSearchBody": [
+    "departuredate",
+    "arrivaldate",
+    "confirmationnumber",
+    "room",
+    "lastname_filter",
+    "secondlastname",
+    "alternatelastname",
+    "aliaslastname",
+    "loyaltynumber",
+    "externalconfirmation"
+  ],
+  "filterAliasesNotOnExactSearchBody": ["firstname"],
+  "sentinels": {
+    "primaryguest": ["-1"],
+    "notes": "Numeric primaryguest is not a display name; compose from lastname/firstname."
+  },
+  "syntheticPageData": {
+    "success": true,
+    "fromCome": true,
+    "messages": null,
+    "grid": {
+      "GRIDRESULT": {
+        "type": "LIST.DATA_ONLY.STORED",
+        "DATASPY": { "id": "1941", "label": "All" },
+        "GRID": {
+          "METADATA": { "GRIDNAME": "OSRESS", "RECORDS": "1" },
+          "DATA": [
+            {
+              "confirmationnumber": "SYNTH-CONF-1001",
+              "externalconfirmation": null,
+              "primaryguest": "-1",
+              "lastname": "Syntherson",
+              "firstname": "Alpha",
+              "arrivaldate": "15-Jan-2099",
+              "departuredate": "18-Jan-2099",
+              "status": "Confirmed",
+              "room": "101"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -284,6 +284,12 @@ export type PropertyReadLock = ReturnType<typeof createPropertyReadLock>;
  * Production adapter.  Each invocation creates a max-one postgres client and
  * closes it after the PMS session, so the advisory lock cannot accidentally
  * live on the shared application pool.
+ *
+ * `idle_timeout` must stay disabled (0). Live Guest Stay openReadSession holds
+ * this lock across HMS login + storage-state handoff + proof context (~20s+)
+ * with no SQL between acquire and unlock. A 5s idle timeout dropped the
+ * connection mid-login and surfaced as PROPERTY_READ_LOCK_LOST before
+ * toolStartedAt (Codex 2026-09-11 live proof attempts).
  */
 export function createPostgresPropertyReadLock(input: {
   tenantId: string;
@@ -294,7 +300,11 @@ export function createPostgresPropertyReadLock(input: {
     tenantId: input.tenantId,
     propertyCode: input.propertyCode,
     connectionFactory: async () => {
-      const client = postgres(input.databaseUrl, { max: 1, idle_timeout: 5, connect_timeout: 10 });
+      const client = postgres(input.databaseUrl, {
+        max: 1,
+        idle_timeout: 0,
+        connect_timeout: 10,
+      });
       return {
         query: async <T = unknown>(statement: string) =>
           (await client.unsafe(statement)) as unknown as T,

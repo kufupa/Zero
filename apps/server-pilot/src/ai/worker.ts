@@ -134,11 +134,19 @@ import {
   executeReadToolRun,
   readRequestSchema,
   type ReadExecutionContext,
+  executeTrustedSynchronousHmsFindReservation,
+  type TrustedSynchronousHmsFindSessionFactory,
 } from '../hms/read-service.js';
 import {
+  assertCurrentAppAccessProof,
   issueCurrentAppAccessProof,
   type CurrentAppAccessProof,
 } from '../hms/requester-authorization.js';
+import {
+  admitReadBranch,
+  assertPersistedReadAdmissionIssuer,
+  READ_BRANCH_WORST_CASE_MS,
+} from '../hms/read-admission.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
@@ -151,12 +159,15 @@ import { reservationFindResultSchema } from '../hms/reservation-context-contract
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../metrics/mail-baseline.js';
 import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
 import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
-import { assertPersistedReadAdmissionIssuer } from '../hms/read-admission.js';
 import { aiShadowPrediction } from '../db/schema/ai-shadow-evaluation.js';
 import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
 import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
-import { positiveFindEvidence } from '../hms/read-admission-issuer.js';
+import {
+  issueReadAdmissionFromMailbox,
+  loadReadMailboxGrant,
+  positiveFindEvidence,
+} from '../hms/read-admission-issuer.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
@@ -666,42 +677,200 @@ let productionActiveReadState:
   | null
   | undefined;
 
-async function getOrCreateProductionHmsRuntime(): Promise<import('../hms/runtime.js').HmsRuntime> {
-  if (productionHmsRuntime) return productionHmsRuntime;
-  const { createProductionHmsRuntime, resolveHmsSourceRevision } = await import(
-    '../hms/production-runtime.js'
-  );
+function synchronousReadError(code: 'READ_ABORTED' | 'READ_SYNC_DEADLINE', message: string) {
+  return Object.assign(new Error(message), {
+    code,
+    failureClass: 'RUN_DEADLINE' as const,
+  });
+}
+
+function assertSynchronousReadActive(signal: AbortSignal, deadlineAt: Date): void {
+  if (!Number.isFinite(deadlineAt.getTime()) || Date.now() >= deadlineAt.getTime()) {
+    throw synchronousReadError('READ_SYNC_DEADLINE', 'synchronous read deadline is expired');
+  }
+  if (signal.aborted) throw synchronousReadError('READ_ABORTED', 'read was aborted');
+}
+
+function deadlineBoundSynchronousReadSignal(
+  inputSignal: AbortSignal | undefined,
+  deadlineAt: Date,
+): AbortSignal {
+  const remaining = Math.max(0, deadlineAt.getTime() - Date.now());
+  const deadlineSignal = AbortSignal.timeout(remaining);
+  return inputSignal ? AbortSignal.any([inputSignal, deadlineSignal]) : deadlineSignal;
+}
+
+function awaitSynchronousReadSetup<T>(input: {
+  operation: () => Promise<T>;
+  signal: AbortSignal;
+  deadlineAt: Date;
+  onLateResolution?: (value: T) => void | Promise<void>;
+  onLateRejection?: (error: unknown) => void | Promise<void>;
+}): Promise<T> {
+  assertSynchronousReadActive(input.signal, input.deadlineAt);
+  let pending: Promise<T>;
+  try {
+    pending = input.operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      input.signal.removeEventListener('abort', onAbort);
+    };
+    const rejectForCurrentState = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        assertSynchronousReadActive(input.signal, input.deadlineAt);
+        reject(synchronousReadError('READ_ABORTED', 'read was aborted'));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onAbort = () => rejectForCurrentState();
+    const remaining = input.deadlineAt.getTime() - Date.now();
+    if (remaining <= 0) {
+      rejectForCurrentState();
+      return;
+    }
+    timer = setTimeout(rejectForCurrentState, remaining);
+    timer.unref?.();
+    input.signal.addEventListener('abort', onAbort, { once: true });
+    if (input.signal.aborted) onAbort();
+    pending.then(
+      (value) => {
+        if (settled) {
+          if (input.onLateResolution) {
+            void Promise.resolve(input.onLateResolution(value)).catch(() => undefined);
+          }
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) {
+          if (input.onLateRejection) {
+            void Promise.resolve(input.onLateRejection(error)).catch(() => undefined);
+          }
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+async function productionReadRuntimeFacts(
+  config: ReturnType<typeof requireHmsReadRuntimeConfig>,
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+) {
+  const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
   const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
   const { loadWorkerActiveReadSet } = await import('../hms/active-read-runtime.js');
-  // The read lane is independent from draft mode: `off` still permits a
-  // model-free browser runtime when the read service is enabled.
-  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
-  const evidenceKey = requireHmsEvidenceHmacChildKey(
-    process.env as Record<string, string | undefined>,
-  );
   const sourceRevision = resolveHmsSourceRevision();
   const runtimeFp = runtimeFingerprintSha256({
     sourceRevision,
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',
   });
+  if (!productionActiveReadState) {
+    const load = () =>
+      loadWorkerActiveReadSet({
+        registryPath: config.activeRegistryPath,
+        releaseRoot: config.releaseRoot,
+        runtimeFingerprintSha256: runtimeFp,
+      });
+    productionActiveReadState =
+      signal && deadlineAt
+        ? await awaitSynchronousReadSetup({ operation: load, signal, deadlineAt })
+        : await load();
+    if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
+  }
+  return { sourceRevision, runtimeFp, active: productionActiveReadState };
+}
+
+async function getOrCreateProductionHmsRuntime(
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+): Promise<import('../hms/runtime.js').HmsRuntime> {
+  if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
+  if (productionHmsRuntime) return productionHmsRuntime;
+  const { createProductionHmsRuntime } = await import('../hms/production-runtime.js');
+  // The read lane is independent from draft mode: `off` still permits a
+  // model-free browser runtime when the read service is enabled.
+  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  const evidenceKey = requireHmsEvidenceHmacChildKey(
+    process.env as Record<string, string | undefined>,
+  );
   // Load active registry before browser start — fail closed if present+invalid.
-  productionActiveReadState = await loadWorkerActiveReadSet({
-    registryPath: config.activeRegistryPath,
-    releaseRoot: config.releaseRoot,
-    runtimeFingerprintSha256: runtimeFp,
-  });
-  const runtime = await createProductionHmsRuntime(config, {
-    evidenceHmac: {
-      secretArn: config.evidenceHmacSecretArn,
-      keyVersion: config.evidenceHmacKeyVersion,
-      key: evidenceKey.key,
-    },
-    sourceRevision,
-  });
-  await runtime.start(AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs)));
-  productionHmsRuntime = runtime;
-  return runtime;
+  const { sourceRevision } = await productionReadRuntimeFacts(config, signal, deadlineAt);
+  const create = () =>
+    createProductionHmsRuntime(config, {
+      evidenceHmac: {
+        secretArn: config.evidenceHmacSecretArn,
+        keyVersion: config.evidenceHmacKeyVersion,
+        key: evidenceKey.key,
+      },
+      sourceRevision,
+    });
+  const runtime =
+    signal && deadlineAt
+      ? await awaitSynchronousReadSetup({
+          operation: create,
+          signal,
+          deadlineAt,
+          onLateResolution: (lateRuntime) => lateRuntime.close(),
+        })
+      : await create();
+  let closeSequence = Promise.resolve();
+  const closeOnFailure = async () => {
+    // Never tear down a runtime that has become the shared worker singleton.
+    if (productionHmsRuntime === runtime) return;
+    const close = closeSequence.then(
+      () => runtime.close(),
+      () => runtime.close(),
+    );
+    closeSequence = close.catch(() => undefined);
+    await close.catch(() => undefined);
+  };
+  try {
+    const runtimeSignal = signal ?? AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs));
+    if (signal && deadlineAt) {
+      await awaitSynchronousReadSetup({
+        operation: () => runtime.start(runtimeSignal),
+        signal,
+        deadlineAt,
+        onLateResolution: closeOnFailure,
+        onLateRejection: closeOnFailure,
+      });
+      assertSynchronousReadActive(signal, deadlineAt);
+    } else {
+      await runtime.start(runtimeSignal);
+    }
+    productionHmsRuntime = runtime;
+    return runtime;
+  } catch (error) {
+    await closeOnFailure();
+    throw error;
+  }
+}
+
+/** Test-only access to the normal runtime accessor for offline lifecycle tests. */
+export async function __getOrCreateProductionHmsRuntimeForTests(
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+): Promise<import('../hms/runtime.js').HmsRuntime> {
+  return getOrCreateProductionHmsRuntime(signal, deadlineAt);
 }
 
 /** Test / shutdown hook — closes singleton and clears handle. */
@@ -737,6 +906,7 @@ export function createLiveHmsCandidateSessionFactory(
       '../hms/reservation-candidate-session.js'
     );
     const { filterExactReservationCandidates } = await import('./thread-context.js');
+    type LookupCandidate = import('./thread-context.js').LookupCandidate;
     const {
       buildHmsFindSessionAuthorization,
       assertFindHandlerBound,
@@ -806,9 +976,22 @@ export function createLiveHmsCandidateSessionFactory(
     const notesRelease =
       notesReleaseRaw && notesReleaseRaw.evidenceKind === 'hms' ? notesReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
+    const surnameDates = input.lookupCandidates.filter(
+      (c): c is Extract<LookupCandidate, { kind: 'surname_dates' }> =>
+        c.kind === 'surname_dates',
+    );
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
-    const candidates = new Map(exact.map((c) => [c.id, c]));
+    const candidates = new Map<
+      string,
+      import('../hms/live-read-manifest.js').ReservationSearchCandidate
+    >(exact.map((c) => [c.id, c]));
+    // Wave 0b: admit surname+dates only when no exact identity is present.
+    if (exact.length === 0) {
+      for (const c of surnameDates) {
+        candidates.set(c.id, c);
+      }
+    }
     const planGate = input.readOnly
       ? null
       : resolvePlanScopedDraftGate({
@@ -1366,6 +1549,264 @@ export function createLiveHmsCandidateSessionFactory(
           }
         : undefined,
     });
+  };
+}
+
+export type SynchronousHmsFindInput = {
+  /** Current authenticated application user; never a caller-authored identity. */
+  userId: string;
+  transportId: string;
+  threadId: string;
+  signal?: AbortSignal;
+  runtime?: import('../hms/runtime.js').HmsRuntime;
+  /** Test-only lower edge; admission and source checks remain production code. */
+  sessionFactory?: TrustedSynchronousHmsFindSessionFactory;
+};
+
+/**
+ * Current application read entry for the first exact reservation lookup.
+ * Admission, candidate identity, current app access and active release facts
+ * are derived from the real mailbox/database boundary before opening HMS.
+ * There is intentionally no ai_workflow_run, claim token, queue, model, or
+ * caller-selected reservation value on this path.
+ */
+export async function executeSynchronousHmsFindReservation(input: SynchronousHmsFindInput) {
+  if (input.signal?.aborted) {
+    throw synchronousReadError('READ_ABORTED', 'read was aborted');
+  }
+  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  if (!input.userId.trim()) {
+    throw Object.assign(new Error('synchronous read requires current application user access'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (input.transportId !== config.expectedTransportId) {
+    throw Object.assign(new Error('synchronous read transport does not match configuration'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (!parseEnv(process.env as Record<string, string | undefined>).HMS_READ_SERVICE_ENABLED) {
+    throw Object.assign(new Error('HMS_READ_SERVICE_DISABLED'), {
+      failureClass: 'POLICY_BLOCK' as const,
+    });
+  }
+
+  const now = new Date();
+  const deadlineAt = new Date(now.getTime() + config.runDeadlineMs);
+  const signal = deadlineBoundSynchronousReadSignal(input.signal, deadlineAt);
+  assertSynchronousReadActive(signal, deadlineAt);
+  const admissionWindow = admitReadBranch({
+    now,
+    deadlineAt,
+    worstCaseMs: READ_BRANCH_WORST_CASE_MS,
+  });
+  if (!admissionWindow.ok) {
+    throw Object.assign(new Error(admissionWindow.code), {
+      failureClass: 'RUN_DEADLINE' as const,
+    });
+  }
+
+  const runtimeFacts = await awaitSynchronousReadSetup({
+    operation: () => productionReadRuntimeFacts(config, signal, deadlineAt),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const findReleaseRaw = runtimeFacts.active?.releases.get('hms_find_reservation') ?? null;
+  const findRelease =
+    findReleaseRaw && findReleaseRaw.evidenceKind === 'hms' ? findReleaseRaw : null;
+  const branch = findRelease?.requestBranches.find(
+    (candidate) => candidate.id === 'guest_stay_search',
+  );
+  if (!findRelease || !branch || runtimeFacts.active?.handlerPathActive !== true) {
+    throw Object.assign(new Error('active reservation find release is required'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const db = getDb();
+  const operationId = randomUUID();
+  const readResultRef = `hms-sync-${randomUUID()}`;
+  const issued = await awaitSynchronousReadSetup({
+    operation: () =>
+      issueReadAdmissionFromMailbox({
+        db,
+        userId: input.userId,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        toolId: 'hms_find_reservation',
+        releaseId: findRelease.releaseId,
+        requestBranchId: branch.id,
+        manifestSha256: branch.manifestSha256,
+        propertyCode: config.expectedPropertyCode,
+        sourceRevision: findRelease.sourceRevision ?? runtimeFacts.sourceRevision,
+        captureBindingRef: readResultRef,
+      }),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const request = readRequestSchema.parse(issued.readRequest);
+  if (request.toolId !== 'hms_find_reservation' || !issued.candidateId) {
+    throw Object.assign(
+      new Error('synchronous reservation admission did not issue one candidate'),
+      {
+        failureClass: 'AUTH' as const,
+      },
+    );
+  }
+
+  const [trigger] = await awaitSynchronousReadSetup({
+    operation: () =>
+      db
+        .select({
+          id: message.id,
+          direction: message.direction,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          subject: message.subject,
+        })
+        .from(message)
+        .where(
+          and(
+            eq(message.id, issued.triggerMessageId),
+            eq(message.transportId, input.transportId),
+            eq(message.threadId, input.threadId),
+          ),
+        )
+        .limit(1),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  if (!trigger || trigger.direction !== 'inbound') {
+    throw Object.assign(new Error('synchronous read trigger is not current inbound mail'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  const { extractLookupCandidates, filterExactReservationCandidates, normalizeMessageText } =
+    await awaitSynchronousReadSetup({
+      operation: () => import('./thread-context.js'),
+      signal,
+      deadlineAt,
+    });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const triggerText = [
+    trigger.subject?.trim() ?? '',
+    normalizeMessageText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody }),
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const candidate = filterExactReservationCandidates(extractLookupCandidates(triggerText)).find(
+    (item) => item.id === issued.candidateId,
+  );
+  if (!candidate) {
+    throw Object.assign(new Error('synchronous read candidate is not in current trigger source'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const grant = await awaitSynchronousReadSetup({
+    operation: () =>
+      loadReadMailboxGrant({
+        db,
+        userId: input.userId,
+        transportId: input.transportId,
+      }),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const currentAppAccessProof = issueCurrentAppAccessProof({
+    userId: grant.userId,
+    mailboxAccessId: grant.accessId,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: issued.triggerMessageId,
+    expiresAt: deadlineAt,
+    now,
+  });
+  assertCurrentAppAccessProof({
+    proof: currentAppAccessProof,
+    requesterAuthorizationId: grant.accessId,
+    context: {
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: issued.triggerMessageId,
+    },
+    now: new Date(),
+  });
+  const runtime =
+    input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt));
+  assertSynchronousReadActive(signal, deadlineAt);
+  const liveSessionFactory = createLiveHmsCandidateSessionFactory({
+    runtime,
+    activeReadState: runtimeFacts.active,
+  });
+  const sessionFactory: TrustedSynchronousHmsFindSessionFactory =
+    input.sessionFactory ??
+    (async (sessionInput) => {
+      const session = await liveSessionFactory({
+        transportId: sessionInput.transportId,
+        threadId: sessionInput.threadId,
+        triggerMessageId: sessionInput.triggerMessageId,
+        propertyCode: sessionInput.propertyCode,
+        lookupCandidates: sessionInput.lookupCandidates,
+        signal: sessionInput.signal,
+        runId: sessionInput.runId,
+        readResultRef: sessionInput.readResultRef,
+        readFence: undefined,
+        readPlanKind: 'reservation',
+        readOnly: true,
+        readAdmission: sessionInput.readAdmission,
+        readToolId: 'hms_find_reservation',
+      });
+      return {
+        propertyReadLock: session.propertyReadLock,
+        close: session.close,
+        findReservation: async (lookup) => {
+          const legacy = await session.findReservation(lookup.candidateId, sessionInput.signal);
+          if (legacy.evidence.kind !== 'hms') {
+            throw Object.assign(new Error('reservation read returned non-HMS evidence'), {
+              failureClass: 'SCHEMA_DRIFT' as const,
+            });
+          }
+          return mapProductionReservationRead({
+            status: legacy.status,
+            data: legacy.data
+              ? { matches: legacy.data.matches as readonly ReservationRow[] }
+              : null,
+            evidence: {
+              kind: 'hms',
+              id: legacy.evidence.id,
+              observedAt: legacy.evidence.observedAt,
+              expiresAt: legacy.evidence.expiresAt,
+            },
+          });
+        },
+      };
+    });
+
+  return {
+    operationId,
+    candidateId: candidate.id,
+    ...(await executeTrustedSynchronousHmsFindReservation({
+      issued,
+      candidate,
+      currentAppAccessProof,
+      operationId,
+      readResultRef,
+      sourceRevision: findRelease.sourceRevision ?? runtimeFacts.sourceRevision,
+      propertyCode: config.expectedPropertyCode,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: issued.triggerMessageId,
+      deadlineAt,
+      now,
+      clock: () => new Date(),
+      signal,
+      sessionFactory,
+    })),
   };
 }
 

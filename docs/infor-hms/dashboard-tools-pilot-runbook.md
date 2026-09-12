@@ -1,5 +1,28 @@
 # Dashboard tools pilot runbook
 
+## Owner correction — live PMS is the acceptance target
+
+- The requested deliverable is each read-only tool working against the **live
+  PMS**, with a recording of that actual PMS interaction and verified result.
+  Local implementation or a synthetic journey is not delivery of that tool.
+- Perform PMS discovery/exploration in the live system using the supplied
+  credentials and existing read-only controls. All current application users
+  already have the required configured tool/data access; do not ask again for
+  per-user roles or allowlists.
+- Requested recordings must be live PMS recordings. Do not create further
+  synthetic recording deliverables unless the owner explicitly requests them.
+  Existing synthetic archives below are retained only as historical test evidence.
+- Unit/disposable-DB regression checks remain secondary engineering evidence;
+  they cannot establish that a tool works in the live PMS. Historical email
+  backtesting is separate and must not postpone direct live tool exploration.
+- Correction to the prior toolkit summary: implementation is partial, and no
+  fresh live-PMS execution or live-PMS recording of this new toolkit was completed
+  in the run. Some entries still return unavailable states or lack live-source
+  wiring; they are not finished working readers.
+- Prioritize live read-tool discovery, execution, fact verification, and PMS
+  videos before further drafting-agent work. Preserve read-only side-effect
+  controls and keep credentials out of captures, logs, and Git.
+
 ## Latest local checkpoint — 2026-09-10
 
 Runtime/test source: `eff22bce3f9e675e7006c0757e3ed7c7274538ba`.
@@ -11,7 +34,7 @@ The local verification sweep is complete; **the full three-phase plan is not**.
 | Read-only toolkit | Independent typed reads and audited local/DB paths for reservation, finance, documents, rates/availability, linked context, and approved knowledge. | Current live PMS capability and the real-email Phase 2/B release gate remain unqualified.        |
 | Drafting agent    | Candidate/review UI, editor preservation, worker/approval safeguards, and synthetic private evaluation have local proof.                            | U5 PMS-to-prepared integration remains incomplete; no complete live drafting or Phase 2/B claim. |
 
-### Watch the current recordings
+### Historical synthetic recordings — not live PMS acceptance
 
 These recordings use real components with synthetic loopback HTTP. They are
 separate from the disposable-DB proofs, not a joined live browser/server test.
@@ -107,8 +130,8 @@ Trace, video, and screenshots are written only under:
 ```
 
 The shared directory is reused and replaced by subsequent browser slices.
-Use the preserved desktop/mobile directories linked in **Watch the current
-recordings** above for the latest production-theme screenshots, videos, and
+Use the preserved desktop/mobile directories linked in **Historical synthetic
+recordings** above for the production-theme screenshots, videos, and
 traces; do not infer freshness from this shared path.
 
 The focused metadata RED run was consumed as private diagnostic evidence before

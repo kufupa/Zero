@@ -13,6 +13,7 @@ import {
   eventReadRequestSchema,
   notesTracesReadRequestSchema,
   type ReadReasonCode,
+  type ReadAdmission,
   type ReadResult,
 } from './read-service-contracts.js';
 import {
@@ -53,6 +54,14 @@ import {
   type PropertyReadConnection,
   type PropertyReadLock,
 } from './property-read-lock.js';
+import {
+  assertReadAdmissionIssuer,
+  type IssuedReadAdmission,
+} from './read-admission.js';
+import {
+  canonicalLookupCandidateId,
+  type ExactLookupCandidate,
+} from '../ai/thread-context.js';
 import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
 import type { QuoteStayReadRequest } from './read-service-contracts.js';
 import type { QuoteRequest } from './quote-request-normalization.js';
@@ -183,6 +192,48 @@ export interface ReadExecutionContext {
   quoteRequests?: ReadonlyMap<string, QuoteRequest>;
 }
 
+/**
+ * The trusted synchronous edge used by the current application/proof runner.
+ * Its source must already have crossed the server-owned admission issuer; the
+ * edge does not accept a workflow row, claim token, or caller-authored user.
+ */
+export type TrustedSynchronousHmsFindSession = {
+  findReservation: NonNullable<ReadHandlers['findReservation']>;
+  propertyReadLock?: PropertyReadLock;
+  close?: () => Promise<void>;
+};
+
+export type TrustedSynchronousHmsFindSessionFactory = (input: {
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  propertyCode: string;
+  lookupCandidates: readonly ExactLookupCandidate[];
+  signal: AbortSignal;
+  runId: string;
+  readResultRef: string;
+  readAdmission: ReadAdmission;
+}) => Promise<TrustedSynchronousHmsFindSession>;
+
+export type TrustedSynchronousHmsFindInput = {
+  issued: IssuedReadAdmission;
+  candidate: ExactLookupCandidate;
+  currentAppAccessProof: CurrentAppAccessProof;
+  operationId: string;
+  readResultRef: string;
+  sourceRevision: string;
+  propertyCode: string;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  deadlineAt: Date;
+  now?: Date;
+  /** Optional live clock; omit to keep lower-edge fixtures deterministic. */
+  clock?: () => Date;
+  signal: AbortSignal;
+  sessionFactory: TrustedSynchronousHmsFindSessionFactory;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
 }
@@ -269,6 +320,94 @@ export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 
 function codedError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
+}
+
+function assertSynchronousReadActive(input: {
+  signal: AbortSignal;
+  deadlineAt: Date;
+  now: Date;
+}): void {
+  const nowMs = input.now.getTime();
+  const deadlineMs = input.deadlineAt.getTime();
+  if (!Number.isFinite(nowMs) || !Number.isFinite(deadlineMs) || nowMs >= deadlineMs) {
+    throw codedError('READ_SYNC_DEADLINE', 'synchronous read deadline is expired');
+  }
+  if (input.signal.aborted) throw codedError('READ_ABORTED', 'read was aborted');
+}
+
+/**
+ * Bound session setup itself. If an uncancellable lower edge resolves after
+ * the caller has left, close the late session so browser work cannot survive
+ * a cancellation race.
+ */
+function awaitSynchronousReadSetup<T>(input: {
+  operation: () => Promise<T>;
+  signal: AbortSignal;
+  deadlineAt: Date;
+  onLateResolution?: (value: T) => void | Promise<void>;
+}): Promise<T> {
+  const assertActive = () =>
+    assertSynchronousReadActive({
+      signal: input.signal,
+      deadlineAt: input.deadlineAt,
+      now: new Date(),
+    });
+  assertActive();
+  let pending: Promise<T>;
+  try {
+    pending = input.operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      input.signal.removeEventListener('abort', onAbort);
+    };
+    const rejectForCurrentState = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        assertActive();
+        reject(codedError('READ_ABORTED', 'read was aborted'));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onAbort = () => rejectForCurrentState();
+    const remaining = input.deadlineAt.getTime() - Date.now();
+    if (remaining <= 0) {
+      rejectForCurrentState();
+      return;
+    }
+    timer = setTimeout(rejectForCurrentState, remaining);
+    timer.unref?.();
+    input.signal.addEventListener('abort', onAbort, { once: true });
+    if (input.signal.aborted) onAbort();
+    pending.then(
+      (value) => {
+        if (settled) {
+          if (input.onLateResolution) {
+            void Promise.resolve(input.onLateResolution(value)).catch(() => undefined);
+          }
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 function toLookup(context: ReadExecutionContext, candidateId: string): ReservationContextLookup {
@@ -811,4 +950,183 @@ export async function executeReadToolRun(input: ReadToolRunInput): Promise<{
     result: readResultSchema.parse(result) as ReadResult<unknown>,
     linkedContextReferences,
   };
+}
+
+/**
+ * Execute one exact reservation find from a server-issued current-application
+ * source without manufacturing an ai_workflow_run. The normal worker can
+ * reuse this same guarded dispatch after it has loaded its durable source;
+ * queue-free callers must first obtain the issuer ticket and current-app proof
+ * from the real mailbox/application boundary.
+ */
+export async function executeTrustedSynchronousHmsFindReservation(
+  input: TrustedSynchronousHmsFindInput,
+): Promise<{
+  modelId: typeof NOT_APPLICABLE_MODEL_ID;
+  promptVersion: typeof READ_CONTRACT_VERSION;
+  readResultRef: string;
+  result: ReadResult<unknown>;
+  linkedContextReferences: LinkedContextReference[];
+}> {
+  const request = readRequestSchema.parse(input.issued.readRequest);
+  if (request.toolId !== 'hms_find_reservation' || !request.admission) {
+    throw codedError(
+      'READ_SYNC_REQUEST_INVALID',
+      'synchronous entry requires an admitted reservation find request',
+    );
+  }
+  if (request.candidateId !== input.candidate.id) {
+    throw codedError(
+      'READ_SYNC_CANDIDATE_MISMATCH',
+      'synchronous entry candidate is not the server-issued exact candidate',
+    );
+  }
+  const admission = request.admission;
+  if (
+    canonicalLookupCandidateId(input.candidate.kind, input.candidate.value) !== input.candidate.id
+  ) {
+    throw codedError(
+      'READ_SYNC_CANDIDATE_MISMATCH',
+      'synchronous entry candidate value is not bound to its canonical id',
+    );
+  }
+  const readResultRef = readRefSchema.parse(input.readResultRef);
+  if (
+    admission.captureBindingRef !== readResultRef ||
+    input.issued.admission.inputDigest !== admission.inputDigest
+  ) {
+    throw codedError(
+      'READ_SYNC_CAPTURE_BINDING_MISMATCH',
+      'synchronous entry capture binding is not the issued result scope',
+    );
+  }
+  const issuer = assertReadAdmissionIssuer({
+    issuer: input.issued.issuer,
+    admission,
+    request: request as unknown as Record<string, unknown>,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+  });
+  const readNow = () => input.clock?.() ?? (input.now ? new Date(input.now.getTime()) : new Date());
+  const now = readNow();
+  assertSynchronousReadActive({
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
+    now,
+  });
+  assertCurrentAppAccessProof({
+    proof: input.currentAppAccessProof,
+    requesterAuthorizationId: issuer.mailboxAccessId,
+    context: {
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: input.triggerMessageId,
+    },
+    now,
+  });
+  if (
+    issuer.userId !== input.currentAppAccessProof.userId ||
+    issuer.mailboxAccessId !== input.currentAppAccessProof.mailboxAccessId
+  ) {
+    throw codedError(
+      'READ_SYNC_CURRENT_APP_SCOPE_MISMATCH',
+      'synchronous entry issuer is not bound to current application access',
+    );
+  }
+
+  const session = await awaitSynchronousReadSetup({
+    operation: () =>
+      input.sessionFactory({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        propertyCode: input.propertyCode,
+        lookupCandidates: [input.candidate],
+        signal: input.signal,
+        runId: input.operationId,
+        readResultRef,
+        readAdmission: admission,
+      }),
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
+    onLateResolution: (lateSession) => lateSession.close?.(),
+  });
+  try {
+    const dispatchNow = readNow();
+    assertSynchronousReadActive({
+      signal: input.signal,
+      deadlineAt: input.deadlineAt,
+      now: dispatchNow,
+    });
+    assertCurrentAppAccessProof({
+      proof: input.currentAppAccessProof,
+      requesterAuthorizationId: issuer.mailboxAccessId,
+      context: {
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+      },
+      now: dispatchNow,
+    });
+    const propertyReadLock = session.propertyReadLock;
+    if (!propertyReadLock) {
+      throw codedError(
+        'READ_PROPERTY_LOCK_REQUIRED',
+        'synchronous entry requires the shared property read lock',
+      );
+    }
+    const readContext: ReadExecutionContext = {
+      transportId: input.transportId,
+      mailboxId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: input.triggerMessageId,
+      propertyCode: input.propertyCode,
+      sourceRevision: input.sourceRevision,
+      parentRef: input.operationId,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        allowedClaimKinds: ['reservation_summary'],
+        expiresAt: input.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: readNow,
+      requireAdmissionBinding: true,
+      readResultRef,
+      requireCurrentAppAccess: true,
+      currentAppAccessProof: input.currentAppAccessProof,
+      propertyReadLock,
+      handlers: {
+        findReservation: session.findReservation,
+      },
+    };
+    assertSynchronousReadActive({
+      signal: input.signal,
+      deadlineAt: input.deadlineAt,
+      now: readContext.now(),
+    });
+    return await propertyReadLock.withLock(
+      async (propertyReadLockConnection) =>
+        executeReadToolRun({
+          runKind: 'read_tool',
+          executorLane: 'hms',
+          draftingEnabled: false,
+          request,
+          context: { ...readContext, propertyReadLockConnection },
+          resultRef: readResultRef,
+        }),
+      {
+        signal: input.signal,
+        deadlineAt: input.deadlineAt.getTime(),
+      },
+    );
+  } finally {
+    await session.close?.();
+  }
 }

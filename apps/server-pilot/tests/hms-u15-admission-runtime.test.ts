@@ -1,6 +1,9 @@
+import {
+  createLiveHmsCandidateSessionFactory,
+  executeSynchronousHmsFindReservation,
+} from '../src/ai/worker.js';
 import { assertReadAdmissionIssuer, issueReadAdmission } from '../src/hms/read-admission.js';
 import { mintLinkedContextReference } from '../src/hms/context-read-reference.js';
-import { createLiveHmsCandidateSessionFactory } from '../src/ai/worker.js';
 import { readRequestSchema } from '../src/hms/read-service.js';
 import { describe, expect, it } from 'vitest';
 
@@ -21,6 +24,17 @@ const source = {
 const companyReservationRef = 'reservation-u15';
 
 describe('U15 normal admission and queue boundary', () => {
+  it('rejects a pre-aborted synchronous entry before loading runtime configuration', async () => {
+    await expect(
+      executeSynchronousHmsFindReservation({
+        userId: '',
+        transportId: '',
+        threadId: '',
+        signal: AbortSignal.abort(),
+      }),
+    ).rejects.toMatchObject({ code: 'READ_ABORTED' });
+  });
+
   it('does not mint a linked context admission from a caller-selected business reference', () => {
     expect(() =>
       issueReadAdmission({

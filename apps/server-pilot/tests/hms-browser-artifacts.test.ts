@@ -7,13 +7,66 @@ import {
   purgeExpiredHmsBrowserArtifacts,
   validatePlaywrightTraceFile,
   validateWebmFile,
+  collectHmsStorageStateSecretValues,
+  sanitizePlaywrightTraceFile,
   type HmsBrowserAuditSpec,
+  type HmsBrowserCaptureHandle,
 } from '../src/hms/browser-artifacts.js';
-import { mkdir, readFile, rm, stat, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  truncate,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { unzipSync } from 'fflate';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+const fsFaults = vi.hoisted(() => ({
+  open: undefined as ((path: string) => void) | undefined,
+  rename:
+    undefined as
+      | ((
+          from: string,
+          to: string,
+          actual: (from: string, to: string) => Promise<void>,
+        ) => Promise<void>)
+      | undefined,
+  remove:
+    undefined as
+      | ((
+          path: string,
+          options: { force?: boolean },
+          actual: (path: string, options: { force?: boolean }) => Promise<void>,
+        ) => Promise<void>)
+      | undefined,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      fsFaults.open?.(String(args[0]));
+      return actual.open(...args);
+    },
+    rename: async (from: string, to: string) => {
+      if (fsFaults.rename) return fsFaults.rename(from, to, actual.rename);
+      return actual.rename(from, to);
+    },
+    rm: async (path: string, options: { force?: boolean } = {}) => {
+      if (fsFaults.remove) return fsFaults.remove(path, options, actual.rm);
+      return actual.rm(path, options);
+    },
+  };
+});
 
 const createHmsBrowserArtifactStore = (
   input: Parameters<typeof createRawHmsBrowserArtifactStore>[0],
@@ -45,12 +98,10 @@ function baseSpec(overrides: Partial<HmsBrowserAuditSpec> = {}): HmsBrowserAudit
 }
 
 const validTraceZip = () =>
-  Buffer.concat([
-    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-    Buffer.alloc(26),
-    Buffer.from([0x50, 0x4b, 0x05, 0x06]),
-    Buffer.alloc(18),
-  ]);
+  traceZip({
+    'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+    'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+  });
 
 const crc32 = (input: Buffer): number => {
   let crc = 0xffffffff;
@@ -63,13 +114,13 @@ const crc32 = (input: Buffer): number => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 
-const traceZip = (entries: Record<string, string>): Buffer => {
+const traceZip = (entries: Record<string, string | Buffer>): Buffer => {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
   for (const [name, value] of Object.entries(entries)) {
     const nameBytes = Buffer.from(name);
-    const body = Buffer.from(value);
+    const body = Buffer.isBuffer(value) ? value : Buffer.from(value);
     const checksum = crc32(body);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
@@ -97,6 +148,54 @@ const traceZip = (entries: Record<string, string>): Buffer => {
   end.writeUInt32LE(0x06054b50, 0);
   end.writeUInt16LE(Object.keys(entries).length, 8);
   end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralBody.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBody, end]);
+};
+
+const traceZipRecords = (
+  entries: Array<{
+    name: string;
+    value: string | Buffer;
+    externalAttributes?: number;
+  }>,
+): Buffer => {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const nameBytes = Buffer.from(entry.name);
+    const body = Buffer.isBuffer(entry.value) ? entry.value : Buffer.from(entry.value);
+    const checksum = crc32(body);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(body.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    locals.push(local, nameBytes, body);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(body.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    if (entry.externalAttributes !== undefined) {
+      central.writeUInt32LE(entry.externalAttributes >>> 0, 38);
+    }
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, nameBytes);
+    offset += local.length + nameBytes.length + body.length;
+  }
+  const centralBody = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
   end.writeUInt32LE(centralBody.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, centralBody, end]);
@@ -188,6 +287,970 @@ const validWebm = (options: { includeCues?: boolean; unknownSegmentSize?: boolea
 };
 
 describe('hms browser artifacts store', () => {
+  it('collects credential-bearing native storage values without collecting metadata labels', () => {
+    expect(
+      collectHmsStorageStateSecretValues({
+        cookies: [
+          {
+            name: 'fixture-session',
+            value: 'rotated-cookie-value',
+            domain: 'example.test',
+            path: '/',
+          },
+        ],
+        origins: [
+          {
+            origin: 'https://example.test',
+            localStorage: [
+              { name: 'locale', value: 'en-ZA' },
+              { name: 'access_token', value: 'rotated-local-token' },
+            ],
+          },
+        ],
+      }),
+    ).toEqual(['rotated-cookie-value', 'rotated-local-token']);
+  });
+
+  it('sanitizes native headers, cookies, postData, and resources while preserving trace structure', async () => {
+    const root = await tempRoot();
+    const rawPath = join(root, 'raw.trace.zip');
+    const reviewPath = join(root, 'review.trace.zip');
+    const secret = 'Bearer-rotated-native-token-123';
+    const rotatedHeaderSecret = 'rotated-session-header-456';
+    const rotatedCookieSecret = 'rotated-cookie-header-567';
+    const trace = `${JSON.stringify({
+      type: 'resource-snapshot',
+      snapshot: {
+        request: {
+          method: 'POST',
+          headers: [
+            { name: 'Authorization', value: secret },
+            { name: 'X-Session-Token', value: rotatedHeaderSecret },
+            { name: 'X-Useful', value: 'kept' },
+          ],
+          cookies: [{ name: 'sid', value: secret }],
+          postData: { _sha1: 'body-resource' },
+        },
+        response: {
+          headers: [{ name: 'Set-Cookie', value: `sid=${rotatedCookieSecret}; Path=/` }],
+          content: { _sha1: 'response-resource' },
+        },
+      },
+    })}\n`;
+    const network = `${JSON.stringify({
+      type: 'request',
+      url: 'https://example.test/echo',
+      headers: { authorization: secret, 'X-Useful': 'kept' },
+      postData: `sid=${encodeURIComponent(secret)}`,
+    })}\n`;
+    const resource = JSON.stringify({
+      safe: 'response provenance stays',
+      echoed: secret,
+      rotated: rotatedHeaderSecret,
+      rotatedCookie: rotatedCookieSecret,
+    });
+    await writeFile(
+      rawPath,
+      traceZip({
+        'trace.trace': trace,
+        'trace.network': network,
+        'resources/response-resource': resource,
+      }),
+    );
+
+    const result = await sanitizePlaywrightTraceFile(rawPath, reviewPath, [secret]);
+    expect(result.raw.bytes).toBe((await stat(rawPath)).size);
+    expect(result.review.bytes).toBe((await stat(reviewPath)).size);
+    expect(result.sanitizerVersion).toBe('hms-trace-sanitizer-v1');
+    await expect(validatePlaywrightTraceFile(reviewPath)).resolves.toBe(true);
+    const reviewEntries = unzipSync(await readFile(reviewPath));
+    const traceText = Buffer.from(reviewEntries['trace.trace']!).toString('utf8');
+    const networkText = Buffer.from(reviewEntries['trace.network']!).toString('utf8');
+    const resourceText = Buffer.from(reviewEntries['resources/response-resource']!).toString(
+      'utf8',
+    );
+    expect(traceText).not.toContain(secret);
+    expect(traceText).not.toContain(rotatedHeaderSecret);
+    expect(networkText).not.toContain(secret);
+    expect(networkText).toContain('https://example.test/echo');
+    expect(resourceText).not.toContain(secret);
+    expect(resourceText).not.toContain(rotatedHeaderSecret);
+    expect(resourceText).not.toContain(rotatedCookieSecret);
+    expect(traceText).toContain('X-Useful');
+    expect(resourceText).toContain('response provenance stays');
+    expect(JSON.parse(traceText).snapshot.request.postData).toBeUndefined();
+    expect(JSON.parse(networkText).headers.authorization).toBeUndefined();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('fails closed on residual secrets, traversal, duplicate, symlink, and expansion-bounded archives', async () => {
+    const root = await tempRoot();
+    const secret = 'residual-secret-token-456';
+    const goodTrace = `${JSON.stringify({ type: 'context-options' })}\n`;
+    const goodNetwork = `${JSON.stringify({ type: 'resource-snapshot' })}\n`;
+
+    await writeFile(
+      join(root, 'residual.zip'),
+      traceZip({
+        'trace.trace': goodTrace,
+        'trace.network': goodNetwork,
+        'resources/body': Buffer.concat([Buffer.from([0xff, 0xfe, 0x00]), Buffer.from(secret)]),
+      }),
+    );
+    await expect(
+      sanitizePlaywrightTraceFile(join(root, 'residual.zip'), join(root, 'review.zip'), [secret]),
+    ).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+
+    const malformedNames: Array<{ filename: string; bytes: Buffer }> = [
+      {
+        filename: 'traversal.zip',
+        bytes: traceZipRecords([
+          { name: '../trace.trace', value: goodTrace },
+          { name: 'trace.network', value: goodNetwork },
+        ]),
+      },
+      {
+        filename: 'duplicate.zip',
+        bytes: traceZipRecords([
+          { name: 'trace.trace', value: goodTrace },
+          { name: 'trace.trace', value: goodTrace },
+          { name: 'trace.network', value: goodNetwork },
+        ]),
+      },
+      {
+        filename: 'symlink.zip',
+        bytes: traceZipRecords([
+          { name: 'trace.trace', value: goodTrace, externalAttributes: 0xa0000000 },
+          { name: 'trace.network', value: goodNetwork },
+        ]),
+      },
+      {
+        filename: 'ratio.zip',
+        bytes: traceZip({
+          'trace.trace': goodTrace,
+          'trace.network': goodNetwork,
+          'resources/repetitive': 'a'.repeat(2_000_000),
+        }),
+      },
+    ];
+    for (const malformed of malformedNames) {
+      await writeFile(join(root, malformed.filename), malformed.bytes);
+      await expect(
+        sanitizePlaywrightTraceFile(
+          join(root, malformed.filename),
+          join(root, `${malformed.filename}.review.zip`),
+          [],
+        ),
+      ).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('cleans raw and intermediate native trace files and receipts identify the sanitized ZIP', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    const secret = 'cleanup-token-789';
+    handle.addSecretValues([secret]);
+    const raw = traceZip({
+      'trace.trace': `${JSON.stringify({ type: 'context-options', echoed: secret })}\n`,
+      'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+      'resources/response': JSON.stringify({ useful: 'response body' }),
+    });
+    await writeFile(join(handle.stagingDir, 'trace.zip'), raw);
+    const intermediatePath = join(handle.tracesDir, `trace-${handle.artifactId}.trace`);
+    await writeFile(intermediatePath, Buffer.from('native intermediate'));
+
+    const receipt = await handle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'src',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    const finalTrace = join(root, handle.artifactId, 'trace.zip');
+    const finalBytes = await readFile(finalTrace);
+    expect(receipt.trace.bytes).toBe(finalBytes.byteLength);
+    expect(receipt.trace.sha256).toBe(
+      (await import('node:crypto')).createHash('sha256').update(finalBytes).digest('hex'),
+    );
+    expect(finalBytes.toString('utf8')).not.toContain(secret);
+    await expect(stat(join(handle.stagingDir, 'trace.zip'))).rejects.toThrow();
+    await expect(stat(intermediatePath)).rejects.toThrow();
+    const provenance = JSON.parse(
+      await readFile(join(root, handle.artifactId, '.trace-provenance.v1.json'), 'utf8'),
+    );
+    expect(provenance).toMatchObject({
+      schemaVersion: 1,
+      sanitizerVersion: 'hms-trace-sanitizer-v1',
+      raw: {
+        sha256: (await import('node:crypto')).createHash('sha256').update(raw).digest('hex'),
+        bytes: raw.byteLength,
+      },
+      review: { sha256: receipt.trace.sha256, bytes: receipt.trace.bytes },
+    });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('removes raw trace and intermediates when privacy finalization fails', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    handle.addSecretValues(['failure-token-000']);
+    await writeFile(
+      join(handle.stagingDir, 'trace.zip'),
+      traceZip({
+        'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+        'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+        'resources/binary': Buffer.concat([
+          Buffer.from([0xff, 0xfe, 0x00]),
+          Buffer.from('failure-token-000', 'utf8'),
+        ]),
+      }),
+    );
+    const intermediatePath = join(handle.tracesDir, `failure-${handle.artifactId}.trace`);
+    await writeFile(intermediatePath, Buffer.from('native intermediate'));
+
+    await expect(
+      handle.finalize({
+        outcome: 'succeeded',
+        terminalCode: 'OK',
+        terminalStage: 'receipt_finalize',
+        sourceRevision: 'src',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        requestRules: [],
+        blockedRequests: 0,
+        mutationRequests: 0,
+        popupCount: 0,
+        downloadCount: 0,
+        webSocketCount: 0,
+        complete: true,
+      }),
+    ).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+    const retainedReceipt = JSON.parse(
+      await readFile(join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'), 'utf8'),
+    ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+    expect(retainedReceipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'failed',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+    });
+    await expect(stat(join(handle.stagingDir, 'trace.zip'))).rejects.toThrow();
+    await expect(stat(intermediatePath)).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('allocates exclusive native intermediate namespaces and preserves another owner', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({ root });
+    const first = await store.beginCapture(baseSpec());
+    const second = await store.beginCapture(baseSpec());
+    expect(first.tracesDir).not.toBe(second.tracesDir);
+
+    const firstPath = join(first.tracesDir, 'same-name.trace');
+    const secondPath = join(second.tracesDir, 'same-name.trace');
+    await writeFile(firstPath, Buffer.from('first-owner'));
+    await writeFile(secondPath, Buffer.from('second-owner'));
+
+    await first.abandon();
+    await expect(stat(firstPath)).rejects.toThrow();
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('second-owner');
+
+    await second.abandon();
+    await expect(stat(secondPath)).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('fails closed when owned intermediate cleanup cannot be verified', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    await rm(handle.tracesDir, { recursive: true, force: true });
+
+    await expect(
+      handle.finalize({
+        outcome: 'succeeded',
+        terminalCode: 'OK',
+        terminalStage: 'receipt_finalize',
+        sourceRevision: 'src',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        requestRules: [],
+        blockedRequests: 0,
+        mutationRequests: 0,
+        popupCount: 0,
+        downloadCount: 0,
+        webSocketCount: 0,
+        complete: true,
+      }),
+    ).rejects.toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+    const retainedReceipt = JSON.parse(
+      await readFile(
+        join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'),
+        'utf8',
+      ),
+    ) as {
+      artifactState: string;
+      operationOutcome: string;
+      terminalCode: string;
+      trace: unknown;
+      video: unknown;
+    };
+    expect(retainedReceipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'failed',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+      trace: null,
+      video: null,
+    });
+    await expect(stat(join(root, handle.artifactId))).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('retains a private aborted receipt when abandon cleanup fails', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    await rm(handle.tracesDir, { recursive: true, force: true });
+
+    await expect(handle.abandon()).rejects.toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+    const receipt = JSON.parse(
+      await readFile(
+        join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'),
+        'utf8',
+      ),
+    ) as {
+      artifactState: string;
+      operationOutcome: string;
+      terminalCode: string;
+      trace: unknown;
+    };
+    expect(receipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'aborted',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+      trace: null,
+    });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('quarantines a complete publication invalidated while final rename is pending', async () => {
+    const root = await tempRoot();
+    let markRenameStarted!: () => void;
+    const renameStarted = new Promise<void>((resolve) => {
+      markRenameStarted = resolve;
+    });
+    let releaseRename!: () => void;
+    const renameRelease = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    let stagingDir = '';
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    stagingDir = handle.stagingDir;
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    fsFaults.rename = async (from, to, actual) => {
+      if (from === stagingDir) {
+        markRenameStarted();
+        await renameRelease;
+      }
+      return actual(from, to);
+    };
+
+    try {
+      const finalizing = handle.finalize({
+        outcome: 'succeeded',
+        terminalCode: 'OK',
+        terminalStage: 'receipt_finalize',
+        sourceRevision: 'src',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        requestRules: [],
+        blockedRequests: 0,
+        mutationRequests: 0,
+        popupCount: 0,
+        downloadCount: 0,
+        webSocketCount: 0,
+        complete: true,
+      });
+      await renameStarted;
+      handle.invalidate();
+      releaseRename();
+
+      const receipt = await finalizing;
+      expect(receipt.artifactState).toBe('incomplete');
+      expect(receipt.operationOutcome).toBe('aborted');
+      await expect(stat(join(root, handle.artifactId))).rejects.toThrow();
+      await expect(
+        stat(join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json')),
+      ).resolves.toBeDefined();
+      const persistedReceipt = JSON.parse(
+        await readFile(
+          join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'),
+          'utf8',
+        ),
+      ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+      expect(persistedReceipt).toMatchObject({
+        artifactState: 'incomplete',
+        operationOutcome: 'aborted',
+        terminalCode: 'ABORTED',
+      });
+      await expect(handle.abandon()).resolves.toBeUndefined();
+    } finally {
+      fsFaults.rename = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a committed target when the invalidation quarantine rename fails once', async () => {
+    const root = await tempRoot();
+    let markRenameStarted!: () => void;
+    const renameStarted = new Promise<void>((resolve) => {
+      markRenameStarted = resolve;
+    });
+    let releaseRename!: () => void;
+    const renameRelease = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    let stagingDir = '';
+    let artifactId = '';
+    let failQuarantineRename = true;
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    stagingDir = handle.stagingDir;
+    artifactId = handle.artifactId;
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    fsFaults.rename = async (from, to, actual) => {
+      if (from === stagingDir) {
+        markRenameStarted();
+        await renameRelease;
+      }
+      if (
+        failQuarantineRename &&
+        from === join(root, artifactId) &&
+        to === join(root, `.incomplete-${artifactId}`)
+      ) {
+        failQuarantineRename = false;
+        throw Object.assign(new Error(`raw quarantine failure: ${to}`), { code: 'EACCES' });
+      }
+      return actual(from, to);
+    };
+
+    try {
+      const finalizing = handle.finalize({
+        outcome: 'succeeded',
+        terminalCode: 'OK',
+        terminalStage: 'receipt_finalize',
+        sourceRevision: 'src',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        requestRules: [],
+        blockedRequests: 0,
+        mutationRequests: 0,
+        popupCount: 0,
+        downloadCount: 0,
+        webSocketCount: 0,
+        complete: true,
+      });
+      await renameStarted;
+      handle.invalidate();
+      releaseRename();
+
+      let result: { artifactState: string; operationOutcome: string } | undefined;
+      let observedError: unknown;
+      try {
+        result = await finalizing;
+      } catch (error) {
+        observedError = error;
+      }
+      if (result) {
+        expect(result.artifactState).toBe('incomplete');
+        expect(result.operationOutcome).toBe('aborted');
+      } else {
+        expect(observedError).toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+      }
+      await expect(stat(join(root, artifactId))).rejects.toThrow();
+      const persistedReceipt = JSON.parse(
+        await readFile(join(root, `.incomplete-${artifactId}`, 'receipt.v1.json'), 'utf8'),
+      ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+      expect(persistedReceipt).toMatchObject({
+        artifactState: 'incomplete',
+        operationOutcome: 'aborted',
+        terminalCode: 'ABORTED',
+      });
+      await expect(handle.abandon()).resolves.toBeUndefined();
+    } finally {
+      fsFaults.rename = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites a private incomplete receipt when the committed receipt is read-only', async () => {
+    const root = await tempRoot();
+    let markRenameStarted!: () => void;
+    const renameStarted = new Promise<void>((resolve) => {
+      markRenameStarted = resolve;
+    });
+    let releaseRename!: () => void;
+    const renameRelease = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    let stagingDir = '';
+    let artifactId = '';
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    stagingDir = handle.stagingDir;
+    artifactId = handle.artifactId;
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    fsFaults.rename = async (from, to, actual) => {
+      if (from === stagingDir) {
+        markRenameStarted();
+        await renameRelease;
+        const result = await actual(from, to);
+        await chmod(join(to, 'receipt.v1.json'), 0o400);
+        return result;
+      }
+      return actual(from, to);
+    };
+
+    try {
+      const finalizing = handle.finalize({
+        outcome: 'succeeded',
+        terminalCode: 'OK',
+        terminalStage: 'receipt_finalize',
+        sourceRevision: 'src',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        requestRules: [],
+        blockedRequests: 0,
+        mutationRequests: 0,
+        popupCount: 0,
+        downloadCount: 0,
+        webSocketCount: 0,
+        complete: true,
+      });
+      await renameStarted;
+      handle.invalidate();
+      releaseRename();
+
+      const result = await finalizing;
+      expect(result.artifactState).toBe('incomplete');
+      expect(result.operationOutcome).toBe('aborted');
+      await expect(stat(join(root, artifactId))).rejects.toThrow();
+      const persistedReceipt = JSON.parse(
+        await readFile(join(root, `.incomplete-${artifactId}`, 'receipt.v1.json'), 'utf8'),
+      ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+      expect(persistedReceipt).toMatchObject({
+        artifactState: 'incomplete',
+        operationOutcome: 'aborted',
+        terminalCode: 'ABORTED',
+      });
+      await expect(handle.abandon()).resolves.toBeUndefined();
+    } finally {
+      fsFaults.rename = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retries abandon quarantine for a committed complete target', async () => {
+    const root = await tempRoot();
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    await handle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'src',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    let failQuarantineRename = true;
+    fsFaults.rename = async (from, to, actual) => {
+      if (
+        failQuarantineRename &&
+        from === join(root, handle.artifactId) &&
+        to === join(root, `.incomplete-${handle.artifactId}`)
+      ) {
+        failQuarantineRename = false;
+        throw Object.assign(new Error(`raw abandon quarantine failure: ${to}`), {
+          code: 'EACCES',
+        });
+      }
+      return actual(from, to);
+    };
+
+    try {
+      await expect(handle.abandon()).resolves.toBeUndefined();
+      await expect(stat(join(root, handle.artifactId))).rejects.toThrow();
+      const persistedReceipt = JSON.parse(
+        await readFile(
+          join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'),
+          'utf8',
+        ),
+      ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+      expect(persistedReceipt).toMatchObject({
+        artifactState: 'incomplete',
+        operationOutcome: 'aborted',
+        terminalCode: 'ABORTED',
+      });
+    } finally {
+      fsFaults.rename = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['quarantine rename', 'private receipt rewrite'] as const)(
+    'retains ownership for abandon retry after persistent %s failure',
+    async (failure) => {
+      const root = await tempRoot();
+      const store = await createHmsBrowserArtifactStore({ root });
+      const handle = await store.beginCapture(baseSpec());
+      const completeTarget = join(root, handle.artifactId);
+      const incompleteTarget = join(root, `.incomplete-${handle.artifactId}`);
+      await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+      fsFaults.rename = async (from, to, actual) => {
+        if (from === handle.stagingDir && to === completeTarget) handle.invalidate();
+        if (
+          failure === 'quarantine rename' &&
+          from === completeTarget &&
+          to === incompleteTarget
+        ) {
+          throw Object.assign(new Error(`raw quarantine failure: ${to}`), { code: 'EACCES' });
+        }
+        return actual(from, to);
+      };
+      fsFaults.open = (path) => {
+        if (
+          failure === 'private receipt rewrite' &&
+          path.startsWith(join(incompleteTarget, 'receipt.v1.json'))
+        ) {
+          throw Object.assign(new Error(`raw receipt failure: ${path}`), { code: 'EACCES' });
+        }
+      };
+
+      try {
+        let observedError: unknown;
+        try {
+          await handle.finalize({
+            outcome: 'succeeded',
+            terminalCode: 'OK',
+            terminalStage: 'receipt_finalize',
+            sourceRevision: 'src',
+            playwrightRevision: '1.52.0',
+            chromiumRevision: '1169',
+            requestRules: [],
+            blockedRequests: 0,
+            mutationRequests: 0,
+            popupCount: 0,
+            downloadCount: 0,
+            webSocketCount: 0,
+            complete: true,
+          });
+        } catch (error) {
+          observedError = error;
+        }
+        expect(observedError).toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+        expect(String(observedError)).not.toContain(root);
+        await expect(stat(join(completeTarget, 'receipt.v1.json'))).rejects.toThrow();
+        fsFaults.rename = undefined;
+        fsFaults.open = undefined;
+
+        await expect(handle.abandon()).resolves.toBeUndefined();
+        await expect(stat(completeTarget)).rejects.toThrow();
+        const receiptPath = join(incompleteTarget, 'receipt.v1.json');
+        expect(JSON.parse(await readFile(receiptPath, 'utf8'))).toMatchObject({
+          artifactId: handle.artifactId,
+          artifactState: 'incomplete',
+          operationOutcome: 'aborted',
+          terminalCode: 'ABORTED',
+        });
+        expect((await stat(receiptPath)).mode & 0o777).toBe(0o600);
+      } finally {
+        fsFaults.rename = undefined;
+        fsFaults.open = undefined;
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ['privacy', 'TRACE_PRIVACY_FAILED'],
+    ['video', 'VIDEO_FINALIZE_FAILED'],
+    ['validation', 'TRACE_FINALIZE_FAILED'],
+  ] as const)(
+    'persists aborted metadata when %s failure retention is invalidated during rename',
+    async (failure, errorCode) => {
+      const root = await tempRoot();
+      const store = await createHmsBrowserArtifactStore({
+        root,
+        validateTraceFile: async () => failure !== 'validation',
+      });
+      const handle = await store.beginCapture(
+        baseSpec({ executionClass: failure === 'video' ? 'live_proof' : 'normal' }),
+      );
+      handle.addSecretValues(['invented-retention-token']);
+      await writeFile(
+        join(handle.stagingDir, 'trace.zip'),
+        failure === 'privacy'
+          ? traceZip({
+              'trace.trace': `${JSON.stringify({ type: 'context-options' })}\n`,
+              'trace.network': `${JSON.stringify({ type: 'resource-snapshot' })}\n`,
+              'resources/binary': Buffer.concat([
+                Buffer.from([0xff, 0xfe, 0x00]),
+                Buffer.from('invented-retention-token'),
+              ]),
+            })
+          : validTraceZip(),
+      );
+      const incompleteTarget = join(root, `.incomplete-${handle.artifactId}`);
+      fsFaults.rename = async (from, to, actual) => {
+        if (from === handle.stagingDir && to === incompleteTarget) handle.invalidate();
+        return actual(from, to);
+      };
+
+      try {
+        await expect(
+          handle.finalize({
+            outcome: 'succeeded',
+            terminalCode: 'OK',
+            terminalStage: 'receipt_finalize',
+            sourceRevision: 'src',
+            playwrightRevision: '1.52.0',
+            chromiumRevision: '1169',
+            requestRules: [],
+            blockedRequests: 0,
+            mutationRequests: 0,
+            popupCount: 0,
+            downloadCount: 0,
+            webSocketCount: 0,
+            complete: true,
+          }),
+        ).rejects.toMatchObject({ code: errorCode });
+        expect(
+          JSON.parse(await readFile(join(incompleteTarget, 'receipt.v1.json'), 'utf8')),
+        ).toMatchObject({
+          artifactState: 'incomplete',
+          operationOutcome: 'aborted',
+          terminalCode: 'ABORTED',
+        });
+        await expect(stat(join(root, handle.artifactId))).rejects.toThrow();
+      } finally {
+        fsFaults.rename = undefined;
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: 'review trace removal',
+      setup: async (handle: HmsBrowserCaptureHandle) => {
+        await writeFile(join(handle.stagingDir, '.trace-review.zip'), Buffer.from('review'));
+      },
+      failureName: '.trace-review.zip',
+    },
+    {
+      name: 'trace removal',
+      setup: async (handle: HmsBrowserCaptureHandle) => {
+        await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+      },
+      failureName: 'trace.zip',
+    },
+    {
+      name: 'owner removal',
+      setup: async (_handle: HmsBrowserCaptureHandle) => undefined,
+      failureName: '.capture-owner.v1.json',
+    },
+  ])('retains a private receipt and sanitizes $name cleanup failures', async ({ setup, failureName }) => {
+    const root = await tempRoot();
+    let failedPath = '';
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    await setup(handle);
+    failedPath = join(handle.stagingDir, failureName);
+    fsFaults.remove = async (path, options, actual) => {
+      if (path === failedPath) {
+        throw Object.assign(new Error(`raw cleanup failure: ${path}`), { code: 'EACCES' });
+      }
+      return actual(path, options);
+    };
+
+    try {
+      let observedError: unknown;
+      try {
+        await handle.finalize({
+          outcome: 'failed',
+          terminalCode: 'TOOL_ERROR',
+          terminalStage: 'tool',
+          sourceRevision: 'src',
+          playwrightRevision: '1.52.0',
+          chromiumRevision: '1169',
+          requestRules: [],
+          blockedRequests: 0,
+          mutationRequests: 0,
+          popupCount: 0,
+          downloadCount: 0,
+          webSocketCount: 0,
+          complete: false,
+        });
+      } catch (error) {
+        observedError = error;
+      }
+      expect(observedError).toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+      expect(String(observedError)).not.toContain(root);
+      expect(String(observedError)).not.toContain(failedPath);
+      const retainedReceipt = JSON.parse(
+        await readFile(
+          join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'),
+          'utf8',
+        ),
+      ) as { artifactState: string; trace: unknown; terminalCode: string };
+      expect(retainedReceipt).toMatchObject({
+        artifactState: 'incomplete',
+        trace: null,
+        terminalCode: 'TRACE_FINALIZE_FAILED',
+      });
+    } finally {
+      fsFaults.remove = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('invalidates publication after validation has started before final rename', async () => {
+    const root = await tempRoot();
+    let markValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => {
+      markValidationStarted = resolve;
+    });
+    let releaseValidation!: () => void;
+    const validationRelease = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+    const store = await createRawHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => {
+        markValidationStarted();
+        await validationRelease;
+        return true;
+      },
+    });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+
+    const finalizing = handle.finalize({
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      sourceRevision: 'src',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    await validationStarted;
+    handle.invalidate();
+    releaseValidation();
+
+    const receipt = await finalizing;
+    expect(receipt.artifactState).toBe('incomplete');
+    expect(receipt.operationOutcome).toBe('aborted');
+    await expect(stat(join(root, handle.artifactId))).rejects.toThrow();
+    await expect(
+      stat(join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json')),
+    ).resolves.toBeDefined();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('clears a trace digest when validation throws before the trace is removed', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => {
+        throw new Error('validator fixture failure');
+      },
+    });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+
+    const receipt = await handle.finalize({
+      outcome: 'failed',
+      terminalCode: 'TOOL_ERROR',
+      terminalStage: 'tool',
+      sourceRevision: 'src',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: false,
+    });
+
+    expect(receipt.artifactState).toBe('incomplete');
+    expect(receipt.trace).toBeNull();
+    await expect(stat(join(root, `.incomplete-${handle.artifactId}`, 'trace.zip'))).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('retains only a validated sanitized incomplete trace for the 24-hour private path', async () => {
+    const root = await tempRoot();
+    const store = await createRawHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => false,
+    });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+
+    const receipt = await handle.finalize({
+      outcome: 'failed',
+      terminalCode: 'TOOL_ERROR',
+      terminalStage: 'tool',
+      sourceRevision: 'src',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: false,
+    });
+
+    expect(receipt.artifactState).toBe('incomplete');
+    expect(receipt.trace).toBeNull();
+    const retainedDir = join(root, `.incomplete-${handle.artifactId}`);
+    await expect(stat(join(retainedDir, 'receipt.v1.json'))).resolves.toBeDefined();
+    await expect(stat(join(retainedDir, 'trace.zip'))).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('requires nonempty parseable Playwright trace event streams', async () => {
     const root = await tempRoot();
     const path = join(root, 'trace.zip');
@@ -463,7 +1526,8 @@ describe('hms browser artifacts store', () => {
     });
 
     expect(receipt.artifactState).toBe('complete');
-    expect(receipt.trace.bytes).toBe(zip.byteLength);
+    expect(receipt.trace.bytes).toBeGreaterThan(0);
+    expect(receipt.trace.bytes).not.toBe(zip.byteLength);
     expect(receipt.trace.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt.video).toBeNull();
     expect(receipt.milestones.traceStartedAt).toBe('2026-08-05T00:00:00.000Z');
@@ -502,9 +1566,19 @@ describe('hms browser artifacts store', () => {
         complete: true,
       }),
     ).rejects.toMatchObject({ code: 'VIDEO_FINALIZE_FAILED' });
+    const retainedReceipt = JSON.parse(
+      await readFile(join(root, `.incomplete-${handle.artifactId}`, 'receipt.v1.json'), 'utf8'),
+    ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+    expect(retainedReceipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'failed',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+    });
 
-    await writeFile(join(handle.stagingDir, 'video.webm'), validWebm());
-    const receipt = await handle.finalize({
+    const completeHandle = await store.beginCapture(baseSpec({ executionClass: 'live_proof' }));
+    await writeFile(join(completeHandle.stagingDir, 'trace.zip'), validTraceZip());
+    await writeFile(join(completeHandle.stagingDir, 'video.webm'), validWebm());
+    const receipt = await completeHandle.finalize({
       outcome: 'succeeded',
       terminalCode: 'OK',
       terminalStage: 'receipt_finalize',
@@ -578,6 +1652,17 @@ describe('hms browser artifacts store', () => {
         complete: true,
       }),
     ).rejects.toMatchObject({ code: 'TRACE_FINALIZE_FAILED' });
+    const traceReceipt = JSON.parse(
+      await readFile(
+        join(traceRoot, `.incomplete-${traceHandle.artifactId}`, 'receipt.v1.json'),
+        'utf8',
+      ),
+    ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+    expect(traceReceipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'failed',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+    });
     await rm(traceRoot, { recursive: true, force: true });
 
     const videoRoot = await tempRoot();
@@ -605,6 +1690,17 @@ describe('hms browser artifacts store', () => {
         complete: true,
       }),
     ).rejects.toMatchObject({ code: 'VIDEO_FINALIZE_FAILED' });
+    const videoReceipt = JSON.parse(
+      await readFile(
+        join(videoRoot, `.incomplete-${videoHandle.artifactId}`, 'receipt.v1.json'),
+        'utf8',
+      ),
+    ) as { artifactState: string; operationOutcome: string; terminalCode: string };
+    expect(videoReceipt).toMatchObject({
+      artifactState: 'incomplete',
+      operationOutcome: 'failed',
+      terminalCode: 'TRACE_FINALIZE_FAILED',
+    });
     await rm(videoRoot, { recursive: true, force: true });
   });
 

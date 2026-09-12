@@ -317,6 +317,54 @@ describe('normal reservation claim authorization and capture join', () => {
     expect(unjoinedResult.status).toBe('manual_required');
     expect(claimsFromToolResult(unjoinedResult, now, unjoined.claimAuthorization)).toEqual([]);
   });
+
+  it('find claimKeys omit null roomType and never claim ratePlan', async () => {
+    const now = new Date('2026-08-11T12:00:00.000Z');
+    const candidate = confCandidate('HONEST-CONF-1');
+    const driver = {
+      searchExactAndMap: vi.fn(async (_candidate, _signal, mapResult) =>
+        mapResult({
+          outcome: 'matched',
+          capped: false,
+          observations: [
+            {
+              confirmationNumber: 'HONEST-CONF-1',
+              externalReference: null,
+              guestName: 'Syntherson, Alpha',
+              arrivalDate: '2026-08-01',
+              departureDate: '2026-08-03',
+              reservationStatus: 'Confirmed',
+              roomType: null,
+              ratePlan: 'SHOULD-NOT-CLAIM',
+            },
+          ],
+        }),
+      ),
+      lastAuditReceipt: vi.fn(() => null),
+    };
+    const session = createReservationCandidateSession({
+      driver,
+      candidates: new Map([[candidate.id, candidate]]),
+      close: async () => undefined,
+      now: () => now,
+      activeReleases: new Map(),
+    });
+    const result = await session.findReservation(candidate.id, new AbortController().signal);
+    expect(result.status).toBe('partial');
+    expect(result.data?.matches[0]?.ratePlan).toBeNull();
+    expect(result.unresolvedFields).toEqual(expect.arrayContaining(['roomType']));
+    expect(result.evidence.claimKeys).toEqual(
+      expect.arrayContaining([
+        'matches.0.confirmationNumber',
+        'matches.0.guestName',
+        'matches.0.reservationStatus',
+        'matches.0.arrivalDate',
+        'matches.0.departureDate',
+      ]),
+    );
+    expect(result.evidence.claimKeys).not.toContain('matches.0.roomType');
+    expect(result.evidence.claimKeys).not.toContain('matches.0.ratePlan');
+  });
 });
 
 describe('guest stay HTML parser correlation', () => {
@@ -492,6 +540,7 @@ describe('guest stay HTML parser correlation', () => {
 
 describe('live OSRESS GRIDRESULT parser', () => {
   const candidate = confCandidate();
+  const liveShapePath = join(here, '../evals/hms/osress-grid-dataspy-1941.live-shape.v1.json');
 
   function gridEnvelope(rows: unknown[], records?: string): string {
     const rec = records ?? (Array.isArray(rows) ? String(rows.length) : '0');
@@ -644,6 +693,125 @@ describe('live OSRESS GRIDRESULT parser', () => {
       )!,
     );
     expect(exact?.[0]).toMatchObject({ roomType: null, ratePlan: null });
+  });
+
+  it('primaryguest sentinel "-1" → compose guestName from lastname/firstname', () => {
+    const rows = parseLiveOsressGridRows(
+      extractOsressPageData(
+        gridEnvelope([
+          {
+            confirmationnumber: SYNTH.conf,
+            primaryguest: '-1',
+            lastname: 'Syntherson',
+            firstname: 'Alpha',
+            status: 'Confirmed',
+            arrivaldate: '15-Jan-2099',
+            departuredate: '18-Jan-2099',
+          },
+        ]),
+      )!,
+    );
+    expect(rows?.[0]?.guestName).toBe('Syntherson, Alpha');
+    expect(rows?.[0]?.guestName).not.toBe('-1');
+  });
+
+  it('surname_dates correlates lastname+dates; wrong dates → not_found', () => {
+    const text = gridEnvelope([
+      {
+        confirmationnumber: SYNTH.conf,
+        primaryguest: '-1',
+        lastname: 'Syntherson',
+        firstname: 'Alpha',
+        status: 'Confirmed',
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+      },
+    ]);
+    const hit = parseAndCorrelateGuestStayHtml(text, {
+      id: 's1',
+      kind: 'surname_dates',
+      surname: 'Syntherson',
+      arrivalDate: '2099-01-15',
+      departureDate: '2099-01-18',
+    });
+    expect(hit.outcome).toBe('matched');
+    if (hit.outcome === 'matched') {
+      expect(hit.observations[0]?.guestName).toBe('Syntherson, Alpha');
+    }
+    const miss = parseAndCorrelateGuestStayHtml(text, {
+      id: 's2',
+      kind: 'surname_dates',
+      surname: 'Syntherson',
+      arrivalDate: '2099-02-01',
+      departureDate: '2099-02-03',
+    });
+    expect(miss.outcome).toBe('not_found');
+  });
+
+  it('surname_dates ambiguous → capped matchCount honesty', () => {
+    const text = gridEnvelope([
+      {
+        confirmationnumber: SYNTH.conf,
+        lastname: 'Syntherson',
+        firstname: 'Alpha',
+        status: 'Confirmed',
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+      },
+      {
+        confirmationnumber: SYNTH.confOther,
+        lastname: 'Syntherson',
+        firstname: 'Beta',
+        status: 'Confirmed',
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+      },
+    ]);
+    const result = parseAndCorrelateGuestStayHtml(text, {
+      id: 's1',
+      kind: 'surname_dates',
+      surname: 'Syntherson',
+      arrivalDate: '2099-01-15',
+      departureDate: '2099-01-18',
+    });
+    expect(result.outcome).toBe('ambiguous');
+    if (result.outcome === 'ambiguous') {
+      expect(result.observations).toHaveLength(2);
+      expect(result.observations.every((r) => r.guestName === null)).toBe(true);
+    }
+  });
+
+  it('primaryguest-only numeric sentinel with no name parts → guestName null', () => {
+    const rows = parseLiveOsressGridRows(
+      extractOsressPageData(
+        gridEnvelope([
+          {
+            confirmationnumber: SYNTH.conf,
+            primaryguest: '-1',
+            status: 'Confirmed',
+          },
+        ]),
+      )!,
+    );
+    expect(rows?.[0]?.guestName).toBeNull();
+  });
+
+  it('committed live-shape fixture: sentinel primaryguest + absent roomtype/rateplan', () => {
+    const fixture = JSON.parse(readFileSync(liveShapePath, 'utf8')) as {
+      syntheticPageData: Record<string, unknown>;
+      rowAliasKeysAbsentOnLiveSearchGrid: string[];
+    };
+    expect(fixture.rowAliasKeysAbsentOnLiveSearchGrid).toEqual(['roomtype', 'rateplan']);
+    const rows = parseLiveOsressGridRows(fixture.syntheticPageData);
+    expect(rows).toHaveLength(1);
+    expect(rows![0]).toMatchObject({
+      confirmationNumber: SYNTH.conf,
+      guestName: 'Syntherson, Alpha',
+      roomType: null,
+      ratePlan: null,
+      reservationStatus: 'Confirmed',
+    });
+    expect(rows![0]!.guestName).not.toBe('-1');
   });
 
   it('external_reference candidate correlates on externalconfirmation', () => {
@@ -842,27 +1010,47 @@ describe('production candidates and reservation-only session', () => {
     expect(exact.map((c) => c.kind).sort()).toEqual(['confirmation', 'external_reference']);
   });
 
-  it('surname_dates → manual_required before browser / driver call', async () => {
-    const searchExact = vi.fn(async () => {
-      throw new Error('browser must not open');
-    });
-    const searchExactAndMap = vi.fn(async () => {
-      throw new Error('browser must not open');
-    });
+  it('surname_dates opens browser via lastname filters (Wave 0b)', async () => {
+    const searchExactAndMap = vi.fn(async (_c, _s, map) =>
+      map({
+        outcome: 'matched' as const,
+        observations: [
+          {
+            confirmationNumber: SYNTH.conf,
+            externalReference: null,
+            guestName: 'Syntherson, Ada',
+            arrivalDate: SYNTH.arrival,
+            departureDate: SYNTH.departure,
+            reservationStatus: 'Reserved',
+            roomType: null,
+            ratePlan: null,
+          },
+        ] as [
+          {
+            confirmationNumber: string;
+            externalReference: null;
+            guestName: string;
+            arrivalDate: string;
+            departureDate: string;
+            reservationStatus: string;
+            roomType: null;
+            ratePlan: null;
+          },
+        ],
+        capped: false as const,
+      }),
+    );
     const driver: LiveGuestStayDriver = {
       loginAndVerifyBinding: vi.fn(),
       runNotFoundCanary: vi.fn(),
-      searchExact,
+      searchExact: vi.fn(),
       searchExactAndMap,
       lastAuditReceipt: vi.fn(() => null),
     };
     const surnameId = 'surname-opaque';
     const session = createReservationCandidateSession({
       driver,
-      candidates: new Map(),
-      close: async () => undefined,
-      // Force surname into lookup map for this safety proof.
-      extraLookupCandidates: new Map([
+      candidates: new Map([
         [
           surnameId,
           {
@@ -874,11 +1062,13 @@ describe('production candidates and reservation-only session', () => {
           },
         ],
       ]),
+      close: async () => undefined,
     });
     const result = await session.findReservation(surnameId, new AbortController().signal);
-    expect(result.status).toBe('manual_required');
-    expect(searchExact).not.toHaveBeenCalled();
-    expect(searchExactAndMap).not.toHaveBeenCalled();
+    expect(searchExactAndMap).toHaveBeenCalledOnce();
+    expect(result.status === 'ok' || result.status === 'partial').toBe(true);
+    expect(result.data.matchCount).toBe(1);
+    expect(result.data.matches[0]?.guestName).toBe('Syntherson, Ada');
   });
 
   it('missing candidate ID is manual_required, not a PMS negative', async () => {
@@ -921,25 +1111,46 @@ describe('production candidates and reservation-only session', () => {
     expect(result.draftReady).toBe(false);
   });
 
-  it('gather routes surname_dates via find when quote inactive → manual_required (not silent skip)', async () => {
-    const searchExact = vi.fn(async () => {
-      throw new Error('browser must not open');
-    });
-    const searchExactAndMap = vi.fn(async () => {
-      throw new Error('browser must not open');
-    });
+  it('gather routes surname_dates via find when quote inactive → live search (Wave 0b)', async () => {
+    const searchExactAndMap = vi.fn(async (_c, _s, map) =>
+      map({
+        outcome: 'matched' as const,
+        observations: [
+          {
+            confirmationNumber: SYNTH.conf,
+            externalReference: null,
+            guestName: 'Syntherson, Ada',
+            arrivalDate: SYNTH.arrival,
+            departureDate: SYNTH.departure,
+            reservationStatus: 'Reserved',
+            roomType: null,
+            ratePlan: null,
+          },
+        ] as [
+          {
+            confirmationNumber: string;
+            externalReference: null;
+            guestName: string;
+            arrivalDate: string;
+            departureDate: string;
+            reservationStatus: string;
+            roomType: null;
+            ratePlan: null;
+          },
+        ],
+        capped: false as const,
+      }),
+    );
     const surnameId = 'surname-gather';
     const session = createReservationCandidateSession({
       driver: {
         loginAndVerifyBinding: vi.fn(),
         runNotFoundCanary: vi.fn(),
-        searchExact,
+        searchExact: vi.fn(),
         searchExactAndMap,
         lastAuditReceipt: vi.fn(() => null),
       },
-      candidates: new Map(),
-      close: async () => undefined,
-      extraLookupCandidates: new Map([
+      candidates: new Map([
         [
           surnameId,
           {
@@ -951,6 +1162,7 @@ describe('production candidates and reservation-only session', () => {
           },
         ],
       ]),
+      close: async () => undefined,
     });
 
     const result = await runClaimSafeCandidateDraft({
@@ -965,9 +1177,7 @@ describe('production candidates and reservation-only session', () => {
       }),
     });
 
-    expect(searchExact).not.toHaveBeenCalled();
-    expect(searchExactAndMap).not.toHaveBeenCalled();
-    expect(result.evidence.some((e) => e.status === 'manual_required')).toBe(true);
+    expect(searchExactAndMap).toHaveBeenCalled();
     expect(result.metrics.toolCalls).toBeGreaterThan(0);
     expect(result.outcome).toBe('insufficient_evidence');
   });
