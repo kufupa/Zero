@@ -19,7 +19,12 @@ const ARRIVAL_KEYS = ['arrivaldate', 'arrival', 'startdate'] as const;
 const DEPARTURE_KEYS = ['departuredate', 'departure', 'enddate'] as const;
 const STATUS_KEYS = ['status', 'reservationstatus', 'resstatus'] as const;
 const CONF_KEYS = ['confirmationnumber', 'confirmation', 'confnumber'] as const;
-const EXT_KEYS = ['externalconfirmation', 'externalreference', 'extconfirmation'] as const;
+const EXT_KEYS = [
+  'externalconfirmation',
+  'externalreference',
+  'externalreference1',
+  'extconfirmation',
+] as const;
 
 function keySet(dump: ReservationDetailDumpV1): Set<string> {
   return new Set(dump.keys.map((k) => k.toLowerCase()));
