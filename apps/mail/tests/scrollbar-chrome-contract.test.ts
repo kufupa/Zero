@@ -21,6 +21,14 @@ const appSidebarSource = readFileSync(
   new URL('../components/ui/app-sidebar.tsx', import.meta.url),
   'utf8',
 );
+const sidebarSource = readFileSync(
+  new URL('../components/ui/sidebar.tsx', import.meta.url),
+  'utf8',
+);
+const emailComposerSource = readFileSync(
+  new URL('../components/create/email-composer.tsx', import.meta.url),
+  'utf8',
+);
 
 describe('scrollbar chrome grab target', () => {
   it('keeps a fixed px width large enough to grab (~Outlook list bar)', () => {
@@ -43,5 +51,32 @@ describe('scrollbar chrome grab target', () => {
     expect(appSidebarSource).toContain('NATIVE_VISIBLE_SCROLLBAR_CLASSES');
     expect(NATIVE_VISIBLE_SCROLLBAR_CLASSES).toContain(NATIVE_SCROLLBAR_WIDTH_CLASS);
     expect(NATIVE_VISIBLE_SCROLLBAR_CLASSES).not.toContain('scrollbar-w-1');
+  });
+
+  it('ensures SidebarContent does not suppress scrollbars with scrollbar-none', () => {
+    const contentMarker = 'const SidebarContent = React.forwardRef';
+    const contentStart = sidebarSource.indexOf(contentMarker);
+    expect(contentStart).toBeGreaterThan(-1);
+    const contentEnd = sidebarSource.indexOf(');', contentStart);
+    const contentDef = sidebarSource.slice(contentStart, contentEnd);
+
+    expect(contentDef).not.toContain('scrollbar-none');
+    expect(contentDef).not.toContain('scrollbar-w-0');
+  });
+
+  it('wires reply email composer message content to the shared visible scrollbar set', () => {
+    expect(emailComposerSource).toContain(
+      "import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';",
+    );
+
+    const contentMarker = '{/* Message Content */}';
+    const markerIndex = emailComposerSource.indexOf(contentMarker);
+    expect(markerIndex).toBeGreaterThan(-1);
+    const tagStart = emailComposerSource.indexOf('<div', markerIndex);
+    const tagEnd = emailComposerSource.indexOf('>', tagStart);
+    const openingTag = emailComposerSource.slice(tagStart, tagEnd + 1);
+
+    expect(openingTag).toContain('NATIVE_VISIBLE_SCROLLBAR_CLASSES');
+    expect(openingTag).toContain('overflow-y-auto');
   });
 });
