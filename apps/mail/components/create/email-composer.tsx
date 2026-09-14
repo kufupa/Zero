@@ -69,6 +69,7 @@ import {
   partitionComposeAttachmentFiles,
 } from '@/lib/compose-attachment-policy';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 
 const hasFileDrag = (dataTransfer: DataTransfer | null): boolean =>
   dataTransfer !== null && Array.from(dataTransfer.types).includes('Files');
@@ -1388,7 +1389,12 @@ export function EmailComposer({
         ) : null}
 
         {/* Message Content */}
-        <div className="flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">
+        <div
+          className={cn(
+            'flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]',
+            NATIVE_VISIBLE_SCROLLBAR_CLASSES,
+          )}
+        >
           <div
             onClick={() => {
               editor.commands.focus();
