@@ -1,13 +1,17 @@
+import { useMail } from '@/components/mail/use-mail';
 import { mailNavigationCommandAtom } from '@/hooks/use-mail-navigation';
 import { enhancedKeyboardShortcuts } from '@/config/shortcuts';
 import useMoveTo from '@/hooks/driver/use-move-to';
 import useDelete from '@/hooks/driver/use-delete';
 import { useShortcuts } from './use-hotkey-utils';
-import { useThread } from '@/hooks/use-threads';
+import { useThread, useThreads } from '@/hooks/use-threads';
 import { useParams } from 'react-router';
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { useSetAtom } from 'jotai';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { m } from '@/paraglide/messages';
+import { toast } from 'sonner';
+import { useCallback } from 'react';
 
 const closeView = (event: KeyboardEvent) => {
   event.preventDefault();
@@ -15,6 +19,8 @@ const closeView = (event: KeyboardEvent) => {
 
 export function ThreadDisplayHotkeys() {
   const scope = 'thread-display';
+  const [mail, setMail] = useMail();
+  const [, items] = useThreads();
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -32,7 +38,25 @@ export function ThreadDisplayHotkeys() {
   const { mutate: moveTo } = useMoveTo();
   const setMailNavigationCommand = useSetAtom(mailNavigationCommandAtom);
 
+  const selectAll = useCallback(() => {
+    if (mail.bulkSelected.length > 0) {
+      setMail((prev) => ({
+        ...prev,
+        bulkSelected: [],
+      }));
+    } else if (items.length > 0) {
+      const allIds = items.map((item) => item.id);
+      setMail((prev) => ({
+        ...prev,
+        bulkSelected: allIds,
+      }));
+    } else {
+      toast.info(m['common.mail.noEmailsToSelect']());
+    }
+  }, [items, mail.bulkSelected.length, setMail]);
+
   const handlers = {
+    selectAll,
     closeView: () => closeView(new KeyboardEvent('keydown', { key: 'Escape' })),
     reply: () => {
       void openReplyComposeContext({
