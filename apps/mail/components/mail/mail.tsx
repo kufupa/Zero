@@ -34,6 +34,7 @@ import {
   isHotelManagedCategorySlug,
 } from '@/lib/mail/hotel-folder-presentation';
 import {
+  resolveActiveMailScope,
   shouldShowDesktopListPanel,
   shouldShowDesktopThreadPanel,
   shouldShowMailSplitHandle,
@@ -403,21 +404,27 @@ export function MailLayout() {
     }
   }, [isWideSplit, listCollapsed]);
 
+  const activeScope = resolveActiveMailScope({
+    hasBulkSelection: mail.bulkSelected.length > 0,
+    threadId,
+    isWideSplit,
+    listCollapsed,
+  });
+
   useEffect(() => {
-    const listHidden = Boolean(threadId) || (isWideSplit && listCollapsed);
-    if (listHidden) {
-      enableScope('thread-display');
-      disableScope('mail-list');
-    } else {
+    if (activeScope === 'mail-list') {
       enableScope('mail-list');
       disableScope('thread-display');
+    } else {
+      enableScope('thread-display');
+      disableScope('mail-list');
     }
 
     return () => {
       disableScope('thread-display');
       disableScope('mail-list');
     };
-  }, [threadId, isWideSplit, listCollapsed, enableScope, disableScope]);
+  }, [activeScope, enableScope, disableScope]);
 
   //   const handleMailListMouseEnter = useCallback(() => {
   //     enableScope('mail-list');

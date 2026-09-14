@@ -111,4 +111,42 @@ describe('Ctrl + A Shortcut Configuration', () => {
     const nextState = updateFn({ bulkSelected: ['thread-1', 'thread-2'] });
     expect(nextState.bulkSelected).toEqual([]);
   });
+
+  describe('resolveActiveMailScope', () => {
+    it('returns mail-list when no email is open', async () => {
+      const { resolveActiveMailScope } = await import('../lib/mail/mail-panel-visibility');
+      expect(
+        resolveActiveMailScope({
+          hasBulkSelection: false,
+          threadId: null,
+          isWideSplit: true,
+          listCollapsed: false,
+        }),
+      ).toBe('mail-list');
+    });
+
+    it('returns thread-display when an email is open with no bulk selection', async () => {
+      const { resolveActiveMailScope } = await import('../lib/mail/mail-panel-visibility');
+      expect(
+        resolveActiveMailScope({
+          hasBulkSelection: false,
+          threadId: 'thread-123',
+          isWideSplit: true,
+          listCollapsed: false,
+        }),
+      ).toBe('thread-display');
+    });
+
+    it('prioritizes mail-list scope when bulk selection is active even with open thread', async () => {
+      const { resolveActiveMailScope } = await import('../lib/mail/mail-panel-visibility');
+      expect(
+        resolveActiveMailScope({
+          hasBulkSelection: true,
+          threadId: 'thread-123',
+          isWideSplit: true,
+          listCollapsed: false,
+        }),
+      ).toBe('mail-list');
+    });
+  });
 });
