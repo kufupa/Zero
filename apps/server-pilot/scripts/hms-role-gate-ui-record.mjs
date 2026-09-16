@@ -120,6 +120,15 @@ async function guestStayState(page) {
       tabs: tabs.slice(0, 20),
       hasGuestStay: /Guest Stay/i.test(body),
       hasSearch: /Search by Name, Confirmation/i.test(body),
+      visibleInputs: [...document.querySelectorAll('input')].filter((node) => {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 && style.visibility !== 'hidden';
+      }).slice(0, 20).map((node) => ({
+        name: String(node.name || '').slice(0, 80),
+        id: String(node.id || '').slice(0, 80),
+        placeholder: String(node.getAttribute('placeholder') || '').slice(0, 100),
+      })),
       body: body.slice(0, 500),
     };
   });
@@ -173,18 +182,18 @@ async function openGuestStay(page, confirmation) {
     attempts.push({ name, state });
     if (state.hasSearch || state.active.some((tab) => !/Start Center/i.test(tab)) || !/\/COMMON$/i.test(state.path)) break;
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     await leaf.dblclick();
     await page.waitForTimeout(8_000);
     attempts.push({ name: 'leaf-row-dblclick', state: await guestStayState(page) });
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     await leaf.focus().catch(() => undefined);
     await page.keyboard.press('Enter');
     await page.waitForTimeout(8_000);
     attempts.push({ name: 'leaf-row-enter', state: await guestStayState(page) });
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     const box = await leaf.boundingBox().catch(() => null);
     if (box) {
       await page.mouse.move(box.x + Math.min(90, box.width / 2), box.y + box.height / 2);
@@ -194,7 +203,7 @@ async function openGuestStay(page, confirmation) {
       attempts.push({ name: 'leaf-row-pointer-click', state: await guestStayState(page) });
     }
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     const clicked = await page.evaluate(() => {
       const nodes = [...document.querySelectorAll('.x-tree-node-text')];
       const node = nodes.find((item) => {
@@ -211,7 +220,7 @@ async function openGuestStay(page, confirmation) {
     await page.waitForTimeout(8_000);
     attempts.push({ name: `leaf-visible-dom-click:${clicked}`, state: await guestStayState(page) });
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     const leaves = page.locator('tr.x-grid-tree-node-leaf').filter({ hasText: /^\s*Guest Stay\s*$/ });
     const count = await leaves.count();
     for (let i = 1; i < count && !attempts.at(-1).state.hasSearch; i += 1) {
@@ -223,7 +232,7 @@ async function openGuestStay(page, confirmation) {
       attempts.push({ name: `leaf-duplicate-${i}-dblclick`, state: await guestStayState(page) });
     }
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     const card = await page.locator('[data-testid="launchcenteritem"], .launchcenteritem').filter({ hasText: /STAY 360/i }).first();
     if (await card.isVisible().catch(() => false)) {
       await card.click();
@@ -231,7 +240,7 @@ async function openGuestStay(page, confirmation) {
       attempts.push({ name: 'visible-start-center-stay360-card', state: await guestStayState(page) });
     }
   }
-  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+  if (attempts.length && !attempts.at(-1).state.hasSearch && !attempts.at(-1).state.active.some((tab) => /Stay 360/i.test(tab))) {
     // The visible Ext record exposes this read-only module URL, while its
     // row listener is inert in this tenant. Navigate to that same GET route;
     // never invent a route or call an Ext handler.
