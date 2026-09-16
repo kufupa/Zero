@@ -257,6 +257,11 @@ async function openGuestStay(page, confirmation) {
     await field.fill(confirmation);
     await field.press('Enter');
   } else if (confirmation) {
+    const staySearch = page.locator('input[name="search"]').first();
+    if (await staySearch.isVisible().catch(() => false)) {
+      await staySearch.fill(confirmation);
+      await staySearch.press('Enter');
+    }
     await page.evaluate((value) => {
       const fields = [...(window.Ext?.ComponentQuery?.query('textfield,field') || [])];
       const target = fields.find((item) => /confirmation/i.test(String(item.name || item.itemId || item.fieldLabel || '')));
@@ -265,8 +270,14 @@ async function openGuestStay(page, confirmation) {
   }
   await visibleClick(page, 'Run');
   await page.waitForTimeout(12_000);
-  const row = page.locator('.x-grid-row,.x-grid3-row').filter({ visible: true }).first();
-  if (await row.count()) await row.dblclick({ timeout: 10_000 });
+  const row = page.locator('tr.x-grid-row, .x-grid3-row')
+    .filter({ visible: true })
+    .filter({ hasNot: page.locator('.x-tree-node-text') })
+    .first();
+  if (await row.count()) {
+    await row.scrollIntoViewIfNeeded().catch(() => undefined);
+    await row.dblclick({ timeout: 10_000 }).catch(() => undefined);
+  }
   await page.waitForTimeout(10_000);
 }
 
