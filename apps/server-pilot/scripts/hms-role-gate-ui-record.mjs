@@ -184,6 +184,33 @@ async function openGuestStay(page, confirmation) {
     await page.waitForTimeout(8_000);
     attempts.push({ name: 'leaf-row-enter', state: await guestStayState(page) });
   }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    const box = await leaf.boundingBox().catch(() => null);
+    if (box) {
+      await page.mouse.move(box.x + Math.min(90, box.width / 2), box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(8_000);
+      attempts.push({ name: 'leaf-row-pointer-click', state: await guestStayState(page) });
+    }
+  }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    const clicked = await page.evaluate(() => {
+      const nodes = [...document.querySelectorAll('.x-tree-node-text')];
+      const node = nodes.find((item) => {
+        if ((item.textContent || '').trim() !== 'Guest Stay') return false;
+        const rect = item.getBoundingClientRect();
+        const style = getComputedStyle(item);
+        return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+          rect.left < innerWidth && rect.top < innerHeight && style.visibility !== 'hidden';
+      });
+      if (!node) return false;
+      node.click();
+      return true;
+    });
+    await page.waitForTimeout(8_000);
+    attempts.push({ name: `leaf-visible-dom-click:${clicked}`, state: await guestStayState(page) });
+  }
   if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
     process.stdout.write(`HMS_ROLE_GATE guestStayAttempts=${JSON.stringify(attempts)}\n`);
   }
