@@ -146,17 +146,25 @@ async function visibleLabelDebug(page, labels) {
     viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
     components: [...(window.Ext?.ComponentQuery?.query('textfield,field,treepanel,gridpanel,button,menu') || [])]
       .slice(0, 80)
-      .map((item) => ({
+      .map((item) => {
+        const readNumber = (method) => {
+          try {
+            const value = item[method]?.();
+            return Number.isFinite(Number(value)) ? Number(value) : 0;
+          } catch { return 0; }
+        };
+        return {
         itemId: String(item.itemId || '').slice(0, 80),
         name: String(item.name || '').slice(0, 80),
         text: String(item.text || item.fieldLabel || item.title || '').slice(0, 120),
         hidden: Boolean(item.hidden),
         rendered: Boolean(item.rendered),
-        x: Number(item.getX?.() ?? item.el?.getX?.() ?? 0),
-        y: Number(item.getY?.() ?? item.el?.getY?.() ?? 0),
-        width: Number(item.getWidth?.() ?? item.el?.getWidth?.() ?? 0),
-        height: Number(item.getHeight?.() ?? item.el?.getHeight?.() ?? 0),
-      })),
+        x: readNumber('getX'),
+        y: readNumber('getY'),
+        width: readNumber('getWidth'),
+        height: readNumber('getHeight'),
+        };
+      }),
     labels: wanted.map((label) => ({
     label,
     matches: [...document.querySelectorAll('*')]
