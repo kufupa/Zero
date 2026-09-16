@@ -211,6 +211,18 @@ async function openGuestStay(page, confirmation) {
     await page.waitForTimeout(8_000);
     attempts.push({ name: `leaf-visible-dom-click:${clicked}`, state: await guestStayState(page) });
   }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    const leaves = page.locator('tr.x-grid-tree-node-leaf').filter({ hasText: /^\s*Guest Stay\s*$/ });
+    const count = await leaves.count();
+    for (let i = 1; i < count && !attempts.at(-1).state.hasSearch; i += 1) {
+      const candidate = leaves.nth(i);
+      await candidate.scrollIntoViewIfNeeded().catch(() => undefined);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+      await candidate.dblclick();
+      await page.waitForTimeout(8_000);
+      attempts.push({ name: `leaf-duplicate-${i}-dblclick`, state: await guestStayState(page) });
+    }
+  }
   if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
     process.stdout.write(`HMS_ROLE_GATE guestStayAttempts=${JSON.stringify(attempts)}\n`);
   }
