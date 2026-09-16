@@ -326,6 +326,23 @@ async function visibleLabelDebug(page, labels) {
         };
       }),
     })),
+    treeRecords: [...(window.Ext?.ComponentQuery?.query('treepanel') || [])].flatMap((tree) => {
+      const out = [];
+      const root = tree.getStore?.()?.getRootNode?.();
+      root?.cascadeBy?.((node) => {
+        const data = node?.data || {};
+        const text = String(data.text || data.name || '').trim();
+        if (!wanted.includes(text)) return;
+        const safe = {};
+        for (const key of ['id', 'text', 'name', 'leaf', 'expanded', 'disabled', 'href', 'url', 'itemId', 'functionName', 'userFunctionName', 'systemFunctionName', 'screenName', 'action']) {
+          const value = data[key];
+          if (value == null || typeof value === 'function' || typeof value === 'object') continue;
+          safe[key] = String(value).slice(0, 120);
+        }
+        out.push(safe);
+      });
+      return out;
+    }),
   }), labels);
 }
 
