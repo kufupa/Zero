@@ -223,6 +223,15 @@ async function openGuestStay(page, confirmation) {
       attempts.push({ name: `leaf-duplicate-${i}-dblclick`, state: await guestStayState(page) });
     }
   }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    // The visible Ext record exposes this read-only module URL, while its
+    // row listener is inert in this tenant. Navigate to that same GET route;
+    // never invent a route or call an Ext handler.
+    const target = new URL('/web/base/OSRESV?USER_FUNCTION_NAME=OSRESV&FUNCTION_CLASS=WEBL', page.url()).toString();
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
+    await page.waitForTimeout(8_000);
+    attempts.push({ name: 'visible-record-readonly-navigation', state: await guestStayState(page) });
+  }
   if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
     process.stdout.write(`HMS_ROLE_GATE guestStayAttempts=${JSON.stringify(attempts)}\n`);
   }
