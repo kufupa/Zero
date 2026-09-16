@@ -63,6 +63,24 @@ async function visibleClick(page, label, { hover = false } = {}) {
   }, { label, hover });
 }
 
+async function clickVisibleComponent(page, itemId) {
+  const id = await page.evaluate((wanted) => {
+    const item = window.Ext?.ComponentQuery?.query(`#${wanted}`)?.[0];
+    const dom = item?.getEl?.()?.dom;
+    if (!dom) return '';
+    const rect = dom.getBoundingClientRect();
+    const style = getComputedStyle(dom);
+    if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0 ||
+        rect.left >= innerWidth || rect.top >= innerHeight || style.visibility === 'hidden' || style.display === 'none') return '';
+    return dom.id || '';
+  }, itemId);
+  if (!id) return false;
+  const target = page.locator(`#${id}`).first();
+  if (!(await target.isVisible().catch(() => false))) return false;
+  await target.click();
+  return true;
+}
+
 async function menuPath(page, labels) {
   for (let i = 0; i < labels.length; i += 1) {
     if (i === 0) {
@@ -221,6 +239,8 @@ async function main() {
     await login(page, value);
     debug = await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']);
     if (TOOL === 'A7') {
+      await clickVisibleComponent(page, 'appheadericon');
+      await page.waitForTimeout(1200);
       // Group Sales is sometimes already painted in the Start Center menu;
       // hover the visible item to reveal its submenu, then leave it painted.
       const openedMore = await visibleClick(page, 'More');
