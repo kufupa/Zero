@@ -1,0 +1,211 @@
+/**
+ * Full-path, read-only UI evidence for genuine HMS role/surface gates.
+ *
+ * HMS_ROLE_GATE_TOOL=A1|DOC|A7
+ * HMS_DISCOVERY_ALLOW_LIVE=1
+ * HMS_READ_SECRET_ARN
+ * HMS_PROOF_EXACT_CANDIDATE_PATH (required for A1/DOC)
+ * HMS_ROLE_GATE_OUT (private output directory)
+ *
+ * The video is intentionally kept full length: login -> normal navigation ->
+ * exact surface/menu -> painted failure/empty state. No hidden Ext controls,
+ * forced clicks, overlays, stitched screenshots, or write requests are used.
+ */
+import { mkdir, readFile, readdir, copyFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { chromium } from 'playwright';
+import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { hmsSecretSchema } from '../dist/hms/runtime.js';
+
+const TOOL = String(process.env.HMS_ROLE_GATE_TOOL || '').toUpperCase();
+const ALLOWED = new Set(['A1', 'DOC', 'A7']);
+const OUT = process.env.HMS_ROLE_GATE_OUT || `/tmp/hms-role-gate-${TOOL.toLowerCase()}-${Date.now()}`;
+
+function scrub(value) {
+  return String(value)
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g, '[email]')
+    .replace(/\b\d{7,}\b/g, '[n]');
+}
+
+async function secret() {
+  const arn = process.env.HMS_READ_SECRET_ARN;
+  if (!arn) throw new Error('HMS_READ_SECRET_ARN required');
+  const client = new SecretsManagerClient({ region: process.env.AWS_REGION || 'af-south-1' });
+  const result = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+  return hmsSecretSchema.parse(JSON.parse(result.SecretString || ''));
+}
+
+async function exactCandidate() {
+  const candidatePath = process.env.HMS_PROOF_EXACT_CANDIDATE_PATH;
+  if (!candidatePath) return '';
+  const value = JSON.parse(await readFile(candidatePath, 'utf8'));
+  return String(value.value || value.confirmation || value.confirmationNumber || '').trim();
+}
+
+async function visibleClick(page, label, { hover = false } = {}) {
+  return page.evaluate(({ label: expected, hover: doHover }) => {
+    const selectors = '.x-menu-item-text,.x-btn-inner,.x-tab-inner,.x-tab,a,button,span';
+    const nodes = [...document.querySelectorAll(selectors)];
+    const node = nodes.find((item) => {
+      if ((item.textContent || '').trim() !== expected) return false;
+      const rect = item.getBoundingClientRect();
+      const style = getComputedStyle(item);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    });
+    if (!node) return false;
+    if (doHover) {
+      node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      node.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    }
+    node.click();
+    return true;
+  }, { label, hover });
+}
+
+async function menuPath(page, labels) {
+  for (let i = 0; i < labels.length; i += 1) {
+    if (i === 0) {
+      await visibleClick(page, 'More');
+      await page.waitForTimeout(800);
+    }
+    const clicked = await visibleClick(page, labels[i], { hover: i < labels.length - 1 });
+    if (!clicked) throw new Error(`visible menu item unavailable: ${labels[i]}`);
+    await page.waitForTimeout(i < labels.length - 1 ? 1600 : 8000);
+  }
+}
+
+async function login(page, value) {
+  await page.goto(value.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.locator('input[name=userid],input[name=username],input[name=j_username]').first().fill(value.username);
+  await page.locator('input[name=password]').fill(value.password);
+  await Promise.all([
+    page.waitForURL(/COMMON/i, { timeout: 60_000 }).catch(() => null),
+    page.getByRole('button', { name: 'Sign in' }).click().catch(async () => {
+      await page.locator('input[name=password]').press('Enter');
+    }),
+  ]);
+  await page.waitForTimeout(8_000);
+  if (!/COMMON/i.test(page.url())) throw new Error('login did not reach HMS COMMON');
+}
+
+async function openGuestStay(page, confirmation) {
+  await menuPath(page, ['Front Desk', 'Guest Stay']);
+  const field = page.locator('input[placeholder*="Search by Name, Confirmation" i]').first();
+  if (confirmation && (await field.count())) {
+    await field.fill(confirmation);
+    await field.press('Enter');
+  } else if (confirmation) {
+    await page.evaluate((value) => {
+      const fields = [...(window.Ext?.ComponentQuery?.query('textfield,field') || [])];
+      const target = fields.find((item) => /confirmation/i.test(String(item.name || item.itemId || item.fieldLabel || '')));
+      if (target?.setValue) target.setValue(value);
+    }, confirmation);
+  }
+  await visibleClick(page, 'Run');
+  await page.waitForTimeout(12_000);
+  const row = page.locator('.x-grid-row,.x-grid3-row').filter({ visible: true }).first();
+  if (await row.count()) await row.dblclick({ timeout: 10_000 });
+  await page.waitForTimeout(10_000);
+}
+
+async function clickVisibleTab(page, label) {
+  const clicked = await visibleClick(page, label);
+  if (!clicked) return false;
+  await page.waitForTimeout(8_000);
+  return true;
+}
+
+async function screenSummary(page) {
+  return page.evaluate(() => {
+    const body = (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 1600);
+    const visibleText = (label) => [...document.querySelectorAll('.x-tab,.x-tab-inner,.x-btn-inner,.x-menu-item-text,a,button,span')].some((node) => {
+      if ((node.textContent || '').trim() !== label) return false;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    });
+    return {
+      urlPath: (() => { try { return new URL(location.href).pathname.slice(0, 100); } catch { return ''; } })(),
+      title: (document.title || '').slice(0, 100),
+      bodySha256: crypto.subtle ? null : null,
+      bodySample: body.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g, '[email]').replace(/\b\d{7,}\b/g, '[n]'),
+      visibleRateDetails: visibleText('Rate Details'),
+      visibleDocuments: visibleText('Documents'),
+      visibleEvents: visibleText('Events'),
+      visibleEventReservations: visibleText('Event Reservations'),
+      activeTabs: [...document.querySelectorAll('.x-tab-strip-active,.x-tab-active,.x-tab')]
+        .map((node) => (node.textContent || '').trim()).filter(Boolean).slice(0, 20),
+    };
+  });
+}
+
+async function main() {
+  if (process.env.HMS_DISCOVERY_ALLOW_LIVE !== '1') throw new Error('refused: HMS_DISCOVERY_ALLOW_LIVE=1 required');
+  if (!ALLOWED.has(TOOL)) throw new Error('HMS_ROLE_GATE_TOOL must be A1, DOC, or A7');
+  await mkdir(OUT, { recursive: true, mode: 0o700 });
+  const value = await secret();
+  const origin = new URL(value.loginUrl).origin;
+  const confirmation = TOOL === 'A7' ? '' : await exactCandidate();
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
+  });
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    viewport: { width: 1600, height: 1000 },
+    recordVideo: { dir: OUT, size: { width: 1600, height: 1000 } },
+  });
+  await context.route('**/*', async (route) => {
+    const requestUrl = route.request().url();
+    if (!requestUrl.startsWith(origin)) return route.abort();
+    if (/(save|delete|submit|checkin|checkout|amend|cancel|newrecord|complete|generate|print|send|resend)/i.test(new URL(requestUrl).pathname)) {
+      return route.abort();
+    }
+    return route.continue();
+  });
+  const page = await context.newPage();
+  let summary = null;
+  try {
+    await login(page, value);
+    if (TOOL === 'A7') {
+      await menuPath(page, ['Group Sales']);
+      await page.waitForTimeout(6_000);
+    } else {
+      await openGuestStay(page, confirmation);
+      if (TOOL === 'DOC') await clickVisibleTab(page, 'Documents');
+      if (TOOL === 'A1') await visibleClick(page, 'Rate Details');
+      await page.waitForTimeout(8_000);
+    }
+    await page.waitForTimeout(12_000);
+    summary = await screenSummary(page);
+  } finally {
+    await page.close().catch(() => undefined);
+    await context.close().catch(() => undefined);
+    await browser.close().catch(() => undefined);
+  }
+  const files = (await readdir(OUT)).filter((file) => file.endsWith('.webm'));
+  if (files.length === 0) throw new Error('recorded video missing');
+  const source = path.join(OUT, files[0]);
+  const full = path.join(OUT, `${TOOL}.full.webm`);
+  if (source !== full) await copyFile(source, full);
+  const video = await readFile(full);
+  const metadata = {
+    schemaVersion: 1,
+    tool: TOOL,
+    capturedAt: new Date().toISOString(),
+    method: 'playwright-recordVideo-full-path',
+    writeRoutesBlocked: true,
+    forcedControls: false,
+    stitchedFrames: false,
+    video: { path: full, bytes: video.byteLength, sha256: createHash('sha256').update(video).digest('hex') },
+    screen: summary,
+  };
+  await import('node:fs/promises').then(({ writeFile }) => writeFile(path.join(OUT, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 }));
+  process.stdout.write(`${JSON.stringify({ tool: TOOL, out: OUT, videoBytes: video.byteLength, videoSha256: metadata.video.sha256, screen: summary })}\n`);
+}
+
+main().catch((error) => {
+  process.stderr.write(`${scrub(error?.message || error)}\n`);
+  process.exit(1);
+});
