@@ -82,6 +82,18 @@ async function clickVisibleComponent(page, itemId) {
   return true;
 }
 
+async function expandVisibleTreeNode(page, label) {
+  const row = page.locator('tr.x-grid-row').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).first();
+  if (!(await row.isVisible().catch(() => false))) return false;
+  const expander = row.locator('img.x-tree-expander, img.x-tree-elbow-img').first();
+  if (!(await expander.isVisible().catch(() => false))) return false;
+  const cls = await expander.getAttribute('class').catch(() => '');
+  if (!/plus/.test(String(cls))) return true;
+  await expander.click();
+  await page.waitForTimeout(2500);
+  return true;
+}
+
 async function menuPath(page, labels) {
   for (let i = 0; i < labels.length; i += 1) {
     if (i === 0) {
@@ -252,6 +264,7 @@ async function main() {
       if (openedMore) await page.waitForTimeout(800);
       const groupSales = await visibleClick(page, 'Group Sales', { hover: true });
       if (!groupSales) throw new Error('visible Group Sales menu item unavailable');
+      await expandVisibleTreeNode(page, 'Group Sales');
       await page.waitForTimeout(6_000);
     } else {
       await openGuestStay(page, confirmation);
