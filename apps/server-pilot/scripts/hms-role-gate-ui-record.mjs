@@ -136,6 +136,11 @@ async function login(page, value) {
 
 async function openGuestStay(page, confirmation) {
   await menuPath(page, ['Front Desk', 'Guest Stay']);
+  const leaf = page.locator('tr.x-grid-tree-node-leaf').filter({ hasText: /^\s*Guest Stay\s*$/ }).first();
+  if (await leaf.isVisible().catch(() => false)) {
+    await leaf.dblclick();
+    await page.waitForTimeout(8_000);
+  }
   const field = page.locator('input[placeholder*="Search by Name, Confirmation" i]').first();
   if (confirmation && (await field.count())) {
     await field.fill(confirmation);
