@@ -106,6 +106,25 @@ async function clickVisibleTreeLabel(page, label, { hover = false } = {}) {
   return true;
 }
 
+async function guestStayState(page) {
+  return page.evaluate(() => {
+    const body = (document.body?.innerText || '').replace(/\s+/g, ' ');
+    const active = [...document.querySelectorAll('.x-tab-strip-active,.x-tab-active')]
+      .map((node) => (node.textContent || '').trim()).filter(Boolean);
+    const tabs = [...document.querySelectorAll('.x-tab')]
+      .map((node) => ({ text: (node.textContent || '').trim(), cls: String(node.className || '') }))
+      .filter((node) => node.text);
+    return {
+      path: (() => { try { return new URL(location.href).pathname; } catch { return ''; } })(),
+      active,
+      tabs: tabs.slice(0, 20),
+      hasGuestStay: /Guest Stay/i.test(body),
+      hasSearch: /Search by Name, Confirmation/i.test(body),
+      body: body.slice(0, 500),
+    };
+  });
+}
+
 async function menuPath(page, labels) {
   for (let i = 0; i < labels.length; i += 1) {
     if (i === 0) {
@@ -137,9 +156,30 @@ async function login(page, value) {
 async function openGuestStay(page, confirmation) {
   await menuPath(page, ['Front Desk', 'Guest Stay']);
   const leaf = page.locator('tr.x-grid-tree-node-leaf').filter({ hasText: /^\s*Guest Stay\s*$/ }).first();
-  if (await leaf.isVisible().catch(() => false)) {
+  if (!(await leaf.isVisible().catch(() => false))) throw new Error('visible Guest Stay leaf unavailable');
+  // Ext tree menus can bind activation to row/cell rather than text node.
+  // Try only real, viewport-visible Playwright input; never invoke Ext handlers.
+  const targets = [
+    ['leaf-row-click', leaf],
+    ['leaf-cell-click', leaf.locator('td').first()],
+    ['leaf-text-click', leaf.locator('.x-tree-node-text').first()],
+  ];
+  const attempts = [];
+  for (const [name, target] of targets) {
+    if (!(await target.isVisible().catch(() => false))) continue;
+    await target.click();
+    await page.waitForTimeout(3_000);
+    const state = await guestStayState(page);
+    attempts.push({ name, state });
+    if (state.hasSearch || state.active.some((tab) => !/Start Center/i.test(tab)) || !/\/COMMON$/i.test(state.path)) break;
+  }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
     await leaf.dblclick();
     await page.waitForTimeout(8_000);
+    attempts.push({ name: 'leaf-row-dblclick', state: await guestStayState(page) });
+  }
+  if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
+    process.stdout.write(`HMS_ROLE_GATE guestStayAttempts=${JSON.stringify(attempts)}\n`);
   }
   const field = page.locator('input[placeholder*="Search by Name, Confirmation" i]').first();
   if (confirmation && (await field.count())) {
