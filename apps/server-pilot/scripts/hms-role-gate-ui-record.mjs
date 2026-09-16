@@ -91,7 +91,9 @@ async function expandVisibleTreeNode(page, label) {
   if (!(await expander.isVisible().catch(() => false))) return false;
   const cls = await expander.getAttribute('class').catch(() => '');
   if (!/plus/.test(String(cls))) return true;
-  await expander.click();
+  const box = await expander.boundingBox().catch(() => null);
+  if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  else await expander.click();
   await page.waitForTimeout(2500);
   return true;
 }
