@@ -306,6 +306,12 @@ async function screenSummary(page) {
       visibleDocuments: visibleText('Documents'),
       visibleEvents: visibleText('Events'),
       visibleEventReservations: visibleText('Event Reservations'),
+      visibleTreeLabels: [...document.querySelectorAll('.x-tree-node-text')].filter((node) => {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+          rect.left < innerWidth && rect.top < innerHeight && style.visibility !== 'hidden';
+      }).map((node) => (node.textContent || '').trim()).filter(Boolean).slice(0, 80),
       activeTabs: [...document.querySelectorAll('.x-tab-strip-active,.x-tab-active,.x-tab')]
         .map((node) => (node.textContent || '').trim()).filter(Boolean).slice(0, 20),
     };
