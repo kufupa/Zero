@@ -66,12 +66,12 @@ async function visibleClick(page, label, { hover = false } = {}) {
 async function menuPath(page, labels) {
   for (let i = 0; i < labels.length; i += 1) {
     if (i === 0) {
-      await visibleClick(page, 'More');
-      await page.waitForTimeout(800);
+      const more = await visibleClick(page, 'More');
+      if (more) await page.waitForTimeout(800);
     }
-    const clicked = await visibleClick(page, labels[i], { hover: i < labels.length - 1 });
+    const clicked = await visibleClick(page, labels[i], { hover: true });
     if (!clicked) throw new Error(`visible menu item unavailable: ${labels[i]}`);
-    await page.waitForTimeout(i < labels.length - 1 ? 1600 : 8000);
+    await page.waitForTimeout(i < labels.length - 1 ? 1600 : 3000);
   }
 }
 
@@ -169,7 +169,12 @@ async function main() {
   try {
     await login(page, value);
     if (TOOL === 'A7') {
-      await menuPath(page, ['Group Sales']);
+      // Group Sales is sometimes already painted in the Start Center menu;
+      // hover the visible item to reveal its submenu, then leave it painted.
+      const openedMore = await visibleClick(page, 'More');
+      if (openedMore) await page.waitForTimeout(800);
+      const groupSales = await visibleClick(page, 'Group Sales', { hover: true });
+      if (!groupSales) throw new Error('visible Group Sales menu item unavailable');
       await page.waitForTimeout(6_000);
     } else {
       await openGuestStay(page, confirmation);
