@@ -224,6 +224,14 @@ async function openGuestStay(page, confirmation) {
     }
   }
   if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    const card = await page.locator('[data-testid="launchcenteritem"], .launchcenteritem').filter({ hasText: /STAY 360/i }).first();
+    if (await card.isVisible().catch(() => false)) {
+      await card.click();
+      await page.waitForTimeout(8_000);
+      attempts.push({ name: 'visible-start-center-stay360-card', state: await guestStayState(page) });
+    }
+  }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
     // The visible Ext record exposes this read-only module URL, while its
     // row listener is inert in this tenant. Navigate to that same GET route;
     // never invent a route or call an Ext handler.
