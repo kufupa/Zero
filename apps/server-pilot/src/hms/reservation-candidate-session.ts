@@ -24,6 +24,7 @@ import type {
   ReservationSearchCandidate,
 } from './live-guest-stay-driver.js';
 import type { MapEnvelopeRequesterAuthorization } from './claim-envelope.js';
+import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
 import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
 import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
 import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
@@ -96,7 +97,8 @@ function mapMatchedRow(
   if (!row.arrivalDate) unresolvedFields.push('arrivalDate');
   if (!row.departureDate) unresolvedFields.push('departureDate');
   if (!row.reservationStatus) unresolvedFields.push('reservationStatus');
-  if (!row.guestName) unresolvedFields.push('guestName');
+  const guestName = isSentinelGuestName(row.guestName) ? null : row.guestName;
+  if (!guestName) unresolvedFields.push('guestName');
   // Search-grid roomType is optional (dataspy 1941 often omits roomtype).
   // ratePlan is never a find claim — owned by hms_read_reservation.
   if (!row.roomType) unresolvedFields.push('roomType');
@@ -122,7 +124,7 @@ function mapMatchedRow(
   const claimKeys: string[] = [];
   if (row.confirmationNumber) claimKeys.push('matches.0.confirmationNumber');
   if (row.externalReference) claimKeys.push('matches.0.externalReference');
-  if (row.guestName) claimKeys.push('matches.0.guestName');
+  if (guestName) claimKeys.push('matches.0.guestName');
   if (row.reservationStatus) claimKeys.push('matches.0.reservationStatus');
   if (row.arrivalDate) claimKeys.push('matches.0.arrivalDate');
   if (row.departureDate) claimKeys.push('matches.0.departureDate');
@@ -135,6 +137,7 @@ function mapMatchedRow(
       matches: [
         {
           ...row,
+          guestName,
           // Do not surface find-owned rate claims from GRID.
           ratePlan: null,
         },

@@ -59,6 +59,52 @@ describe('projectNotesFromDetailDump', () => {
       reasonCode: 'SOURCE_UNAVAILABLE',
     });
   });
+
+  it('does not expose protected/hidden sentinels as note text', () => {
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote', 'cancellationnote'],
+        values: { reservationnote: 'protected', cancellationnote: 'HIDDEN' },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.claimKeys).toEqual([]);
+    expect(projected.data.notes).toMatchObject({
+      state: 'unavailable',
+      reasonCode: 'POLICY_UNAPPROVED',
+    });
+  });
+
+  it('retains bounded long note text instead of dropping it at 128 characters', () => {
+    const text = 'x'.repeat(500);
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote'],
+        values: { reservationnote: text },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.claimKeys).toEqual(['notes.reservationnote']);
+    if ('items' in projected.data.notes) {
+      expect(projected.data.notes.items[0]?.permittedText.value).toHaveLength(500);
+    }
+  });
 });
 
 describe('observeNotesTraces with detail dump', () => {
@@ -103,5 +149,31 @@ describe('observeNotesTraces with detail dump', () => {
       { section: 'traces', reasonCode: 'SURFACE_UNPROVEN' },
     ]);
     expect(result.data).toBeTruthy();
+  });
+
+  it('returns masked notes as policy-unapproved, never as known text', async () => {
+    const result = await observeNotesTraces(
+      authorization,
+      {
+        resourceRef: 'notes-resource-test',
+        states: ['open'],
+        limit: 20,
+        audience: 'staff',
+      },
+      new AbortController().signal,
+      {
+        detailDumpFor: async () => ({
+          schemaVersion: 1,
+          surface: 'guest_stay_detail',
+          keys: ['reservationnote'],
+          values: { reservationnote: 'protected' },
+        }),
+      },
+    );
+    expect(result.status).toBe('manual_required');
+    expect(result.unavailableSections).toEqual([
+      { section: 'notes', reasonCode: 'POLICY_UNAPPROVED' },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('protected');
   });
 });

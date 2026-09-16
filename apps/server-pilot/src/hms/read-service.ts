@@ -6,6 +6,8 @@ import {
   readResultSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  hmsListDocumentsReadRequestSchema,
+  hmsSentEmailAuditReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
   companyAccountReadRequestSchema,
@@ -72,6 +74,8 @@ export const readRequestSchema = z.union([
   reservationContextRequestSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  hmsListDocumentsReadRequestSchema,
+  hmsSentEmailAuditReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
   companyAccountReadRequestSchema,
@@ -84,6 +88,8 @@ export type ReadRequest =
   | ReservationContextRequest
   | z.infer<typeof documentsListReadRequestSchema>
   | z.infer<typeof documentsReadReadRequestSchema>
+  | z.infer<typeof hmsListDocumentsReadRequestSchema>
+  | z.infer<typeof hmsSentEmailAuditReadRequestSchema>
   | z.infer<typeof folioReadRequestSchema>
   | QuoteStayReadRequest
   | z.infer<typeof companyAccountReadRequestSchema>
@@ -142,6 +148,11 @@ export interface ReadHandlers {
     cursor: string | undefined;
     audience: 'staff' | 'customer';
   }) => Promise<ReadResult<unknown>>;
+  listDocuments?: (input: {
+    candidateId: string;
+    documentScope: 'sent_email' | 'tax_invoice';
+  }) => Promise<ReadResult<unknown>>;
+  readSentEmailAudit?: (input: { candidateId: string }) => Promise<ReadResult<unknown>>;
 }
 
 export interface ReadExecutionContext {
@@ -467,6 +478,16 @@ function isExistingDocumentRequest(request: ReadRequest): request is ExistingDoc
   );
 }
 
+type HmsCommunicationReadRequest =
+  | z.infer<typeof hmsListDocumentsReadRequestSchema>
+  | z.infer<typeof hmsSentEmailAuditReadRequestSchema>;
+
+function isHmsCommunicationRequest(
+  request: ReadRequest,
+): request is HmsCommunicationReadRequest {
+  return request.toolId === 'hms_list_documents' || request.toolId === 'hms_sent_email_audit';
+}
+
 function assertDocumentRequesterScope(context: ReadExecutionContext): void {
   const expiry = Date.parse(context.requester.expiresAt);
   if (
@@ -644,19 +665,23 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
       context,
       now,
       requiredClaimKind:
-        request.toolId === 'hms_read_folio'
-          ? 'folio_deposit_summary'
-          : request.toolId === 'hms_quote_stay'
-            ? 'quote_stay_summary'
-            : request.toolId === 'hms_company_account_read'
-              ? 'company_billing_summary'
-              : request.toolId === 'hms_group_block_read'
-                ? 'group_status'
-                : request.toolId === 'hms_event_read'
-                  ? 'event_status'
-                  : request.toolId === 'hms_read_notes_traces'
-                    ? 'notes_trace_observation'
-                    : 'reservation_summary',
+        request.toolId === 'hms_list_documents'
+          ? 'document_metadata'
+          : request.toolId === 'hms_sent_email_audit'
+            ? 'sent_email_audit'
+            : request.toolId === 'hms_read_folio'
+              ? 'folio_deposit_summary'
+              : request.toolId === 'hms_quote_stay'
+                ? 'quote_stay_summary'
+                : request.toolId === 'hms_company_account_read'
+                  ? 'company_billing_summary'
+                  : request.toolId === 'hms_group_block_read'
+                    ? 'group_status'
+                    : request.toolId === 'hms_event_read'
+                      ? 'event_status'
+                      : request.toolId === 'hms_read_notes_traces'
+                        ? 'notes_trace_observation'
+                        : 'reservation_summary',
       currentAppAccessProof: context.currentAppAccessProof,
       requireCurrentAppAccess: context.requireCurrentAppAccess,
     });
@@ -749,6 +774,50 @@ async function dispatchRead(
       now: context.now(),
       result,
     });
+  }
+
+  if (isHmsCommunicationRequest(parsed)) {
+    const unavailable = (reasonCode: 'SOURCE_UNAVAILABLE' | 'POLICY_UNAPPROVED') =>
+      readResultSchema.parse({
+        toolId: parsed.toolId,
+        schemaVersion: 'hms-communications/1',
+        status: 'manual_required',
+        data: null,
+        completeness: 'unknown',
+        unavailableSections: [
+          {
+            section:
+              parsed.toolId === 'hms_list_documents' ? parsed.documentScope : 'sent_email',
+            reasonCode,
+          },
+        ],
+        scopeRef: parsed.candidateId,
+        evidence: [],
+        page: null,
+        issues: [
+          {
+            code: reasonCode,
+            retryable: false,
+            safeNextAction: 'manual_review',
+          },
+        ],
+      }) as ReadResult<unknown>;
+    if (parsed.toolId === 'hms_list_documents') {
+      const handler = context.handlers?.listDocuments;
+      return handler
+        ? handler({ candidateId: parsed.candidateId, documentScope: parsed.documentScope })
+        : Promise.resolve(
+            unavailable(
+              parsed.documentScope === 'tax_invoice'
+                ? 'POLICY_UNAPPROVED'
+                : 'SOURCE_UNAVAILABLE',
+            ),
+          );
+    }
+    const handler = context.handlers?.readSentEmailAudit;
+    return handler
+      ? handler({ candidateId: parsed.candidateId })
+      : Promise.resolve(unavailable('SOURCE_UNAVAILABLE'));
   }
 
   if (parsed.toolId === 'hms_find_reservation') {

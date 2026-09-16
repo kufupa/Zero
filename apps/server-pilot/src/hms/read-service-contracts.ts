@@ -116,6 +116,26 @@ export const documentsReadReadRequestSchema = documentsReadExistingInputSchema
   .strict();
 export type DocumentsReadReadRequest = z.infer<typeof documentsReadReadRequestSchema>;
 
+/** Closed HMS communication/document observation requests. */
+export const hmsListDocumentsReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_list_documents'),
+    candidateId: readRefSchema,
+    documentScope: z.enum(['sent_email', 'tax_invoice']).default('tax_invoice'),
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type HmsListDocumentsReadRequest = z.infer<typeof hmsListDocumentsReadRequestSchema>;
+
+export const hmsSentEmailAuditReadRequestSchema = z
+  .object({
+    toolId: z.literal('hms_sent_email_audit'),
+    candidateId: readRefSchema,
+    admission: readAdmissionSchema.optional(),
+  })
+  .strict();
+export type HmsSentEmailAuditReadRequest = z.infer<typeof hmsSentEmailAuditReadRequestSchema>;
+
 /** Closed finance sections; selectors never expose PMS URLs or locators. */
 export const folioReadSectionIdSchema = z.enum([
   'balance',
@@ -607,6 +627,8 @@ export const readToolResultIdSchema = z.enum([
   'hms_group_block_read',
   'hms_event_read',
   'hms_read_notes_traces',
+  'hms_list_documents',
+  'hms_sent_email_audit',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 

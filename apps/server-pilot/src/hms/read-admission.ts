@@ -10,6 +10,8 @@ import {
   readDigestSchema,
   documentsListReadRequestSchema,
   documentsReadReadRequestSchema,
+  hmsListDocumentsReadRequestSchema,
+  hmsSentEmailAuditReadRequestSchema,
   quoteStayReadRequestSchema,
   companyAccountReadRequestSchema,
   groupBlockReadRequestSchema,
@@ -169,7 +171,13 @@ type ReservationIssueReadAdmissionInput = {
   source: ReadAdmissionSource;
   now?: Date;
   candidateId: string;
-  toolId: 'hms_find_reservation' | 'hms_read_reservation' | 'hms_read_folio';
+  toolId:
+    | 'hms_find_reservation'
+    | 'hms_read_reservation'
+    | 'hms_read_folio'
+    | 'hms_list_documents'
+    | 'hms_sent_email_audit';
+  documentScope?: 'sent_email' | 'tax_invoice';
   sections?: readonly string[];
   detail?: 'summary' | 'detail';
   parentReadResultRef?: string;
@@ -298,7 +306,9 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     input.toolId === 'hms_company_account_read' ||
     input.toolId === 'hms_group_block_read' ||
     input.toolId === 'hms_event_read' ||
-    input.toolId === 'hms_read_notes_traces';
+    input.toolId === 'hms_read_notes_traces' ||
+    input.toolId === 'hms_list_documents' ||
+    input.toolId === 'hms_sent_email_audit';
   const captureBindingRef = captureRequired
     ? requiredRef(source.captureBindingRef ?? '', 'captureBindingRef')
     : null;
@@ -447,7 +457,18 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     closedRequest =
       input.toolId === 'hms_find_reservation'
         ? { toolId: input.toolId, candidateId: candidateId! }
-        : input.toolId === 'hms_read_folio'
+        : input.toolId === 'hms_list_documents'
+          ? hmsListDocumentsReadRequestSchema.omit({ admission: true }).parse({
+              toolId: input.toolId,
+              candidateId: candidateId!,
+              documentScope: reservationInput.documentScope ?? 'tax_invoice',
+            })
+          : input.toolId === 'hms_sent_email_audit'
+            ? hmsSentEmailAuditReadRequestSchema.omit({ admission: true }).parse({
+                toolId: input.toolId,
+                candidateId: candidateId!,
+              })
+            : input.toolId === 'hms_read_folio'
           ? {
               toolId: input.toolId,
               reservationRef,
@@ -537,6 +558,8 @@ export function assertPersistedReadAdmissionIssuer(input: {
     | 'hms_group_block_read'
     | 'hms_event_read'
     | 'hms_read_notes_traces'
+    | 'hms_list_documents'
+    | 'hms_sent_email_audit'
     | 'documents_list_existing'
     | 'documents_read_existing';
 }): PersistedReadAdmissionIssuer {
@@ -567,6 +590,8 @@ export function assertPersistedReadAdmissionIssuer(input: {
   if (
     input.expectedToolId === 'hms_find_reservation' ||
     input.expectedToolId === 'hms_quote_stay' ||
+    input.expectedToolId === 'hms_list_documents' ||
+    input.expectedToolId === 'hms_sent_email_audit' ||
     input.expectedToolId === 'documents_list_existing' ||
     input.expectedToolId === 'documents_read_existing'
   ) {

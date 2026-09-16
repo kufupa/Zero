@@ -20,6 +20,14 @@ export type DepositLedgerDetailScope = {
 
 export interface FolioReadFacade {
   openOsressAndSearch(candidate: ExactReservationCandidate): Promise<string>;
+  /**
+   * OSRESV.FOL tab open (confirmation + optional stay id). Used when OSRESS
+   * dataspy lacks foliobalance columns.
+   */
+  openOsresvFol(input: {
+    confirmationNumber: string;
+    reservationStayId?: string | null;
+  }): Promise<string>;
   /** OSLEDG open + OSLEDG.LST date list (no confirmation column). */
   openDepositLedgerList(): Promise<string>;
   /**
@@ -64,6 +72,28 @@ export function createFolioReadFacade(
         throw new HmsRuntimeError('SCHEMA_DRIFT', 'folio OSRESS.search correlation failed');
       }
       return post.value || (await page.content());
+    },
+
+    async openOsresvFol(input) {
+      const confirmation = String(input.confirmationNumber || '').trim();
+      if (!confirmation) {
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'OSRESV.FOL requires confirmationNumber');
+      }
+      const fields: Record<string, string> = {
+        confirmationnumber: confirmation,
+        propertycode: expectedPropertyCode,
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'FOL',
+      };
+      const stayId = String(input.reservationStayId || '').trim();
+      if (stayId) {
+        fields.reservationstayid = stayId;
+        fields.id = stayId;
+      }
+      return page.postForm(`${session.origin}/web/base/OSRESV.FOL`, fields);
     },
 
     async openDepositLedgerList() {

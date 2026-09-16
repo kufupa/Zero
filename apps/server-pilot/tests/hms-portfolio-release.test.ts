@@ -97,16 +97,15 @@ describe('CandidateReadPlan closed union', () => {
 });
 
 describe('production executable steps stay decoupled from blocked surfaces', () => {
-  it('excludes fixture-only blocked tools from active production read allowlist', () => {
-    const active = productionActiveReadToolIds();
-    // Live digests cleared until operator-observed evidence returns.
-    expect(active).toEqual([]);
+  it('includes soft-proven PMS tools on production allowlist; gated stay fail-closed', () => {
+    const active = productionActiveReadToolIds().sort();
+    // Quote is discovery-only until a trusted current-rate authority is
+    // wired and live-proven through normal composition.
+    expect(active).toEqual(['hms_find_reservation']);
     for (const blocked of [
-      'hms_find_reservation',
-      'hms_quote_stay',
+      'hms_read_folio',
       'hms_list_documents',
       'hms_sent_email_audit',
-      'hms_read_folio',
       'hms_company_account_read',
       'hms_group_block_read',
       'hms_event_read',
@@ -127,10 +126,12 @@ describe('production executable steps stay decoupled from blocked surfaces', () 
       followupToToolId('documents'),
       followupToToolId('company'),
     ]);
-    expect(executableToolIdsForPlan(plan, 'production')).toEqual([]);
+    expect(executableToolIdsForPlan(plan, 'production')).toEqual([
+      'hms_find_reservation',
+    ]);
   });
 
-  it('yields empty production executable for fixture-only plan kinds', () => {
+  it('yields production executable for promoted quote; group/event stay fail-closed', () => {
     expect(
       executableToolIdsForPlan({ kind: 'quote', quote: true }, 'production'),
     ).toEqual([]);
@@ -164,13 +165,12 @@ describe('workflow summary claim', () => {
 
 describe('cumulative ablation across promoted releases only', () => {
   it('release order is currently promoted tools only', () => {
-    expect(promotedPortfolioReleaseOrder()).toEqual([]);
-    expect(promotedPortfolioReleaseOrder()).not.toContain('hms_find_reservation');
-    expect(promotedPortfolioReleaseOrder()).not.toContain('hms_quote_stay');
+    expect(promotedPortfolioReleaseOrder()).toEqual(['hms_find_reservation']);
+    expect(promotedPortfolioReleaseOrder()).not.toContain('hms_read_folio');
     expect(promotedPortfolioReleaseOrder()).not.toContain('hms_company_account_read');
     expect(promotedPortfolioReleaseOrder()).not.toContain('hms_group_block_read');
     expect(promotedPortfolioReleaseOrder()).not.toContain('hms_event_read');
-    expect(promotedPortfolioReleaseOrder()).not.toContain('hms_read_folio');
+    expect(promotedPortfolioReleaseOrder()).not.toContain('mail_read_artifact');
   });
 
   it('ablation membership does not overlap and never requires blocked live promotion', () => {
@@ -188,15 +188,17 @@ describe('cumulative ablation across promoted releases only', () => {
         baseline,
       },
     });
-    expect(report.steps.map((s) => s.toolId)).toEqual(['baseline']);
+    expect(report.steps.map((s) => s.toolId)).toEqual([
+      'baseline',
+      'hms_find_reservation',
+    ]);
     expect(report.denominator).toBe(56);
     for (const blocked of [
-      'hms_find_reservation',
-      'hms_quote_stay',
       'hms_read_folio',
       'hms_company_account_read',
       'hms_group_block_read',
       'hms_event_read',
+      'mail_read_artifact',
     ]) {
       expect(report.steps.some((s) => s.toolId === blocked)).toBe(false);
     }
@@ -237,7 +239,9 @@ describe('load/capacity replay (promoted tools only)', () => {
         deadlineAborts: 1,
       },
     ]);
-    expect(report.toolIds).toEqual([]);
+    expect(report.toolIds).toEqual([
+      'hms_find_reservation',
+    ]);
     expect(Object.keys(report.byConcurrency).sort()).toEqual(['1', '20', '5']);
     expect(report.byConcurrency['20']?.deadlineAborts).toBe(1);
     expect(report.byConcurrency['1']?.samples).toBe(1);

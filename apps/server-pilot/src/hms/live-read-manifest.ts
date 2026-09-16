@@ -863,6 +863,19 @@ export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestR
       '/web/resources/inforhms/images/tab-bar/default-scroll-right-top.png',
       ['image'],
     ),
+    // Wave A1 live 2026-09-13: flag sprite GET blocked DETAIL_DUMP (POLICY_BLOCK).
+    getStaticRule(
+      origin,
+      'live-osresv-flags-sprite-16',
+      '/web/resources/inforhms/images/hms/flags/sprite-16x16.png',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-osresv-hms-tb-rate-details',
+      '/web/resources/inforhms/images/hms/toolbar/rate-details.svg',
+      ['image', 'other'],
+    ),
     // Wave A1 live 2026-09-12: Guest Stay detail toolbar icons (OSRESV open).
     toolbar('live-osresv-tb-luxury', 'luxury.svg'),
     toolbar('live-osresv-tb-travel-plan', 'travel-plan.svg'),
@@ -1175,7 +1188,10 @@ export function buildExactOsrravSearchBody(
   const start = isoDateToHmsDisplay(candidate.arrivalDate);
   const requestedCurrency = candidate.currency ?? chrome.currency ?? 'ZAR';
   const property = chrome.property || 'HRCEN';
-  const salesstrategy = chrome.salesstrategy || 'TRANSI';
+  // HRCEN: TRANSI sales strategy can return empty roomTypeInvArray even when
+  // roomtypes filter is valid. Prefer chrome value when present; otherwise leave
+  // unscoped so roomtypes+rateplans drive the inventory rows.
+  const salesstrategy = chrome.salesstrategy ?? '';
   return {
     extId: chrome.extId ?? '',
     property,
@@ -1252,6 +1268,9 @@ export function buildExactOsrravSearchRule(
     extId: { pattern: '[A-Za-z0-9._:-]{0,64}', maxLength: 64 },
     roomtypes: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
     rateplans: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
+    // HRCEN: empty strategy returns inventory; TRANSI can empty roomTypeInvArray.
+    salesstrategy: { pattern: '[A-Za-z0-9]{0,32}', maxLength: 32 },
+    salesstrategy_display: { pattern: '.{0,64}', maxLength: 64 },
     adults: { pattern: '[1-9][0-9]?', maxLength: 2 },
     children: { pattern: '[0-9]{1,2}', maxLength: 2 },
     startdate: { pattern: '[0-9]{2}-[A-Z]{3}-[0-9]{4}', maxLength: 11 },

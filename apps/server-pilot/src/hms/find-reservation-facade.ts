@@ -209,8 +209,26 @@ export function createFindReservationFacade(
         const again = page.waitForCorrelatedResponse
           ? page.waitForCorrelatedResponse(LIVE_GUEST_STAY_SEARCH_PATH)
           : Promise.resolve('');
-        await page.press(selector, 'Enter');
-        body = (await again.catch(() => '')) || body || (await page.content());
+        const press = (page as HmsPage & {
+          press?: (selector: string, key: string) => Promise<void>;
+        }).press;
+        if (typeof press === 'function') {
+          await press.call(page, selector, 'Enter');
+          body = (await again.catch(() => '')) || body || (await page.content());
+        } else if (post.status === 'rejected' && correlated.status === 'rejected') {
+          // Attach a rejection handler even though no keyboard fallback exists
+          // on this adapter, so the already-started correlation does not leak
+          // an unhandled promise rejection.
+          void again.catch(() => '');
+          // Minimal test/adapter pages may not expose keyboard input. Preserve
+          // the original transport failure instead of masking it with a
+          // TypeError from the optional fallback.
+          throw post.reason ?? correlated.reason;
+        } else {
+          // The initial response is usable (or already classified below), but
+          // still consume the optional correlation promise before returning.
+          void again.catch(() => '');
+        }
       }
       if (!body || body.length < 32) {
         throw new HmsRuntimeError('SCHEMA_DRIFT', 'search correlation failed');

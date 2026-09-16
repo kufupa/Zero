@@ -14,6 +14,7 @@ import {
   type ReadSection,
 } from './read-service-contracts.js';
 import type { LinkedContextReferenceKind } from './context-read-reference.js';
+import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
 import { randomUUID } from 'node:crypto';
 
 export interface ReservationContextLookup {
@@ -165,6 +166,29 @@ function retainFact<T>(
   return fact(value as T | null | undefined, evidenceRef, observedAt, expiresAt);
 }
 
+function matchLabelFor(
+  row: ReservationRow,
+  ambiguous: boolean,
+  evidenceRef: string,
+  observedAt: Date | string,
+  expiresAt: Date | string,
+): ReadFact<string> {
+  // Ambiguous rows must not expose guest names or a selectable identifier.
+  if (ambiguous) {
+    return fact('reservation match', evidenceRef, observedAt, expiresAt);
+  }
+  const raw = typeof row.guestName === 'string' ? row.guestName.trim() : '';
+  if (!raw || isSentinelGuestName(raw)) {
+    return unknownFact({
+      reasonCode: 'SOURCE_UNAVAILABLE',
+      evidenceRef,
+      observedAt,
+      expiresAt,
+    });
+  }
+  return fact(raw, evidenceRef, observedAt, expiresAt);
+}
+
 function matchFor(
   row: ReservationRow,
   input: ReservationContextLookup,
@@ -177,13 +201,7 @@ function matchFor(
   const referenceKind = row.externalReference ? 'external' : 'confirmation';
   return {
     reservationRef,
-    // Ambiguous rows must not expose guest names or a selectable identifier.
-    label: fact(
-      ambiguous ? 'reservation match' : 'reservation match',
-      evidenceRef,
-      observedAt,
-      expiresAt,
-    ),
+    label: matchLabelFor(row, ambiguous, evidenceRef, observedAt, expiresAt),
     referenceKind: fact(referenceKind, evidenceRef, observedAt, expiresAt),
     status: fact(row.reservationStatus, evidenceRef, observedAt, expiresAt),
     arrival: fact(row.arrivalDate, evidenceRef, observedAt, expiresAt),

@@ -22,6 +22,7 @@ import {
   type StayOptionReadData,
 } from './contracts.js';
 import type { HmsPage, HmsReadSession } from './runtime.js';
+import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
 
 export const HMS_FIND_RESERVATION_TOOL_ID = 'hms_find_reservation';
 export const HMS_QUOTE_STAY_TOOL_ID = 'hms_quote_stay';
@@ -329,17 +330,26 @@ export class InforReadAdapter implements HmsReadAdapter {
 
     // Exactly one list row — enrich from list attrs only (no forced detail nav).
     const single = matches[0]!;
+    // Search-grid roomType optional; ratePlan never a find claim (session parity).
+    const matchedRow = { ...single, ratePlan: null as string | null };
     const unresolvedFields: string[] = [];
-    if (!single.confirmationNumber && !single.externalReference) {
+    if (!matchedRow.confirmationNumber && !matchedRow.externalReference) {
       unresolvedFields.push('confirmationNumber');
     }
-    if (!single.arrivalDate) unresolvedFields.push('arrivalDate');
-    if (!single.departureDate) unresolvedFields.push('departureDate');
-    if (!single.reservationStatus) unresolvedFields.push('reservationStatus');
+    if (!matchedRow.arrivalDate) unresolvedFields.push('arrivalDate');
+    if (!matchedRow.departureDate) unresolvedFields.push('departureDate');
+    if (!matchedRow.reservationStatus) unresolvedFields.push('reservationStatus');
+    if (!matchedRow.guestName || isSentinelGuestName(matchedRow.guestName)) {
+      unresolvedFields.push('guestName');
+      matchedRow.guestName = isSentinelGuestName(matchedRow.guestName)
+        ? null
+        : matchedRow.guestName;
+    }
+    if (!matchedRow.roomType) unresolvedFields.push('roomType');
     if (
-      single.arrivalDate === null &&
-      single.departureDate === null &&
-      (single.confirmationNumber || single.externalReference)
+      matchedRow.arrivalDate === null &&
+      matchedRow.departureDate === null &&
+      (matchedRow.confirmationNumber || matchedRow.externalReference)
     ) {
       // Malformed date attrs present as empty
       if (!unresolvedFields.includes('arrivalDate')) {
@@ -370,15 +380,15 @@ export class InforReadAdapter implements HmsReadAdapter {
     if (matchedNode) {
       const rawArrival = matchedNode.attr(selectors.arrivalAttr);
       const rawDeparture = matchedNode.attr(selectors.departureAttr);
-      if (rawArrival && !single.arrivalDate) {
+      if (rawArrival && !matchedRow.arrivalDate) {
         unresolvedFields.push('arrivalDate');
       }
-      if (rawDeparture && !single.departureDate) {
+      if (rawDeparture && !matchedRow.departureDate) {
         unresolvedFields.push('departureDate');
       }
     }
 
-    const statusLower = (single.reservationStatus ?? '').toLowerCase();
+    const statusLower = (matchedRow.reservationStatus ?? '').toLowerCase();
     const canceled = CANCELED_STATUSES.has(statusLower);
     const active = ACTIVE_STATUSES.has(statusLower);
 
@@ -390,7 +400,7 @@ export class InforReadAdapter implements HmsReadAdapter {
         unresolvedFields.push('reservationStatus.active');
       }
       status = 'partial';
-    } else if (single.reservationStatus && !active) {
+    } else if (matchedRow.reservationStatus && !active) {
       unresolvedFields.push('reservationStatus.active');
       status = 'partial';
     }
@@ -401,26 +411,27 @@ export class InforReadAdapter implements HmsReadAdapter {
       !canceled &&
       active;
 
+    const claimKeys: string[] = [];
+    if (matchedRow.confirmationNumber) claimKeys.push('matches.0.confirmationNumber');
+    if (matchedRow.externalReference) claimKeys.push('matches.0.externalReference');
+    if (matchedRow.guestName) claimKeys.push('matches.0.guestName');
+    if (matchedRow.reservationStatus) claimKeys.push('matches.0.reservationStatus');
+    if (matchedRow.arrivalDate) claimKeys.push('matches.0.arrivalDate');
+    if (matchedRow.departureDate) claimKeys.push('matches.0.departureDate');
+    if (matchedRow.roomType) claimKeys.push('matches.0.roomType');
+    // Never claim ratePlan on find — even if fixture invents rateplan.
+
     return this.#reservationResult({
       status,
       data: reservationReadDataSchema.parse({
-        matches: [single],
+        matches: [matchedRow],
         matchCount: 1,
         capped: false,
       }),
       unresolvedFields: [...new Set(unresolvedFields)],
       observedAt,
-      claimKeys: [
-        'matches.0.confirmationNumber',
-        'matches.0.externalReference',
-        'matches.0.guestName',
-        'matches.0.reservationStatus',
-        'matches.0.arrivalDate',
-        'matches.0.departureDate',
-        'matches.0.roomType',
-        'matches.0.ratePlan',
-      ],
-      sourceSeed: `one:${single.confirmationNumber ?? single.externalReference}`,
+      claimKeys,
+      sourceSeed: `one:${matchedRow.confirmationNumber ?? matchedRow.externalReference}`,
       draftReady,
     });
   }

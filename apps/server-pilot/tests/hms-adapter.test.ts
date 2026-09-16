@@ -282,8 +282,10 @@ describe('InforReadAdapter.findReservation', () => {
       new AbortController().signal,
     );
 
-    expect(result.status).toBe('ok');
+    expect(result.status).toBe('partial');
+    expect(result.unresolvedFields).toEqual(expect.arrayContaining(['roomType']));
     expect(result.data.matches[0]?.externalReference).toBe('EXT-77');
+    expect(result.evidence.claimKeys).not.toContain('matches.0.ratePlan');
     expect(page.posts[0]?.fields.externalReference).toBe('EXT-77');
   });
 
@@ -343,7 +345,9 @@ describe('InforReadAdapter.findReservation', () => {
       new AbortController().signal,
     );
 
-    expect(result.status).toBe('ok');
+    expect(result.status).toBe('partial');
+    expect(result.unresolvedFields).toEqual(expect.arrayContaining(['roomType']));
+    expect(result.evidence.claimKeys).not.toContain('matches.0.ratePlan');
     expect(page.posts[0]?.fields).toMatchObject({
       surname: 'Ngubane',
       arrivalDate: '2026-08-10',

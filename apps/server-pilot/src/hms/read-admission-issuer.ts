@@ -69,6 +69,8 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
     | 'hms_group_block_read'
     | 'hms_event_read'
     | 'hms_read_notes_traces'
+    | 'hms_list_documents'
+    | 'hms_sent_email_audit'
     | 'documents_list_existing'
     | 'documents_read_existing';
   now?: Date;
@@ -89,6 +91,7 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   resourceRef?: string;
   states?: readonly string[];
   audience?: 'staff' | 'customer';
+  documentScope?: 'sent_email' | 'tax_invoice';
   captureBindingRef?: string;
 };
 
@@ -771,6 +774,7 @@ export async function issueReadAdmissionFromMailbox(
       now,
       candidateId: trigger.candidateId,
       toolId: input.toolId,
+      ...(input.documentScope ? { documentScope: input.documentScope } : {}),
       sections: input.sections,
       detail: input.detail,
       parentReadResultRef: input.parentReadResultRef,

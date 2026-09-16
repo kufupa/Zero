@@ -12,9 +12,51 @@ import {
 import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
 import { renderClaim, type ToolResult } from '../src/ai/draft-evidence.js';
 import { READ_TOOLS, capabilityStateFor } from '../src/hms/read-tools.js';
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const HASH = 'a'.repeat(64);
+const AUTH_KEY = Buffer.alloc(32, 0x41);
+const AUTH_KEY_VERSION = 'requester-key-v1';
+const AUTH_NOW = new Date(NOW);
+
+function claimAuthorization() {
+  const currentState = {
+    operationId: 'communications-fixture-operation',
+    mailboxGrant: {
+      sha256: HASH,
+      transportId: 'transport-communications-fixture',
+      active: true,
+    },
+    thread: {
+      transportId: 'transport-communications-fixture',
+      threadId: 'thread-communications-fixture',
+      stateVersion: 'thread-state-v1',
+    },
+    requester: {
+      identity: 'requester-communications-fixture',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: ['document_metadata', 'sent_email_audit'],
+      forwarded: false,
+      spoofed: false,
+    },
+  };
+  const authorization = issueTrustedRequesterAuthorization(currentState, {
+    key: AUTH_KEY,
+    keyVersion: AUTH_KEY_VERSION,
+    issuedAt: AUTH_NOW,
+    expiresAt: new Date(AUTH_NOW.getTime() + 5 * 60_000),
+  });
+  if (!authorization) throw new Error('fixture authorization issuance failed');
+  return {
+    authorization,
+    currentState,
+    key: AUTH_KEY,
+    expectedPrivateDigestKeyVersion: AUTH_KEY_VERSION,
+    now: AUTH_NOW,
+  };
+}
 
 function hmsResult<T>(
   toolId: 'hms_sent_email_audit' | 'hms_list_documents',
@@ -35,6 +77,7 @@ function hmsResult<T>(
       expiresAt: '2026-08-06T01:00:00.000Z',
       claimKeys: [],
       sourceHash: HASH,
+      scopeVerified: true,
     },
   };
 }
@@ -215,6 +258,7 @@ describe('hms_sent_email_audit fixture kernel', () => {
     const claims = claimsFromToolResult(
       hmsResult('hms_sent_email_audit', parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
+      claimAuthorization(),
     );
     expect(claims).toHaveLength(1);
     expect(claims[0]?.kind).toBe('sent_email_audit');
@@ -351,6 +395,7 @@ describe('hms_list_documents fixture kernel', () => {
     const claims = claimsFromToolResult(
       hmsResult('hms_list_documents', parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
+      claimAuthorization(),
     );
     expect(claims).toHaveLength(1);
     expect(claims[0]?.kind).toBe('document_metadata');

@@ -23,6 +23,7 @@ import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createFolioReadFacade } from './folio-read-facade.js';
 import { projectFolioBalanceFromDetailDump } from './folio-detail-projection.js';
+import { parseFolioFolTransport } from './folio-fol-parse.js';
 import type { ReadCandidateChild } from './candidate-graph.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1379,7 +1380,39 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         }
 
         assertNotAborted(signal);
-        const parsed = parseFolioBalanceTransport(text, expectedConfirmationToken);
+        let parsed = parseFolioBalanceTransport(text, expectedConfirmationToken);
+        // Dataspy 1941 often lacks foliobalance — deepen via OSRESV.FOL when scoped.
+        if (
+          parsed.reservationScopeProven &&
+          (parsed.totalBalance == null || parsed.currency == null)
+        ) {
+          assertNotAborted(signal);
+          const folText = await facade.openOsresvFol({
+            confirmationNumber: expectedConfirmationToken,
+          });
+          const folParsed = parseFolioFolTransport(folText);
+          if (folParsed.hasCardLeak) {
+            return {
+              status: 'manual_required',
+              currency: null,
+              totalBalance: null,
+              evidenceId: null,
+              blocker: 'FOLIO_PCI_FIELD_SUPPRESSED',
+              observedAt: observedAt.toISOString(),
+              durationMs: Date.now() - started,
+              bytesObserved: parsed.bytesObserved + Buffer.byteLength(folText),
+              rowsScanned: parsed.rowsScanned,
+            };
+          }
+          if (folParsed.envelopeRecognized) {
+            parsed = {
+              ...parsed,
+              totalBalance: parsed.totalBalance ?? folParsed.totalBalance,
+              currency: parsed.currency ?? folParsed.currency,
+              bytesObserved: parsed.bytesObserved + Buffer.byteLength(folText),
+            };
+          }
+        }
         const durationMs = Date.now() - started;
         if (parsed.hasCardLeak) {
           return {

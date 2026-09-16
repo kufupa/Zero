@@ -59,7 +59,10 @@ async function collectFormKeys(page: HmsPage): Promise<FormDump> {
       keys.add(normalized);
       keys.add(lower);
       const raw = typeof node.value === 'string' ? node.value : '';
-      if (raw && raw.length <= 128 && !/password|secret|token|cookie/i.test(lower)) {
+      const valueLimit = /note|remark|comment|trace|message|instruction|request/i.test(lower)
+        ? 2_000
+        : 256;
+      if (raw && raw.length <= valueLimit && !/password|secret|token|cookie/i.test(lower)) {
         values[normalized] = raw;
       }
     }
@@ -115,6 +118,19 @@ function keysFromHdrBody(body: string): FormDump {
     keys.add(normalized);
     keys.add(name);
   }
+  for (const m of body.matchAll(
+    /"([A-Za-z][A-Za-z0-9_]{1,48})"\s*:\s*"((?:\\.|[^"\\])*)"/g,
+  )) {
+    const name = m[1]!.trim().toLowerCase();
+    const normalized = name.replace(/^ff_/, '').replace(/^filter_/, '');
+    const raw = m[2]!.trim();
+    const valueLimit = /note|remark|comment|trace|message|instruction|request/i.test(normalized)
+      ? 2_000
+      : 256;
+    if (raw && raw.length <= valueLimit && !/password|secret|token|cookie/i.test(normalized)) {
+      values[normalized] = raw;
+    }
+  }
   for (const m of body.matchAll(/"([A-Za-z][A-Za-z0-9_]{1,48})"\s*:/g)) {
     const k = m[1]!.toLowerCase();
     if (k.length > 48) continue;
@@ -126,7 +142,10 @@ function keysFromHdrBody(body: string): FormDump {
   );
   // HDR body is not the search filter surface when it carries stay identity keys.
   const stayHints = ['confirmationnumber', 'arrivaldate', 'departuredate', 'roomtype', 'status'];
-  const filledNonSearch = stayHints.filter((k) => keyList.includes(k)).length;
+  const filledNonSearch = stayHints.filter((k) => {
+    const value = values[k];
+    return typeof value === 'string' && value.trim().length > 0;
+  }).length;
   return { keys: keyList, values, searchChrome, filledNonSearch };
 }
 
@@ -142,6 +161,74 @@ async function waitDetailForm(page: HmsPage, budgetMs: number): Promise<FormDump
     if (collected.filledNonSearch >= 3) return collected;
   }
   return collected;
+}
+
+async function enrichWithRateDetailsClick(
+  page: HmsPage,
+  baseDump: ReservationDetailDumpV1,
+): Promise<ReservationDetailDumpV1> {
+  try {
+    const clicked = await page.evaluateStableDom(() => {
+      const doc = (globalThis as unknown as {
+        document?: {
+          querySelectorAll(selector: string): ArrayLike<{
+            getAttribute(name: string): string | null;
+            dispatchEvent(event: unknown): void;
+            closest(selector: string): { dispatchEvent(event: unknown): void } | null;
+          }>;
+        };
+        MouseEvent?: new (type: string, init?: unknown) => unknown;
+      }).document;
+      if (!doc) return false;
+      const imgs = Array.from(doc.querySelectorAll('img'));
+      const MouseEventCtor = (globalThis as unknown as {
+        MouseEvent?: new (type: string, init?: unknown) => unknown;
+      }).MouseEvent;
+      if (!MouseEventCtor) return false;
+      for (const img of imgs) {
+        const srcAttr = img.getAttribute('src') || '';
+        const title =
+          img.getAttribute('title') || img.getAttribute('data-qtip') || '';
+        if (/rate-details/i.test(srcAttr) || /rate\s*detail/i.test(title)) {
+          img.dispatchEvent(new MouseEventCtor('click', { bubbles: true }));
+          const parent = img.closest('a,button,div,span');
+          if (parent) {
+            parent.dispatchEvent(new MouseEventCtor('click', { bubbles: true }));
+          }
+          return true;
+        }
+      }
+      return false;
+    });
+    if (!clicked) {
+      return {
+        ...baseDump,
+        values: { ...baseDump.values, rateDetailsClicked: 'false' },
+      };
+    }
+    await new Promise((r) => setTimeout(r, 4_000));
+    const after = await collectFormKeys(page);
+    const rateKeys = after.keys.filter((k) => !SEARCH_CHROME_KEYS.has(k));
+    return {
+      ...baseDump,
+      keys: Array.from(
+        new Set([
+          ...(baseDump.keys || []),
+          ...rateKeys.map((k) => `ratedetails.${k}`),
+        ]),
+      ).sort(),
+      values: {
+        ...baseDump.values,
+        rateDetailsClicked: 'true',
+        rateDetailsKeyCount: String(rateKeys.length),
+      },
+    };
+  } catch {
+    return {
+      ...baseDump,
+      values: { ...baseDump.values, rateDetailsClicked: 'error' },
+    };
+  }
 }
 
 export function createReservationDetailFacade(input: {
@@ -188,7 +275,10 @@ export function createReservationDetailFacade(input: {
 
       let collected = opened ? await waitDetailForm(page, 12_000) : null;
       if (collected && collected.filledNonSearch >= 3) {
-        return dumpFromForm(collected, Boolean(options?.captureValues));
+        return enrichWithRateDetailsClick(
+          page,
+          dumpFromForm(collected, Boolean(options?.captureValues)),
+        );
       }
 
       // Reviewed inert HDR open — confirmation / stay id from matched OSRESS row.
@@ -206,11 +296,18 @@ export function createReservationDetailFacade(input: {
         const hdrBody = await page.postForm(`${input.session.origin}/web/base/OSRESV.HDR`, fields);
         collected = await waitDetailForm(page, 8_000);
         if (collected && collected.filledNonSearch >= 3) {
-          return dumpFromForm(collected, Boolean(options?.captureValues));
+          return enrichWithRateDetailsClick(
+            page,
+            dumpFromForm(collected, Boolean(options?.captureValues)),
+          );
         }
         const fromBody = keysFromHdrBody(hdrBody || '');
         if (fromBody.filledNonSearch >= 3) {
-          return dumpFromForm(fromBody, Boolean(options?.captureValues));
+          // Body-only keys — no Ext paint; Rate Details click will no-op.
+          return enrichWithRateDetailsClick(
+            page,
+            dumpFromForm(fromBody, Boolean(options?.captureValues)),
+          );
         }
         lastOpenError = new Error('HDR open did not yield stay fields');
       }
@@ -234,7 +331,10 @@ export function createReservationDetailFacade(input: {
           'guest stay detail open still on search chrome (no stay fields filled)',
         );
       }
-      return dumpFromForm(collected, Boolean(options?.captureValues));
+      return enrichWithRateDetailsClick(
+        page,
+        dumpFromForm(collected, Boolean(options?.captureValues)),
+      );
     },
   };
 }

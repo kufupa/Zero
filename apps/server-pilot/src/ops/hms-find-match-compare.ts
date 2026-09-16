@@ -8,6 +8,7 @@ const matchFieldSchema = z.enum([
   'confirmationNumber',
   'externalReference',
   'guestName',
+  'label',
   'arrivalDate',
   'departureDate',
   'reservationStatus',
@@ -16,6 +17,8 @@ const matchFieldSchema = z.enum([
   'matchCount',
   'claimKeys.ratePlan',
   'guestName.notSentinel',
+  'label.notSentinel',
+  'unresolvedFields.required',
 ]);
 
 export type HmsFindMatchField = z.infer<typeof matchFieldSchema>;
@@ -37,6 +40,8 @@ export type HmsFindMatchActual = {
   confirmationNumber: string | null;
   externalReference: string | null;
   guestName: string | null;
+  /** Public Match label (reservationMatchSchema); may differ from legacy guestName. */
+  label?: string | null;
   arrivalDate: string | null;
   departureDate: string | null;
   reservationStatus: string | null;
@@ -44,6 +49,8 @@ export type HmsFindMatchActual = {
   ratePlan: string | null;
   matchCount: number;
   claimKeys: string[];
+  /** Session/adapter unresolvedFields — required Match gaps must fail compare. */
+  unresolvedFields?: string[];
 };
 
 export type HmsFindCompareRow = {
@@ -61,14 +68,30 @@ export type HmsFindCompareV1 = {
   rows: HmsFindCompareRow[];
 };
 
-function isSentinelGuestName(value: string | null): boolean {
+/** Infor dataspy often fills primaryguest with numeric sentinels like "-1". */
+export function isSentinelGuestName(value: string | null | undefined): boolean {
   if (value == null) return false;
   return /^-?\d+$/.test(value.trim());
+}
+
+export function isUsableGuestDisplayName(value: string | null | undefined): boolean {
+  if (value == null) return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return !isSentinelGuestName(trimmed);
 }
 
 function eqNullable(a: string | null, b: string | null): boolean {
   return (a ?? null) === (b ?? null);
 }
+
+const REQUIRED_UNRESOLVED_BLOCKERS = new Set([
+  'confirmationNumber',
+  'arrivalDate',
+  'departureDate',
+  'reservationStatus',
+  'guestName',
+]);
 
 /**
  * Compare Match DoD fields. ratePlan must stay unclaimed on find.
@@ -118,6 +141,23 @@ export function compareHmsFindMatch(
     true,
     !isSentinelGuestName(actual.guestName),
   );
+
+  const label = actual.label ?? actual.guestName;
+  push(
+    'label',
+    oracle.guestName,
+    label,
+    Boolean(oracle.guestName),
+    eqNullable(oracle.guestName, label),
+  );
+  push(
+    'label.notSentinel',
+    true,
+    !isSentinelGuestName(label),
+    true,
+    !isSentinelGuestName(label),
+  );
+
   push(
     'arrivalDate',
     oracle.arrivalDate,
@@ -162,6 +202,16 @@ export function compareHmsFindMatch(
     oracle.matchCount === actual.matchCount,
   );
 
+  const unresolved = actual.unresolvedFields ?? [];
+  const blockedRequired = unresolved.filter((f) => REQUIRED_UNRESOLVED_BLOCKERS.has(f));
+  push(
+    'unresolvedFields.required',
+    false,
+    blockedRequired.length > 0 ? blockedRequired.join(',') : false,
+    true,
+    blockedRequired.length === 0,
+  );
+
   return {
     schemaVersion: 1,
     toolId: 'hms_find_reservation',
@@ -192,7 +242,7 @@ export function oracleFromOsressGridRow(row: {
   const last = str(row.lastname);
   const first = str(row.firstname);
   let guestName: string | null = null;
-  if (primary && !/^-?\d+$/.test(primary)) guestName = primary;
+  if (primary && isUsableGuestDisplayName(primary)) guestName = primary;
   else if (last && first) guestName = `${last}, ${first}`;
   else guestName = last ?? first;
 

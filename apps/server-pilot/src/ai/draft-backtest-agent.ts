@@ -130,7 +130,6 @@ export async function draftClaimSafeStub(input: {
     activeToolIds: new Set([
       'hms_find_reservation',
       'hms_quote_stay',
-      'mail_read_artifact',
       'hms_read_folio',
     ]),
   });

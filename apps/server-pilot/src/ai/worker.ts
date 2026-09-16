@@ -1519,7 +1519,7 @@ export function createLiveHmsCandidateSessionFactory(
               notesSignal,
               {
                 detailDumpFor: async (_notes, signal) => {
-                  if (!exactCandidate || exactCandidate.kind === 'surname_dates') return null;
+                  if (!exactCandidate) return null;
                   const { dump } = await driver.searchExactThenDetailDump(exactCandidate, signal);
                   return dump;
                 },

@@ -12,6 +12,7 @@ import {
   HMS_READ_TOOL_IDS,
   READ_TOOL_IDS,
   ROLE_SURFACE_IDS,
+  type ActiveReadToolId,
   type DiscoveryOperationId,
   type HmsReadToolId,
   type ReadToolDefinition,
@@ -508,7 +509,7 @@ export async function promoteReadTool(input: {
 
 export async function rollbackReadTool(input: {
   path: string;
-  toolId: ReadToolId;
+  toolId: ActiveReadToolId;
 }): Promise<HmsActiveRegistryV1> {
   const current = await loadActiveReadRegistry(input.path);
   const retained = [...(current.retainedPredecessors[input.toolId] ?? [])];
@@ -582,8 +583,8 @@ export type MailArtifactAuthorization = {
 };
 
 export function fingerprintActiveSet(input: {
-  active: Partial<Record<ReadToolId, string>>;
-  immediatePredecessor: Partial<Record<ReadToolId, string>>;
+  active: Partial<Record<ActiveReadToolId, string>>;
+  immediatePredecessor: Partial<Record<ActiveReadToolId, string>>;
   generation: number;
   toolsetVersion: string;
   toolsetFingerprint: string;
@@ -595,10 +596,10 @@ export function fingerprintActiveSet(input: {
       toolsetFingerprint: input.toolsetFingerprint,
       active: Object.keys(input.active)
         .sort()
-        .map((k) => [k, input.active[k as ReadToolId]]),
+        .map((k) => [k, input.active[k as ActiveReadToolId]]),
       immediatePredecessor: Object.keys(input.immediatePredecessor)
         .sort()
-        .map((k) => [k, input.immediatePredecessor[k as ReadToolId]]),
+        .map((k) => [k, input.immediatePredecessor[k as ActiveReadToolId]]),
     }),
   );
 }
@@ -679,16 +680,16 @@ export async function loadValidatedActiveReadSet(input: {
   releaseRoot: string;
   runtimeAbiVersion: string;
   runtimeFingerprintSha256: string;
-  availableImplementationDigests: ReadonlyMap<ReadToolId, ReadonlySet<string>>;
+  availableImplementationDigests: ReadonlyMap<ActiveReadToolId, ReadonlySet<string>>;
 }): Promise<{
-  toolIds: Set<ReadToolId>;
-  releases: Map<ReadToolId, HmsPortfolioToolReleaseV2>;
+  toolIds: Set<ActiveReadToolId>;
+  releases: Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>;
   registry: HmsActiveRegistryV2;
-  predecessors: Map<ReadToolId, HmsPortfolioToolReleaseV2>;
+  predecessors: Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>;
 }> {
   const registry = await loadActiveReadRegistryV2(input.registryPath);
-  const releases = new Map<ReadToolId, HmsPortfolioToolReleaseV2>();
-  const predecessors = new Map<ReadToolId, HmsPortfolioToolReleaseV2>();
+  const releases = new Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>();
+  const predecessors = new Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>();
 
   const loadRelease = async (releaseId: string): Promise<HmsPortfolioToolReleaseV2> => {
     const path = join(input.releaseRoot, `${releaseId}.json`);
@@ -702,7 +703,7 @@ export async function loadValidatedActiveReadSet(input: {
   };
 
   for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
-    const toolId = toolIdRaw as ReadToolId;
+    const toolId = toolIdRaw as ActiveReadToolId;
     if (!releaseId) continue;
     const release = await loadRelease(releaseId);
     if (release.toolId !== toolId) {
@@ -724,7 +725,7 @@ export async function loadValidatedActiveReadSet(input: {
   for (const [toolIdRaw, releaseId] of Object.entries(
     registry.immediatePredecessor,
   )) {
-    const toolId = toolIdRaw as ReadToolId;
+    const toolId = toolIdRaw as ActiveReadToolId;
     if (!releaseId) continue;
     const release = await loadRelease(releaseId);
     if (release.toolId !== toolId) {
@@ -770,8 +771,7 @@ export function isRegistryCutoverComplete(input: {
 }): boolean {
   return (
     input.handlerPathActive &&
-    input.activeToolIds.has('hms_find_reservation') &&
-    input.activeToolIds.has('mail_read_artifact')
+    input.activeToolIds.has('hms_find_reservation')
   );
 }
 
@@ -781,6 +781,9 @@ export async function promoteReadToolV2(input: {
   releaseRoot: string;
 }): Promise<HmsActiveRegistryV2> {
   const release = hmsPortfolioToolReleaseV2Schema.parse(input.release);
+  if (release.toolId === 'mail_read_artifact') {
+    throw new Error('mail_read_artifact is permanently excluded from active registry');
+  }
   await mkdir(input.releaseRoot, { recursive: true });
   const releasePath = join(input.releaseRoot, `${release.releaseId}.json`);
   try {
@@ -847,7 +850,7 @@ export async function promoteReadToolV2(input: {
 
 export async function rollbackReadToolV2(input: {
   path: string;
-  toolId: ReadToolId;
+  toolId: ActiveReadToolId;
 }): Promise<HmsActiveRegistryV2> {
   const current = await loadActiveReadRegistryV2(input.path);
   const activeId = current.active[input.toolId];

@@ -54,25 +54,111 @@ function assertNotAborted(signal: AbortSignal): void {
   }
 }
 
+/**
+ * Live OSRRAV.HDR.search often returns mixed literals:
+ * `{ "pageData": { values:{"availabilitydata":{...}}}}`
+ * (quoted pageData, unquoted values). extractOsressPageData JSON.parse fails.
+ * The `values` object itself uses quoted keys — brace-extract + JSON.parse.
+ */
+function extractOsrravValuesObject(text: string): Record<string, unknown> | null {
+  const markers = ['"values":', 'values:', "'values':"] as const;
+  for (const marker of markers) {
+    const idx = text.indexOf(marker);
+    if (idx < 0) continue;
+    const brace = text.indexOf('{', idx + marker.length - 1);
+    if (brace < 0) continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let quote = '';
+    let end = -1;
+    for (let j = brace; j < text.length; j++) {
+      const ch = text[j]!;
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === '\\') {
+          esc = true;
+          continue;
+        }
+        if (ch === quote) inStr = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inStr = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    try {
+      const parsed = JSON.parse(text.slice(brace, end + 1)) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* try next marker */
+    }
+  }
+  return null;
+}
+
 /** Parse Infor mixed object-literal / JSON search envelopes. */
 export function parseOsrravSearchEnvelope(text: string): Record<string, unknown> | null {
   const fromPageData = extractOsressPageData(text);
-  if (fromPageData) return fromPageData;
+  if (fromPageData) {
+    const values = fromPageData.values;
+    if (
+      values &&
+      typeof values === 'object' &&
+      (values as { availabilitydata?: unknown }).availabilitydata
+    ) {
+      return fromPageData;
+    }
+  }
   try {
     const parsed = JSON.parse(text.trim()) as Record<string, unknown>;
     if (parsed.pageData && typeof parsed.pageData === 'object') {
       return parsed.pageData as Record<string, unknown>;
     }
+    if (
+      parsed.values &&
+      typeof parsed.values === 'object' &&
+      (parsed.values as { availabilitydata?: unknown }).availabilitydata
+    ) {
+      return parsed;
+    }
     return parsed;
   } catch {
-    return null;
+    /* mixed literal fallthrough */
   }
+  const values = extractOsrravValuesObject(text);
+  if (values && values.availabilitydata) {
+    return { values };
+  }
+  return fromPageData;
 }
 
 function isoFromHmsDate(raw: unknown): string | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   const t = raw.trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
+  if (mdy) {
+    const mm = mdy[1]!.padStart(2, '0');
+    const dd = mdy[2]!.padStart(2, '0');
+    return `${mdy[3]}-${mm}-${dd}`;
+  }
   const m = /^(\d{2})-([A-Z]{3})-(\d{4})/i.exec(t);
   if (!m) return null;
   const months: Record<string, string> = {

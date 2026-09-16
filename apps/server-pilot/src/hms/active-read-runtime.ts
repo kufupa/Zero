@@ -14,14 +14,13 @@ import {
 import {
   FIND_RESERVATION_IMPL_V1,
   FIND_RESERVATION_IMPL_V2,
-  MAIL_ARTIFACT_IMPL_V1,
   QUOTE_STAY_IMPL_V1,
   assertHandlerIndexCovers,
   createReadToolHandler,
   listHandlerIndexEntries,
 } from './read-handler-index.js';
 import type { RequestPolicyManifest } from './contracts.js';
-import type { ReadToolId } from './read-tools.js';
+import type { ActiveReadToolId, ReadToolId } from './read-tools.js';
 import { access } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
@@ -49,11 +48,12 @@ function emptyState(): ActiveReadRuntimeState {
 }
 
 export function availableImplementationDigestsFromHandlerIndex(): Map<
-  ReadToolId,
+  ActiveReadToolId,
   ReadonlySet<string>
 > {
-  const map = new Map<ReadToolId, Set<string>>();
+  const map = new Map<ActiveReadToolId, Set<string>>();
   for (const entry of listHandlerIndexEntries()) {
+    if (entry.toolId === 'mail_read_artifact') continue;
     let set = map.get(entry.toolId);
     if (!set) {
       set = new Set();
@@ -65,7 +65,6 @@ export function availableImplementationDigestsFromHandlerIndex(): Map<
   for (const [toolId, digest] of [
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V1],
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V2],
-    ['mail_read_artifact', MAIL_ARTIFACT_IMPL_V1],
     ['hms_quote_stay', QUOTE_STAY_IMPL_V1],
   ] as const) {
     let set = map.get(toolId);
@@ -128,16 +127,7 @@ export async function loadWorkerActiveReadSet(input: {
   // be allowed to stand in for a release payload digest.
   for (const [, release] of loaded.releases) {
     if (release.evidenceKind === 'mail') {
-      createReadToolHandler(release, {
-        operationId: randomUUID(),
-        releaseId: release.releaseId,
-        grantPolicySha256: release.grantPolicySha256,
-        s3IdentitySha256: release.s3IdentitySha256,
-        runtimeFingerprintSha256: release.runtimeFingerprintSha256,
-        privateDigestKeyVersion: release.privateDigestKeyVersion,
-        sourceRevision: release.sourceRevision,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      });
+      throw new Error('excluded mail release cannot enter active worker runtime');
     }
   }
 

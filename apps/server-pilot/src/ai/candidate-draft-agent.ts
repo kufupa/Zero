@@ -85,7 +85,6 @@ export type CandidateToolId = keyof typeof candidateToolEffects;
 export const DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS: readonly CandidateToolId[] = [
   'hms_find_reservation',
   'hms_quote_stay',
-  'mail_read_artifact',
 ];
 
 export type CandidateToolEffect = (typeof candidateToolEffects)[keyof typeof candidateToolEffects];
@@ -305,6 +304,9 @@ export function createCandidateTools(
   const activeToolIds = session.activeToolIds ?? new Set(DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS);
 
   for (const toolId of activeToolIds) {
+    if (toolId === 'mail_read_artifact') {
+      throw new Error('mail_read_artifact is permanently excluded from active tools');
+    }
     if (!(toolId in candidateToolEffects)) {
       throw new Error(`unknown active tool id: ${toolId}`);
     }

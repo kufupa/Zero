@@ -29,10 +29,9 @@ describe('phase-b-doctor', () => {
     expect(quote?.discoveryPreflightCode).toBe('DISCOVERY_READY');
     const find = report.tools.find((t) => t.id === 'hms_find_reservation');
     expect(find?.discoveryPreflightCode).toBe('DISCOVERY_READY');
-    expect(find?.capabilityState).toBe('fixture_verified');
-    const mail = report.tools.find((t) => t.id === 'mail_read_artifact');
-    expect(mail?.discoveryPreflightCode).toBe('BLOCKED_MAIL_ARTIFACT_DISCOVERY');
-    expect(report.uniqueBlockerCodes).toContain('BLOCKED_MAIL_ARTIFACT_DISCOVERY');
+    expect(find?.capabilityState).toBe('live_verified');
+    expect(report.tools).not.toContainEqual(expect.objectContaining({ id: 'mail_read_artifact' }));
+    expect(report.uniqueBlockerCodes).not.toContain('BLOCKED_MAIL_ARTIFACT_DISCOVERY');
     expect(report.uniqueBlockerCodes).not.toContain('PHASE_B_BLOCKED');
   });
 
@@ -62,10 +61,10 @@ describe('phase-b-doctor', () => {
     expect(report.registryLoadState).toBe('ok');
     // Demotion-era: any snapshot-active tool flips decoupled false.
     expect(report.productionActiveReadDecoupled).toBe(false);
-    // Still fixture_verified in static contract rows — snapshot is activation only.
+    // Static live evidence remains visible; snapshot is still the activation authority.
     const find = report.tools.find((t) => t.id === 'hms_find_reservation');
-    expect(find?.capabilityState).toBe('fixture_verified');
-    expect(find?.discoveryDigestPresent).toBe(false);
+    expect(find?.capabilityState).toBe('live_verified');
+    expect(find?.discoveryDigestPresent).toBe(true);
     expect(find?.activeReleaseId).toBe(releaseId);
   });
 

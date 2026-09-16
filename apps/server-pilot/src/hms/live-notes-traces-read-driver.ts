@@ -137,6 +137,43 @@ export async function observeNotesTraces(
         ],
       }) as ReadResult<NotesTracesReadData>;
     }
+
+    const noteReason = projected.notesReasonCode;
+    return readResultSchema.parse({
+      toolId: 'hms_read_notes_traces',
+      schemaVersion: 'hms-notes/1',
+      status: 'manual_required',
+      data: projected.data,
+      completeness: 'unknown',
+      unavailableSections: [
+        { section: 'notes', reasonCode: noteReason },
+      ],
+      scopeRef: input.resourceRef,
+      evidence: [
+        {
+          evidenceRef,
+          sourceSystem: 'hms' as const,
+          sourceSurface: 'guest-stay-detail-notes',
+          requestBranchId: authorization.requestBranchId,
+          observedAt: observedAt.toISOString(),
+          sourceUpdatedAt: null,
+          expiresAt: expiresAt.toISOString(),
+          scopeVerified: true,
+          artifactRef: null,
+          sourceHash: createHash('sha256')
+            .update(`${projected.notesReasonCode}:masked-or-empty`)
+            .digest('hex'),
+        },
+      ],
+      page: { returnedCount: 0, hasMore: false, nextCursor: null },
+      issues: [
+        {
+          code: noteReason,
+          retryable: false,
+          safeNextAction: 'manual_review',
+        },
+      ],
+    }) as ReadResult<NotesTracesReadData>;
   }
 
   const data = {

@@ -13,19 +13,36 @@ const NOTE_FIELD_SPECS = [
 ] as const;
 
 const MAX_PERMITTED_TEXT = 2000;
+const MASKED_VALUES = new Set([
+  'protected',
+  'hidden',
+  'masked',
+  'redacted',
+  'not authorized',
+  'not authorised',
+]);
 
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/^ff_/, '').replace(/^filter_/, '');
 }
 
-function valueFor(dump: ReservationDetailDumpV1, key: string): string | null {
+type NoteValue =
+  | { state: 'absent' | 'empty' }
+  | { state: 'masked' }
+  | { state: 'value'; text: string };
+
+function valueFor(dump: ReservationDetailDumpV1, key: string): NoteValue {
   const present = new Set(dump.keys.map(normalizeKey));
-  if (!present.has(key)) return null;
+  if (!present.has(key)) return { state: 'absent' };
   const raw = dump.values?.[key] ?? dump.values?.[key.toLowerCase()];
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== 'string') return { state: 'empty' };
   const trimmed = raw.trim();
-  if (!trimmed) return null;
-  return trimmed.length > MAX_PERMITTED_TEXT ? trimmed.slice(0, MAX_PERMITTED_TEXT) : trimmed;
+  if (!trimmed) return { state: 'empty' };
+  if (MASKED_VALUES.has(trimmed.toLowerCase())) return { state: 'masked' };
+  return {
+    state: 'value',
+    text: trimmed.length > MAX_PERMITTED_TEXT ? trimmed.slice(0, MAX_PERMITTED_TEXT) : trimmed,
+  };
 }
 
 function knownFact(
@@ -67,6 +84,7 @@ export type ProjectedNotesFromDetail = {
   claimKeys: string[];
   tracesStatus: 'unavailable';
   tracesReasonCode: 'SURFACE_UNPROVEN';
+  notesReasonCode: 'SOURCE_UNAVAILABLE' | 'POLICY_UNAPPROVED';
 };
 
 /** Map dump-proved reservation/cancellation notes; never invent absent keys. */
@@ -84,11 +102,17 @@ export function projectNotesFromDetailDump(
   const expiresAt = input.expiresAt.toISOString();
   const items: NotesTraceItem[] = [];
   const claimKeys: string[] = [];
+  let sawMasked = false;
 
   for (const spec of NOTE_FIELD_SPECS) {
     if (items.length >= input.limit) break;
-    const text = valueFor(dump, spec.key);
-    if (text == null) continue;
+    const value = valueFor(dump, spec.key);
+    if (value.state === 'masked') {
+      sawMasked = true;
+      continue;
+    }
+    if (value.state !== 'value') continue;
+    const text = value.text;
     const noteRef = `note:${spec.noteRefSuffix}:${createHash('sha256')
       .update(`${input.resourceRef}|${spec.key}|${text}`)
       .digest('hex')
@@ -117,10 +141,10 @@ export function projectNotesFromDetailDump(
         notes: {
           state: 'unavailable',
           data: null,
-          reasonCode: 'SOURCE_UNAVAILABLE',
+          reasonCode: sawMasked ? 'POLICY_UNAPPROVED' : 'SOURCE_UNAVAILABLE',
           issues: [
             {
-              code: 'SOURCE_UNAVAILABLE',
+              code: sawMasked ? 'POLICY_UNAPPROVED' : 'SOURCE_UNAVAILABLE',
               retryable: false,
               safeNextAction: 'manual_review',
             },
@@ -130,6 +154,7 @@ export function projectNotesFromDetailDump(
       claimKeys: [],
       tracesStatus: 'unavailable',
       tracesReasonCode: 'SURFACE_UNPROVEN',
+      notesReasonCode: sawMasked ? 'POLICY_UNAPPROVED' : 'SOURCE_UNAVAILABLE',
     };
   }
 
@@ -143,5 +168,6 @@ export function projectNotesFromDetailDump(
     claimKeys,
     tracesStatus: 'unavailable',
     tracesReasonCode: 'SURFACE_UNPROVEN',
+    notesReasonCode: sawMasked ? 'POLICY_UNAPPROVED' : 'SOURCE_UNAVAILABLE',
   };
 }

@@ -101,7 +101,6 @@ export function followupToToolId(kind: ReservationFollowupKind): ReadToolId {
 /** Canonical release order; ablation membership uses promoted subset only. */
 export const PORTFOLIO_RELEASE_ORDER: readonly ReadToolId[] = [
   'hms_find_reservation',
-  'mail_read_artifact',
   'hms_quote_stay',
   'hms_list_documents',
   'hms_sent_email_audit',
@@ -199,7 +198,6 @@ export function plannedToolIds(plan: CandidateReadPlan): ReadToolId[] {
       ];
     case 'artifact_reservation':
       return [
-        'mail_read_artifact',
         'hms_find_reservation',
         ...plan.followups.map(followupToToolId),
       ];
@@ -434,13 +432,6 @@ export function executableReadStepsForPlan(
 
   switch (plan.kind) {
     case 'artifact_reservation': {
-      let artifactSteps = 0;
-      for (const [id, binding] of candidates) {
-        if (binding.toolId !== 'mail_read_artifact') continue;
-        if (artifactSteps >= Math.min(3, plan.artifacts)) break;
-        if (!pushStep('mail_read_artifact', id, null)) break;
-        artifactSteps += 1;
-      }
       const findId = findCandidate('hms_find_reservation');
       if (findId) {
         const branch = resolveBranch('hms_find_reservation');
@@ -558,18 +549,6 @@ export function buildPlanScopedCandidateBindings(input: {
       parentEvidenceId: null,
       requesterAuthorizationId: input.requesterAuthorizationId,
     });
-  }
-  const mailRelease = input.activeReleases.get('mail_read_artifact');
-  if (mailRelease && input.authorizedAttachmentIds) {
-    for (const attachmentId of input.authorizedAttachmentIds) {
-      out.set(attachmentId, {
-        candidateId: attachmentId,
-        toolId: 'mail_read_artifact',
-        allowedRequestBranchIds: [],
-        parentEvidenceId: null,
-        requesterAuthorizationId: input.requesterAuthorizationId,
-      });
-    }
   }
   return out;
 }

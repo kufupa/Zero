@@ -14,7 +14,6 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const READ_TOOL_IDS = [
-  'mail_read_artifact',
   'hms_find_reservation',
   'hms_quote_stay',
   'hms_list_documents',
@@ -25,7 +24,25 @@ export const READ_TOOL_IDS = [
   'hms_event_read',
 ] as const;
 
-export type ReadToolId = (typeof READ_TOOL_IDS)[number];
+/**
+ * Active/model-facing IDs intentionally exclude the two permanently excluded
+ * sources.  The legacy mail ID remains typed below only so old internal
+ * release/artifact adapters can be read or retired without reintroducing it
+ * into active enumeration, suggestions, or promotion.
+ */
+export type ActiveReadToolId = (typeof READ_TOOL_IDS)[number];
+export type LegacyExcludedReadToolId = 'mail_read_artifact';
+export type ReadToolId = ActiveReadToolId | LegacyExcludedReadToolId;
+
+/** Entire user-approved PMS/channel read scope, including branches kept out of
+ * the Phase-B promotion registry until their own live proof exists. */
+export const INCLUDED_READ_TOOL_IDS = [
+  ...READ_TOOL_IDS,
+  'hms_read_reservation',
+  'hms_read_notes_traces',
+  'mail_parse_channel_payload',
+] as const;
+export type IncludedReadToolId = (typeof INCLUDED_READ_TOOL_IDS)[number];
 
 /**
  * U15 normal read-service branches are intentionally tracked separately from
@@ -208,7 +225,7 @@ export type HmsReadToolDefinition = ReadToolDefinitionBase<HmsReadToolId> & {
   requestBranches: readonly RequestBranchDefinition[];
 };
 
-export type MailReadToolDefinition = ReadToolDefinitionBase<'mail_read_artifact'> & {
+export type MailReadToolDefinition = ReadToolDefinitionBase<LegacyExcludedReadToolId> & {
   privacyClass: 'mail_server_only';
   discoveryOperationIds?: never;
   requestBranches?: never;
@@ -288,9 +305,8 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     promotionEvidence: {
       fixture: true,
-      // No digests yet — flags must not claim discovery/live until real evidence returns.
-      discovery: false,
-      live: false,
+      discovery: true,
+      live: true,
       shadow: false,
     },
     // Fixture contract only. Discovery/live evidence must come from immutable
@@ -298,6 +314,9 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     evidenceRefs: {
       // Fixture digest = live Guest Stay row fingerprint manifestSha256 (valuesCaptured:false).
       fixtureDigest: '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+      // Discovery = same OSRESS search fingerprint (not GOLD-EMAIL-TOOL-CATALOGUE.md).
+      discoveryDigest: '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+      liveProofDigest: '47a0121bd941d6508d924f3336a741b8eea4e70ec146d62d5635fae7e460a389',
     },
     observationSchema: opaqueObservationSchema,
     claimKinds: ['reservation_summary'],
@@ -347,12 +366,16 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     promotionEvidence: {
       fixture: true,
-      discovery: false,
+      discovery: true,
+      // A parser/probe digest is not production quote authority. The worker
+      // currently fails closed until a trusted current-rate reference exists.
       live: false,
       shadow: false,
     },
     evidenceRefs: {
       fixtureDigest: '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
+      // Discovery = quote parser/fixture contract (not GOLD-EMAIL-TOOL-CATALOGUE.md).
+      discoveryDigest: '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
     },
     observationSchema: quoteStayReadDataSchema,
     claimKinds: ['quote_stay_summary'],
@@ -468,13 +491,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     promotionEvidence: {
       fixture: true,
-      discovery: false,
+      discovery: true,
+      // Own-conf burn: FOL/HDR expose balance keys but values are role-masked
+      // ("protected"/"hidden") — money payload gate fails. Stay fail-closed until
+      // a role that returns signed money is proven (invent-forbid on masked values).
       live: false,
       shadow: false,
     },
     evidenceRefs: {
       fixtureDigest: '716018585f130515af72a506721849c0f1e5e22ccf521241136e03f96e653b65',
       discoveryDigest: '2a8ffeaecb91a5c59ee17b371e3154aab16c07628fd42399a891ce9c8c60bc82',
+      // Own-conf digest proves FOL open without money (uniqueOk money=0).
     },
     observationSchema: folioReadDataSchema,
     claimKinds: ['folio_deposit_summary'],
@@ -612,7 +639,12 @@ export function listReadToolIds(): ReadToolId[] {
 export function assertReadToolRegistrySealed(
   registry: Readonly<Record<string, ReadToolDefinition>>,
 ): void {
-  const keys = Object.keys(registry).sort();
+  // The excluded mail adapter may remain in the legacy typed map for
+  // rollback/artifact readers, but it is never part of the active registry
+  // fingerprint or model-facing enumeration.
+  const keys = Object.keys(registry)
+    .filter((key) => key !== 'mail_read_artifact')
+    .sort();
   const expected = [...READ_TOOL_IDS].sort();
   if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
     throw new Error(
@@ -623,12 +655,6 @@ export function assertReadToolRegistrySealed(
     const tool = registry[id];
     if (!tool || tool.id !== id || tool.effect !== 'read') {
       throw new Error(`READ_TOOLS entry invalid for ${id}`);
-    }
-    if (tool.id === 'mail_read_artifact') {
-      if ('discoveryOperationIds' in tool || 'requestBranches' in tool) {
-        throw new Error('mail_read_artifact cannot declare HMS request contracts');
-      }
-      continue;
     }
     if (
       tool.privacyClass !== 'minimized_hms' ||
@@ -652,7 +678,7 @@ export function assertReadToolRegistrySealed(
  * promotionEvidence.live may enter the worker allowlist.
  * Shadow registry requires shadow_enabled separately.
  */
-export function isProductionActiveReadTool(id: ReadToolId): boolean {
+export function isProductionActiveReadTool(id: ReadToolId | LegacyExcludedReadToolId): boolean {
   const tool = READ_TOOLS[id];
   const state = deriveCapabilityState(tool.evidenceRefs);
   return tool.promotionEvidence.live && (state === 'live_verified' || state === 'shadow_enabled');
@@ -660,6 +686,28 @@ export function isProductionActiveReadTool(id: ReadToolId): boolean {
 
 export function productionActiveReadToolIds(): ReadToolId[] {
   return listReadToolIds().filter(isProductionActiveReadTool);
+}
+
+/**
+ * Context-read allowlist (A1 etc.). Separate from Phase-B READ_TOOL_IDS.
+ * Live when fixture+discovery+liveProofDigest present on CONTEXT_READ_EVIDENCE.
+ */
+export const CONTEXT_READ_EVIDENCE: Readonly<
+  Record<ReservationContextToolId, CapabilityEvidenceRefs>
+> = {
+  hms_read_reservation: {
+    // Discovery-only: old HDR soft passes did not prove normal worker wiring
+    // or complete booked fields, so this remains inactive.
+    fixtureDigest: '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+    discoveryDigest: '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+  },
+};
+
+export function productionActiveReservationContextToolIds(): ReservationContextToolId[] {
+  return RESERVATION_CONTEXT_TOOL_IDS.filter((id) => {
+    const state = deriveCapabilityState(CONTEXT_READ_EVIDENCE[id]);
+    return state === 'live_verified' || state === 'shadow_enabled';
+  });
 }
 
 export function deriveCapabilityState(refs: CapabilityEvidenceRefs): CapabilityState {
@@ -671,7 +719,7 @@ export function deriveCapabilityState(refs: CapabilityEvidenceRefs): CapabilityS
   return 'shadow_enabled';
 }
 
-export function capabilityStateFor(id: ReadToolId): CapabilityState {
+export function capabilityStateFor(id: ReadToolId | LegacyExcludedReadToolId): CapabilityState {
   return deriveCapabilityState(READ_TOOLS[id].evidenceRefs);
 }
 

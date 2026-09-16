@@ -304,6 +304,31 @@ describe('live quote stay parser', () => {
     ).toHaveLength(2);
   });
 
+  it('parses live mixed pageData with unquoted values key', () => {
+    const c = candidate();
+    // Shape observed on HRCEN OSRRAV.HDR.search (quoted pageData, bare values:).
+    const mixed = `{
+
+"pageData": {
+	values:{"isPopup":null,"pagemode":"display","availabilitydata":{"uoc":"ZAR","roomTypeInvArray":[{"roomTypeCode":"DLXQN","ratePlanInvArray":[{"ratePlanCode":"BAR","uoc":"ZAR","ratePlanDailyInvArray":[{"date":"09/15/2026","numOfAvailable":2,"roomRate":1100,"combNumOfAvailable":2}]}],"roomTypeDailyInvArray":[{"date":"09/15/2026","numOfAvailable":2}]}]}}
+}}`;
+    const parsed = parseLiveQuoteAvailability(
+      mixed,
+      c,
+      new Date('2026-08-06T00:00:00.000Z'),
+    );
+    expect(parsed.envelopeRecognized).toBe(true);
+    expect(parsed.rows.length).toBeGreaterThanOrEqual(1);
+    expect(parsed.rows[0]).toMatchObject({
+      date: '2026-09-15',
+      roomType: 'DLXQN',
+      ratePlan: 'BAR',
+      availableCount: 2,
+      displayedAmount: '1100.00',
+      currency: 'ZAR',
+    });
+  });
+
   it('rejects fixture HTML fallback', () => {
     const c = candidate();
     expect(() =>

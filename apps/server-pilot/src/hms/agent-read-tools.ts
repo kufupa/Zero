@@ -4,25 +4,10 @@
  * executor; it never accepts URLs, selectors, scripts, or PMS record IDs.
  */
 import {
-  PROPERTY_KNOWLEDGE_CONTRACT_VERSION,
-  PROPERTY_KNOWLEDGE_TOOL_ID,
-  propertyKnowledgeReadRequestSchema,
-  propertyKnowledgeReadResultSchema,
-  type PropertyKnowledgeAudience,
-  type PropertyKnowledgeReadResult,
-} from '../ai/property-knowledge-contract.js';
-import {
-  readPropertyKnowledge,
-  type PropertyKnowledgeReader,
-  type PropertyKnowledgeReadContextInput,
-} from '../ai/property-knowledge-read.js';
-import {
   executeRead,
-  readExecutionContextSchema,
   type ReadExecutionContext,
 } from './read-service.js';
 import { reservationContextRequestSchema } from './reservation-context-contract.js';
-import { assertReadRequesterScope } from './requester-authorization.js';
 import { quoteRequestSchema } from './quote-request-normalization.js';
 import { readRefSchema } from './read-service-contracts.js';
 import { z } from 'zod';
@@ -38,45 +23,35 @@ export const hmsQuoteStayInputSchema = z
     detail: z.enum(['summary', 'detail']).default('summary'),
   })
   .strict();
-export const propertyReadKnowledgeInputSchema = propertyKnowledgeReadRequestSchema;
 export const agentReadRequestSchema = z.union([
   hmsFindReservationInputSchema,
   hmsReadReservationInputSchema,
   hmsQuoteStayInputSchema,
-  propertyReadKnowledgeInputSchema,
 ]);
 
 export type AgentReadRequest =
   | z.infer<typeof hmsFindReservationInputSchema>
   | z.infer<typeof hmsReadReservationInputSchema>
-  | z.infer<typeof hmsQuoteStayInputSchema>
-  | z.infer<typeof propertyReadKnowledgeInputSchema>;
+  | z.infer<typeof hmsQuoteStayInputSchema>;
 
 export type AgentReadToolResult =
-  | Awaited<ReturnType<typeof executeRead>>
-  | PropertyKnowledgeReadResult;
+  Awaited<ReturnType<typeof executeRead>>;
 
 export type AgentReadTool = {
   id:
     | 'hms_find_reservation'
     | 'hms_read_reservation'
-    | 'hms_quote_stay'
-    | 'property_read_knowledge';
+    | 'hms_quote_stay';
   description: string;
   inputSchema: z.ZodTypeAny;
   execute: (input: AgentReadRequest) => Promise<AgentReadToolResult>;
 };
 
-export type AgentReadToolsOptions = {
-  /** Server-wired local/storage reader; never constructed from model input. */
-  propertyKnowledgeReader?: PropertyKnowledgeReader;
-  /** @deprecated Disclosure is fixed to customer until a trusted recipient context exists. */
-  propertyKnowledgeAudience?: PropertyKnowledgeAudience;
-};
+export type AgentReadToolsOptions = Record<never, never>;
 
 export function createAgentReadTools(
   context: ReadExecutionContext,
-  options: AgentReadToolsOptions = {},
+  _options: AgentReadToolsOptions = {},
 ): Readonly<Record<string, AgentReadTool>> {
   return {
     hms_find_reservation: {
@@ -98,19 +73,6 @@ export function createAgentReadTools(
         'Read trusted nightly quote facts from a producer-minted opaque request reference.',
       inputSchema: hmsQuoteStayInputSchema,
       execute: (input) => hmsQuoteStay(context, hmsQuoteStayInputSchema.parse(input)),
-    },
-    property_read_knowledge: {
-      id: 'property_read_knowledge',
-      description:
-        'Read current approved generic property knowledge from a server-authorized local or attachment source; it does not replace reservation-specific booked policy.',
-      inputSchema: propertyReadKnowledgeInputSchema,
-      execute: (input) =>
-        propertyReadKnowledge(
-          context,
-          options.propertyKnowledgeReader,
-          propertyReadKnowledgeInputSchema.parse(input),
-          'customer',
-        ),
     },
   };
 }
@@ -144,69 +106,4 @@ export async function hmsQuoteStay(
     quoteRequest: quoteRequestSchema.parse(quoteRequest),
     detail: parsed.detail,
   });
-}
-
-/**
- * Thin model-free adapter for the non-PMS property knowledge reader.  The
- * property scope comes from the trusted execution context; callers cannot
- * provide a property code, document ref, URL, locator or role claim.
- */
-export async function propertyReadKnowledge(
-  context: ReadExecutionContext,
-  reader: PropertyKnowledgeReader | undefined,
-  input: z.input<typeof propertyReadKnowledgeInputSchema>,
-  audience: PropertyKnowledgeAudience = 'customer',
-): Promise<PropertyKnowledgeReadResult> {
-  const parsed = propertyReadKnowledgeInputSchema.parse(input);
-  // This model-free tool still runs on the normal server-owned read boundary:
-  // validate the closed context, requester/current-app proof, abort state and
-  // one budget unit. HMS admission/capture binding is intentionally not
-  // invented here because this property source is not a PMS read and has no
-  // durable capture path.
-  readExecutionContextSchema.parse(context);
-  const now = context.now();
-  // The legacy audience argument is intentionally ignored: disclosure is not
-  // a role claim, and a model-facing/factory caller cannot self-select staff.
-  void audience;
-  assertReadRequesterScope({
-    requester: context.requester,
-    context: {
-      transportId: context.transportId,
-      threadId: context.threadId,
-      triggerMessageId: context.triggerMessageId,
-    },
-    now,
-    currentAppAccessProof: context.currentAppAccessProof,
-    requireCurrentAppAccess: true,
-  });
-  if (context.signal.aborted) {
-    throw Object.assign(new Error('read was aborted'), { code: 'READ_ABORTED' });
-  }
-  if (context.budget.total >= context.budget.limit) {
-    throw Object.assign(new Error('read budget exhausted'), { code: 'READ_BUDGET_EXCEEDED' });
-  }
-  context.budget.total += 1;
-  if (!reader) {
-    return propertyKnowledgeReadResultSchema.parse({
-      toolId: PROPERTY_KNOWLEDGE_TOOL_ID,
-      schemaVersion: PROPERTY_KNOWLEDGE_CONTRACT_VERSION,
-      status: 'unavailable',
-      scopeRef: context.propertyCode,
-      data: null,
-      evidence: [],
-      issues: [
-        {
-          code: 'SOURCE_UNAVAILABLE',
-          detail: 'property knowledge reader is not server-configured',
-        },
-      ],
-    });
-  }
-  const readerContext: PropertyKnowledgeReadContextInput = {
-    propertyRef: context.propertyCode,
-    audience: 'customer',
-    now,
-    signal: context.signal,
-  };
-  return readPropertyKnowledge(reader, parsed, readerContext);
 }

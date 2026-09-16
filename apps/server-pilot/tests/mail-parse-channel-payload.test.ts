@@ -23,12 +23,32 @@ import { readMailParseChannelPayload } from '../src/mail/parse-channel-payload-r
 const here = fileURLToPath(new URL('.', import.meta.url));
 const webbedsFixturePath = join(here, 'fixtures/channel-fw-webbeds-synthetic.txt');
 const webbedsFixtureBody = readFileSync(webbedsFixturePath);
+const ratetigerFixturePath = join(here, 'fixtures/channel-fw-ratetiger-synthetic.txt');
+const ratetigerFixtureBody = readFileSync(ratetigerFixturePath);
+const synxisFixturePath = join(here, 'fixtures/channel-fw-synxis-synthetic.txt');
+const synxisFixtureBody = readFileSync(synxisFixturePath);
 
 const WEBBEDS_ORACLE = channelPayloadDataSchema.parse({
   channel: 'webbeds',
   externalRef: 'WB-TEST-12345',
   stayDates: { arrival: '2026-10-15', departure: '2026-10-18' },
   guestLabel: 'TESTGUEST, Sample',
+  cardHandleAbsent: true,
+});
+
+const RATETIGER_ORACLE = channelPayloadDataSchema.parse({
+  channel: 'ratetiger',
+  externalRef: 'RT-TEST-99881',
+  stayDates: { arrival: '2026-11-01', departure: '2026-11-04' },
+  guestLabel: 'SAMPLEGUEST, RateTiger',
+  cardHandleAbsent: true,
+});
+
+const SYNXIS_ORACLE = channelPayloadDataSchema.parse({
+  channel: 'synxis',
+  externalRef: 'SYX-TEST-55442',
+  stayDates: { arrival: '2026-12-15', departure: '2026-12-18' },
+  guestLabel: 'SYNTEST, Guest',
   cardHandleAbsent: true,
 });
 
@@ -42,6 +62,20 @@ describe('parseChannelPayloadFromText', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.data).toEqual(WEBBEDS_ORACLE);
+  });
+
+  it('parses synthetic RateTiger channel_fw forward', () => {
+    const outcome = parseChannelPayloadFromText(ratetigerFixtureBody.toString('utf8'));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.data).toEqual(RATETIGER_ORACLE);
+  });
+
+  it('parses synthetic SynXis channel_fw forward (DMY dates)', () => {
+    const outcome = parseChannelPayloadFromText(synxisFixtureBody.toString('utf8'));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.data).toEqual(SYNXIS_ORACLE);
   });
 
   it('extractChannelQuotedBlock keeps OTA lines after human cover', () => {
@@ -108,5 +142,18 @@ describe('mail_parse_channel_payload compare (Wave A11 fixture)', () => {
     expect(compare.toolId).toBe('mail_parse_channel_payload');
     expect(compare.allRequiredPass).toBe(true);
     expect(compare.rows.every((row) => !row.required || row.pass)).toBe(true);
+  });
+
+  it('compare.v1 all-required-pass for RateTiger + SynXis fixtures', () => {
+    for (const [body, oracle] of [
+      [ratetigerFixtureBody, RATETIGER_ORACLE],
+      [synxisFixtureBody, SYNXIS_ORACLE],
+    ] as const) {
+      const parsed = parseChannelPayloadFromBytes(body);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      const compare = compareMailChannelPayload(oracle, parsed.data);
+      expect(compare.allRequiredPass).toBe(true);
+    }
   });
 });

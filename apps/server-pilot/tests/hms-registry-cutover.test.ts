@@ -129,8 +129,10 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
     await expect(loadActiveReadRegistryV2(join(root, 'bad.json'))).rejects.toThrow();
   });
 
-  it('fixture constants cannot activate production without registry', () => {
-    expect(productionActiveReadToolIds()).toEqual([]);
+  it('fixture constants alone do not imply full registry cutover', () => {
+    expect(productionActiveReadToolIds().sort()).toEqual(
+      ['hms_find_reservation'].sort(),
+    );
     expect(
       isRegistryCutoverComplete({
         activeToolIds: new Set(),
@@ -842,10 +844,10 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
     expect(IncompleteRestoreError).toBeTruthy();
   });
 
-  it('cutover complete only when find+mail seeds and handler path active', () => {
+  it('cutover complete when the active find seed and handler path are present', () => {
     expect(
       isRegistryCutoverComplete({
-        activeToolIds: new Set(['hms_find_reservation', 'mail_read_artifact']),
+        activeToolIds: new Set(['hms_find_reservation']),
         handlerPathActive: true,
       }),
     ).toBe(true);
@@ -854,6 +856,6 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
         activeToolIds: new Set(['hms_find_reservation']),
         handlerPathActive: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

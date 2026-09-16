@@ -147,4 +147,55 @@ describe('U8 reservation context facade', () => {
     expect(result.data?.matches.every((match) => match.label.data === 'reservation match')).toBe(true);
     expect(result.data?.matches.some((match) => match.reservationRef)).toBe(false);
   });
+
+  it('unique match projects composed guestName onto Match label (never sentinel)', async () => {
+    const facade = createReservationContextFacade({
+      now: () => now,
+      lookup: async () => ({
+        status: 'matched' as const,
+        row: {
+          confirmationNumber: 'CONF-100',
+          externalReference: null,
+          guestName: 'Example, Guest',
+          arrivalDate: '2026-09-10',
+          departureDate: '2026-09-12',
+          reservationStatus: 'Confirmed',
+          roomType: null,
+          ratePlan: null,
+        },
+      }),
+      readContext: vi.fn(),
+    });
+    const found = await facade.findReservation(lookup());
+    expect(found.status).toBe('ok');
+    const match = found.data?.matches[0];
+    expect(match?.label.state).toBe('known');
+    expect(match?.label.data).toBe('Example, Guest');
+    expect(match?.label.data).not.toBe('reservation match');
+    expect(match?.roomType.state).not.toBe('known');
+  });
+
+  it('unique match rejects numeric sentinel guestName as Match label', async () => {
+    const facade = createReservationContextFacade({
+      now: () => now,
+      lookup: async () => ({
+        status: 'matched' as const,
+        row: {
+          confirmationNumber: 'CONF-100',
+          externalReference: null,
+          guestName: '-1',
+          arrivalDate: '2026-09-10',
+          departureDate: '2026-09-12',
+          reservationStatus: 'Confirmed',
+          roomType: 'STD',
+          ratePlan: null,
+        },
+      }),
+      readContext: vi.fn(),
+    });
+    const found = await facade.findReservation(lookup());
+    const match = found.data?.matches[0];
+    expect(match?.label.state).not.toBe('known');
+    expect(match?.label.data).not.toBe('-1');
+  });
 });
