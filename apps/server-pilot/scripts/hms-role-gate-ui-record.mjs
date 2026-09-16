@@ -178,6 +178,12 @@ async function openGuestStay(page, confirmation) {
     await page.waitForTimeout(8_000);
     attempts.push({ name: 'leaf-row-dblclick', state: await guestStayState(page) });
   }
+  if (attempts.length && !attempts.at(-1).state.hasSearch) {
+    await leaf.focus().catch(() => undefined);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(8_000);
+    attempts.push({ name: 'leaf-row-enter', state: await guestStayState(page) });
+  }
   if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
     process.stdout.write(`HMS_ROLE_GATE guestStayAttempts=${JSON.stringify(attempts)}\n`);
   }
@@ -309,6 +315,17 @@ async function main() {
     return route.continue();
   });
   const page = await context.newPage();
+  const networkTrace = [];
+  page.on('request', (request) => {
+    try {
+      const url = new URL(request.url());
+      if (url.origin !== origin) return;
+      const type = request.resourceType();
+      if (type === 'document' || type === 'xhr' || type === 'fetch' || request.method() !== 'GET') {
+        networkTrace.push({ method: request.method(), type, path: url.pathname.slice(0, 160) });
+      }
+    } catch { /* ignore malformed/non-http requests */ }
+  });
   let summary = null;
   let debug = undefined;
   try {
@@ -335,7 +352,11 @@ async function main() {
     await page.waitForTimeout(12_000);
     summary = await screenSummary(page);
     if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
-      debug = { before: debug, after: await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']) };
+      debug = {
+        before: debug,
+        after: await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']),
+        network: networkTrace.slice(-120),
+      };
     }
   } catch (error) {
     const failureScreen = await screenSummary(page).catch(() => null);
