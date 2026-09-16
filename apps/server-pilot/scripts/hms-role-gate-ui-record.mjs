@@ -142,7 +142,22 @@ async function screenSummary(page) {
 
 async function visibleLabelDebug(page, labels) {
   if (process.env.HMS_ROLE_GATE_DEBUG !== '1') return undefined;
-  return page.evaluate((wanted) => wanted.map((label) => ({
+  return page.evaluate((wanted) => ({
+    viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
+    components: [...(window.Ext?.ComponentQuery?.query('textfield,field,treepanel,gridpanel,button,menu') || [])]
+      .slice(0, 80)
+      .map((item) => ({
+        itemId: String(item.itemId || '').slice(0, 80),
+        name: String(item.name || '').slice(0, 80),
+        text: String(item.text || item.fieldLabel || item.title || '').slice(0, 120),
+        hidden: Boolean(item.hidden),
+        rendered: Boolean(item.rendered),
+        x: Number(item.getX?.() ?? item.el?.getX?.() ?? 0),
+        y: Number(item.getY?.() ?? item.el?.getY?.() ?? 0),
+        width: Number(item.getWidth?.() ?? item.el?.getWidth?.() ?? 0),
+        height: Number(item.getHeight?.() ?? item.el?.getHeight?.() ?? 0),
+      })),
+    labels: wanted.map((label) => ({
     label,
     matches: [...document.querySelectorAll('*')]
       .filter((node) => (node.textContent || '').trim() === label)
@@ -163,7 +178,8 @@ async function visibleLabelDebug(page, labels) {
           outer: node.outerHTML.slice(0, 500),
         };
       }),
-  })), labels);
+    })),
+  }), labels);
 }
 
 async function main() {
