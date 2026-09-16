@@ -2739,6 +2739,12 @@ describe('HMS browser audit capture order', () => {
           const context = await browser.newContext(opts);
           const nativeClose = context.close.bind(context);
           if (isAuth) {
+            const nativeStorageState = context.storageState.bind(context);
+            context.storageState = async () => {
+              events.push('auth:storage-state');
+              operationAbort.abort();
+              return nativeStorageState();
+            };
             context.close = async () => {
               events.push('auth:close');
               markAuthCloseStarted();

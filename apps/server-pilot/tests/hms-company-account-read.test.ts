@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import { renderClaim, type ToolResult } from '../src/ai/draft-evidence.js';
+import { type ToolResult } from '../src/ai/draft-evidence.js';
 import {
   COMPANY_ACCOUNT_READ_MAX_BYTES,
   COMPANY_ACCOUNT_READ_MAX_DURATION_MS,
@@ -284,9 +284,9 @@ describe('company billing claims', () => {
       toolResult(parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
     );
-    expect(claims).toHaveLength(1);
-    expect(claims[0]?.kind).toBe('company_billing_summary');
-    expect(renderClaim(claims[0]!)).toContain('Company billing summary');
+    // Fixture observations do not carry separately issued requester authority;
+    // the closed claim envelope must therefore emit no claim.
+    expect(claims).toEqual([]);
   });
 
   it.each(['reservation_guest', 'third_party', 'unknown'] as const)(

@@ -431,7 +431,7 @@ describe('claim-safe candidate agent', () => {
     const bundle = createCandidateTools(session);
     assertToolRegistrySealed(bundle.tools);
     expect(Object.keys(bundle.tools).sort()).toEqual(
-      ['hms_find_reservation', 'hms_quote_stay', 'mail_read_artifact'].sort(),
+      ['hms_find_reservation', 'hms_quote_stay'].sort(),
     );
   });
 
@@ -495,15 +495,11 @@ describe('claim-safe candidate agent', () => {
     expect(claimsFromToolResult(result, now, null)).toEqual([]);
   });
 
-  it('fixture session may activate all three handlers; production allowlist is narrower', () => {
+  it('permanently excluded mail artifact cannot be activated', () => {
     const fixture = createMockCandidateSession({
       activeToolIds: new Set(['hms_find_reservation', 'hms_quote_stay', 'mail_read_artifact']),
     });
-    expect(Object.keys(createCandidateTools(fixture).tools).sort()).toEqual([
-      'hms_find_reservation',
-      'hms_quote_stay',
-      'mail_read_artifact',
-    ]);
+    expect(() => createCandidateTools(fixture)).toThrow(/permanently excluded/i);
 
     const production = createMockCandidateSession({
       activeToolIds: new Set(['hms_find_reservation']),
@@ -887,12 +883,7 @@ describe('claim-safe candidate agent', () => {
       }),
     ).toThrow(/unexpected tool/i);
 
-    await expect(
-      bundle.tools.mail_read_artifact.execute!(
-        { attachmentId: 'att-injected-by-email' },
-        { abortSignal: new AbortController().signal },
-      ),
-    ).rejects.toThrow(/unauthorized attachment/i);
+    expect(bundle.tools).not.toHaveProperty('mail_read_artifact');
 
     // Opaque map still required even if injection text mentions CONF.
     void injection;
@@ -1177,7 +1168,8 @@ describe('claim-safe candidate agent', () => {
     expect(missing.outcome).toBe('insufficient_evidence');
     expect(missing.metrics.planScopedGateMissing).toBe(true);
 
-    // Empty releases → production legacy allowlist empty (cutover pending) → no I/O.
+    // Empty releases use the current production allowlist; the proven find
+    // lane may execute without plan-scoped releases.
     let legacyCalls = 0;
     const legacy = await runClaimSafeCandidateDraft({
       session: createMockCandidateSession({
@@ -1200,8 +1192,8 @@ describe('claim-safe candidate agent', () => {
         closingTemplate: 'invite_questions',
       }),
     });
-    expect(legacyCalls).toBe(0);
-    expect(legacy.outcome).toBe('insufficient_evidence');
+    expect(legacyCalls).toBe(1);
+    expect(legacy.outcome).toBe('candidate');
     expect(legacy.metrics.executablePlanStatus).toBeNull();
     expect(legacy.metrics.planScopedGateMissing).toBeUndefined();
   });

@@ -56,7 +56,10 @@ describe('hms live proof Phase A contracts', () => {
     expect(proof).toMatch(/action !== 'proof-video'/);
     expect(proof).toMatch(/runProofVideo/);
     expect(proof).toMatch(/createCandidateTools/);
-    expect(proof).toMatch(/createProductionHmsProofRuntime/);
+    expect(proof).toMatch(/createPhaseAProofRuntime/);
+    expect(
+      readFileSync(join(here, '..', 'src', 'ops', 'hms-proof-composition.ts'), 'utf8'),
+    ).toMatch(/createProductionHmsProofRuntime/);
     expect(
       readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8'),
     ).not.toMatch(/createProductionHmsProofRuntime|createHmsLiveProofRuntime/);

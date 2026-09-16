@@ -70,7 +70,6 @@ export const RCA_DOSSIER_REQUIRED_TOOL_IDS = [
   'hms_company_account_read',
   'hms_group_block_read',
   'hms_event_read',
-  'mail_read_artifact',
 ] as const satisfies readonly ReadToolId[];
 
 export type RcaDossierRequiredToolId =

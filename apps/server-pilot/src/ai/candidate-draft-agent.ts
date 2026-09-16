@@ -282,7 +282,8 @@ function sessionHandlerPresent(session: CandidateToolSession, toolId: CandidateT
 /**
  * Register strict read tools. Effects are code-owned (all `read`).
  * Inputs accept opaque IDs only — no raw property/guest/S3 fields.
- * Registers only `session.activeToolIds` (default: find/quote/artifact).
+ * Registers only `session.activeToolIds` (default: find/quote). The permanently
+ * excluded mail-artifact adapter remains legacy-only and cannot be activated.
  */
 export type ReserveReadAttempt = (
   fence: AiRunFence,
@@ -899,7 +900,10 @@ export async function runClaimSafeCandidateDraft(input: {
 
     const availableClaimIds = [...bundle.claims.keys()];
     const claimSummaries = bundle.evidenceResults.map((result) =>
-      minimizeToolResultForModel(result, claimsFromToolResult(result, input.now)),
+      minimizeToolResultForModel(
+        result,
+        claimsFromToolResult(result, input.now, input.session.claimAuthorization),
+      ),
     );
 
     let preparedInput: PreparedDraftInput | undefined;

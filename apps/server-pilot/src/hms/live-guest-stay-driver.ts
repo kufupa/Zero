@@ -13,7 +13,6 @@ import {
   buildExactOsressSearchManifest,
   liveNotFoundCanaryCandidate,
   LIVE_NOTFOUND_CANARY,
-  osressSearchFillValue,
   type ExactReservationCandidate,
   type ReservationSearchCandidate,
 } from './live-read-manifest.js';
@@ -780,40 +779,10 @@ export function createLiveGuestStayDriver(
               'detail dump requires a unique matched search row',
             );
           }
-          // XHR pageData match does not always hydrate ExtJS grid. Wait, then
-          // Enter-refresh search so a visible row exists for inert dblclick open.
-          const page = session.page;
-          const countRows = async (): Promise<number> =>
-            page.evaluateStableDom(() => {
-              const doc = (globalThis as unknown as {
-                document?: { querySelectorAll(sel: string): { length: number } };
-              }).document;
-              if (!doc) return 0;
-              return doc.querySelectorAll('.x-grid3-row, .x-grid-row, tr.x-grid3-row')
-                .length;
-            });
-          const waitRows = async (budgetMs: number): Promise<number> => {
-            const deadline = Date.now() + budgetMs;
-            let rowCount = 0;
-            while (Date.now() < deadline) {
-              rowCount = await countRows();
-              if (rowCount > 0) return rowCount;
-              await new Promise((resolve) => setTimeout(resolve, 400));
-            }
-            return rowCount;
-          };
-          let rowCount = await waitRows(6_000);
-          if (rowCount < 1) {
-            const htmlNow = await page.content().catch(() => '');
-            const selector = /name="search"/i.test(htmlNow)
-              ? 'input[name="search"]'
-              : 'input[name="ff_confirmationnumber"]';
-            await page
-              .fill(selector, osressSearchFillValue(candidate))
-              .catch(() => undefined);
-            await page.press(selector, 'Enter').catch(() => undefined);
-            rowCount = await waitRows(10_000);
-          }
+          // XHR pageData match does not always hydrate ExtJS grid. The
+          // tool-specific facade owns the reviewed DOM refresh before the
+          // detail facade attempts an inert row open.
+          const rowCount = await facade.ensureSearchResultRows(candidate);
           const obs = search.observations[0]!;
           const hints = extractOsressDetailOpenHints(html);
           const matchToken =

@@ -332,7 +332,7 @@ describe('folio registry contract', () => {
     expect(READ_TOOLS.hms_read_folio.observationSchema).toBe(folioReadDataSchema);
     expect(READ_TOOLS.hms_read_folio.promotionEvidence).toEqual({
       fixture: true,
-      discovery: false,
+      discovery: true,
       live: false,
       shadow: false,
     });
