@@ -140,6 +140,32 @@ async function screenSummary(page) {
   });
 }
 
+async function visibleLabelDebug(page, labels) {
+  if (process.env.HMS_ROLE_GATE_DEBUG !== '1') return undefined;
+  return page.evaluate((wanted) => wanted.map((label) => ({
+    label,
+    matches: [...document.querySelectorAll('*')]
+      .filter((node) => (node.textContent || '').trim() === label)
+      .slice(0, 20)
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return {
+          tag: node.tagName,
+          className: String(node.className || '').slice(0, 180),
+          id: node.id || '',
+          role: node.getAttribute('role') || '',
+          aria: node.getAttribute('aria-label') || '',
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          display: style.display,
+          visibility: style.visibility,
+          pointerEvents: style.pointerEvents,
+          outer: node.outerHTML.slice(0, 500),
+        };
+      }),
+  })), labels);
+}
+
 async function main() {
   if (process.env.HMS_DISCOVERY_ALLOW_LIVE !== '1') throw new Error('refused: HMS_DISCOVERY_ALLOW_LIVE=1 required');
   if (!ALLOWED.has(TOOL)) throw new Error('HMS_ROLE_GATE_TOOL must be A1, DOC, or A7');
@@ -166,8 +192,10 @@ async function main() {
   });
   const page = await context.newPage();
   let summary = null;
+  let debug = undefined;
   try {
     await login(page, value);
+    debug = await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']);
     if (TOOL === 'A7') {
       // Group Sales is sometimes already painted in the Start Center menu;
       // hover the visible item to reveal its submenu, then leave it painted.
@@ -184,6 +212,9 @@ async function main() {
     }
     await page.waitForTimeout(12_000);
     summary = await screenSummary(page);
+    if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
+      debug = { before: debug, after: await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']) };
+    }
   } finally {
     await page.close().catch(() => undefined);
     await context.close().catch(() => undefined);
@@ -205,6 +236,7 @@ async function main() {
     stitchedFrames: false,
     video: { path: full, bytes: video.byteLength, sha256: createHash('sha256').update(video).digest('hex') },
     screen: summary,
+    ...(debug ? { debug } : {}),
   };
   await import('node:fs/promises').then(({ writeFile }) => writeFile(path.join(OUT, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 }));
   process.stdout.write(`${JSON.stringify({ tool: TOOL, out: OUT, videoBytes: video.byteLength, videoSha256: metadata.video.sha256, screen: summary })}\n`);
