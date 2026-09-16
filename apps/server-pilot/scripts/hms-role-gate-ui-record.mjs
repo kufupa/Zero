@@ -174,8 +174,12 @@ async function visibleLabelDebug(page, labels) {
         };
         return {
         itemId: String(item.itemId || '').slice(0, 80),
+        id: String(item.id || item.getId?.() || '').slice(0, 100),
         name: String(item.name || '').slice(0, 80),
         text: String(item.text || item.fieldLabel || item.title || '').slice(0, 120),
+        cls: String(item.cls || item.iconCls || '').slice(0, 120),
+        handler: typeof item.handler === 'function' || Boolean(item.handler?.fn),
+        hasMenu: Boolean(item.menu),
         hidden: Boolean(item.hidden),
         rendered: Boolean(item.rendered),
         x: readNumber('getX'),
