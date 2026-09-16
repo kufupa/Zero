@@ -290,6 +290,15 @@ async function main() {
     if (process.env.HMS_ROLE_GATE_DEBUG === '1') {
       debug = { before: debug, after: await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events']) };
     }
+  } catch (error) {
+    const failureScreen = await screenSummary(page).catch(() => null);
+    const failureDebug = await visibleLabelDebug(page, ['More', 'Group Sales', 'Front Desk', 'Guest Stay', 'Events', 'Documents', 'Rate Details']).catch(() => undefined);
+    await import('node:fs/promises').then(({ writeFile }) => writeFile(
+      path.join(OUT, 'error.json'),
+      `${JSON.stringify({ schemaVersion: 1, tool: TOOL, error: scrub(error?.message || error), screen: failureScreen, debug: failureDebug }, null, 2)}\n`,
+      { mode: 0o600 },
+    )).catch(() => undefined);
+    throw error;
   } finally {
     await page.close().catch(() => undefined);
     await context.close().catch(() => undefined);
