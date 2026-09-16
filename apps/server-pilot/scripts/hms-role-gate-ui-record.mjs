@@ -65,7 +65,8 @@ async function visibleClick(page, label, { hover = false } = {}) {
 
 async function clickVisibleComponent(page, itemId) {
   const id = await page.evaluate((wanted) => {
-    const item = window.Ext?.ComponentQuery?.query(`#${wanted}`)?.[0];
+    const item = window.Ext?.ComponentQuery?.query(`[itemId=${wanted}]`)?.[0] ||
+      window.Ext?.ComponentQuery?.query(`#${wanted}`)?.[0];
     const dom = item?.getEl?.()?.dom;
     if (!dom) return '';
     const rect = dom.getBoundingClientRect();
