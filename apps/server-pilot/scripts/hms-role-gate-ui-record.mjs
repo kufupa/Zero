@@ -96,13 +96,22 @@ async function expandVisibleTreeNode(page, label) {
   return true;
 }
 
+async function clickVisibleTreeLabel(page, label, { hover = false } = {}) {
+  const target = page.locator('.x-tree-node-text').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).first();
+  if (!(await target.isVisible().catch(() => false))) return false;
+  if (hover) await target.hover();
+  await target.click();
+  return true;
+}
+
 async function menuPath(page, labels) {
   for (let i = 0; i < labels.length; i += 1) {
     if (i === 0) {
       const more = await visibleClick(page, 'More');
       if (more) await page.waitForTimeout(800);
     }
-    const clicked = await visibleClick(page, labels[i], { hover: true });
+    const clicked = (await clickVisibleTreeLabel(page, labels[i], { hover: true })) ||
+      (await visibleClick(page, labels[i], { hover: true }));
     if (!clicked) throw new Error(`visible menu item unavailable: ${labels[i]}`);
     if (i < labels.length - 1) await expandVisibleTreeNode(page, labels[i]);
     await page.waitForTimeout(i < labels.length - 1 ? 1600 : 3000);
@@ -265,7 +274,8 @@ async function main() {
       // hover the visible item to reveal its submenu, then leave it painted.
       const openedMore = await visibleClick(page, 'More');
       if (openedMore) await page.waitForTimeout(800);
-      const groupSales = await visibleClick(page, 'Group Sales', { hover: true });
+      const groupSales = (await clickVisibleTreeLabel(page, 'Group Sales', { hover: true })) ||
+        (await visibleClick(page, 'Group Sales', { hover: true }));
       if (!groupSales) throw new Error('visible Group Sales menu item unavailable');
       await expandVisibleTreeNode(page, 'Group Sales');
       await page.waitForTimeout(6_000);
