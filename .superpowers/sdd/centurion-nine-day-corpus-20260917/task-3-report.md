@@ -64,3 +64,45 @@ passed
 ## Report path
 
 `.superpowers/sdd/centurion-nine-day-corpus-20260917/task-3-report.md`
+
+## U3 review fixes (2026-09-17)
+
+- The CLI now leaves the worker transport injectable and defaults to the explicit
+  unavailable Luna boundary. It writes `centurion_classification.blocked`, exits
+  with code `2`, and includes `luna_worker_transport_unavailable` in the coverage
+  audit and daily report. Any unresolved core worker/parse/context result also
+  blocks the CLI; it is never reported as a successful classification.
+- Worker result parsing is fail-closed for unknown or duplicate labels, invalid
+  or inconsistent primary/secondary workflows, malformed uncertainty reasons or
+  context flags, and missing uncertainty reasons for `unknown_review`/`other`.
+- Sealed manifests now validate the fixed window/timezone, transport, snapshot
+  identifier, ordered hash, source counts and derived partition counts. Normal
+  and quarantine records validate their required schemas, enums, nullable values,
+  arrays, timestamps, attachments, MIME metadata and evidence types.
+- Coverage reconciliation now compares validated source candidate IDs and
+  manifest counts against emitted classification IDs independently. The audit
+  persists source/emitted counts, missing/unexpected IDs and both ID hashes.
+- Private output writing resolves a canonical repository/private/corpus/output
+  chain, rejects symlinked roots or parents, and applies the same guard to the
+  exported writer.
+
+Focused review-fix verification ran with `DATABASE_URL` and
+`VITEST_ALLOW_PILOT_RDS` unset:
+
+```text
+pnpm exec vitest run tests/centurion-corpus-classification.test.ts --reporter=dot
+17 tests passed
+
+pnpm exec vitest run tests/centurion-corpus-classification.test.ts tests/centurion-quarantine-export.test.ts tests/centurion-corpus-export.test.ts tests/centurion-thread-corpus-postgres-reader.test.ts tests/export-centurion-thread-corpus-live.test.ts tests/centurion-thread-corpus-exporter.test.ts --config vitest.config.ts --reporter=dot
+6 files, 54 tests passed
+
+pnpm exec tsc --noEmit -p tsconfig.json
+passed
+
+pnpm exec prettier --check scripts/classify-centurion-nine-day-corpus.ts tests/centurion-corpus-classification.test.ts
+passed
+```
+
+The real approved GPT-5.6-Luna-Max worker transport remains unavailable in this
+runtime; no live classifications were invented and no production/RDS test or
+external model call was made.

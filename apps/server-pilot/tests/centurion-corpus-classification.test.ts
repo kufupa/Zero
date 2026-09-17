@@ -3,10 +3,12 @@ import {
   DEFAULT_LUNA_MODEL_ID,
   WORKFLOW_CLASSES,
   classifyCenturionNineDayCorpus,
+  reconcileCoverage,
+  runCenturionClassificationCli,
   type CenturionClassificationWorkerRequest,
   type CenturionClassificationWorkerResponse,
 } from '../scripts/classify-centurion-nine-day-corpus';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -25,17 +27,59 @@ function manifestFor(
   records: readonly Record<string, unknown>[],
 ): Record<string, unknown> {
   const ordered = records.map((record) => JSON.stringify(record)).join('\n');
+  const isNormal = schemaVersion === 'centurion-nine-day-corpus-v1';
+  const normalRecords = isNormal ? records : [];
+  const quarantineRecords = isNormal ? [] : records;
   return {
     schemaVersion,
     snapshotId,
     exporterVersion: 'fixture',
-    orderedMessageSha256:
-      schemaVersion === 'centurion-nine-day-corpus-v1' ? sha(ordered) : undefined,
-    orderedRecordSha256: schemaVersion === 'centurion-quarantine-v1' ? sha(ordered) : undefined,
-    counts: { sourceRows: records.length, logicalMessages: records.length },
+    transportId: 'transport-centurion',
+    asOf: '2026-09-18T00:00:00.000Z',
+    orderedMessageSha256: isNormal ? sha(ordered) : undefined,
+    orderedRecordSha256: !isNormal ? sha(ordered) : undefined,
+    counts: isNormal
+      ? {
+          sourceRowCount: records.length,
+          includedMessageCount: normalRecords.filter((record) => record.dailyIncluded === true)
+            .length,
+          contextOnlyMessageCount: normalRecords.filter((record) => record.contextOnly === true)
+            .length,
+          missingEventAtCount: normalRecords.filter((record) => record.eventAt === null).length,
+        }
+      : {
+          sourceRowCount: records.length,
+          quarantineRowCount: records.length,
+          centurionRowCount: records.length,
+          parseFailureCount: quarantineRecords.filter((record) => record.reason === 'parse_failure')
+            .length,
+          coreCount: quarantineRecords.filter((record) => record.reportPartition === 'core').length,
+          september17SpilloverCount: quarantineRecords.filter(
+            (record) => record.reportPartition === 'september17_spillover',
+          ).length,
+          undatedCount: quarantineRecords.filter((record) => record.reportPartition === 'undated')
+            .length,
+          outsideWindowCount: quarantineRecords.filter(
+            (record) => record.reportPartition === 'outside_window',
+          ).length,
+          parseErrorCount: quarantineRecords.filter(
+            (record) => record.parseStatus === 'parse_error',
+          ).length,
+          missingObjectCount: quarantineRecords.filter(
+            (record) => record.parseStatus === 'missing_object',
+          ).length,
+          duplicateUidGroupCount: 0,
+          duplicateRawHashGroupCount: 0,
+        },
     window: {
       startInclusive: WINDOW_START,
       endExclusive: WINDOW_END,
+      ...(isNormal
+        ? {}
+        : {
+            spilloverStartInclusive: WINDOW_END,
+            spilloverEndExclusive: '2026-09-17T22:00:00.000Z',
+          }),
       timezone: 'Africa/Johannesburg',
     },
   };
@@ -153,7 +197,7 @@ async function writeSnapshot(
   records: readonly Record<string, unknown>[],
 ): Promise<string> {
   const directory = path.join(root, name);
-  await (await import('node:fs/promises')).mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const lines = `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
   await writeFile(
     path.join(
@@ -211,7 +255,7 @@ async function runFixture(input: {
     'centurion-quarantine-v1',
     input.quarantine,
   );
-  const output = path.join(root, 'output');
+  const output = path.join(root, '.private', 'centurion-corpus', 'fixture-u3');
   const result = await classifyCenturionNineDayCorpus({
     normalSnapshotDir,
     quarantineSnapshotDir,
@@ -241,7 +285,7 @@ describe('Centurion exhaustive classification and daily reports', () => {
           ? response({
               opaqueId: 'opaque-normal',
               labels: ['guest_experience', 'booking_quote'],
-              primaryWorkflow: 'guest_experience',
+              primaryWorkflow: 'booking_quote',
               evidenceLocations: [
                 { field: 'body', start: fullBody.length - 4, end: fullBody.length },
               ],
@@ -249,7 +293,7 @@ describe('Centurion exhaustive classification and daily reports', () => {
           : response({
               opaqueId: 'opaque-quarantine',
               labels: ['delivery_documents', 'money_proof_of_payment'],
-              primaryWorkflow: 'delivery_documents',
+              primaryWorkflow: 'money_proof_of_payment',
             });
       },
     });
@@ -464,6 +508,184 @@ describe('Centurion exhaustive classification and daily reports', () => {
         worker: async () => response(),
       }),
     ).rejects.toThrow(/maxWorkers/);
+  });
+
+  it.each([
+    {
+      name: 'unknown workflow label',
+      response: response({ labels: ['not_a_workflow' as never] }),
+      errorCode: 'workflow_label_unknown',
+    },
+    {
+      name: 'invalid primary workflow',
+      response: response({ primaryWorkflow: 'not_a_workflow' as never }),
+      errorCode: 'primary_workflow_invalid',
+    },
+    {
+      name: 'inconsistent deterministic primary',
+      response: response({ labels: ['booking_quote'], primaryWorkflow: 'guest_experience' }),
+      errorCode: 'primary_workflow_inconsistent',
+    },
+    {
+      name: 'malformed uncertainty reasons',
+      response: response({ uncertainty: { level: 'low', reasons: ['ok', null as never] } }),
+      errorCode: 'uncertainty_reasons_invalid',
+    },
+  ])(
+    'rejects $name instead of filtering invalid worker output',
+    async ({ response: workerResponse, errorCode }) => {
+      const fixture = await runFixture({
+        normal: [normalRecord({ id: `normal-${errorCode}` })],
+        quarantine: [],
+        worker: async () => workerResponse,
+      });
+      expect(fixture.result.records[0]).toMatchObject({ status: 'parse_error', errorCode });
+      await rm(fixture.root, { recursive: true, force: true });
+    },
+  );
+
+  it('rejects unknown-review and other labels without an explicit uncertainty reason', async () => {
+    const fixture = await runFixture({
+      normal: [normalRecord({ id: 'normal-unknown-no-reason' })],
+      quarantine: [],
+      worker: async () =>
+        response({
+          labels: ['unknown_review'],
+          primaryWorkflow: 'unknown_review',
+          uncertainty: { level: 'high', reasons: [] },
+        }),
+    });
+    expect(fixture.result.records[0]).toMatchObject({
+      status: 'parse_error',
+      errorCode: 'uncertainty_reason_required',
+    });
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+
+  it('rejects a tampered fixed manifest window before worker invocation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-manifest-'));
+    const normalSnapshotDir = await writeSnapshot(root, 'normal', 'centurion-nine-day-corpus-v1', [
+      normalRecord(),
+    ]);
+    const quarantineSnapshotDir = await writeSnapshot(
+      root,
+      'quarantine',
+      'centurion-quarantine-v1',
+      [],
+    );
+    const manifestPath = path.join(normalSnapshotDir, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+    manifest.window = { startInclusive: WINDOW_START, endExclusive: WINDOW_END, timezone: 'UTC' };
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await expect(
+      classifyCenturionNineDayCorpus({
+        normalSnapshotDir,
+        quarantineSnapshotDir,
+        outputDir: path.join(root, '.private', 'centurion-corpus', 'fixture-u3'),
+        snapshotId: 'fixture-u3',
+        workerTransport: { classify: async () => response() },
+      }),
+    ).rejects.toThrow(/normal_manifest_window_mismatch/);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects a normal record with the wrong transport or malformed body shape', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-schema-'));
+    const normalSnapshotDir = await writeSnapshot(root, 'normal', 'centurion-nine-day-corpus-v1', [
+      normalRecord({ transportId: 'transport-other' }),
+    ]);
+    const quarantineSnapshotDir = await writeSnapshot(
+      root,
+      'quarantine',
+      'centurion-quarantine-v1',
+      [],
+    );
+    await expect(
+      classifyCenturionNineDayCorpus({
+        normalSnapshotDir,
+        quarantineSnapshotDir,
+        outputDir: path.join(root, '.private', 'centurion-corpus', 'fixture-u3'),
+        snapshotId: 'fixture-u3',
+        workerTransport: { classify: async () => response() },
+      }),
+    ).rejects.toThrow(/normal_record_transport_mismatch/);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('reconciles the independently validated source candidate IDs against emitted IDs', () => {
+    expect(
+      reconcileCoverage({
+        sourceCandidateIds: ['normal:a', 'quarantine:b'],
+        classificationRecordIds: ['normal:a'],
+        dailyTotal: 1,
+      }),
+    ).toMatchObject({
+      sourceCandidateCount: 2,
+      missingClassificationIdCount: 1,
+      unexpectedClassificationIdCount: 0,
+      dailyReconciles: false,
+    });
+  });
+
+  it('surfaces the unavailable CLI worker as a blocker, not a successful classification', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-cli-'));
+    const normalSnapshotDir = await writeSnapshot(root, 'normal', 'centurion-nine-day-corpus-v1', [
+      normalRecord(),
+    ]);
+    const quarantineSnapshotDir = await writeSnapshot(
+      root,
+      'quarantine',
+      'centurion-quarantine-v1',
+      [],
+    );
+    const outputDir = path.join(root, '.private', 'centurion-corpus', 'fixture-cli');
+    const stdout: string[] = [];
+    const exitCode = await runCenturionClassificationCli(
+      [
+        '--normal',
+        normalSnapshotDir,
+        '--quarantine',
+        quarantineSnapshotDir,
+        '--out',
+        outputDir,
+        '--snapshot',
+        'fixture-cli',
+      ],
+      { repoRoot: root, writeStdout: (value) => stdout.push(value) },
+    );
+    expect(exitCode).toBe(2);
+    expect(stdout.join('')).toContain('centurion_classification.blocked');
+    expect(stdout.join('')).toContain('luna_worker_transport_unavailable');
+    expect(await readFile(path.join(outputDir, 'daily-tables.md'), 'utf8')).toContain(
+      'luna_worker_transport_unavailable',
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects a symlinked private root before publishing output', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-symlink-'));
+    const target = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-target-'));
+    const normalSnapshotDir = await writeSnapshot(root, 'normal', 'centurion-nine-day-corpus-v1', [
+      normalRecord(),
+    ]);
+    const quarantineSnapshotDir = await writeSnapshot(
+      root,
+      'quarantine',
+      'centurion-quarantine-v1',
+      [],
+    );
+    await symlink(target, path.join(root, '.private'));
+    await expect(
+      classifyCenturionNineDayCorpus({
+        normalSnapshotDir,
+        quarantineSnapshotDir,
+        outputDir: path.join(root, '.private', 'centurion-corpus', 'fixture-u3'),
+        snapshotId: 'fixture-u3',
+        workerTransport: { classify: async () => response() },
+      }),
+    ).rejects.toThrow(/private_root_symlink/);
+    await rm(root, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
   });
 });
 
