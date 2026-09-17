@@ -1432,6 +1432,7 @@ function basePredictionRecord(
   predictorInput: HumanResponsePredictorInput | null = null,
 ): HumanResponsePredictionFreezeRecord {
   const error = target.predictionError;
+  const safePredictorInput = error === 'target_payload_leakage' ? null : predictorInput;
   return {
     schemaVersion: PREDICTION_FREEZE_SCHEMA_VERSION,
     targetKey: target.targetKey,
@@ -1448,7 +1449,7 @@ function basePredictionRecord(
     targetHeaderHash: target.targetHeaderHash,
     targetAttachmentHash: target.targetAttachmentHash,
     preTargetBodyHashes: [...target.preTargetBodyHashes],
-    predictorInput,
+    predictorInput: safePredictorInput,
     predictionStatus: error
       ? error === 'context_incomplete'
         ? 'context_incomplete'
@@ -1719,8 +1720,10 @@ export async function analyseCenturionHumanResponses(
     let leakage: string | null = null;
     if (match.status === 'paired' && match.triggeringInbound && !match.contextIncomplete) {
       const built = buildPredictorInput(target, match.triggeringInbound, messages, causalWindowMs);
-      input = built.input;
       leakage = built.leakage;
+      // A leakage finding invalidates the entire predictor snapshot. Do not
+      // retain the tainted input in either manifest or prediction freeze.
+      input = leakage === null ? built.input : null;
     }
     const manifest = targetManifestRecord(target, match, input, leakage, cutoff);
     skeletonTargets.push(manifest);

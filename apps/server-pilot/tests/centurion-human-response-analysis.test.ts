@@ -12,11 +12,13 @@ import {
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 
 const WINDOW_START = CENTURION_WINDOW_START_UTC;
 const WINDOW_END = CENTURION_WINDOW_END_UTC;
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const fixtureOutputs = new Set<string>();
 
 function sha(value: string): string {
@@ -195,7 +197,7 @@ async function writeFixture(input: {
   const quarantine = path.join(root, 'quarantine');
   // The production contract permits only the actual checkout's ignored root.
   const snapshotId = path.basename(root);
-  const output = path.resolve(process.cwd(), '.private', 'centurion-corpus', snapshotId);
+  const output = path.join(REPO_ROOT, '.private', 'centurion-corpus', snapshotId);
   fixtureOutputs.add(output);
   await mkdir(normal, { recursive: true, mode: 0o700 });
   await mkdir(quarantine, { recursive: true, mode: 0o700 });
@@ -256,7 +258,7 @@ function prediction(
 
 async function cleanup(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
-  const output = path.resolve(process.cwd(), '.private', 'centurion-corpus', path.basename(root));
+  const output = path.join(REPO_ROOT, '.private', 'centurion-corpus', path.basename(root));
   await rm(output, {
     recursive: true,
     force: true,
@@ -716,8 +718,8 @@ describe('Centurion blinded human-response analysis', () => {
 
     const headerLeakInbound = normalRecord({
       id: 'inbound-header-leak',
-      textBody: `Current request.\nSubject: ${targetSubject}`,
-      htmlBody: `<p>Current request.</p><p>Subject: ${targetSubject}</p>`,
+      textBody: `Current request.\nSubject: ${targetSubject}\nA different private target body.`,
+      htmlBody: `<p>Current request.</p><p>Subject: ${targetSubject}</p><p>A different private target body.</p>`,
     });
     const headerLeakTarget = {
       ...target,
@@ -747,7 +749,16 @@ describe('Centurion blinded human-response analysis', () => {
       predictionError: 'target_payload_leakage',
       contextIncomplete: true,
     });
-    expect(headerResult.predictions[0]?.predictionError).toBe('target_payload_leakage');
+    expect(headerResult.predictions[0]).toMatchObject({
+      predictionError: 'target_payload_leakage',
+      predictorInput: null,
+    });
+    const headerFreeze = await readFile(
+      path.join(headerFixture.output, 'prediction-freeze.jsonl'),
+      'utf8',
+    );
+    expect(headerFreeze).not.toContain(targetSubject);
+    expect(headerFreeze).not.toContain('A different private target body.');
     await cleanup(headerFixture.root);
   });
 
@@ -1050,7 +1061,7 @@ describe('Centurion blinded human-response analysis', () => {
     });
     const fixture = await writeFixture({ normal: [inbound, target] });
     const unsafeOutput = path.join(
-      process.cwd(),
+      REPO_ROOT,
       'apps',
       'server-pilot',
       '.private',

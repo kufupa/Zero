@@ -28,3 +28,24 @@ All commands were run from the worktree with `DATABASE_URL` and `VITEST_ALLOW_PI
 - Targeted `git diff --check`: **passed**.
 
 The private output fixture uses a unique temporary snapshot basename under the real ignored root and cleans only that exact generated directory.
+
+## Residual review rerun
+
+The residual leakage and package-cwd findings are closed. When leakage is
+detected, the tainted predictor input is discarded before both the target
+manifest and prediction freeze are built; the freeze therefore retains only
+hashes, status, and the explicit `target_payload_leakage` error. The regression
+asserts that target header and body text are absent from the persisted freeze.
+Fixture outputs now resolve from the test module to the actual checkout root,
+so package invocation exercises the same strict production output guard.
+
+Fresh verification from `apps/server-pilot`:
+
+- Standard focused Vitest: **15 tests passed**.
+- Root-workaround guard regression: **1 passed, 14 skipped**.
+- Server TypeScript (`pnpm --filter @zero/server exec tsc --noEmit --pretty false`): **passed**.
+- Targeted Prettier check: **passed**.
+- Targeted `git diff --check`: **passed**.
+
+No production database, private snapshot, external model, or message payload
+was accessed.
