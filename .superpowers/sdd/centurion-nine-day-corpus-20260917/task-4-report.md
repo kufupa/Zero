@@ -88,3 +88,25 @@ passed
 `.superpowers/sdd/centurion-nine-day-corpus-20260917/task-4-report.md`
 
 Commit: recorded in the task handoff.
+
+## Live execution addendum (2026-09-17)
+
+The guarded U4 pipeline was run against the sealed U1/U2 snapshots and the
+canonical U3 classification output. The first injected-worker attempts failed
+closed because the transport boundary does not expose a target key; that
+diagnostic output is retained privately. The corrected final runner keys the
+three approved worker responses by the frozen `inputHash` and produced the
+canonical output below.
+
+- 547 in-window human outbound targets were emitted exactly once;
+- statuses: paired 227, ambiguous 25, no-eligible-inbound 18, outbound-only
+  277;
+- 224 paired contexts were rejected as
+  `target_payload_leakage` and persisted with a null predictor input;
+- 3 safe paired contexts have `predictionStatus: frozen`, with no prediction
+  errors; all other targets have explicit status/error records;
+- pending-at-cutoff and late-response counts are zero; no target/post-target
+  plaintext is present in the freeze.
+
+Canonical live output:
+`.private/centurion-corpus/centurion-human-final4-20260917-live/`.

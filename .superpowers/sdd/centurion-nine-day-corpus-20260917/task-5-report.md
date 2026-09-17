@@ -28,3 +28,30 @@ Run with `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS` unset:
 - The live run must use the canonical U4 frozen input and write a new snapshot directory; existing private outputs are rejected.
 
 Implementation commit: `9e213d70`.
+
+## Live execution addendum (2026-09-17)
+
+The approved fresh Luna-Max comparator ran in five private shards (110, 110,
+109, 109 and 109 targets) after the U4 freeze. A schema repair was required for
+one shard whose operation entries were initially encoded as strings; the shard
+was rewritten and revalidated before comparison. The canonical U5 output is:
+
+`.private/centurion-corpus/centurion-gold-final4-20260917-live/`
+
+- 547/547 target gold claims observed; 1,829 total comparison records after
+  1,282 explicit supplemental unanswered/automated records;
+- 224 prediction errors remain the explicit U4 target-payload-leakage stratum;
+  the comparator itself had zero runtime blockers;
+- semantic grades: 3 partial, 224 prediction-error, 1,602 not-scored (status,
+  unavailable or supplemental strata); no prose-similarity score was used;
+- claimed human actions: 547 observed; authoritative PMS actions: **0
+  observed**, 1,829 `not_observed` by design because no PMS receipt/read was
+  supplied;
+- private audit records matching U1/U2 ordered/manifest hashes, U3 input
+  hashes and U4 target/prediction hashes; the handoff contains aggregate
+  frequencies and opaque evidence IDs only.
+
+The U5 implementation was tightened after the first live attempt to accept the
+explicit U3 core+spillover partition (not older context/out-of-window rows)
+and to null unknown candidate endpoint names. Focused tests and TypeScript were
+rerun with production database variables unset.

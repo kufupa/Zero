@@ -114,3 +114,20 @@ or `other` occurs anywhere in the full label set, including secondary labels.
 An offline regression covers `booking_quote` with secondary `unknown_review` and
 no reason. Focused verification passed with production variables unset: 18
 tests, TypeScript, and Prettier.
+
+## Live execution addendum (2026-09-17)
+
+The guarded EC2 run completed with the approved repeatable-read snapshot and a
+five-worker local Luna-Max batch. The prior unavailable-transport concern is
+resolved for this run; the private evidence is authoritative for the observed
+RDS/quarantine corpus:
+
+- normal source rows 1,709; included core 1,500; context-only 209;
+- quarantine source rows 2,185; parse failures 436; core 608; September 17
+  spillover 272; missing raw objects 5; parse errors 0;
+- core candidates/classifications 2,108/2,108, with no missing, unexpected or
+  duplicate IDs, no worker/parse/context errors and daily reconciliation PASS;
+- model `gpt-5.6-luna-max`, prompt/schema hashes are recorded in
+  `coverage-audit.json` and `daily-tables.json`.
+
+Canonical live output: `.private/centurion-corpus/centurion-classified-20260917-live/`.

@@ -62,6 +62,32 @@ const GRADES = [
   'unavailable',
   'not_scored',
 ] as const;
+// Candidate names are hypotheses only. Keep the report bound to the current
+// Centurion vocabulary; an unknown name becomes a null candidate rather than
+// being presented as a buildable endpoint.
+const KNOWN_CANDIDATE_TOOLS = new Set([
+  'hms_find_reservation',
+  'hms_read_reservation',
+  'hms_quote_stay',
+  'hms_read_folio',
+  'hms_list_documents',
+  'hms_sent_email_audit',
+  'hms_group_block_read',
+  'hms_company_account_read',
+  'hms_event_read',
+  'hms_read_notes_traces',
+  'hms_create_reservation',
+  'hms_amend_reservation',
+  'hms_cancel_reservation',
+  'hms_post_payment',
+  'hms_refund_payment',
+  'hms_generate_quote_document',
+  'hms_generate_invoice',
+  'hms_email_folio',
+  'hms_generate_confirmation_proforma',
+  'hms_send_reservation_confirmation',
+  'hms_attach_guest_stay_document',
+]);
 
 type JsonRecord = Record<string, unknown>;
 type SourceKind = 'normal' | 'quarantine';
@@ -345,6 +371,12 @@ function strictStrings(value: unknown, code: string): string[] {
   return [...(value as string[])];
 }
 
+function normalizeCandidateTool(value: unknown, code: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return fail(`${code}_invalid`);
+  return KNOWN_CANDIDATE_TOOLS.has(value) ? value : null;
+}
+
 function looseStrings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
@@ -616,9 +648,35 @@ async function loadClassifications(
       return fail('classification_input_hash_mismatch');
     byKey.set(key, record);
   }
-  for (const key of sourceMessages.keys()) {
+  // U3 intentionally emits classifications for the core window plus the
+  // September-17 spillover only. Older normal context rows and quarantine
+  // rows outside those partitions remain sealed source evidence but are not
+  // classification candidates; requiring them here would turn an explicit
+  // U3 partition boundary into a false coverage failure.
+  const expectedClassificationKeys = new Set<string>();
+  for (const record of snapshots.normal.records) {
+    if (record.dailyIncluded === true && record.contextOnly !== true) {
+      expectedClassificationKeys.add(
+        sourceRecordKey('normal', requiredText(record.id, 'normal_record_id_missing')),
+      );
+    }
+  }
+  for (const record of snapshots.quarantine.records) {
+    if (
+      record.reportPartition === 'core' ||
+      record.reportPartition === 'spillover' ||
+      record.reportPartition === 'september17_spillover'
+    ) {
+      expectedClassificationKeys.add(
+        sourceRecordKey('quarantine', requiredText(record.id, 'quarantine_record_id_missing')),
+      );
+    }
+  }
+  for (const key of expectedClassificationKeys) {
     if (!byKey.has(key)) return fail('classification_missing_record_key');
   }
+  if (byKey.size !== expectedClassificationKeys.size)
+    return fail('classification_candidate_count_mismatch');
   const orderedHash = sha256(records.map((record) => JSON.stringify(record)).join('\n'));
   return { records, byKey, audit, orderedHash, raw };
 }
@@ -775,8 +833,7 @@ function normalizeOperation(value: unknown, code: string): GoldOperation {
   const fields = strictStrings(requiredFields, `${code}_required_fields_invalid`);
   if (fields.length > 32 || fields.some((field) => field.trim() === '' || field.length > 256))
     return fail(`${code}_required_fields_invalid`);
-  if (candidateTool !== null && candidateTool !== undefined && typeof candidateTool !== 'string')
-    return fail(`${code}_candidate_tool_invalid`);
+  const normalizedCandidateTool = normalizeCandidateTool(candidateTool, `${code}_candidate_tool`);
   if (unknownReason !== null && unknownReason !== undefined && typeof unknownReason !== 'string')
     return fail(`${code}_unknown_reason_invalid`);
   if (
@@ -788,7 +845,7 @@ function normalizeOperation(value: unknown, code: string): GoldOperation {
     operation: operation as HumanResponseOperation,
     needLevel: needLevel as HumanResponseNeedLevel,
     requiredFields: fields,
-    candidateTool: typeof candidateTool === 'string' ? candidateTool : null,
+    candidateTool: normalizedCandidateTool,
     unknownReason: typeof unknownReason === 'string' ? unknownReason : null,
   };
 }
@@ -870,11 +927,9 @@ function normalizeGoldResponse(value: unknown): HumanGoldComparatorResponse {
     return fail('gold_required_fields_invalid');
   if (JSON.stringify(fields) !== JSON.stringify(primaryAction.requiredFields))
     return fail('gold_required_fields_mismatch');
-  const candidateTool = aliasValue(
-    parsed,
-    'candidateTool',
-    'candidate_tool',
-    'gold_candidate_tool_alias_conflict',
+  const candidateTool = normalizeCandidateTool(
+    aliasValue(parsed, 'candidateTool', 'candidate_tool', 'gold_candidate_tool_alias_conflict'),
+    'gold_candidate_tool',
   );
   if (candidateTool !== primaryAction.candidateTool) return fail('gold_candidate_tool_mismatch');
   const unknownReason = aliasValue(
