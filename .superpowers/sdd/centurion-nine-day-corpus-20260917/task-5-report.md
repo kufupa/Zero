@@ -27,4 +27,4 @@ Run with `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS` unset:
 - The current implementation records PMS actions as `not_observed` unless callers supply authoritative PMS receipt/read evidence.
 - The live run must use the canonical U4 frozen input and write a new snapshot directory; existing private outputs are rejected.
 
-Commit: `f644dacb` (amended below only to record the final hash).
+Implementation commit: `9e213d70`.
