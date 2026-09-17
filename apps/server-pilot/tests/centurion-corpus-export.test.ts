@@ -217,6 +217,15 @@ describe('Centurion nine-day corpus reader', () => {
     expect(messageQuery?.text).toMatch(/in_window_threads/i);
     expect(messageQuery?.text).toMatch(/"eventAt"\s*>=/i);
     expect(messageQuery?.text).toMatch(/"eventAt"\s*<\s*\$\d+/i);
+    expect(messageQuery?.text).toMatch(/selected_candidates/i);
+    expect(messageQuery?.text).toMatch(/JOIN\s+message\s+AS\s+m\s+ON\s+m\.id\s*=\s*selected\.id/i);
+    const candidateSql = messageQuery?.text.match(
+      /WITH\s+candidates\s+AS\s*\(([\s\S]*?)\),\s*in_window_threads/i,
+    )?.[1];
+    expect(candidateSql).toMatch(/m\.id|m\.thread_id|m\.received_at|m\.sent_at|m\.created_at/i);
+    expect(candidateSql).not.toMatch(
+      /m\.(?:text_body|html_body|from_address|to_addresses|cc_addresses|bcc_addresses|in_reply_to|raw_mime_s3_key)\b/i,
+    );
     for (const query of fake.queries) {
       expect(query.text.trim()).toMatch(/^(?:SELECT|WITH\b)/i);
       expect(query.text).not.toMatch(

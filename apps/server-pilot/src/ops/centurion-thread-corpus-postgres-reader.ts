@@ -805,25 +805,7 @@ async function readCenturionMessages(
     WITH candidates AS (
       SELECT
         m.id,
-        m.transport_id AS "transportId",
         m.thread_id AS "messageThreadId",
-        t.id AS "resolvedThreadId",
-        t.transport_id AS "threadTransportId",
-        m.message_id_header AS "messageId",
-        m.direction::text AS "direction",
-        m.subject,
-        m.text_body AS "textBody",
-        m.html_body AS "htmlBody",
-        m.from_address AS "fromAddress",
-        m.to_addresses AS "toAddresses",
-        m.cc_addresses AS "ccAddresses",
-        m.bcc_addresses AS "bccAddresses",
-        m.received_at AS "receivedAt",
-        m.sent_at AS "sentAt",
-        m.created_at AS "createdAt",
-        m.in_reply_to AS "inReplyTo",
-        m."references" AS "references",
-        m.raw_mime_s3_key AS "rawMimeLocator",
         CASE
           WHEN m.direction::text = 'outbound'
             AND m.sent_at IS NOT NULL
@@ -838,17 +820,7 @@ async function readCenturionMessages(
           WHEN m.received_at IS NOT NULL THEN m.received_at
           WHEN m.sent_at IS NOT NULL THEN m.sent_at
           ELSE m.created_at
-        END AS "eventAt",
-        (
-          SELECT q.status
-          FROM outbound_send_queue AS q
-          WHERE q.message_id = m.id
-            AND q.transport_id = m.transport_id
-            AND q.status = 'sent'
-            AND q.created_at < ${snapshotAsOf}
-          ORDER BY q.created_at DESC, q.id DESC
-          LIMIT 1
-        ) AS "confirmedQueueStatus"
+        END AS "eventAt"
       FROM message AS m
       LEFT JOIN mail_thread AS t ON t.id = m.thread_id
       WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
@@ -862,20 +834,59 @@ async function readCenturionMessages(
         AND c."eventAt" < ${endExclusive}
         AND c."eventAt" < ${snapshotAsOf}
         AND c."messageThreadId" IS NOT NULL
-    )
-    SELECT c.*
-    FROM candidates AS c
-    WHERE (
-      c."eventAt" >= ${startInclusive}
-      AND c."eventAt" < ${endExclusive}
-      AND c."eventAt" < ${snapshotAsOf}
-    )
-      OR (
-        c."eventAt" < ${startInclusive}
-        AND c."messageThreadId" IN (SELECT thread_id FROM in_window_threads)
+    ),
+    selected_candidates AS (
+      SELECT c.id, c."messageThreadId", c."eventAt"
+      FROM candidates AS c
+      WHERE (
+        c."eventAt" >= ${startInclusive}
+        AND c."eventAt" < ${endExclusive}
+        AND c."eventAt" < ${snapshotAsOf}
       )
-      OR c."eventAt" IS NULL
-    ORDER BY c."eventAt" NULLS LAST, c.id
+        OR (
+          c."eventAt" < ${startInclusive}
+          AND c."messageThreadId" IN (SELECT thread_id FROM in_window_threads)
+        )
+        OR c."eventAt" IS NULL
+    )
+    SELECT
+      m.id,
+      m.transport_id AS "transportId",
+      m.thread_id AS "messageThreadId",
+      t.id AS "resolvedThreadId",
+      t.transport_id AS "threadTransportId",
+      m.message_id_header AS "messageId",
+      m.direction::text AS "direction",
+      m.subject,
+      m.text_body AS "textBody",
+      m.html_body AS "htmlBody",
+      m.from_address AS "fromAddress",
+      m.to_addresses AS "toAddresses",
+      m.cc_addresses AS "ccAddresses",
+      m.bcc_addresses AS "bccAddresses",
+      m.received_at AS "receivedAt",
+      m.sent_at AS "sentAt",
+      m.created_at AS "createdAt",
+      m.in_reply_to AS "inReplyTo",
+      m."references" AS "references",
+      m.raw_mime_s3_key AS "rawMimeLocator",
+      (
+        SELECT q.status
+        FROM outbound_send_queue AS q
+        WHERE q.message_id = m.id
+          AND q.transport_id = m.transport_id
+          AND q.status = 'sent'
+          AND q.created_at < ${snapshotAsOf}
+        ORDER BY q.created_at DESC, q.id DESC
+        LIMIT 1
+      ) AS "confirmedQueueStatus"
+    FROM selected_candidates AS selected
+    INNER JOIN message AS m ON m.id = selected.id
+    LEFT JOIN mail_thread AS t ON t.id = m.thread_id
+    WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+      AND (m.created_at < ${snapshotAsOf} OR m.created_at IS NULL)
+      AND (t.id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
+    ORDER BY selected."eventAt" NULLS LAST, m.id
   `;
   return rows
     .map((row) => mapCenturionMessageRow(row, identities))
