@@ -562,6 +562,25 @@ describe('Centurion exhaustive classification and daily reports', () => {
     await rm(fixture.root, { recursive: true, force: true });
   });
 
+  it('requires a reason when unknown-review is only a secondary label', async () => {
+    const fixture = await runFixture({
+      normal: [normalRecord({ id: 'normal-secondary-unknown-no-reason' })],
+      quarantine: [],
+      worker: async () =>
+        response({
+          labels: ['booking_quote', 'unknown_review'],
+          primaryWorkflow: 'booking_quote',
+          secondaryLabels: ['unknown_review'],
+          uncertainty: { level: 'high', reasons: [] },
+        }),
+    });
+    expect(fixture.result.records[0]).toMatchObject({
+      status: 'parse_error',
+      errorCode: 'uncertainty_reason_required',
+    });
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+
   it('rejects a tampered fixed manifest window before worker invocation', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u3-manifest-'));
     const normalSnapshotDir = await writeSnapshot(root, 'normal', 'centurion-nine-day-corpus-v1', [

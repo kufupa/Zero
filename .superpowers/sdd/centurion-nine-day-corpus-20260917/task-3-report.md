@@ -106,3 +106,11 @@ passed
 The real approved GPT-5.6-Luna-Max worker transport remains unavailable in this
 runtime; no live classifications were invented and no production/RDS test or
 external model call was made.
+
+## Residual P2 fix (2026-09-17)
+
+The uncertainty guard now requires a nonempty reason whenever `unknown_review`
+or `other` occurs anywhere in the full label set, including secondary labels.
+An offline regression covers `booking_quote` with secondary `unknown_review` and
+no reason. Focused verification passed with production variables unset: 18
+tests, TypeScript, and Prettier.

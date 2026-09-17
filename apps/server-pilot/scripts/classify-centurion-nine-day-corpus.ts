@@ -111,6 +111,8 @@ export type CenturionClassificationWorkerResponse = {
   origin: MessageOrigin;
   labels: WorkflowClass[];
   primaryWorkflow: WorkflowClass;
+  secondaryLabels?: WorkflowClass[];
+  secondaryWorkflows?: WorkflowClass[];
   evidenceLocations: EvidenceLocation[];
   provenance: WorkerProvenance;
   uncertainty: WorkerUncertainty;
@@ -1232,8 +1234,7 @@ function normalizeWorkerResponse(
   if (
     (businessDirection === 'ambiguous' ||
       origin === 'unknown' ||
-      primaryWorkflow === 'unknown_review' ||
-      primaryWorkflow === 'other') &&
+      labels.some((label) => label === 'unknown_review' || label === 'other')) &&
     uncertainty.reasons.length === 0
   ) {
     throw new WorkerResponseValidationError('uncertainty_reason_required');
