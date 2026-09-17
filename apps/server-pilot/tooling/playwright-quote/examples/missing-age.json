@@ -1,0 +1,6 @@
+{
+  "propertyCode": "HRCEN",
+  "arrivalDate": "2026-10-01",
+  "departureDate": "2026-10-04",
+  "rooms": [{"quantity": 1, "adults": 1, "children": 1, "childAges": []}]
+}

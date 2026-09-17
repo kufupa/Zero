@@ -1,0 +1,14 @@
+{
+  "propertyCode": "HRCEN",
+  "arrivalDate": "2026-09-24",
+  "departureDate": "2026-09-27",
+  "rooms": [{"quantity": 2, "adults": 1, "children": 0, "childAges": []}],
+  "preferences": {
+    "room": "Standard",
+    "bed": "Double",
+    "board": "Breakfast",
+    "flexibility": "Flexible cancellation and/or date modification",
+    "paymentQuestion": "Advance payment by bank transfer possible?"
+  },
+  "interpretation": "Two rooms for two adults, interpreted as one adult per room."
+}
