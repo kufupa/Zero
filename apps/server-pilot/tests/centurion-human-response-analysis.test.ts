@@ -1,6 +1,7 @@
 import {
   CENTURION_WINDOW_END_UTC,
   CENTURION_WINDOW_START_UTC,
+  HUMAN_RESPONSE_SCHEMA_HASH,
   HUMAN_RESPONSE_OPERATIONS,
   TARGET_STATUSES,
   analyseCenturionHumanResponses,
@@ -9,13 +10,14 @@ import {
   type HumanResponseWorkerResponse,
 } from '../scripts/analyse-centurion-human-responses';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
 const WINDOW_START = CENTURION_WINDOW_START_UTC;
 const WINDOW_END = CENTURION_WINDOW_END_UTC;
+const fixtureOutputs = new Set<string>();
 
 function sha(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -186,11 +188,15 @@ async function writeFixture(input: {
   quarantine: string;
   classification: string;
   output: string;
+  snapshotId: string;
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'centurion-u4-'));
   const normal = path.join(root, 'normal');
   const quarantine = path.join(root, 'quarantine');
-  const output = path.join(root, '.private', 'centurion-corpus', 'fixture-u4');
+  // The production contract permits only the actual checkout's ignored root.
+  const snapshotId = path.basename(root);
+  const output = path.resolve(process.cwd(), '.private', 'centurion-corpus', snapshotId);
+  fixtureOutputs.add(output);
   await mkdir(normal, { recursive: true, mode: 0o700 });
   await mkdir(quarantine, { recursive: true, mode: 0o700 });
   const quarantineRecords = input.quarantine ?? [];
@@ -222,7 +228,7 @@ async function writeFixture(input: {
       : '',
     { mode: 0o600 },
   );
-  return { root, normal, quarantine, classification, output };
+  return { root, normal, quarantine, classification, output, snapshotId };
 }
 
 function prediction(
@@ -250,7 +256,20 @@ function prediction(
 
 async function cleanup(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
+  const output = path.resolve(process.cwd(), '.private', 'centurion-corpus', path.basename(root));
+  await rm(output, {
+    recursive: true,
+    force: true,
+  });
+  fixtureOutputs.delete(output);
 }
+
+afterEach(async () => {
+  await Promise.all(
+    [...fixtureOutputs].map((output) => rm(output, { recursive: true, force: true })),
+  );
+  fixtureOutputs.clear();
+});
 
 describe('Centurion blinded human-response analysis', () => {
   it('exports the fixed operation/status vocabularies and chooses a deterministic primary operation', () => {
@@ -294,7 +313,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: {
         predict: async (request) => {
           requests.push(request);
@@ -352,7 +371,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: {
         predict: async () => {
           calls += 1;
@@ -411,7 +430,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: { predict: async () => prediction() },
     });
     expect(result.targets.map((target) => target.targetStatus)).toEqual([
@@ -466,7 +485,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: { predict: async () => prediction() },
     });
     expect(result.targets).toHaveLength(1);
@@ -515,7 +534,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: { predict: async () => prediction() },
     });
     expect(result.targets[0]?.targetStatus).toBe('paired');
@@ -555,7 +574,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: {
         predict: async () => {
           manifestExistsDuringWorker = true;
@@ -600,7 +619,7 @@ describe('Centurion blinded human-response analysis', () => {
       quarantineSnapshotDir: fixture.quarantine,
       classificationPath: fixture.classification,
       outputDir: fixture.output,
-      snapshotId: 'fixture-u4',
+      snapshotId: fixture.snapshotId,
       workerTransport: {
         predict: async (request) => {
           seenWorkerIds.add(request.workerId);
@@ -650,6 +669,403 @@ describe('Centurion blinded human-response analysis', () => {
       'read',
       'unknown',
     ]);
+    await cleanup(fixture.root);
+  });
+
+  it('removes unprefixed quoted replies but fails closed when a target header appears in live text', async () => {
+    const targetBody = 'Private target reply that must remain blinded.';
+    const targetSubject = 'Private target subject header.';
+    const inbound = normalRecord({
+      id: 'inbound-quote-marker',
+      textBody: `Current request.\nOn Tue, 8 Sep 2026 at 09:00, staff wrote:\n${targetBody}`,
+      htmlBody: `<p>Current request.</p><p>On Tue, 8 Sep 2026 at 09:00, staff wrote:</p><p>${targetBody}</p>`,
+    });
+    const target = normalRecord({
+      id: 'outbound-quote-marker',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      subject: targetSubject,
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      textBody: targetBody,
+      htmlBody: `<p>${targetBody}</p>`,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<inbound-quote-marker@example.test>',
+    });
+    const fixture = await writeFixture({ normal: [inbound, target] });
+    const requests: HumanResponseWorkerRequest[] = [];
+    await analyseCenturionHumanResponses({
+      normalSnapshotDir: fixture.normal,
+      quarantineSnapshotDir: fixture.quarantine,
+      classificationPath: fixture.classification,
+      outputDir: fixture.output,
+      snapshotId: fixture.snapshotId,
+      workerTransport: {
+        predict: async (request) => {
+          requests.push(request);
+          return prediction();
+        },
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.input)).not.toContain(targetBody);
+    await cleanup(fixture.root);
+
+    const headerLeakInbound = normalRecord({
+      id: 'inbound-header-leak',
+      textBody: `Current request.\nSubject: ${targetSubject}`,
+      htmlBody: `<p>Current request.</p><p>Subject: ${targetSubject}</p>`,
+    });
+    const headerLeakTarget = {
+      ...target,
+      id: 'outbound-header-leak',
+      messageId: '<outbound-header-leak@example.test>',
+      inReplyTo: '<inbound-header-leak@example.test>',
+      textBody: 'A different private target body.',
+      htmlBody: '<p>A different private target body.</p>',
+    };
+    const headerFixture = await writeFixture({ normal: [headerLeakInbound, headerLeakTarget] });
+    let headerCalls = 0;
+    const headerResult = await analyseCenturionHumanResponses({
+      normalSnapshotDir: headerFixture.normal,
+      quarantineSnapshotDir: headerFixture.quarantine,
+      classificationPath: headerFixture.classification,
+      outputDir: headerFixture.output,
+      snapshotId: headerFixture.snapshotId,
+      workerTransport: {
+        predict: async () => {
+          headerCalls += 1;
+          return prediction();
+        },
+      },
+    });
+    expect(headerCalls).toBe(0);
+    expect(headerResult.targets[0]).toMatchObject({
+      predictionError: 'target_payload_leakage',
+      contextIncomplete: true,
+    });
+    expect(headerResult.predictions[0]?.predictionError).toBe('target_payload_leakage');
+    await cleanup(headerFixture.root);
+  });
+
+  it('requires a hash-verified classified human outbound before creating a target', async () => {
+    const target = normalRecord({
+      id: 'unclassified-outbound',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+    });
+    const fixture = await writeFixture({ normal: [target], classification: [] });
+    let calls = 0;
+    const result = await analyseCenturionHumanResponses({
+      normalSnapshotDir: fixture.normal,
+      quarantineSnapshotDir: fixture.quarantine,
+      classificationPath: fixture.classification,
+      outputDir: fixture.output,
+      snapshotId: fixture.snapshotId,
+      workerTransport: {
+        predict: async () => {
+          calls += 1;
+          return prediction();
+        },
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.targets).toHaveLength(0);
+    await cleanup(fixture.root);
+
+    const invalid = await writeFixture({
+      normal: [target],
+      classification: [
+        classificationFor(target, 'normal', {
+          status: 'worker_error',
+          inputHash: sha('tampered source record'),
+        }),
+      ],
+    });
+    await expect(
+      analyseCenturionHumanResponses({
+        normalSnapshotDir: invalid.normal,
+        quarantineSnapshotDir: invalid.quarantine,
+        classificationPath: invalid.classification,
+        outputDir: invalid.output,
+        snapshotId: invalid.snapshotId,
+      }),
+    ).rejects.toThrow('classification_input_hash_mismatch');
+    await cleanup(invalid.root);
+  });
+
+  it('marks an unknown-time linked inbound context incomplete and never predicts it', async () => {
+    const inbound = normalRecord({
+      id: 'inbound-unknown-time',
+      messageId: '<inbound-unknown-time@example.test>',
+      eventAt: null,
+      receivedAt: null,
+      createdAt: null,
+      dailyIncluded: false,
+    });
+    const target = normalRecord({
+      id: 'outbound-unknown-time',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<inbound-unknown-time@example.test>',
+    });
+    const fixture = await writeFixture({ normal: [inbound, target] });
+    let calls = 0;
+    const result = await analyseCenturionHumanResponses({
+      normalSnapshotDir: fixture.normal,
+      quarantineSnapshotDir: fixture.quarantine,
+      classificationPath: fixture.classification,
+      outputDir: fixture.output,
+      snapshotId: fixture.snapshotId,
+      workerTransport: {
+        predict: async () => {
+          calls += 1;
+          return prediction();
+        },
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.targets[0]).toMatchObject({
+      targetStatus: 'no_eligible_inbound',
+      candidateInboundRecordIds: ['normal:inbound-unknown-time'],
+      contextIncomplete: true,
+      predictionError: 'context_incomplete',
+    });
+    expect(result.predictions[0]).toMatchObject({
+      predictionStatus: 'context_incomplete',
+      predictionError: 'context_incomplete',
+      predictorInput: null,
+    });
+    await cleanup(fixture.root);
+  });
+
+  it('includes identity-linked ambiguous direction candidates instead of treating them as absent', async () => {
+    const ambiguous = normalRecord({
+      id: 'ambiguous-direction',
+      messageId: '<ambiguous-direction@example.test>',
+      direction: 'unknown',
+      messageDirection: 'unknown',
+      businessDirection: 'ambiguous',
+    });
+    const target = normalRecord({
+      id: 'outbound-ambiguous-direction',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<ambiguous-direction@example.test>',
+    });
+    const fixture = await writeFixture({
+      normal: [ambiguous, target],
+      classification: [
+        classificationFor(ambiguous, 'normal', {
+          businessDirection: 'ambiguous',
+          origin: 'unknown',
+        }),
+        classificationFor(target),
+      ],
+    });
+    let calls = 0;
+    const result = await analyseCenturionHumanResponses({
+      normalSnapshotDir: fixture.normal,
+      quarantineSnapshotDir: fixture.quarantine,
+      classificationPath: fixture.classification,
+      outputDir: fixture.output,
+      snapshotId: fixture.snapshotId,
+      workerTransport: {
+        predict: async () => {
+          calls += 1;
+          return prediction();
+        },
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.targets[0]).toMatchObject({
+      targetStatus: 'ambiguous',
+      candidateInboundRecordIds: ['normal:ambiguous-direction'],
+      predictionError: 'target_status_ambiguous',
+    });
+    await cleanup(fixture.root);
+  });
+
+  it('rejects conflicting aliases, unbounded fields, and non-canonical singular predictions', async () => {
+    expect(HUMAN_RESPONSE_SCHEMA_HASH).toMatch(/^[a-f0-9]{64}$/);
+    const inbound = normalRecord({ id: 'inbound-schema' });
+    const target = normalRecord({
+      id: 'outbound-schema',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<inbound-schema@example.test>',
+      textBody: 'Schema target reply.',
+      htmlBody: '<p>Schema target reply.</p>',
+    });
+    const responses: unknown[] = [
+      {
+        ...prediction(),
+        operations: [
+          {
+            operation: 'read',
+            op: 'cancel',
+            needLevel: 'required',
+            requiredFields: [],
+            candidateTool: null,
+            unknownReason: null,
+          },
+        ],
+      },
+      {
+        ...prediction(),
+        operations: [
+          {
+            operation: 'read',
+            needLevel: 'required',
+            requiredFields: Array.from({ length: 33 }, (_, index) => `field-${index}`),
+            candidateTool: null,
+            unknownReason: null,
+          },
+        ],
+      },
+      {
+        opaqueId: 'singular-only',
+        operation: 'read',
+        needLevel: 'required',
+        requiredFields: [],
+        candidateTool: null,
+        unknownReason: null,
+      },
+    ];
+    for (const [index, response] of responses.entries()) {
+      const fixture = await writeFixture({
+        normal: [inbound, { ...target, id: `${target.id}-${index}` }],
+      });
+      const result = await analyseCenturionHumanResponses({
+        normalSnapshotDir: fixture.normal,
+        quarantineSnapshotDir: fixture.quarantine,
+        classificationPath: fixture.classification,
+        outputDir: fixture.output,
+        snapshotId: fixture.snapshotId,
+        maxRetries: 0,
+        workerTransport: { predict: async () => response },
+      });
+      expect(result.predictions[0]).toMatchObject({
+        predictionStatus: 'prediction_error',
+        predictionError: 'prediction_parse_error',
+      });
+      await cleanup(fixture.root);
+    }
+  });
+
+  it('keeps a deep immutable predictor snapshot when the worker mutates its request', async () => {
+    const inbound = normalRecord({ id: 'inbound-mutation' });
+    const target = normalRecord({
+      id: 'outbound-mutation',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<inbound-mutation@example.test>',
+      textBody: 'Mutation target reply.',
+      htmlBody: '<p>Mutation target reply.</p>',
+    });
+    const fixture = await writeFixture({ normal: [inbound, target] });
+    let requestHash = '';
+    const result = await analyseCenturionHumanResponses({
+      normalSnapshotDir: fixture.normal,
+      quarantineSnapshotDir: fixture.quarantine,
+      classificationPath: fixture.classification,
+      outputDir: fixture.output,
+      snapshotId: fixture.snapshotId,
+      workerTransport: {
+        predict: async (request) => {
+          requestHash = request.inputHash;
+          request.input.triggeringInbound.textBody = 'worker mutation';
+          request.input.triggeringInbound.attachments.push({
+            attachmentId: null,
+            filename: 'worker-mutation',
+            contentType: 'text/plain',
+            byteSize: 1,
+            contentId: null,
+            availability: 'available',
+            sourceRecordId: 'worker',
+          });
+          request.input.earlierContext.push({ ...request.input.triggeringInbound });
+          return prediction();
+        },
+      },
+    });
+    expect(result.predictions[0]?.predictionStatus).toBe('frozen');
+    expect(result.predictions[0]?.inputHash).toBe(requestHash);
+    expect(result.predictions[0]?.predictorInput?.triggeringInbound.textBody).toContain(
+      'Please quote a room',
+    );
+    expect(result.predictions[0]?.predictorInput?.triggeringInbound.textBody).not.toContain(
+      'worker mutation',
+    );
+    expect(result.predictions[0]?.predictorInput?.earlierContext).toHaveLength(0);
+    await cleanup(fixture.root);
+  });
+
+  it('rejects the existing apps/server-pilot private directory and accepts only the ignored repo root', async () => {
+    const inbound = normalRecord({ id: 'inbound-private-root' });
+    const target = normalRecord({
+      id: 'outbound-private-root',
+      direction: 'outbound',
+      messageDirection: 'outbound',
+      businessDirection: 'outbound',
+      eventAt: '2026-09-08T09:00:00.000Z',
+      sentAt: '2026-09-08T09:00:00.000Z',
+      receivedAt: null,
+      confirmedOutbound: true,
+      queueState: 'sent',
+      inReplyTo: '<inbound-private-root@example.test>',
+    });
+    const fixture = await writeFixture({ normal: [inbound, target] });
+    const unsafeOutput = path.join(
+      process.cwd(),
+      'apps',
+      'server-pilot',
+      '.private',
+      'centurion-corpus',
+      'fixture-u4',
+    );
+    await expect(
+      analyseCenturionHumanResponses({
+        normalSnapshotDir: fixture.normal,
+        quarantineSnapshotDir: fixture.quarantine,
+        classificationPath: fixture.classification,
+        outputDir: unsafeOutput,
+        snapshotId: fixture.snapshotId,
+      }),
+    ).rejects.toThrow('output_private_root_invalid');
     await cleanup(fixture.root);
   });
 });

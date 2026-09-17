@@ -25,6 +25,8 @@ export {
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
 import { DEFAULT_LUNA_MODEL_ID } from './classify-centurion-nine-day-corpus.js';
 
+const ANALYSIS_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
 export const HUMAN_RESPONSE_ANALYSIS_SCHEMA_VERSION =
   'centurion-human-response-analysis-v1' as const;
 export const TARGET_MANIFEST_SCHEMA_VERSION = 'centurion-target-manifest-v1' as const;
@@ -67,6 +69,71 @@ export const HUMAN_RESPONSE_NEED_LEVELS = [
 
 export type HumanResponseNeedLevel = (typeof HUMAN_RESPONSE_NEED_LEVELS)[number];
 
+export const HUMAN_RESPONSE_PREDICTION_LIMITS = {
+  opaqueIdMaxLength: 256,
+  operationCountMax: HUMAN_RESPONSE_OPERATIONS.length,
+  requiredFieldCountMax: 32,
+  requiredFieldMaxLength: 256,
+  candidateToolMaxLength: 256,
+  unknownReasonMaxLength: 2048,
+} as const;
+
+/**
+ * The hash covers the complete wire contract, including canonical names,
+ * compatibility aliases, required/nullability rules, and validation bounds.
+ * A vocabulary-only hash is not sufficient to bind a worker to this parser.
+ */
+export const HUMAN_RESPONSE_PREDICTION_SCHEMA = {
+  schemaVersion: PREDICTION_FREEZE_SCHEMA_VERSION,
+  request: {
+    required: [
+      'workerId',
+      'modelId',
+      'modelVersion',
+      'promptVersion',
+      'promptHash',
+      'schemaVersion',
+      'schemaHash',
+      'inputHash',
+      'input',
+    ],
+  },
+  response: {
+    required: [
+      'opaqueId',
+      'operations',
+      'primaryOperation',
+      'needLevel',
+      'requiredFields',
+      'candidateTool',
+      'unknownReason',
+    ],
+    aliases: {
+      primaryOperation: 'primary_operation',
+      needLevel: 'need_level',
+      requiredFields: 'required_fields',
+      candidateTool: 'candidate_tool',
+      unknownReason: 'unknown_reason',
+    },
+    optional: ['contextIncomplete'],
+  },
+  operation: {
+    required: ['operation', 'needLevel', 'requiredFields', 'candidateTool', 'unknownReason'],
+    aliases: {
+      operation: 'op',
+      needLevel: 'need_level',
+      requiredFields: 'required_fields',
+      candidateTool: 'candidate_tool',
+      unknownReason: 'unknown_reason',
+    },
+  },
+  vocabularies: {
+    operations: HUMAN_RESPONSE_OPERATIONS,
+    needLevels: HUMAN_RESPONSE_NEED_LEVELS,
+  },
+  limits: HUMAN_RESPONSE_PREDICTION_LIMITS,
+} as const;
+
 export const DEFAULT_MAX_WORKERS = 5 as const;
 export const DEFAULT_MAX_RETRIES = 2 as const;
 export const DEFAULT_CAUSAL_WINDOW_DAYS = 30 as const;
@@ -81,13 +148,7 @@ export const HUMAN_RESPONSE_PROMPT_HASH = sha256(
   ].join('\n'),
 );
 
-export const HUMAN_RESPONSE_SCHEMA_HASH = sha256(
-  JSON.stringify({
-    schemaVersion: PREDICTION_FREEZE_SCHEMA_VERSION,
-    operations: HUMAN_RESPONSE_OPERATIONS,
-    needLevels: HUMAN_RESPONSE_NEED_LEVELS,
-  }),
-);
+export const HUMAN_RESPONSE_SCHEMA_HASH = sha256(JSON.stringify(HUMAN_RESPONSE_PREDICTION_SCHEMA));
 
 type JsonRecord = Record<string, unknown>;
 
@@ -354,6 +415,8 @@ type TargetMatch = {
   eligible: CorpusMessage[];
   triggeringInbound: CorpusMessage | null;
   method: 'in_reply_to' | 'reference' | 'thread' | null;
+  contextIncomplete: boolean;
+  contextIncompleteReasons: string[];
 };
 
 type NormalizedPrediction = HumanResponseWorkerResponse;
@@ -374,6 +437,18 @@ function sha256(value: string): string {
 
 function objectHash(value: unknown): string {
   return sha256(JSON.stringify(value));
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function fail(code: string): never {
@@ -698,6 +773,24 @@ function normalizedTargetIds(target: CorpusMessage): Set<string> {
   return ids;
 }
 
+type MatchingDirection = 'inbound' | 'outbound' | 'ambiguous' | 'unknown';
+
+/**
+ * Preserve ambiguity when source evidence and the U3 classification disagree.
+ * A linked ambiguous row is a candidate, never an eligible predictor trigger.
+ */
+function matchingDirection(message: CorpusMessage): MatchingDirection {
+  const classified = message.classification?.businessDirection;
+  const directions = new Set<MatchingDirection>([message.sourceDirection]);
+  if (classified === 'inbound' || classified === 'outbound' || classified === 'ambiguous')
+    directions.add(classified);
+  if (directions.has('ambiguous')) return 'ambiguous';
+  if (directions.has('inbound') && directions.has('outbound')) return 'ambiguous';
+  if (directions.has('inbound')) return 'inbound';
+  if (directions.has('outbound')) return 'outbound';
+  return 'unknown';
+}
+
 function matchStrength(
   target: CorpusMessage,
   inbound: CorpusMessage,
@@ -734,120 +827,90 @@ function matchTarget(
     const candidateAt = Date.parse(candidate.eventAt);
     return candidateAt < targetAt && candidateAt >= targetAt - causalWindowMs;
   });
-  const candidates = causalCandidates;
-  const availableCandidates = candidates.filter((candidate) => candidate.available);
+  const unknownTimeCandidates = relatedInbound.filter((candidate) => candidate.eventAt === null);
+  const candidates = [...causalCandidates, ...unknownTimeCandidates].sort(compareMessages);
+  const contextIncompleteReasons = unknownTimeCandidates.map(
+    (candidate) => `${candidate.recordKey}:event_time_unknown`,
+  );
+  const contextIncomplete = contextIncompleteReasons.length > 0;
+  const availableCandidates = causalCandidates.filter(
+    (candidate) => candidate.available && matchingDirection(candidate) === 'inbound',
+  );
+  const ambiguousCandidates = causalCandidates.filter(
+    (candidate) => matchingDirection(candidate) === 'ambiguous',
+  );
+  const result = (
+    status: TargetStatus,
+    triggeringInbound: CorpusMessage | null = null,
+    method: TargetMatch['method'] = null,
+  ): TargetMatch => ({
+    status,
+    candidates,
+    eligible: availableCandidates,
+    triggeringInbound,
+    method,
+    contextIncomplete,
+    contextIncompleteReasons,
+  });
+  if (ambiguousCandidates.length > 0) return result('ambiguous');
   if (availableCandidates.length === 0) {
-    return {
-      status: relatedInbound.length === 0 ? 'outbound_only' : 'no_eligible_inbound',
-      candidates,
-      eligible: [],
-      triggeringInbound: null,
-      method: null,
-    };
+    return result(relatedInbound.length === 0 ? 'outbound_only' : 'no_eligible_inbound');
   }
   const inReplyTo = candidates.filter(
-    (candidate) => matchStrength(target, candidate) === 'in_reply_to',
+    (candidate) =>
+      matchStrength(target, candidate) === 'in_reply_to' &&
+      matchingDirection(candidate) === 'inbound' &&
+      candidate.eventAt !== null,
   );
   if (inReplyTo.length > 1) {
-    return {
-      status: 'ambiguous',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: null,
-      method: null,
-    };
+    return result('ambiguous');
   }
   if (inReplyTo.length === 1 && inReplyTo[0]!.available) {
-    return {
-      status: 'paired',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: inReplyTo[0]!,
-      method: 'in_reply_to',
-    };
+    return result('paired', inReplyTo[0]!, 'in_reply_to');
   }
   if (inReplyTo.length === 1) {
-    return {
-      status: 'no_eligible_inbound',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: null,
-      method: null,
-    };
+    return result('no_eligible_inbound');
   }
   const references = candidates.filter(
-    (candidate) => matchStrength(target, candidate) === 'reference',
+    (candidate) =>
+      matchStrength(target, candidate) === 'reference' &&
+      matchingDirection(candidate) === 'inbound' &&
+      candidate.eventAt !== null,
   );
   if (references.length > 1) {
-    return {
-      status: 'ambiguous',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: null,
-      method: null,
-    };
+    return result('ambiguous');
   }
   if (references.length === 1 && references[0]!.available) {
-    return {
-      status: 'paired',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: references[0]!,
-      method: 'reference',
-    };
+    return result('paired', references[0]!, 'reference');
   }
   if (references.length === 1) {
-    return {
-      status: 'no_eligible_inbound',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: null,
-      method: null,
-    };
+    return result('no_eligible_inbound');
   }
   const threadCandidates = candidates.filter(
-    (candidate) => matchStrength(target, candidate) === 'thread',
+    (candidate) =>
+      matchStrength(target, candidate) === 'thread' &&
+      matchingDirection(candidate) === 'inbound' &&
+      candidate.eventAt !== null,
   );
   if (threadCandidates.length === 1 && threadCandidates[0]!.available) {
     const candidate = threadCandidates[0]!;
-    return {
-      status: 'paired',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: candidate,
-      method: 'thread',
-    };
+    return result('paired', candidate, 'thread');
   }
   if (threadCandidates.length === 1) {
-    return {
-      status: 'no_eligible_inbound',
-      candidates,
-      eligible: availableCandidates,
-      triggeringInbound: null,
-      method: null,
-    };
+    return result('no_eligible_inbound');
   }
-  return {
-    status: 'ambiguous',
-    candidates,
-    eligible: availableCandidates,
-    triggeringInbound: null,
-    method: null,
-  };
+  return result('ambiguous');
 }
 
 function stripQuotedText(value: string): string {
   const lines = value.split(/\r?\n/);
   const kept: string[] = [];
-  let quoted = false;
   for (const line of lines) {
-    if (/^\s*>/.test(line) || /^\s*(on .+wrote:|-----original message-----)\s*$/i.test(line)) {
-      quoted = true;
-      continue;
-    }
-    if (quoted && /^\s*(from|sent|to|subject):/i.test(line)) continue;
-    if (quoted && line.trim() === '') continue;
-    if (quoted) quoted = false;
+    // A marker without `>` is still a quote boundary. Drop its complete
+    // suffix; resuming on the next unprefixed line would leak quoted replies.
+    if (/^\s*(on .+wrote:|-----original message-----|begin forwarded message:?)\s*$/i.test(line))
+      break;
+    if (/^\s*>/.test(line)) continue;
     kept.push(line);
   }
   return kept.join('\n').trim();
@@ -857,7 +920,15 @@ function stripQuotedHtml(value: string): string {
   return value
     .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
     .replace(
+      /<div[^>]*(?:id|class)=["'][^"']*(?:gmail_quote|yahoo_quoted|moz-cite-prefix)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
+      '',
+    )
+    .replace(
       /<div[^>]*class=["'][^"']*(?:gmail_quote|yahoo_quoted)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
+      '',
+    )
+    .replace(
+      /<(?:p|div)[^>]*>\s*(?:on .+wrote:|-----original message-----|begin forwarded message:?)\s*<\/(?:p|div)>[\s\S]*$/i,
       '',
     )
     .trim();
@@ -890,36 +961,96 @@ function bodyHash(message: CorpusMessage): string {
   return objectHash({ textBody: message.body, htmlBody: message.htmlBody });
 }
 
+function normalizedLeakageText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(?:amp|lt|gt|quot|apos|#39);/gi, ' ')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+type ForbiddenPredictorMaterial = {
+  ids: ReadonlySet<string>;
+  values: ReadonlySet<string>;
+};
+
+function forbiddenHeaderValues(messages: readonly CorpusMessage[]): Set<string> {
+  const values = new Set<string>();
+  for (const message of messages) {
+    const candidates = [
+      message.sourceRecordId,
+      message.recordKey,
+      message.messageId,
+      message.threadId,
+      message.eventAt,
+      message.subject,
+      message.inReplyTo,
+      ...message.references,
+      ...message.from,
+      ...message.to,
+      ...message.cc,
+      ...message.bcc,
+      ...message.attachments.flatMap((attachment) => [attachment.filename, attachment.contentId]),
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim() !== '') values.add(candidate);
+    }
+  }
+  return values;
+}
+
+function isForbiddenPredictorValue(value: string, forbidden: ForbiddenPredictorMaterial): boolean {
+  if (forbidden.values.has(value)) return true;
+  const normalized = normalizedLeakageText(value);
+  return (
+    normalized.length >= 8 &&
+    [...forbidden.values].some((item) => {
+      const normalizedItem = normalizedLeakageText(item);
+      return normalizedItem.length >= 8 && normalizedItem === normalized;
+    })
+  );
+}
+
 function contextMessage(
   message: CorpusMessage,
   role: HumanResponsePredictorMessage['role'],
-  forbiddenIds: ReadonlySet<string>,
+  forbidden: ForbiddenPredictorMaterial,
 ): HumanResponsePredictorMessage {
   const references = message.references
-    .filter((reference) => !forbiddenIds.has(canonicalMessageId(reference) ?? ''))
+    .filter((reference) => !forbidden.ids.has(canonicalMessageId(reference) ?? ''))
     .map((reference) => reference);
-  const inReplyTo = forbiddenIds.has(canonicalMessageId(message.inReplyTo) ?? '')
+  const inReplyTo = forbidden.ids.has(canonicalMessageId(message.inReplyTo) ?? '')
     ? null
     : message.inReplyTo;
   return {
     role,
     source: message.source,
-    sourceRecordId: message.sourceRecordId,
-    messageId: forbiddenIds.has(canonicalMessageId(message.messageId) ?? '')
+    sourceRecordId: isForbiddenPredictorValue(message.sourceRecordId, forbidden)
+      ? 'redacted'
+      : message.sourceRecordId,
+    messageId: forbidden.ids.has(canonicalMessageId(message.messageId) ?? '')
       ? null
       : message.messageId,
-    threadId: message.threadId,
+    threadId:
+      message.threadId && !isForbiddenPredictorValue(message.threadId, forbidden)
+        ? message.threadId
+        : null,
     eventAt: message.eventAt!,
-    subject: message.subject,
+    subject: isForbiddenPredictorValue(message.subject, forbidden) ? '' : message.subject,
     textBody: stripQuotedText(message.body),
     htmlBody: stripQuotedHtml(message.htmlBody),
-    from: [...message.from],
-    to: [...message.to],
-    cc: [...message.cc],
-    bcc: [...message.bcc],
+    from: message.from.filter((value) => !isForbiddenPredictorValue(value, forbidden)),
+    to: message.to.filter((value) => !isForbiddenPredictorValue(value, forbidden)),
+    cc: message.cc.filter((value) => !isForbiddenPredictorValue(value, forbidden)),
+    bcc: message.bcc.filter((value) => !isForbiddenPredictorValue(value, forbidden)),
     inReplyTo,
     references,
-    attachments: safeAttachmentEvidence(message),
+    attachments: safeAttachmentEvidence(message).map((attachment) =>
+      isForbiddenPredictorValue(attachment.filename, forbidden)
+        ? { ...attachment, filename: '', contentId: null }
+        : attachment,
+    ),
     bodyHash: bodyHash(message),
     headerHash: headerHash(message),
     attachmentHash: attachmentHash(message),
@@ -968,10 +1099,14 @@ function buildPredictorInput(
   for (const message of [target, ...forbiddenMessages]) {
     for (const id of messageIdSet(message)) forbiddenIds.add(id);
   }
-  const triggerInput = contextMessage(trigger, 'triggering_inbound', forbiddenIds);
+  const forbidden: ForbiddenPredictorMaterial = {
+    ids: forbiddenIds,
+    values: forbiddenHeaderValues([target, ...forbiddenMessages]),
+  };
+  const triggerInput = contextMessage(trigger, 'triggering_inbound', forbidden);
   const earlierContext = contextCandidates
     .filter((message) => message.recordKey !== trigger.recordKey && message.available)
-    .map((message) => contextMessage(message, 'earlier_context', forbiddenIds));
+    .map((message) => contextMessage(message, 'earlier_context', forbidden));
   const input: HumanResponsePredictorInput = {
     schemaVersion: HUMAN_RESPONSE_ANALYSIS_SCHEMA_VERSION,
     triggeringInbound: triggerInput,
@@ -980,19 +1115,21 @@ function buildPredictorInput(
     contextIncompleteReasons: [...new Set(contextIncompleteReasons)].sort(),
   };
   const serialized = JSON.stringify(input);
-  const targetFragments = [target.body, target.htmlBody]
-    .map((value) => value.trim())
+  const forbiddenFragments = [
+    target.body,
+    target.htmlBody,
+    ...forbiddenMessages
+      .filter((message) => message.recordKey !== target.recordKey)
+      .flatMap((message) => [message.body, message.htmlBody]),
+    ...forbidden.values,
+  ]
+    .map((value) => normalizedLeakageText(value))
     .filter((value) => value.length >= 8);
-  const laterFragments = forbiddenMessages
-    .filter((message) => message.recordKey !== target.recordKey)
-    .flatMap((message) => [message.body, message.htmlBody])
-    .map((value) => value.trim())
-    .filter((value) => value.length >= 8);
-  const forbiddenFragments = [...targetFragments, ...laterFragments];
-  const leakage = forbiddenFragments.some((fragment) => serialized.includes(fragment))
+  const normalizedSerialized = normalizedLeakageText(serialized);
+  const leakage = forbiddenFragments.some((fragment) => normalizedSerialized.includes(fragment))
     ? 'target_or_post_target_payload_detected'
     : null;
-  return { input, leakage };
+  return { input: deepFreeze(input), leakage };
 }
 
 function operation(value: unknown): value is HumanResponseOperation {
@@ -1016,36 +1153,86 @@ export function choosePrimaryOperation(
   return OPERATION_PRIORITY.find((item) => present.has(item)) ?? 'unknown';
 }
 
+function hasOwn(record: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function aliasedValue(record: JsonRecord, canonical: string, alias: string): unknown {
+  const hasCanonical = hasOwn(record, canonical);
+  const hasAlias = hasOwn(record, alias);
+  if (hasCanonical && hasAlias && !jsonEqual(record[canonical], record[alias]))
+    throw new PredictionResponseError('prediction_parse_error');
+  if (hasCanonical) return record[canonical];
+  if (hasAlias) return record[alias];
+  throw new PredictionResponseError('prediction_parse_error');
+}
+
+function rejectUnknownKeys(record: JsonRecord, allowed: ReadonlySet<string>): void {
+  if (Object.keys(record).some((key) => !allowed.has(key)))
+    throw new PredictionResponseError('prediction_parse_error');
+}
+
+function boundedString(value: unknown, maxLength: number): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > maxLength) return null;
+  return value;
+}
+
 function normalizePredictionOperation(value: unknown): HumanResponsePredictionOperation {
   if (!isRecord(value)) throw new PredictionResponseError('prediction_parse_error');
-  const rawOperation = value.operation ?? value.op;
-  const rawNeedLevel = value.needLevel ?? value.need_level;
-  const rawRequiredFields = value.requiredFields ?? value.required_fields;
-  const rawCandidateTool = value.candidateTool ?? value.candidate_tool;
-  const rawUnknownReason = value.unknownReason ?? value.unknown_reason;
+  rejectUnknownKeys(
+    value,
+    new Set([
+      'operation',
+      'op',
+      'needLevel',
+      'need_level',
+      'requiredFields',
+      'required_fields',
+      'candidateTool',
+      'candidate_tool',
+      'unknownReason',
+      'unknown_reason',
+    ]),
+  );
+  const rawOperation = aliasedValue(value, 'operation', 'op');
+  const rawNeedLevel = aliasedValue(value, 'needLevel', 'need_level');
+  const rawRequiredFields = aliasedValue(value, 'requiredFields', 'required_fields');
+  const rawCandidateTool = aliasedValue(value, 'candidateTool', 'candidate_tool');
+  const rawUnknownReason = aliasedValue(value, 'unknownReason', 'unknown_reason');
   if (!operation(rawOperation) || !needLevel(rawNeedLevel))
     throw new PredictionResponseError('prediction_parse_error');
   let requiredFields: string[];
   try {
-    requiredFields = strictStrings(rawRequiredFields ?? [], 'prediction_required_fields_invalid');
+    requiredFields = strictStrings(rawRequiredFields, 'prediction_required_fields_invalid');
   } catch {
     throw new PredictionResponseError('prediction_parse_error');
   }
-  if (requiredFields.some((field) => field.trim() === ''))
-    throw new PredictionResponseError('prediction_parse_error');
   if (
-    rawCandidateTool !== null &&
-    rawCandidateTool !== undefined &&
-    typeof rawCandidateTool !== 'string'
+    requiredFields.length > HUMAN_RESPONSE_PREDICTION_LIMITS.requiredFieldCountMax ||
+    requiredFields.some(
+      (field) =>
+        field.trim() === '' ||
+        field.length > HUMAN_RESPONSE_PREDICTION_LIMITS.requiredFieldMaxLength,
+    )
   )
     throw new PredictionResponseError('prediction_parse_error');
-  if (
-    rawUnknownReason !== null &&
-    rawUnknownReason !== undefined &&
-    typeof rawUnknownReason !== 'string'
-  )
+  const candidateTool = boundedString(
+    rawCandidateTool,
+    HUMAN_RESPONSE_PREDICTION_LIMITS.candidateToolMaxLength,
+  );
+  const unknownReason = boundedString(
+    rawUnknownReason,
+    HUMAN_RESPONSE_PREDICTION_LIMITS.unknownReasonMaxLength,
+  );
+  if (candidateTool === null && rawCandidateTool !== null)
     throw new PredictionResponseError('prediction_parse_error');
-  const unknownReason = rawUnknownReason ?? null;
+  if (unknownReason === null && rawUnknownReason !== null)
+    throw new PredictionResponseError('prediction_parse_error');
   if (
     (rawOperation === 'unknown' || rawNeedLevel === 'unknown') &&
     (!unknownReason || unknownReason.trim() === '')
@@ -1055,11 +1242,11 @@ function normalizePredictionOperation(value: unknown): HumanResponsePredictionOp
     operation: rawOperation,
     needLevel: rawNeedLevel,
     requiredFields,
-    candidateTool: rawCandidateTool ?? null,
+    candidateTool,
     unknownReason,
     need_level: rawNeedLevel,
     required_fields: [...requiredFields],
-    candidate_tool: rawCandidateTool ?? null,
+    candidate_tool: candidateTool,
     unknown_reason: unknownReason,
   };
 }
@@ -1074,63 +1261,77 @@ function normalizePrediction(value: unknown): NormalizedPrediction {
     }
   }
   if (!isRecord(parsed)) throw new PredictionResponseError('prediction_parse_error');
-  const opaqueId = text(parsed.opaqueId);
-  if (!opaqueId) throw new PredictionResponseError('prediction_parse_error');
-  const rawOperations = parsed.operations;
-  const operations = Array.isArray(rawOperations)
-    ? rawOperations.map(normalizePredictionOperation)
-    : parsed.operation !== undefined || parsed.primaryOperation !== undefined
-      ? [
-          normalizePredictionOperation({
-            operation: parsed.operation ?? parsed.primaryOperation,
-            needLevel: parsed.needLevel ?? parsed.need_level,
-            requiredFields: parsed.requiredFields ?? parsed.required_fields,
-            candidateTool: parsed.candidateTool ?? parsed.candidate_tool,
-            unknownReason: parsed.unknownReason ?? parsed.unknown_reason,
-          }),
-        ]
-      : [];
-  if (operations.length === 0 || operations.length > HUMAN_RESPONSE_OPERATIONS.length)
+  rejectUnknownKeys(
+    parsed,
+    new Set([
+      'opaqueId',
+      'operations',
+      'primaryOperation',
+      'primary_operation',
+      'needLevel',
+      'need_level',
+      'requiredFields',
+      'required_fields',
+      'candidateTool',
+      'candidate_tool',
+      'unknownReason',
+      'unknown_reason',
+      'contextIncomplete',
+    ]),
+  );
+  const opaqueId = boundedString(
+    parsed.opaqueId,
+    HUMAN_RESPONSE_PREDICTION_LIMITS.opaqueIdMaxLength,
+  );
+  if (!opaqueId || opaqueId.trim() === '')
     throw new PredictionResponseError('prediction_parse_error');
+  if (!hasOwn(parsed, 'operations') || !Array.isArray(parsed.operations))
+    throw new PredictionResponseError('prediction_parse_error');
+  if (
+    parsed.operations.length === 0 ||
+    parsed.operations.length > HUMAN_RESPONSE_PREDICTION_LIMITS.operationCountMax
+  )
+    throw new PredictionResponseError('prediction_parse_error');
+  const operations = parsed.operations.map(normalizePredictionOperation);
   if (new Set(operations.map((item) => item.operation)).size !== operations.length)
     throw new PredictionResponseError('prediction_parse_error');
-  const primaryOperation = choosePrimaryOperation(operations.map((item) => item.operation));
-  const rawPrimary = parsed.primaryOperation ?? parsed.primary_operation;
-  if (rawPrimary !== undefined && rawPrimary !== primaryOperation)
+  const primaryOperation = aliasedValue(parsed, 'primaryOperation', 'primary_operation');
+  if (!operation(primaryOperation)) throw new PredictionResponseError('prediction_parse_error');
+  const expectedPrimary = choosePrimaryOperation(operations.map((item) => item.operation));
+  if (primaryOperation !== expectedPrimary)
     throw new PredictionResponseError('prediction_parse_error');
-  const primary = operations.find((item) => item.operation === primaryOperation)!;
-  const topNeed = parsed.needLevel ?? parsed.need_level;
-  const topRequired = parsed.requiredFields ?? parsed.required_fields;
-  const topCandidate = parsed.candidateTool ?? parsed.candidate_tool;
-  const topUnknown = parsed.unknownReason ?? parsed.unknown_reason;
-  if (topNeed !== undefined && topNeed !== primary.needLevel)
+  const primary = operations.find((item) => item.operation === expectedPrimary)!;
+  const topNeed = aliasedValue(parsed, 'needLevel', 'need_level');
+  const topRequired = aliasedValue(parsed, 'requiredFields', 'required_fields');
+  const topCandidate = aliasedValue(parsed, 'candidateTool', 'candidate_tool');
+  const topUnknown = aliasedValue(parsed, 'unknownReason', 'unknown_reason');
+  if (topNeed !== primary.needLevel || !needLevel(topNeed))
     throw new PredictionResponseError('prediction_parse_error');
-  if (topRequired !== undefined) {
-    let normalizedTopRequired: string[];
-    try {
-      normalizedTopRequired = strictStrings(topRequired, 'prediction_required_fields_invalid');
-    } catch {
-      throw new PredictionResponseError('prediction_parse_error');
-    }
-    if (JSON.stringify(normalizedTopRequired) !== JSON.stringify(primary.requiredFields))
-      throw new PredictionResponseError('prediction_parse_error');
+  let normalizedTopRequired: string[];
+  try {
+    normalizedTopRequired = strictStrings(topRequired, 'prediction_required_fields_invalid');
+  } catch {
+    throw new PredictionResponseError('prediction_parse_error');
   }
-  if (topCandidate !== undefined && topCandidate !== primary.candidateTool)
+  if (
+    normalizedTopRequired.length > HUMAN_RESPONSE_PREDICTION_LIMITS.requiredFieldCountMax ||
+    JSON.stringify(normalizedTopRequired) !== JSON.stringify(primary.requiredFields)
+  )
     throw new PredictionResponseError('prediction_parse_error');
-  if (topUnknown !== undefined && topUnknown !== primary.unknownReason)
+  if (topCandidate !== primary.candidateTool || topUnknown !== primary.unknownReason)
     throw new PredictionResponseError('prediction_parse_error');
-  const contextIncomplete = parsed.contextIncomplete === true;
-  if (parsed.contextIncomplete !== undefined && typeof parsed.contextIncomplete !== 'boolean')
+  const contextIncomplete = parsed.contextIncomplete;
+  if (contextIncomplete !== undefined && typeof contextIncomplete !== 'boolean')
     throw new PredictionResponseError('prediction_parse_error');
   return {
     opaqueId,
     operations,
-    primaryOperation,
+    primaryOperation: expectedPrimary,
     needLevel: primary.needLevel,
     requiredFields: [...primary.requiredFields],
     candidateTool: primary.candidateTool,
     unknownReason: primary.unknownReason,
-    ...(contextIncomplete ? { contextIncomplete: true } : {}),
+    ...(contextIncomplete === true ? { contextIncomplete: true } : {}),
   };
 }
 
@@ -1174,7 +1375,6 @@ async function ensurePrivateOutputDirectory(
   const absoluteOutput = path.resolve(outputDir);
   const corpusRoot = path.dirname(absoluteOutput);
   const privateRoot = path.dirname(corpusRoot);
-  const repoRoot = path.dirname(privateRoot);
   if (
     path.basename(privateRoot) !== '.private' ||
     path.basename(corpusRoot) !== 'centurion-corpus' ||
@@ -1182,15 +1382,18 @@ async function ensurePrivateOutputDirectory(
     !/^[A-Za-z0-9._-]+$/.test(snapshotId)
   )
     return fail('output_private_root_invalid');
-  const repoEntry = await lstat(repoRoot).catch(() => null);
-  if (!repoEntry || repoEntry.isSymbolicLink() || !repoEntry.isDirectory())
+  const expectedRepoEntry = await lstat(ANALYSIS_REPO_ROOT).catch(() => null);
+  if (!expectedRepoEntry || expectedRepoEntry.isSymbolicLink() || !expectedRepoEntry.isDirectory())
     return fail('private_parent_invalid');
-  if (
-    path.basename(repoRoot) === 'server-pilot' &&
-    path.basename(path.dirname(repoRoot)) === 'apps'
-  )
+  const canonicalRepo = await realpath(ANALYSIS_REPO_ROOT);
+  if (path.resolve(path.dirname(privateRoot)) !== ANALYSIS_REPO_ROOT)
     return fail('output_private_root_invalid');
-  const canonicalRepo = await realpath(repoRoot);
+  const expectedPrivate = path.join(canonicalRepo, '.private');
+  if (path.resolve(privateRoot) !== path.resolve(path.join(ANALYSIS_REPO_ROOT, '.private')))
+    return fail('output_private_root_invalid');
+  const privateEntry = await lstat(privateRoot).catch(() => null);
+  if (!privateEntry || privateEntry.isSymbolicLink() || !privateEntry.isDirectory())
+    return fail('private_root_symlink');
   async function ensure(directory: string, code: string): Promise<string> {
     const current = await lstat(directory).catch(() => null);
     if (!current) await mkdir(directory, { mode: 0o700 });
@@ -1200,8 +1403,12 @@ async function ensurePrivateOutputDirectory(
     return realpath(directory);
   }
   const canonicalPrivate = await ensure(privateRoot, 'private_root_symlink');
-  if (canonicalPrivate !== path.join(canonicalRepo, '.private'))
-    return fail('private_root_symlink');
+  if (canonicalPrivate !== expectedPrivate) return fail('private_root_symlink');
+  const privateIgnore = await readFile(path.join(canonicalPrivate, '.gitignore'), 'utf8').catch(
+    () => '',
+  );
+  if (!privateIgnore.split(/\r?\n/).some((line) => line.trim() === '*'))
+    return fail('private_root_not_ignored');
   const canonicalCorpus = await ensure(corpusRoot, 'private_parent_symlink');
   if (canonicalCorpus !== path.join(canonicalPrivate, 'centurion-corpus'))
     return fail('private_parent_symlink');
@@ -1222,6 +1429,7 @@ function basePredictionRecord(
   target: HumanResponseTargetManifestRecord,
   modelId: string,
   modelVersion: string,
+  predictorInput: HumanResponsePredictorInput | null = null,
 ): HumanResponsePredictionFreezeRecord {
   const error = target.predictionError;
   return {
@@ -1240,13 +1448,15 @@ function basePredictionRecord(
     targetHeaderHash: target.targetHeaderHash,
     targetAttachmentHash: target.targetAttachmentHash,
     preTargetBodyHashes: [...target.preTargetBodyHashes],
-    predictorInput: null,
+    predictorInput,
     predictionStatus: error
-      ? 'not_attempted'
+      ? error === 'context_incomplete'
+        ? 'context_incomplete'
+        : 'not_attempted'
       : target.contextIncomplete
         ? 'context_incomplete'
         : 'prediction_error',
-    predictionError: error,
+    predictionError: error ?? (target.contextIncomplete ? 'context_incomplete' : null),
     opaqueWorkerId: null,
     attempts: 0,
     retries: 0,
@@ -1271,14 +1481,17 @@ function basePredictionRecord(
 }
 
 function isHumanOutbound(message: CorpusMessage): boolean {
-  if (message.sourceDirection !== 'outbound' || !message.eventAt) return false;
-  return !(
-    message.classification?.status === 'classified' && message.classification.origin === 'automated'
+  return (
+    message.eventAt !== null &&
+    matchingDirection(message) === 'outbound' &&
+    message.classification?.status === 'classified' &&
+    message.classification.businessDirection === 'outbound' &&
+    message.classification.origin === 'human'
   );
 }
 
 function directionIsInbound(message: CorpusMessage): boolean {
-  return message.sourceDirection === 'inbound';
+  return matchingDirection(message) === 'inbound' || matchingDirection(message) === 'ambiguous';
 }
 
 function targetManifestRecord(
@@ -1291,13 +1504,19 @@ function targetManifestRecord(
   const hashes = targetHashRecord(target);
   const pendingAtCutoff = Date.parse(target.eventAt!) > cutoffAt;
   const lateResponse = pendingAtCutoff;
-  const contextIncompleteReasons = input?.contextIncompleteReasons ?? [];
-  const contextIncomplete = Boolean(input?.contextIncomplete || leakage);
+  const contextIncompleteReasons = [
+    ...match.contextIncompleteReasons,
+    ...(input?.contextIncompleteReasons ?? []),
+    ...(leakage ? ['target_or_post_target_payload_detected'] : []),
+  ];
+  const contextIncomplete = Boolean(match.contextIncomplete || input?.contextIncomplete || leakage);
   const predictionError = leakage
     ? 'target_payload_leakage'
-    : match.status === 'paired'
-      ? null
-      : statusError(match.status);
+    : contextIncomplete
+      ? 'context_incomplete'
+      : match.status === 'paired'
+        ? null
+        : statusError(match.status);
   return {
     schemaVersion: TARGET_MANIFEST_SCHEMA_VERSION,
     targetKey: target.recordKey,
@@ -1334,9 +1553,20 @@ async function predictTarget(
   metadata: { modelId: string; modelVersion: string },
   maxRetries: number,
 ): Promise<HumanResponsePredictionFreezeRecord> {
-  const base = basePredictionRecord(target, metadata.modelId, metadata.modelVersion);
+  const base = basePredictionRecord(target, metadata.modelId, metadata.modelVersion, input);
   if (target.targetStatus !== 'paired' || !input || target.predictionError) return base;
-  const inputHash = objectHash(input);
+  const frozenInput = deepFreeze(deepClone(input));
+  const inputHash = objectHash(frozenInput);
+  if (target.preTargetInputHash !== inputHash) {
+    return {
+      ...base,
+      frozenAt: new Date().toISOString(),
+      inputHash,
+      predictorInput: frozenInput,
+      predictionStatus: 'prediction_error',
+      predictionError: 'worker_error',
+    };
+  }
   let attempts = 0;
   let lastError: HumanResponsePredictionErrorCode = 'worker_error';
   let lastWorkerId: string | null = null;
@@ -1353,7 +1583,9 @@ async function predictTarget(
       schemaVersion: PREDICTION_FREEZE_SCHEMA_VERSION,
       schemaHash: HUMAN_RESPONSE_SCHEMA_HASH,
       inputHash,
-      input,
+      // The transport receives a separate mutable boundary. The frozen copy
+      // below is the only input retained for the manifest/hash record.
+      input: deepClone(frozenInput),
     };
     try {
       const response = normalizePrediction(await transport.predict(request));
@@ -1361,11 +1593,13 @@ async function predictTarget(
         ...base,
         frozenAt: new Date().toISOString(),
         inputHash,
-        predictorInput: input,
+        predictorInput: frozenInput,
         predictionStatus:
-          response.contextIncomplete || input.contextIncomplete ? 'context_incomplete' : 'frozen',
+          response.contextIncomplete || frozenInput.contextIncomplete
+            ? 'context_incomplete'
+            : 'frozen',
         predictionError:
-          response.contextIncomplete || input.contextIncomplete ? 'context_incomplete' : null,
+          response.contextIncomplete || frozenInput.contextIncomplete ? 'context_incomplete' : null,
         opaqueWorkerId: response.opaqueId,
         attempts,
         retries: attempts - 1,
@@ -1380,8 +1614,8 @@ async function predictTarget(
         candidate_tool: response.candidateTool,
         unknownReason: response.unknownReason,
         unknown_reason: response.unknownReason,
-        contextIncomplete: response.contextIncomplete === true || input.contextIncomplete,
-        context_incomplete: response.contextIncomplete === true || input.contextIncomplete,
+        contextIncomplete: response.contextIncomplete === true || frozenInput.contextIncomplete,
+        context_incomplete: response.contextIncomplete === true || frozenInput.contextIncomplete,
       };
     } catch (error) {
       if (error instanceof PredictionResponseError) lastError = error.code;
@@ -1398,15 +1632,15 @@ async function predictTarget(
     ...base,
     frozenAt: new Date().toISOString(),
     inputHash,
-    predictorInput: input,
+    predictorInput: frozenInput,
     predictionStatus:
       lastError === 'context_incomplete' ? 'context_incomplete' : 'prediction_error',
     predictionError: lastError,
     opaqueWorkerId: lastWorkerId,
     attempts,
     retries: Math.max(0, attempts - 1),
-    contextIncomplete: input.contextIncomplete,
-    context_incomplete: input.contextIncomplete,
+    contextIncomplete: frozenInput.contextIncomplete,
+    context_incomplete: frozenInput.contextIncomplete,
   };
 }
 
@@ -1483,7 +1717,7 @@ export async function analyseCenturionHumanResponses(
     const match = matchTarget(target, allInbound, causalWindowMs);
     let input: HumanResponsePredictorInput | null = null;
     let leakage: string | null = null;
-    if (match.status === 'paired' && match.triggeringInbound) {
+    if (match.status === 'paired' && match.triggeringInbound && !match.contextIncomplete) {
       const built = buildPredictorInput(target, match.triggeringInbound, messages, causalWindowMs);
       input = built.input;
       leakage = built.leakage;
