@@ -22,7 +22,7 @@ import { WORKFLOW_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/d
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { ComponentType, SVGProps } from 'react';
-import { ShieldCheck, Upload } from 'lucide-react';
+import { ShieldCheck, Upload, Download } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { m } from '@/paraglide/messages';
 
@@ -270,6 +270,12 @@ export const navigationConfig: Record<string, NavConfig> = {
             url: '/settings/catchup-upload',
             icon: Archive,
             hidden: true,
+          },
+          {
+            id: 'outlook-addin',
+            title: 'Outlook add-in',
+            url: '/settings/outlook-addin',
+            icon: Download,
           },
         ].map((item) => ({
           ...item,

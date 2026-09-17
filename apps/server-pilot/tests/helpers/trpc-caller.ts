@@ -89,6 +89,7 @@ export async function callerForPrivate(
   settings: RootCaller['settings'];
   connections: RootCaller['connections'];
   user: RootCaller['user'];
+  workstation: RootCaller['workstation'];
 }> {
   const sessionUser = { id: userId, email: '', name: null };
   const ctx = {
@@ -104,5 +105,6 @@ export async function callerForPrivate(
     settings: caller.settings,
     connections: caller.connections,
     user: caller.user,
+    workstation: caller.workstation,
   };
 }
