@@ -583,14 +583,16 @@ function centurionWindowFrom(
   if (request.transportId !== undefined && request.transportId !== CENTURION_TRANSPORT_ID) {
     throw new Error('Centurion transport scope is fixed');
   }
-  const startInclusive = timestampOrNull(request.startInclusive ?? CENTURION_WINDOW_START_UTC);
-  const endExclusive = timestampOrNull(request.endExclusive ?? CENTURION_WINDOW_END_UTC);
-  if (!startInclusive || !endExclusive || startInclusive >= endExclusive) {
-    throw new Error('Centurion window is invalid');
+  if (
+    (request.startInclusive !== undefined &&
+      request.startInclusive !== CENTURION_WINDOW_START_UTC) ||
+    (request.endExclusive !== undefined && request.endExclusive !== CENTURION_WINDOW_END_UTC)
+  ) {
+    throw new Error('Centurion window is fixed');
   }
   return {
-    startInclusive,
-    endExclusive,
+    startInclusive: CENTURION_WINDOW_START_UTC,
+    endExclusive: CENTURION_WINDOW_END_UTC,
     timezone: CENTURION_WINDOW_TIMEZONE,
   };
 }
@@ -796,50 +798,84 @@ async function readCenturionMessages(
   window: CenturionCorpusWindow,
   identities: ReadonlySet<string>,
 ): Promise<UnscopedCenturionCorpusMessage[]> {
+  const snapshotAsOf = utcNaiveTimestamp(asOf);
+  const startInclusive = utcNaiveTimestamp(window.startInclusive);
+  const endExclusive = utcNaiveTimestamp(window.endExclusive);
   const rows = await connection<CenturionMessageRow>`
-    SELECT
-      m.id,
-      m.transport_id AS "transportId",
-      m.thread_id AS "messageThreadId",
-      t.id AS "resolvedThreadId",
-      t.transport_id AS "threadTransportId",
-      m.message_id_header AS "messageId",
-      m.direction::text AS "direction",
-      m.subject,
-      m.text_body AS "textBody",
-      m.html_body AS "htmlBody",
-      m.from_address AS "fromAddress",
-      m.to_addresses AS "toAddresses",
-      m.cc_addresses AS "ccAddresses",
-      m.bcc_addresses AS "bccAddresses",
-      m.received_at AS "receivedAt",
-      m.sent_at AS "sentAt",
-      m.created_at AS "createdAt",
-      m.in_reply_to AS "inReplyTo",
-      m."references" AS "references",
-      m.raw_mime_s3_key AS "rawMimeLocator",
-      (
-        SELECT q.status
-        FROM outbound_send_queue AS q
-        WHERE q.message_id = m.id
-          AND q.transport_id = m.transport_id
-          AND q.status = 'sent'
-          AND q.created_at < ${asOf}
-        ORDER BY q.created_at DESC, q.id DESC
-        LIMIT 1
-      ) AS "confirmedQueueStatus"
-    FROM message AS m
-    LEFT JOIN mail_thread AS t ON t.id = m.thread_id
-    WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
-      AND m.created_at < ${asOf}
-      AND (
-        m.received_at < ${utcNaiveTimestamp(window.endExclusive)}
-        OR m.sent_at < ${utcNaiveTimestamp(window.endExclusive)}
-        OR m.created_at < ${utcNaiveTimestamp(window.endExclusive)}
-        OR (m.received_at IS NULL AND m.sent_at IS NULL AND m.created_at IS NULL)
+    WITH candidates AS (
+      SELECT
+        m.id,
+        m.transport_id AS "transportId",
+        m.thread_id AS "messageThreadId",
+        t.id AS "resolvedThreadId",
+        t.transport_id AS "threadTransportId",
+        m.message_id_header AS "messageId",
+        m.direction::text AS "direction",
+        m.subject,
+        m.text_body AS "textBody",
+        m.html_body AS "htmlBody",
+        m.from_address AS "fromAddress",
+        m.to_addresses AS "toAddresses",
+        m.cc_addresses AS "ccAddresses",
+        m.bcc_addresses AS "bccAddresses",
+        m.received_at AS "receivedAt",
+        m.sent_at AS "sentAt",
+        m.created_at AS "createdAt",
+        m.in_reply_to AS "inReplyTo",
+        m."references" AS "references",
+        m.raw_mime_s3_key AS "rawMimeLocator",
+        CASE
+          WHEN m.direction::text = 'outbound'
+            AND m.sent_at IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM outbound_send_queue AS q
+              WHERE q.message_id = m.id
+                AND q.transport_id = m.transport_id
+                AND q.status = 'sent'
+                AND q.created_at < ${snapshotAsOf}
+            ) THEN m.sent_at
+          WHEN m.received_at IS NOT NULL THEN m.received_at
+          WHEN m.sent_at IS NOT NULL THEN m.sent_at
+          ELSE m.created_at
+        END AS "eventAt",
+        (
+          SELECT q.status
+          FROM outbound_send_queue AS q
+          WHERE q.message_id = m.id
+            AND q.transport_id = m.transport_id
+            AND q.status = 'sent'
+            AND q.created_at < ${snapshotAsOf}
+          ORDER BY q.created_at DESC, q.id DESC
+          LIMIT 1
+        ) AS "confirmedQueueStatus"
+      FROM message AS m
+      LEFT JOIN mail_thread AS t ON t.id = m.thread_id
+      WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+        AND (m.created_at < ${snapshotAsOf} OR m.created_at IS NULL)
+        AND (t.id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
+    ),
+    in_window_threads AS (
+      SELECT DISTINCT c."messageThreadId" AS thread_id
+      FROM candidates AS c
+      WHERE c."eventAt" >= ${startInclusive}
+        AND c."eventAt" < ${endExclusive}
+        AND c."eventAt" < ${snapshotAsOf}
+        AND c."messageThreadId" IS NOT NULL
+    )
+    SELECT c.*
+    FROM candidates AS c
+    WHERE (
+      c."eventAt" >= ${startInclusive}
+      AND c."eventAt" < ${endExclusive}
+      AND c."eventAt" < ${snapshotAsOf}
+    )
+      OR (
+        c."eventAt" < ${startInclusive}
+        AND c."messageThreadId" IN (SELECT thread_id FROM in_window_threads)
       )
-      AND (t.id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
-    ORDER BY COALESCE(m.received_at, m.sent_at, m.created_at), m.id
+      OR c."eventAt" IS NULL
+    ORDER BY c."eventAt" NULLS LAST, c.id
   `;
   return rows
     .map((row) => mapCenturionMessageRow(row, identities))

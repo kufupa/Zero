@@ -211,7 +211,37 @@ describe('Centurion nine-day corpus reader', () => {
     const messageQuery = fake.queries.find((query) => /FROM message AS m/i.test(query.text));
     expect(messageQuery?.values).toContain(CENTURION_TRANSPORT_ID);
     expect(messageQuery?.text).toMatch(/m\.transport_id\s*=\s*\$\d+/i);
-    expect(messageQuery?.text).toMatch(/repeatable|created_at|event/i);
+    expect(messageQuery?.values).toContain('2026-09-07T22:00:00.000');
+    expect(messageQuery?.values).toContain('2026-09-16T22:00:00.000');
+    expect(messageQuery?.text).toMatch(/WITH\s+candidates\s+AS/i);
+    expect(messageQuery?.text).toMatch(/in_window_threads/i);
+    expect(messageQuery?.text).toMatch(/"eventAt"\s*>=/i);
+    expect(messageQuery?.text).toMatch(/"eventAt"\s*<\s*\$\d+/i);
+    for (const query of fake.queries) {
+      expect(query.text.trim()).toMatch(/^(?:SELECT|WITH\b)/i);
+      expect(query.text).not.toMatch(
+        /\b(?:INSERT|UPDATE|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE)\b/i,
+      );
+    }
+  });
+
+  it('rejects caller-supplied Centurion bounds that differ from the fixed plan window', async () => {
+    const fake = createFakePostgres();
+    const reader = createThreadCorpusPostgresReader({
+      databaseUrl: 'fixture://non-production',
+      clientFactory: () => fake.client,
+    });
+
+    await expect(
+      reader.readCenturionSnapshot({
+        transportId: CENTURION_TRANSPORT_ID,
+        startInclusive: '2026-09-08T22:00:00.000Z',
+        endExclusive: CENTURION_WINDOW_END_UTC,
+      }),
+    ).rejects.toThrow(/fixed|window/i);
+    expect(fake.beginOptions).toEqual([]);
+    expect(fake.queries).toEqual([]);
+    await reader.close();
   });
 
   it('records event timestamp fallback provenance, including missing timestamps', async () => {
