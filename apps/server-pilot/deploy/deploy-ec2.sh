@@ -174,7 +174,8 @@ pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="
 sudo mkdir -p "$WEB_ROOT"
-sudo rsync -a --delete "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
+sudo rsync -a --delete --exclude '/downloads/' "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
+sudo install -d -o www-data -g www-data -m 0755 "${WEB_ROOT}/downloads"
 
 echo "== hosts: nava.legacyhotels.co.za =="
 # EC2 uses split-tunnel routing and does not consume hotel DNS; on-box browser gates need this.

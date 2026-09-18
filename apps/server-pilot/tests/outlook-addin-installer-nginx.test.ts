@@ -40,4 +40,10 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(downloadIndex).toBeGreaterThan(-1);
     expect(downloadIndex).toBeLessThan(spaIndex);
   });
+
+  it('does not delete nginx downloads when rsyncing the mail SPA', () => {
+    const deploy = readFileSync(path.join(root, 'deploy/deploy-ec2.sh'), 'utf8');
+    expect(deploy).toMatch(/rsync -a --delete --exclude '\/downloads\/'/);
+    expect(deploy).toContain('WEB_ROOT}/downloads');
+  });
 });
