@@ -30,7 +30,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Office\15.0\Outlook\Resiliency\DoNotDisa
 Root: HKCU; Subkey: "Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList"; ValueType: dword; ValueName: "NavaOutlookAddin"; ValueData: "1"
 
 [Run]
-Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2..."; Flags: waituntilterminated skipifsourcedoesntexist; Check: not WebView2Present
+Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2..."; Flags: waituntilterminated skipifdoesntexist; Check: not WebView2Present
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/c certutil -user -delstore TrustedPublisher NavaOutlookAddin"; Flags: runhidden
