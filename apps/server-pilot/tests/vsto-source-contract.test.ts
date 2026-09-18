@@ -50,6 +50,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('ReleaseComObject');
     expect(source).toContain('ThisAddIn_Shutdown');
     expect(source).toContain('CreateRibbonExtensibilityObject');
+    expect(source).toContain('Pane/WebView2 failures must not unload');
   });
 
   it('pins WebView2 messages to the Nava origin', () => {

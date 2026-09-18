@@ -25,15 +25,22 @@ namespace NavaOutlookAddin
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
             Instance = this;
-            _control = new TaskPaneControl(this.Application);
-            _taskPane = TaskPanes.Add(_control, "Nava AI Reservationist");
-            _taskPane.Width = 380;
-            _taskPane.Visible = true;
-
-            _explorer = this.Application.ActiveExplorer();
-            if (_explorer != null)
+            try
             {
-                _explorer.SelectionChange += Explorer_SelectionChange;
+                _control = new TaskPaneControl(this.Application);
+                _taskPane = TaskPanes.Add(_control, "Nava AI Reservationist");
+                _taskPane.Width = 380;
+                _taskPane.Visible = true;
+
+                _explorer = this.Application.ActiveExplorer();
+                if (_explorer != null)
+                {
+                    _explorer.SelectionChange += Explorer_SelectionChange;
+                }
+            }
+            catch (Exception)
+            {
+                // Pane/WebView2 failures must not unload the VSTO add-in.
             }
         }
 

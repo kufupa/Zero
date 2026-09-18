@@ -110,6 +110,12 @@ jobs:
             }
           }
           if (-not (Test-Path $vsto)) { throw "Missing $vsto" }
+          $cer = "bin\Release\NavaOutlookAddin.cer"
+          $storeCert = Get-Item "Cert:\CurrentUser\My\$($env:CERT_THUMB)"
+          if (-not $storeCert) { throw "Signing cert $($env:CERT_THUMB) not in CurrentUser\\My" }
+          Export-Certificate -Cert $storeCert -FilePath $cer | Out-Null
+          if (-not (Test-Path $cer)) { throw "Missing $cer" }
+          Write-Host "Exported $cer"
         env:
           VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
           REF_ASM: ${{ steps.refs.outputs.refAsm }}

@@ -6,23 +6,30 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('Outlook add-in installer and nginx download route', () => {
-  it('registers a per-user VSTO manifest with file:/// and does not wipe other add-ins', () => {
+  it('registers a per-user VSTO add-in and trusts the build cert without wiping other add-ins', () => {
     const issPath = path.join(root, 'vsto/installer/setup.iss');
     expect(existsSync(issPath)).toBe(true);
     const iss = readFileSync(issPath, 'utf8');
     expect(iss).toContain('PrivilegesRequired=lowest');
-    expect(iss).toContain('file:///{app}\\NavaOutlookAddin.vsto|vstolocal');
+    expect(iss).toContain('register-trust.cmd');
     expect(iss).toContain('DoNotDisableAddinList');
     expect(iss).not.toMatch(/DisabledItems[\s\S]*deletekey/i);
+
+    const trustPath = path.join(root, 'vsto/installer/register-trust.cmd');
+    expect(existsSync(trustPath)).toBe(true);
+    const trust = readFileSync(trustPath, 'utf8');
+    expect(trust).toContain('certutil -user -addstore TrustedPublisher');
+    expect(trust).toContain('AbsoluteUri');
+    expect(trust).toContain('|vstolocal');
+    expect(trust).toContain('LoadBehavior');
   });
 
-  it('ships a fallback HKCU install.cmd with file:/// manifest', () => {
+  it('ships a fallback HKCU install.cmd that copies Release output then runs register-trust', () => {
     const cmdPath = path.join(root, 'vsto/installer/install.cmd');
     expect(existsSync(cmdPath)).toBe(true);
     const cmd = readFileSync(cmdPath, 'utf8');
     expect(cmd).toContain('%LOCALAPPDATA%\\NavaOutlookAddin');
-    expect(cmd).toContain('file:///');
-    expect(cmd).toContain('NavaOutlookAddin.vsto|vstolocal');
+    expect(cmd).toContain('register-trust.cmd');
     expect(cmd).toContain('NavaOutlookAddin\\bin\\Release');
     expect(cmd).not.toMatch(/reg delete .*DisabledItems/i);
   });
