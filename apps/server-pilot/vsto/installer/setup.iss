@@ -7,7 +7,7 @@
 
 [Setup]
 AppName=Nava Outlook Assistant
-AppVersion=1.0.7
+AppVersion=1.0.8
 DefaultDirName={localappdata}\NavaOutlookAddin
 DefaultGroupName=Nava AI
 PrivilegesRequired=lowest

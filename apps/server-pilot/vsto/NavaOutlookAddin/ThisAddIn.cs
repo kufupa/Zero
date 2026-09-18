@@ -31,22 +31,29 @@ namespace NavaOutlookAddin
         private void EnsurePane(bool showErrorDialog)
         {
             if (_taskPane != null) return;
+            Outlook.Explorer explorer = this.Application.ActiveExplorer();
+            if (explorer == null)
+            {
+                WaitForExplorer();
+                if (showErrorDialog)
+                {
+                    MessageBox.Show(
+                        "Open a mail window, then click Nava Assistant again.",
+                        "Nava Outlook Assistant");
+                }
+                return;
+            }
+            AttachPane(explorer, showErrorDialog);
+        }
+
+        private void AttachPane(Outlook.Explorer explorer, bool showErrorDialog)
+        {
+            if (_taskPane != null || explorer == null) return;
             try
             {
-                _explorer = this.Application.ActiveExplorer();
-                if (_explorer == null)
-                {
-                    WaitForExplorer();
-                    if (showErrorDialog)
-                    {
-                        MessageBox.Show(
-                            "Open a mail window, then click Nava Assistant again.",
-                            "Nava Outlook Assistant");
-                    }
-                    return;
-                }
+                _explorer = explorer;
                 _control = new TaskPaneControl(this.Application);
-                _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist", _explorer);
+                _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist", explorer);
                 _explorer.SelectionChange += Explorer_SelectionChange;
                 _taskPane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionRight;
                 _taskPane.Width = 380;
@@ -76,10 +83,16 @@ namespace NavaOutlookAddin
         {
             try
             {
-                StopWaitingExplorer();
-                if (_taskPane == null)
+                if (_taskPane != null)
                 {
-                    EnsurePane(false);
+                    StopWaitingExplorer();
+                    return;
+                }
+                if (explorer == null) return;
+                AttachPane(explorer, false);
+                if (_taskPane != null)
+                {
+                    StopWaitingExplorer();
                 }
             }
             catch (COMException)
