@@ -100,14 +100,15 @@ jobs:
             if (-not $mage) { throw "mage.exe not found and $vsto missing" }
             Write-Host "MAGE=$mage"
             $manifest = "bin\Release\NavaOutlookAddin.dll.manifest"
+            if (-not $env:CERT_THUMB) { throw "CERT_THUMB missing; cannot sign mage fallback manifests" }
             & $mage -New Application -ToFile $manifest -FromDirectory bin\Release -Name NavaOutlookAddin -Version 1.0.0.0 -Processor msil
             if ($LASTEXITCODE -ne 0) { throw "mage application manifest failed" }
+            & $mage -Sign $manifest -CertHash $env:CERT_THUMB
+            if ($LASTEXITCODE -ne 0) { throw "mage sign application manifest failed" }
             & $mage -New Deployment -ToFile $vsto -AppManifest $manifest -Name NavaOutlookAddin -Version 1.0.0.0 -Install false
             if ($LASTEXITCODE -ne 0) { throw "mage deployment manifest failed" }
-            if ($env:CERT_THUMB) {
-              & $mage -Sign $manifest -CertHash $env:CERT_THUMB
-              & $mage -Sign $vsto -CertHash $env:CERT_THUMB
-            }
+            & $mage -Sign $vsto -CertHash $env:CERT_THUMB
+            if ($LASTEXITCODE -ne 0) { throw "mage sign deployment failed" }
           }
           if (-not (Test-Path $vsto)) { throw "Missing $vsto" }
           $cer = "bin\Release\NavaOutlookAddin.cer"

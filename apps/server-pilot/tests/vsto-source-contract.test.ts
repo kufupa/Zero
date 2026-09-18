@@ -163,6 +163,19 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(workflow).toMatch(/throw ".*WebView2 bootstrapper/);
   });
 
+  it('signs the application manifest before mage writes the .vsto deployment', () => {
+    const workflow = readFileSync(
+      path.resolve(vstoRoot, '../../../../.github/workflows/outlook-vsto.yml'),
+      'utf8',
+    );
+    const mageBlock = workflow.slice(workflow.indexOf('generating with mage.exe'));
+    const signManifest = mageBlock.indexOf('-Sign $manifest');
+    const newDeploy = mageBlock.indexOf('-New Deployment');
+    expect(signManifest).toBeGreaterThan(-1);
+    expect(newDeploy).toBeGreaterThan(-1);
+    expect(signManifest).toBeLessThan(newDeploy);
+  });
+
   it('copies WebView2Loader from LocalAppData install into the VSTO assembly cache', () => {
     const source = read('TaskPaneControl.cs');
     expect(source).toContain('LocalApplicationData');
