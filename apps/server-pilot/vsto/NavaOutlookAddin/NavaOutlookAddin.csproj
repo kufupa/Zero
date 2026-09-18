@@ -11,6 +11,9 @@
     <FileAlignment>512</FileAlignment>
     <ProjectTypeGuids>{BAA0C2D2-18CE-41C9-AD1D-768AF2A3ACE5};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <OfficeApplication>Outlook</OfficeApplication>
+    <TargetOfficeVersion>15.0</TargetOfficeVersion>
+    <GenerateManifests>true</GenerateManifests>
+    <StartupObject>NavaOutlookAddin.ThisAddIn</StartupObject>
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
     <VstoRefAsm Condition="'$(VstoRefAsm)' == ''">$(ProgramW6432)\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\ReferenceAssemblies\v4.0</VstoRefAsm>
     <VstoPia Condition="'$(VstoPia)' == ''">$(MSBuildProgramFiles32)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15</VstoPia>
