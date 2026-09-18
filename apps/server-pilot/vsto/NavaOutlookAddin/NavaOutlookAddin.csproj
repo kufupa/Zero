@@ -12,6 +12,8 @@
     <ProjectTypeGuids>{BAA0C2D2-18CE-41C9-AD1D-768AF2A3ACE5};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <OfficeApplication>Outlook</OfficeApplication>
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <VstoRefAsm Condition="'$(VstoRefAsm)' == ''">$(ProgramW6432)\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\ReferenceAssemblies\v4.0</VstoRefAsm>
+    <VstoPia Condition="'$(VstoPia)' == ''">$(MSBuildProgramFiles32)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15</VstoPia>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -36,11 +38,35 @@
   <ItemGroup>
     <Reference Include="Microsoft.Office.Interop.Outlook, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <HintPath>$(VstoPia)\Microsoft.Office.Interop.Outlook.dll</HintPath>
     </Reference>
-    <Reference Include="Microsoft.Office.Tools.Outlook" />
-    <Reference Include="Microsoft.Office.Tools.Common" />
+    <Reference Include="Microsoft.Office.Tools">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Common.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common.v4.0.Utilities">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Common.v4.0.Utilities.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Outlook">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Outlook.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Outlook.v4.0.Utilities">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Outlook.v4.0.Utilities.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Tools.Applications.Runtime">
+      <HintPath>$(VstoRefAsm)\Microsoft.VisualStudio.Tools.Applications.Runtime.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="Office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <HintPath>$(VstoPia)\Office.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />

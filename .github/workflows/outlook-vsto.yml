@@ -68,12 +68,10 @@ jobs:
             "-p:Platform=AnyCPU",
             "-p:VisualStudioVersion=17.0",
             "-p:VSToolsPath=$($env:VSTOOLS)",
+            "-p:VstoRefAsm=$($env:REF_ASM)",
+            "-p:VstoPia=$($env:PIA)",
             "-verbosity:minimal"
           )
-          # Extra search dirs: MSBuild splits ';' on argv, so encode as %3B.
-          if ($env:REF_PATH) {
-            $msbuildArgs += "-p:ReferencePath=$($env:REF_PATH -replace ';','%3B')"
-          }
           msbuild @msbuildArgs
           if ($LASTEXITCODE -ne 0) { throw "msbuild rebuild failed: $LASTEXITCODE" }
           $dll = "bin\Release\NavaOutlookAddin.dll"
@@ -83,7 +81,8 @@ jobs:
           if (-not (Test-Path $vsto)) { throw "Missing $vsto — VSTO targets did not emit ClickOnce manifests" }
         env:
           VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
-          REF_PATH: ${{ steps.refs.outputs.pia }};${{ steps.refs.outputs.refAsm }}
+          REF_ASM: ${{ steps.refs.outputs.refAsm }}
+          PIA: ${{ steps.refs.outputs.pia }}
 
       - name: Compile Inno Setup installer
         working-directory: apps/server-pilot/vsto/installer
