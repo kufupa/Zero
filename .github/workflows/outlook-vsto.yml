@@ -115,9 +115,12 @@ jobs:
           if (-not $storeCert) { throw "Signing cert $($env:CERT_THUMB) not in CurrentUser\\My" }
           Export-Certificate -Cert $storeCert -FilePath $cer | Out-Null
           if (-not (Test-Path $cer)) { throw "Missing $cer" }
-          $loader = Get-ChildItem bin\Release -Recurse -Filter WebView2Loader.dll -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $loader) { throw "WebView2Loader.dll missing from Release output" }
-          Copy-Item $loader.FullName "bin\Release\WebView2Loader.dll" -Force
+          $destLoader = "bin\Release\WebView2Loader.dll"
+          if (-not (Test-Path $destLoader)) {
+            $loader = Get-ChildItem bin\Release -Recurse -Filter WebView2Loader.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $loader) { throw "WebView2Loader.dll missing from Release output" }
+            Copy-Item $loader.FullName $destLoader -Force
+          }
           foreach ($need in @(
             "bin\Release\NavaOutlookAddin.dll",
             "bin\Release\NavaOutlookAddin.vsto",
@@ -128,7 +131,7 @@ jobs:
           )) {
             if (-not (Test-Path $need)) { throw "Missing $need" }
           }
-          Write-Host "Exported $cer ; loader=$($loader.FullName)"
+          Write-Host "Exported $cer ; loader=$(Resolve-Path $destLoader)"
           Get-ChildItem bin\Release -File | Format-Table Name, Length
         env:
           VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
