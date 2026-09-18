@@ -68,9 +68,12 @@ jobs:
             "-p:Platform=AnyCPU",
             "-p:VisualStudioVersion=17.0",
             "-p:VSToolsPath=$($env:VSTOOLS)",
-            "-p:ReferencePath=$($env:REF_PATH)",
             "-verbosity:minimal"
           )
+          # Extra search dirs: MSBuild splits ';' on argv, so encode as %3B.
+          if ($env:REF_PATH) {
+            $msbuildArgs += "-p:ReferencePath=$($env:REF_PATH -replace ';','%3B')"
+          }
           msbuild @msbuildArgs
           if ($LASTEXITCODE -ne 0) { throw "msbuild rebuild failed: $LASTEXITCODE" }
           $dll = "bin\Release\NavaOutlookAddin.dll"
