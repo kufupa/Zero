@@ -131,7 +131,10 @@ namespace NavaOutlookAddin
             if (_webView != null && _webView.CoreWebView2 != null)
             {
                 var activeMail = _dispatcher.GetActiveEmail(false);
-                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer
+                {
+                    MaxJsonLength = 10 * 1024 * 1024
+                };
                 var evt = new Dictionary<string, object>
                 {
                     { "requestId", "evt_selection_" + Guid.NewGuid().ToString("N") },

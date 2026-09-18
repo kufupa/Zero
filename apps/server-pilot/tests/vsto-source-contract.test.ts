@@ -42,6 +42,8 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('0x007D001F');
     expect(source).toContain('ReleaseComObject');
     expect(source).not.toMatch(/autoAuth/i);
+    expect(source).toMatch(/"bodyText",\s*includeBodies \? \(mail\.Body/);
+    expect(source).toMatch(/"bodyHtml",\s*includeBodies \? \(mail\.HTMLBody/);
   });
 
   it('unhooks SelectionChange and releases COM on shutdown', () => {
