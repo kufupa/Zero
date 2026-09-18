@@ -2,10 +2,12 @@
 ; Kills Outlook, copies LocalAppData, runs RegisterTrust.exe (CurrentUser
 ; TrustedPublisher + Inclusion List + URI-encoded Manifest). Chains WebView2
 ; Evergreen bootstrapper when missing. Aborts if VSTO Runtime is absent.
+; Trust, WebView2, and Outlook-still-running are fatal — Setup must not
+; report success with a dead add-in.
 
 [Setup]
 AppName=Nava Outlook Assistant
-AppVersion=1.0.6
+AppVersion=1.0.7
 DefaultDirName={localappdata}\NavaOutlookAddin
 DefaultGroupName=Nava AI
 PrivilegesRequired=lowest
@@ -29,13 +31,16 @@ Root: HKCU; Subkey: "Software\Microsoft\Office\Outlook\Addins\NavaOutlookAddin";
 Root: HKCU; Subkey: "Software\Microsoft\Office\15.0\Outlook\Resiliency\DoNotDisableAddinList"; ValueType: dword; ValueName: "NavaOutlookAddin"; ValueData: "1"
 Root: HKCU; Subkey: "Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList"; ValueType: dword; ValueName: "NavaOutlookAddin"; ValueData: "1"
 
-[Run]
-Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2..."; Flags: waituntilterminated skipifdoesntexist; Check: not WebView2Present
-
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/c certutil -user -delstore TrustedPublisher NavaOutlookAddin"; Flags: runhidden
 
 [Code]
+procedure FailSetup(const Message: String);
+begin
+  MsgBox(Message, mbCriticalError, MB_OK);
+  Abort;
+end;
+
 function VstorPresent: Boolean;
 begin
   Result :=
@@ -55,6 +60,20 @@ begin
     RegKeyExists(HKLM64, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}');
 end;
 
+function OutlookStillRunning: Boolean;
+var
+  ResultCode: Integer;
+  TmpFile, Listing: String;
+begin
+  TmpFile := ExpandConstant('{tmp}\nava-outlook-tasklist.txt');
+  Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq OUTLOOK.EXE" /NH > "' + TmpFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Listing := '';
+  LoadStringFromFile(TmpFile, Listing);
+  Result :=
+    (Pos('OUTLOOK.EXE', Uppercase(Listing)) > 0) or
+    (FindWindowByClassName('rctrl_renwnd32') <> 0);
+end;
+
 function InitializeSetup(): Boolean;
 begin
   if not VstorPresent then
@@ -69,22 +88,55 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  Tries: Integer;
 begin
   NeedsRestart := False;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM OUTLOOK.EXE /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1500);
-  Result := '';
+  Tries := 0;
+  while Tries < 3 do
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM OUTLOOK.EXE /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1500);
+    if not OutlookStillRunning then
+    begin
+      Result := '';
+      Exit;
+    end;
+    Inc(Tries);
+  end;
+  Result := 'Outlook is still running. Close Outlook completely (check the hidden icons by the clock), then run Setup again.';
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+procedure EnsureWebView2;
+var
+  ResultCode: Integer;
+  Bootstrapper: String;
+begin
+  if WebView2Present then
+    Exit;
+  Bootstrapper := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
+  if not FileExists(Bootstrapper) then
+    FailSetup('This installer is missing Microsoft Edge WebView2. Download Nava Outlook Setup again.');
+  if not Exec(Bootstrapper, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    FailSetup('Could not start Microsoft Edge WebView2 setup. Nava cannot open without it.');
+  if (ResultCode <> 0) or (not WebView2Present) then
+    FailSetup('Microsoft Edge WebView2 did not install. Check internet, then run Setup again.');
+end;
+
+procedure EnsureTrust;
 var
   ResultCode: Integer;
 begin
+  if not Exec(ExpandConstant('{app}\RegisterTrust.exe'), '"' + ExpandConstant('{app}') + '"', ExpandConstant('{app}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
+    FailSetup('Could not start Nava trust helper. Setup did not finish. Run Setup again.');
+  if ResultCode <> 0 then
+    FailSetup('Could not trust Nava for this Windows user (error ' + IntToStr(ResultCode) + '). If Windows asked about a certificate, click Yes, then run Setup again.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
   if CurStep = ssPostInstall then
   begin
-    if not Exec(ExpandConstant('{app}\RegisterTrust.exe'), '"' + ExpandConstant('{app}') + '"', ExpandConstant('{app}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
-      MsgBox('Could not start Nava trust helper.', mbError, MB_OK)
-    else if ResultCode <> 0 then
-      MsgBox('Could not trust Nava for this Windows user (error ' + IntToStr(ResultCode) + '). If Windows asked about a certificate, click Yes and run Setup again.', mbError, MB_OK);
+    EnsureWebView2;
+    EnsureTrust;
   end;
 end;

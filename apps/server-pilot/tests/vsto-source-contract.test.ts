@@ -141,6 +141,14 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toMatch(/CustomTaskPanes\.Add\([\s\S]*explorer/);
   });
 
+  it('pins the Inno installer version to 1.0.7', () => {
+    const iss = readFileSync(
+      path.resolve(vstoRoot, '../installer/setup.iss'),
+      'utf8',
+    );
+    expect(iss).toContain('AppVersion=1.0.7');
+  });
+
   it('fails the Windows build when the WebView2 bootstrapper is missing', () => {
     const workflow = readFileSync(
       path.resolve(vstoRoot, '../../../../.github/workflows/outlook-vsto.yml'),
