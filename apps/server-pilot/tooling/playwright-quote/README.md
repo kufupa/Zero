@@ -41,8 +41,8 @@ uses the operator's existing configuration/credential files. No extension ID,
 LLM API key, spend ledger or telemetry configuration is required by this CLI.
 
 Each invocation writes a timestamped private audit bundle. Outputs must be inside
-this worktree's `.private/playwright-quote`. Exit 0 means `quote` or verified
-`unavailable` **and** complete requested capture. Exit 2 also covers incomplete
+this worktree's `.private/playwright-quote`. Exit 0 means `quote`, `no_match` or
+verified `unavailable` **and** complete requested capture. Exit 2 covers incomplete
 audit capture, `input_gap`, `partial`, or `execution_failure`. The business outcome
 and `result.audit.status` are separate; inspect both.
 
@@ -167,37 +167,67 @@ files. End only your tunnel with Ctrl-C or `aws ssm terminate-session
 
 ## Inputs and interpretation
 
-`examples/` contains sanitized versions of the adult, child, unavailable and
-missing-age validation inputs, without mailbox/corpus references or customer
-identities. Their dates are the recorded verification windows, not guarantees
-of future inventory. Adjust dates for a new request, and keep real customer
-inputs and outputs in `.private/playwright-quote/`. The missing-age example is
-deliberately invalid and can be run without browser or credential configuration.
+`examples/` holds sanitized adult, child, unavailable, missing-age and v2
+requests. Dates are recorded verification windows, not future inventory
+guarantees. Keep real customer inputs/outputs in `.private/playwright-quote/`.
+The missing-age example is deliberately invalid and needs no browser.
+
+Canonical request is `schemaVersion: 2` (`quote-tool.schema.json` `$defs.request`).
+Absent `schemaVersion` is legacy: property/dates/occupancy stay; missing group
+ids become `group-1` then `group-2`; root `roomCode`/`rateCode` become singleton
+required lists on every group; bed/board aliases and room/flexibility/payment
+text map to preferred features. Conflicting legacy and v2 fields are input
+gaps, not silent winners. Legacy defaults to full details. Both paths return
+the v2 result (multiple options, not the historical single-row winner).
+
+v2 examples:
+
+- `examples/v2-broad.json` — two adults, one room, no room/rate filter
+- `examples/v2-required-preferred.json` — required queen, preferred breakfast
+- `examples/v2-full-narrow.json` — full details, at most five native identities
+- `examples/v2-scoped-context.json` — organization/agency/group via exact native
+  `code` or unique name. Replace the placeholder; never invent a picker code.
 
 ```json
 {
+  "schemaVersion": 2,
   "propertyCode": "HRCEN",
   "arrivalDate": "2026-09-24",
   "departureDate": "2026-09-27",
-  "rooms": [{"quantity": 2, "adults": 1, "children": 0, "childAges": []}],
-  "preferences": {"room": "Standard", "bed": "Double", "board": "Breakfast"}
+  "rooms": [{"id": "share", "quantity": 1, "adults": 2, "children": 0, "childAges": []}]
 }
 ```
 
 Arrival/departure are ISO dates; departure is exclusive. Each room entry is an
-occupancy group, not a sum of guests across rooms. Child ages must be supplied
-individually; adults-only requests must have `children: 0, childAges: []`.
-Up to eight groups are accepted. The recorded tenant age picker accepts 0–99;
-the command never guesses an age. Optional exact `roomCode` / `rateCode`
-constrain the selected product (for example `STQN` / `BAR`). Unknown codes or
-unverifiable data fail rather than becoming sold-out claims.
+occupancy group, not a sum of guests across rooms. Quantity multiplies per-room
+occupancy. Child ages must be supplied individually; adults-only requests must
+have `children: 0, childAges: []`. Up to eight groups and 1–30 nightly stays.
+Tenant age picker accepts 0–99; that is a transport bound, not the property’s
+commercial child definition. Unknown codes or unverifiable data fail rather
+than becoming sold-out claims.
 
 Search uses the ordinary **BAR sales-strategy filter**, leaving Shop by Day,
 sales restrictions and property configuration untouched. Preset returned no
-calendar despite positive BAR inventory and is not a sold-out oracle. Without
-an exact rate code, selection considers public `BAR` / `BARRO`, prefers matching
-room/board text and an available option, and returns one option, not every rate.
-Native descriptions are retained; “Queen” is not silently mapped to “Double”.
+calendar despite positive BAR inventory and is not a sold-out oracle. Public
+eligibility starts at verified `BAR` / `BARRO`. Other returned rates stay
+conditional until entitlement is proven. Restricted rows are information, not
+eligible quotes. `includemultirateoptions` is Show Restricted Sell Options.
+
+The tool enumerates source-bound room/rate options for each occupancy group.
+There is no Standard/first-row winner. Required lists are OR within a field
+and AND across fields. A preference miss does not reject. Match, alternative
+and unresolved stay distinct. Native descriptions are retained; STWN labelled
+“Standard Twin” can still say Two Double Beds — never infer bed type from the
+room name.
+
+Broad searches return useful options with `allocation.status: not_selected`.
+A complete multi-group `quote` requires every group to select exactly one
+room code and one rate code via `rooms[].required.roomCodes` /
+`rateCodes`. Joint demand uses proven `property:building:roomCode` pools when
+`buildingCode` is present on the source room. Missing pool identity stays
+`unknown`, never an invented allotment. Sequential occupancy searches are not
+an atomic hold. Alternatives are never summed. Displayed-nightly sums use
+exact decimals and `official:false`; they are not PMS payable totals.
 
 This tenant exposes a daily calendar, not arrival/departure/nights input fields.
 The tool binds every requested night to its rendered date, price and inventory,
@@ -219,15 +249,17 @@ PMS's displayed meal-plan label.
 ## Checks and evidence
 
 ```bash
-node --check apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs
-node --check apps/server-pilot/tooling/playwright-quote/audit.mjs
 unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+node --check apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs
+node --check apps/server-pilot/tooling/playwright-quote/quote-contract.mjs
+node --check apps/server-pilot/tooling/playwright-quote/audit.mjs
 node --test apps/server-pilot/tooling/playwright-quote/*.test.mjs
 (cd apps/server-pilot && node_modules/.bin/vitest run tests/hms-trace-privacy.test.ts tests/hms-browser-artifacts.test.ts)
 ```
 
-The focused tests use no database or live PMS. Actual run IDs, hashes, outcomes,
-timing, fresh-profile identity and final resource state are recorded privately
-in `.private/playwright-quote/handoff.md` and the audit run's `verification.json`.
-Those live records, not synthetic
-tests or the existence of this README, establish the verified capabilities.
+Focused tests use no database or live PMS. Live run IDs, hashes, outcomes,
+timing and remaining source limits sit in
+`.private/playwright-quote/widening-handoff.md` (this widening) and historical
+`.private/playwright-quote/handoff.md`. Those records, not this README, prove
+verified capabilities. Partial/unknown outcomes mean unestablished coverage,
+eligibility or joint allocation — not sold out and not a payable quote.

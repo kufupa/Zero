@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nava.local/playwright-quote/quote-tool.schema.json",
+  "title": "Hotel Availability quote tool",
+  "description": "Versioned request and result shapes for the standalone deterministic Hotel Availability quote tool. Inspect $defs.request and $defs.result without a browser. schemaVersion 2 is canonical; omitting schemaVersion selects legacy input normalization and full details.",
+  "$defs": {
+    "isoDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Gregorian calendar date YYYY-MM-DD. Departure is exclusive."
+    },
+    "isoCurrency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 source or requested currency. Conversion happens only through verified PMS controls."
+    },
+    "nativeCode": {
+      "type": "string",
+      "pattern": "^[A-Z0-9_-]+$",
+      "description": "Native PMS code. A supplied code narrows a product; it does not prove entitlement."
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Implemented mappings: refundability, payment_method, accessibility, parking, room_description. Other names stay unresolved." },
+        "value": { "type": "string", "minLength": 1 }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OR within a list; AND across different fields. Empty lists are invalid.",
+      "properties": {
+        "roomCodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nativeCode" } },
+        "rateCodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nativeCode" } },
+        "bedTypes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["single", "twin", "double", "queen", "king"] }
+        },
+        "boardBases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["room_only", "breakfast", "dinner_bed_breakfast", "half_board", "full_board", "all_inclusive"] }
+        },
+        "features": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/feature" } }
+      }
+    },
+    "contextRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exactly one of native code or exact name. Multiple picker matches are an input gap.",
+      "oneOf": [
+        { "required": ["code"], "properties": { "code": { "$ref": "#/$defs/nativeCode" } } },
+        { "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "path", "reason", "action"],
+      "properties": {
+        "code": { "type": "string", "description": "Stable issue code. Caller-correctable input is distinct from retryable transport failure." },
+        "path": { "type": "string", "description": "Field, group or option path." },
+        "reason": { "type": "string" },
+        "action": { "type": "string", "description": "Correction or narrowing hint." }
+      }
+    },
+    "moneySum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "currency", "label", "official"],
+      "properties": {
+        "amount": { "type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "description": "Exact decimal string in minor-unit arithmetic. Never binary floating point." },
+        "currency": { "$ref": "#/$defs/isoCurrency" },
+        "label": { "const": "sum_of_displayed_nightly_rates" },
+        "official": { "const": false, "description": "Displayed-nightly sums are not PMS totals, tax, fees or payable amounts." }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Canonical schemaVersion 2 request after normalizeQuoteRequest. Absent schemaVersion on input means legacy: preserve property/dates/occupancy, assign group-1.. ids, map root roomCode/rateCode onto each group's required lists, map bed/board aliases and room/flexibility/payment text onto preferred features, and default details to full. Conflicting legacy and v2 fields are input gaps. Child ages 0-99 are a transport bound, not the property's commercial child definition. Daily stays of 1-30 nights and 1-8 occupancy groups are the supported range.",
+      "required": ["schemaVersion", "propertyCode", "arrivalDate", "departureDate", "rooms", "search", "details", "maxOptionsPerGroup", "normalizedFrom"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "propertyCode": { "$ref": "#/$defs/nativeCode" },
+        "arrivalDate": { "$ref": "#/$defs/isoDate" },
+        "departureDate": { "$ref": "#/$defs/isoDate", "description": "Exclusive departure. Stay length is charged nights, maximum 30." },
+        "rooms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "quantity", "adults", "children", "childAges"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "description": "Unique occupancy-group id. Legacy input without ids receives group-1, group-2, ..." },
+              "quantity": { "type": "integer", "minimum": 1, "description": "Multiplies the per-room occupancy, not a total guest count." },
+              "adults": { "type": "integer", "minimum": 1 },
+              "children": { "type": "integer", "minimum": 0 },
+              "childAges": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 99 } },
+              "required": { "$ref": "#/$defs/constraints" },
+              "preferred": { "$ref": "#/$defs/constraints", "description": "Ordering only. A preference miss is not a hard rejection." }
+            }
+          }
+        },
+        "rateContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional organization, agency and group references. All supplied contexts must be applied together where the PMS supports that combination. Unsupported or unapplied context yields partial, not a silent public quote.",
+          "properties": {
+            "organization": { "$ref": "#/$defs/contextRef" },
+            "agency": { "$ref": "#/$defs/contextRef" },
+            "group": { "$ref": "#/$defs/contextRef" }
+          }
+        },
+        "requestedCurrency": { "$ref": "#/$defs/isoCurrency", "description": "Optional. Omission uses property currency. No local FX approximation." },
+        "search": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["includeRestricted", "includeAlternatives"],
+          "properties": {
+            "salesStrategy": { "type": "string", "minLength": 1, "description": "Default public strategy is the verified BAR choice. Scoped rates may need a different verified native strategy." },
+            "includeRestricted": { "type": "boolean", "default": false, "description": "Restricted offers are information, not eligible offers." },
+            "includeAlternatives": { "type": "boolean", "default": true }
+          }
+        },
+        "details": {
+          "type": "string",
+          "enum": ["summary", "full"],
+          "default": "summary",
+          "description": "summary: source-verified nightly offers and grid facts. full: inspect at most five narrowed offers per group. Legacy input defaults to full. A summary search is not a final payable quote."
+        },
+        "maxOptionsPerGroup": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50,
+          "description": "Return cap after classifying examined source-bound rows. Not permission to claim exhaustive search."
+        },
+        "notes": { "type": "string", "description": "Caller context retained as data. It does not authorize actions or satisfy conditions." },
+        "normalizedFrom": { "type": "string", "enum": ["legacy", "v2"], "description": "Legacy callers receive this v2 result, not the historical single-option output." }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schemaVersion 2 result. Business outcome is separate from audit capture status. CLI exit 0 means quote, no_match or unavailable with requested capture complete; exit 2 covers partial, input_gap, execution_failure or incomplete capture.",
+      "required": ["schemaVersion", "outcome", "groups", "allocation", "searchCompleteness", "issues"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "outcome": {
+          "type": "string",
+          "enum": ["quote", "no_match", "unavailable", "input_gap", "partial", "execution_failure"],
+          "description": "quote: every group has at least one eligible verified matching offer at the requested detail level and multi-group calls also have a checked allocation. no_match: complete requested search found no hard-requirement offer. unavailable: verified inventory shortage for the searched product/allocation. input_gap: missing, invalid or conflicting caller fields. partial: useful data with unestablished coverage, eligibility or joint allocation. execution_failure: browser or source failure."
+        },
+        "requested": { "$ref": "#/$defs/request" },
+        "observedAt": { "type": "string" },
+        "sourceScreen": { "type": "string", "description": "Hotel Availability and related read-only details. OSRRAV and CRS are not substitutes." },
+        "appliedCriteria": { "type": "object" },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "request": { "type": "object" },
+              "outcome": { "type": "string" },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "matchStatus": { "type": "string", "enum": ["match", "alternative", "unresolved"] },
+                    "rateScope": { "type": "string", "enum": ["public", "contextual", "unknown"] },
+                    "eligibility": { "type": "string", "enum": ["verified", "conditional", "unknown"] },
+                    "availability": { "type": "string", "enum": ["available", "unavailable", "restricted", "unknown"] },
+                    "held": { "const": false },
+                    "calculated": {
+                      "type": "object",
+                      "description": "per-room and quantity-scaled sum_of_displayed_nightly_rates with official:false. Distinct from nullable PMS total, tax, fee and payable facts. Complete dates, identical currency and known per-room basis are required before summing.",
+                      "properties": {
+                        "perRoom": { "$ref": "#/$defs/moneySum" },
+                        "forQuantity": { "$ref": "#/$defs/moneySum" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "allocation": {
+          "type": "object",
+          "description": "status is verified_at_observation, insufficient, not_selected or unknown. Broad multi-group searches stay not_selected. Joint demand uses proven shared inventory pools per night, never summed alternatives.",
+          "properties": {
+            "status": { "type": "string", "enum": ["verified_at_observation", "insufficient", "not_selected", "unknown"] },
+            "reason": { "type": "string" },
+            "pools": { "type": "array" }
+          }
+        },
+        "searchCompleteness": { "type": "object" },
+        "issues": { "type": "array", "items": { "$ref": "#/$defs/issue" } },
+        "evidence": { "type": "array", "description": "References into the private audit bundle. Do not embed entire DOM or network payloads." },
+        "publicReset": { "type": "object", "description": "Verified public search after a contextual or currency call. Absence of leakage is required; public alternatives never silently fulfil a contextual request." },
+        "limitations": { "type": "array", "items": { "type": "string" } },
+        "gaps": { "type": "array", "items": { "type": "string" }, "description": "Legacy path aliases for input-gap field paths." },
+        "error": { "type": "object" },
+        "phase": { "type": "string" },
+        "cleanupError": { "type": "string" },
+        "elapsedMs": { "type": "integer", "description": "Wall time for this invocation, including capture finalization." },
+        "evidenceDirectory": { "type": "string", "description": "Private local bundle path. Not a public URL." },
+        "audit": { "type": "object", "description": "Capture status is separate from business outcome." }
+      }
+    }
+  }
+}
