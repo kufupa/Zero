@@ -57,6 +57,18 @@ jobs:
           "refAsm=$refAsm" >> $env:GITHUB_OUTPUT
           "vsToolsPath=$vsToolsPath" >> $env:GITHUB_OUTPUT
 
+      - name: Create temporary ClickOnce signing cert
+        id: cert
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigning `
+            -Subject "CN=NavaOutlookAddin" `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyExportPolicy Exportable `
+            -HashAlgorithm SHA256
+          "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+          Write-Host "thumbprint=$($cert.Thumbprint)"
+
       - name: Restore and build VSTO add-in
         working-directory: apps/server-pilot/vsto/NavaOutlookAddin
         run: |
@@ -72,6 +84,8 @@ jobs:
             "-p:VSToolsPath=$($env:VSTOOLS)",
             "-p:VstoRefAsm=$($env:REF_ASM)",
             "-p:VstoPia=$($env:PIA)",
+            "-p:SignManifests=true",
+            "-p:ManifestCertificateThumbprint=$($env:CERT_THUMB)",
             "-verbosity:minimal"
           )
           msbuild @msbuildArgs
@@ -85,6 +99,7 @@ jobs:
           VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
           REF_ASM: ${{ steps.refs.outputs.refAsm }}
           PIA: ${{ steps.refs.outputs.pia }}
+          CERT_THUMB: ${{ steps.cert.outputs.thumbprint }}
 
       - name: Compile Inno Setup installer
         working-directory: apps/server-pilot/vsto/installer
