@@ -58,22 +58,29 @@ jobs:
       - name: Restore and build VSTO add-in
         working-directory: apps/server-pilot/vsto/NavaOutlookAddin
         run: |
-          $refPath = "${{ steps.refs.outputs.pia }};${{ steps.refs.outputs.refAsm }}"
           $proj = "NavaOutlookAddin.csproj"
           msbuild $proj -t:Restore -p:Configuration=Release -verbosity:minimal
-          msbuild $proj `
-            -t:Rebuild `
-            -p:Configuration=Release `
-            -p:Platform=AnyCPU `
-            -p:VisualStudioVersion=17.0 `
-            -p:VSToolsPath="${{ steps.refs.outputs.vsToolsPath }}" `
-            -p:ReferencePath="$refPath" `
-            -verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed: $LASTEXITCODE" }
+          $msbuildArgs = @(
+            $proj,
+            "-t:Rebuild",
+            "-p:Configuration=Release",
+            "-p:Platform=AnyCPU",
+            "-p:VisualStudioVersion=17.0",
+            "-p:VSToolsPath=$($env:VSTOOLS)",
+            "-p:ReferencePath=$($env:REF_PATH)",
+            "-verbosity:minimal"
+          )
+          msbuild @msbuildArgs
+          if ($LASTEXITCODE -ne 0) { throw "msbuild rebuild failed: $LASTEXITCODE" }
           $dll = "bin\Release\NavaOutlookAddin.dll"
           $vsto = "bin\Release\NavaOutlookAddin.vsto"
           Get-ChildItem bin\Release -ErrorAction SilentlyContinue | Format-Table Name, Length
           if (-not (Test-Path $dll)) { throw "Missing $dll" }
           if (-not (Test-Path $vsto)) { throw "Missing $vsto — VSTO targets did not emit ClickOnce manifests" }
+        env:
+          VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
+          REF_PATH: ${{ steps.refs.outputs.pia }};${{ steps.refs.outputs.refAsm }}
 
       - name: Compile Inno Setup installer
         working-directory: apps/server-pilot/vsto/installer
