@@ -121,5 +121,23 @@ describe('useOutlookBridge selection events', () => {
     await waitFor(() => {
       expect(screen.getByTestId('subject').textContent).toBe('Suite Availability Request');
     });
+
+    act(() => {
+      for (const listener of listeners.get('message') ?? []) {
+        listener({
+          data: JSON.stringify({
+            requestId: 'evt_selection_cleared',
+            version: 1,
+            action: 'ON_SELECTION_CHANGED',
+            success: true,
+            data: null,
+          }),
+        });
+      }
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('subject').textContent).toBe('');
+    });
   });
 });

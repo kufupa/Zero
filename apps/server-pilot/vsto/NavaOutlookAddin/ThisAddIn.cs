@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using Microsoft.Office.Tools;
+using Office = Microsoft.Office.Core;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace NavaOutlookAddin
@@ -12,6 +13,11 @@ namespace NavaOutlookAddin
         private CustomTaskPane _taskPane;
         private TaskPaneControl _control;
         private Outlook.Explorer _explorer;
+
+        protected override Office.IRibbonExtensibility CreateRibbonExtensibilityObject()
+        {
+            return new NavaRibbon();
+        }
 
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
@@ -30,7 +36,17 @@ namespace NavaOutlookAddin
 
         private void Explorer_SelectionChange()
         {
-            _control?.NotifySelectionChanged();
+            try
+            {
+                _control?.NotifySelectionChanged();
+            }
+            catch (COMException)
+            {
+                // Mailbox-specific COM failures must not escape Outlook's event callback.
+            }
+            catch (Exception)
+            {
+            }
         }
 
         public void ToggleTaskPane()

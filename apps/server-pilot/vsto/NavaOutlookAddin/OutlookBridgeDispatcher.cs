@@ -93,7 +93,7 @@ namespace NavaOutlookAddin
             }
         }
 
-        public Dictionary<string, object> GetActiveEmail()
+        public Dictionary<string, object> GetActiveEmail(bool includeBodies = true)
         {
             Outlook.Explorer explorer = null;
             Outlook.Selection selection = null;
@@ -108,7 +108,7 @@ namespace NavaOutlookAddin
                     object item = selection[1];
                     if (item is Outlook.MailItem mail)
                     {
-                        try { return MapMailItem(mail); }
+                        try { return MapMailItem(mail, includeBodies); }
                         finally { Marshal.ReleaseComObject(mail); }
                     }
                     if (item != null) Marshal.ReleaseComObject(item);
@@ -131,7 +131,7 @@ namespace NavaOutlookAddin
                 item = _application.Session.GetItemFromID(entryId);
                 if (item is Outlook.MailItem mail)
                 {
-                    return MapMailItem(mail);
+                    return MapMailItem(mail, true);
                 }
                 return null;
             }
@@ -344,7 +344,7 @@ namespace NavaOutlookAddin
                 || string.Equals(key, "Junk Email", StringComparison.OrdinalIgnoreCase);
         }
 
-        private Dictionary<string, object> MapMailItem(Outlook.MailItem mail)
+        private Dictionary<string, object> MapMailItem(Outlook.MailItem mail, bool includeBodies)
         {
             string headers = "";
             string msgId = "";
@@ -374,7 +374,7 @@ namespace NavaOutlookAddin
                 { "cc", mail.CC ?? "" },
                 { "receivedTime", mail.ReceivedTime.ToString("o") },
                 { "bodyText", mail.Body ?? "" },
-                { "bodyHtml", mail.HTMLBody ?? "" },
+                { "bodyHtml", includeBodies ? (mail.HTMLBody ?? "") : "" },
                 { "conversationId", mail.ConversationID ?? "" },
                 { "internetMessageId", msgId },
                 { "transportHeaders", headers }

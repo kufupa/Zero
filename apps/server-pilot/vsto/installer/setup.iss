@@ -23,6 +23,6 @@ Root: HKCU; Subkey: "Software\Microsoft\Office\Outlook\Addins\NavaOutlookAddin";
 Root: HKCU; Subkey: "Software\Microsoft\Office\Outlook\Addins\NavaOutlookAddin"; ValueType: dword; ValueName: "LoadBehavior"; ValueData: "3"
 Root: HKCU; Subkey: "Software\Microsoft\Office\Outlook\Addins\NavaOutlookAddin"; ValueType: string; ValueName: "Manifest"; ValueData: "file:///{app}\NavaOutlookAddin.vsto|vstolocal"
 
-; Clear Outlook resiliency blacklist so a previous crash does not keep the add-in disabled.
-Root: HKCU; Subkey: "Software\Microsoft\Office\16.0\Outlook\Resiliency\DisabledItems"; ValueType: none; Flags: deletekey dontcreatekey
+; Do not delete Outlook's DisabledItems blob — that would re-enable unrelated add-ins.
+; Only record that Nava should not be auto-disabled after a crash.
 Root: HKCU; Subkey: "Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList"; ValueType: dword; ValueName: "NavaOutlookAddin"; ValueData: "1"

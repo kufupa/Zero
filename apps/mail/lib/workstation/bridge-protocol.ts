@@ -87,9 +87,5 @@ export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> 
 }
 
 export function isSelectionChangedEvent(response: BridgeResponse): boolean {
-  return (
-    response.requestId.startsWith('evt_') &&
-    response.action === 'ON_SELECTION_CHANGED' &&
-    response.data != null
-  );
+  return response.requestId.startsWith('evt_') && response.action === 'ON_SELECTION_CHANGED';
 }

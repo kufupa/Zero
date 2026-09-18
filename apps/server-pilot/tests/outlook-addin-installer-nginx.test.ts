@@ -6,14 +6,14 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('Outlook add-in installer and nginx download route', () => {
-  it('registers a per-user VSTO manifest with file:/// and clears resiliency', () => {
+  it('registers a per-user VSTO manifest with file:/// and does not wipe other add-ins', () => {
     const issPath = path.join(root, 'vsto/installer/setup.iss');
     expect(existsSync(issPath)).toBe(true);
     const iss = readFileSync(issPath, 'utf8');
     expect(iss).toContain('PrivilegesRequired=lowest');
     expect(iss).toContain('file:///{app}\\NavaOutlookAddin.vsto|vstolocal');
-    expect(iss).toContain('Software\\Microsoft\\Office\\16.0\\Outlook\\Resiliency\\DisabledItems');
-    expect(iss).toMatch(/deletevalue|deletekey/i);
+    expect(iss).toContain('DoNotDisableAddinList');
+    expect(iss).not.toMatch(/DisabledItems[\s\S]*deletekey/i);
   });
 
   it('ships a fallback HKCU install.cmd with file:/// manifest', () => {
@@ -23,6 +23,8 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(cmd).toContain('%LOCALAPPDATA%\\NavaOutlookAddin');
     expect(cmd).toContain('file:///');
     expect(cmd).toContain('NavaOutlookAddin.vsto|vstolocal');
+    expect(cmd).toContain('NavaOutlookAddin\\bin\\Release');
+    expect(cmd).not.toMatch(/reg delete .*DisabledItems/i);
   });
 
   it('serves NavaOutlookSetup.exe from nginx before the SPA catch-all', () => {

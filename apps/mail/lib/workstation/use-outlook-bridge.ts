@@ -77,9 +77,7 @@ export function useOutlookBridge() {
 
       if (isSelectionChangedEvent(parsed)) {
         const email = WorkstationEmailPayloadSchema.safeParse(parsed.data);
-        if (email.success) {
-          setActiveEmail(email.data);
-        }
+        setActiveEmail(email.success ? email.data : null);
         return;
       }
 

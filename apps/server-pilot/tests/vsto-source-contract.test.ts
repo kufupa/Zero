@@ -16,6 +16,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
   it('ships the C# project files', () => {
     for (const file of [
       'ThisAddIn.cs',
+      'ThisAddIn.Designer.cs',
       'TaskPaneControl.cs',
       'OutlookBridgeDispatcher.cs',
       'NavaRibbon.cs',
@@ -48,6 +49,20 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('SelectionChange -=');
     expect(source).toContain('ReleaseComObject');
     expect(source).toContain('ThisAddIn_Shutdown');
+    expect(source).toContain('CreateRibbonExtensibilityObject');
+  });
+
+  it('pins WebView2 messages to the Nava origin', () => {
+    const source = read('TaskPaneControl.cs');
+    expect(source).toContain('nava.legacyhotels.co.za');
+    expect(source).toContain('NavigationStarting');
+    expect(source).toContain('IsTrustedPaneOrigin');
+  });
+
+  it('imports VSTO Outlook targets and the designer partial', () => {
+    const csproj = read('NavaOutlookAddin.csproj');
+    expect(csproj).toContain('ThisAddIn.Designer.cs');
+    expect(csproj).toContain('Microsoft.VisualStudio.Tools.Office.Outlook.targets');
   });
 
   it('includes a Home ribbon toggle', () => {
