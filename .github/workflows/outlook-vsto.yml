@@ -29,24 +29,31 @@ jobs:
         run: |
           $pia = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15"
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-            -latest -products * -requires Microsoft.VisualStudio.Component.TeamOffice `
-            -property installationPath
-          if (-not $vs) {
-            $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-              -latest -products * -property installationPath
-          }
+            -latest -products * -property installationPath
           $refAsm = Join-Path $vs "Common7\IDE\ReferenceAssemblies\v4.0"
-          $officeTargets = Join-Path $vs "MSBuild\Microsoft\VisualStudio\v17.0\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets"
+          $searchRoots = @(
+            (Join-Path $vs "MSBuild"),
+            "${env:ProgramFiles(x86)}\MSBuild",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022"
+          ) | Where-Object { Test-Path $_ }
+          $targets = foreach ($root in $searchRoots) {
+            Get-ChildItem -Path $root -Recurse -Filter "Microsoft.VisualStudio.Tools.Office*.targets" -ErrorAction SilentlyContinue
+          }
+          $targets | Select-Object -ExpandProperty FullName -Unique | ForEach-Object { Write-Host "FOUND $_" }
+          $outlook = $targets | Where-Object { $_.Name -eq "Microsoft.VisualStudio.Tools.Office.Outlook.targets" } | Select-Object -First 1
+          $office = $targets | Where-Object { $_.Name -eq "Microsoft.VisualStudio.Tools.Office.targets" } | Select-Object -First 1
+          $chosen = if ($outlook) { $outlook } else { $office }
+          if (-not $chosen) { throw "No VSTO Office*.targets on runner" }
+          $vsToolsPath = Split-Path (Split-Path $chosen.FullName -Parent) -Parent
           Write-Host "VS=$vs"
           Write-Host "PIA exists=$(Test-Path $pia) path=$pia"
           Write-Host "RefAsm exists=$(Test-Path $refAsm) path=$refAsm"
-          Write-Host "Outlook.targets exists=$(Test-Path $officeTargets) path=$officeTargets"
-          if (-not (Test-Path $officeTargets)) {
-            throw "VSTO Outlook.targets missing on runner"
-          }
+          Write-Host "VSToolsPath=$vsToolsPath"
+          Write-Host "Chosen targets=$($chosen.FullName)"
           "vs=$vs" >> $env:GITHUB_OUTPUT
           "pia=$pia" >> $env:GITHUB_OUTPUT
           "refAsm=$refAsm" >> $env:GITHUB_OUTPUT
+          "vsToolsPath=$vsToolsPath" >> $env:GITHUB_OUTPUT
 
       - name: Restore and build VSTO add-in
         working-directory: apps/server-pilot/vsto/NavaOutlookAddin
@@ -59,6 +66,7 @@ jobs:
             -p:Configuration=Release `
             -p:Platform=AnyCPU `
             -p:VisualStudioVersion=17.0 `
+            -p:VSToolsPath="${{ steps.refs.outputs.vsToolsPath }}" `
             -p:ReferencePath="$refPath" `
             -verbosity:minimal
           $dll = "bin\Release\NavaOutlookAddin.dll"
