@@ -20,7 +20,7 @@ namespace NavaOutlookAddin
         }
 
         private CustomTaskPaneCollection TaskPanes =>
-            ((AddInBase)this).CustomTaskPanes;
+            (CustomTaskPaneCollection)((dynamic)this).CustomTaskPanes;
 
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
