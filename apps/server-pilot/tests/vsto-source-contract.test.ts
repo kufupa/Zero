@@ -80,4 +80,26 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(csproj).toContain('CopyWebView2Loader');
     expect(csproj).toContain('WebView2Loader.dll');
   });
+
+  it('picks WebView2Loader by Outlook process bitness and shows pane errors', () => {
+    const source = read('TaskPaneControl.cs');
+    expect(source).toContain('Is64BitProcess');
+    expect(source).toContain('win-x64');
+    expect(source).toContain('win-x86');
+    expect(source).toContain('WebView2Loader.dll');
+    expect(source).toMatch(/could not start the side pane/i);
+  });
+
+  it('retries the task pane when Nava Assistant is clicked', () => {
+    const source = read('ThisAddIn.cs');
+    expect(source).toContain('EnsurePane');
+    expect(source).toMatch(/if \(_taskPane == null\)/);
+    expect(source).toContain('EnsurePane()');
+  });
+
+  it('ships x64 and x86 WebView2Loader runtimes', () => {
+    const csproj = read('NavaOutlookAddin.csproj');
+    expect(csproj).toContain('win-x64');
+    expect(csproj).toContain('win-x86');
+  });
 });

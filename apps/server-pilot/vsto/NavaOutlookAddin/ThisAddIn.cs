@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using Microsoft.Office.Tools;
 using Office = Microsoft.Office.Core;
 using Outlook = Microsoft.Office.Interop.Outlook;
@@ -25,10 +26,17 @@ namespace NavaOutlookAddin
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
             Instance = this;
+            EnsurePane();
+        }
+
+        private void EnsurePane()
+        {
+            if (_taskPane != null) return;
             try
             {
                 _control = new TaskPaneControl(this.Application);
                 _taskPane = TaskPanes.Add(_control, "Nava AI Reservationist");
+                _taskPane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionRight;
                 _taskPane.Width = 380;
                 _taskPane.Visible = true;
 
@@ -38,9 +46,12 @@ namespace NavaOutlookAddin
                     _explorer.SelectionChange += Explorer_SelectionChange;
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // Pane/WebView2 failures must not unload the VSTO add-in.
+                MessageBox.Show(
+                    "Nava could not open the side pane.\n\n" + ex.Message,
+                    "Nava Outlook Assistant");
             }
         }
 
@@ -61,10 +72,12 @@ namespace NavaOutlookAddin
 
         public void ToggleTaskPane()
         {
-            if (_taskPane != null)
+            if (_taskPane == null)
             {
-                _taskPane.Visible = !_taskPane.Visible;
+                EnsurePane();
+                return;
             }
+            _taskPane.Visible = !_taskPane.Visible;
         }
 
         private void ThisAddIn_Shutdown(object sender, System.EventArgs e)

@@ -108,10 +108,14 @@
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="'$(VSToolsPath)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets')" />
   <Target Name="CopyWebView2Loader" AfterTargets="Build">
     <PropertyGroup>
-      <_WebView2Loader Condition="Exists('$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll</_WebView2Loader>
-      <_WebView2Loader Condition="'$(_WebView2Loader)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll</_WebView2Loader>
+      <_WebView2X86 Condition="Exists('$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll</_WebView2X86>
+      <_WebView2X86 Condition="'$(_WebView2X86)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll</_WebView2X86>
+      <_WebView2X64 Condition="Exists('$(OutputPath)runtimes\win-x64\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x64\native\WebView2Loader.dll</_WebView2X64>
+      <_WebView2X64 Condition="'$(_WebView2X64)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x64\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x64\native\WebView2Loader.dll</_WebView2X64>
     </PropertyGroup>
-    <Copy SourceFiles="$(_WebView2Loader)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'$(_WebView2Loader)' != ''" />
+    <MakeDir Directories="$(OutputPath)runtimes\win-x86\native;$(OutputPath)runtimes\win-x64\native" />
+    <Copy SourceFiles="$(_WebView2X86)" DestinationFolder="$(OutputPath)runtimes\win-x86\native" Condition="Exists('$(_WebView2X86)')" />
+    <Copy SourceFiles="$(_WebView2X64)" DestinationFolder="$(OutputPath)runtimes\win-x64\native" Condition="Exists('$(_WebView2X64)')" />
   </Target>
   <ProjectExtensions>
     <VisualStudio>
