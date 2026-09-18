@@ -21,8 +21,8 @@ MinVersion=6.1sp1
 
 [Files]
 Source: "..\NavaOutlookAddin\bin\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
-Source: "RegisterTrust.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
+Source: "RegisterTrust.exe"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: RunPostCopyGates
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Office\Outlook\Addins\NavaOutlookAddin"; ValueType: string; ValueName: "FriendlyName"; ValueData: "Nava AI Reservationist"; Flags: uninsdeletekey
@@ -38,7 +38,7 @@ Filename: "{cmd}"; Parameters: "/c certutil -user -delstore TrustedPublisher Nav
 procedure FailSetup(const Message: String);
 begin
   MsgBox(Message, mbCriticalError, MB_OK);
-  Abort;
+  RaiseException(Message);
 end;
 
 function VstorPresent: Boolean;
@@ -63,7 +63,8 @@ end;
 function OutlookStillRunning: Boolean;
 var
   ResultCode: Integer;
-  TmpFile, Listing: String;
+  TmpFile: String;
+  Listing: AnsiString;
 begin
   TmpFile := ExpandConstant('{tmp}\nava-outlook-tasklist.txt');
   Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq OUTLOOK.EXE" /NH > "' + TmpFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -132,11 +133,8 @@ begin
     FailSetup('Could not trust Nava for this Windows user (error ' + IntToStr(ResultCode) + '). If Windows asked about a certificate, click Yes, then run Setup again.');
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+procedure RunPostCopyGates;
 begin
-  if CurStep = ssPostInstall then
-  begin
-    EnsureWebView2;
-    EnsureTrust;
-  end;
+  EnsureWebView2;
+  EnsureTrust;
 end;

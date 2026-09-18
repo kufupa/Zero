@@ -42,7 +42,10 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(iss).toMatch(
       /procedure EnsureTrust[\s\S]*RegisterTrust\.exe[\s\S]*FailSetup/,
     );
-    expect(iss).toMatch(/procedure FailSetup[\s\S]*Abort/);
+    expect(iss).toMatch(/Listing:\s*AnsiString/);
+    expect(iss).toMatch(/AfterInstall:\s*RunPostCopyGates/);
+    expect(iss).toMatch(/procedure FailSetup[\s\S]*RaiseException/);
+    expect(iss).not.toMatch(/ssPostInstall/);
     expect(iss).not.toMatch(
       /if not Exec\(ExpandConstant\('\{app\}\\RegisterTrust\.exe'\)[\s\S]*then\s+MsgBox\('Could not start Nava trust helper\.'/,
     );
