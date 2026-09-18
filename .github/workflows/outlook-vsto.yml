@@ -1,0 +1,93 @@
+# Builds NavaOutlookSetup.exe on GitHub-hosted Windows.
+# Pin windows-2022: windows-latest/VS 2026 dropped VSTO runtime.
+name: Outlook VSTO installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/outlook-vsto-build
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Locate Office / VSTO reference paths
+        id: refs
+        run: |
+          $pia = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.VisualStudio.Component.TeamOffice `
+            -property installationPath
+          if (-not $vs) {
+            $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -products * -property installationPath
+          }
+          $refAsm = Join-Path $vs "Common7\IDE\ReferenceAssemblies\v4.0"
+          $officeTargets = Join-Path $vs "MSBuild\Microsoft\VisualStudio\v17.0\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets"
+          Write-Host "VS=$vs"
+          Write-Host "PIA exists=$(Test-Path $pia) path=$pia"
+          Write-Host "RefAsm exists=$(Test-Path $refAsm) path=$refAsm"
+          Write-Host "Outlook.targets exists=$(Test-Path $officeTargets) path=$officeTargets"
+          if (-not (Test-Path $officeTargets)) {
+            throw "VSTO Outlook.targets missing on runner"
+          }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+          "pia=$pia" >> $env:GITHUB_OUTPUT
+          "refAsm=$refAsm" >> $env:GITHUB_OUTPUT
+
+      - name: Restore and build VSTO add-in
+        working-directory: apps/server-pilot/vsto/NavaOutlookAddin
+        run: |
+          $refPath = "${{ steps.refs.outputs.pia }};${{ steps.refs.outputs.refAsm }}"
+          $proj = "NavaOutlookAddin.csproj"
+          msbuild $proj -t:Restore -p:Configuration=Release -verbosity:minimal
+          msbuild $proj `
+            -t:Rebuild `
+            -p:Configuration=Release `
+            -p:Platform=AnyCPU `
+            -p:VisualStudioVersion=17.0 `
+            -p:ReferencePath="$refPath" `
+            -verbosity:minimal
+          $dll = "bin\Release\NavaOutlookAddin.dll"
+          $vsto = "bin\Release\NavaOutlookAddin.vsto"
+          Get-ChildItem bin\Release -ErrorAction SilentlyContinue | Format-Table Name, Length
+          if (-not (Test-Path $dll)) { throw "Missing $dll" }
+          if (-not (Test-Path $vsto)) { throw "Missing $vsto — VSTO targets did not emit ClickOnce manifests" }
+
+      - name: Compile Inno Setup installer
+        working-directory: apps/server-pilot/vsto/installer
+        run: |
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          Write-Host "ISCC=$iscc"
+          & $iscc setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+          if (-not (Test-Path "NavaOutlookSetup.exe")) { throw "Missing NavaOutlookSetup.exe" }
+          Get-Item NavaOutlookSetup.exe | Format-List FullName, Length, LastWriteTime
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: NavaOutlookSetup
+          path: apps/server-pilot/vsto/installer/NavaOutlookSetup.exe
+          if-no-files-found: error
+          retention-days: 14
