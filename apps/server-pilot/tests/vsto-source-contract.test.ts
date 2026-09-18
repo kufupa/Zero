@@ -129,16 +129,21 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(shutdown).not.toMatch(/CustomTaskPanes\.Remove|TaskPanes\.Remove/);
   });
 
-  it('hosts WebView2 after the task pane has a window handle and does not overwrite a loaded loader', () => {
+  it('hosts WebView2 after the task pane has a window handle and overwrites a stale loader', () => {
     const source = read('TaskPaneControl.cs');
     expect(source).toMatch(/this\.Load \+=/);
     expect(source).not.toMatch(/InitializeComponent\(\);\s*InitializeWebView\(\);/);
-    expect(source).toContain('if (!File.Exists(dest))');
+    expect(source).toMatch(/File\.Copy\(src, dest,\s*true\)/);
+    expect(source).not.toContain('if (!File.Exists(dest))');
   });
 
   it('binds the pane to the active Explorer when present', () => {
     const source = read('ThisAddIn.cs');
     expect(source).toMatch(/CustomTaskPanes\.Add\([\s\S]*explorer/);
+    expect(source).toContain('NewExplorer');
+    expect(source).not.toMatch(
+      /CustomTaskPanes\.Add\(_control,\s*"Nava AI Reservationist"\s*\)/,
+    );
   });
 
   it('pins the Inno installer version to 1.0.7', () => {

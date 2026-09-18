@@ -29,16 +29,13 @@ namespace NavaOutlookInstaller
                 }
 
                 UnblockTree(app);
-                string uri = new Uri(vsto).AbsoluteUri + "|vstolocal";
-                WriteAddinRegistration(uri);
-                WriteResiliency();
-
                 if (!File.Exists(cer))
                 {
                     Console.Error.WriteLine("Missing " + cer);
                     return 3;
                 }
 
+                string uri = new Uri(vsto).AbsoluteUri + "|vstolocal";
                 var cert = new X509Certificate2(cer);
                 AddToStore(StoreName.TrustedPublisher, cert);
                 try
@@ -53,6 +50,8 @@ namespace NavaOutlookInstaller
                 string publicKey = BitConverter.ToString(cert.GetPublicKey()).Replace("-", "");
                 WriteInclusionList(new Uri(vsto).AbsoluteUri, publicKey);
                 TryUserInclusionList(new Uri(vsto).AbsoluteUri, publicKey);
+                WriteAddinRegistration(uri);
+                WriteResiliency();
                 Console.WriteLine("Trusted Nava Outlook Assistant for this Windows user.");
                 Console.WriteLine("Manifest=" + uri);
                 return 0;

@@ -88,10 +88,7 @@ namespace NavaOutlookAddin
                 throw new FileNotFoundException(
                     "Missing WebView2Loader.dll. Tried: " + string.Join("; ", sources));
             }
-            if (!File.Exists(dest))
-            {
-                File.Copy(src, dest, false);
-            }
+            File.Copy(src, dest, true);
         }
 
         private void ShowPaneError(Exception ex)

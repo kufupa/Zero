@@ -35,6 +35,10 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(trust).toContain('"15.0"');
     expect(trust).toContain('"16.0"');
     expect(trust).not.toMatch(/powershell/i);
+    const writeAt = trust.indexOf('WriteAddinRegistration');
+    const storeAt = trust.indexOf('AddToStore(StoreName.TrustedPublisher');
+    expect(storeAt).toBeGreaterThan(-1);
+    expect(writeAt).toBeGreaterThan(storeAt);
   });
 
   it('aborts Setup if RegisterTrust, WebView2, or Outlook-still-running would leave a dead add-in', () => {

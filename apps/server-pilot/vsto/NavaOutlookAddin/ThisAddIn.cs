@@ -14,6 +14,8 @@ namespace NavaOutlookAddin
         private CustomTaskPane _taskPane;
         private TaskPaneControl _control;
         private Outlook.Explorer _explorer;
+        private Outlook.Explorers _explorers;
+        private bool _waitingExplorer;
 
         protected override Office.IRibbonExtensibility CreateRibbonExtensibilityObject()
         {
@@ -31,17 +33,21 @@ namespace NavaOutlookAddin
             if (_taskPane != null) return;
             try
             {
-                _control = new TaskPaneControl(this.Application);
                 _explorer = this.Application.ActiveExplorer();
-                if (_explorer != null)
+                if (_explorer == null)
                 {
-                    _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist", _explorer);
-                    _explorer.SelectionChange += Explorer_SelectionChange;
+                    WaitForExplorer();
+                    if (showErrorDialog)
+                    {
+                        MessageBox.Show(
+                            "Open a mail window, then click Nava Assistant again.",
+                            "Nava Outlook Assistant");
+                    }
+                    return;
                 }
-                else
-                {
-                    _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist");
-                }
+                _control = new TaskPaneControl(this.Application);
+                _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist", _explorer);
+                _explorer.SelectionChange += Explorer_SelectionChange;
                 _taskPane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionRight;
                 _taskPane.Width = 380;
                 _taskPane.Visible = true;
@@ -55,6 +61,44 @@ namespace NavaOutlookAddin
                         "Nava could not open the side pane.\n\n" + ex.Message,
                         "Nava Outlook Assistant");
                 }
+            }
+        }
+
+        private void WaitForExplorer()
+        {
+            if (_waitingExplorer) return;
+            _explorers = this.Application.Explorers;
+            _explorers.NewExplorer += Explorers_NewExplorer;
+            _waitingExplorer = true;
+        }
+
+        private void Explorers_NewExplorer(Outlook.Explorer explorer)
+        {
+            try
+            {
+                StopWaitingExplorer();
+                if (_taskPane == null)
+                {
+                    EnsurePane(false);
+                }
+            }
+            catch (COMException)
+            {
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void StopWaitingExplorer()
+        {
+            if (!_waitingExplorer) return;
+            _waitingExplorer = false;
+            if (_explorers != null)
+            {
+                _explorers.NewExplorer -= Explorers_NewExplorer;
+                Marshal.ReleaseComObject(_explorers);
+                _explorers = null;
             }
         }
 
@@ -97,6 +141,7 @@ namespace NavaOutlookAddin
 
         private void ThisAddIn_Shutdown(object sender, System.EventArgs e)
         {
+            StopWaitingExplorer();
             if (_explorer != null)
             {
                 _explorer.SelectionChange -= Explorer_SelectionChange;
