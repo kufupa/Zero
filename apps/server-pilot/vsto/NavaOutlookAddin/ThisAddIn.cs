@@ -82,7 +82,11 @@ namespace NavaOutlookAddin
             }
             try
             {
-                _taskPane.Visible = !_taskPane.Visible;
+                _taskPane.Visible = true;
+                if (_taskPane.Width < 200)
+                {
+                    _taskPane.Width = 380;
+                }
             }
             catch (Exception)
             {
@@ -107,6 +111,7 @@ namespace NavaOutlookAddin
         #region VSTO generated code
         private void InternalStartup()
         {
+            Instance = this;
             this.Startup += new System.EventHandler(ThisAddIn_Startup);
             this.Shutdown += new System.EventHandler(ThisAddIn_Shutdown);
         }

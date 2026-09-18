@@ -23,7 +23,8 @@ namespace NavaOutlookAddin
 
         public void OnToggleTaskPane(Office.IRibbonControl control)
         {
-            ThisAddIn.Instance?.ToggleTaskPane();
+            ThisAddIn addin = ThisAddIn.Instance ?? Globals.ThisAddIn;
+            addin?.ToggleTaskPane();
         }
 
         private static string GetResourceText(string resourceName)

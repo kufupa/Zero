@@ -95,6 +95,16 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('EnsurePane');
     expect(source).toMatch(/if \(_taskPane == null\)/);
     expect(source).toContain('EnsurePane(true)');
+    expect(source).toContain('_taskPane.Visible = true');
+    expect(source).not.toContain('_taskPane.Visible = !_taskPane.Visible');
+  });
+
+  it('wires the ribbon to Globals.ThisAddIn so a click cannot no-op', () => {
+    const ribbon = read('NavaRibbon.cs');
+    expect(ribbon).toContain('Globals.ThisAddIn');
+    const source = read('ThisAddIn.cs');
+    const internalStartup = source.slice(source.indexOf('InternalStartup'));
+    expect(internalStartup).toContain('Instance = this');
   });
 
   it('ships x64 and x86 WebView2Loader runtimes', () => {
