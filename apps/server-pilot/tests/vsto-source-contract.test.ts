@@ -66,9 +66,18 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(csproj).toContain('Microsoft.VisualStudio.Tools.Office.Outlook.targets');
   });
 
-  it('includes a Home ribbon toggle', () => {
+  it('includes a Nava ribbon tab and Home-mail toggle', () => {
     const source = read('NavaRibbon.cs');
     expect(source).toContain('Nava Assistant');
     expect(source).toContain('ToggleTaskPane');
+    const xml = read('NavaRibbon.xml');
+    expect(xml).toContain('id="NavaTab"');
+    expect(xml).toContain('idMso="TabMail"');
+  });
+
+  it('copies WebView2Loader.dll next to the add-in', () => {
+    const csproj = read('NavaOutlookAddin.csproj');
+    expect(csproj).toContain('CopyWebView2Loader');
+    expect(csproj).toContain('WebView2Loader.dll');
   });
 });

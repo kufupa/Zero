@@ -106,6 +106,13 @@
   <Import Project="$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="!Exists('$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets') And Exists('$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets')" />
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets" Condition="'$(VSToolsPath)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets')" />
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="'$(VSToolsPath)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets')" />
+  <Target Name="CopyWebView2Loader" AfterTargets="Build">
+    <PropertyGroup>
+      <_WebView2Loader Condition="Exists('$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll</_WebView2Loader>
+      <_WebView2Loader Condition="'$(_WebView2Loader)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll</_WebView2Loader>
+    </PropertyGroup>
+    <Copy SourceFiles="$(_WebView2Loader)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'$(_WebView2Loader)' != ''" />
+  </Target>
   <ProjectExtensions>
     <VisualStudio>
       <FlavorProperties GUID="{BAA0C2D2-18CE-41C9-AD1D-768AF2A3ACE5}">
