@@ -8,7 +8,7 @@
 namespace NavaOutlookAddin
 {
     [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
-    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddIn
+    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
     {
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         internal Microsoft.Office.Interop.Outlook.Application Application;

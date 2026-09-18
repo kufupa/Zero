@@ -19,11 +19,14 @@ namespace NavaOutlookAddin
             return new NavaRibbon();
         }
 
+        private CustomTaskPaneCollection TaskPanes =>
+            ((Microsoft.Office.Tools.Outlook.OutlookAddIn)this).CustomTaskPanes;
+
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
             Instance = this;
             _control = new TaskPaneControl(this.Application);
-            _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist");
+            _taskPane = TaskPanes.Add(_control, "Nava AI Reservationist");
             _taskPane.Width = 380;
             _taskPane.Visible = true;
 
@@ -67,7 +70,7 @@ namespace NavaOutlookAddin
             }
             if (_taskPane != null)
             {
-                this.CustomTaskPanes.Remove(_taskPane);
+                TaskPanes.Remove(_taskPane);
                 _taskPane.Dispose();
                 _taskPane = null;
             }
