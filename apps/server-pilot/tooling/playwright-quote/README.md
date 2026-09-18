@@ -221,6 +221,7 @@ PMS's displayed meal-plan label.
 ```bash
 node --check apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs
 node --check apps/server-pilot/tooling/playwright-quote/audit.mjs
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 node --test apps/server-pilot/tooling/playwright-quote/*.test.mjs
 (cd apps/server-pilot && node_modules/.bin/vitest run tests/hms-trace-privacy.test.ts tests/hms-browser-artifacts.test.ts)
 ```

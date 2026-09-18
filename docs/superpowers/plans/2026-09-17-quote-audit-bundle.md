@@ -1,6 +1,6 @@
 # Quote Audit Bundle Implementation Plan
 
-> **For agentic workers:** Use executing-plans inline. One operator owns the live browser; do not delegate live PMS interaction.
+> **For agentic workers:** Use `/nava-run`. One operator owns the live browser; do not delegate live PMS interaction.
 
 **Goal:** Run the native quote tool on real PMS data and deliver a private, locally viewable video with matching structured evidence.
 
