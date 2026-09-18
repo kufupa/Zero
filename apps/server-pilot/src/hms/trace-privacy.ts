@@ -202,7 +202,10 @@ function assertSafeEntryName(name: string, nameBytes: Buffer): void {
   if (parts.some((part) => !part || part === '.' || part === '..')) privacyFailure();
   const isTrace = SUPPORTED_TRACE_STREAMS.has(name);
   const isResource = /^resources\/[A-Za-z0-9._@+-]+$/.test(name);
-  if (!isTrace && !isResource) privacyFailure();
+  // Playwright 1.63 stores viewport frames separately from network resources.
+  // Keep the same single-component boundary; never accept arbitrary ZIP paths.
+  const isScreencast = /^screencast\/[A-Za-z0-9._@+-]+\.jpeg$/.test(name);
+  if (!isTrace && !isResource && !isScreencast) privacyFailure();
 }
 
 function assertEntryType(entry: ZipCentralEntry): void {
@@ -608,6 +611,13 @@ function collectStrings(value: unknown, out: Set<string>): void {
   }
 }
 
+function isHmsCookieFlag(name: unknown, value: unknown): boolean {
+  // This HMS cookie is a yes/no login-mode flag, not an authentication value.
+  // Treating "no" as a secret rejects schema keys like nonroombundleslist.
+  // Do not exempt unknown values or the same value in a credential cookie.
+  return name === 'iscallerlogin' && (value === 'yes' || value === 'no');
+}
+
 function collectCookieValues(value: unknown, out: Set<string>): void {
   if (typeof value === 'string') {
     out.add(value);
@@ -618,6 +628,8 @@ function collectCookieValues(value: unknown, out: Set<string>): void {
     return;
   }
   if (!value || typeof value !== 'object') return;
+  const cookie = value as Record<string, unknown>;
+  if (isHmsCookieFlag(cookie.name, cookie.value)) return;
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     if (/^value$/i.test(key)) collectStrings(child, out);
     else if (child && typeof child === 'object') collectCookieValues(child, out);
@@ -641,7 +653,8 @@ function collectCookieHeaderValues(value: unknown, out: Set<string>, allPairs: b
       const separator = segment.indexOf('=');
       if (separator <= 0) continue;
       const cookieValue = segment.slice(separator + 1).trim();
-      if (cookieValue.length > 0) out.add(cookieValue);
+      const cookieName = segment.slice(0, separator).trim();
+      if (cookieValue.length > 0 && !isHmsCookieFlag(cookieName, cookieValue)) out.add(cookieValue);
     }
     return;
   }
@@ -710,9 +723,19 @@ function looksLikeDynamicSecretName(value: string): boolean {
   return /(?:token|secret|credential|password|session|cookie|authorization|bearer|jwt)/i.test(value);
 }
 
-function collectTraceDynamicValues(value: unknown, key = '', out = new Set<string>()): Set<string> {
+function collectTraceDynamicValues(
+  value: unknown,
+  key: string,
+  out: Set<string>,
+  resourceReferences: ReadonlySet<string>,
+): Set<string> {
   if (isCookieName(key)) collectCookieValues(value, out);
   if (typeof value === 'string') {
+    // Native content hashes are links, not credentials. Classifying them as
+    // opaque tokens renames distinct resources to the same "redacted" entry.
+    // Exempt only native sha1 fields referencing an entry actually in this ZIP;
+    // the same string in an auth field (or caller secrets) is still redacted.
+    if (/^_?sha1$/.test(key) && resourceReferences.has(value)) return out;
     if (isSensitiveName(key)) {
       out.add(value);
     } else if (/^(?:https?|wss?):\/\//i.test(value)) {
@@ -731,12 +754,12 @@ function collectTraceDynamicValues(value: unknown, key = '', out = new Set<strin
   }
   if (Array.isArray(value)) {
     if (/^headers$/i.test(key)) collectHeaderValues(value, out);
-    for (const child of value) collectTraceDynamicValues(child, key, out);
+    for (const child of value) collectTraceDynamicValues(child, key, out, resourceReferences);
     return out;
   }
   if (!value || typeof value !== 'object') return out;
   for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
-    collectTraceDynamicValues(child, childKey, out);
+    collectTraceDynamicValues(child, childKey, out, resourceReferences);
   }
   return out;
 }
@@ -971,6 +994,7 @@ function containsSecretText(
 function parseJsonLinesForDynamicValues(
   bytes: Uint8Array,
   dynamicSecrets: Set<string>,
+  resourceReferences: ReadonlySet<string>,
 ): void {
   const decoded = decodeTextRepresentation(bytes);
   if (!decoded || decoded.text.length > MAX_TEXT_ENTRY_BYTES) privacyFailure();
@@ -982,15 +1006,15 @@ function parseJsonLinesForDynamicValues(
     } catch {
       privacyFailure();
     }
-    collectTraceDynamicValues(parsed, '', dynamicSecrets);
+    collectTraceDynamicValues(parsed, '', dynamicSecrets, resourceReferences);
   }
 }
 
-function collectResourceDynamicValues(bytes: Uint8Array, dynamicSecrets: Set<string>): void {
+function collectResourceDynamicValues(bytes: Uint8Array, dynamicSecrets: Set<string>, resourceReferences: ReadonlySet<string>): void {
   const decoded = decodeTextRepresentation(bytes);
   if (!decoded || decoded.text.length > MAX_TEXT_ENTRY_BYTES) return;
   try {
-    collectTraceDynamicValues(JSON.parse(decoded.text), '', dynamicSecrets);
+    collectTraceDynamicValues(JSON.parse(decoded.text), '', dynamicSecrets, resourceReferences);
   } catch {
     // Non-JSON resource text is still scanned for caller-provided variants.
   }
@@ -1003,9 +1027,12 @@ export function sanitizeTraceArchiveBytes(
 ): Buffer {
   const archive = unzipBoundedTraceArchive(rawBytes);
   const dynamicSecrets = new Set<string>();
+  const resourceReferences = new Set(Object.keys(archive)
+    .filter((name) => /^resources\/[a-f0-9]{40}(?:\.[a-z0-9]+)?$/.test(name))
+    .map((name) => name.slice('resources/'.length)));
   for (const [name, bytes] of Object.entries(archive)) {
-    if (SUPPORTED_TRACE_STREAMS.has(name)) parseJsonLinesForDynamicValues(bytes, dynamicSecrets);
-    else collectResourceDynamicValues(bytes, dynamicSecrets);
+    if (SUPPORTED_TRACE_STREAMS.has(name)) parseJsonLinesForDynamicValues(bytes, dynamicSecrets, resourceReferences);
+    else collectResourceDynamicValues(bytes, dynamicSecrets, resourceReferences);
     const nameComponent = name.slice(name.lastIndexOf('/') + 1);
     if (looksLikeDynamicSecretName(nameComponent)) dynamicSecrets.add(nameComponent);
   }
@@ -1177,7 +1204,9 @@ export function collectHmsStorageStateSecretValues(value: unknown): string[] {
   if (Array.isArray(cookies)) {
     for (const cookie of cookies) {
       if (!cookie || typeof cookie !== 'object') continue;
-      const cookieValue = (cookie as Record<string, unknown>).value;
+      const record = cookie as Record<string, unknown>;
+      if (isHmsCookieFlag(record.name, record.value)) continue;
+      const cookieValue = record.value;
       if (typeof cookieValue === 'string' && cookieValue.length > 0) values.add(cookieValue);
     }
   }

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { unzipSync, zipSync } from 'fflate';
 import {
   HmsTracePrivacyError,
+  collectHmsStorageStateSecretValues,
   sanitizePlaywrightTraceFile,
   type HmsTraceSanitizationResult,
 } from '../src/hms/trace-privacy.js';
@@ -130,6 +131,90 @@ async function fixture(entries: Record<string, string | Uint8Array>): Promise<{
 }
 
 describe('bounded native trace privacy', () => {
+  it('does not mistake the HMS iscallerlogin=no flag for a credential inside response schema keys', async () => {
+    const values = collectHmsStorageStateSecretValues({ cookies: [
+      { name: 'iscallerlogin', value: 'no' },
+      { name: 'JSESSIONID', value: 'private-session-value' },
+    ] });
+    expect(values).toEqual(['private-session-value']);
+    const { root, rawPath, reviewPath } = await fixture({
+      'trace.trace': '{}\n',
+      'trace.network': JSON.stringify({ request: {
+        headers: [{ name: 'Cookie', value: 'iscallerlogin=no; JSESSIONID=private-session-value' }],
+        cookies: [{ name: 'iscallerlogin', value: 'no' }, { name: 'JSESSIONID', value: 'private-session-value' }],
+      } }) + '\n',
+      'resources/response.json': JSON.stringify({ nonroombundleslist: [], noguestpreferences: true, duplicate: 'private-session-value' }),
+    });
+    try {
+      await sanitize(rawPath, reviewPath, values);
+      const output = unzipSync(await readFile(reviewPath));
+      const body = JSON.parse(Buffer.from(output['resources/response.json']!).toString());
+      expect(body.nonroombundleslist).toEqual([]);
+      expect(body.noguestpreferences).toBe(true);
+      for (const bytes of Object.values(output)) expect(Buffer.from(bytes).toString()).not.toContain('private-session-value');
+      // Arbitrary values in that cookie are not automatically trusted.
+      expect(collectHmsStorageStateSecretValues({ cookies: [{ name: 'iscallerlogin', value: 'opaque-secret' }] })).toEqual(['opaque-secret']);
+      expect(collectHmsStorageStateSecretValues({ cookies: [{ name: 'JSESSIONID', value: 'no' }] })).toEqual(['no']);
+      await expect(sanitize(rawPath, reviewPath, ['no'])).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native resource hash references distinct without exempting credential-shaped hashes', async () => {
+    const first = 'a'.repeat(39) + '1';
+    const second = 'b'.repeat(39) + '2';
+    const token = 'c'.repeat(39) + '3';
+    const { root, rawPath, reviewPath } = await fixture({
+      'trace.trace': JSON.stringify({ sha1: first, token, duplicate: token }) + '\n',
+      'trace.network': JSON.stringify({ content: { _sha1: first } }) + '\n' + JSON.stringify({ content: { _sha1: second } }) + '\n',
+      [`resources/${first}`]: 'first native body',
+      [`resources/${second}`]: 'second native body',
+    });
+    try {
+      await sanitize(rawPath, reviewPath, []);
+      const output = unzipSync(await readFile(reviewPath));
+      expect(Buffer.from(output[`resources/${first}`]!).toString()).toBe('first native body');
+      expect(Buffer.from(output[`resources/${second}`]!).toString()).toBe('second native body');
+      expect(Buffer.from(output['trace.network']!).toString()).toContain(first);
+      expect(Buffer.from(output['trace.network']!).toString()).toContain(second);
+      expect(Buffer.from(output['trace.trace']!).toString()).not.toContain(token);
+      for (const source of ['auth-field', 'caller-secret']) {
+        await writeFile(rawPath, nativeZip({
+          'trace.trace': JSON.stringify({ sha1: first, ...(source === 'auth-field' ? { authorization: first } : {}) }) + '\n',
+          'trace.network': JSON.stringify({ content: { _sha1: first } }) + '\n',
+          [`resources/${first}`]: 'native body',
+        }));
+        await sanitize(rawPath, reviewPath, source === 'caller-secret' ? [first] : []);
+        const redacted = unzipSync(await readFile(reviewPath));
+        expect(Object.keys(redacted).join('\n')).not.toContain(first);
+        for (const bytes of Object.values(redacted)) expect(Buffer.from(bytes).toString()).not.toContain(first);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves Playwright 1.63 screencast frames while rejecting unsafe sibling entries', async () => {
+    const frameName = 'screencast/page@375948314ea928e64075ea93f74cdd9a-1789688535557.jpeg';
+    const frame = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+    const { root, rawPath, reviewPath } = await fixture({
+      'trace.trace': JSON.stringify({ type: 'screencast-frame', sha1: frameName }) + '\n',
+      'trace.network': '',
+      [frameName]: frame,
+    });
+    try {
+      await sanitize(rawPath, reviewPath, []);
+      expect(Buffer.from(unzipSync(await readFile(reviewPath))[frameName]!)).toEqual(frame);
+      for (const name of ['screencast/../escape.jpeg', 'screencast/nested/frame.jpeg', 'screencast/script.js']) {
+        await writeFile(rawPath, nativeZip({ 'trace.trace': '{}\n', 'trace.network': '', [name]: frame }));
+        await expect(sanitize(rawPath, reviewPath, [])).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('redacts supported encodings and every native textual stream without losing provenance', async () => {
     const rotated = 'rotated-stream-token-123';
     const rotatedUrl = 'rotated-url-token-456';
