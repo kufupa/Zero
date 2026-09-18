@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createAudit } from './audit.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const exec = promisify(execFile);
@@ -192,7 +193,7 @@ async function expandCriteria(page) {
   }
 }
 
-async function searchCalendar(page, request, room) {
+async function searchCalendar(page, request, room, criteriaCheckpoint) {
   await expandCriteria(page);
   await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
   await page.locator('input[name="startdate"]').press('Tab');
@@ -203,6 +204,7 @@ async function searchCalendar(page, request, room) {
     if (await input.inputValue()) { await input.fill(''); await input.press('Tab'); }
   }
   if (await page.locator('input[name="propertycodes"]').inputValue() !== request.propertyCode) throw new Error('PROPERTY_MISMATCH');
+  await criteriaCheckpoint();
   const pending = page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internalBooking/hotelAvail/inquiryForGrid' && r.request().method()==='POST', {timeout:45000});
   pending.catch(()=>{});
   const [response] = await Promise.all([pending,search(page)]);
@@ -268,7 +270,7 @@ export function selectOption(request, room, data, calendar) {
   return candidates[0];
 }
 
-async function readDetails(page, chosen, directory, prefix) {
+async function readDetails(page, chosen, prefix, checkpoint) {
   const row=rateRow(page,chosen.nativeRoom.code,chosen.rate.code);
   const details=[];
   for (const [n,index] of chosen.indexes.entries()) {
@@ -282,8 +284,8 @@ async function readDetails(page, chosen, directory, prefix) {
     await page.getByText(rateLabel,{exact:true}).waitFor();
     const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
     details.push({selectedDate:await selected.innerText(),room:roomLabel,rate:rateLabel,sourceText:await panel.innerText()});
+    await checkpoint(`${prefix}-night-${n+1}-details`);
   }
-  await page.screenshot({path:join(directory,`${prefix}-details.png`),fullPage:true,timeout:10000});
   const roomRow=page.getByText(chosen.nativeRoom.code,{exact:true}).locator('xpath=ancestor::tr[1]');
   await roomRow.locator('.cell-info').click();
   const card=page.locator('.x-window:visible').filter({hasText:'Room Type Information'});
@@ -291,23 +293,37 @@ async function readDetails(page, chosen, directory, prefix) {
   // Wait for the actual room content, not merely the empty card shell.
   await card.getByText(chosen.nativeRoom.desc,{exact:true}).waitFor();
   const roomInformation=await card.innerText();
+  await checkpoint(`${prefix}-room-information`);
   await page.keyboard.press('Escape');
   await card.waitFor({state:'hidden'});
   return {details,roomInformation};
 }
 
-export async function runInPage(page, request, directory, event=()=>{}) {
+export async function runInPage(page, request, directory, event=()=>{}, checkpoint=async name=>{
+  await mkdir(join(directory,'screenshots'),{recursive:true,mode:0o700});
+  await page.screenshot({path:join(directory,'screenshots',`${name}.png`),fullPage:true,timeout:10000});
+}) {
   const groups=[];
   for (const [index,room] of request.rooms.entries()) {
     event(`group_${index+1}_search`);
-    const source=await searchCalendar(page,request,room);
+    const prefix=`group-${index+1}`;
+    const source=await searchCalendar(page,request,room,()=>checkpoint(`${prefix}-criteria-applied`));
     await saveEvidence(directory,`group-${index+1}-criteria.json`,source.criteria);
+    await checkpoint(`${prefix}-availability-results`);
     if (!source.data) {
       groups.push({outcome:'partial',applied:source.criteria,options:[],limitations:['PMS returned a null calendar. This does not prove sold-out inventory.']});
       break;
     }
     const chosen=selectOption(request,room,source.data,source.calendar);
-    const sourceDetails=await readDetails(page,chosen,directory,`group-${index+1}`);
+    await saveEvidence(directory,`${prefix}-source.json`,{
+      endpoint:'/api/internalBooking/hotelAvail/inquiryForGrid',method:'POST',
+      criteria:source.criteria,datesList:source.data.datesList,
+      room:{code:chosen.nativeRoom.code,description:chosen.nativeRoom.desc,columns:chosen.nativeRoom.columns},
+      rate:{code:chosen.rate.code,description:chosen.rate.desc,currency:chosen.rate.currency,
+        restricted:chosen.rate.restricted,haspolicies:chosen.rate.haspolicies,columns:chosen.rate.columns},
+      visible:{headers:source.calendar.headers,selected:chosen.dom},
+    });
+    const sourceDetails=await readDetails(page,chosen,prefix,checkpoint);
     const option={room:{code:chosen.nativeRoom.code,label:chosen.nativeRoom.desc,information:sourceDetails.roomInformation},
       rate:{code:chosen.rate.code,label:chosen.rate.desc},board:chosen.dom.board,nightly:chosen.nightly,
       stayCoverage:{arrivalDate:request.arrivalDate,departureDate:request.departureDate,nights:chosen.nightly.length,mode:'daily_calendar',details:sourceDetails.details},
@@ -335,17 +351,19 @@ export async function runInPage(page, request, directory, event=()=>{}) {
     limitations:request.rooms.length>1?['Sequential occupancy-group searches do not establish additive or jointly available inventory.']:[]};
 }
 
-export async function fetchQuote({requestPath,outputDir,env=process.env}) {
+export async function fetchQuote({requestPath,outputDir,env=process.env,video=false}) {
   process.umask(0o077);
   const root=resolve(fileURLToPath(new URL('../../../../',import.meta.url)),'.private/playwright-quote');
   const outputRoot=resolve(outputDir??root);
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,page,secret,phase='input',result;
+  let browser,context,page,secret,phase='input',result,auditReport;
+  const audit=await createAudit(directory,{video});
   const started=Date.now();
-  const event=(next)=>{phase=next;process.stderr.write(JSON.stringify({at:new Date().toISOString(),phase})+'\n');};
+  const event=(next)=>{phase=next;process.stderr.write(JSON.stringify(audit.event(next))+'\n');};
   try {
+    event('input');
     const request=JSON.parse(await readFile(requestPath,'utf8'));
     const gaps=validateRequest(request);
     if(gaps.length) result={outcome:'input_gap',gaps,requested:request};
@@ -359,26 +377,36 @@ export async function fetchQuote({requestPath,outputDir,env=process.env}) {
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
       browser=await playwright().chromium.connectOverCDP(url.href,{timeout:20000});
-      if(browser.contexts().length!==1) throw new Error('AMBIGUOUS_BROWSER_CONTEXT');
-      page=await browser.contexts()[0].newPage();
+      // Trace only our isolated context, never the borrowed owner's tabs.
+      context=await browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}});
+      page=await context.newPage();
       page.setDefaultTimeout(20000);
       event('login'); await login(page,secret);
+      event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
+      await audit.checkpoint('login-complete');
       event('hotel_availability'); await openHotelAvailability(page);
-      result=await runInPage(page,request,directory,event);
+      await audit.checkpoint('hotel-availability');
+      result=await runInPage(page,request,directory,event,audit.checkpoint);
+      event(`result_${result.outcome}`);
     }
   } catch(error) {
     result=executionFailure(error,phase,secret);
     if(page && phase!=='login' && !await page.locator('input[type="password"]:visible').count().catch(()=>1))
-      await page.screenshot({path:join(directory,'failure.png'),fullPage:true,timeout:3000}).catch(()=>{});
+      await audit.checkpoint('failure').catch(()=>{});
   } finally {
-    try { if(page) await page.close({runBeforeUnload:false}); }
-    catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_TAB_CLOSE_FAILED'}; }
+    // Flush recording and trace while our page is still alive. Capture failure
+    // cannot prevent closing our context or detaching CDP.
+    try {auditReport=await audit.finish();}
+    catch {auditReport={status:'incomplete',errors:['AUDIT_FINALIZATION_FAILED']};}
+    try { if(context) await context.close(); }
+    catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
     // Pinned Playwright connectOverCDP closes its transport, not remote Chromium.
     // Verified in coreBundle _connectOverCDPImpl and against the retained live tab.
     try { if(browser) await browser.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
   }
-  result={...result,elapsedMs:Date.now()-started,evidenceDirectory:directory};
+  result={...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory};
+  event('run_finished');
   await saveEvidence(directory,'result.json',result);
   await saveEvidence(directory,'summary.txt',summarize(result));
   return result;
@@ -399,16 +427,17 @@ export function summarize(result) {
   }
   lines.push('Observation only, not a booking or hold. Whole-stay/all-room totals and tax inclusion not established.');
   if(result.error) lines.push(`${result.phase}: ${result.error.name}: ${result.error.message}`);
+  if(result.audit) lines.push(`Audit: ${result.audit.status}; video: ${result.audit.video?.status??'unknown'}. Capture begins after login; private artifacts may contain hotel/customer data.`);
   return lines.join('\n')+'\n';
 }
 
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const args=process.argv.slice(2);
-  if(args.includes('--help')) console.log('node fetch-quote.mjs --request <private.json> --output <.private/playwright-quote/runs>\nRequires HMS_STAGEHAND_CDP_URL, HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed, HMS_QUOTE_SECRET_PATH or HMS_READ_SECRET_ARN and AWS_REGION.');
+  if(args.includes('--help')) console.log('node fetch-quote.mjs --request <private.json> --output <.private/playwright-quote/runs> [--video]\nRequires HMS_STAGEHAND_CDP_URL, HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed, HMS_QUOTE_SECRET_PATH or HMS_READ_SECRET_ARN and AWS_REGION. Video requires the pinned Playwright FFmpeg installation on this controller.');
   else {
     const requestPath=args[args.indexOf('--request')+1];
     const outputDir=args[args.indexOf('--output')+1];
     if(!args.includes('--request')||!args.includes('--output')||!requestPath||!outputDir) {console.error('Required: --request <path> --output <path>');process.exitCode=2;}
-    else fetchQuote({requestPath,outputDir}).then(result=>{console.log(summarize(result));console.log(`Evidence: ${result.evidenceDirectory}`);process.exitCode=['quote','unavailable'].includes(result.outcome)?0:2;}).catch(error=>{console.error(error.message);process.exitCode=2;});
+    else fetchQuote({requestPath,outputDir,video:args.includes('--video')}).then(result=>{console.log(summarize(result));console.log(`Evidence: ${result.evidenceDirectory}`);process.exitCode=['quote','unavailable'].includes(result.outcome)&&result.audit.status==='complete'?0:2;}).catch(error=>{console.error(error.message);process.exitCode=2;});
   }
 }

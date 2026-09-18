@@ -2,9 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
+import { readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import * as quote from './fetch-quote.mjs';
 const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
+test('input-gap invocation has durable events and explicit capture status without browser access',async t=>{
+  const result=await quote.fetchQuote({requestPath:new URL('./examples/missing-age.json',import.meta.url),env:{},video:true});
+  t.after(()=>rm(result.evidenceDirectory,{recursive:true,force:true}));
+  assert.equal(result.outcome,'input_gap');
+  assert.equal(result.audit?.status,'not_started');
+  assert.equal(result.audit.video.requested,true);
+  const events=(await readFile(join(result.evidenceDirectory,'events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.at(-1).phase,'run_finished');
+});
 test('validates real adult request and exclusive departure',()=>{
   assert.deepEqual(validateRequest(request),[]);
   assert.deepEqual(stayDates(request),['2026-09-24','2026-09-25','2026-09-26']);
