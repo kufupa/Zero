@@ -20,6 +20,12 @@ namespace NavaOutlookAddin
         {
             _dispatcher = new OutlookBridgeDispatcher(application);
             InitializeComponent();
+            this.Load += TaskPaneControl_Load;
+        }
+
+        private void TaskPaneControl_Load(object sender, EventArgs e)
+        {
+            if (_webView != null) return;
             InitializeWebView();
         }
 
@@ -54,7 +60,10 @@ namespace NavaOutlookAddin
         private static void EnsureNativeLoader()
         {
             string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            if (string.IsNullOrEmpty(dir)) return;
+            if (string.IsNullOrEmpty(dir))
+            {
+                throw new InvalidOperationException("Add-in directory is unknown.");
+            }
             string rid = Environment.Is64BitProcess ? "win-x64" : "win-x86";
             string src = Path.Combine(dir, "runtimes", rid, "native", "WebView2Loader.dll");
             string dest = Path.Combine(dir, "WebView2Loader.dll");
@@ -62,7 +71,10 @@ namespace NavaOutlookAddin
             {
                 throw new FileNotFoundException("Missing " + src);
             }
-            File.Copy(src, dest, true);
+            if (!File.Exists(dest))
+            {
+                File.Copy(src, dest, false);
+            }
         }
 
         private void ShowPaneError(Exception ex)

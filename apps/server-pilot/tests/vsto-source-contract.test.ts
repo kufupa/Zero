@@ -94,12 +94,49 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     const source = read('ThisAddIn.cs');
     expect(source).toContain('EnsurePane');
     expect(source).toMatch(/if \(_taskPane == null\)/);
-    expect(source).toContain('EnsurePane()');
+    expect(source).toContain('EnsurePane(true)');
   });
 
   it('ships x64 and x86 WebView2Loader runtimes', () => {
     const csproj = read('NavaOutlookAddin.csproj');
     expect(csproj).toContain('win-x64');
     expect(csproj).toContain('win-x86');
+  });
+
+  it('creates CustomTaskPanes via the VSTO factory instead of dynamic', () => {
+    const designer = read('ThisAddIn.Designer.cs');
+    expect(designer).toContain('CustomTaskPaneCollection CustomTaskPanes');
+    expect(designer).toContain('CreateCustomTaskPaneCollection');
+    expect(designer).toContain('this.CustomTaskPanes.Dispose');
+    const source = read('ThisAddIn.cs');
+    expect(source).not.toContain('(dynamic)this');
+    expect(source).toContain('this.CustomTaskPanes');
+  });
+
+  it('does not Remove custom task panes during ThisAddIn_Shutdown', () => {
+    const source = read('ThisAddIn.cs');
+    const shutdown = source.slice(source.indexOf('ThisAddIn_Shutdown'));
+    expect(shutdown).not.toMatch(/CustomTaskPanes\.Remove|TaskPanes\.Remove/);
+  });
+
+  it('hosts WebView2 after the task pane has a window handle and does not overwrite a loaded loader', () => {
+    const source = read('TaskPaneControl.cs');
+    expect(source).toMatch(/this\.Load \+=/);
+    expect(source).not.toMatch(/InitializeComponent\(\);\s*InitializeWebView\(\);/);
+    expect(source).toContain('if (!File.Exists(dest))');
+  });
+
+  it('binds the pane to the active Explorer when present', () => {
+    const source = read('ThisAddIn.cs');
+    expect(source).toMatch(/CustomTaskPanes\.Add\([\s\S]*explorer/);
+  });
+
+  it('fails the Windows build when the WebView2 bootstrapper is missing', () => {
+    const workflow = readFileSync(
+      path.resolve(vstoRoot, '../../../../.github/workflows/outlook-vsto.yml'),
+      'utf8',
+    );
+    expect(workflow).not.toContain('WARN: WebView2 bootstrapper missing');
+    expect(workflow).toMatch(/throw ".*WebView2 bootstrapper/);
   });
 });

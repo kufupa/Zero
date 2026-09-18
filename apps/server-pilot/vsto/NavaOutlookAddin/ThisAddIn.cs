@@ -20,38 +20,41 @@ namespace NavaOutlookAddin
             return new NavaRibbon();
         }
 
-        private CustomTaskPaneCollection TaskPanes =>
-            (CustomTaskPaneCollection)((dynamic)this).CustomTaskPanes;
-
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
             Instance = this;
-            EnsurePane();
+            EnsurePane(false);
         }
 
-        private void EnsurePane()
+        private void EnsurePane(bool showErrorDialog)
         {
             if (_taskPane != null) return;
             try
             {
                 _control = new TaskPaneControl(this.Application);
-                _taskPane = TaskPanes.Add(_control, "Nava AI Reservationist");
-                _taskPane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionRight;
-                _taskPane.Width = 380;
-                _taskPane.Visible = true;
-
                 _explorer = this.Application.ActiveExplorer();
                 if (_explorer != null)
                 {
+                    _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist", _explorer);
                     _explorer.SelectionChange += Explorer_SelectionChange;
                 }
+                else
+                {
+                    _taskPane = this.CustomTaskPanes.Add(_control, "Nava AI Reservationist");
+                }
+                _taskPane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionRight;
+                _taskPane.Width = 380;
+                _taskPane.Visible = true;
             }
             catch (Exception ex)
             {
                 // Pane/WebView2 failures must not unload the VSTO add-in.
-                MessageBox.Show(
-                    "Nava could not open the side pane.\n\n" + ex.Message,
-                    "Nava Outlook Assistant");
+                if (showErrorDialog)
+                {
+                    MessageBox.Show(
+                        "Nava could not open the side pane.\n\n" + ex.Message,
+                        "Nava Outlook Assistant");
+                }
             }
         }
 
@@ -74,10 +77,18 @@ namespace NavaOutlookAddin
         {
             if (_taskPane == null)
             {
-                EnsurePane();
+                EnsurePane(true);
                 return;
             }
-            _taskPane.Visible = !_taskPane.Visible;
+            try
+            {
+                _taskPane.Visible = !_taskPane.Visible;
+            }
+            catch (Exception)
+            {
+                _taskPane = null;
+                EnsurePane(true);
+            }
         }
 
         private void ThisAddIn_Shutdown(object sender, System.EventArgs e)
@@ -88,17 +99,8 @@ namespace NavaOutlookAddin
                 Marshal.ReleaseComObject(_explorer);
                 _explorer = null;
             }
-            if (_taskPane != null)
-            {
-                TaskPanes.Remove(_taskPane);
-                _taskPane.Dispose();
-                _taskPane = null;
-            }
-            if (_control != null)
-            {
-                _control.Dispose();
-                _control = null;
-            }
+            _taskPane = null;
+            _control = null;
             Instance = null;
         }
 

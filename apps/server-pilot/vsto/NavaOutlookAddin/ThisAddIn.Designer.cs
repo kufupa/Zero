@@ -14,6 +14,8 @@ namespace NavaOutlookAddin
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         internal Microsoft.Office.Interop.Outlook.Application Application;
 
+        internal Microsoft.Office.Tools.CustomTaskPaneCollection CustomTaskPanes;
+
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         public ThisAddIn(Microsoft.Office.Tools.Outlook.Factory factory, System.IServiceProvider serviceProvider)
@@ -78,12 +80,14 @@ namespace NavaOutlookAddin
         private void BeginInitialization()
         {
             this.BeginInit();
+            this.CustomTaskPanes.BeginInit();
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void EndInitialization()
         {
+            this.CustomTaskPanes.EndInit();
             this.EndInit();
         }
 
@@ -91,12 +95,22 @@ namespace NavaOutlookAddin
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeControls()
         {
+            this.CustomTaskPanes = Globals.Factory.CreateCustomTaskPaneCollection(
+                null, null, "CustomTaskPanes", "CustomTaskPanes", this);
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeComponents()
         {
+        }
+
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
+        protected override void OnShutdown()
+        {
+            this.CustomTaskPanes.Dispose();
+            base.OnShutdown();
         }
     }
 

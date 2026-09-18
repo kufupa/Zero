@@ -159,7 +159,7 @@ jobs:
               Write-Host "WebView2 bootstrapper download failed from $url : $_"
             }
           }
-          if (-not $ok) { Write-Host "WARN: WebView2 bootstrapper missing; installer will skip that chain" }
+          if (-not $ok) { throw "WebView2 bootstrapper missing" }
           Get-Item RegisterTrust.exe, $wv2 -ErrorAction SilentlyContinue | Format-List Name, Length
 
       - name: Compile Inno Setup installer
