@@ -8,7 +8,7 @@
 namespace NavaOutlookAddin
 {
     [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
-    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
+    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddIn
     {
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         internal Microsoft.Office.Interop.Outlook.Application Application;
@@ -58,11 +58,6 @@ namespace NavaOutlookAddin
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeCachedData()
         {
-            if (this.DataHost == null) return;
-            if (this.DataHost.IsCacheInitialized)
-            {
-                this.DataHost.InitializeCachedData();
-            }
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]

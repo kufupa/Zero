@@ -50,6 +50,8 @@ jobs:
           Write-Host "RefAsm exists=$(Test-Path $refAsm) path=$refAsm"
           Write-Host "VSToolsPath=$vsToolsPath"
           Write-Host "Chosen targets=$($chosen.FullName)"
+          Get-ChildItem $refAsm -Filter "*Office.Tools*" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "REFASM $($_.Name)" }
+          Get-ChildItem $refAsm -Filter "*VisualStudio.Tools*" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "REFASM $($_.Name)" }
           "vs=$vs" >> $env:GITHUB_OUTPUT
           "pia=$pia" >> $env:GITHUB_OUTPUT
           "refAsm=$refAsm" >> $env:GITHUB_OUTPUT
