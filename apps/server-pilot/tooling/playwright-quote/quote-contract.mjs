@@ -596,7 +596,8 @@ export function composeAllocation(groups = [], propertyCode) {
     const singleton = Array.isArray(required?.roomCodes) && required.roomCodes.length === 1
       && Array.isArray(required?.rateCodes) && required.rateCodes.length === 1;
     const option = singleton
-      ? options.find((row) => row.room?.code === required.roomCodes[0] && row.rate?.code === required.rateCodes[0])
+      ? options.find((row) => row.room?.code === required.roomCodes[0] && row.rate?.code === required.rateCodes[0]
+        && row.matchStatus === 'match' && row.eligibility === 'verified' && row.availability === 'available')
       : undefined;
     const building = option?.room?.buildingCode;
     const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code

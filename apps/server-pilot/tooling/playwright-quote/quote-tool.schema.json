@@ -158,7 +158,10 @@
           "enum": ["quote", "no_match", "unavailable", "input_gap", "partial", "execution_failure"],
           "description": "quote: every group has at least one eligible verified matching offer at the requested detail level and multi-group calls also have a checked allocation. no_match: complete requested search found no hard-requirement offer. unavailable: verified inventory shortage for the searched product/allocation. input_gap: missing, invalid or conflicting caller fields. partial: useful data with unestablished coverage, eligibility or joint allocation. execution_failure: browser or source failure."
         },
-        "requested": { "$ref": "#/$defs/request" },
+        "requested": {
+          "type": "object",
+          "description": "Normalized v2 request after successful validation. On input_gap this may be the raw caller object, including legacy or invalid fields, so consumers can show correction paths without requiring a valid request."
+        },
         "observedAt": { "type": "string" },
         "sourceScreen": { "type": "string", "description": "Hotel Availability and related read-only details. OSRRAV and CRS are not substitutes." },
         "appliedCriteria": { "type": "object" },

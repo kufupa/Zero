@@ -355,6 +355,8 @@ test('published schema documents request and result contracts without selectors 
   assert.equal(schema.$defs.request.properties.maxOptionsPerGroup.maximum, 200);
   assert.ok(schema.$defs.request.description.includes('schemaVersion'));
   assert.ok(schema.$defs.result.properties.groups.items.properties.options.items.properties.calculated.description.includes('sum_of_displayed_nightly_rates'));
+  assert.equal(schema.$defs.result.properties.requested.$ref, undefined);
+  assert.ok(schema.$defs.result.properties.requested.description.includes('input_gap'));
   const adult = normalizeQuoteRequest(JSON.parse(await readFile(adultFixtureUrl, 'utf8')));
   for (const key of Object.keys(adult.request)) {
     assert.ok(Object.hasOwn(schema.$defs.request.properties, key), `schema missing request property ${key}`);
@@ -483,10 +485,10 @@ test('orderOptions ranks preferred hits inside a match class before displayed-ni
 
 test('composeAllocation uses proven building/room pools and never invents identity', () => {
   const night = (inventory) => [{ date: '2026-09-24', inventory }];
-  const group = (id, quantity, roomCode, rateCode, buildingCode, inventory, matchStatus = 'match') => ({
+  const group = (id, quantity, roomCode, rateCode, buildingCode, inventory, matchStatus = 'match', eligibility = 'verified', availability = 'available') => ({
     id,
     request: { quantity, required: { roomCodes: [roomCode], rateCodes: [rateCode] } },
-    options: [{ room: { code: roomCode, buildingCode }, rate: { code: rateCode }, matchStatus, nightly: night(inventory) }],
+    options: [{ room: { code: roomCode, buildingCode }, rate: { code: rateCode }, matchStatus, eligibility, availability, nightly: night(inventory) }],
   });
   const over = composeAllocation([
     group('a', 2, 'STQN', 'BAR', 'H1', 3),
@@ -517,6 +519,10 @@ test('composeAllocation uses proven building/room pools and never invents identi
     { id: 'a', request: { quantity: 1 }, options: [] },
     { id: 'b', request: { quantity: 1 }, options: [] },
   ], 'HRCEN').status, 'not_selected');
+  assert.equal(composeAllocation([
+    group('a', 2, 'STQN', 'BAR', 'H1', 1, 'match', 'conditional', 'restricted'),
+    group('b', 2, 'STQN', 'BAR', 'H1', 1, 'match', 'conditional', 'restricted'),
+  ], 'HRCEN').status, 'unknown');
 });
 
 test('legacy sourceReference is retained as notes when no other caller context exists', () => {
