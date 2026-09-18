@@ -7,8 +7,9 @@
 #pragma warning disable 414
 namespace NavaOutlookAddin
 {
-    [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
-    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
+        [Microsoft.VisualStudio.Tools.Applications.Runtime.StartupObjectAttribute(0)]
+        public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
     {
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         internal Microsoft.Office.Interop.Outlook.Application Application;

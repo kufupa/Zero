@@ -89,12 +89,27 @@ jobs:
             "-verbosity:minimal"
           )
           msbuild @msbuildArgs
-          if ($LASTEXITCODE -ne 0) { throw "msbuild rebuild failed: $LASTEXITCODE" }
           $dll = "bin\Release\NavaOutlookAddin.dll"
           $vsto = "bin\Release\NavaOutlookAddin.vsto"
           Get-ChildItem bin\Release -ErrorAction SilentlyContinue | Format-Table Name, Length
-          if (-not (Test-Path $dll)) { throw "Missing $dll" }
-          if (-not (Test-Path $vsto)) { throw "Missing $vsto — VSTO targets did not emit ClickOnce manifests" }
+          if (-not (Test-Path $dll)) { throw "Missing $dll (msbuild exit $LASTEXITCODE)" }
+          if (-not (Test-Path $vsto)) {
+            Write-Host "VSTO targets did not emit .vsto (msbuild exit $LASTEXITCODE); generating with mage.exe"
+            $mage = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft SDKs\Windows" -Recurse -Filter mage.exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $mage) { throw "mage.exe not found and $vsto missing" }
+            Write-Host "MAGE=$mage"
+            $manifest = "bin\Release\NavaOutlookAddin.dll.manifest"
+            & $mage -New Application -ToFile $manifest -FromDirectory bin\Release -Name NavaOutlookAddin -Version 1.0.0.0 -Processor msil
+            if ($LASTEXITCODE -ne 0) { throw "mage application manifest failed" }
+            & $mage -New Deployment -ToFile $vsto -AppManifest $manifest -Name NavaOutlookAddin -Version 1.0.0.0 -Install false
+            if ($LASTEXITCODE -ne 0) { throw "mage deployment manifest failed" }
+            if ($env:CERT_THUMB) {
+              & $mage -Sign $manifest -CertHash $env:CERT_THUMB
+              & $mage -Sign $vsto -CertHash $env:CERT_THUMB
+            }
+          }
+          if (-not (Test-Path $vsto)) { throw "Missing $vsto" }
         env:
           VSTOOLS: ${{ steps.refs.outputs.vsToolsPath }}
           REF_ASM: ${{ steps.refs.outputs.refAsm }}
