@@ -139,4 +139,16 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(workflow).not.toContain('WARN: WebView2 bootstrapper missing');
     expect(workflow).toMatch(/throw ".*WebView2 bootstrapper/);
   });
+
+  it('copies WebView2Loader from LocalAppData install into the VSTO assembly cache', () => {
+    const source = read('TaskPaneControl.cs');
+    expect(source).toContain('LocalApplicationData');
+    expect(source).toContain('GetExecutingAssembly');
+    expect(source).toContain('runtimes');
+    expect(source).toMatch(/File\.Copy\(src, dest/);
+    expect(source).toContain('NavaOutlookAddin');
+    expect(source).not.toMatch(
+      /string src = Path\.Combine\(dir, "runtimes"/,
+    );
+  });
 });

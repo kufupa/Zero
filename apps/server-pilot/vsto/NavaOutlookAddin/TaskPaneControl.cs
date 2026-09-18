@@ -59,17 +59,34 @@ namespace NavaOutlookAddin
 
         private static void EnsureNativeLoader()
         {
-            string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            if (string.IsNullOrEmpty(dir))
+            string cacheDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            if (string.IsNullOrEmpty(cacheDir))
             {
                 throw new InvalidOperationException("Add-in directory is unknown.");
             }
             string rid = Environment.Is64BitProcess ? "win-x64" : "win-x86";
-            string src = Path.Combine(dir, "runtimes", rid, "native", "WebView2Loader.dll");
-            string dest = Path.Combine(dir, "WebView2Loader.dll");
-            if (!File.Exists(src))
+            string dest = Path.Combine(cacheDir, "WebView2Loader.dll");
+            string installDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "NavaOutlookAddin");
+            string[] sources =
             {
-                throw new FileNotFoundException("Missing " + src);
+                Path.Combine(installDir, "runtimes", rid, "native", "WebView2Loader.dll"),
+                Path.Combine(cacheDir, "runtimes", rid, "native", "WebView2Loader.dll"),
+            };
+            string src = null;
+            foreach (string candidate in sources)
+            {
+                if (File.Exists(candidate))
+                {
+                    src = candidate;
+                    break;
+                }
+            }
+            if (src == null)
+            {
+                throw new FileNotFoundException(
+                    "Missing WebView2Loader.dll. Tried: " + string.Join("; ", sources));
             }
             if (!File.Exists(dest))
             {
