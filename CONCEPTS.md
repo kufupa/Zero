@@ -504,6 +504,28 @@ Mandatory dual review on every implementation plan: `gstack-plan-eng-review` as 
 
 Hard override that forbids Vitest (and similar runners) against pilot/production Postgres, including under overnight autonomy and “make tests green” pressure. Prefer disposable non-production databases for DB-required tests; prove pilot with read-only SQL/API, health checks, or purpose-built non-test scripts. Related: Pilot RDS vitest refuse, VITEST_ALLOW_PILOT_RDS, Wipe-safe pilot verify.
 
+## Outlook desktop taskpane domain
+
+### Outlook Task Pane
+
+Native WinForms `CustomTaskPane` instance hosted in Classic Outlook 2016 Explorer/Inspector windows, docked to the right edge and running an embedded Microsoft Edge WebView2 runtime.
+
+### VSTO WebView2 Bridge
+
+The .NET Framework 4.8 C# COM add-in registered in `HKCU\Software\Microsoft\Office\Outlook\Addins` that instantiates WebView2, points it to the canonical HTTPS task pane URL, and brokers bidirectional JSON messaging between the Outlook COM object model and web DOM.
+
+### Nava Task Pane Route
+
+The dedicated, responsive web route (`/outlook-pane`) in `apps/mail` styled for a narrow (~350–450px) taskpane viewport, rendering AI reservationist cards, active email inspection, and pilot actions.
+
+### Workstation Client
+
+Physical or virtual Windows PC on the hotel LAN running Classic Outlook 2016 with local POP3/PST storage against the hotel Zimbra server, connecting to `https://nava.legacyhotels.co.za` over hotel LAN/OpenVPN.
+
+### Workstation Bridge Protocol
+
+The versioned JSON RPC message contract exchanged over `window.chrome.webview.postMessage` and `WebMessageReceived` bridging Outlook COM capabilities (active email headers, selection change events, reply draft insertion) into the web client.
+
 ## Flagged ambiguities
 
 - **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
@@ -517,6 +539,7 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
+- **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
 
 ## Pilot measurement

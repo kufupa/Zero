@@ -6,6 +6,7 @@ import { m } from '@/paraglide/messages';
 import GeneralPage from '../general/page';
 import AdminDashboardPage from '../admin-dashboard/page';
 import CatchupUploadPage from '../catchup-upload/page';
+import OutlookAddinDownloadPage from '../outlook-addin/page';
 import { useLocation } from 'react-router';
 import LabelsPage from '../labels/page';
 
@@ -18,6 +19,7 @@ const settingsPages: Record<string, React.ComponentType> = {
   labels: LabelsPage,
   'admin-dashboard': AdminDashboardPage,
   'catchup-upload': CatchupUploadPage,
+  'outlook-addin': OutlookAddinDownloadPage,
 };
 
 export default function SettingsPage() {
