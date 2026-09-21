@@ -140,7 +140,9 @@ export function proposedActionFacts(request: Record<string, unknown>): string {
   const arr = compactDate(request.arrival);
   const dep = compactDate(request.departure);
   const stay = arr && dep ? `${arr}–${dep}` : arr || dep;
-  return [rooms, stay].filter(Boolean).join(' · ');
+  const conf = request.confirmationNumber ? String(request.confirmationNumber) : '';
+  const adults = request.adults != null && request.adults !== '' ? `${request.adults} pax` : '';
+  return [rooms, stay, adults, conf].filter(Boolean).join(' · ');
 }
 
 export function coerceProposedAction(
@@ -173,7 +175,7 @@ export function shouldSkipProposed(row: LabRow): boolean {
   return false;
 }
 
-export function resolveProposedActions(row: LabRow): ProposedAction[] {
+function listedOrDerivedProposed(row: LabRow): ProposedAction[] {
   if (Array.isArray(row.proposedActions)) {
     return row.proposedActions
       .map((item, index) => coerceProposedAction(item, index))
@@ -223,6 +225,152 @@ export function resolveProposedActions(row: LabRow): ProposedAction[] {
     });
   }
   return actions;
+}
+
+export function resolveProposedActions(row: LabRow): ProposedAction[] {
+  return enrichHitlProposed(row);
+}
+
+export const HITL_PRIMARY_TOOLS = [
+  'hms_quote_stay',
+  'hms_amend_reservation',
+  'hms_create_reservation',
+  'hms_cancel_reservation',
+  'hms_read_folio',
+  'hms_generate_invoice',
+  'hms_post_payment',
+  'hms_email_folio',
+  'hms_refund',
+  'hms_event_read',
+  'hms_group_block_read',
+  'hms_company_account_read',
+  'hms_send_reservation_confirmation',
+  'hms_generate_quote_document',
+  'hms_generate_confirmation_proforma',
+  'mail.send_with_attachments',
+  'hms_attach_guest_stay_document',
+] as const;
+
+export const HITL_NOISY_TOOLS = new Set([
+  'mail_read_artifact',
+  'documents_read_existing',
+  'documents_list_existing',
+  'mail_parse_channel_payload',
+  'hms_sent_email_audit',
+  'property_read_knowledge',
+  'hms_list_documents',
+]);
+
+/** Freeze needed=false for these; gold still used them. Card from tools/staffUsed. */
+export const HITL_COMPANION_FROM_TOOLS = new Set([
+  'hms_generate_quote_document',
+  'hms_email_folio',
+]);
+
+function wantsPrimaryCard(row: LabRow, tool: string): boolean {
+  if (row.needed?.[tool]) return true;
+  if (HITL_PRIMARY_TOOLS.includes(tool as (typeof HITL_PRIMARY_TOOLS)[number]) && row.staffUsed?.[tool]) {
+    return true;
+  }
+  if (HITL_COMPANION_FROM_TOOLS.has(tool) && row.tools.includes(tool)) return true;
+  return false;
+}
+
+export function occupancyFromText(text: string): { adults?: number } {
+  const match = text.match(
+    /\b(\d{1,3})\s*(?:pax|adults?|people|guests?|delegates?|attendees?|singles?|twins?|doubles?)\b/i,
+  );
+  if (!match) return {};
+  const adults = Number(match[1]);
+  if (!Number.isFinite(adults) || adults < 1 || adults > 400) return {};
+  return { adults };
+}
+
+function actionRank(tool: string): number {
+  if (tool === 'hms_quote_stay') return 0;
+  const primary = HITL_PRIMARY_TOOLS.indexOf(tool as (typeof HITL_PRIMARY_TOOLS)[number]);
+  if (primary >= 0) return 1 + primary;
+  if (tool === 'hms_find_reservation') return 80;
+  if (tool === 'hms_read_reservation') return 81;
+  return 90;
+}
+
+export function enrichHitlProposed(row: LabRow): ProposedAction[] {
+  if (row.otherDesk || row.threadOutcome === 'other_desk') return [];
+  const existing = listedOrDerivedProposed(row);
+  const byTool = new Map<string, ProposedAction>();
+  const quotes: ProposedAction[] = [];
+  for (const action of existing) {
+    const next =
+      action.status === 'superseded' || action.status === 'needs_human'
+        ? action
+        : { ...action, status: 'live' as const };
+    if (next.tool === 'hms_quote_stay') quotes.push(next);
+    else if (!byTool.has(next.tool)) byTool.set(next.tool, next);
+  }
+  const hay = `${row.inbound.textBody || ''}\n${row.attachmentText || ''}`;
+  const occ = occupancyFromText(hay);
+  const baseRequest = coerceRequest({ ...row.request, ...occ });
+  for (const tool of HITL_PRIMARY_TOOLS) {
+    if (!wantsPrimaryCard(row, tool)) continue;
+    if (tool === 'hms_quote_stay' && quotes.length) continue;
+    if (byTool.has(tool)) continue;
+    byTool.set(tool, {
+      tool,
+      title: proposedVerb(tool),
+      status: 'live',
+      colorIndex: 0,
+      request: baseRequest,
+    });
+  }
+  const writeLive = [...quotes, ...byTool.values()].some(
+    (item) =>
+      (item.status === 'live' || item.status === 'needs_human') &&
+      (item.tool === 'hms_quote_stay' || HITL_PRIMARY_TOOLS.includes(item.tool as (typeof HITL_PRIMARY_TOOLS)[number])),
+  );
+  if (writeLive) {
+    for (const tool of ['hms_find_reservation', 'hms_read_reservation', 'hms_read_notes_traces'] as const) {
+      if (byTool.has(tool) || quotes.some((item) => item.tool === tool)) continue;
+      const fromQuote = quotes.length > 0 && tool !== 'hms_read_notes_traces';
+      if (row.needed?.[tool] || row.tools.includes(tool) || Boolean(row.staffUsed?.[tool]) || fromQuote) {
+        byTool.set(tool, {
+          tool,
+          title: proposedVerb(tool),
+          status: 'live',
+          colorIndex: 0,
+          request: baseRequest,
+        });
+      }
+    }
+  }
+  let merged = [...quotes, ...byTool.values()];
+  const primaryLive = merged.filter(
+    (item) =>
+      (item.status === 'live' || item.status === 'needs_human') && !HITL_NOISY_TOOLS.has(item.tool),
+  );
+  if (primaryLive.length) {
+    merged = merged.filter((item) => !HITL_NOISY_TOOLS.has(item.tool));
+  }
+  merged.sort((left, right) => {
+    const quoteDelta =
+      (left.tool === 'hms_quote_stay' ? 0 : 1) - (right.tool === 'hms_quote_stay' ? 0 : 1);
+    if (quoteDelta !== 0) return quoteDelta;
+    return actionRank(left.tool) - actionRank(right.tool);
+  });
+  return merged.map((item, index) => {
+    const request = { ...item.request };
+    if (request.adults == null && occ.adults != null) request.adults = occ.adults;
+    if (
+      request.adults == null &&
+      item.tool === 'hms_quote_stay' &&
+      typeof request.roomQty === 'number' &&
+      request.roomQty >= 1 &&
+      request.roomQty <= 400
+    ) {
+      request.adults = request.roomQty;
+    }
+    return { ...item, request, colorIndex: index % 4 };
+  });
 }
 
 export type LabIndex = {
@@ -756,13 +904,20 @@ export type LabFilters = {
   tool?: string | null;
   outcome?: ThreadOutcome | null;
   facet?: string | null;
+  proposed?: 'live' | 'skip' | null;
 };
+
+export function rowHasLiveProposed(row: LabRow): boolean {
+  return resolveProposedActions(row).some((item) => item.status === 'live' || item.status === 'needs_human');
+}
 
 export function filterLabRows(index: LabIndex, filters: LabFilters = {}): LabRow[] {
   return index.rows.filter((row) => {
     if (filters.tool && !rowNeedsTool(row, filters.tool)) return false;
     if (filters.outcome && row.threadOutcome !== filters.outcome) return false;
     if (filters.facet && !(row.facetChips || []).includes(filters.facet)) return false;
+    if (filters.proposed === 'live' && !rowHasLiveProposed(row)) return false;
+    if (filters.proposed === 'skip' && rowHasLiveProposed(row)) return false;
     return true;
   });
 }

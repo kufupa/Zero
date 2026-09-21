@@ -35,6 +35,8 @@ import {
   coerceRoomQty,
   resolveProposedActions,
   proposedActionFacts,
+  enrichHitlProposed,
+  occupancyFromText,
   spansForPaint,
   stripQuotedHistory,
   SYNTHETIC_LAB_INDEX,
@@ -223,7 +225,7 @@ describe('centurion eval lab', () => {
     cleanup();
     const gapOnly = { generated: 'synthetic', rows: [gapRow] };
     render(<CenturionEvalLab index={gapOnly} />);
-    expect(screen.getByTestId('lab-schema-staff-did').textContent).toContain('∅');
+    expect(screen.getByTestId('lab-schema-staff-did').textContent).toMatch(/No captured PMS response|∅/);
     expect(screen.getByTestId('lab-empty-gold')).toBeTruthy();
   });
 
@@ -424,10 +426,14 @@ describe('centurion eval lab', () => {
     expect(html).toMatch(/data-field="roomQty"/);
     expect(html).not.toMatch(/data-field="roomQty">2026/);
     const derived = resolveProposedActions(row);
-    expect(derived).toHaveLength(2);
-    expect(derived[0]?.title).toBe('Quote stay');
-    expect(derived[0]?.colorIndex).toBe(0);
-    expect(derived[1]?.colorIndex).toBe(1);
+    const derivedQuotes = derived.filter((item) => item.tool === 'hms_quote_stay');
+    expect(derivedQuotes).toHaveLength(2);
+    expect(derivedQuotes[0]?.title).toBe('Quote stay');
+    expect(derivedQuotes[0]?.colorIndex).toBe(0);
+    expect(derivedQuotes[1]?.colorIndex).toBe(1);
+    expect(derived.map((item) => item.tool)).toEqual(
+      expect.arrayContaining(['hms_quote_stay', 'hms_find_reservation', 'hms_read_reservation']),
+    );
     expect(proposedActionFacts(derived[0]!.request)).toMatch(/2/);
     expect(proposedActionFacts(derived[1]!.request)).toMatch(/7/);
     const reRow: LabRow = {
@@ -443,7 +449,9 @@ describe('centurion eval lab', () => {
     };
     const reLive = resolveProposedActions(reRow).filter((item) => item.status === 'live');
     const reFolded = resolveProposedActions(reRow).filter((item) => item.status === 'superseded');
-    expect(reLive.map((item) => item.request.roomQty)).toEqual([3, 6]);
+    expect(reLive.filter((item) => item.tool === 'hms_quote_stay').map((item) => item.request.roomQty)).toEqual([
+      3, 6,
+    ]);
     expect(reFolded.map((item) => item.request.roomQty)).toEqual([2, 7]);
     render(
       <CenturionEvalLab
@@ -534,5 +542,69 @@ describe('centurion eval lab', () => {
     };
     delete (deskRow as { proposedActions?: unknown }).proposedActions;
     expect(resolveProposedActions(deskRow)).toEqual([]);
+  });
+
+  it('shows list verbs, skip chip, staff-did miss, and enriches primary writes', () => {
+    render(<CenturionEvalLab index={SYNTHETIC_LAB_INDEX} />);
+    expect(screen.getAllByTestId('lab-row-verbs')[0]!.textContent).toMatch(/Quote stay/);
+    fireEvent.click(screen.getByTestId('proposed-skip'));
+    expect(screen.queryByTestId('lab-row-verbs')).toBeNull();
+    cleanup();
+    const gapOnly = { generated: 'synthetic', rows: [SYNTHETIC_LAB_INDEX.rows[1]!] };
+    render(<CenturionEvalLab index={gapOnly} />);
+    expect(screen.getByTestId('lab-staff-did-missing').textContent).toMatch(/No captured PMS response/);
+    fireEvent.keyDown(window, { key: 'j' });
+    cleanup();
+    const folioRow: LabRow = {
+      ...SYNTHETIC_LAB_INDEX.rows[1]!,
+      inboundId: 'enrich-folio',
+      inbound: { subject: 'Invoice', textBody: 'Please send folio for 12 pax arriving 12 Oct.' },
+      needed: { hms_read_folio: true, mail_read_artifact: true },
+      tools: ['hms_read_folio', 'mail_read_artifact'],
+      proposedActions: [
+        {
+          tool: 'mail_read_artifact',
+          title: 'Read mail artifact',
+          status: 'live',
+          colorIndex: 0,
+          request: {},
+        },
+      ],
+    };
+    const enriched = enrichHitlProposed(folioRow);
+    expect(enriched.map((item) => item.tool)).toContain('hms_read_folio');
+    expect(enriched.map((item) => item.tool)).not.toContain('mail_read_artifact');
+    expect(occupancyFromText(folioRow.inbound.textBody)).toEqual({ adults: 12 });
+    expect(occupancyFromText('Rooms : 2 Singles')).toEqual({ adults: 2 });
+    const quotes: LabRow = {
+      ...SYNTHETIC_LAB_INDEX.rows[0]!,
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { roomQty: 2 } },
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 1, request: { roomQty: 7 } },
+      ],
+    };
+    expect(enrichHitlProposed(quotes).slice(0, 2).map((item) => item.request.roomQty)).toEqual([2, 7]);
+    const quoteDoc: LabRow = {
+      ...quotes,
+      tools: ['hms_quote_stay', 'hms_generate_quote_document'],
+      needed: { hms_quote_stay: true },
+      staffUsed: { hms_generate_quote_document: true },
+    };
+    expect(enrichHitlProposed(quoteDoc).map((item) => item.tool)).toContain('hms_generate_quote_document');
+    const emailFolio: LabRow = {
+      ...folioRow,
+      tools: ['hms_read_folio', 'hms_email_folio'],
+      needed: { hms_read_folio: true },
+      staffUsed: { hms_email_folio: true },
+    };
+    expect(enrichHitlProposed(emailFolio).map((item) => item.tool)).toContain('hms_email_folio');
+    const companyStaff: LabRow = {
+      ...folioRow,
+      tools: ['hms_find_reservation'],
+      needed: {},
+      staffUsed: { hms_company_account_read: true },
+      proposedActions: [],
+    };
+    expect(enrichHitlProposed(companyStaff).map((item) => item.tool)).toContain('hms_company_account_read');
   });
 });

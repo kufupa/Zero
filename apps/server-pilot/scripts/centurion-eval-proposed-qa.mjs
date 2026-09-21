@@ -93,4 +93,4 @@ const out = {
 console.log(JSON.stringify(out));
 const reviewDir = path.join(DEMAND, 'review');
 mkdirSync(reviewDir, { recursive: true });
-writeFileSync(path.join(reviewDir, 'product-loop-2.json'), `${JSON.stringify({ ...out, samples: Object.fromEntries(Object.entries(byTool).map(([id, v]) => [id, v.sample])) }, null, 2)}\n`);
+writeFileSync(path.join(reviewDir, 'product-loop-4.json'), `${JSON.stringify({ ...out, samples: Object.fromEntries(Object.entries(byTool).map(([id, v]) => [id, v.sample])) }, null, 2)}\n`);

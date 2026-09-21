@@ -97,6 +97,7 @@ function SchemaFieldList({
           const isRequired = required.includes(key);
           const value = filled[key];
           const empty = value == null || value === '';
+          if (empty && !isRequired && tone === 'response') return null;
           return (
             <li key={key} className="border-border/60 rounded-lg border px-3 py-2" data-required={isRequired ? 'true' : 'false'}>
               <div className={cn('text-[12px]', isRequired ? 'font-medium' : 'text-muted-foreground')}>
@@ -199,13 +200,22 @@ function ProposedPane({
                       filled={fills.input}
                       tone="request"
                     />
-                    <SchemaFieldList
-                      testId="lab-schema-staff-did"
-                      heading="Staff did"
-                      schema={schema.output}
-                      filled={fills.output}
-                      tone="response"
-                    />
+                    {Object.values(fills.output).some((value) => value != null && value !== '') ? (
+                      <SchemaFieldList
+                        testId="lab-schema-staff-did"
+                        heading="Staff did"
+                        schema={schema.output}
+                        filled={fills.output}
+                        tone="response"
+                      />
+                    ) : (
+                      <section className="lab-schema-response space-y-2" data-testid="lab-schema-staff-did">
+                        <h3 className="text-muted-foreground text-[11px] font-medium uppercase tracking-wide">Staff did</h3>
+                        <p className="text-muted-foreground text-[12px]" data-testid="lab-staff-did-missing">
+                          No captured PMS response in gold
+                        </p>
+                      </section>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -345,21 +355,22 @@ function CenturionEvalLabReady({
   const [tool, setTool] = useState<string | null>(selectedToolProp);
   const [outcome, setOutcome] = useState<ThreadOutcome | null>(null);
   const [facet, setFacet] = useState<string | null>(null);
+  const [proposed, setProposed] = useState<'live' | 'skip' | null>(null);
   const [query, setQuery] = useState('');
   const rows = useMemo(() => {
-    const filtered = filterLabRows(index, { tool, outcome, facet });
+    const filtered = filterLabRows(index, { tool, outcome, facet, proposed });
     const needle = query.trim().toLowerCase();
     if (!needle) return filtered;
     return filtered.filter((row) => {
       const hay = `${row.inbound.subject ?? ''} ${row.inbound.textBody} ${row.gold?.textBody ?? ''}`.toLowerCase();
       return hay.includes(needle);
     });
-  }, [index, tool, outcome, facet, query]);
+  }, [index, tool, outcome, facet, proposed, query]);
   const [selectedId, setSelectedId] = useState(rows[0]?.inboundId ?? index.rows[0]?.inboundId);
   const selected = rows.find((row) => row.inboundId === selectedId) ?? rows[0];
 
   useEffect(() => {
-    setTool(selectedToolProp);
+    if (selectedToolProp) setTool(selectedToolProp);
   }, [selectedToolProp]);
 
   useEffect(() => {
@@ -370,8 +381,15 @@ function CenturionEvalLabReady({
   const chooseTool = (next: string | null) => {
     setTool(next);
     onToolChange?.(next);
-    const match = filterLabRows(index, { tool: next, outcome, facet })[0];
-    if (match) setSelectedId(match.inboundId);
+    const match = filterLabRows(index, { tool: next, outcome, facet, proposed })[0];
+    if (match) {
+      setSelectedId(match.inboundId);
+      const live = resolveProposedActions(match).filter(
+        (item) => item.status === 'live' || item.status === 'needs_human',
+      );
+      const idx = next ? live.findIndex((item) => item.tool === next) : 0;
+      setActionIndex(idx >= 0 ? idx : 0);
+    }
   };
 
   const goldAuto = Boolean(selected?.gold?.channelAuto || selected?.channelAuto);
@@ -379,8 +397,35 @@ function CenturionEvalLabReady({
   const liveActions = actions.filter((item) => item.status === 'live' || item.status === 'needs_human');
   const [actionIndex, setActionIndex] = useState(0);
   useEffect(() => {
-    setActionIndex(0);
-  }, [selected?.inboundId]);
+    if (!selected) {
+      setActionIndex(0);
+      return;
+    }
+    const live = resolveProposedActions(selected).filter(
+      (item) => item.status === 'live' || item.status === 'needs_human',
+    );
+    const idx = tool ? live.findIndex((item) => item.tool === tool) : 0;
+    setActionIndex(idx >= 0 ? idx : 0);
+  }, [selected?.inboundId, tool]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (event.key === 'j' || event.key === 'k') {
+        event.preventDefault();
+        const current = rows.findIndex((row) => row.inboundId === selected?.inboundId);
+        const next = event.key === 'j' ? Math.min(rows.length - 1, current + 1) : Math.max(0, current - 1);
+        const row = rows[next];
+        if (row) setSelectedId(row.inboundId);
+      }
+      if (event.key >= '1' && event.key <= '4') {
+        setActionIndex(Number(event.key) - 1);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [rows, selected?.inboundId]);
   const currentAction = liveActions[Math.min(actionIndex, Math.max(liveActions.length - 1, 0))] || null;
   const activeTool = tool || currentAction?.tool || selected?.tools[0] || 'hms_find_reservation';
 
@@ -419,6 +464,27 @@ function CenturionEvalLabReady({
                   placeholder="Search"
                   className="border-input bg-background mt-2 h-10 w-full rounded-lg border px-3 text-[13px]"
                 />
+                <div className="mt-2 flex flex-wrap gap-1" data-testid="lab-proposed-filter">
+                  {(['live', 'skip'] as const).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      data-testid={`proposed-${item}`}
+                      className={cn(
+                        'rounded-full px-2 py-0.5 text-[10px]',
+                        proposed === item ? 'bg-primary/15' : 'bg-muted',
+                      )}
+                      onClick={() => {
+                        const next = proposed === item ? null : item;
+                        setProposed(next);
+                        const match = filterLabRows(index, { tool, outcome, facet, proposed: next })[0];
+                        if (match) setSelectedId(match.inboundId);
+                      }}
+                    >
+                      {item === 'live' ? 'Has Proposed' : 'Skip'}
+                    </button>
+                  ))}
+                </div>
                 <div className="mt-2 flex flex-wrap gap-1" data-testid="lab-outcome-chips">
                   {outcomes.map((item) => (
                     <button
@@ -432,7 +498,7 @@ function CenturionEvalLabReady({
                       onClick={() => {
                         const next = outcome === item.outcome ? null : item.outcome;
                         setOutcome(next);
-                        const match = filterLabRows(index, { tool, outcome: next, facet })[0];
+                        const match = filterLabRows(index, { tool, outcome: next, facet, proposed })[0];
                         if (match) setSelectedId(match.inboundId);
                       }}
                     >
@@ -450,7 +516,7 @@ function CenturionEvalLabReady({
                       onClick={() => {
                         const next = facet === item ? null : item;
                         setFacet(next);
-                        const match = filterLabRows(index, { tool, outcome, facet: next })[0];
+                        const match = filterLabRows(index, { tool, outcome, facet: next, proposed })[0];
                         if (match) setSelectedId(match.inboundId);
                       }}
                     >
@@ -488,6 +554,9 @@ function CenturionEvalLabReady({
                     {(index) => {
                       const row = rows[index]!;
                       const active = row.inboundId === selected?.inboundId;
+                      const verbs = resolveProposedActions(row).filter(
+                        (item) => item.status === 'live' || item.status === 'needs_human',
+                      );
                       return (
                         <button
                           key={row.inboundId}
@@ -507,6 +576,26 @@ function CenturionEvalLabReady({
                             <span className="truncate text-[13px] font-medium">{row.inbound.subject || row.inboundId}</span>
                             <span className="text-muted-foreground shrink-0 text-[10px]">{row.threadOutcome}</span>
                           </span>
+                          {verbs.length ? (
+                            <span className="flex flex-wrap gap-1" data-testid="lab-row-verbs">
+                              {verbs.slice(0, 3).map((action) => {
+                                const palette = ACTION_PALETTE[action.colorIndex % ACTION_PALETTE.length]!;
+                                return (
+                                  <span
+                                    key={`${row.inboundId}-${action.tool}-${action.colorIndex}`}
+                                    className="rounded-full px-1.5 py-0.5 text-[10px]"
+                                    style={{ background: palette.mark, color: palette.ink }}
+                                  >
+                                    {action.title}
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground text-[10px]" data-testid="lab-row-skip">
+                              No HMS write
+                            </span>
+                          )}
                           <span className="text-muted-foreground line-clamp-2 text-[12px]">{snippetOf(row.inbound.textBody)}</span>
                         </button>
                       );
@@ -552,18 +641,18 @@ function CenturionEvalLabReady({
                         </article>
                       ))}
                       {selected.attachmentText ? (
-                        <details className="border-border/60 mb-3 rounded-lg border px-3 py-2" data-testid="lab-attachment-text">
-                          <summary className="text-muted-foreground cursor-pointer text-[12px]">
-                            Attachment extract
+                        <article className="border-border bg-background mb-3 rounded-xl border px-4 py-3" data-testid="lab-attachment-text">
+                          <div className="mb-2 text-[13px] font-medium">
+                            Attachment
                             {selected.attachmentRefs[0]?.filename ? ` · ${selected.attachmentRefs[0].filename}` : ''}
-                          </summary>
+                          </div>
                           <div
-                            className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[12px]"
+                            className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-6"
                             dangerouslySetInnerHTML={{
                               __html: highlightedHtml(selected.attachmentText, selected, 'inbound', activeTool),
                             }}
                           />
-                        </details>
+                        </article>
                       ) : null}
                     </div>
                   </ScrollArea>
