@@ -18,6 +18,7 @@ import {
   getHotelFolderPresentation,
   HOTEL_WORKFLOW_PRIMARY_SLUGS,
 } from '@/lib/mail/hotel-folder-presentation';
+import { LAB_FREEZE_TOOL_IDS } from '@/lib/lab/centurion-eval-schemas';
 import { WORKFLOW_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/demo/folder-map';
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -274,6 +275,37 @@ export const navigationConfig: Record<string, NavConfig> = {
         ].map((item) => ({
           ...item,
           isSettingsPage: true,
+        })),
+      },
+    ],
+  },
+  lab: {
+    path: '/lab',
+    sections: [
+      {
+        title: 'Core',
+        items: [
+          {
+            id: 'all-threads',
+            title: 'All threads',
+            url: '/lab/centurion',
+            icon: Inbox,
+          },
+          {
+            title: 'Inbox',
+            url: '/mail/inbox',
+            icon: ArrowLeft,
+            isBackButton: true,
+          },
+        ],
+      },
+      {
+        title: 'Tools',
+        items: LAB_FREEZE_TOOL_IDS.map((tool) => ({
+          id: tool,
+          title: tool,
+          url: `/lab/centurion/${encodeURIComponent(tool)}`,
+          icon: Folder,
         })),
       },
     ],

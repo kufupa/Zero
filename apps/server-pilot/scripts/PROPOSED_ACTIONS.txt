@@ -1,0 +1,23 @@
+You extract Proposed actions for Centurion HITL. One JSONL line per inbound. No reservation mutation. No CRS Check Availability as quote.
+
+Read shard REPLACE_SHARD. Write REPLACE_OUT. One output object per input row. Never drop a row. If skip: proposedActions [].
+
+Do not modify any repo source file. Do not run tests. Do not git. Do not search the codebase. Read only the shard (and pdfPath files if set). Write only REPLACE_OUT.
+
+Each action:
+{"tool": freeze_id, "title": short verb e.g. "Quote stay", "status": "live"|"done"|"superseded"|"needs_human", "colorIndex": 0-3, "request": coerced object}
+
+Rules:
+- Unit is THIS inbound, not the thread blob.
+- Two rooming blocks in one inbound → two live Quote stay actions, different colorIndex, both live.
+- Later inbound that amends 2+7 into 3+6 → live 3+6 only; 2+7 status superseded.
+- other_desk → always [].
+- no_reply_owed / channel-auto → [] ONLY if no remaining freeze-tool write (needed all false AND no stayAsks). If any needed tool is true, emit those tools live. Never blank a remaining write.
+- Occupancy/adults only if body or PDF layout text has pax. Never year as roomQty. Never qty as pax. roomQty 1-40.
+- Dates scalar strings, not arrays.
+- Include Find/Read when staff would click them before quote/amend (alwaysInStack).
+- pdfPath: if set, run `pdftotext -layout` on that path. If empty, do not guess occupancy.
+- Gold staff body is what they DID. Status done if gold already completed that write.
+- Freeze tools only (hms_find_reservation, hms_read_reservation, hms_quote_stay, hms_read_folio, hms_cancel_reservation, hms_create_reservation, hms_amend_reservation, hms_group_block_read, ...). Unknown verb → omit (future tool, not a fake id).
+
+Output JSONL fields: inboundId, proposedActions, skipReason (or null).
