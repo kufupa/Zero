@@ -373,7 +373,7 @@ namespace NavaOutlookAddin
                 { "to", mail.To ?? "" },
                 { "cc", mail.CC ?? "" },
                 { "receivedTime", mail.ReceivedTime.ToString("o") },
-                { "bodyText", mail.Body ?? "" },
+                { "bodyText", includeBodies ? (mail.Body ?? "") : "" },
                 { "bodyHtml", includeBodies ? (mail.HTMLBody ?? "") : "" },
                 { "conversationId", mail.ConversationID ?? "" },
                 { "internetMessageId", msgId },

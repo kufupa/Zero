@@ -23,7 +23,8 @@ namespace NavaOutlookAddin
 
         public void OnToggleTaskPane(Office.IRibbonControl control)
         {
-            ThisAddIn.Instance?.ToggleTaskPane();
+            ThisAddIn addin = ThisAddIn.Instance ?? Globals.ThisAddIn;
+            addin?.ToggleTaskPane();
         }
 
         private static string GetResourceText(string resourceName)
@@ -36,6 +37,11 @@ namespace NavaOutlookAddin
                     return @"<customUI xmlns=""http://schemas.microsoft.com/office/2009/07/customui"">
   <ribbon>
     <tabs>
+      <tab id=""NavaTab"" label=""Nava"">
+        <group id=""NavaGroupHome"" label=""Nava"">
+          <button id=""NavaToggleHome"" label=""Nava Assistant"" size=""large"" onAction=""OnToggleTaskPane"" />
+        </group>
+      </tab>
       <tab idMso=""TabMail"">
         <group id=""NavaGroup"" label=""Nava"">
           <button id=""NavaToggle"" label=""Nava Assistant"" size=""large"" onAction=""OnToggleTaskPane"" />

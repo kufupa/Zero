@@ -7,11 +7,14 @@
 #pragma warning disable 414
 namespace NavaOutlookAddin
 {
-    [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
-    public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
+        [Microsoft.VisualStudio.Tools.Applications.Runtime.StartupObjectAttribute(0)]
+        public sealed partial class ThisAddIn : Microsoft.Office.Tools.Outlook.OutlookAddInBase
     {
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         internal Microsoft.Office.Interop.Outlook.Application Application;
+
+        internal Microsoft.Office.Tools.CustomTaskPaneCollection CustomTaskPanes;
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
@@ -58,11 +61,6 @@ namespace NavaOutlookAddin
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeCachedData()
         {
-            if (this.DataHost == null) return;
-            if (this.DataHost.IsCacheInitialized)
-            {
-                this.DataHost.InitializeCachedData();
-            }
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
@@ -82,12 +80,14 @@ namespace NavaOutlookAddin
         private void BeginInitialization()
         {
             this.BeginInit();
+            this.CustomTaskPanes.BeginInit();
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void EndInitialization()
         {
+            this.CustomTaskPanes.EndInit();
             this.EndInit();
         }
 
@@ -95,12 +95,22 @@ namespace NavaOutlookAddin
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeControls()
         {
+            this.CustomTaskPanes = Globals.Factory.CreateCustomTaskPaneCollection(
+                null, null, "CustomTaskPanes", "CustomTaskPanes", this);
         }
 
         [System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
         private void InitializeComponents()
         {
+        }
+
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Tools.Office.ProgrammingModel.dll", "10.0.0.0")]
+        protected override void OnShutdown()
+        {
+            this.CustomTaskPanes.Dispose();
+            base.OnShutdown();
         }
     }
 

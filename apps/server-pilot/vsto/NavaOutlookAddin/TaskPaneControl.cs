@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -19,27 +20,86 @@ namespace NavaOutlookAddin
         {
             _dispatcher = new OutlookBridgeDispatcher(application);
             InitializeComponent();
+            this.Load += TaskPaneControl_Load;
+        }
+
+        private void TaskPaneControl_Load(object sender, EventArgs e)
+        {
+            if (_webView != null) return;
             InitializeWebView();
         }
 
         private async void InitializeWebView()
         {
-            _webView = new WebView2 { Dock = DockStyle.Fill };
-            this.Controls.Add(_webView);
+            try
+            {
+                EnsureNativeLoader();
+                _webView = new WebView2 { Dock = DockStyle.Fill };
+                this.Controls.Add(_webView);
 
-            string userDataFolder = Path.Combine(
+                string userDataFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "NavaOutlookAddin", "WebView2Profile"
+                );
+                Directory.CreateDirectory(userDataFolder);
+
+                var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+                await _webView.EnsureCoreWebView2Async(env);
+
+                _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                _webView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
+                _webView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
+                _webView.Source = new Uri(PaneUrl);
+            }
+            catch (Exception ex)
+            {
+                ShowPaneError(ex);
+            }
+        }
+
+        private static void EnsureNativeLoader()
+        {
+            string cacheDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            if (string.IsNullOrEmpty(cacheDir))
+            {
+                throw new InvalidOperationException("Add-in directory is unknown.");
+            }
+            string rid = Environment.Is64BitProcess ? "win-x64" : "win-x86";
+            string dest = Path.Combine(cacheDir, "WebView2Loader.dll");
+            string installDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "NavaOutlookAddin", "WebView2Profile"
-            );
-            Directory.CreateDirectory(userDataFolder);
+                "NavaOutlookAddin");
+            string[] sources =
+            {
+                Path.Combine(installDir, "runtimes", rid, "native", "WebView2Loader.dll"),
+                Path.Combine(cacheDir, "runtimes", rid, "native", "WebView2Loader.dll"),
+            };
+            string src = null;
+            foreach (string candidate in sources)
+            {
+                if (File.Exists(candidate))
+                {
+                    src = candidate;
+                    break;
+                }
+            }
+            if (src == null)
+            {
+                throw new FileNotFoundException(
+                    "Missing WebView2Loader.dll. Tried: " + string.Join("; ", sources));
+            }
+            File.Copy(src, dest, true);
+        }
 
-            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-            await _webView.EnsureCoreWebView2Async(env);
-
-            _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
-            _webView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
-            _webView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
-            _webView.Source = new Uri(PaneUrl);
+        private void ShowPaneError(Exception ex)
+        {
+            this.Controls.Clear();
+            this.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(12),
+                Text = "Nava could not start the side pane.\n\n" + ex.Message
+            });
         }
 
         private void CoreWebView2_NavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
@@ -71,7 +131,10 @@ namespace NavaOutlookAddin
             if (_webView != null && _webView.CoreWebView2 != null)
             {
                 var activeMail = _dispatcher.GetActiveEmail(false);
-                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer
+                {
+                    MaxJsonLength = 10 * 1024 * 1024
+                };
                 var evt = new Dictionary<string, object>
                 {
                     { "requestId", "evt_selection_" + Guid.NewGuid().ToString("N") },

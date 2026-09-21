@@ -11,18 +11,70 @@
     <FileAlignment>512</FileAlignment>
     <ProjectTypeGuids>{BAA0C2D2-18CE-41C9-AD1D-768AF2A3ACE5};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <OfficeApplication>Outlook</OfficeApplication>
+    <TargetOfficeVersion>15.0</TargetOfficeVersion>
+    <GenerateManifests>true</GenerateManifests>
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <VstoRefAsm Condition="'$(VstoRefAsm)' == ''">$(ProgramW6432)\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\ReferenceAssemblies\v4.0</VstoRefAsm>
+    <VstoPia Condition="'$(VstoPia)' == ''">$(MSBuildProgramFiles32)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15</VstoPia>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3179.45" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
     <Reference Include="Microsoft.Office.Interop.Outlook, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <HintPath>$(VstoPia)\Microsoft.Office.Interop.Outlook.dll</HintPath>
     </Reference>
-    <Reference Include="Microsoft.Office.Tools.Outlook" />
-    <Reference Include="Microsoft.Office.Tools.Common" />
+    <Reference Include="Microsoft.Office.Tools">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.v4.0.Framework">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.v4.0.Framework.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Common.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common.v4.0.Utilities">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Common.v4.0.Utilities.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Outlook">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Outlook.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Outlook.v4.0.Utilities">
+      <HintPath>$(VstoRefAsm)\Microsoft.Office.Tools.Outlook.v4.0.Utilities.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Tools.Applications.Runtime">
+      <HintPath>$(VstoRefAsm)\Microsoft.VisualStudio.Tools.Applications.Runtime.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="Office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <HintPath>$(VstoPia)\Office.dll</HintPath>
     </Reference>
-    <Reference Include="Microsoft.Web.WebView2.Core" />
-    <Reference Include="Microsoft.Web.WebView2.WinForms" />
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
@@ -36,6 +88,9 @@
     <Compile Include="ThisAddIn.Designer.cs">
       <DependentUpon>ThisAddIn.cs</DependentUpon>
     </Compile>
+    <None Include="ThisAddIn.Designer.xml">
+      <DependentUpon>ThisAddIn.cs</DependentUpon>
+    </None>
     <Compile Include="TaskPaneControl.cs">
       <SubType>UserControl</SubType>
     </Compile>
@@ -48,5 +103,28 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets" Condition="Exists('$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets')" />
+  <Import Project="$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="!Exists('$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets') And Exists('$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets')" />
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets" Condition="'$(VSToolsPath)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.Outlook.targets')" />
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="'$(VSToolsPath)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets')" />
+  <Target Name="CopyWebView2Loader" AfterTargets="Build">
+    <PropertyGroup>
+      <_WebView2X86 Condition="Exists('$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll</_WebView2X86>
+      <_WebView2X86 Condition="'$(_WebView2X86)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x86\native\WebView2Loader.dll</_WebView2X86>
+      <_WebView2X64 Condition="Exists('$(OutputPath)runtimes\win-x64\native\WebView2Loader.dll')">$(OutputPath)runtimes\win-x64\native\WebView2Loader.dll</_WebView2X64>
+      <_WebView2X64 Condition="'$(_WebView2X64)' == '' And Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x64\native\WebView2Loader.dll')">$(NuGetPackageRoot)microsoft.web.webview2\1.0.3179.45\runtimes\win-x64\native\WebView2Loader.dll</_WebView2X64>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutputPath)runtimes\win-x86\native;$(OutputPath)runtimes\win-x64\native" />
+    <Copy SourceFiles="$(_WebView2X86)" DestinationFolder="$(OutputPath)runtimes\win-x86\native" Condition="Exists('$(_WebView2X86)')" />
+    <Copy SourceFiles="$(_WebView2X64)" DestinationFolder="$(OutputPath)runtimes\win-x64\native" Condition="Exists('$(_WebView2X64)')" />
+  </Target>
+  <ProjectExtensions>
+    <VisualStudio>
+      <FlavorProperties GUID="{BAA0C2D2-18CE-41C9-AD1D-768AF2A3ACE5}">
+        <ProjectProperties HostName="Outlook" HostPackage="{20A848B8-E01F-4801-8022-6D9024AE0662}" OfficeVersion="15.0" Vstx="false" ApplicationType="Outlook" Language="cs" TemplatesPath="" DebugInfoExeName="#Software\Microsoft\Office\16.0\Outlook\InstallRoot\Path#outlook.exe" AddItemTemplatesGuid="{A58A78EB-1C92-4AE7-AE6C-6567BF8A2295}" />
+        <Host Name="Outlook" GeneratedCodeNamespace="NavaOutlookAddin" IconIndex="0">
+          <HostItem Name="ThisAddIn" Code="ThisAddIn.cs" CanonicalName="AddIn" CanActivate="false" IconIndex="1" Blueprint="ThisAddIn.Designer.xml" GeneratedCode="ThisAddIn.Designer.cs" />
+        </Host>
+      </FlavorProperties>
+    </VisualStudio>
+  </ProjectExtensions>
 </Project>
