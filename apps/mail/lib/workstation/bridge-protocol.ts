@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const BRIDGE_PROTOCOL_VERSION = 1;
+export const BRIDGE_PROTOCOL_VERSION = 2;
 
 export const WorkstationEmailPayloadSchema = z.object({
   entryId: z.string(),
@@ -29,6 +29,54 @@ export const FolderEmailSummarySchema = z.object({
 
 export type FolderEmailSummary = z.infer<typeof FolderEmailSummarySchema>;
 
+export const TemplateSummarySchema = z.object({
+  name: z.string(),
+  fileName: z.string(),
+  path: z.string(),
+  modifiedTime: z.string(),
+  byteSize: z.number().optional(),
+});
+
+export type TemplateSummary = z.infer<typeof TemplateSummarySchema>;
+
+export const TemplateContentSchema = z.object({
+  path: z.string(),
+  subject: z.string(),
+  to: z.string().optional(),
+  cc: z.string().optional(),
+  htmlBody: z.string(),
+  plainBody: z.string(),
+});
+
+export type TemplateContent = z.infer<typeof TemplateContentSchema>;
+
+export const SignatureSummarySchema = z.object({
+  name: z.string(),
+  fileName: z.string(),
+  htmlBody: z.string(),
+});
+
+export type SignatureSummary = z.infer<typeof SignatureSummarySchema>;
+
+export const AttachmentMetaSchema = z.object({
+  index: z.number(),
+  fileName: z.string(),
+  displayName: z.string().optional(),
+  byteSize: z.number(),
+  type: z.string().optional(),
+});
+
+export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
+
+export const AttachmentContentSchema = z.object({
+  index: z.number(),
+  fileName: z.string(),
+  byteSize: z.number(),
+  base64Data: z.string(),
+});
+
+export type AttachmentContent = z.infer<typeof AttachmentContentSchema>;
+
 export type BridgeAction =
   | 'PING'
   | 'GET_ACTIVE_EMAIL'
@@ -39,6 +87,16 @@ export type BridgeAction =
   | 'MOVE_EMAIL'
   | 'MOVE_TO_SPAM'
   | 'CREATE_FOLDER'
+  | 'LIST_TEMPLATES'
+  | 'GET_TEMPLATE_CONTENT'
+  | 'LIST_SIGNATURES'
+  | 'GET_ATTACHMENT_METADATA'
+  | 'READ_ATTACHMENT_BASE64'
+  | 'ADD_ATTACHMENT_TO_DRAFT'
+  | 'SET_EMAIL_CATEGORY'
+  | 'SET_FOLLOW_UP_FLAG'
+  | 'MARK_EMAIL_READ'
+  | 'GET_CONVERSATION_THREAD'
   | 'ON_SELECTION_CHANGED';
 
 export interface BridgeRequest<T = unknown> {

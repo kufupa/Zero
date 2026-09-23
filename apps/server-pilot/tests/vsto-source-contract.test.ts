@@ -194,4 +194,29 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
       /string src = Path\.Combine\(dir, "runtimes"/,
     );
   });
+
+  it('exposes protocol v2 enterprise actions for templates, attachments, and triage', () => {
+    const source = read('OutlookBridgeDispatcher.cs');
+    expect(source).toContain('BRIDGE_VERSION = 2');
+    for (const action of [
+      'LIST_TEMPLATES',
+      'GET_TEMPLATE_CONTENT',
+      'LIST_SIGNATURES',
+      'GET_ATTACHMENT_METADATA',
+      'READ_ATTACHMENT_BASE64',
+      'ADD_ATTACHMENT_TO_DRAFT',
+      'SET_EMAIL_CATEGORY',
+      'SET_FOLLOW_UP_FLAG',
+      'MARK_EMAIL_READ',
+      'GET_CONVERSATION_THREAD',
+    ]) {
+      expect(source).toContain(`case "${action}":`);
+    }
+    expect(source).toContain('CreateItemFromTemplate');
+    expect(source).toContain('Microsoft", "Templates"');
+    expect(source).toContain('Microsoft", "Signatures"');
+    expect(source).toContain('SaveAsFile');
+    expect(source).toContain('ToBase64String');
+  });
 });
+
