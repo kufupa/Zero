@@ -2,11 +2,15 @@
  * @vitest-environment happy-dom
  */
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+
+const { sendCommandMock } = vi.hoisted(() => ({
+  sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
+}));
 
 vi.mock('../lib/workstation/use-outlook-bridge', () => ({
   useOutlookBridge: () => ({
@@ -18,6 +22,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     },
     activeEmail: {
       entryId: '001',
+      storeId: 'store-1',
       subject: 'Suite Availability Request',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
@@ -25,7 +30,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       bodyText: 'We need 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
-    sendCommand: vi.fn().mockResolvedValue({ success: true }),
+    sendCommand: sendCommandMock,
   }),
 }));
 
@@ -48,12 +53,13 @@ vi.mock('../providers/query-provider', () => ({
 describe('OutlookPanePage', () => {
   afterEach(() => {
     cleanup();
+    sendCommandMock.mockClear();
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
-    expect(screen.getByText(/Connected to Outlook 2016/i)).toBeDefined();
+    expect(screen.getByText(/Connected to Classic Outlook \(16\.0\)/i)).toBeDefined();
   });
 
   it('renders active email card with subject and sender', () => {
@@ -70,6 +76,19 @@ describe('OutlookPanePage', () => {
   it('labels the AI draft card as a sample placeholder', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/not live AI output/i)).toBeDefined();
+  });
+
+  it('passes the selected store ID when creating a reply draft', async () => {
+    render(<OutlookPanePage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() => {
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ entryId: '001', storeId: 'store-1' }),
+      );
+    });
   });
 
   it('registers /outlook-pane as a top-level route', () => {

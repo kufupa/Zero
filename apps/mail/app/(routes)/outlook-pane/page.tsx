@@ -87,6 +87,7 @@ export default function OutlookPanePage() {
     try {
       await sendCommand('CREATE_REPLY_DRAFT', {
         entryId: activeEmail.entryId,
+        ...(activeEmail.storeId ? { storeId: activeEmail.storeId } : {}),
         htmlBody: `<div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1F497D;">
           <p>Dear Guest,</p>
           <p>Thank you for contacting Centurion Lake Hotel. We have confirmed availability for your requested stay.</p>
@@ -114,7 +115,9 @@ export default function OutlookPanePage() {
           </p>
         </div>
         <Badge variant={isConnected ? 'default' : 'destructive'} className="px-2 py-0.5 text-[10px]">
-          {isConnected ? '● Connected to Outlook 2016' : '○ Disconnected'}
+          {isConnected
+            ? `● Connected to Classic Outlook (${workstationInfo?.outlookVersion ?? 'version unknown'})`
+            : '○ Disconnected'}
         </Badge>
       </div>
 
