@@ -163,7 +163,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
 
   it('fails the Windows build when the WebView2 bootstrapper is missing', () => {
     const workflow = readFileSync(
-      path.resolve(vstoRoot, '../../../../.github/workflows/outlook-vsto.yml'),
+      path.resolve(vstoRoot, '../.github/workflows/outlook-vsto.yml'),
       'utf8',
     );
     expect(workflow).not.toContain('WARN: WebView2 bootstrapper missing');
@@ -172,7 +172,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
 
   it('signs the application manifest before mage writes the .vsto deployment', () => {
     const workflow = readFileSync(
-      path.resolve(vstoRoot, '../../../../.github/workflows/outlook-vsto.yml'),
+      path.resolve(vstoRoot, '../.github/workflows/outlook-vsto.yml'),
       'utf8',
     );
     const mageBlock = workflow.slice(workflow.indexOf('generating with mage.exe'));
