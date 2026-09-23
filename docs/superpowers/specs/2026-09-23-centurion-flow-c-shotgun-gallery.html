@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A static, synthetic-data design gallery for the Centurion reservation inbox and one-page Flow C builder.">
+  <title>Centurion · Flow C design shotgun</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172336;
+      --muted: #718096;
+      --line: #e3e8ef;
+      --canvas: #edf1f6;
+      --paper: #fff;
+      --blue: #5368d8;
+      --navy: #15243d;
+      --teal: #23867e;
+      --amber: #bf702a;
+      --violet: #7959b9;
+      --lime: #658542;
+      --gold: #aa7a24;
+      --soft-blue: #edf0ff;
+      --soft-teal: #e9f6f3;
+      --soft-amber: #fff4e8;
+      --soft-violet: #f3edff;
+      --soft-lime: #f0f6e9;
+      --shadow: 0 18px 45px rgba(24, 39, 65, .08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: #f2f4f8; color: var(--ink); }
+    a { color: inherit; }
+    .page { width: min(1440px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 64px; }
+    .hero {
+      min-height: 285px; padding: 34px 40px; border-radius: 22px; overflow: hidden; position: relative;
+      background: radial-gradient(circle at 80% 22%, rgba(118, 139, 226, .24), transparent 26%),
+        radial-gradient(circle at 95% 95%, rgba(78, 159, 148, .24), transparent 30%),
+        linear-gradient(120deg, #142238, #1c3151 68%, #203957);
+      color: #f8fbff; box-shadow: var(--shadow); display: flex; align-items: center; justify-content: space-between; gap: 40px;
+    }
+    .hero-copy { max-width: 760px; position: relative; z-index: 1; }
+    .eyebrow { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; font-weight: 750; color: #b7c5de; }
+    .hero h1 { margin: 14px 0 12px; font-size: clamp(32px, 4.4vw, 56px); line-height: 1.02; letter-spacing: -.045em; font-weight: 700; }
+    .hero p { color: #c8d3e5; max-width: 620px; line-height: 1.6; margin: 0; font-size: 15px; }
+    .hero .disclaimer { margin-top: 20px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid rgba(255,255,255,.19); background: rgba(255,255,255,.07); border-radius: 99px; padding: 8px 12px; font-size: 11px; color: #e5ebf5; }
+    .hero .disclaimer::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #f2b85c; box-shadow: 0 0 0 4px rgba(242,184,92,.14); }
+    .hero-side { position: relative; z-index: 1; width: 260px; min-width: 220px; padding: 17px; border-radius: 15px; border: 1px solid rgba(255,255,255,.16); background: rgba(8,20,37,.29); backdrop-filter: blur(5px); }
+    .hero-stat { display: flex; justify-content: space-between; gap: 15px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.12); }
+    .hero-stat:last-child { border: 0; }
+    .hero-stat span { color: #b9c7da; font-size: 12px; }
+    .hero-stat b { font-size: 16px; font-weight: 650; }
+    .jumpbar { position: sticky; top: 0; z-index: 5; margin: 18px 0 26px; padding: 11px 13px; display: flex; align-items: center; gap: 8px; overflow-x: auto; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.94); box-shadow: 0 6px 20px rgba(27,39,58,.05); backdrop-filter: blur(12px); }
+    .jumpbar .jump-label { padding: 0 8px 0 3px; font-size: 10px; letter-spacing: .12em; font-weight: 750; color: var(--muted); text-transform: uppercase; white-space: nowrap; }
+    .jumpbar a { text-decoration: none; white-space: nowrap; padding: 7px 10px; border-radius: 8px; background: #f3f5f8; color: #4d5d72; font-size: 11px; font-weight: 650; }
+    .jumpbar a:hover, .jumpbar a:focus-visible { outline: none; background: var(--soft-blue); color: #4357c3; }
+    .section-title { margin: 34px 4px 15px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+    .section-title h2 { margin: 0; font-size: 21px; letter-spacing: -.025em; }
+    .section-title p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+    .legend { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; color: #637185; font-size: 10px; white-space: nowrap; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 3px; }
+    .artboard { scroll-margin-top: 76px; background: var(--paper); border: 1px solid #e2e7ee; border-radius: 17px; box-shadow: 0 9px 24px rgba(30,44,68,.045); overflow: hidden; margin: 0 0 20px; }
+    .art-head { padding: 17px 20px 15px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #eef1f5; }
+    .art-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .art-num { flex: 0 0 auto; width: 31px; height: 31px; border-radius: 9px; display: grid; place-items: center; background: #eef1ff; color: #5266d4; font-size: 11px; font-weight: 800; }
+    .art-title h3 { margin: 0; font-size: 15px; letter-spacing: -.015em; }
+    .art-title p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+    .art-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: end; }
+    .tag { display: inline-flex; align-items: center; border: 1px solid #e4e8ef; background: #fafbfd; border-radius: 99px; padding: 5px 8px; color: #66758a; font-size: 9px; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; white-space: nowrap; }
+    .tag.concept { color: #9a5a22; border-color: #f2d6b9; background: #fff6ec; }
+    .stage { background: #f3f5f8; padding: 14px; overflow-x: auto; }
+    .app-shell { min-width: 1010px; max-width: 1320px; margin: 0 auto; overflow: hidden; border: 1px solid #dfe5ed; border-radius: 11px; background: #fff; box-shadow: 0 8px 22px rgba(30,44,68,.07); }
+    .app-top { min-height: 43px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e8ecf1; background: #fff; }
+    .brand-line, .top-actions, .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 10px; }
+    .brandmark { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 7px; background: linear-gradient(145deg, #5368d8, #7d8beb); color: #fff; font-weight: 800; font-size: 11px; box-shadow: 0 3px 8px rgba(83,104,216,.24); }
+    .brand-name { font-size: 12px; font-weight: 750; letter-spacing: -.02em; }
+    .vline { width: 1px; height: 19px; background: #e7ebf0; margin: 0 2px; }
+    .top-crumb { font-size: 10px; color: #718096; }
+    .sample-pill { background: #f0f4ff; border: 1px solid #dce3ff; color: #5769c3; padding: 4px 7px; font-weight: 750; font-size: 8px; border-radius: 5px; letter-spacing: .07em; }
+    .avatar { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #dce7f8; color: #37517b; font-size: 9px; font-weight: 800; border: 2px solid #fff; box-shadow: 0 0 0 1px #e1e6ee; }
+    .toolbar { padding: 0 14px; height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e9edf2; background: #fbfcfd; }
+    .toolbar-label { font-size: 11px; font-weight: 720; }
+    .toolbar-button { padding: 5px 8px; border: 1px solid #e3e7ed; border-radius: 6px; color: #5e6c80; background: #fff; font-size: 9px; font-weight: 650; white-space: nowrap; }
+    .search-box { width: 150px; padding: 5px 8px; border-radius: 6px; border: 1px solid #e5e9ef; color: #99a3b1; background: #fff; font-size: 9px; }
+    .mail-grid { display: grid; grid-template-columns: 145px 218px minmax(355px, 1fr) 298px; min-height: 420px; }
+    .folder-nav { padding: 11px 8px; border-right: 1px solid #e9edf2; background: #fbfcfe; }
+    .nav-caption { margin: 2px 8px 8px; text-transform: uppercase; letter-spacing: .1em; color: #98a2b0; font-size: 8px; font-weight: 800; }
+    .folder { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0; padding: 7px 8px; border-radius: 6px; font-size: 9px; color: #637084; }
+    .folder.active { color: #4659bf; background: #eef1ff; font-weight: 750; }
+    .folder em { font-style: normal; color: #97a1ae; font-size: 8px; }
+    .folder.active em { color: #6779ce; }
+    .list-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 11px 8px; font-size: 9px; color: #7c8898; font-weight: 700; }
+    .thread-list { border-right: 1px solid #e9edf2; background: #fff; }
+    .thread { padding: 11px 11px 10px; border-top: 1px solid #f0f2f5; color: #758194; }
+    .thread.selected { background: #f5f7ff; border-left: 2px solid #6174dc; padding-left: 9px; }
+    .thread-name { display: flex; justify-content: space-between; gap: 6px; font-size: 9px; color: #334155; font-weight: 730; }
+    .thread-name time { font-size: 8px; font-weight: 550; color: #9aa4b1; white-space: nowrap; }
+    .thread-subject { margin-top: 4px; font-size: 9px; color: #647186; font-weight: 630; }
+    .thread-snippet { margin-top: 3px; font-size: 8px; color: #94a0af; line-height: 1.35; }
+    .reader { padding: 17px 18px; min-width: 0; background: #fff; }
+    .mail-tags { display: flex; align-items: center; gap: 5px; margin-bottom: 11px; flex-wrap: wrap; }
+    .mail-subject { margin: 0 0 12px; font-size: 15px; line-height: 1.25; letter-spacing: -.025em; }
+    .sender { display: flex; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #eff2f5; }
+    .sender .avatar { flex: 0 0 auto; width: 27px; height: 27px; }
+    .sender-lines { min-width: 0; }
+    .sender-lines b { display: block; font-size: 9px; color: #354258; }
+    .sender-lines span { display: block; margin-top: 2px; font-size: 8px; color: #8793a3; }
+    .email-body { padding: 13px 1px 0; color: #536176; font-size: 10px; line-height: 1.62; }
+    .email-body p { margin: 0 0 9px; }
+    .email-body strong { color: #26364d; font-weight: 700; }
+    .quote-line { padding-left: 10px; border-left: 2px solid #dce2ea; color: #8d98a7; font-size: 9px; }
+    .attachment { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding: 9px; border: 1px solid #e6eaf0; border-radius: 8px; background: #fbfcfe; }
+    .file-icon { width: 26px; height: 30px; border: 1px solid #f0c9c5; border-radius: 5px; background: #fff4f2; color: #c45f58; display: grid; place-items: center; font-size: 7px; font-weight: 800; }
+    .attachment b { display: block; color: #48566b; font-size: 9px; }
+    .attachment small { display: block; margin-top: 2px; color: #929dad; font-size: 8px; }
+    .proposed-rail { padding: 12px 11px; border-left: 1px solid #e9edf2; background: #fbfcfe; }
+    .rail-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .rail-head h4 { margin: 0; font-size: 11px; letter-spacing: -.015em; }
+    .rail-head p { margin: 3px 0 0; color: #8a96a5; font-size: 8px; }
+    .count-pill { border-radius: 99px; padding: 4px 7px; background: #eef1ff; color: #5366cc; font-weight: 800; font-size: 8px; white-space: nowrap; }
+    .action-card { --tone: var(--blue); --wash: var(--soft-blue); padding: 10px; margin: 8px 0; border: 1px solid #e6eaf0; border-left: 3px solid var(--tone); border-radius: 8px; background: #fff; box-shadow: 0 2px 4px rgba(24,38,58,.025); }
+    .action-card.teal { --tone: var(--teal); --wash: var(--soft-teal); }
+    .action-card.amber { --tone: var(--amber); --wash: var(--soft-amber); }
+    .action-card.violet { --tone: var(--violet); --wash: var(--soft-violet); }
+    .action-card.lime { --tone: var(--lime); --wash: var(--soft-lime); }
+    .action-top { display: flex; align-items: start; gap: 7px; }
+    .action-icon { flex: 0 0 auto; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 6px; background: var(--wash); color: var(--tone); font-size: 9px; font-weight: 850; }
+    .action-label { min-width: 0; flex: 1; }
+    .action-label b { display: block; color: #334156; font-size: 9px; line-height: 1.25; }
+    .action-label small { display: block; margin-top: 3px; color: #8a96a5; font-size: 7px; }
+    .proposed-chip { border: 1px solid #e8ebf1; color: #8591a0; border-radius: 4px; padding: 3px 5px; font-size: 6px; line-height: 1; font-weight: 800; letter-spacing: .06em; white-space: nowrap; }
+    .action-facts { margin-top: 8px; padding-top: 7px; border-top: 1px solid #f0f2f5; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }
+    .action-facts div { min-width: 0; }
+    .action-facts span { display: block; color: #98a2af; font-size: 7px; }
+    .action-facts b { display: block; margin-top: 2px; color: #59677c; font-size: 8px; font-weight: 650; overflow-wrap: anywhere; }
+    .source-line { margin-top: 7px; display: flex; align-items: center; gap: 5px; color: #8490a0; font-size: 7px; }
+    .source-tag { padding: 3px 5px; border-radius: 4px; background: #f1f4f8; color: #6c7b90; font-size: 6px; font-weight: 800; letter-spacing: .04em; }
+    .rail-foot { margin-top: 9px; padding: 8px; border-radius: 7px; background: #f5f7fa; color: #7c8999; font-size: 8px; line-height: 1.45; }
+    .rail-foot b { color: #58667a; }
+    .soft-state { padding: 14px 11px; border: 1px dashed #d9e0e8; border-radius: 9px; background: #fff; text-align: center; }
+    .soft-state .state-symbol { margin: 0 auto 8px; width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; background: #f0f3f7; color: #8390a0; font-size: 12px; font-weight: 700; }
+    .soft-state b { display: block; color: #566478; font-size: 9px; }
+    .soft-state p { margin: 4px 0 0; color: #95a0ad; font-size: 8px; line-height: 1.45; }
+    .inline-note { display: flex; gap: 7px; align-items: start; margin-top: 10px; padding: 8px 9px; border-radius: 7px; background: #f3f6fb; color: #708096; font-size: 8px; line-height: 1.4; }
+    .inline-note .note-mark { color: #5368d8; font-weight: 900; }
+    .email-callout { margin: 10px 0; padding: 9px 10px; border-left: 2px solid #bdc9e8; background: #f6f8fc; color: #586980; font-size: 9px; line-height: 1.55; }
+    .folded { margin: 8px 0; padding: 7px 9px; border: 1px solid #e9edf2; border-radius: 6px; background: #fafbfd; color: #8b96a5; font-size: 8px; }
+    .folded b { color: #647287; }
+    .evidence-list { margin: 8px 0; overflow: hidden; border: 1px solid #e5eaf0; border-radius: 7px; background: #fff; }
+    .evidence-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 8px; border-bottom: 1px solid #f0f2f5; }
+    .evidence-row:last-child { border-bottom: 0; }
+    .evidence-row span { color: #8190a1; font-size: 8px; }
+    .evidence-row b { color: #405066; font-size: 8px; font-weight: 680; text-align: right; }
+    .mini-status { display: inline-flex; align-items: center; gap: 4px; border-radius: 4px; padding: 3px 5px; background: #f2f5f8; color: #6f7e90; font-size: 6px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+    .mini-status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .mini-status.ok { color: #49836e; background: #eaf5ef; }
+    .mini-status.wait { color: #aa7026; background: #fff4e7; }
+    .board-foot { padding: 10px 17px 12px; display: flex; justify-content: space-between; gap: 15px; align-items: center; color: #8792a1; background: #fff; border-top: 1px solid #eef1f5; font-size: 9px; }
+    .board-foot strong { color: #657387; font-weight: 700; }
+    .queue-board { max-width: 1130px; min-width: 730px; margin: 0 auto; padding: 20px; border: 1px solid #dfe5ed; border-radius: 12px; background: #fff; box-shadow: 0 8px 22px rgba(30,44,68,.07); }
+    .queue-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-bottom: 14px; border-bottom: 1px solid #edf0f4; }
+    .queue-head h4 { margin: 0; font-size: 13px; }
+    .queue-head p { margin: 4px 0 0; color: #8793a3; font-size: 9px; }
+    .queue-property { text-align: right; color: #748196; font-size: 8px; }
+    .queue-property .mini-status { display: flex; width: max-content; margin: 4px 0 0 auto; }
+    .queue-property b { display: block; margin-top: 3px; color: #43536a; font-size: 10px; }
+    .queue-users { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; margin: 15px 0 12px; }
+    .user-session { padding: 12px; border: 1px solid #e5eaf0; border-radius: 10px; background: #fcfdff; }
+    .user-session.active-session { border-color: #cce5dc; background: linear-gradient(140deg, #f7fcfa, #fff); }
+    .session-top { display: flex; align-items: center; gap: 8px; }
+    .session-top .avatar { width: 29px; height: 29px; }
+    .session-top b { display: block; font-size: 9px; }
+    .session-top small { display: block; margin-top: 3px; color: #8b97a5; font-size: 7px; }
+    .session-route { margin: 11px 0 9px; padding: 7px 8px; border-radius: 6px; background: #f4f6f9; color: #718096; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .session-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid #eef1f4; }
+    .session-state b { color: #516075; font-size: 8px; }
+    .session-state span { color: #8c98a7; font-size: 7px; text-align: right; }
+    .queue-banner { display: flex; align-items: center; gap: 8px; padding: 10px 11px; border-radius: 8px; background: #f2f6fb; color: #61748c; font-size: 8px; line-height: 1.4; }
+    .queue-banner .queue-dot { width: 8px; height: 8px; border-radius: 50%; background: #548578; box-shadow: 0 0 0 4px #e0efe9; flex: 0 0 auto; }
+    .popout-demo { min-width: 850px; max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 250px 28px minmax(500px, 1fr); align-items: center; gap: 18px; }
+    .outlook-pane { min-height: 305px; padding: 13px; border: 1px solid #dfe5ed; border-radius: 10px; background: #fff; box-shadow: 0 8px 22px rgba(30,44,68,.07); }
+    .pane-topline { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid #edf0f4; }
+    .pane-topline b { font-size: 9px; }
+    .pane-mail { padding: 13px 2px; color: #66758a; font-size: 8px; line-height: 1.55; }
+    .pane-mail strong { display: block; margin: 4px 0 7px; color: #35445a; font-size: 10px; }
+    .concept-button { display: block; width: 100%; margin-top: 12px; padding: 8px 9px; border: 1px solid #dce2fb; border-radius: 6px; background: #f3f5ff; color: #5266c9; font-size: 8px; font-weight: 750; text-align: center; }
+    .window-arrow { color: #95a1b0; font-size: 20px; text-align: center; }
+    .popout-window { min-height: 330px; border: 1px solid #d5dce6; border-radius: 11px; overflow: hidden; background: #fff; box-shadow: 0 14px 35px rgba(30,44,68,.12); }
+    .window-chrome { min-height: 31px; padding: 0 11px; display: flex; align-items: center; justify-content: space-between; background: #f7f8fa; border-bottom: 1px solid #e7ebf0; color: #778498; font-size: 7px; }
+    .window-chrome .dots { display: flex; gap: 4px; }
+    .window-chrome .dots i { display: block; width: 6px; height: 6px; border-radius: 50%; background: #c9d0da; }
+    .window-inner { padding: 12px; }
+    .window-inner .mail-grid { grid-template-columns: 130px 1fr 260px; min-height: 230px; border: 1px solid #edf0f4; border-radius: 7px; overflow: hidden; }
+    .window-inner .folder-nav { grid-column: 1; }
+    .window-inner .reader { grid-column: 2; }
+    .window-inner .proposed-rail { grid-column: 3; }
+    .flow-frame { min-width: 930px; max-width: 1320px; margin: 0 auto; overflow: hidden; border: 1px solid #dfe5ed; border-radius: 11px; background: #fff; box-shadow: 0 8px 22px rgba(30,44,68,.07); }
+    .flow-top { min-height: 47px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #e9edf2; }
+    .flow-title { display: flex; align-items: center; gap: 9px; }
+    .flow-title b { font-size: 11px; }
+    .flow-title small { display: block; margin-top: 2px; color: #8c98a7; font-size: 7px; }
+    .flow-layout { display: grid; grid-template-columns: 255px minmax(420px,1fr) 235px; min-height: 410px; }
+    .flow-source { padding: 13px; border-right: 1px solid #e9edf2; background: #fbfcfe; }
+    .flow-section-label { margin: 0 0 8px; color: #8a96a5; text-transform: uppercase; letter-spacing: .1em; font-size: 7px; font-weight: 800; }
+    .source-card { padding: 10px; border: 1px solid #e5eaf0; border-radius: 8px; background: #fff; }
+    .source-card .source-subject { margin: 7px 0; font-size: 9px; font-weight: 750; line-height: 1.4; }
+    .source-card p { margin: 0; color: #758297; font-size: 8px; line-height: 1.6; }
+    .source-snippet { margin-top: 9px; padding: 8px; border-left: 2px solid #7185df; border-radius: 0 5px 5px 0; background: #f5f6ff; color: #62718a; font-size: 7px; line-height: 1.55; }
+    .source-key { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; color: #8c97a6; font-size: 7px; }
+    .flow-form { padding: 13px 14px; }
+    .flow-form h4 { margin: 0 0 3px; font-size: 12px; }
+    .flow-form .form-sub { margin: 0 0 11px; color: #8b96a5; font-size: 8px; }
+    .form-group-title { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; margin: 5px 0 -1px; padding-top: 6px; border-top: 1px solid #eff1f4; color: #647287; font-size: 8px; font-weight: 800; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .field { min-width: 0; }
+    .field label { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-bottom: 3px; color: #69778b; font-size: 7px; font-weight: 700; }
+    .field-value { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 5px 7px; border: 1px solid #e4e8ee; border-radius: 6px; background: #fff; color: #3d4c62; font-size: 8px; }
+    .field-value.empty { color: #a0a9b5; background: #fbfcfd; border-style: dashed; }
+    .field-src { flex: 0 0 auto; border-radius: 3px; padding: 2px 4px; background: #eff3ff; color: #6173c6; font-size: 5px; font-weight: 850; letter-spacing: .06em; }
+    .field-src.missing { background: #fff3e6; color: #ab702e; }
+    .flow-summary { padding: 13px; border-left: 1px solid #e9edf2; background: #fbfcfe; }
+    .completion-ring { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 50%; margin: 9px auto 7px; border: 4px solid #e9edf6; border-top-color: #6175dc; border-right-color: #6175dc; color: #4558bc; font-size: 10px; font-weight: 800; }
+    .summary-caption { text-align: center; color: #778499; font-size: 7px; }
+    .check-row { display: flex; align-items: start; gap: 6px; padding: 7px 0; border-bottom: 1px solid #eef1f4; color: #718095; font-size: 7px; line-height: 1.4; }
+    .check-row:last-child { border-bottom: 0; }
+    .check-icon { flex: 0 0 auto; width: 13px; height: 13px; display: grid; place-items: center; border-radius: 4px; background: #e8f4ee; color: #53856d; font-size: 8px; font-weight: 850; }
+    .check-icon.missing { background: #fff2e5; color: #ae7027; }
+    .check-row b { color: #526176; }
+    .disabled-action { display: block; width: 100%; margin-top: 9px; padding: 8px 7px; border: 1px solid #e1e5eb; border-radius: 6px; background: #f4f5f7; color: #9aa3af; font-size: 8px; font-weight: 750; text-align: center; }
+    .disabled-note { margin-top: 6px; color: #a0a9b5; font-size: 6px; line-height: 1.4; text-align: center; }
+    .compact-wrap { padding: 14px; display: flex; justify-content: center; }
+    .compact-shell { width: 520px; min-height: 485px; border: 1px solid #dfe5ed; border-radius: 11px; overflow: hidden; background: #fff; box-shadow: 0 8px 22px rgba(30,44,68,.08); }
+    .compact-top { min-height: 42px; padding: 0 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e9edf2; }
+    .compact-top b { font-size: 10px; }
+    .compact-body { padding: 14px; }
+    .compact-body h4 { margin: 9px 0 5px; font-size: 13px; }
+    .compact-body p { color: #738197; font-size: 9px; line-height: 1.55; }
+    .compact-actions { margin-top: 15px; padding-top: 11px; border-top: 1px solid #edf0f3; }
+    .compact-actions-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
+    .compact-actions-head b { font-size: 10px; }
+    .compact-actions .action-card { margin: 6px 0; }
+    .concept-strip { padding: 10px 14px; border: 1px solid #f0d6b8; border-radius: 8px; background: #fff8ef; color: #98612b; font-size: 8px; line-height: 1.5; }
+    .footer { padding: 20px 5px 0; color: #8591a0; font-size: 10px; line-height: 1.55; }
+    .footer a { color: #5368c9; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    @media (max-width: 800px) {
+      .page { width: min(100% - 20px, 1440px); padding-top: 10px; }
+      .hero { min-height: unset; padding: 25px 22px; display: block; }
+      .hero-side { margin-top: 22px; width: 100%; }
+      .art-head { align-items: start; flex-direction: column; gap: 10px; }
+      .art-tags { justify-content: start; }
+      .section-title { align-items: start; flex-direction: column; }
+      .jumpbar { top: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Centurion · reservation desk · design shotgun</div>
+        <h1>From inbound to<br>one clear next action.</h1>
+        <p>Eleven screens for an evidence-first Proposed rail, multi-user Outlook workflow, controlled-popout concept, and a one-page Flow C stay builder.</p>
+        <div class="disclaimer">Synthetic examples · concept only · no live HMS reads or writes</div>
+      </div>
+      <aside class="hero-side" aria-label="Gallery summary">
+        <div class="hero-stat"><span>Artboards</span><b>11</b></div>
+        <div class="hero-stat"><span>Core flow</span><b>One page</b></div>
+        <div class="hero-stat"><span>HMS status</span><b>View-only</b></div>
+      </aside>
+    </header>
+
+    <nav class="jumpbar" aria-label="Jump to artboard">
+      <span class="jump-label">Boards</span>
+      <a href="#board-01">01 Inbox</a><a href="#board-02">02 Multi-ask</a><a href="#board-03">03 Amendment</a>
+      <a href="#board-04">04 PDF</a><a href="#board-05">05 Skip</a><a href="#board-06">06 Needs human</a>
+      <a href="#board-07">07 Staff did</a><a href="#board-08">08 Multi-user</a><a href="#board-09">09 Popout</a>
+      <a href="#board-10">10 Flow C</a><a href="#board-11">11 Compact pane</a>
+    </nav>
+
+    <div class="section-title">
+      <div><h2>Proposed · source · operator</h2><p>Each board explores one real state, not just another coat of paint.</p></div>
+      <div class="legend" aria-label="Action color legend">
+        <span class="legend-item"><i class="legend-dot" style="background:var(--teal)"></i>Find / read</span>
+        <span class="legend-item"><i class="legend-dot" style="background:var(--amber)"></i>Quote</span>
+        <span class="legend-item"><i class="legend-dot" style="background:var(--violet)"></i>Amend / note</span>
+        <span class="legend-item"><i class="legend-dot" style="background:var(--lime)"></i>Group / create</span>
+        <span class="legend-item"><i class="legend-dot" style="background:var(--gold)"></i>Staff proof</span>
+      </div>
+    </div>
+
+    <section class="artboard" id="board-01">
+      <header class="art-head"><div class="art-title"><span class="art-num">01</span><div><h3>Inbox overview · one inbound, two scoped actions</h3><p>The default reading rhythm: message first, evidence nearby, actions at the edge.</p></div></div><div class="art-tags"><span class="tag">Outlook-shaped</span><span class="tag">Proposed rail</span></div></header>
+      <div class="stage">
+        <div class="app-shell">
+          <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+          <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Unread 8</span><span class="toolbar-button">Needs review 3</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span><span class="toolbar-button">More</span></div></div>
+          <div class="mail-grid">
+            <aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed <em>3</em></div><div class="folder">Amendments <em>2</em></div><div class="folder">Skipped <em>6</em></div><div class="folder">Sent</div><div class="nav-caption" style="margin-top:18px">Views</div><div class="folder">Needs a person</div><div class="folder">Attachments</div></aside>
+            <aside class="thread-list"><div class="list-head"><span>Recent</span><span>⌄</span></div><div class="thread selected"><div class="thread-name">Morgan Vale <time>10:42</time></div><div class="thread-subject">Two rooms for October</div><div class="thread-snippet">Could you send options for a short stay…</div></div><div class="thread"><div class="thread-name">Riley Sample <time>09:31</time></div><div class="thread-subject">Change to arrival date</div><div class="thread-snippet">Quick correction to the earlier request…</div></div><div class="thread"><div class="thread-name">Taylor North <time>Yesterday</time></div><div class="thread-subject">Rooming list attached</div><div class="thread-snippet">Roster for the sample group is attached…</div></div><div class="thread"><div class="thread-name">Jamie Park <time>Mon</time></div><div class="thread-subject">For the Sales team</div><div class="thread-snippet">No room request in this message.</div></div></aside>
+            <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">Reservation request</span></div><h3 class="mail-subject">Two rooms for October</h3><div class="sender"><span class="avatar">MV</span><div class="sender-lines"><b>Morgan Vale</b><span>morgan@example.test · to Reservations · 10:42</span></div></div><div class="email-body"><p>Hello,</p><p>Could you send options for <strong>two standard queen rooms</strong> from <strong>14–17 October 2026</strong>, for <strong>two adults</strong>? The booking would be under Riley Sample.</p><p>Thanks,<br>Morgan</p></div><div class="inline-note"><span class="note-mark">i</span><span>Dates, party size, and room type are grounded in this message. No price or availability is implied.</span></div></article>
+            <aside class="proposed-rail"><div class="rail-head"><div><h4>Proposed</h4><p>For this inbound only</p></div><span class="count-pill">2 actions</span></div><div class="action-card teal"><div class="action-top"><span class="action-icon">F</span><span class="action-label"><b>Find reservation</b><small>Identify a matching stay</small></span><span class="proposed-chip">PROPOSED</span></div><div class="action-facts"><div><span>Guest</span><b>Riley Sample</b></div><div><span>Evidence</span><b>Email body</b></div></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>name in paragraph 2</span></div></div><div class="action-card amber"><div class="action-top"><span class="action-icon">Q</span><span class="action-label"><b>Fetch stay quote</b><small>Read-only quote request</small></span><span class="proposed-chip">PROPOSED</span></div><div class="action-facts"><div><span>Dates</span><b>14–17 Oct</b></div><div><span>Rooms</span><b>2 queen</b></div></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>party and stay details</span></div></div><div class="rail-foot"><b>Human review required.</b> Cards describe candidate actions; nothing runs from this concept.</div></aside>
+          </div>
+        </div>
+      </div>
+      <footer class="board-foot"><span><strong>Design note:</strong> mailbox context stays visible; no “stay chips” collapse multiple actions into one.</span><span class="mini-status wait">No live execution</span></footer>
+    </section>
+
+    <section class="artboard" id="board-02">
+      <header class="art-head"><div class="art-title"><span class="art-num">02</span><div><h3>Multi-ask · color and evidence belong to each action</h3><p>One inbound can produce several cards; each card says what it does and why.</p></div></div><div class="art-tags"><span class="tag">One inbound</span><span class="tag">3 action families</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Message 1 of 24</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed <em>3</em></div><div class="folder">Amendments</div><div class="folder">Skipped</div></aside><aside class="thread-list"><div class="list-head"><span>Selected</span><span>1</span></div><div class="thread selected"><div class="thread-name">Casey Example <time>11:06</time></div><div class="thread-subject">Two asks for this week</div><div class="thread-snippet">New stay options and an existing booking note…</div></div><div class="thread"><div class="thread-name">Morgan Vale <time>10:42</time></div><div class="thread-subject">Two rooms for October</div><div class="thread-snippet">Could you send options…</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">Two asks detected</span></div><h3 class="mail-subject">Two asks for this week</h3><div class="sender"><span class="avatar">CE</span><div class="sender-lines"><b>Casey Example</b><span>casey@example.test · 11:06</span></div></div><div class="email-body"><p>Hi team — please quote a <strong>single standard room, 20–22 October</strong>, for <strong>one adult</strong> under Casey Example.</p><p>Also, on existing stay <strong>RS-2048 (sample reference)</strong>, please add: “arriving after 9 pm.”</p><p>Thank you.</p></div><div class="inline-note"><span class="note-mark">↳</span><span>Two distinct requests in one message. Their sources stay attached to their own cards.</span></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Proposed</h4><p>Split by verb, not by email</p></div><span class="count-pill">3 actions</span></div><div class="action-card teal"><div class="action-top"><span class="action-icon">F</span><span class="action-label"><b>Find existing stay</b><small>Resolve sample reference</small></span><span class="proposed-chip">PROPOSED</span></div><div class="source-line"><span class="source-tag">ASK 2</span><span>“RS-2048”</span></div></div><div class="action-card amber"><div class="action-top"><span class="action-icon">Q</span><span class="action-label"><b>Fetch stay quote</b><small>New one-room request</small></span><span class="proposed-chip">PROPOSED</span></div><div class="action-facts"><div><span>Dates</span><b>20–22 Oct</b></div><div><span>Adults</span><b>1</b></div></div><div class="source-line"><span class="source-tag">ASK 1</span><span>first paragraph</span></div></div><div class="action-card violet"><div class="action-top"><span class="action-icon">N</span><span class="action-label"><b>Add arrival note</b><small>Existing stay only</small></span><span class="proposed-chip">PROPOSED</span></div><div class="action-facts"><div><span>Note</span><b>After 9 pm</b></div><div><span>Target</span><b>RS-2048</b></div></div><div class="source-line"><span class="source-tag">ASK 2</span><span>second paragraph</span></div></div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> each card keeps its own source, tool color, and target; none is selected by default here.</span><span class="mini-status wait">Illustrative only</span></footer>
+    </section>
+
+    <section class="artboard" id="board-03">
+      <header class="art-head"><div class="art-title"><span class="art-num">03</span><div><h3>Amendment · latest message owns the live request</h3><p>Prior asks remain readable context, not a second set of Proposed actions.</p></div></div><div class="art-tags"><span class="tag">Thread-safe</span><span class="tag">Superseded folded</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Thread · 3 messages</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed <em>3</em></div><div class="folder">Amendments <em>2</em></div><div class="folder">Skipped</div></aside><aside class="thread-list"><div class="list-head"><span>Thread</span><span>3</span></div><div class="thread selected"><div class="thread-name">Riley Sample <time>11:20</time></div><div class="thread-subject">Re: October stay</div><div class="thread-snippet">Correction: one day later…</div></div><div class="thread"><div class="thread-name">Riley Sample <time>Yesterday</time></div><div class="thread-subject">October stay request</div><div class="thread-snippet">Original dates and room request.</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">Amendment</span></div><h3 class="mail-subject">Re: October stay</h3><div class="sender"><span class="avatar">RS</span><div class="sender-lines"><b>Riley Sample</b><span>riley@example.test · 11:20</span></div></div><div class="email-body"><p>Please change the arrival to <strong>15 October</strong> and keep the departure on <strong>17 October</strong>. Same room and guest details as before.</p><div class="folded"><b>▸ 2 earlier messages folded</b> · original stay request · historical quote discussion</div><p class="quote-line">Previous dates are context only. The current inbound changes arrival; it does not restate an instruction to re-quote every earlier option.</p></div><div class="inline-note"><span class="note-mark">↳</span><span>Only current-message changes feed the live amendment card. Open history when needed.</span></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Proposed</h4><p>Current inbound only</p></div><span class="count-pill">2 actions</span></div><div class="action-card teal"><div class="action-top"><span class="action-icon">F</span><span class="action-label"><b>Find reservation</b><small>Resolve the existing stay</small></span><span class="proposed-chip">PROPOSED</span></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>same guest, prior context</span></div></div><div class="action-card violet"><div class="action-top"><span class="action-icon">A</span><span class="action-label"><b>Amend arrival date</b><small>Keep other fields unchanged</small></span><span class="proposed-chip">PROPOSED</span></div><div class="action-facts"><div><span>Arrival</span><b>15 Oct</b></div><div><span>Departure</span><b>17 Oct</b></div></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>correction in first sentence</span></div></div><div class="rail-foot"><b>Prior request folded.</b> It is not duplicated as a new quote.</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> thread identity is context; the current inbound is the unit of work.</span><span class="mini-status">No duplicate quote</span></footer>
+    </section>
+
+    <section class="artboard" id="board-04">
+      <header class="art-head"><div class="art-title"><span class="art-num">04</span><div><h3>PDF rooming list · extracted facts point back to the file</h3><p>Show the attachment as a source, not as a wall of parsed text.</p></div></div><div class="art-tags"><span class="tag">Attachment evidence</span><span class="tag">Synthetic PDF</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Attachment detected</span></div><div class="toolbar-right"><span class="toolbar-button">Open PDF</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed <em>3</em></div><div class="folder">Attachments</div><div class="folder">Skipped</div></aside><aside class="thread-list"><div class="list-head"><span>Recent</span><span>⌄</span></div><div class="thread selected"><div class="thread-name">Northstar Events <time>11:31</time></div><div class="thread-subject">Sample retreat roster</div><div class="thread-snippet">Guest list and stay dates attached.</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">PDF attached</span></div><h3 class="mail-subject">Sample retreat roster</h3><div class="sender"><span class="avatar">NE</span><div class="sender-lines"><b>Northstar Events</b><span>events@example.test · 11:31</span></div></div><div class="email-body"><p>Hello Reservations,</p><p>Here is the <strong>sample rooming list</strong> for our <strong>2–4 November</strong> team visit. Please send a group quote.</p><div class="attachment"><span class="file-icon">PDF</span><span><b>sample-rooming-list.pdf</b><small>2 pages · 8 roster rows · synthetic fixture</small></span><span class="mini-status ok" style="margin-left:auto">Parsed</span></div><div class="email-callout">Attachment preview · Page 1<br><strong>Row 01 · Avery Sample · 2 guests · Standard Queen</strong><br>⋯ 7 more synthetic rows</div></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Evidence</h4><p>Extracted values link to source</p></div><span class="count-pill">Page 1</span></div><div class="evidence-list"><div class="evidence-row"><span>Room count</span><b>8 · roster rows</b></div><div class="evidence-row"><span>Guests</span><b>14 · listed pax</b></div><div class="evidence-row"><span>Dates</span><b>2–4 Nov</b></div><div class="evidence-row"><span>Room type</span><b>Standard Queen</b></div></div><div class="source-line"><span class="source-tag">PDF · P.1</span><span>tap fact to inspect row</span></div><div class="action-card amber"><div class="action-top"><span class="action-icon">Q</span><span class="action-label"><b>Fetch group quote</b><small>Read-only proposal</small></span><span class="proposed-chip">PROPOSED</span></div><div class="source-line"><span class="source-tag">EMAIL + PDF</span><span>dates and roster counts</span></div></div><div class="rail-foot"><b>Occupancy is evidence-backed.</b> No count is inferred from “group” alone.</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> extraction should preserve page/row provenance and never surface raw PDF encoding.</span><span class="mini-status ok">Source visible</span></footer>
+    </section>
+
+    <section class="artboard" id="board-05">
+      <header class="art-head"><div class="art-title"><span class="art-num">05</span><div><h3>Quiet skip · no reservation work is still a useful outcome</h3><p>Other-desk handoffs leave the Proposed rail intentionally calm.</p></div></div><div class="art-tags"><span class="tag">Empty state</span><span class="tag">No false action</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Message 2 of 24</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed <em>3</em></div><div class="folder">Skipped <em>6</em></div><div class="folder">Sales handoffs</div></aside><aside class="thread-list"><div class="list-head"><span>Recent</span><span>⌄</span></div><div class="thread selected"><div class="thread-name">Jamie Park <time>11:45</time></div><div class="thread-subject">For the Sales team</div><div class="thread-snippet">No room request in this message…</div></div><div class="thread"><div class="thread-name">Northstar Events <time>11:31</time></div><div class="thread-subject">Sample retreat roster</div><div class="thread-snippet">Group quote attached.</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">Other desk</span></div><h3 class="mail-subject">For the Sales team</h3><div class="sender"><span class="avatar">JP</span><div class="sender-lines"><b>Jamie Park</b><span>jamie@example.test · 11:45</span></div></div><div class="email-body"><p>Hi Reservations,</p><p>Could you pass this note to the <strong>Sales team</strong>? They are coordinating a sample event. There is <strong>no room block or guest stay request</strong> in this message.</p><p>Thanks!</p></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Proposed</h4><p>Nothing reservation-shaped</p></div><span class="count-pill">0 actions</span></div><div class="soft-state"><div class="state-symbol">—</div><b>No PMS action proposed</b><p>This message is a Sales handoff. No quote, stay, or reservation tool was inferred.</p></div><div class="rail-foot"><b>Quiet by design.</b> The email stays available in the inbox; the rail does not invent a task.</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> a zero-card state is explicit and reassuring, not an error.</span><span class="mini-status">Skipped · other desk</span></footer>
+    </section>
+
+    <section class="artboard" id="board-06">
+      <header class="art-head"><div class="art-title"><span class="art-num">06</span><div><h3>Needs a person · contradictions stay visible</h3><p>Keep missing values blank; show exactly what blocks a safe proposal.</p></div></div><div class="art-tags"><span class="tag">Human review</span><span class="tag">No guessing</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Review needed 1</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed</div><div class="folder">Needs a person <em>1</em></div><div class="folder">Skipped</div></aside><aside class="thread-list"><div class="list-head"><span>Needs review</span><span>1</span></div><div class="thread selected"><div class="thread-name">Robin Sample <time>11:52</time></div><div class="thread-subject">Updated stay dates</div><div class="thread-snippet">Arrive Thursday—actually Friday…</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span><span class="tag">Date conflict</span></div><h3 class="mail-subject">Updated stay dates</h3><div class="sender"><span class="avatar">RS</span><div class="sender-lines"><b>Robin Sample</b><span>robin@example.test · 11:52</span></div></div><div class="email-body"><p>Can you arrange our sample stay? We expect to arrive on <strong>Thursday 12 November</strong>.</p><p>Later in the same message: <strong>we will check in Friday the 13th</strong>. No departure date is included.</p><div class="email-callout">Two arrival statements disagree. The message does not establish which is current.</div></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Needs a person</h4><p>Hold action creation</p></div><span class="count-pill" style="background:#fff3e5;color:#a86a25">Blocked</span></div><div class="action-card amber"><div class="action-top"><span class="action-icon">!</span><span class="action-label"><b>Clarify stay dates</b><small>No quote proposal yet</small></span><span class="proposed-chip">REVIEW</span></div><div class="evidence-list" style="margin-bottom:0"><div class="evidence-row"><span>Arrival</span><b style="color:#ad6e29">12 or 13 Nov</b></div><div class="evidence-row"><span>Departure</span><b style="color:#9aa4b0">Not stated</b></div></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>two conflicting sentences</span></div></div><div class="rail-foot"><b>No date is selected.</b> Ask the sender; do not choose the latest-looking number.</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> “needs a person” is a state, not a half-filled action card.</span><span class="mini-status wait">No invented date</span></footer>
+    </section>
+
+    <section class="artboard" id="board-07">
+      <header class="art-head"><div class="art-title"><span class="art-num">07</span><div><h3>Staff did · proof present and proof missing are different states</h3><p>Never manufacture a PMS-shaped answer to make the rail look complete.</p></div></div><div class="art-tags"><span class="tag">Gold-bound</span><span class="tag">No fake payload</span></div></header>
+      <div class="stage"><div class="app-shell">
+        <div class="app-top"><div class="brand-line"><span class="brandmark">N</span><span class="brand-name">Nava</span><span class="vline"></span><span class="top-crumb">Reservations / Northstar Sample</span><span class="sample-pill">DEMO DATA</span></div><div class="top-actions"><span class="search-box">Search inbox</span><span class="avatar">RM</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><span class="toolbar-label">Inbox</span><span class="toolbar-button">Outcome evidence</span></div><div class="toolbar-right"><span class="toolbar-button">Reply</span></div></div>
+        <div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Mailbox</div><div class="folder active">Inbox <em>8</em></div><div class="folder">Proposed</div><div class="folder">Staff outcomes</div><div class="folder">Needs a person</div></aside><aside class="thread-list"><div class="list-head"><span>Examples</span><span>2</span></div><div class="thread selected"><div class="thread-name">Avery Sample <time>11:58</time></div><div class="thread-subject">Quote request · proof state</div><div class="thread-snippet">Compare the linked outcome states…</div></div><div class="thread"><div class="thread-name">Jordan Example <time>11:41</time></div><div class="thread-subject">Amendment · no proof</div><div class="thread-snippet">No verified result is linked.</div></div></aside>
+          <article class="reader"><div class="mail-tags"><span class="tag">Staff-did examples</span><span class="tag">Two separate cases</span></div><h3 class="mail-subject">Outcome evidence</h3><div class="sender"><span class="avatar">AS</span><div class="sender-lines"><b>Avery Sample</b><span>avery@example.test · 11:58</span></div></div><div class="email-body"><p>This board demonstrates the two UI states for a completed human action. It contains <strong>no PMS response body or invented confirmation data</strong>.</p><div class="email-callout"><strong>State A · source-bound:</strong> when a real gold `usedResult` is linked, show its exact content with the source reference. This visual keeps the payload redacted.</div><div class="email-callout" style="border-left-color:#dfc28b;background:#fffaf2"><strong>State B · no source:</strong> keep “No verified result linked.” Never fill the gap with a plausible-looking success.</div></div></article>
+          <aside class="proposed-rail"><div class="rail-head"><div><h4>Staff did</h4><p>Outcome evidence</p></div><span class="count-pill" style="background:#fff5e6;color:#9d702e">Gold only</span></div><div class="action-card" style="--tone:var(--gold);--wash:#fff6e7"><div class="action-top"><span class="action-icon">✓</span><span class="action-label"><b>Verified result available</b><small>Render linked `usedResult` verbatim</small></span><span class="mini-status ok">Linked</span></div><div class="rail-foot" style="margin:8px 0 0;background:#fffaf1"><b>Payload hidden in this gallery.</b><br>Show the actual source-bound result here; do not replace it with mock PMS fields.</div></div><div class="action-card" style="--tone:#9aa4b1;--wash:#f2f4f6"><div class="action-top"><span class="action-icon">·</span><span class="action-label"><b>No verified result linked</b><small>Keep missing evidence explicit</small></span><span class="mini-status">No source</span></div><div class="source-line"><span class="source-tag">HONEST EMPTY</span><span>no fabricated response</span></div></div><div class="rail-foot"><b>Proposed ≠ Staff did.</b> Candidate action and observed result remain separate.</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> the “linked” box is a rendering rule, not sample HMS data.</span><span class="mini-status">Evidence policy</span></footer>
+    </section>
+
+    <section class="artboard" id="board-08">
+      <header class="art-head"><div class="art-title"><span class="art-num">08</span><div><h3>Multi-user · one property queue, separate user grants</h3><p>Same workspace route can serve both staff; the URL itself does not grant access.</p></div></div><div class="art-tags"><span class="tag">Two sessions</span><span class="tag concept">Queue indicator concept</span></div></header>
+      <div class="stage"><div class="queue-board">
+        <div class="queue-head"><div><h4>Northstar Sample · reservation work queue</h4><p>Two signed-in operators · same property · same queue view</p></div><div class="queue-property">Mailbox access<span class="mini-status ok">Granted individually</span></div></div>
+        <div class="queue-users">
+          <article class="user-session active-session"><div class="session-top"><span class="avatar">AL</span><div><b>Alex Lee</b><small>Signed in · user grant verified</small></div><span class="mini-status ok" style="margin-left:auto">Active</span></div><div class="session-route">/reservations/inbox</div><div class="session-state"><b>Find stay · in progress</b><span>Property read owns the slot</span></div></article>
+          <article class="user-session"><div class="session-top"><span class="avatar" style="background:#f2e9da;color:#85632c">KM</span><div><b>Kai Morgan · you</b><small>Signed in · user grant verified</small></div><span class="mini-status wait" style="margin-left:auto">Waiting</span></div><div class="session-route">/reservations/inbox</div><div class="session-state"><b>Quote context · queued</b><span>Starts when the property slot frees</span></div></article>
+        </div>
+        <div class="queue-banner"><span class="queue-dot"></span><span><strong>Property-scoped serialization:</strong> one HMS read in flight, next authorized request waiting. Queue visibility here is a design concept until that state is exposed to the UI.</span></div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> each operator authenticates independently; shared links are not credentials.</span><span class="mini-status wait">UI queue status not shipped</span></footer>
+    </section>
+
+    <section class="artboard" id="board-09">
+      <header class="art-head"><div class="art-title"><span class="art-num">09</span><div><h3>Popout · same session, more room to work</h3><p>Explores a controlled full window while keeping the Outlook message in reach.</p></div></div><div class="art-tags"><span class="tag concept">Not implemented</span><span class="tag">WebView2 host</span></div></header>
+      <div class="stage"><div class="popout-demo">
+        <aside class="outlook-pane"><div class="pane-topline"><b>Outlook · reservation pane</b><span class="sample-pill">CONCEPT</span></div><div class="pane-mail"><span class="tag">Current email</span><strong>Two rooms for October</strong>Morgan Vale · 10:42<br><br>Please send options for two standard queen rooms, 14–17 October, for two adults.<div class="concept-button">Open full workspace ↗</div><p style="font-size:7px;color:#9aa3af;margin-top:8px">Prototype control only — not wired to a window.</p></div></aside>
+        <div class="window-arrow">→</div>
+        <div class="popout-window"><div class="window-chrome"><span class="dots"><i></i><i></i><i></i></span><span>Northstar Sample · reservation workspace · same signed-in user</span><span>Concept</span></div><div class="window-inner"><div class="mail-grid"><aside class="folder-nav"><div class="nav-caption">Workspace</div><div class="folder active">Current email</div><div class="folder">Evidence</div><div class="folder">Proposed</div></aside><article class="reader"><div class="mail-tags"><span class="tag">Current inbound</span></div><h3 class="mail-subject">Two rooms for October</h3><div class="sender"><span class="avatar">MV</span><div class="sender-lines"><b>Morgan Vale</b><span>morgan@example.test</span></div></div><div class="email-body"><p>Two standard queen rooms, 14–17 October 2026, two adults.</p><div class="inline-note"><span class="note-mark">↳</span><span>Full-width email and evidence surface in the detached window.</span></div></div></article><aside class="proposed-rail"><div class="rail-head"><div><h4>Proposed</h4><p>Same user, same request</p></div><span class="count-pill">1 action</span></div><div class="action-card amber"><div class="action-top"><span class="action-icon">Q</span><span class="action-label"><b>Fetch stay quote</b><small>Illustrative action</small></span></div><div class="source-line"><span class="source-tag">CURRENT EMAIL</span><span>dates + room type</span></div></div><div class="rail-foot"><b>Concept only.</b> No second login, permission bypass, or cross-user session sharing.</div></aside></div></div></div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> today’s VSTO host has one WebView2 pane per Windows-user profile; this popout is not shipped.</span><span class="mini-status wait">Future concept</span></footer>
+    </section>
+
+    <section class="artboard" id="board-10">
+      <header class="art-head"><div class="art-title"><span class="art-num">10</span><div><h3>Flow C · one-page stay builder</h3><p>Email on the left, source-marked fields in the middle, honest readiness on the right.</p></div></div><div class="art-tags"><span class="tag">Core builder</span><span class="tag concept">No live quote or save</span></div></header>
+      <div class="stage"><div class="flow-frame">
+        <div class="flow-top"><div class="flow-title"><span class="brandmark">C</span><span><b>Flow C · Stay request</b><small>One page · from current inbound</small></span></div><div class="top-actions"><span class="tag">Synthetic request</span><span class="toolbar-button">← Back to email</span><span class="sample-pill">CONCEPT ONLY</span></div></div>
+        <div class="flow-layout">
+          <aside class="flow-source"><div class="flow-section-label">Source email</div><div class="source-card"><span class="tag">Current inbound</span><div class="source-subject">Two rooms for October</div><p>From Riley Sample · riley@example.test</p><div class="source-snippet">“One standard queen room from 14 October to 17 October 2026 for two adults, under Riley Sample.”</div><div class="source-key"><span>Selected source text</span><span class="source-tag">EMAIL · BODY</span></div></div><div class="inline-note"><span class="note-mark">i</span><span>Select any populated field to jump back to the sentence that supports it.</span></div><div class="source-card" style="margin-top:9px"><div class="flow-section-label" style="margin-bottom:5px">Page behavior</div><p>No wizard steps. Review and resolve this request on one screen.</p></div></aside>
+          <section class="flow-form"><h4>Build a stay request</h4><p class="form-sub">Extracted facts are marked; unsupported setup fields stay empty.</p><div class="form-grid">
+            <div class="form-group-title"><span>Guest</span><span class="mini-status ok">2 of 2 sourced</span></div>
+            <div class="field"><label>First name <span>Required</span></label><div class="field-value">Riley <span class="field-src">EMAIL</span></div></div>
+            <div class="field"><label>Last name <span>Required</span></label><div class="field-value">Sample <span class="field-src">EMAIL</span></div></div>
+            <div class="form-group-title"><span>Stay</span><span class="mini-status wait">1 unresolved</span></div>
+            <div class="field"><label>Arrival <span>Required</span></label><div class="field-value">14 Oct 2026 <span class="field-src">EMAIL</span></div></div>
+            <div class="field"><label>Departure <span>Required</span></label><div class="field-value">17 Oct 2026 <span class="field-src">EMAIL</span></div></div>
+            <div class="field"><label>Adults <span>Required</span></label><div class="field-value">2 <span class="field-src">EMAIL</span></div></div>
+            <div class="field"><label>Room type <span>Required</span></label><div class="field-value">Standard Queen <span class="field-src">EMAIL</span></div></div>
+            <div class="field"><label>Rate plan <span>Required</span></label><div class="field-value empty">Choose rate plan <span class="field-src missing">NEEDS INPUT</span></div></div>
+            <div class="form-group-title"><span>HMS setup</span><span class="mini-status wait">3 unresolved</span></div>
+            <div class="field"><label>Source of business <span>Required</span></label><div class="field-value empty">Choose source <span class="field-src missing">NEEDS INPUT</span></div></div>
+            <div class="field"><label>Track <span>Required</span></label><div class="field-value empty">Choose track <span class="field-src missing">NEEDS INPUT</span></div></div>
+            <div class="field"><label>Guarantee <span>Required at save</span></label><div class="field-value empty">Choose guarantee <span class="field-src missing">NEEDS INPUT</span></div></div>
+            <div class="field"><label>Room count <span>Optional</span></label><div class="field-value">1 <span class="field-src">EMAIL</span></div></div>
+          </div></section>
+          <aside class="flow-summary"><div class="flow-section-label">Readiness</div><div class="completion-ring">6 / 10</div><div class="summary-caption">required fields sourced</div><div style="margin-top:12px"><div class="check-row"><span class="check-icon">✓</span><span><b>6 fields</b> have email evidence.</span></div><div class="check-row"><span class="check-icon missing">!</span><span><b>4 choices</b> need a person. Do not infer them from “email.”</span></div><div class="check-row"><span class="check-icon missing">!</span><span><b>Guarantee</b> can be required by HMS even if the form omits an asterisk.</span></div><div class="check-row"><span class="check-icon">i</span><span><b>Price & availability</b> are not fetched on this page.</span></div></div><span class="disabled-action">Quote unavailable</span><span class="disabled-action">Save to HMS unavailable</span><div class="disabled-note">Prototype only · no live quote · no reservation write</div></aside>
+        </div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> one page, visible provenance, explicit missing requirements; no rate, confirmation, or write-success fiction.</span><span class="mini-status wait">Flow C assumption needs confirmation before build</span></footer>
+    </section>
+
+    <section class="artboard" id="board-11">
+      <header class="art-head"><div class="art-title"><span class="art-num">11</span><div><h3>Compact pane · preserve the hierarchy at 520 px</h3><p>Message first, expandable Proposed stack, and a clear path to the popout concept.</p></div></div><div class="art-tags"><span class="tag">Outlook pane</span><span class="tag">Responsive concept</span></div></header>
+      <div class="stage compact-wrap"><div class="compact-shell">
+        <div class="compact-top"><div class="brand-line"><span class="brandmark">N</span><b>Nava Reservations</b><span class="sample-pill">SAMPLE</span></div><span class="toolbar-button">•••</span></div>
+        <div class="compact-body"><div class="mail-tags"><span class="tag">Inbox</span><span class="tag">Current inbound</span></div><h4>Two rooms for October</h4><div class="sender"><span class="avatar">MV</span><div class="sender-lines"><b>Morgan Vale</b><span>morgan@example.test · 10:42</span></div></div><p>Please send options for two standard queen rooms, 14–17 October 2026, for two adults.</p><div class="source-line"><span class="source-tag">EMAIL BODY</span><span>4 supported facts · no rate present</span></div><div class="compact-actions"><div class="compact-actions-head"><b>Proposed</b><span class="count-pill">2 actions</span></div><div class="action-card teal"><div class="action-top"><span class="action-icon">F</span><span class="action-label"><b>Find reservation</b><small>Identify matching stay</small></span><span class="proposed-chip">PROPOSED</span></div></div><div class="action-card amber"><div class="action-top"><span class="action-icon">Q</span><span class="action-label"><b>Fetch stay quote</b><small>14–17 Oct · 2 queen rooms</small></span><span class="proposed-chip">PROPOSED</span></div></div></div><div class="concept-button">Open full workspace ↗ · concept only</div><div class="concept-strip" style="margin-top:10px">Current Outlook host is one pane per Windows-user profile. This compact layout is a design study, not a shipped popout.</div></div>
+      </div></div>
+      <footer class="board-foot"><span><strong>Design note:</strong> at pane width, keep message and action summary; move deep evidence to an explicit expansion.</span><span class="mini-status wait">Concept only</span></footer>
+    </section>
+
+    <div class="footer">Design artifact only. All people, property names, messages, references, dates, and counts are synthetic. Read alongside <a href="./2026-09-23-centurion-flow-c-shotgun-design.md">the design brief</a>. No app code, user screenshots, private corpus records, live quotes, or HMS writes are included.</div>
+  </main>
+</body>
+</html>
