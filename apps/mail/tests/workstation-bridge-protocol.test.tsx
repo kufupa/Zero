@@ -1,23 +1,153 @@
 /**
  * @vitest-environment happy-dom
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import {
   parseBridgeMessage,
   createBridgeRequest,
+  createOperationId,
   BRIDGE_PROTOCOL_VERSION,
+  AccountSummarySchema,
+  BridgeCapabilitiesSchema,
+  DeleteEmailResultSchema,
+  FolderEmailSummarySchema,
+  FolderEmailPageSchema,
+  FolderSummarySchema,
+  SendDraftResultSchema,
+  StoreSummarySchema,
   type WorkstationEmailPayload,
 } from '../lib/workstation/bridge-protocol';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { useOutlookBridge } from '../lib/workstation/use-outlook-bridge';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 describe('Workstation Bridge Protocol', () => {
+  it('uses protocol v3 and exposes the reusable mail action set', () => {
+    expect(BRIDGE_PROTOCOL_VERSION).toBe(3);
+    const actions = [
+      'GET_CAPABILITIES',
+      'LIST_STORES',
+      'LIST_FOLDERS',
+      'UPDATE_DRAFT',
+      'LIST_ACCOUNTS',
+      'SEND_DRAFT',
+      'DELETE_EMAIL',
+      'DELETE_EMAIL_PERMANENTLY',
+    ] as const;
+
+    for (const action of actions) {
+      expect(createBridgeRequest(action, {}).action).toBe(action);
+    }
+  });
+
+  it('parses store/folder/account records and IDs returned by the COM bridge', () => {
+    expect(
+      StoreSummarySchema.parse({ storeId: 'store-1', displayName: 'Reservations' }).storeId,
+    ).toBe('store-1');
+    expect(
+      FolderSummarySchema.parse({
+        storeId: 'store-1',
+        entryId: 'folder-1',
+        parentEntryId: 'root-1',
+        name: 'Inbox',
+        path: '\\Reservations\\Inbox',
+        depth: 1,
+      }).entryId,
+    ).toBe('folder-1');
+    expect(
+      AccountSummarySchema.parse({
+        smtpAddress: 'reservations@example.com',
+        displayName: 'Reservations',
+      }).smtpAddress,
+    ).toBe('reservations@example.com');
+    expect(
+      FolderEmailSummarySchema.parse({
+        entryId: 'mail-1',
+        storeId: 'store-1',
+        folderEntryId: 'folder-1',
+        subject: 'Availability',
+        senderName: 'Guest',
+        receivedTime: '2026-09-17T12:00:00Z',
+      }).storeId,
+    ).toBe('store-1');
+  });
+
+  it('parses capabilities and the native send/delete result contracts', () => {
+    const capabilities = BridgeCapabilitiesSchema.parse({
+      bridgeProtocolVersion: 3,
+      addinVersion: '1.0.9',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['SEND_DRAFT', 'DELETE_EMAIL'],
+    });
+    expect(capabilities.supportedActions).toContain('SEND_DRAFT');
+    expect(capabilities.outlookVersion).toBe('16.0');
+    expect(
+      SendDraftResultSchema.parse({
+        submitted: true,
+        usedDefaultAccount: false,
+        accountSmtpAddress: 'reservations@example.com',
+      }).submitted,
+    ).toBe(true);
+    expect(
+      SendDraftResultSchema.parse({
+        submitted: true,
+        usedDefaultAccount: true,
+        accountSmtpAddress: null,
+      }).usedDefaultAccount,
+    ).toBe(true);
+    expect(
+      DeleteEmailResultSchema.parse({
+        deleted: true,
+        permanent: true,
+        exchangeRetentionMayKeepRecoverableCopy: true,
+      }).permanent,
+    ).toBe(true);
+  });
+
   it('serializes a GET_ACTIVE_EMAIL request with protocol version', () => {
     const req = createBridgeRequest('GET_ACTIVE_EMAIL', {});
     expect(req.action).toBe('GET_ACTIVE_EMAIL');
     expect(req.version).toBe(BRIDGE_PROTOCOL_VERSION);
     expect(typeof req.requestId).toBe('string');
     expect(req.requestId.startsWith('req_')).toBe(true);
+  });
+
+  it('creates stable-operation identifiers distinct from transport request IDs', () => {
+    const operationId = createOperationId();
+    const request = createBridgeRequest('CREATE_DRAFT', { operationId });
+    expect(operationId).toBeTruthy();
+    expect(request.requestId).not.toBe(operationId);
+    expect(request.payload.operationId).toBe(operationId);
+  });
+
+  it('parses folder pages with stable continuation tokens', () => {
+    const page = FolderEmailPageSchema.parse({
+      items: [
+        {
+          entryId: 'mail-1',
+          storeId: 'store-1',
+          folderEntryId: 'folder-1',
+          subject: 'Availability',
+          senderName: 'Guest',
+          receivedTime: '2026-09-17T12:00:00Z',
+        },
+      ],
+      continuationToken: 'snapshot-1:200',
+      snapshotTruncated: false,
+      totalItems: 450,
+      storeId: 'store-1',
+      folderEntryId: 'folder-1',
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.continuationToken).toBe('snapshot-1:200');
+    expect(page.storeId).toBe('store-1');
   });
 
   it('parses a valid email payload from C# bridge with headers', () => {
@@ -52,18 +182,20 @@ describe('Workstation Bridge Protocol', () => {
 });
 
 function BridgeProbe() {
-  const { isConnected, activeEmail } = useOutlookBridge();
+  const { isConnected, activeEmail, workstationInfo, supportsAction } = useOutlookBridge();
   return (
     <div>
       <span data-testid="connected">{isConnected ? 'yes' : 'no'}</span>
       <span data-testid="subject">{activeEmail?.subject ?? ''}</span>
+      <span data-testid="protocol">{workstationInfo?.bridgeProtocolVersion ?? ''}</span>
+      <span data-testid="send-supported">{supportsAction('SEND_DRAFT') ? 'yes' : 'no'}</span>
     </div>
   );
 }
 
-describe('useOutlookBridge selection events', () => {
-  const listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
+const listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
 
+describe('useOutlookBridge selection events', () => {
   beforeEach(() => {
     listeners.clear();
     window.chrome = {
@@ -88,6 +220,84 @@ describe('useOutlookBridge selection events', () => {
   afterEach(() => {
     cleanup();
     delete window.chrome;
+  });
+
+  it('discovers protocol v3 capabilities before exposing active Outlook data', async () => {
+    render(<BridgeProbe />);
+
+    const ping = await waitForBridgeRequest('PING');
+    respondToBridgeRequest(ping, {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.9',
+      bridgeProtocolVersion: 3,
+    });
+
+    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
+    respondToBridgeRequest(capabilitiesRequest, {
+      bridgeProtocolVersion: 3,
+      addinVersion: '1.0.9',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['PING', 'GET_CAPABILITIES', 'SEND_DRAFT'],
+    });
+
+    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    respondToBridgeRequest(activeEmailRequest, {
+      entryId: 'mail-1',
+      subject: 'Availability',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17T12:00:00Z',
+      bodyText: 'Can you host us?',
+      bodyHtml: '<p>Can you host us?</p>',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connected').textContent).toBe('yes');
+      expect(screen.getByTestId('protocol').textContent).toBe('3');
+      expect(screen.getByTestId('send-supported').textContent).toBe('yes');
+    });
+  });
+
+  it('keeps protocol v2 connected but reports that v3 actions are unsupported', async () => {
+    render(<BridgeProbe />);
+
+    const ping = await waitForBridgeRequest('PING');
+    respondToBridgeRequest(ping, {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.8',
+      bridgeProtocolVersion: 2,
+    });
+
+    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
+    respondToBridgeRequest(capabilitiesRequest, null, false);
+
+    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    respondToBridgeRequest(activeEmailRequest, {
+      entryId: 'mail-1',
+      subject: 'Availability',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17T12:00:00Z',
+      bodyText: 'Can you host us?',
+      bodyHtml: '<p>Can you host us?</p>',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connected').textContent).toBe('yes');
+      expect(screen.getByTestId('protocol').textContent).toBe('2');
+      expect(screen.getByTestId('send-supported').textContent).toBe('no');
+    });
   });
 
   it('updates active email on ON_SELECTION_CHANGED events with evt_ ids', async () => {
@@ -141,3 +351,35 @@ describe('useOutlookBridge selection events', () => {
     });
   });
 });
+
+type TestBridgeRequest = { requestId: string; action: string };
+
+async function waitForBridgeRequest(action: string): Promise<TestBridgeRequest> {
+  let request: TestBridgeRequest | undefined;
+  await waitFor(() => {
+    const postMessage = window.chrome?.webview?.postMessage as unknown as {
+      mock: { calls: Array<[unknown]> };
+    };
+    request = postMessage.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest)
+      .find((candidate) => candidate.action === action);
+    expect(request).toBeDefined();
+  });
+  return request!;
+}
+
+function respondToBridgeRequest(request: TestBridgeRequest, data: unknown, success = true): void {
+  const response = JSON.stringify({
+    requestId: request.requestId,
+    version: 1,
+    action: request.action,
+    success,
+    data,
+    ...(success ? {} : { error: 'Unknown action: ' + request.action }),
+  });
+  act(() => {
+    for (const listener of listeners.get('message') ?? []) {
+      listener({ data: response });
+    }
+  });
+}

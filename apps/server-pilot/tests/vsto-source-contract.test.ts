@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
+import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const vstoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,6 +21,10 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
       'ThisAddIn.Designer.cs',
       'TaskPaneControl.cs',
       'OutlookBridgeDispatcher.cs',
+      'OutlookMailOperations.cs',
+      'OutlookFolderEmailSnapshotStore.cs',
+      'OutlookMailOperationPolicy.cs',
+      'OutlookBridgeOperationCache.cs',
       'NavaRibbon.cs',
       'NavaOutlookAddin.csproj',
     ]) {
@@ -145,9 +149,7 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
     const source = read('ThisAddIn.cs');
     expect(source).toMatch(/CustomTaskPanes\.Add\([\s\S]*explorer/);
     expect(source).toContain('NewExplorer');
-    expect(source).not.toMatch(
-      /CustomTaskPanes\.Add\(_control,\s*"Nava AI Reservationist"\s*\)/,
-    );
+    expect(source).not.toMatch(/CustomTaskPanes\.Add\(_control,\s*"Nava AI Reservationist"\s*\)/);
     expect(source).toMatch(/void AttachPane\(Outlook\.Explorer explorer/);
     expect(source).toMatch(/Explorers_NewExplorer[\s\S]*AttachPane\(explorer/);
     expect(source).not.toMatch(
@@ -155,12 +157,17 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
     );
   });
 
-  it('pins the Inno installer version to 1.0.8', () => {
-    const iss = readFileSync(
-      path.resolve(vstoRoot, '../installer/setup.iss'),
-      'utf8',
+  it('pins the Inno installer version to 1.0.9', () => {
+    const iss = readFileSync(path.resolve(vstoRoot, '../installer/setup.iss'), 'utf8');
+    expect(iss).toContain('AppVersion=1.0.9');
+  });
+
+  it('compiles the typed mail operations into the installed VSTO assembly', () => {
+    const csproj = read('NavaOutlookAddin.csproj');
+    expect(csproj).toContain('Compile Include="OutlookMailOperations.cs"');
+    expect(read('OutlookMailOperations.cs')).toContain(
+      'public partial class OutlookBridgeDispatcher',
     );
-    expect(iss).toContain('AppVersion=1.0.8');
   });
 
   it('fails the Windows build when the WebView2 bootstrapper is missing', () => {
@@ -192,14 +199,12 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
     expect(source).toContain('runtimes');
     expect(source).toMatch(/File\.Copy\(src, dest/);
     expect(source).toContain('NavaOutlookAddin');
-    expect(source).not.toMatch(
-      /string src = Path\.Combine\(dir, "runtimes"/,
-    );
+    expect(source).not.toMatch(/string src = Path\.Combine\(dir, "runtimes"/);
   });
 
-  it('exposes protocol v2 enterprise actions for templates, attachments, and triage', () => {
+  it('exposes protocol v3 enterprise actions for templates, attachments, and triage', () => {
     const source = read('OutlookBridgeDispatcher.cs');
-    expect(source).toContain('BRIDGE_VERSION = 2');
+    expect(source).toContain('BRIDGE_VERSION = 3');
     for (const action of [
       'LIST_TEMPLATES',
       'GET_TEMPLATE_CONTENT',
@@ -220,5 +225,187 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
     expect(source).toContain('SaveAsFile');
     expect(source).toContain('ToBase64String');
   });
-});
 
+  it('exposes reusable, store-aware mail operations in protocol v3', () => {
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    const source = dispatcher + read('OutlookMailOperations.cs');
+    expect(dispatcher).toContain('BRIDGE_VERSION = 3');
+    for (const action of [
+      'GET_CAPABILITIES',
+      'LIST_STORES',
+      'LIST_FOLDERS',
+      'UPDATE_DRAFT',
+      'LIST_ACCOUNTS',
+      'SEND_DRAFT',
+      'DELETE_EMAIL',
+      'DELETE_EMAIL_PERMANENTLY',
+    ]) {
+      expect(dispatcher).toContain(`case "${action}":`);
+    }
+    expect(source).toContain('GetFolderFromID');
+    expect(source).toContain('GetItemFromID(entryId, storeId)');
+    expect(source).toContain('MaxPageSize = 200');
+    expect(source).toContain('continuationToken');
+    expect(source).toContain('OutlookFolderEmailSnapshotStore');
+    expect(source).not.toContain('skipped < firstIndex');
+    expect(source).toContain('targetFolderEntryId or folderName is required');
+    expect(source).toContain('confirmPermanentDelete');
+    expect(source).toContain('SendUsingAccount');
+    expect(source).toContain('replyAll');
+    expect(source).toContain('openInComposer');
+  });
+
+  it('requires a saved draft before sending and gates permanent deletion', () => {
+    const source = read('OutlookBridgeDispatcher.cs') + read('OutlookMailOperations.cs');
+    expect(source).toContain('EnsureItemIsInDraftsFolder');
+    expect(source).toContain('confirmPermanentDelete');
+    expect(source).toContain('EnsureItemIsInDeletedItemsFolder');
+  });
+
+  it('stores new and reply drafts in the requested Outlook store Drafts folder', () => {
+    const source = read('OutlookMailOperations.cs');
+    expect(source).toContain('MoveDraftToStore(reply, PayloadString(payload, "storeId"))');
+    const createDraft = source.slice(
+      source.indexOf('public Dictionary<string, object> CreateDraft('),
+      source.indexOf('public Dictionary<string, object> UpdateDraft('),
+    );
+    const createReplyDraft = source.slice(
+      source.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+      source.indexOf('private Outlook.MailItem MoveDraftToStore('),
+    );
+    expect(createDraft.indexOf('ResolveDraftsFolder')).toBeGreaterThanOrEqual(0);
+    expect(createDraft.indexOf('ResolveDraftsFolder')).toBeLessThan(
+      createDraft.indexOf('CreateDraftInFolder'),
+    );
+    expect(createReplyDraft.indexOf('ResolveDraftsFolder')).toBeLessThan(
+      createReplyDraft.indexOf('original.Reply'),
+    );
+    expect(source).toContain('draftPlacementWarning');
+  });
+
+  it('uses a shared folder-alias mapper for default and selected stores', () => {
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    const operations = read('OutlookMailOperations.cs');
+    expect(dispatcher).toContain('TryGetDefaultFolderType(key, out');
+    expect(operations).toContain('TryGetDefaultFolderType(key, out');
+    expect(dispatcher + operations).toContain('private static bool TryGetDefaultFolderType');
+  });
+
+  it('uses a bounded immutable folder snapshot and cursor instead of live offsets', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const snapshots = read('OutlookFolderEmailSnapshotStore.cs');
+    expect(operations).toContain('_folderEmailSnapshots.CreatePage');
+    expect(operations).toContain('_folderEmailSnapshots.GetPage');
+    expect(operations).toContain('continuationToken');
+    expect(operations).not.toContain('skipped < firstIndex');
+    expect(snapshots).toContain('MaxSnapshotItems = 5000');
+    expect(snapshots).toContain('snapshotTruncated');
+  });
+
+  it('requires explicit account selection and skips non-SMTP accounts', () => {
+    const source = read('OutlookMailOperations.cs');
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    expect(source).toContain('if (string.IsNullOrWhiteSpace(smtpAddress)) continue;');
+    expect(source).toContain('OutlookMailOperationPolicy.EnsureSendAccountSelection');
+    expect(source).toContain('useDefaultAccount');
+    expect(source).toContain('submitted');
+    expect(source).not.toContain('{ "sent", true }');
+    expect(source).toContain('catch (System.Exception)');
+    expect(dispatcher).toContain('_operationCache.TryGet');
+    expect(dispatcher).toContain('_operationCache.StoreCompleted');
+    expect(dispatcher).toContain('operationId');
+  });
+
+  it('runs pure bridge policy and snapshot tests in the Windows build', () => {
+    const workflow = readFileSync(
+      path.resolve(vstoRoot, '../.github/workflows/outlook-vsto.yml'),
+      'utf8',
+    );
+    const tests = readFileSync(path.resolve(vstoRoot, '../tests/BridgePolicyTests.cs'), 'utf8');
+    expect(workflow).toContain('Run Outlook bridge policy tests');
+    expect(workflow).toContain('BridgePolicyTests.cs');
+    expect(tests).toContain('VerifyFolderPagingSurvivesSourceMutation');
+    expect(tests).toContain('VerifyPermanentDeleteRequiresConfirmationAndDeletedItems');
+  });
+
+  it('includes Outlook mail subclasses when paging folders', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    const source = operations + dispatcher;
+    expect(dispatcher).toContain(
+      'MAIL_ITEM_CLASS_FILTER = "@SQL=\\\"https://schemas.microsoft.com/mapi/proptag/0x001A001F\\\" LIKE \'IPM.Note%\'"',
+    );
+    expect(operations).toContain('GetTable(MAIL_ITEM_CLASS_FILTER,');
+    expect(source).not.toContain("[MessageClass] LIKE 'IPM.Note*'");
+    expect(source).not.toContain("[MessageClass] = 'IPM.Note'");
+  });
+
+  it('resolves conversation rows through Outlook Conversation.GetTable and store IDs', () => {
+    const source = read('OutlookBridgeDispatcher.cs');
+    const methodStart = source.indexOf(
+      'public List<Dictionary<string, object>> GetConversationThread(',
+    );
+    const methodEnd = source.indexOf(
+      '\n        private Outlook.MailItem ResolveMailItem',
+      methodStart,
+    );
+    const method = source.slice(methodStart, methodEnd);
+
+    expect(source).toContain('PR_STORE_ENTRYID');
+    expect(method).toContain('.GetConversation()');
+    expect(method).toContain('.GetTable()');
+    expect(method).toContain('row.BinaryToString(PR_STORE_ENTRYID)');
+    expect(method).toContain(
+      'ResolveMailItem(PayloadString(payload, "entryId"), PayloadString(payload, "storeId"))',
+    );
+    expect(method).toContain('session.GetItemFromID(rowEntryId, rowStoreId)');
+    expect(method).toContain('GetMailLocation(mail)');
+    expect(method).toContain('item is Outlook.MailItem mail');
+    expect(method).toContain('list.Count < maxResults');
+    expect(method).not.toContain('folder.GetTable(');
+    expect(method).not.toContain('columns.Add("ConversationID")');
+  });
+
+  it('clears Outlook Table default columns before adding the requested mail fields', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    expect(operations).toMatch(/columns = table\.Columns;\s*columns\.RemoveAll\(\);/);
+    expect(dispatcher).toMatch(/columns = table\.Columns;\s*columns\.RemoveAll\(\);/);
+  });
+
+  it('requires both the active WebView page and message sender to be trusted', () => {
+    const source = read('TaskPaneControl.cs');
+    expect(source).toContain('AreBridgeMessageOriginsTrusted');
+    expect(source).toMatch(
+      /IsTrustedPaneOrigin\(currentPageUri\)\s*&&\s*IsTrustedPaneOrigin\(messageSourceUri\)/,
+    );
+    expect(source).toContain('parsed.IsDefaultPort');
+    expect(source).not.toMatch(
+      /!IsTrustedPaneOrigin\(_webView\?\.Source\?\.ToString\(\) \?\? ""\)\s*&&/,
+    );
+  });
+
+  it('keeps installer, add-in assembly, and bridge product versions aligned', () => {
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    const assembly = read('Properties/AssemblyInfo.cs');
+    const iss = readFileSync(path.resolve(vstoRoot, '../installer/setup.iss'), 'utf8');
+    const workflow = readFileSync(
+      path.resolve(vstoRoot, '../.github/workflows/outlook-vsto.yml'),
+      'utf8',
+    );
+
+    expect(dispatcher).toContain('{ "version", ADDIN_VERSION }');
+    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.9"');
+    expect(assembly).toContain('AssemblyVersion("1.0.9.0")');
+    expect(assembly).toContain('AssemblyFileVersion("1.0.9.0")');
+    expect(iss).toContain('AppVersion=1.0.9');
+    expect(workflow).toContain('-Version 1.0.9.0');
+  });
+
+  it('documents Office LTSC 2024 as a 16.0 but unverified runtime target', () => {
+    const readme = readFileSync(path.resolve(vstoRoot, '../README.md'), 'utf8');
+    expect(readme).toContain('Office LTSC 2024');
+    expect(readme).toContain('not been runtime-verified');
+    expect(readme).toContain('16.0');
+  });
+});
