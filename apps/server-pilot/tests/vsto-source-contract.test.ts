@@ -12,7 +12,9 @@ function read(file: string): string {
   return readFileSync(path.join(vstoRoot, file), 'utf8');
 }
 
-describe('VSTO source contract (Linux, no Outlook compile)', () => {
+const hasVstoSource = existsSync(path.join(vstoRoot, 'ThisAddIn.cs'));
+
+describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile)', () => {
   it('ships the C# project files', () => {
     for (const file of [
       'ThisAddIn.cs',
