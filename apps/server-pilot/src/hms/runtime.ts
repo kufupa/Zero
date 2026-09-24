@@ -19,6 +19,10 @@ import {
   type PolicyRoute,
 } from './request-policy.js';
 import {
+  buildNarrowRequestProjection,
+  type NarrowRequestProjection,
+} from './request-signature-projection.js';
+import {
   HmsBrowserArtifactError,
   HMS_BROWSER_CAPACITY_WATCHDOG_MS,
   HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES,
@@ -92,6 +96,15 @@ export type HmsPageVideo = {
   path(): Promise<string>;
 };
 
+/**
+ * Opt-in response bounds for the small number of reviewed browser form reads.
+ * The bounded native path is deliberately separate from legacy postForm calls.
+ */
+export type HmsPostFormResponseBounds = Readonly<{
+  maxBytes: number;
+  timeoutMs: number;
+}>;
+
 export type HmsPage = {
   goto(
     url: string,
@@ -114,7 +127,16 @@ export type HmsPage = {
    * Returns response body text. Live Playwright must not replace the SPA via
    * setContent — that destroys ExtJS and can trigger login form navigations.
    */
-  postForm(url: string, fields: Record<string, string>): Promise<string>;
+  postForm(
+    url: string,
+    fields: Record<string, string>,
+    responseBounds?: HmsPostFormResponseBounds,
+  ): Promise<string>;
+  /**
+   * Optional JSON POST through the same context route policy. Implementations
+   * must use the page's authenticated context; no API-request fallback/retry.
+   */
+  postJson?(url: string, body: Record<string, unknown>): Promise<string>;
   click(selector: string): Promise<void>;
   /** Constrained dblclick — selector must be a reviewed static string. */
   dblclick(selector: string): Promise<void>;
@@ -269,6 +291,14 @@ export type HmsRuntimeOptions = {
   /** Role-proof path — revalidated before every context creation when set. */
   roleProofPath?: string;
   loadRoleProof?: HmsRoleProofLoader;
+  /**
+   * Narrow private proof-binding seam for connected runs. It is invoked for
+   * each supplied session authorization before a proof context is created and
+   * again after authentication. Undefined preserves fixture runtimes.
+   */
+  validateSessionAuthorization?: (
+    authorization: import('./release-kernel.js').HmsSessionAuthorization,
+  ) => Promise<void> | void;
   /** Health heartbeat interval (ms). Default 10s when healthStatusPath set. */
   healthHeartbeatMs?: number;
   /** Stale threshold written into health JSON. Default 30s. */
@@ -299,6 +329,18 @@ export type HmsRuntimeOptions = {
    * per-tool HmsSessionAuthorization (never process-wide Guest Stay alone).
    */
   requireSessionAuthorization?: boolean;
+  /**
+   * Reuse a validated authenticated storage state between serialized read
+   * sessions. The proof context remains fresh per call; only the login is
+   * reused. Disabled by default for isolated fixture/proof tests.
+   */
+  reuseAuthenticatedStorageState?: boolean;
+  /**
+   * Development-only request projection invoked synchronously before policy
+   * continuation/abort. It receives names, reviewed transport values and
+   * digests only; callback failure never changes the policy decision.
+   */
+  onRequestProjection?: (projection: NarrowRequestProjection) => void;
 };
 
 export const HEALTH_HEARTBEAT_MS = 10_000;
@@ -573,6 +615,48 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type LoginTimingPhase =
+  | 'login_goto'
+  | 'login_fill'
+  | 'login_submit'
+  | 'wait_authenticated_shell'
+  | 'verify_property';
+type LoginTimingBranch = 'userid' | 'label' | 'username' | 'button' | 'enter';
+
+function emitLoginTiming(
+  phase: LoginTimingPhase,
+  startedAt: number,
+  selectorBranch?: LoginTimingBranch,
+): void {
+  if (process.env.HMS_PROOF_DIAGNOSTICS !== '1') return;
+  try {
+    process.stderr.write(
+      `${JSON.stringify({
+        type: 'HMS_PROOF_DIAGNOSTIC',
+        stage: 'login_timing',
+        phase,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        ...(selectorBranch ? { selectorBranch } : {}),
+      })}\n`,
+    );
+  } catch {
+    // Diagnostics must never change the login result or mask its error.
+  }
+}
+
+async function gotoLoginWithTiming(
+  page: HmsPage,
+  url: string,
+  timeout: number,
+): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await page.goto(url, { timeout });
+  } finally {
+    emitLoginTiming('login_goto', startedAt);
+  }
+}
+
 function isNavigationRaceError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /navigat|Execution context was destroyed|changing the content|Target closed/i.test(
@@ -634,6 +718,22 @@ export function looksLikeUnauthenticatedLoginPage(
  * immediately. Poll until tenant+propertyCode extractable or budget exhausted.
  */
 export async function waitForAuthenticatedShell(
+  page: HmsPage,
+  secret: Pick<
+    HmsSecret,
+    'expectedTenant' | 'expectedPropertyCode' | 'expectedPropertyName'
+  >,
+  timeoutMs: number,
+): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await waitForAuthenticatedShellCore(page, secret, timeoutMs);
+  } finally {
+    emitLoginTiming('wait_authenticated_shell', startedAt);
+  }
+}
+
+async function waitForAuthenticatedShellCore(
   page: HmsPage,
   secret: Pick<
     HmsSecret,
@@ -805,8 +905,18 @@ export function createFetchBrowserFactory(
         this.ctx.markAuthenticated();
       }
 
-      async postForm(url: string, fields: Record<string, string>) {
+      async postForm(
+        url: string,
+        fields: Record<string, string>,
+        responseBounds?: HmsPostFormResponseBounds,
+      ) {
         this.#assertOpen();
+        if (responseBounds) {
+          throw new HmsRuntimeError(
+            'SOURCE_UNAVAILABLE',
+            'bounded form reads require native browser transport',
+          );
+        }
         const postData = new URLSearchParams(fields).toString();
         const path = new URL(url).pathname;
         const resourceType = path.includes('/web/') ? 'xhr' : 'document';
@@ -835,6 +945,39 @@ export function createFetchBrowserFactory(
         if (loc) {
           await this.goto(new URL(loc, url).toString());
           return this.#html;
+        }
+        this.#html = await res.text();
+        this.#url = url;
+        return this.#html;
+      }
+
+      async postJson(url: string, body: Record<string, unknown>) {
+        this.#assertOpen();
+        const postData = JSON.stringify(body);
+        const decision = await this.ctx.dispatchRoute({
+          url,
+          method: 'POST',
+          resourceType: 'xhr',
+          headers: { 'content-type': 'application/json' },
+          postData,
+        });
+        if (decision?.action === 'block') {
+          throw new HmsRuntimeError(
+            decision.code,
+            `post blocked: ${decision.code}`,
+          );
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: postData,
+          redirect: 'manual',
+        });
+        if (res.status < 200 || res.status >= 300 || res.type === 'opaqueredirect') {
+          throw new HmsRuntimeError(
+            'SOURCE_UNAVAILABLE',
+            'JSON response status/type rejected',
+          );
         }
         this.#html = await res.text();
         this.#url = url;
@@ -1202,6 +1345,9 @@ function createHmsRuntimeInternal(
 
   let browser: HmsBrowser | null = null;
   let cachedSecret: HmsSecret | null = null;
+  let cachedAuthenticatedStorageState: HmsStorageState | null = null;
+  let cachedAuthenticatedLandingUrl: string | null = null;
+  const reuseAuthenticatedStorageState = options.reuseAuthenticatedStorageState === true;
   let browserLaunches = 0;
   let contextsCreated = 0;
   let contextsClosed = 0;
@@ -1314,6 +1460,8 @@ function createHmsRuntimeInternal(
     state = 'degraded';
     lastErrorCode = 'AUDIT_CAPTURE';
     cachedSecret = null;
+    cachedAuthenticatedStorageState = null;
+    cachedAuthenticatedLandingUrl = null;
     stopHeartbeat();
     stopArtifactPurge();
     const failedBrowser = browser;
@@ -1497,7 +1645,7 @@ function createHmsRuntimeInternal(
     circuitOpenedAt = Date.now();
   }
 
-  async function verifyProperty(
+  async function verifyPropertyCore(
     page: HmsPage,
     secret: HmsSecret,
   ): Promise<void> {
@@ -1540,6 +1688,18 @@ function createHmsRuntimeInternal(
         ? lastNavErr.message.slice(0, 120)
         : 'property verify interrupted by navigation',
     );
+  }
+
+  async function verifyProperty(
+    page: HmsPage,
+    secret: HmsSecret,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await verifyPropertyCore(page, secret);
+    } finally {
+      emitLoginTiming('verify_property', startedAt);
+    }
   }
 
   /**
@@ -1689,6 +1849,18 @@ function createHmsRuntimeInternal(
           'ROLE_PROOF_EXPIRED',
           'session authorization expired',
         );
+      }
+      if (options.validateSessionAuthorization) {
+        try {
+          await options.validateSessionAuthorization(auth);
+        } catch (err) {
+          if (err instanceof HmsRuntimeError) throw err;
+          const code =
+            err && typeof err === 'object' && 'code' in err && typeof err.code === 'string'
+              ? err.code
+              : 'ROLE_SCOPE_INVALID';
+          throw new HmsRuntimeError(code, redactError(err));
+        }
       }
       const loader = options.loadRoleProof;
       if (loader) {
@@ -2613,6 +2785,22 @@ function createHmsRuntimeInternal(
       });
 
       await guardedContext.route('**/*', async (route) => {
+        try {
+          const request = route.request();
+          options.onRequestProjection?.(
+            buildNarrowRequestProjection({
+              kind: 'runtime-request-projection',
+              url: request.url(),
+              method: request.method(),
+              resourceType: request.resourceType(),
+              rawBody: request.postData(),
+              headers: request.headers(),
+            }),
+          );
+        } catch {
+          // Diagnostics are advisory; never let projection failure bypass the
+          // fail-closed request policy below.
+        }
         const decision = await enforceRequestPolicy(route, sessionManifest, {
           onDecision: (d) => {
             if (d.action === 'allow' && d.ruleId) {
@@ -2821,9 +3009,11 @@ function createHmsRuntimeInternal(
         primaryPage = page;
         page.setDefaultTimeout(timeoutMs);
         page.setDefaultNavigationTimeout(timeoutMs);
-        await page.goto(secret.loginUrl, {
-          timeout: remainingBudgetMs(input.signal, timeoutMs),
-        });
+        await gotoLoginWithTiming(
+          page,
+          secret.loginUrl,
+          remainingBudgetMs(input.signal, timeoutMs),
+        );
         await page.fillLogin(secret.username, secret.password);
         await page.submitLogin();
         await waitForAuthenticatedShell(
@@ -2832,6 +3022,7 @@ function createHmsRuntimeInternal(
           remainingBudgetMs(input.signal, timeoutMs),
         );
         await verifyProperty(page, secret);
+        await revalidateSessionAuthorization();
 
         if (capture) {
           const skipTrace = process.env.HMS_PROOF_SOFT_TRACE_FINALIZE === '1';
@@ -2939,58 +3130,91 @@ function createHmsRuntimeInternal(
         };
       }
 
-      const auth = await awaitContextCreationForSetup(
-        beginAuthContextCreation(async () => {
-        assertNotAborted(input.signal);
-        assertDeadline(input.signal);
-        if (terminal || closing) {
+      let storageState: HmsStorageState | null = reuseAuthenticatedStorageState
+        ? cachedAuthenticatedStorageState
+        : null;
+      let landingUrl: string | null = reuseAuthenticatedStorageState
+        ? cachedAuthenticatedLandingUrl
+        : null;
+
+      // Production read calls are serialized by sessionSemaphore. Reuse only
+      // the native state captured after a successful, property-verified login;
+      // the proof context and page remain fresh for every call. A failed proof
+      // clears this cache in the outer catch, so the next call logs in again.
+      if (!storageState || !landingUrl) {
+        const auth = await awaitContextCreationForSetup(
+          beginAuthContextCreation(async () => {
+            assertNotAborted(input.signal);
+            assertDeadline(input.signal);
+            if (terminal || closing) {
+              throw new HmsRuntimeError('aborted', 'HMS operation aborted');
+            }
+            return b.newContext(contextCreationOptions());
+          }),
+        );
+        if (input.signal.aborted || terminal || closing) {
+          await closeAuthContext();
           throw new HmsRuntimeError('aborted', 'HMS operation aborted');
         }
-        return b.newContext(contextCreationOptions());
-        }),
-      );
-      if (input.signal.aborted || terminal || closing) {
-        await closeAuthContext();
-        throw new HmsRuntimeError('aborted', 'HMS operation aborted');
-      }
-      await installContextGuards(auth);
-      assertNotAborted(input.signal);
-      assertDeadline(input.signal);
-      const authPage = await auth.newPage();
-      authPage.setDefaultTimeout(timeoutMs);
-      authPage.setDefaultNavigationTimeout(timeoutMs);
-      await authPage.goto(secret.loginUrl, {
-        timeout: remainingBudgetMs(input.signal, timeoutMs),
-      });
-      await authPage.fillLogin(secret.username, secret.password);
-      await authPage.submitLogin();
-      await waitForAuthenticatedShell(
-        authPage,
-        secret,
-        remainingBudgetMs(input.signal, timeoutMs),
-      );
-      await verifyProperty(authPage, secret);
+        await installContextGuards(auth);
+        assertNotAborted(input.signal);
+        assertDeadline(input.signal);
+        const authPage = await auth.newPage();
+        authPage.setDefaultTimeout(timeoutMs);
+        authPage.setDefaultNavigationTimeout(timeoutMs);
+        await gotoLoginWithTiming(
+          authPage,
+          secret.loginUrl,
+          remainingBudgetMs(input.signal, timeoutMs),
+        );
+        await authPage.fillLogin(secret.username, secret.password);
+        await authPage.submitLogin();
+        await waitForAuthenticatedShell(
+          authPage,
+          secret,
+          remainingBudgetMs(input.signal, timeoutMs),
+        );
+        await verifyProperty(authPage, secret);
 
-      const landingUrl = authPage.url();
-      if (!landingUrl || new URL(landingUrl).origin !== new URL(secret.loginUrl).origin) {
+        const authenticatedLandingUrl = authPage.url();
+        if (
+          !authenticatedLandingUrl ||
+          new URL(authenticatedLandingUrl).origin !== new URL(secret.loginUrl).origin
+        ) {
+          throw new HmsRuntimeError(
+            'AUTH_STATE_NOT_PORTABLE',
+            'authenticated landing URL is not same-origin',
+          );
+        }
+        let authenticatedStorageState: HmsStorageState;
+        try {
+          authenticatedStorageState = await auth.storageState();
+        } catch {
+          throw new HmsRuntimeError(
+            'AUTH_STATE_UNAVAILABLE',
+            'native storage state unavailable',
+          );
+        }
+        if (
+          authenticatedStorageState === null ||
+          typeof authenticatedStorageState !== 'object'
+        ) {
+          throw new HmsRuntimeError(
+            'AUTH_STATE_NOT_PORTABLE',
+            'native storage state is not portable',
+          );
+        }
+        storageState = authenticatedStorageState;
+        landingUrl = authenticatedLandingUrl;
+        if (reuseAuthenticatedStorageState) {
+          cachedAuthenticatedStorageState = authenticatedStorageState;
+          cachedAuthenticatedLandingUrl = authenticatedLandingUrl;
+        }
+      }
+      if (!storageState || !landingUrl) {
         throw new HmsRuntimeError(
           'AUTH_STATE_NOT_PORTABLE',
-          'authenticated landing URL is not same-origin',
-        );
-      }
-      let storageState: HmsStorageState;
-      try {
-        storageState = await auth.storageState();
-      } catch {
-        throw new HmsRuntimeError(
-          'AUTH_STATE_UNAVAILABLE',
-          'native storage state unavailable',
-        );
-      }
-      if (storageState === null || typeof storageState !== 'object') {
-        throw new HmsRuntimeError(
-          'AUTH_STATE_NOT_PORTABLE',
-          'native storage state is not portable',
+          'authenticated storage state unavailable',
         );
       }
       if (capture) {
@@ -3239,6 +3463,8 @@ function createHmsRuntimeInternal(
         lastErrorCode = code;
       }
       cachedSecret = null;
+      cachedAuthenticatedStorageState = null;
+      cachedAuthenticatedLandingUrl = null;
       if (teardownError) {
         state = state === 'circuit_open' ? state : 'degraded';
         lastErrorCode = 'AUDIT_CAPTURE';
@@ -3325,6 +3551,8 @@ function createHmsRuntimeInternal(
       started = false;
       state = 'stopped';
       cachedSecret = null;
+      cachedAuthenticatedStorageState = null;
+      cachedAuthenticatedLandingUrl = null;
       stopHeartbeat();
       stopArtifactPurge();
       await artifactPurgeQueue;
@@ -3413,11 +3641,19 @@ export function createHmsLiveProofRuntime(
 }
 
 /** Required Playwright factory — production composition must use this (or equivalent). */
-export function createPlaywrightBrowserFactory(): BrowserFactory {
+export function createPlaywrightBrowserFactory(options: {
+  /** Trusted development composition only; normal callers use Chromium launch. */
+  launchBrowser?: (options: {
+    executablePath?: string;
+    headless: boolean;
+    tracesDir?: string;
+  }) => Promise<Pick<import('playwright').Browser, 'newContext' | 'close'>>;
+} = {}): BrowserFactory {
   return async ({ executablePath, signal, tracesDir }) => {
     assertNotAborted(signal ?? new AbortController().signal);
     const pw = await import('playwright');
-    const browser = await pw.chromium.launch({
+    const launch = options.launchBrowser ?? ((input) => pw.chromium.launch(input));
+    const browser = await launch({
       executablePath,
       headless: true,
       ...(tracesDir ? { tracesDir } : {}),
@@ -3527,6 +3763,99 @@ export async function tryCreatePlaywrightBrowserFactory(): Promise<BrowserFactor
   }
 }
 
+const NATIVE_NOTES_INQUIRY_PATH = '/api/booking/HRCEN/notesInquiry';
+// Keep native transport bound equal to notes-inquiry-read-facade source bound.
+const NATIVE_NOTES_INQUIRY_MAX_BYTES = 32 * 1024;
+const NATIVE_NOTES_INQUIRY_TIMEOUT_MS = 8_000;
+const NATIVE_TRACES_FORM_PATH = '/web/base/OSRESV.TRC';
+const NATIVE_FOLIO_FORM_PATHS = [
+  '/web/base/OSRESV.FOL',
+  '/web/base/OSRESV.FOL.xmlhttp',
+  '/web/base/GETCACHE',
+] as const;
+const NATIVE_BOUNDED_FORM_PATHS = [
+  NATIVE_TRACES_FORM_PATH,
+  ...NATIVE_FOLIO_FORM_PATHS,
+] as const;
+const NATIVE_BOUNDED_RESPONSE_MAX_BYTES = 32 * 1024;
+const NATIVE_FOLIO_BOUNDED_RESPONSE_MAX_BYTES = 256 * 1024;
+const NATIVE_BOUNDED_RESPONSE_TIMEOUT_MS = 5_000;
+
+function legacyFolioDiagnosticPath(url: string): string | null {
+  try {
+    const path = new URL(url).pathname;
+    return NATIVE_FOLIO_FORM_PATHS.includes(
+      path as (typeof NATIVE_FOLIO_FORM_PATHS)[number],
+    )
+      ? path
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertNativeNotesInquiryUrl(url: string, pageUrl: string): void {
+  try {
+    const target = new URL(url);
+    const current = new URL(pageUrl);
+    if (
+      target.origin !== current.origin ||
+      target.pathname !== NATIVE_NOTES_INQUIRY_PATH ||
+      target.search !== '' ||
+      target.hash !== '' ||
+      target.username !== '' ||
+      target.password !== '' ||
+      /[?#]/.test(url)
+    ) {
+      throw new Error('rejected');
+    }
+  } catch {
+    throw new HmsRuntimeError('SOURCE_UNAVAILABLE', 'approved notes JSON endpoint rejected');
+  }
+}
+
+function assertNativeBoundedFormUrl(url: string, pageUrl: string): string {
+  try {
+    const target = new URL(url);
+    const current = new URL(pageUrl);
+    if (
+      target.origin !== current.origin ||
+      !NATIVE_BOUNDED_FORM_PATHS.includes(target.pathname as (typeof NATIVE_BOUNDED_FORM_PATHS)[number]) ||
+      target.search !== '' ||
+      target.hash !== '' ||
+      target.username !== '' ||
+      target.password !== '' ||
+      /[?#]/.test(url)
+    ) {
+      throw new Error('rejected');
+    }
+    return target.pathname;
+  } catch {
+    throw new HmsRuntimeError('SOURCE_UNAVAILABLE', 'approved bounded form endpoint rejected');
+  }
+}
+
+function assertNativeResponseBounds(
+  bounds: HmsPostFormResponseBounds,
+  path: string,
+): void {
+  const maxBytes = NATIVE_FOLIO_FORM_PATHS.includes(
+    path as (typeof NATIVE_FOLIO_FORM_PATHS)[number],
+  )
+    ? NATIVE_FOLIO_BOUNDED_RESPONSE_MAX_BYTES
+    : NATIVE_BOUNDED_RESPONSE_MAX_BYTES;
+  if (
+    !Number.isSafeInteger(bounds.maxBytes) ||
+    bounds.maxBytes < 1 ||
+    bounds.maxBytes > maxBytes ||
+    !Number.isSafeInteger(bounds.timeoutMs) ||
+    bounds.timeoutMs < 1 ||
+    bounds.timeoutMs > NATIVE_BOUNDED_RESPONSE_TIMEOUT_MS
+  ) {
+    throw new HmsRuntimeError('SOURCE_UNAVAILABLE', 'bounded form response limits rejected');
+  }
+}
+
 function wrapPlaywrightPage(page: {
   goto(url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }): Promise<unknown>;
   content(): Promise<string>;
@@ -3553,8 +3882,12 @@ function wrapPlaywrightPage(page: {
   getByLabel(text: string): { fill(value: string): Promise<void> };
   getByRole(
     role: string,
-    opts: { name: string },
-  ): { click(): Promise<void> };
+    opts: { name: string; exact?: boolean },
+  ): {
+    click(): Promise<void>;
+    count?(): Promise<number>;
+    isVisible?(): Promise<boolean>;
+  };
   getByText(
     text: string,
     opts?: { exact?: boolean },
@@ -3637,49 +3970,291 @@ function wrapPlaywrightPage(page: {
       });
     },
     async fillLogin(username, password) {
-      const userid = page.locator('input[name="userid"]');
-      const userLegacy = page.locator('input[name="username"]');
+      const startedAt = Date.now();
+      let selectorBranch: LoginTimingBranch = 'userid';
       try {
-        await userid.fill(username);
-      } catch {
+        const userid = page.locator('input[name="userid"]');
+        const userLegacy = page.locator('input[name="username"]');
         try {
-          await page.getByLabel('Username').fill(username);
+          await userid.fill(username);
         } catch {
-          await userLegacy.fill(username);
+          selectorBranch = 'label';
+          try {
+            await page.getByLabel('Username').fill(username);
+          } catch {
+            selectorBranch = 'username';
+            await userLegacy.fill(username);
+          }
         }
-      }
-      try {
-        await page.locator('input[name="password"]').fill(password);
-      } catch {
-        await page.getByLabel('Password').fill(password);
+        try {
+          await page.locator('input[name="password"]').fill(password);
+        } catch {
+          await page.getByLabel('Password').fill(password);
+        }
+      } finally {
+        emitLoginTiming('login_fill', startedAt, selectorBranch);
       }
     },
     async submitLogin() {
-      const waitCommon = () =>
-        page
-          .waitForURL(/\/web\/base\/COMMON/i, { timeout: 20_000 })
-          .catch(() => undefined);
+      const startedAt = Date.now();
+      // The faster selector experiment did not establish reliable live detail
+      // reads. Retain the baseline flow while the HDR failure is investigated.
+      let selectorBranch: LoginTimingBranch = 'button';
       try {
-        await Promise.all([
-          waitCommon(),
-          page.getByRole('button', { name: 'Sign in' }).click(),
-        ]);
-      } catch {
-        await Promise.all([
-          waitCommon(),
-          page.locator('input[name="password"]').press('Enter'),
-        ]);
+        const waitCommon = () =>
+          page
+            .waitForURL(/\/web\/base\/COMMON/i, { timeout: 20_000 })
+            .catch(() => undefined);
+        try {
+          await Promise.all([
+            waitCommon(),
+            page.getByRole('button', { name: 'Sign in' }).click(),
+          ]);
+        } catch {
+          selectorBranch = 'enter';
+          await Promise.all([
+            waitCommon(),
+            page.locator('input[name="password"]').press('Enter'),
+          ]);
+        }
+        await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 500));
+      } finally {
+        emitLoginTiming('login_submit', startedAt, selectorBranch);
       }
-      await page.waitForLoadState('domcontentloaded').catch(() => undefined);
-      await new Promise((r) => setTimeout(r, 500));
     },
-    async postForm(url, fields) {
+    async postForm(url, fields, responseBounds) {
+      const legacyPath = legacyFolioDiagnosticPath(url);
+      const legacyStartedAt = Date.now();
       const postData = new URLSearchParams(fields).toString();
+      if (responseBounds) {
+        const boundedPath = assertNativeBoundedFormUrl(url, page.url());
+        assertNativeResponseBounds(responseBounds, boundedPath);
+        const result = await page.evaluate(
+          async ({ url, postData, expectedPaths, maxBytes, timeoutMs }) => {
+            type FormResult = {
+              text: string | null;
+              status: number;
+              responseType: string;
+              redirected: boolean;
+              bodyBytes: number | null;
+              errorCode?:
+                | 'response_status_rejected'
+                | 'response_type_rejected'
+                | 'response_body_missing'
+                | 'response_body_invalid'
+                | 'response_too_large'
+                | 'timeout'
+                | 'fetch_failed';
+            };
+            const rejected = (
+              errorCode: FormResult['errorCode'] = 'fetch_failed',
+              bodyBytes: number | null = null,
+            ): FormResult => ({
+              text: null,
+              status: 0,
+              responseType: 'rejected',
+              redirected: false,
+              bodyBytes,
+              errorCode,
+            });
+            let timedOut = false;
+            let observedBytes = 0;
+            const controller = new AbortController();
+            const deadline = setTimeout(() => {
+              timedOut = true;
+              controller.abort();
+            }, timeoutMs);
+            try {
+              const pageLocation = (
+                globalThis as unknown as {
+                  location?: { origin?: unknown; href?: unknown };
+                }
+              ).location;
+              if (
+                !pageLocation ||
+                typeof pageLocation.origin !== 'string' ||
+                typeof pageLocation.href !== 'string'
+              ) {
+                return rejected('fetch_failed');
+              }
+              const target = new URL(url, pageLocation.href);
+              if (
+                target.origin !== pageLocation.origin ||
+                !(expectedPaths as readonly string[]).includes(target.pathname) ||
+                target.search !== '' ||
+                target.hash !== ''
+              ) {
+                return rejected('fetch_failed');
+              }
+              const res = await fetch(target.href, {
+                method: 'POST',
+                headers: { 'content-type': 'application/x-www-form-urlencoded' },
+                body: postData,
+                credentials: 'same-origin',
+                redirect: 'manual',
+                signal: controller.signal,
+              });
+              if (!res || typeof res !== 'object') {
+                return rejected('response_type_rejected');
+              }
+              const responseType = String(res.type);
+              const status = res.status;
+              const redirected = res.redirected === true;
+              if (
+                !['basic', 'cors', 'default'].includes(responseType) ||
+                typeof status !== 'number' ||
+                status < 200 ||
+                status >= 300 ||
+                redirected ||
+                responseType === 'opaque' ||
+                responseType === 'opaqueredirect'
+              ) {
+                return {
+                  text: null,
+                  status: typeof status === 'number' ? status : 0,
+                  responseType,
+                  redirected,
+                  bodyBytes: null,
+                  errorCode:
+                    !['basic', 'cors', 'default'].includes(responseType) ||
+                    responseType === 'opaque' ||
+                    responseType === 'opaqueredirect'
+                      ? 'response_type_rejected'
+                      : 'response_status_rejected',
+                } satisfies FormResult;
+              }
+              if (!res.body || typeof res.body.getReader !== 'function') {
+                return {
+                  text: null,
+                  status,
+                  responseType,
+                  redirected,
+                  bodyBytes: null,
+                  errorCode: 'response_body_missing',
+                } satisfies FormResult;
+              }
+              const reader = res.body.getReader();
+              if (
+                !reader ||
+                typeof reader.read !== 'function' ||
+                typeof reader.releaseLock !== 'function'
+              ) {
+                return {
+                  text: null,
+                  status,
+                  responseType,
+                  redirected,
+                  bodyBytes: null,
+                  errorCode: 'response_body_invalid',
+                } satisfies FormResult;
+              }
+              const decoder = new TextDecoder();
+              const cancelReader = () => {
+                if (typeof reader.cancel !== 'function') return;
+                try {
+                  void reader.cancel().catch(() => undefined);
+                } catch {
+                  // Cancellation is best-effort; never hold the read result on cleanup.
+                }
+              };
+              const cancelOnAbort = () => {
+                cancelReader();
+              };
+              controller.signal.addEventListener('abort', cancelOnAbort, { once: true });
+              try {
+                let text = '';
+                while (true) {
+                  const chunk = await reader.read();
+                  if (!chunk || typeof chunk !== 'object') {
+                    return {
+                      text: null,
+                      status,
+                      responseType,
+                      redirected,
+                      bodyBytes: observedBytes,
+                      errorCode: 'response_body_invalid',
+                    } satisfies FormResult;
+                  }
+                  if (chunk.done) break;
+                  if (!(chunk.value instanceof Uint8Array)) {
+                    return {
+                      text: null,
+                      status,
+                      responseType,
+                      redirected,
+                      bodyBytes: observedBytes,
+                      errorCode: 'response_body_invalid',
+                    } satisfies FormResult;
+                  }
+                  observedBytes += chunk.value.byteLength;
+                  if (observedBytes > maxBytes) {
+                    cancelReader();
+                    return {
+                      text: null,
+                      status,
+                      responseType,
+                      redirected,
+                      bodyBytes: observedBytes,
+                      errorCode: 'response_too_large',
+                    } satisfies FormResult;
+                  }
+                  text += decoder.decode(chunk.value, { stream: true });
+                }
+                text += decoder.decode();
+                return {
+                  text,
+                  status,
+                  responseType,
+                  redirected,
+                  bodyBytes: observedBytes,
+                } satisfies FormResult;
+              } finally {
+                controller.signal.removeEventListener('abort', cancelOnAbort);
+                reader.releaseLock();
+              }
+            } catch {
+              return rejected(timedOut ? 'timeout' : 'fetch_failed', observedBytes);
+            } finally {
+              clearTimeout(deadline);
+            }
+          },
+          {
+            url,
+            postData,
+            expectedPaths: NATIVE_BOUNDED_FORM_PATHS,
+            maxBytes: responseBounds.maxBytes,
+            timeoutMs: responseBounds.timeoutMs,
+          },
+        );
+        if (result?.errorCode === 'timeout') {
+          throw new HmsRuntimeError('TIMEOUT', 'bounded form response timed out');
+        }
+        if (result?.errorCode === 'response_too_large') {
+          throw new HmsRuntimeError('SIZE_LIMIT', 'bounded form response exceeded its byte limit');
+        }
+        if (
+          !result ||
+          typeof result !== 'object' ||
+          result.text === null ||
+          typeof result.text !== 'string' ||
+          typeof result.status !== 'number' ||
+          result.status < 200 ||
+          result.status >= 300 ||
+          !['basic', 'cors', 'default'].includes(result.responseType) ||
+          result.responseType === 'opaque' ||
+          result.responseType === 'opaqueredirect' ||
+          result.redirected
+        ) {
+          throw new HmsRuntimeError('SOURCE_UNAVAILABLE', 'bounded form response status/type rejected');
+        }
+        return result.text;
+      }
       // Prefer in-page fetch after Guest Stay is open: ExtJS same-origin session
       // + cookies. page.request.post previously returned logindisp HTML bounce
       // even when COMMON was authenticated; keep it as fallback only.
       try {
-        return await page.evaluate(
+        const result = await page.evaluate(
           async ({ url, postData }) => {
             const res = await fetch(url, {
               method: 'POST',
@@ -3688,10 +4263,50 @@ function wrapPlaywrightPage(page: {
               credentials: 'same-origin',
               redirect: 'manual',
             });
-            return await res.text();
+            return {
+              text: await res.text(),
+              status: res.status,
+              responseUrl: res.url,
+              redirected: res.redirected,
+              responseType: res.type,
+            };
           },
           { url, postData },
         );
+        if (process.env.HMS_PROOF_DIAGNOSTICS === '1' && /OSRESV\.HDR/i.test(url)) {
+          process.stderr.write(
+            `${JSON.stringify({
+              type: 'HMS_PROOF_DIAGNOSTIC',
+              stage: 'post_form_response',
+              path: new URL(url).pathname,
+              status: result.status,
+              responseUrlPath: (() => {
+                try {
+                  return new URL(result.responseUrl).pathname;
+                } catch {
+                  return '';
+                }
+              })(),
+              redirected: result.redirected,
+              responseType: result.responseType,
+              bodyBytes: result.text.length,
+            })}\n`,
+          );
+        }
+        if (process.env.HMS_PROOF_DIAGNOSTICS === '1' && legacyPath) {
+          process.stderr.write(
+            `${JSON.stringify({
+              type: 'HMS_PROOF_DIAGNOSTIC',
+              stage: 'legacy_read_post_form',
+              path: legacyPath,
+              status: result.status,
+              responseType: result.responseType,
+              bodyBytes: result.text.length,
+              durationMs: Math.max(0, Date.now() - legacyStartedAt),
+            })}\n`,
+          );
+        }
+        return result.text;
       } catch (err) {
         if (typeof page.request?.post !== 'function') throw err;
       }
@@ -3705,6 +4320,256 @@ function wrapPlaywrightPage(page: {
         return response.text();
       }
       throw new Error('postForm unavailable');
+    },
+    async postJson(url, body) {
+      assertNativeNotesInquiryUrl(url, page.url());
+      const postData = JSON.stringify(body);
+      const result = await page.evaluate(
+        async ({ url, postData, expectedPath, maxBytes, timeoutMs }) => {
+          type JsonResult = {
+            text: string | null;
+            status: number;
+            responseType: string;
+            redirected: boolean;
+            bodyBytes: number | null;
+            errorCode?:
+              | 'response_status_rejected'
+              | 'response_type_rejected'
+              | 'response_body_missing'
+              | 'response_body_invalid'
+              | 'response_too_large'
+              | 'timeout'
+              | 'fetch_failed';
+          };
+          const rejected = (
+            errorCode: JsonResult['errorCode'] = 'fetch_failed',
+            bodyBytes: number | null = null,
+          ): JsonResult => ({
+            text: null,
+            status: 0,
+            responseType: 'rejected',
+            redirected: false,
+            bodyBytes,
+            errorCode,
+          });
+          let timedOut = false;
+          let observedBytes = 0;
+          const controller = new AbortController();
+          const deadline = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, timeoutMs);
+          try {
+            const pageLocation = (
+              globalThis as unknown as {
+                location?: { origin?: unknown; href?: unknown };
+              }
+            ).location;
+            if (
+              !pageLocation ||
+              typeof pageLocation.origin !== 'string' ||
+              typeof pageLocation.href !== 'string'
+            ) {
+              return rejected('fetch_failed');
+            }
+            const target = new URL(url, pageLocation.href);
+            if (
+              target.origin !== pageLocation.origin ||
+              target.pathname !== expectedPath ||
+              target.search !== '' ||
+              target.hash !== ''
+            ) {
+              return rejected('fetch_failed');
+            }
+            const globals = globalThis as unknown as {
+              EAM?: {
+                AppData?: {
+                  getRawAppData?: () => unknown;
+                };
+              };
+              CryptoJS?: {
+                SHA256?: (value: string) => unknown;
+                enc?: {
+                  Base64?: {
+                    stringify?: (value: unknown) => unknown;
+                  };
+                };
+              };
+            };
+            const appDataApi = globals.EAM?.AppData;
+            const cryptoJs = globals.CryptoJS;
+            const base64 = cryptoJs?.enc?.Base64;
+            if (
+              typeof appDataApi?.getRawAppData !== 'function' ||
+              typeof cryptoJs?.SHA256 !== 'function' ||
+              typeof base64?.stringify !== 'function'
+            ) {
+              return rejected('fetch_failed');
+            }
+            const appData = appDataApi.getRawAppData();
+            if (!appData || typeof appData !== 'object') return rejected('fetch_failed');
+            const cookieName = (appData as { HMSLoginSessionCookieName?: unknown })
+              .HMSLoginSessionCookieName;
+            if (typeof cookieName !== 'string' || cookieName.length === 0) {
+              return rejected('fetch_failed');
+            }
+            const authorization = base64.stringify(cryptoJs.SHA256(cookieName));
+            if (typeof authorization !== 'string' || authorization.length === 0) {
+              return rejected('fetch_failed');
+            }
+            const res = await fetch(target.href, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${authorization}`,
+              },
+              body: postData,
+              credentials: 'same-origin',
+              redirect: 'manual',
+              signal: controller.signal,
+            });
+            const responseType = String(res.type);
+            const status = res.status;
+            const redirected = res.redirected === true;
+            if (
+              !['basic', 'cors', 'default'].includes(responseType) ||
+              status < 200 ||
+              status >= 300 ||
+              responseType === 'opaque' ||
+              responseType === 'opaqueredirect' ||
+              redirected
+            ) {
+              return {
+                text: null,
+                status,
+                responseType,
+                redirected,
+                bodyBytes: null,
+                errorCode:
+                  !['basic', 'cors', 'default'].includes(responseType) ||
+                  responseType === 'opaque' ||
+                  responseType === 'opaqueredirect'
+                    ? 'response_type_rejected'
+                    : 'response_status_rejected',
+              };
+            }
+            if (!res.body || typeof res.body.getReader !== 'function') {
+              return {
+                text: null,
+                status,
+                responseType,
+                redirected,
+                bodyBytes: null,
+                errorCode: 'response_body_missing',
+              };
+            }
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            const cancelReader = () => {
+              if (typeof reader.cancel !== 'function') return;
+              try {
+                void reader.cancel().catch(() => undefined);
+              } catch {
+                // Cancellation is best-effort; never hold the read result on cleanup.
+              }
+            };
+            const cancelOnAbort = () => {
+              cancelReader();
+            };
+            controller.signal.addEventListener('abort', cancelOnAbort, { once: true });
+            try {
+              let text = '';
+              while (true) {
+                const chunk = await reader.read();
+                if (!chunk || typeof chunk !== 'object') {
+                  return {
+                    text: null,
+                    status,
+                    responseType,
+                    redirected,
+                    bodyBytes: observedBytes,
+                    errorCode: 'response_body_invalid',
+                  };
+                }
+                if (chunk.done) break;
+                if (!(chunk.value instanceof Uint8Array)) {
+                  return {
+                    text: null,
+                    status,
+                    responseType,
+                    redirected,
+                    bodyBytes: observedBytes,
+                    errorCode: 'response_body_invalid',
+                  };
+                }
+                observedBytes += chunk.value.byteLength;
+                if (observedBytes > maxBytes) {
+                  cancelReader();
+                  return {
+                    text: null,
+                    status,
+                    responseType,
+                    redirected,
+                    bodyBytes: observedBytes,
+                    errorCode: 'response_too_large',
+                  };
+                }
+                text += decoder.decode(chunk.value, { stream: true });
+              }
+              text += decoder.decode();
+              return {
+                text,
+                status,
+                responseType,
+                redirected,
+                bodyBytes: observedBytes,
+              };
+            } finally {
+              controller.signal.removeEventListener('abort', cancelOnAbort);
+              reader.releaseLock();
+            }
+          } catch {
+            // Never return provider/auth errors or any browser credential data.
+            return rejected(timedOut ? 'timeout' : 'fetch_failed', observedBytes);
+          } finally {
+            clearTimeout(deadline);
+          }
+        },
+        {
+          url,
+          postData,
+          expectedPath: NATIVE_NOTES_INQUIRY_PATH,
+          maxBytes: NATIVE_NOTES_INQUIRY_MAX_BYTES,
+          timeoutMs: NATIVE_NOTES_INQUIRY_TIMEOUT_MS,
+        },
+      );
+      if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
+        process.stderr.write(`${JSON.stringify({
+          type: 'HMS_PROOF_DIAGNOSTIC',
+          stage: 'post_json_response',
+          status: result.status,
+          responseType: result.responseType,
+          bodyBytes: result.bodyBytes,
+          errorCode: result.errorCode ?? null,
+        })}\n`);
+      }
+      if (result.errorCode === 'timeout') {
+        throw new HmsRuntimeError('TIMEOUT', 'JSON response timed out');
+      }
+      if (result.errorCode === 'response_too_large') {
+        throw new HmsRuntimeError('SIZE_LIMIT', 'JSON response exceeded its byte limit');
+      }
+      if (
+        result.text === null ||
+        result.status < 200 ||
+        result.status >= 300 ||
+        result.responseType === 'opaque' ||
+        result.responseType === 'opaqueredirect' ||
+        result.redirected
+      ) {
+        throw new HmsRuntimeError('SOURCE_UNAVAILABLE', 'JSON response status/type rejected');
+      }
+      return result.text;
     },
     async click(selector) {
       const textMatch = /^text=(.+)$/i.exec(selector);

@@ -55,6 +55,8 @@ isProject: false
 
 # Phase B Expanded HMS Read Portfolio
 
+> **Quote workflow superseded 2026-09-17:** The `hms_quote_stay` OSRRAV/Room Type and Rate Availability sections below are legacy decision history. Current client-approved quote work uses Front Desk → Availability → **Hotel Availability** with applied adults/children/ages and read-only Availability Details. CRS Check Availability remains forbidden.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `/nava-run` with `superpowers:subagent-driven-development` to execute this plan task-by-task. Every implementation step uses TDD, per-task review, and fresh verification.
 
 **Goal:** autonomously finish the seven fixture-verified HMS reads, prove each against the live HRCEN tenant without writes, and leave masked private trace/video evidence when safe plus independently reversible production releases.
@@ -391,7 +393,7 @@ type CandidateReadPlan =
 
 ### `hms_quote_stay@2.0.0`
 
-- Single `Room Type and Rate Availability` surface, one exact search, contiguous requested nights, no paging/result clicks.
+- **Historical baseline:** single `Room Type and Rate Availability` surface, one exact search, contiguous requested nights, no paging/result clicks. Current standalone quote proof uses Hotel Availability and read-only Availability Details; OSRRAV is diagnostic only.
 - Return date, room type, available count, rate plan, displayed amount, currency, rate basis, restrictions, and observation time.
 - Always `bookable:false`, `stayTotal:null`, `occupancyPriced:false`. Missing nightly semantics returns `manual_required`.
 
@@ -1735,4 +1737,3 @@ Not blockers: absent role-proof-v2, absent reviewed manifests, fixture-only stat
 - Parallelization: contracts/fixtures/docs may run in parallel; all shared-kernel changes serialize first; live discovery/proof/promotion serialize through one HMS owner.
 - Unresolved planning blockers: none. Live execution may still produce only the named external/safety blockers in this plan.
 - Review verdict: **CLEARED FOR IMPLEMENTATION after user starts execution.**
-

@@ -56,6 +56,7 @@ Why (evidence):
 - Secrets, cookies, DB URLs out of Git / SSM / CI. Client PII in `.private/` mode 0600 only.
 - One live PMS browser per property lock. Prefer overlay/S3 proof path; no isolated EC2 checksum theater; no Luna-as-done-gate.
 - **Packaging gate ≠ Payload gate ≠ wave-boundary Tool promotion HITL.** Per tool inside a wave: packaging + payload required before that tool counts done. Human HITL only when the **wave** is complete (or Wave 0’s single tool).
+- **HITL visual (2026-09-13 reopen — binding):** a packaging `.webm` is FAIL if last painted frame is Start Center, empty login, Ext error `0` dialog, or Guest Stay **Record View + Processing request** without the owner tab. Soft-XHR payload GREEN does not pass human watch. Owner surfaces: A2 **Folio** tab (not Record View); A3 **Sent Email** PSSNEL grid; A5 **Room Type and Rate Availability** (ALT+Z / Front Desk → Availability) — never Availability Summary KPI; A6 **Group Booking**; A8 **Organization Profiles**; A9 **Notes** and/or **Traces** tab content. A4/A11 remain mailProof. No Wave B.
 - Do not start Wave A while **find HITL (Wave 0 + 0b)** is unsigned. Do not start Wave B while Wave A batch HITL is unsigned.
 - **Live surface / dataspy dump before required fields (binding — every tool, every wave):** see next section. Never invent GRID keys, filter aliases, or detail fields from catalogue marketing alone.
 
@@ -111,7 +112,7 @@ Private dumps stay under `.private/`; sanitized fixtures may land in tests. Lear
 
 ## Overnight Autonomous Execution Mandate
 
-**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). **Reopened twice same day:** (1) skip packets ≠ working tools; (2) soft-capture/`BLOCKED` HITL without Wave-0 packaging videos = same premature stop. Agent must finish A1–A11 at **Wave 0 find depth** with no mid-wave human pause. **Stop for HITL only when every tool has packaging video (or mail proof) + compare.v1 all-required-pass for its claimed sections** — not when a blocker JSON exists. Do **not** start Wave B.
+**User granted full autonomy for Wave A** (2026-09-12; find HITL 0+0b signed). **Reopened twice same day:** (1) skip packets ≠ working tools; (2) soft-capture/`BLOCKED` HITL without Wave-0 packaging videos = same premature stop. **Reopened 2026-09-13 night:** human FAIL on visual packaging — Start Center / login bounce / spinner Record View. Agent owns UI-first re-record overnight; no mid-wave pause. **Stop for HITL only when every GREEN tool has a webm whose last painted frame shows the owner surface** (plus prior payload compare). Soft-XHR-only video ≠ done. Do **not** start Wave B.
 
 ### Anti-underwork rule (binding — learned 2026-09-12 ×2)
 
@@ -357,6 +358,8 @@ From `READ_TOOL_IDS` + siblings: `mail_read_artifact`, `hms_find_reservation`, `
 
 ### Wave A — **all remaining reads** (after Wave 0 HITL; run fully, one batch HITL at end)
 
+> **Historical quote note (superseded 2026-09-17):** Current A5 quote proof uses Hotel Availability with per-room adults/children/ages and read-only Availability Details. Any older Room Type and Rate Availability/OSRRAV recipe is diagnostic history only and cannot satisfy or replace this workflow.
+
 Former “Wave A existing HMS reads” + former “Wave B new reads” **merged**. Same effect class (`view_only` / mail parse). No mid-wave human pause.
 
 | Order | ID | Payload stub | Live video? |
@@ -365,7 +368,7 @@ Former “Wave A existing HMS reads” + former “Wave B new reads” **merged*
 | A2 | `hms_read_folio` | Folio balances/lines per existing folio contract | Yes |
 | A3 | `hms_list_documents` / `documents_list_existing` | List metadata only | Yes |
 | A4 | `documents_read_existing` | Authorized bytes | Yes (or byte digest proof) |
-| A5 | `hms_quote_stay` | Nightly/rate observations; **never** CRS Check Availability | Yes |
+| A5 | `hms_quote_stay` | Hotel Availability nightly/rate observations + read-only Availability Details; **never** OSRRAV fallback or CRS Check Availability | Yes |
 | A6 | `hms_group_block_read` | Keep; defer live if role blocked | If unblocked |
 | A7 | `hms_event_read` | Keep; defer if blocked | If unblocked |
 | A8 | `hms_company_account_read` | Keep; defer live | If unblocked |

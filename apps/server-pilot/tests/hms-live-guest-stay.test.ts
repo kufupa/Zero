@@ -2,6 +2,8 @@ import {
   buildLiveGuestStayRowFingerprintV2,
   buildLiveGuestStayRowFingerprintV1,
   createLiveGuestStayDriver,
+  extractOsressDetailOpenHints,
+  extractValidatedReservationStayId,
   extractOsressPageData,
   parseAndCorrelateGuestStayHtml,
   parseLiveOsressGridRows,
@@ -525,6 +527,33 @@ describe('guest stay HTML parser correlation', () => {
     ).toThrowError(expect.objectContaining({ code: 'SCHEMA_DRIFT' }));
   });
 
+  it('forced locale bootstrap-shaped response is not classified as a reservation negative', () => {
+    const bootstrap =
+      '<html><script>loadLocalizedPage(document.cookie);document.langform.submit()</script>' +
+      '<form name="langform" action="/web/base/OSRESV.HDR" method="post">' +
+      '<input name="ewslanguage"></form></html>';
+
+    expect(() =>
+      parseAndCorrelateGuestStayHtml(bootstrap, candidate, undefined, {
+        requireLiveEnvelope: true,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'SCHEMA_DRIFT' }));
+  });
+
+  it('does not apply the provider alias to an unvalidated HTML fallback row', () => {
+    expect(
+      parseAndCorrelateGuestStayHtml(
+        grid([
+          rowHtml({
+            'data-external': 'LS-SYNTH-55--2375',
+            'data-confirmation': 'SYNTH-CONF-1',
+          }),
+        ]),
+        { id: 'html-alias', kind: 'external_reference', value: 'LS-SYNTH-55' },
+      ).outcome,
+    ).toBe('not_found');
+  });
+
   it('abort signal → AbortError before parse', () => {
     const ac = new AbortController();
     ac.abort();
@@ -566,6 +595,88 @@ describe('live OSRESS GRIDRESULT parser', () => {
     const pd = extractOsressPageData(text);
     expect(pd).not.toBeNull();
     expect(parseLiveOsressGridRows(pd!)).toEqual([]);
+  });
+
+  it('propagates actual detail stay id, never the differing opaque OSRESS id', () => {
+    expect(
+      extractValidatedReservationStayId({
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['id', 'reservationstayid'],
+        values: { id: 'OPAQUE-ROW-7', reservationstayid: 'ACTUAL-STAY-77' },
+      }),
+    ).toBe('ACTUAL-STAY-77');
+  });
+
+  it('returns actual stay id from the bound detail pipeline, not OSRESS row id', async () => {
+    const searchBody = gridEnvelope([
+      {
+        id: 'OPAQUE-ROW-7',
+        confirmationnumber: SYNTH.conf,
+        primaryguest: 'Syntherson, Alpha',
+      },
+    ]);
+    const lstBody = JSON.stringify({
+      pageData: {
+        grid: {
+          GRIDRESULT: {
+            GRID: {
+              DATA: [
+                {
+                  id: 'OPAQUE-ROW-7',
+                  reservationstayid: 'ACTUAL-STAY-77',
+                  confirmationnumber: SYNTH.conf,
+                  propertycode: 'HRCEN',
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const hdrBody = JSON.stringify({
+      pageData: {
+        values: {
+          confirmationnumber: SYNTH.conf,
+          reservationstayid: 'ACTUAL-STAY-77',
+          arrivaldate: '15-Jan-2099',
+          departuredate: '18-Jan-2099',
+          guestname: 'Syntherson, Alpha',
+        },
+      },
+    });
+    let domReads = 0;
+    const { driver } = liveDriverWithSession({
+      page: {
+        url: () => 'http://127.0.0.1:17888/web/base/COMMON',
+        async content() {
+          return '<input name="search">';
+        },
+        async fill() {},
+        async postForm(url: string) {
+          if (url.endsWith('/OSRESS.search')) return searchBody;
+          if (url.endsWith('/OSRESV.LST')) return lstBody;
+          if (url.endsWith('/OSRESV.HDR')) return hdrBody;
+          return '';
+        },
+        async waitForCorrelatedResponse() {
+          return searchBody;
+        },
+        async evaluateStableDom() {
+          domReads += 1;
+          return domReads === 1 ? 1 : false;
+        },
+      },
+    });
+
+    const result = await driver.searchExactThenDetailDump(
+      confCandidate(),
+      new AbortController().signal,
+    );
+
+    expect(result.reservationStayId).toBe('ACTUAL-STAY-77');
+    expect(result.reservationStayId).not.toBe('OPAQUE-ROW-7');
+    expect(result.dump.values?.reservationstayid).toBe('ACTUAL-STAY-77');
   });
 
   it('RECORDS 0 / empty DATA → not_found', () => {
@@ -748,6 +859,64 @@ describe('live OSRESS GRIDRESULT parser', () => {
     expect(miss.outcome).toBe('not_found');
   });
 
+  it('detail hints select the uniquely correlated raw row, not the first row', () => {
+    const text = gridEnvelope([
+      {
+        id: 'wrong-stay',
+        confirmationnumber: 'OTHER-1',
+        primaryguest: 'Other Guest',
+        arrivaldate: '2099-01-15',
+        departuredate: '2099-01-18',
+      },
+      {
+        id: 'matched-stay',
+        reservationstayid: 'actual-detail-stay',
+        confirmationnumber: SYNTH.conf,
+        primaryguest: 'Syntherson, Alpha',
+        lastname: 'Syntherson',
+        firstname: 'Alpha',
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+      },
+    ]);
+    expect(
+      extractOsressDetailOpenHints(text, {
+        id: 's1',
+        kind: 'surname_dates',
+        surname: 'Syntherson',
+        arrivalDate: '2099-01-15',
+        departureDate: '2099-01-18',
+      }),
+    ).toMatchObject({
+      confirmationNumber: SYNTH.conf,
+      reservationStayId: 'matched-stay',
+    });
+  });
+
+  it('does not promote the LST stay id when the OSRESS opaque row id is absent', () => {
+    const text = gridEnvelope([
+      {
+        reservationstayid: 'actual-detail-stay',
+        confirmationnumber: SYNTH.conf,
+        primaryguest: 'Syntherson, Alpha',
+        lastname: 'Syntherson',
+        firstname: 'Alpha',
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+      },
+    ]);
+
+    expect(
+      extractOsressDetailOpenHints(text, {
+        id: 's1',
+        kind: 'surname_dates',
+        surname: 'Syntherson',
+        arrivalDate: '2099-01-15',
+        departureDate: '2099-01-18',
+      }).reservationStayId,
+    ).toBeNull();
+  });
+
   it('surname_dates ambiguous → capped matchCount honesty', () => {
     const text = gridEnvelope([
       {
@@ -829,6 +998,118 @@ describe('live OSRESS GRIDRESULT parser', () => {
     ]);
     const result = parseAndCorrelateGuestStayHtml(text, extCandidate);
     expect(result.outcome).toBe('matched');
+  });
+
+  it.each([
+    ['LekkeSlaap', 'LS-SYNTH-55', 'LS-SYNTH-55--2375'],
+    ['SynXis', '9000SG000001', '9000SG000001--1234'],
+  ])(
+    'external_reference base aliases only the verified four-digit %s decoration',
+    (_provider, base, observed) => {
+      const result = parseAndCorrelateGuestStayHtml(
+        gridEnvelope([
+          {
+            confirmationnumber: 'SYNTH-CONF-1',
+            externalconfirmation: observed,
+            status: 'Reserved',
+          },
+        ]),
+        { id: `ext-${base}`, kind: 'external_reference', value: base },
+        undefined,
+        { requireLiveEnvelope: true },
+      );
+      expect(result).toEqual({
+        outcome: 'matched',
+        observations: [
+          expect.objectContaining({
+            confirmationNumber: 'SYNTH-CONF-1',
+            externalReference: observed,
+          }),
+        ],
+        capped: false,
+      });
+    },
+  );
+
+  it('rejects malformed, wrong-base, multi-row, and confirmation aliases', () => {
+    const candidate: ExactReservationCandidate = {
+      id: 'ext-alias',
+      kind: 'external_reference',
+      value: 'LS-SYNTH-55',
+    };
+    for (const observed of [
+      'LS-SYNTH-55--237',
+      'LS-SYNTH-55--23756',
+      'OTHER-SYNTH-55--2375',
+    ]) {
+      expect(
+        parseAndCorrelateGuestStayHtml(
+          gridEnvelope([{ externalconfirmation: observed }]),
+          candidate,
+          undefined,
+          { requireLiveEnvelope: true },
+        ).outcome,
+      ).toBe('not_found');
+    }
+    expect(
+      parseAndCorrelateGuestStayHtml(
+        gridEnvelope([
+          { externalconfirmation: 'LS-SYNTH-55--2375' },
+          { externalconfirmation: 'UNRELATED-2' },
+        ]),
+        candidate,
+        undefined,
+        { requireLiveEnvelope: true },
+      ).outcome,
+    ).toBe('not_found');
+    expect(
+      parseAndCorrelateGuestStayHtml(
+        gridEnvelope([{ confirmationnumber: 'LS-SYNTH-55--2375' }]),
+        { id: 'conf-alias', kind: 'confirmation', value: 'LS-SYNTH-55' },
+        undefined,
+        { requireLiveEnvelope: true },
+      ).outcome,
+    ).toBe('not_found');
+  });
+
+  it('keeps exact decorated external references unchanged and requires a base input for aliases', () => {
+    const observed = 'LS-SYNTH-55--2375';
+    expect(
+      parseAndCorrelateGuestStayHtml(
+        gridEnvelope([{ externalconfirmation: observed }]),
+        { id: 'exact-decorated', kind: 'external_reference', value: observed },
+        undefined,
+        { requireLiveEnvelope: true },
+      ).outcome,
+    ).toBe('matched');
+    expect(
+      parseAndCorrelateGuestStayHtml(
+        gridEnvelope([{ externalconfirmation: `${observed}--9999` }]),
+        { id: 'double-decorated', kind: 'external_reference', value: observed },
+        undefined,
+        { requireLiveEnvelope: true },
+      ).outcome,
+    ).toBe('not_found');
+  });
+
+  it('detail hints use the same single-row external alias correlation', () => {
+    const observed = 'LS-SYNTH-55--2375';
+    expect(
+      extractOsressDetailOpenHints(
+        gridEnvelope([
+          {
+            id: 'opaque-synth-row',
+            confirmationnumber: 'SYNTH-CONF-1',
+            externalconfirmation: observed,
+          },
+        ]),
+        { id: 'ext-hint', kind: 'external_reference', value: 'LS-SYNTH-55' },
+      ),
+    ).toEqual({
+      confirmationNumber: 'SYNTH-CONF-1',
+      externalReference: observed,
+      reservationStayId: 'opaque-synth-row',
+    });
   });
 
   it('external_reference rows without one shared confirmation stay ambiguous', () => {

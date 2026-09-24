@@ -15,15 +15,15 @@ import path from 'node:path';
 export const CLASSIFICATION_SCHEMA_VERSION = 'centurion-classification-v1' as const;
 export const DAILY_TABLES_SCHEMA_VERSION = 'centurion-daily-tables-v1' as const;
 export const COVERAGE_AUDIT_SCHEMA_VERSION = 'centurion-coverage-audit-v1' as const;
-export const DEFAULT_LUNA_MODEL_ID = 'gpt-5.6-luna-max' as const;
+export const DEFAULT_LUNA_MODEL_ID = 'gpt-6-luna' as const;
 export const DEFAULT_MAX_WORKERS = 5 as const;
 export const DEFAULT_MAX_RETRIES = 2 as const;
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion' as const;
 const CENTURION_WINDOW_TIMEZONE = 'Africa/Johannesburg' as const;
-const CENTURION_WINDOW_START = '2026-09-07T22:00:00.000Z' as const;
-const CENTURION_WINDOW_END = '2026-09-16T22:00:00.000Z' as const;
-const CENTURION_SPILLOVER_END = '2026-09-17T22:00:00.000Z' as const;
+const CENTURION_WINDOW_START = '2026-09-08T22:00:00.000Z' as const;
+const CENTURION_WINDOW_END = '2026-09-18T14:50:00.000Z' as const;
+const CENTURION_SPILLOVER_END = '2026-09-18T22:00:00.000Z' as const;
 
 export const WORKFLOW_CLASSES = [
   'booking_quote',

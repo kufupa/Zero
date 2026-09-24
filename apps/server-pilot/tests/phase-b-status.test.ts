@@ -171,17 +171,17 @@ describe('phase-b-status', () => {
     expect(b0.tools).toEqual([]);
   });
 
-  it('quote remains discovery-only until trusted current-rate authority exists', () => {
+  it('quote remains fixture-only until tenant Hotel Availability discovery exists', () => {
     const row = toolStatusRow('hms_quote_stay');
-    expect(row.capabilityState).toBe('discovery_verified');
+    expect(row.capabilityState).toBe('fixture_verified');
     expect(row.fixtureDigestPresent).toBe(true);
-    expect(row.discoveryDigestPresent).toBe(true);
+    expect(row.discoveryDigestPresent).toBe(false);
     expect(row.liveProofDigestPresent).toBe(false);
     expect(row.activeReleaseId).toBeNull();
     expect(row.privateArtifactIds).toEqual([]);
     expect(row.promotionEvidence).toEqual({
       fixture: true,
-      discovery: true,
+      discovery: false,
       live: false,
       shadow: false,
     });

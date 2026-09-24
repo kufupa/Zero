@@ -6,24 +6,45 @@
  * paymentcardnumber on DLD is detected for leak flag only — never parsed into claims.
  */
 import {
+  parseBoundFolioAllDataTransport,
+  parseBoundFolioFolTransport,
+  parseFolioFolTransport,
+  type BoundFolioAllDataParseResult,
+  type BoundFolioTransaction,
+  type BoundFolioBalancesSection,
+  type FolioFolParentProof,
+} from './folio-fol-parse.js';
+import {
+  FOLIO_BOUND_READ_MAX_DURATION_MS,
   FOLIO_READ_MAX_BYTES,
   FOLIO_READ_MAX_DURATION_MS,
   FOLIO_READ_MAX_ROWS,
+  FOLIO_READ_MAX_TOTAL_ROWS,
   FOLIO_READ_MAX_SOURCE_AGE_MS,
   folioClaimEligibility,
   folioReadDataSchema,
   type FolioReadData,
 } from './folio-read-contract.js';
-import { knownFact, readIssue, unknownFact } from './read-service-contracts.js';
+import {
+  knownFact,
+  readIssue,
+  readResultSchema,
+  unknownFact,
+  type ReadReasonCode,
+  type ReadResult,
+} from './read-service-contracts.js';
+import { projectFolioBalanceFromDetailDump } from './folio-detail-projection.js';
 import type { HmsBrowserArtifactReceiptV1 } from './browser-artifacts.js';
 import type { ExactReservationCandidate } from './live-read-manifest.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
-import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import {
+  HmsRuntimeError,
+  type HmsPostFormResponseBounds,
+  type HmsRuntime,
+} from './runtime.js';
 import { createFolioReadFacade } from './folio-read-facade.js';
-import { projectFolioBalanceFromDetailDump } from './folio-detail-projection.js';
-import { parseFolioFolTransport } from './folio-fol-parse.js';
 import type { ReadCandidateChild } from './candidate-graph.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1270,6 +1291,487 @@ export function mergeFolioEvidence(
   }
 }
 
+const BOUND_FOLIO_SECTION_IDS = ['balance', 'deposits', 'transactions', 'authorization'] as const;
+type BoundFolioSectionId = (typeof BOUND_FOLIO_SECTION_IDS)[number];
+
+function detailDumpValue(values: Record<string, unknown>, key: string): string | null {
+  const match = Object.entries(values).find(([name]) => name.toLowerCase() === key.toLowerCase());
+  if (!match || match[1] == null) return null;
+  const value = String(match[1]).trim();
+  return value.length > 0 ? value : null;
+}
+
+function boundFolioReason(blocker: string | null | undefined): ReadReasonCode {
+  if (!blocker) return 'SOURCE_UNAVAILABLE';
+  if (blocker === 'FOLIO_BOUNDS_EXCEEDED' || blocker === 'FOLIO_ALL_DATA_BOUNDS_EXCEEDED')
+    return 'SIZE_LIMIT';
+  if (
+    blocker === 'FOLIO_PAGING_UNSUPPORTED' ||
+    blocker === 'FOLIO_ALL_DATA_PAGING_UNSUPPORTED' ||
+    blocker === 'FOLIO_ALL_DATA_UNSUPPORTED_FORMAT'
+  )
+    return 'UNSUPPORTED_FORMAT';
+  if (blocker === 'FOLIO_ALL_DATA_TIMEOUT') return 'TIMEOUT';
+  if (
+    blocker === 'FOLIO_PARENT_BINDING_UNPROVEN' ||
+    blocker === 'FOLIO_PARENT_BINDING_MISMATCH' ||
+    blocker === 'FOLIO_ACCOUNT_BINDING_MISMATCH' ||
+    blocker === 'FOLIO_CURRENCY_MISMATCH' ||
+    blocker === 'FOLIO_ALL_DATA_PARENT_BINDING_MISMATCH' ||
+    blocker === 'FOLIO_ALL_DATA_ACCOUNT_BINDING_MISMATCH' ||
+    blocker === 'FOLIO_ALL_DATA_CURRENCY_MISMATCH'
+  ) {
+    return 'SCOPE_DENIED';
+  }
+  if (
+    blocker === 'FOLIO_UNSUPPORTED_FORMAT' ||
+    blocker === 'FOLIO_EVIDENCE_INVALID' ||
+    blocker === 'FOLIO_ALL_DATA_UNSUPPORTED_FORMAT'
+  ) {
+    return 'UNSUPPORTED_FORMAT';
+  }
+  return 'SOURCE_UNAVAILABLE';
+}
+
+function requestedBoundFolioSections(
+  requested: readonly BoundFolioSectionId[] | undefined,
+): BoundFolioSectionId[] {
+  const sections: readonly BoundFolioSectionId[] =
+    requested && requested.length > 0 ? requested : ['balance', 'deposits'];
+  return [...new Set(sections)].filter((section): section is BoundFolioSectionId =>
+    BOUND_FOLIO_SECTION_IDS.includes(section),
+  );
+}
+
+function boundFolioManualResult(
+  child: ReadCandidateChild,
+  requested: readonly BoundFolioSectionId[],
+  reasonCode: ReadReasonCode,
+  status: ReadResult<FolioReadData>['status'] = 'manual_required',
+): ReadResult<FolioReadData> {
+  return {
+    toolId: 'hms_read_folio',
+    schemaVersion: '1.0.0',
+    status,
+    data: null,
+    completeness: 'unknown',
+    unavailableSections: requested.map((section) => ({ section, reasonCode })),
+    scopeRef: child.scopeHash,
+    evidence: [],
+    page: null,
+    issues: [readIssue(reasonCode)],
+  };
+}
+
+function boundFolioDisclosure(input?: TrustedFolioDisclosure): TrustedFolioDisclosure {
+  return (
+    input ?? {
+      recipientClass: 'unknown',
+      inquiryClass: 'other',
+    }
+  );
+}
+
+function boundFolioEvidence(input: {
+  evidenceRef: string;
+  body: string;
+  sourceBodies?: readonly { surface: string; body: string }[];
+  authorization: HmsSessionAuthorization;
+  child: ReadCandidateChild;
+  observedAt: string;
+  expiresAt: string;
+  artifactRef?: string | null;
+}) {
+  const sources = [{ surface: 'OSRESV.FOL', body: input.body }, ...(input.sourceBodies ?? [])];
+  return {
+    evidenceRef: input.evidenceRef,
+    sourceSystem: 'hms' as const,
+    sourceSurface: [...new Set(sources.map((source) => source.surface))].join('+'),
+    requestBranchId: input.authorization.requestBranchId,
+    observedAt: input.observedAt,
+    sourceUpdatedAt: null,
+    expiresAt: input.expiresAt,
+    scopeVerified: true,
+    artifactRef: input.artifactRef ?? null,
+    sourceHash: sha256Hex(
+      sources.map((source) => `${source.surface}\u0000${source.body}`).join('\u0000'),
+    ),
+    manifestSha256: input.authorization.manifestSha256,
+    scopeHash: input.child.scopeHash,
+  };
+}
+
+function boundFolioBalanceSection(
+  source: BoundFolioBalancesSection | null,
+  amount: string | null,
+  currency: string,
+  evidenceRef: string,
+  observedAt: string,
+  expiresAt: string,
+  requested: boolean,
+) {
+  if (!requested) return unknownSection('NOT_REQUESTED');
+  if (source) return source;
+  if (amount == null) return unknownSection('SOURCE_UNAVAILABLE');
+  return {
+    state: 'available' as const,
+    data: {
+      items: [
+        {
+          folioRef: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+          folioType: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+          balance: moneyFact(
+            amount,
+            currency,
+            evidenceRef,
+            observedAt,
+            expiresAt,
+            'ledger_balance',
+          ),
+        },
+      ],
+    },
+    completeness: 'complete' as const,
+    issues: [],
+  };
+}
+
+function boundFolioSectionIssue(
+  section: BoundFolioSectionId,
+  value: FolioReadData['balance'] | FolioReadData['deposits'] | FolioReadData['transactions'],
+): { section: string; reasonCode: ReadReasonCode } | null {
+  if (value?.state !== 'unavailable') return null;
+  return { section, reasonCode: value.reasonCode };
+}
+
+export type BoundFolioPaging = {
+  limit?: number;
+  cursor?: string;
+};
+
+type BoundFolioCursor = {
+  digest: string;
+  offset: number;
+};
+
+type BoundFolioAllDataRead = {
+  items: BoundFolioTransaction[];
+  totalRecords: number;
+  rowsScanned: number;
+  bytesObserved: number;
+  sourceHash: string;
+  sourceBodies?: Array<{ surface: string; body: string }>;
+  unavailable: boolean;
+  blocker: string | null;
+};
+
+const MAX_BOUND_FOLIO_SOURCE_PAGES = 4;
+const MAX_BOUND_FOLIO_SOURCE_ROWS = 200;
+const BOUND_FOLIO_CACHE_POSITIONS = new Set([51, 101, 151]);
+
+function nextBoundFolioResponseBounds(
+  started: number,
+  bytesObserved: number,
+): HmsPostFormResponseBounds {
+  const totalRemainingMs = FOLIO_BOUND_READ_MAX_DURATION_MS - (Date.now() - started);
+  if (totalRemainingMs <= 0) {
+    throw new HmsRuntimeError('TIMEOUT', 'folio financial source budget exhausted');
+  }
+  const maxBytes = FOLIO_READ_MAX_BYTES - bytesObserved;
+  if (maxBytes <= 0) {
+    throw new HmsRuntimeError('SIZE_LIMIT', 'folio financial source byte budget exhausted');
+  }
+  return { maxBytes, timeoutMs: Math.min(FOLIO_READ_MAX_DURATION_MS, totalRemainingMs) };
+}
+
+function assertBoundFolioRequestDuration(requestStarted: number): void {
+  if (Date.now() - requestStarted > FOLIO_READ_MAX_DURATION_MS) {
+    throw new HmsRuntimeError('TIMEOUT', 'folio financial request exceeded its time budget');
+  }
+}
+
+function boundedFolioTransportReason(error: unknown): ReadReasonCode | null {
+  if (!(error instanceof HmsRuntimeError)) return null;
+  if (error.code === 'TIMEOUT') return 'TIMEOUT';
+  if (error.code === 'SIZE_LIMIT') return 'SIZE_LIMIT';
+  if (error.code === 'SOURCE_UNAVAILABLE') return 'SOURCE_UNAVAILABLE';
+  return null;
+}
+
+function boundFolioPageLimit(paging: BoundFolioPaging | undefined): number | null {
+  const limit = paging?.limit ?? FOLIO_READ_MAX_ROWS;
+  return Number.isSafeInteger(limit) && limit >= 1 && limit <= FOLIO_READ_MAX_ROWS ? limit : null;
+}
+
+function parseBoundFolioCursor(cursor: string | undefined): BoundFolioCursor | null {
+  if (cursor === undefined) return { digest: '', offset: 0 };
+  const match = /^fol1:([a-f0-9]{64}):(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const offset = Number(match[2]);
+  if (!Number.isSafeInteger(offset) || offset < 1 || offset >= MAX_BOUND_FOLIO_SOURCE_ROWS) {
+    return null;
+  }
+  return { digest: match[1]!, offset };
+}
+
+function boundFolioCursorDigest(
+  parentProof: FolioFolParentProof,
+  sourceHash: string,
+  requested: readonly BoundFolioSectionId[],
+  offset: number,
+): string {
+  return sha256Hex(
+    canonicalJson({
+      parent: parentProof,
+      sourceHash,
+      requestedSections: [...requested].sort(),
+      offset,
+    }),
+  );
+}
+
+function makeBoundFolioCursor(
+  parentProof: FolioFolParentProof,
+  sourceHash: string,
+  requested: readonly BoundFolioSectionId[],
+  offset: number,
+): string {
+  return `fol1:${boundFolioCursorDigest(parentProof, sourceHash, requested, offset)}:${offset}`;
+}
+
+function mergeBoundFolioPageHash(
+  pages: readonly BoundFolioAllDataParseResult[],
+  totalRecords: number,
+): string {
+  return sha256Hex(
+    canonicalJson({
+      totalRecords,
+      pages: pages.map((page) => page.sourceHash),
+    }),
+  );
+}
+
+function allDataReadUnavailable(
+  bytesObserved: number,
+  rowsScanned: number,
+  sourceHash = '',
+): BoundFolioAllDataRead {
+  return {
+    items: [],
+    totalRecords: 0,
+    rowsScanned,
+    bytesObserved,
+    sourceHash,
+    unavailable: true,
+    blocker: null,
+  };
+}
+
+async function readBoundFolioAllDataPages(input: {
+  facade: ReturnType<typeof createFolioReadFacade>;
+  confirmationNumber: string;
+  reservationStayId: string;
+  detailValues: Record<string, string | number | null | undefined>;
+  parentProof: FolioFolParentProof;
+  context: import('./folio-fol-parse.js').FolioAllDataParseContext;
+  signal: AbortSignal;
+  started: number;
+  initialBytesObserved: number;
+}): Promise<BoundFolioAllDataRead> {
+  const pages: BoundFolioAllDataParseResult[] = [];
+  const sourceBodies: Array<{ surface: string; body: string }> = [];
+  let bytesObserved = 0;
+  let rowsScanned = 0;
+  let body: string;
+  assertNotAborted(input.signal);
+  try {
+    const requestStarted = Date.now();
+    body = await input.facade.openBoundFolioAllData({
+      confirmationNumber: input.confirmationNumber,
+      reservationStayId: input.reservationStayId,
+      detailValues: input.detailValues,
+      responseBounds: nextBoundFolioResponseBounds(
+        input.started,
+        input.initialBytesObserved + bytesObserved,
+      ),
+    });
+    assertNotAborted(input.signal);
+    assertBoundFolioRequestDuration(requestStarted);
+  } catch (error) {
+    if (input.signal.aborted) assertNotAborted(input.signal);
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    if (boundedFolioTransportReason(error)) throw error;
+    return allDataReadUnavailable(bytesObserved, rowsScanned);
+  }
+  if (typeof body !== 'string') return allDataReadUnavailable(bytesObserved, rowsScanned);
+  sourceBodies.push({ surface: 'OSRESV.FOL.xmlhttp', body });
+
+  for (let pageNumber = 0; ; pageNumber += 1) {
+    assertNotAborted(input.signal);
+    bytesObserved += Buffer.byteLength(body);
+    if (input.initialBytesObserved + bytesObserved > FOLIO_READ_MAX_BYTES) {
+      return {
+        items: [],
+        totalRecords: 0,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: '',
+        unavailable: false,
+        blocker: 'FOLIO_ALL_DATA_BOUNDS_EXCEEDED',
+      };
+    }
+    if (Date.now() - input.started > FOLIO_BOUND_READ_MAX_DURATION_MS) {
+      return {
+        items: [],
+        totalRecords: 0,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: '',
+        unavailable: false,
+        blocker: 'FOLIO_ALL_DATA_TIMEOUT',
+      };
+    }
+    const parsed = parseBoundFolioAllDataTransport(body, input.parentProof, {
+      ...input.context,
+      expectedCursorPosition:
+        pageNumber === 0 ? 0 : pages[pages.length - 1]!.currentCursorPosition! + 1,
+    });
+    if (parsed.blocker) {
+      rowsScanned += parsed.rowsScanned;
+      return {
+        items: [],
+        totalRecords: parsed.totalRecords ?? 0,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: parsed.sourceHash,
+        unavailable: parsed.blocker === 'FOLIO_ALL_DATA_UNSUPPORTED_FORMAT',
+        blocker: parsed.blocker,
+      };
+    }
+    rowsScanned += parsed.rowsScanned;
+    pages.push(parsed);
+    if (pages.length > MAX_BOUND_FOLIO_SOURCE_PAGES) {
+      return {
+        items: [],
+        totalRecords: parsed.totalRecords ?? 0,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: '',
+        unavailable: false,
+        blocker: 'FOLIO_ALL_DATA_BOUNDS_EXCEEDED',
+      };
+    }
+    const totalRecords = pages[0]!.totalRecords!;
+    if (parsed.totalRecords !== totalRecords) {
+      return {
+        items: [],
+        totalRecords,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: parsed.sourceHash,
+        unavailable: false,
+        blocker: 'FOLIO_ALL_DATA_PAGING_UNSUPPORTED',
+      };
+    }
+    if (!parsed.hasMore) {
+      const items = pages.flatMap((page) => page.items);
+      const duplicateRefs = new Set<string>();
+      for (const item of items) {
+        const ref = item.transactionRef.value;
+        if (duplicateRefs.has(ref)) {
+          return {
+            items: [],
+            totalRecords,
+            rowsScanned,
+            bytesObserved,
+            sourceHash: '',
+            unavailable: false,
+            blocker: 'FOLIO_ALL_DATA_PAGING_UNSUPPORTED',
+          };
+        }
+        duplicateRefs.add(ref);
+      }
+      if (items.length !== totalRecords || totalRecords > MAX_BOUND_FOLIO_SOURCE_ROWS) {
+        return {
+          items: [],
+          totalRecords,
+          rowsScanned,
+          bytesObserved,
+          sourceHash: '',
+          unavailable: false,
+          blocker: 'FOLIO_ALL_DATA_PAGING_UNSUPPORTED',
+        };
+      }
+      return {
+        items,
+        totalRecords,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: mergeBoundFolioPageHash(pages, totalRecords),
+        sourceBodies,
+        unavailable: false,
+        blocker: null,
+      };
+    }
+    const nextPosition = parsed.currentCursorPosition! + 1;
+    if (!BOUND_FOLIO_CACHE_POSITIONS.has(nextPosition)) {
+      return {
+        items: [],
+        totalRecords,
+        rowsScanned,
+        bytesObserved,
+        sourceHash: parsed.sourceHash,
+        unavailable: false,
+        blocker: 'FOLIO_ALL_DATA_PAGING_UNSUPPORTED',
+      };
+    }
+    assertNotAborted(input.signal);
+    try {
+      const requestStarted = Date.now();
+      body = await input.facade.readBoundFolioCache(
+        nextPosition,
+        nextBoundFolioResponseBounds(input.started, input.initialBytesObserved + bytesObserved),
+      );
+      assertNotAborted(input.signal);
+      assertBoundFolioRequestDuration(requestStarted);
+    } catch (error) {
+      if (input.signal.aborted) assertNotAborted(input.signal);
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (boundedFolioTransportReason(error)) throw error;
+      return allDataReadUnavailable(bytesObserved, rowsScanned, parsed.sourceHash);
+    }
+    if (typeof body !== 'string') return allDataReadUnavailable(bytesObserved, rowsScanned);
+    sourceBodies.push({ surface: 'GETCACHE', body });
+  }
+}
+
+function boundFolioTransactionsPage(
+  items: readonly BoundFolioTransaction[],
+  offset: number,
+  limit: number,
+  parentProof: FolioFolParentProof,
+  sourceHash: string,
+  requested: readonly BoundFolioSectionId[],
+) {
+  const selected = items.slice(offset, offset + limit);
+  const hasMore = offset + selected.length < items.length;
+  return {
+    state: 'available' as const,
+    data: {
+      items: selected,
+      page: {
+        returnedCount: selected.length,
+        hasMore,
+        nextCursor: hasMore
+          ? makeBoundFolioCursor(parentProof, sourceHash, requested, offset + selected.length)
+          : null,
+      },
+    },
+    completeness: 'complete' as const,
+    issues: [],
+  };
+}
+
 export type LiveFolioReadDriver = {
   observeFolioBalance(
     authorization: HmsSessionAuthorization,
@@ -1281,12 +1783,27 @@ export type LiveFolioReadDriver = {
     child: ReadCandidateChild,
     signal: AbortSignal,
   ): Promise<DepositSummaryKernelResult>;
+  /**
+   * Read the exact parent-bound OSRESV.FOL transport once and return the
+   * canonical receipt shape.  Deposits and authorization stay explicit
+   * unavailable until their own reviewed source is proven.
+   */
+  observeBoundFolio(
+    authorization: HmsSessionAuthorization,
+    child: ReadCandidateChild,
+    requestedSections: readonly BoundFolioSectionId[],
+    signal: AbortSignal,
+    trustedDisclosure?: TrustedFolioDisclosure,
+    paging?: BoundFolioPaging,
+  ): Promise<ReadResult<FolioReadData>>;
 };
 
 export type LiveFolioReadDriverInput = {
   runtime: HmsRuntime;
   transportId: string;
   expectedConfirmationToken: string;
+  /** Validated OSRESV.HDR reservationstayid from the detail dump, when available. */
+  reservationStayId?: string | null;
   expectedPropertyCode?: string;
   auditSpecFor?: (input: {
     branchId: 'folio_summary' | 'deposit_ledger_summary';
@@ -1301,10 +1818,355 @@ export type LiveFolioReadDriverInput = {
   >;
 };
 
+async function runBoundFolioRead(
+  input: LiveFolioReadDriverInput,
+  authorization: HmsSessionAuthorization,
+  child: ReadCandidateChild,
+  requestedInput: readonly BoundFolioSectionId[],
+  signal: AbortSignal,
+  trustedDisclosure?: TrustedFolioDisclosure,
+  paging?: BoundFolioPaging,
+): Promise<ReadResult<FolioReadData>> {
+  const requested = requestedBoundFolioSections(requestedInput);
+  const pageLimit = boundFolioPageLimit(paging);
+  const cursor = parseBoundFolioCursor(paging?.cursor);
+  if (
+    pageLimit == null ||
+    cursor == null ||
+    (paging?.cursor && !requested.includes('transactions'))
+  ) {
+    return boundFolioManualResult(child, requested, 'UNSUPPORTED_FORMAT');
+  }
+  try {
+    assertNotAborted(signal);
+    assertFolioAuth(
+      authorization,
+      child,
+      new Set(['folio_summary']),
+      'folio_summary',
+      input.expectedPropertyCode ?? 'HRCEN',
+    );
+  } catch (error) {
+    const reasonCode: ReadReasonCode =
+      error instanceof HmsRuntimeError && error.code === 'ROLE_PROOF_EXPIRED'
+        ? 'REF_EXPIRED'
+        : error instanceof Error && error.name === 'AbortError'
+          ? 'TIMEOUT'
+          : 'SCOPE_DENIED';
+    return boundFolioManualResult(child, requested, reasonCode);
+  }
+
+  let session: Awaited<ReturnType<HmsRuntime['openReadSession']>> | null = null;
+  let sessionClosed = false;
+  let closeSession: (() => Promise<void>) | null = null;
+  try {
+    const reservationStayId = input.reservationStayId?.trim() ?? '';
+    if (!reservationStayId) {
+      return boundFolioManualResult(child, requested, 'INPUT_MISSING');
+    }
+    if (!input.detailDumpFor) {
+      return boundFolioManualResult(child, requested, 'INPUT_MISSING');
+    }
+
+    const detailDump = await input.detailDumpFor();
+    assertNotAborted(signal);
+    const detailValues = detailDump?.values as Record<string, unknown> | undefined;
+    if (!detailValues) {
+      return boundFolioManualResult(child, requested, 'SCOPE_DENIED');
+    }
+    const account = detailDumpValue(detailValues, 'account');
+    const currency = ['balancecurr', 'propertycurrency', 'hotelcurrency', 'currency']
+      .map((key) => detailDumpValue(detailValues, key))
+      .find((value): value is string => value != null && /^[A-Z]{3}$/i.test(value))
+      ?.toUpperCase();
+    if (!account || !currency) {
+      return boundFolioManualResult(child, requested, 'SCOPE_DENIED');
+    }
+
+    const auditSpec = input.auditSpecFor?.({ branchId: 'folio_summary' });
+    session = await input.runtime.openReadSession({
+      transportId: input.transportId,
+      signal,
+      allowUnstarted: true,
+      auditSpec,
+      sessionAuthorization: authorization,
+    });
+    closeSession = async () => {
+      if (sessionClosed || !session) return;
+      sessionClosed = true;
+      await session.close();
+    };
+
+    assertNotAborted(signal);
+    // Authentication/context preparation remains bounded by the caller's
+    // signal. The five-second financial-source budget starts at the read,
+    // not while an authenticated proof context is being prepared.
+    const observedAtDate = new Date();
+    const observedAt = observedAtDate.toISOString();
+    const started = observedAtDate.getTime();
+    const facade = createFolioReadFacade(session, {
+      expectedPropertyCode: input.expectedPropertyCode ?? 'HRCEN',
+    });
+    const requestStarted = Date.now();
+    const body = await facade.openBoundOsresvFol({
+      confirmationNumber: input.expectedConfirmationToken,
+      reservationStayId,
+      detailValues: detailValues as Record<string, string | number | null | undefined>,
+      responseBounds: nextBoundFolioResponseBounds(started, 0),
+    });
+    assertNotAborted(signal);
+    assertBoundFolioRequestDuration(requestStarted);
+    if (typeof body !== 'string') {
+      return boundFolioManualResult(child, requested, 'SOURCE_UNAVAILABLE');
+    }
+
+    const bytesObserved = Buffer.byteLength(body);
+    const durationBeforeParse = Date.now() - started;
+    if (bytesObserved > FOLIO_READ_MAX_BYTES) {
+      return boundFolioManualResult(child, requested, 'SIZE_LIMIT');
+    }
+    if (durationBeforeParse > FOLIO_BOUND_READ_MAX_DURATION_MS) {
+      return boundFolioManualResult(child, requested, 'TIMEOUT');
+    }
+    if (session.terminal() || session.violation()) {
+      return boundFolioManualResult(child, requested, 'SOURCE_UNAVAILABLE');
+    }
+
+    const evidenceRef = `ev:folio-fol:${randomUUID()}`;
+    const sourceExpiresAt = new Date(
+      observedAtDate.getTime() + FOLIO_READ_MAX_SOURCE_AGE_MS,
+    ).toISOString();
+    const parentProof: FolioFolParentProof = {
+      confirmationNumber: input.expectedConfirmationToken,
+      reservationStayId,
+      propertyCode: input.expectedPropertyCode ?? 'HRCEN',
+      account,
+      currency,
+    };
+    const parsed = parseBoundFolioFolTransport(body, parentProof, {
+      evidenceRef,
+      observedAt,
+      expiresAt: sourceExpiresAt,
+    });
+    assertNotAborted(signal);
+    let durationMs = Date.now() - started;
+    if (parsed.bytesObserved > FOLIO_READ_MAX_BYTES) {
+      return boundFolioManualResult(child, requested, 'SIZE_LIMIT');
+    }
+    if (durationMs > FOLIO_BOUND_READ_MAX_DURATION_MS) {
+      return boundFolioManualResult(child, requested, 'TIMEOUT');
+    }
+    if (
+      parsed.blocker ||
+      !parsed.envelopeRecognized ||
+      !parsed.scopeVerified ||
+      parsed.currency == null ||
+      parsed.currency !== currency
+    ) {
+      return boundFolioManualResult(child, requested, boundFolioReason(parsed.blocker));
+    }
+
+    const wantsBalance = requested.includes('balance');
+    const wantsDeposits = requested.includes('deposits');
+    const wantsTransactions = requested.includes('transactions');
+    const wantsAuthorization = requested.includes('authorization');
+    let allData: BoundFolioAllDataRead | null = null;
+    if (wantsTransactions) {
+      allData = await readBoundFolioAllDataPages({
+        facade,
+        confirmationNumber: input.expectedConfirmationToken,
+        reservationStayId,
+        detailValues: detailValues as Record<string, string | number | null | undefined>,
+        parentProof,
+        context: {
+          evidenceRef,
+          observedAt,
+          expiresAt: sourceExpiresAt,
+        },
+        signal,
+        started,
+        initialBytesObserved: bytesObserved,
+      });
+      assertNotAborted(signal);
+      if (!allData.unavailable && allData.blocker) {
+        return boundFolioManualResult(child, requested, boundFolioReason(allData.blocker));
+      }
+      if (allData.bytesObserved + bytesObserved > FOLIO_READ_MAX_BYTES) {
+        return boundFolioManualResult(child, requested, 'SIZE_LIMIT');
+      }
+      if (Date.now() - started > FOLIO_BOUND_READ_MAX_DURATION_MS) {
+        return boundFolioManualResult(child, requested, 'TIMEOUT');
+      }
+      if (session.terminal() || session.violation()) {
+        return boundFolioManualResult(child, requested, 'SOURCE_UNAVAILABLE');
+      }
+      durationMs = Date.now() - started;
+      if (!allData.unavailable && allData.sourceHash) {
+        const expectedDigest = boundFolioCursorDigest(
+          parentProof,
+          allData.sourceHash,
+          requested,
+          cursor.offset,
+        );
+        if (
+          paging?.cursor &&
+          (cursor.digest !== expectedDigest || cursor.offset >= allData.items.length)
+        ) {
+          return boundFolioManualResult(child, requested, 'STALE_EVIDENCE');
+        }
+      } else if (paging?.cursor) {
+        return boundFolioManualResult(child, requested, 'SOURCE_UNAVAILABLE');
+      }
+    }
+
+    assertNotAborted(signal);
+    await closeSession?.();
+    assertNotAborted(signal);
+    const finalizedReceipt = finalizedFolioReceipt(session, auditSpec, 'folio_summary');
+    if (auditSpec && !finalizedReceipt) {
+      return boundFolioManualResult(child, requested, 'SOURCE_UNAVAILABLE');
+    }
+    const finalizedExpiry = finalizedReceipt?.expiresAt;
+    const expiresAt =
+      finalizedExpiry && Date.parse(finalizedExpiry) < Date.parse(sourceExpiresAt)
+        ? finalizedExpiry
+        : sourceExpiresAt;
+    const evidence = boundFolioEvidence({
+      evidenceRef,
+      body,
+      sourceBodies: allData?.sourceBodies,
+      authorization,
+      child,
+      observedAt,
+      expiresAt,
+      artifactRef: finalizedReceipt?.artifactId,
+    });
+
+    const balance = boundFolioBalanceSection(
+      parsed.balanceSection,
+      parsed.totalBalance,
+      parsed.currency,
+      evidenceRef,
+      observedAt,
+      expiresAt,
+      wantsBalance,
+    );
+    const deposits = unknownSection(wantsDeposits ? 'SOURCE_UNAVAILABLE' : 'NOT_REQUESTED');
+    const transactions = wantsTransactions
+      ? allData && !allData.unavailable
+        ? boundFolioTransactionsPage(
+            allData.items,
+            cursor.offset,
+            pageLimit,
+            parentProof,
+            allData.sourceHash,
+            requested,
+          )
+        : unknownSection('SOURCE_UNAVAILABLE')
+      : unknownSection('NOT_REQUESTED');
+    const authorizationFact = unknownFact({
+      reasonCode: wantsAuthorization ? 'SOURCE_UNAVAILABLE' : 'NOT_REQUESTED',
+    });
+    const disclosure = boundFolioDisclosure(trustedDisclosure);
+
+    const data = folioReadDataSchema.parse({
+      reservationBinding: 'exact_parent_redacted',
+      guestPrivacy: 'identity_redacted',
+      currency: parsed.currency,
+      ...(wantsBalance && parsed.totalBalance != null ? { totalBalance: parsed.totalBalance } : {}),
+      balance,
+      deposits,
+      transactions,
+      liabilityLocation: unknownFact({ reasonCode: 'NOT_REQUESTED' }),
+      authorization: authorizationFact,
+      disclosure: {
+        ...disclosure,
+        claimEligibility: folioClaimEligibility(disclosure.recipientClass, disclosure.inquiryClass),
+      },
+      rowsScanned: Math.min(
+        FOLIO_READ_MAX_TOTAL_ROWS,
+        parsed.rowsScanned + (allData?.rowsScanned ?? 0),
+      ),
+      bytesObserved: parsed.bytesObserved + (allData?.bytesObserved ?? 0),
+      durationMs,
+      observedAt,
+    });
+
+    const unavailableSections = [
+      ...(wantsBalance ? [boundFolioSectionIssue('balance', balance)] : []),
+      ...(wantsDeposits ? [boundFolioSectionIssue('deposits', deposits)] : []),
+      ...(wantsTransactions ? [boundFolioSectionIssue('transactions', transactions)] : []),
+      ...(wantsAuthorization
+        ? [{ section: 'authorization', reasonCode: 'SOURCE_UNAVAILABLE' as const }]
+        : []),
+    ].filter((value): value is { section: string; reasonCode: ReadReasonCode } => value !== null);
+    const transactionPartial = wantsTransactions && transactions?.state !== 'available';
+    const complete = unavailableSections.length === 0 && !transactionPartial;
+    const hasPerFolioBalance =
+      wantsBalance &&
+      parsed.balanceSection?.data.items.some((item) => item.balance.state === 'known') === true;
+    const hasData =
+      (wantsBalance && (parsed.totalBalance != null || hasPerFolioBalance)) ||
+      (wantsTransactions && transactions?.state === 'available');
+    const issues = [
+      ...unavailableSections.map(({ reasonCode }) => readIssue(reasonCode)),
+      ...(transactionPartial ? [readIssue('PARTIAL_WINDOW')] : []),
+    ];
+    const result: ReadResult<FolioReadData> = {
+      toolId: 'hms_read_folio',
+      schemaVersion: '1.0.0',
+      status: complete ? 'ok' : hasData ? 'partial' : 'manual_required',
+      data,
+      completeness: complete ? 'complete' : hasData ? 'partial' : 'unknown',
+      unavailableSections,
+      scopeRef: child.scopeHash,
+      evidence: [evidence],
+      page:
+        wantsTransactions && transactions?.state === 'available' ? transactions.data.page : null,
+      issues,
+    };
+    if (!readResultSchema.safeParse(result).success) {
+      return boundFolioManualResult(child, requested, 'UNSUPPORTED_FORMAT');
+    }
+    return result;
+  } catch (error) {
+    const boundedTransportReason = boundedFolioTransportReason(error);
+    const reasonCode: ReadReasonCode =
+      error instanceof Error && error.name === 'AbortError'
+        ? 'TIMEOUT'
+        : error instanceof HmsRuntimeError &&
+            (error.code === 'PROPERTY_MISMATCH' || error.code === 'ROLE_SCOPE_INVALID')
+          ? 'SCOPE_DENIED'
+          : boundedTransportReason ?? 'SOURCE_UNAVAILABLE';
+    return boundFolioManualResult(child, requested, reasonCode);
+  } finally {
+    if (session && !sessionClosed) {
+      try {
+        if (closeSession) await closeSession();
+        else await session.close();
+      } catch {
+        // The canonical result already failed closed; never replace it with
+        // a provider/native cleanup error.
+      }
+    }
+  }
+}
+
 export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
   const { runtime, transportId, expectedConfirmationToken, expectedPropertyCode = 'HRCEN' } = input;
 
   return {
+    observeBoundFolio(authorization, child, requestedSections, signal, trustedDisclosure, paging) {
+      return runBoundFolioRead(
+        input,
+        authorization,
+        child,
+        requestedSections,
+        signal,
+        trustedDisclosure,
+        paging,
+      );
+    },
     async observeFolioBalance(authorization, child, signal) {
       assertNotAborted(signal);
       assertFolioAuth(
@@ -1381,17 +2243,22 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
         assertNotAborted(signal);
         let parsed = parseFolioBalanceTransport(text, expectedConfirmationToken);
-        // Dataspy 1941 often lacks foliobalance — deepen via OSRESV.FOL when scoped.
+        // Dataspy 1941 may omit foliobalance or the scoped row. Deepen via the
+        // exact OSRESV.FOL tab bound to the same parent confirmation. The FOL
+        // response may establish scope only when it yields both admissible
+        // money and currency; otherwise remain fail-closed.
         if (
-          parsed.reservationScopeProven &&
-          (parsed.totalBalance == null || parsed.currency == null)
+          !parsed.reservationScopeProven ||
+          parsed.totalBalance == null ||
+          parsed.currency == null
         ) {
           assertNotAborted(signal);
           const folText = await facade.openOsresvFol({
             confirmationNumber: expectedConfirmationToken,
+            reservationStayId: input.reservationStayId,
           });
           const folParsed = parseFolioFolTransport(folText);
-          if (folParsed.hasCardLeak) {
+          if (parsed.hasCardLeak || folParsed.hasCardLeak) {
             return {
               status: 'manual_required',
               currency: null,
@@ -1404,14 +2271,22 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
               rowsScanned: parsed.rowsScanned,
             };
           }
-          if (folParsed.envelopeRecognized) {
-            parsed = {
-              ...parsed,
-              totalBalance: parsed.totalBalance ?? folParsed.totalBalance,
-              currency: parsed.currency ?? folParsed.currency,
-              bytesObserved: parsed.bytesObserved + Buffer.byteLength(folText),
-            };
-          }
+          // Legacy OSRESV.FOL has no response-side parent proof. Never promote
+          // its money/currency into the identity-scoped balance result; the
+          // bound reader owns the only path allowed to claim that scope.
+          return {
+            status: 'manual_required',
+            currency: null,
+            totalBalance: null,
+            evidenceId: null,
+            blocker: FOLIO_RESERVATION_SCOPE_BLOCKER,
+            observedAt: observedAt.toISOString(),
+            durationMs: Date.now() - started,
+            bytesObserved: parsed.bytesObserved + Buffer.byteLength(folText),
+            rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: false,
+            scopeVerified: false,
+          };
         }
         const durationMs = Date.now() - started;
         if (parsed.hasCardLeak) {

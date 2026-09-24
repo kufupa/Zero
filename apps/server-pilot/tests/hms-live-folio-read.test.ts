@@ -568,6 +568,32 @@ describe('live folio driver binding + denied actions', () => {
     expect(JSON.stringify(result)).not.toContain('inquiryClass');
   });
 
+  it('fails closed instead of promoting identity-free OSRESV.FOL money', async () => {
+    const osress = folioEnvelope([{ confirmationnumber: CONFIRM }]);
+    const fol = folioEnvelope([
+      { foliobalance: '12.00', propertycurrency: 'ZAR' },
+    ]);
+    const { runtime, posts } = mockRuntime((path) =>
+      path === '/web/base/OSRESV.FOL' ? fol : osress,
+    );
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+      reservationStayId: 'stay-from-correlated-row',
+      expectedPropertyCode: 'HRCEN',
+    });
+    const result = await driver.observeFolioBalance(auth(), child(), new AbortController().signal);
+    expect(result.status).toBe('manual_required');
+    expect(result.totalBalance).toBeNull();
+    expect(result.currency).toBeNull();
+    expect(result.blocker).toBe('BLOCKED_FOLIO_RESERVATION_SCOPE_UNPROVEN');
+    const folPost = posts.find((post) => post.path === '/web/base/OSRESV.FOL');
+    expect(folPost?.fields.confirmationnumber).toBe(CONFIRM);
+    expect(folPost?.fields.reservationstayid).toBe('stay-from-correlated-row');
+    expect(folPost?.fields.id).toBe('stay-from-correlated-row');
+  });
+
   it('rejects stale/cross-thread/third-party branch/unknown property', async () => {
     const { runtime } = mockRuntime(folioEnvelope([]));
     const driver = createLiveFolioReadDriver({
@@ -1321,7 +1347,7 @@ describe('live folio driver binding + denied actions', () => {
         'report_execution',
       ]),
     );
-    expect(FOLIO_READ_MAX_BYTES).toBe(64 * 1024);
+    expect(FOLIO_READ_MAX_BYTES).toBe(256 * 1024);
     expect(FOLIO_READ_MAX_DURATION_MS).toBe(5_000);
   });
 

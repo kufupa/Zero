@@ -187,6 +187,21 @@ describe('centurion eval lab', () => {
       expect(schema.input.properties).toBeTruthy();
       expect(schema.output.properties).toBeTruthy();
     }
+    const create = labReviewSchemaFor('hms_create_reservation');
+    expect(create.input.required).toEqual([
+      'arrival',
+      'departure',
+      'adults',
+      'sourceOfBusiness',
+      'roomType',
+      'ratePlan',
+      'track',
+      'firstName',
+      'lastName',
+    ]);
+    expect(create.input.properties).not.toHaveProperty('boardBasis');
+    expect(create.input.properties).not.toHaveProperty('guestName');
+    expect(create.output.properties).toHaveProperty('mealPlan');
     const quote = labReviewSchemaFor('hms_quote_stay');
     expect(quote.input.properties).toHaveProperty('arrival');
     expect(quote.input.properties).toHaveProperty('departure');
@@ -379,6 +394,7 @@ describe('centurion eval lab', () => {
     expect(screen.getByTestId('interesting-fact').textContent).not.toContain('check-in time');
     expect(screen.getByTestId('lab-gold-split')).toBeTruthy();
     expect(screen.getByTestId('lab-gold-body').textContent).toContain('Please see attached quotation.');
+    expect(screen.getByTestId('lab-quote-rate-proof').textContent).toContain('Not a mailbox guest.');
   });
 
   it('builds inbound spans from request values on PDF/prior text', () => {
@@ -461,6 +477,7 @@ describe('centurion eval lab', () => {
     );
     expect(screen.queryByTestId('lab-stay-asks')).toBeNull();
     expect(screen.getByTestId('lab-action-live-0').textContent).toContain('Quote stay');
+    expect(screen.getAllByTestId('lab-action-then').length).toBeGreaterThan(0);
     expect(screen.getByTestId('lab-action-live-0').textContent).toContain('2');
     expect(screen.getByTestId('lab-action-live-1').textContent).toContain('7');
     expect(screen.getByTestId('lab-reading-pane').innerHTML).toMatch(/lab-span-action-0/);
@@ -575,7 +592,7 @@ describe('centurion eval lab', () => {
     expect(enriched.map((item) => item.tool)).toContain('hms_read_folio');
     expect(enriched.map((item) => item.tool)).not.toContain('mail_read_artifact');
     expect(occupancyFromText(folioRow.inbound.textBody)).toEqual({ adults: 12 });
-    expect(occupancyFromText('Rooms : 2 Singles')).toEqual({ adults: 2 });
+    expect(occupancyFromText('Rooms : 2 Singles')).toEqual({});
     const quotes: LabRow = {
       ...SYNTHETIC_LAB_INDEX.rows[0]!,
       proposedActions: [
@@ -584,6 +601,647 @@ describe('centurion eval lab', () => {
       ],
     };
     expect(enrichHitlProposed(quotes).slice(0, 2).map((item) => item.request.roomQty)).toEqual([2, 7]);
+    expect(enrichHitlProposed(quotes).slice(0, 2).every((item) => item.request.adults == null)).toBe(true);
+    const singles: LabRow = {
+      ...quotes,
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { roomQty: 3, roomType: 'Singles', adults: 3 } },
+      ],
+    };
+    const routed = enrichHitlProposed(singles).find((item) => item.tool === 'hms_quote_stay');
+    expect(routed?.request.roomType).toBeUndefined();
+    expect(routed?.request.bedPreference).toBe('single');
+    expect(routed?.request.adults).toBeUndefined();
+    const suite: LabRow = {
+      ...quotes,
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { roomType: 'Suite' } },
+      ],
+    };
+    expect(enrichHitlProposed(suite).find((item) => item.tool === 'hms_quote_stay')?.request.roomType).toBe('SUITE');
+    const product: LabRow = {
+      ...quotes,
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { roomType: 'Standard Queen' } },
+      ],
+    };
+    const productRouted = enrichHitlProposed(product).find((item) => item.tool === 'hms_quote_stay');
+    expect(productRouted?.request.roomType).toBeUndefined();
+    expect(productRouted?.request.bedPreference).toBeUndefined();
+    const fromPdf: LabRow = {
+      ...quotes,
+      attachmentText: 'Check In: Thursday 10/09/2026\nCheck Out: Friday 11/09/2026\nRATE IS INCLUSIVE OF BREAKFAST',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const filled = enrichHitlProposed(fromPdf).find((item) => item.tool === 'hms_quote_stay');
+    expect(filled?.request.arrival).toBe('10/09/2026');
+    expect(filled?.request.departure).toBe('11/09/2026');
+    expect(filled?.request.boardBasis).toBeUndefined();
+    const twoRates: LabRow = {
+      ...quotes,
+      attachmentText: 'Rate per night: R1450.00 – Single / R1670.00 – Double',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(twoRates).find((item) => item.tool === 'hms_quote_stay')?.request.rateQuoted).toBeUndefined();
+    const oneRate: LabRow = {
+      ...quotes,
+      attachmentText: '14 - 18 Sep 2026 1 Single rate Dinner bed and Breakfast 4 R1 900,00 R7 600,00',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const rated = enrichHitlProposed(oneRate).find((item) => item.tool === 'hms_quote_stay');
+    expect(rated?.request.rateQuoted).toBe('1900.00');
+    expect(rated?.request.boardBasis).toBeUndefined();
+    expect(rated?.request.bedPreference).toBeUndefined();
+    const slip: LabRow = {
+      ...quotes,
+      attachmentText: 'Authorisation failed. Not a room quote. Amount 2910.00',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(slip).find((item) => item.tool === 'hms_quote_stay')?.request.rateQuoted).toBeUndefined();
+    const zar: LabRow = {
+      ...quotes,
+      attachmentText: 'Single rate Monday, 20, 2026 ZAR 1,940.00',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { rateQuoted: '202026.00' } },
+      ],
+    };
+    expect(enrichHitlProposed(zar).find((item) => item.tool === 'hms_quote_stay')?.request.rateQuoted).toBe('1940.00');
+    const ordinal: LabRow = {
+      ...quotes,
+      attachmentText: 'Arrival – Wednesday, 16th September 2026\nDeparture – Saturday, 19th September 2026\nAverage Daily rate:\nZAR 1420.00',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { arrival: '18 September', departure: '18-09-2026' } },
+      ],
+    };
+    const ordinalFilled = enrichHitlProposed(ordinal).find((item) => item.tool === 'hms_quote_stay');
+    expect(ordinalFilled?.request.arrival).toBe('16th September 2026');
+    expect(ordinalFilled?.request.departure).toBe('19th September 2026');
+    expect(ordinalFilled?.request.rateQuoted).toBe('1420.00');
+    const agreed: LabRow = {
+      ...quotes,
+      attachmentText: 'The agreed rate is R1,800.00 for a double room, inclusive of dinner, bed, and breakfast.',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const agreedFilled = enrichHitlProposed(agreed).find((item) => item.tool === 'hms_quote_stay');
+    expect(agreedFilled?.request.rateQuoted).toBe('1800.00');
+    expect(agreedFilled?.request.boardBasis).toBeUndefined();
+    const ping: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Rooms', textBody: 'Please update room availability. Advise vacant, clean, inspected rooms you are READY.' },
+      attachmentText: '',
+      threadOutcome: 'no_reply_owed',
+      needed: { hms_quote_stay: true },
+      tools: ['hms_quote_stay', 'hms_find_reservation', 'hms_read_reservation'],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { arrival: '1 October 2026' } },
+        { tool: 'hms_find_reservation', title: 'Find reservation', status: 'live', colorIndex: 1, request: {} },
+        { tool: 'hms_read_reservation', title: 'Read reservation', status: 'live', colorIndex: 2, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(ping)).toEqual([]);
+    const sameDay: LabRow = {
+      ...quotes,
+      attachmentText: 'Arrival – Wednesday, 16th September 2026\nArrival 16-09-2026\nCheck-out Mon, 02 Nov\n2026',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { arrival: '18 September', departure: '26-09-20' } },
+      ],
+    };
+    const same = enrichHitlProposed(sameDay).find((item) => item.tool === 'hms_quote_stay');
+    expect(same?.request.arrival).toBe('16th September 2026');
+    expect(same?.request.departure).toBe('02 Nov 2026');
+    const beds: LabRow = {
+      ...quotes,
+      attachmentText: 'Check-in: 24 September 2026\nSingle rooms: 1\nTwin rooms: 7',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { roomQty: 1, bedPreference: 'single' } },
+      ],
+    };
+    const mixed = enrichHitlProposed(beds).find((item) => item.tool === 'hms_quote_stay');
+    expect(mixed?.request.bedPreference).toBeUndefined();
+    expect(mixed?.request.roomQty).toBeUndefined();
+    const shortYear: LabRow = {
+      ...quotes,
+      attachmentText: 'Check in - 14 Sep\nCheck in - 14 Sep 26\nCheck out - 21 Sep\n4 Single rooms',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { adults: 4 } },
+      ],
+    };
+    const short = enrichHitlProposed(shortYear).find((item) => item.tool === 'hms_quote_stay');
+    expect(short?.request.arrival).toBe('14 Sep 26');
+    expect(short?.request.adults).toBeUndefined();
+    const iso: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Stay', textBody: 'Check-in: 2026-11-02\nCheck-out: 2026-11-05\nStandard double – R2300.00 Bed & Breakfast per night.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { arrival: '1 September 2026', departure: '15 October 2026' } },
+      ],
+    };
+    const isoFilled = enrichHitlProposed(iso).find((item) => item.tool === 'hms_quote_stay');
+    expect(isoFilled?.request.arrival).toBe('2026-11-02');
+    expect(isoFilled?.request.departure).toBe('2026-11-05');
+    expect(isoFilled?.request.rateQuoted).toBe('2300.00');
+    const spaced: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Rate', textBody: 'the rate will be R3 870 BB per night in a twin room.\nSent: 09 September 2026 10:19' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const spacedFilled = enrichHitlProposed(spaced).find((item) => item.tool === 'hms_quote_stay');
+    expect(spacedFilled?.request.rateQuoted).toBe('3870.00');
+    expect(spacedFilled?.request.boardBasis).toBeUndefined();
+    const subscription: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Offer', textBody: 'For only R199 per month, the tool gives you access to tenders.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { amount: '199.00' } },
+      ],
+    };
+    expect(enrichHitlProposed(subscription).find((item) => item.tool === 'hms_quote_stay')?.request.amount).toBeUndefined();
+    const duplicatedDay: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Dates', textBody: 'Arrival: 14 October\nDeparture: 15 October 15' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { departure: '15 October 15' },
+        },
+      ],
+    };
+    expect(enrichHitlProposed(duplicatedDay).find((item) => item.tool === 'hms_quote_stay')?.request.departure).toBe('15 October');
+    const newsDate: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Holiday',
+        textBody: 'Travelers leave on the 19th September and return on the 4th October 2026 for a public holiday.',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { arrival: '19th September', departure: '4th October 2026' },
+        },
+      ],
+    };
+    const newsFilled = enrichHitlProposed(newsDate).find((item) => item.tool === 'hms_quote_stay');
+    expect(newsFilled?.request.arrival).toBeUndefined();
+    expect(newsFilled?.request.departure).toBeUndefined();
+    const fullBoard: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Meals', textBody: 'Breakfast, lunch and dinner to be included.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(fullBoard).find((item) => item.tool === 'hms_quote_stay')?.request.boardBasis).toBeUndefined();
+    const glued: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Dates', textBody: 'Check in 21Sep 26\nCheck Out 22Sep' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const gluedFilled = enrichHitlProposed(glued).find((item) => item.tool === 'hms_quote_stay');
+    expect(gluedFilled?.request.arrival).toBe('21Sep 26');
+    expect(gluedFilled?.request.departure).toBe('22Sep');
+    const rangeStay: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Gov', textBody: 'Check in 14-16September 2026' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const rangeFilled = enrichHitlProposed(rangeStay).find((item) => item.tool === 'hms_quote_stay');
+    expect(rangeFilled?.request.arrival).toBe('14 September 2026');
+    expect(rangeFilled?.request.departure).toBe('16 September 2026');
+    const bankAndStay: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Pay', textBody: 'Bank payment notification.\nCheck in date: 13/09/2026\nCheck out date: 18/09/2026' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const bankFilled = enrichHitlProposed(bankAndStay).find((item) => item.tool === 'hms_quote_stay');
+    expect(bankFilled?.request.arrival).toBe('13/09/2026');
+    expect(bankFilled?.request.departure).toBe('18/09/2026');
+    const bbAndRoom: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Rate',
+        textBody: 'For the same room type is R1780.00 Bed & Breakfast per night & R1605.00 room only.',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { rateQuoted: '1780.00' } },
+      ],
+    };
+    expect(enrichHitlProposed(bbAndRoom).find((item) => item.tool === 'hms_quote_stay')?.request.rateQuoted).toBeUndefined();
+    const slicedDay: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Dates', textBody: 'Check in: 11/09/2026\nCheck out : 112/09/2026' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { departure: '12/09/2026' },
+        },
+      ],
+    };
+    const slicedFilled = enrichHitlProposed(slicedDay).find((item) => item.tool === 'hms_quote_stay');
+    expect(slicedFilled?.request.arrival).toBe('11/09/2026');
+    expect(slicedFilled?.request.departure).toBeUndefined();
+    const shortNumeric: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Dates', textBody: 'Check IN: 20/09\nCheck OUT: 21/09' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const shortFilled = enrichHitlProposed(shortNumeric).find((item) => item.tool === 'hms_quote_stay');
+    expect(shortFilled?.request.arrival).toBe('20/09');
+    expect(shortFilled?.request.departure).toBe('21/09');
+    const monthFirst: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody:
+          'Arrival : Tuesday, September 22, 2026\nDeparture : Wednesday, September 23, 2026\nDaily Rate : Tuesday, September 22, 2026 ZAR 1,940.00',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const monthFirstFilled = enrichHitlProposed(monthFirst).find((item) => item.tool === 'hms_quote_stay');
+    expect(monthFirstFilled?.request.arrival).toBe('September 22, 2026');
+    expect(monthFirstFilled?.request.departure).toBe('September 23, 2026');
+    expect(monthFirstFilled?.request.rateQuoted).toBe('1940.00');
+    const andOut: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Stay', textBody: 'Guest is check in 16 and out 18 Sep.\nDinner bed and breakfast please.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const andOutFilled = enrichHitlProposed(andOut).find((item) => item.tool === 'hms_quote_stay');
+    expect(andOutFilled?.request.arrival).toBe('16 Sep');
+    expect(andOutFilled?.request.departure).toBe('18 Sep');
+    expect(andOutFilled?.request.boardBasis).toBeUndefined();
+    const rateBasis: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'Check-In:21 Sep 2026 Check-Out:25 Sep 2026 Rate Basis:Breakfast',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const rateBasisFilled = enrichHitlProposed(rateBasis).find((item) => item.tool === 'hms_quote_stay');
+    expect(rateBasisFilled?.request.arrival).toBe('21 Sep 2026');
+    expect(rateBasisFilled?.request.departure).toBe('25 Sep 2026');
+    expect(rateBasisFilled?.request.boardBasis).toBeUndefined();
+    const dinnerOrders = [
+      'Service : B&B and dinner with soft drink',
+      'On government rate (bed, breakfast, dinner with 02 soft drinks & parking)',
+      'Please include breakfast and dinner, dinner capped at R250.',
+    ];
+    for (const textBody of dinnerOrders) {
+      const row: LabRow = {
+        ...quotes,
+        inbound: { subject: 'Stay', textBody },
+        attachmentText: '',
+        gold: null,
+        priorInbounds: [],
+        proposedActions: [
+          { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+        ],
+      };
+      expect(enrichHitlProposed(row).find((item) => item.tool === 'hms_quote_stay')?.request.boardBasis).toBeUndefined();
+    }
+    const timesOnly: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Stay', textBody: 'What time will dinner & breakfast times be each day?' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(timesOnly).find((item) => item.tool === 'hms_quote_stay')?.request.boardBasis).toBeUndefined();
+    const manyBeds: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Stay', textBody: 'Need queen rooms and twin rooms.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { bedPreference: 'twin', bedType: 'queen' },
+        },
+      ],
+    };
+    const manyBedsFilled = enrichHitlProposed(manyBeds).find((item) => item.tool === 'hms_quote_stay');
+    expect(manyBedsFilled?.request.bedPreference).toBeUndefined();
+    expect(manyBedsFilled?.request.bedType).toBeUndefined();
+    const statedPax: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'Dinner, bed and breakfast for 17 people Check-in 21/09/2026 and check-out 23/09/2026',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { roomQty: 17, adults: 17 },
+        },
+      ],
+    };
+    expect(enrichHitlProposed(statedPax).find((item) => item.tool === 'hms_quote_stay')?.request.adults).toBe(17);
+    const markdownDates: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: '*Check-in:* 01 November 2026\n*Check-out:* 19 December 2026',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const markdownFilled = enrichHitlProposed(markdownDates).find((item) => item.tool === 'hms_quote_stay');
+    expect(markdownFilled?.request.arrival).toBe('01 November 2026');
+    expect(markdownFilled?.request.departure).toBe('19 December 2026');
+    const boardLine: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Stay', textBody: 'Check In\nCheck Out\nBed & Breakfast' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    expect(enrichHitlProposed(boardLine).find((item) => item.tool === 'hms_quote_stay')?.request.boardBasis).toBeUndefined();
+    const fromTo: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'Room Reservation from 19 Sept to 21 Sept 2026 (2 Nights Stay)',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const fromToFilled = enrichHitlProposed(fromTo).find((item) => item.tool === 'hms_quote_stay');
+    expect(fromToFilled?.request.arrival).toBe('19 Sept 2026');
+    expect(fromToFilled?.request.departure).toBe('21 Sept 2026');
+    const commaWeekday: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'checking in Thursday, 17 September 2026 and checking out, Saturday, 19 September 2026',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const commaFilled = enrichHitlProposed(commaWeekday).find((item) => item.tool === 'hms_quote_stay');
+    expect(commaFilled?.request.arrival).toBe('17 September 2026');
+    expect(commaFilled?.request.departure).toBe('19 September 2026');
+    const dinnerCap: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'Check-in: 28 September 2026\nCheck-out: 30 September 2026\nPlease include breakfast and dinner, dinner capped at R250.',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { amount: '250.00' },
+        },
+      ],
+    };
+    const dinnerCapFilled = enrichHitlProposed(dinnerCap).find((item) => item.tool === 'hms_quote_stay');
+    expect(dinnerCapFilled?.request.amount).toBeUndefined();
+    expect(dinnerCapFilled?.request.boardBasis).toBeUndefined();
+    const airline: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Tickets', textBody: 'Remember to check in prior to departure.\n\nSent: Monday, 14 September 2026 14:32' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { amount: 'r 2026' } },
+      ],
+    };
+    const airlineFilled = enrichHitlProposed(airline).find((item) => item.tool === 'hms_quote_stay');
+    expect(airlineFilled?.request.arrival).toBeUndefined();
+    expect(airlineFilled?.request.amount).toBeUndefined();
+    const ofOctober: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Stay',
+        textBody: 'so we check in on the 12th of October and Check out on the 15th of October.',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { arrival: 'on the 12th of October and', departure: 'on the 15th of October.' },
+        },
+      ],
+    };
+    const ofOctoberFilled = enrichHitlProposed(ofOctober).find((item) => item.tool === 'hms_quote_stay');
+    expect(ofOctoberFilled?.request.arrival).toBe('12th of October');
+    expect(ofOctoberFilled?.request.departure).toBe('15th of October');
+    const bedAmp: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Rate',
+        textBody: 'Standard room is R1940.00 per night Bed & Breakfast',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: {} },
+      ],
+    };
+    const bedAmpFilled = enrichHitlProposed(bedAmp).find((item) => item.tool === 'hms_quote_stay');
+    expect(bedAmpFilled?.request.rateQuoted).toBe('1940.00');
+    expect(bedAmpFilled?.request.boardBasis).toBeUndefined();
+    expect(bedAmpFilled?.request.roomType).toBeUndefined();
+    const multiCheck: LabRow = {
+      ...quotes,
+      inbound: {
+        subject: 'Rooming',
+        textBody:
+          'One guest will now only be checking in on 16 September 2026 and checking out on 17 September 2026. Another guest will need to check in on 14 September 2026.',
+      },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { rateQuoted: 'R2500.00' },
+        },
+      ],
+    };
+    const multiFilled = enrichHitlProposed(multiCheck).find((item) => item.tool === 'hms_quote_stay');
+    expect(multiFilled?.request.arrival).toBeUndefined();
+    expect(multiFilled?.request.rateQuoted).toBeUndefined();
+    const dinnerBedOnly: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Policy', textBody: 'Dinner, Bed is listed on the menu. No stay rate.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { boardBasis: 'dinner_bed_breakfast' },
+        },
+      ],
+    };
+    expect(enrichHitlProposed(dinnerBedOnly).find((item) => item.tool === 'hms_quote_stay')?.request.boardBasis).toBeUndefined();
+    const prefixedRate: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Rate', textBody: 'The rate will be R2500.00 Single per room per night – Bed and Breakfast.' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        {
+          tool: 'hms_quote_stay',
+          title: 'Quote stay',
+          status: 'live',
+          colorIndex: 0,
+          request: { rateQuoted: 'R2500.00' },
+        },
+      ],
+    };
+    const prefixedFilled = enrichHitlProposed(prefixedRate).find((item) => item.tool === 'hms_quote_stay');
+    expect(prefixedFilled?.request.rateQuoted).toBe('2500.00');
+    expect(prefixedFilled?.request.boardBasis).toBeUndefined();
+    const openWindow: LabRow = {
+      ...quotes,
+      inbound: { subject: 'Programme', textBody: 'Applications Open: 1 September 2026 – 15 October 2026' },
+      attachmentText: '',
+      gold: null,
+      priorInbounds: [],
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { arrival: '1 September 2026', departure: '15 October 2026' } },
+      ],
+    };
+    const opened = enrichHitlProposed(openWindow).find((item) => item.tool === 'hms_quote_stay');
+    expect(opened?.request.arrival).toBeUndefined();
+    expect(opened?.request.departure).toBeUndefined();
+    const conflict: LabRow = {
+      ...quotes,
+      attachmentText: 'Departure – Saturday, 19th September 2026\nDeparture 18-09-2026',
+      proposedActions: [
+        { tool: 'hms_quote_stay', title: 'Quote stay', status: 'live', colorIndex: 0, request: { departure: '18-09-2026' } },
+      ],
+    };
+    expect(enrichHitlProposed(conflict).find((item) => item.tool === 'hms_quote_stay')?.request.departure).toBeUndefined();
     const quoteDoc: LabRow = {
       ...quotes,
       tools: ['hms_quote_stay', 'hms_generate_quote_document'],

@@ -1,6 +1,7 @@
 /** View-only Centurion demand eval lab helpers. Synthetic fixtures only in tests. */
 
 import { LAB_FREEZE_TOOL_IDS as LAB_TOOL_FOLDER_IDS, labReviewSchemaFor } from './centurion-eval-schemas';
+import { fillQuoteFromReadText, isAvailabilityPing, routeQuoteRequest } from './quote-stay-route';
 
 export {
   EMPTY_LAB_REVIEW_SCHEMA,
@@ -278,7 +279,7 @@ function wantsPrimaryCard(row: LabRow, tool: string): boolean {
 
 export function occupancyFromText(text: string): { adults?: number } {
   const match = text.match(
-    /\b(\d{1,3})\s*(?:pax|adults?|people|guests?|delegates?|attendees?|singles?|twins?|doubles?)\b/i,
+    /\b(\d{1,3})\s*(?:pax|adults?|people|guests?|delegates?|attendees?)\b/i,
   );
   if (!match) return {};
   const adults = Number(match[1]);
@@ -286,17 +287,50 @@ export function occupancyFromText(text: string): { adults?: number } {
   return { adults };
 }
 
-function actionRank(tool: string): number {
-  if (tool === 'hms_quote_stay') return 0;
-  const primary = HITL_PRIMARY_TOOLS.indexOf(tool as (typeof HITL_PRIMARY_TOOLS)[number]);
-  if (primary >= 0) return 1 + primary;
-  if (tool === 'hms_find_reservation') return 80;
-  if (tool === 'hms_read_reservation') return 81;
-  return 90;
+/** Early step is a small number. The rail shows the later step on top. */
+export function reservationistRank(tool: string): number {
+  if (tool === 'hms_find_reservation') return 10;
+  if (
+    tool === 'hms_read_reservation' ||
+    tool === 'hms_read_notes_traces' ||
+    tool === 'hms_read_folio' ||
+    tool === 'hms_event_read' ||
+    tool === 'hms_group_block_read' ||
+    tool === 'hms_company_account_read'
+  ) {
+    return 20;
+  }
+  if (
+    tool === 'hms_quote_stay' ||
+    tool === 'hms_amend_reservation' ||
+    tool === 'hms_create_reservation' ||
+    tool === 'hms_cancel_reservation'
+  ) {
+    return 30;
+  }
+  if (
+    tool === 'hms_generate_quote_document' ||
+    tool === 'hms_generate_confirmation_proforma' ||
+    tool === 'hms_generate_invoice' ||
+    tool === 'hms_attach_guest_stay_document'
+  ) {
+    return 40;
+  }
+  if (
+    tool === 'hms_send_reservation_confirmation' ||
+    tool === 'hms_email_folio' ||
+    tool === 'mail.send_with_attachments'
+  ) {
+    return 50;
+  }
+  if (tool === 'hms_post_payment' || tool === 'hms_refund') return 60;
+  return 25;
 }
 
 export function enrichHitlProposed(row: LabRow): ProposedAction[] {
   if (row.otherDesk || row.threadOutcome === 'other_desk') return [];
+  const pingSource = `${row.inbound?.textBody || ''}\n${row.attachmentText || ''}`;
+  if (isAvailabilityPing(pingSource)) return [];
   const existing = listedOrDerivedProposed(row);
   const byTool = new Map<string, ProposedAction>();
   const quotes: ProposedAction[] = [];
@@ -305,7 +339,10 @@ export function enrichHitlProposed(row: LabRow): ProposedAction[] {
       action.status === 'superseded' || action.status === 'needs_human'
         ? action
         : { ...action, status: 'live' as const };
-    if (next.tool === 'hms_quote_stay') quotes.push(next);
+    if (next.tool === 'hms_quote_stay') {
+      const pingSource = `${row.inbound?.textBody || ''}\n${row.attachmentText || ''}`;
+      if (!isAvailabilityPing(pingSource)) quotes.push(next);
+    }
     else if (!byTool.has(next.tool)) byTool.set(next.tool, next);
   }
   const hay = `${row.inbound.textBody || ''}\n${row.attachmentText || ''}`;
@@ -313,7 +350,7 @@ export function enrichHitlProposed(row: LabRow): ProposedAction[] {
   const baseRequest = coerceRequest({ ...row.request, ...occ });
   for (const tool of HITL_PRIMARY_TOOLS) {
     if (!wantsPrimaryCard(row, tool)) continue;
-    if (tool === 'hms_quote_stay' && quotes.length) continue;
+    if (tool === 'hms_quote_stay' && (quotes.length || isAvailabilityPing(`${row.inbound?.textBody || ''}\n${row.attachmentText || ''}`))) continue;
     if (byTool.has(tool)) continue;
     byTool.set(tool, {
       tool,
@@ -351,26 +388,32 @@ export function enrichHitlProposed(row: LabRow): ProposedAction[] {
   if (primaryLive.length) {
     merged = merged.filter((item) => !HITL_NOISY_TOOLS.has(item.tool));
   }
-  merged.sort((left, right) => {
-    const quoteDelta =
-      (left.tool === 'hms_quote_stay' ? 0 : 1) - (right.tool === 'hms_quote_stay' ? 0 : 1);
-    if (quoteDelta !== 0) return quoteDelta;
-    return actionRank(left.tool) - actionRank(right.tool);
-  });
-  return merged.map((item, index) => {
+  merged.sort((left, right) => reservationistRank(right.tool) - reservationistRank(left.tool));
+  const asks = row.stayAsks?.length ? row.stayAsks : splitStayAsks(hay);
+  const filled = merged.map((item, index) => {
     const request = { ...item.request };
     if (request.adults == null && occ.adults != null) request.adults = occ.adults;
-    if (
-      request.adults == null &&
-      item.tool === 'hms_quote_stay' &&
-      typeof request.roomQty === 'number' &&
-      request.roomQty >= 1 &&
-      request.roomQty <= 400
-    ) {
-      request.adults = request.roomQty;
-    }
-    return { ...item, request, colorIndex: index % 4 };
+    const quoteSource = [
+      row.inbound?.textBody || '',
+      row.attachmentText || '',
+      row.gold?.textBody || '',
+      ...(row.priorInbounds || []).map((prior) => prior.textBody || ''),
+    ].join('\n');
+    const routed =
+      item.tool === 'hms_quote_stay' ? fillQuoteFromReadText(routeQuoteRequest(request), quoteSource) : request;
+    return { ...item, request: routed, colorIndex: index % 4 };
   });
+  const liveQuotes = filled.filter((item) => item.tool === 'hms_quote_stay' && item.status === 'live');
+  if (asks.length > 1 && liveQuotes.length === asks.length) {
+    liveQuotes.forEach((item, askIndex) => {
+      const ask = stayAskRecord(asks[askIndex]);
+      const request = { ...item.request };
+      if (!request.arrival && ask.arrival) request.arrival = ask.arrival;
+      if (!request.departure && ask.departure) request.departure = ask.departure;
+      item.request = request;
+    });
+  }
+  return filled;
 }
 
 export type LabIndex = {

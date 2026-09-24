@@ -92,7 +92,7 @@ Private (not Git): `.private/pms-tools-replan-2026-09-07/{pms-docs-capabilities.
 
 1. Wire Rate-details URL into **read** DoD (was only in last-tools email plan, not companion matrix).
 2. Clarify Property [Deposit ledger](https://docs.infor.com/hms/2026.08/en-us/hmsolh/s_t1424428579193.html) ≠ per-stay Advance Deposit (Sep-07 already pointed deposit ledger as report source L375 — nuance was under-specified in folio DoD).
-3. Prefer `s_t1424428570597.html` as explicit “view room+rate avail” page (matrix used PDF; Sep-07 used Hotel Availability/Rate Shop for limits).
+3. **Historical only:** `s_t1424428570597.html` was the old explicit “view room+rate avail” page. Current quote execution uses Hotel Availability; keep the old page/OSRRAV reference for diagnostic history, never as a fallback.
 4. Fix bad pointer: event read ≠ Sep-07 L329.
 
 **Answer:** Enough prior info for evidence-backed **owner surfaces**. More blanket web research **not** needed. Remaining gap = **live dump / role**, not missing Infor docs.
@@ -176,7 +176,7 @@ Private (not Git): `.private/pms-tools-replan-2026-09-07/{pms-docs-capabilities.
 |---|-------|-------|
 | **1. toolId** | `hms_read_reservation` |
 | **2. Input schema** | **TS:** `reservationContextRequestSchema` — `{toolId:'hms_read_reservation', reservationRef:Ref, candidateId?:Ref, sections?:[core,stay,rates,policies,operations] default [core,stay], detail?:summary\|detail, admission?}` (`apps/server-pilot/src/hms/reservation-context-contract.ts`) |
-| **3. Output / verify fields** | **ReadResult** `schemaVersion:'reservation-context/1'`. **Data** `reservationContextDataSchema` sections (each `available\|unavailable` + `ReadFact` children): **core** — confirmation, externalReference, status, guestRefs, organizationRef, agencyRef, groupRef; **stay** — arrival, departure, roomType, roomQuantity, adults, childAges, additionalGuests; **rates** — nightly ratePlan, price, inventory, restrictions, inclusions, taxes, fees; **policies** — guarantee, deposit, cancellation, policyVersion; **operations** — kind, permittedText, dueAt, sourceStatus. Unrequested sections honest `not_requested`. **Canonical:** Sep-07 `ReservationData` / `ReservationCore` / `ReservationStay` / `NightlyRate` / `BookedPolicies` / `OperationObservation` (`docs/infor-hms/2026-09-07-corpus-driven-pms-tool-catalog.md` L104–109) |
+| **3. Output / verify fields** | **ReadResult** `schemaVersion:'reservation-context/1'`. **Data** `reservationContextDataSchema` sections (each `available\|unavailable` + `ReadFact` children): **core** — confirmation, externalReference, status, guestRefs, organizationRef, agencyRef, groupRef; **stay** — arrival, departure, roomType, roomQuantity, adults, childAges, additionalGuests; **rates** — nightly ratePlan, price, inventory, restrictions, inclusions, taxes, fees; **policies** — guarantee, deposit, cancellation, policyVersion; **operations** — kind, permittedText, dueAt, sourceStatus. Unrequested sections honest `not_requested`. **Canonical:** Sep-07 `ReservationData` / `ReservationCore` / `ReservationStay` / `NightlyRate` / `BookedPolicies` / `OperationObservation` (`docs/infor-hms/2026-09-07-corpus-driven-pms-tool-catalog.md` L104–109). **Live dump-proved (2026-09-13 DETAIL_DUMP OSRESV.HDR keys=122):** policies `guaranteetype`/`depositreceived`/`canceldate`/`cancellationnote`; rates **summary** `rateplan`/`averagerate`/`nights`/`totalrate` (nightly Rate Details popup = EXTERNAL_ROLE_GATE — see `.private/wave-a-20260912/a1-external-role-gate-rate-details/EXTERNAL_ROLE_GATE.md`). **Invent-forbidden (absent from DETAIL_DUMP):** Sep-07 operations `kind`/`permittedText`/`dueAt`/`sourceStatus` — dump ops family only `lastcheckoutdate`/`waitlistpriority` (cite EC2 `.private/wave-a-20260912/a1-payload/compare.v1.json`) |
 | **4. Surface / denied** | **Surface:** Guest Stay **detail** (inert) after find-minted `reservationRef`; `open_guest_stay_detail` **allowed** here. **Denied:** save/mutation (`2026-09-11-centurion-pms-tools-robust-catalogue.md` W0 find/read table); all `deniedCommon` if wired via HMS session |
 | **5. Evidence** | **3949:** 223 named reads. **Sep-07:** L146 U8 detail disclosure. **420:** 111-label reservation family (split from find 2115) |
 | **6. Oracle (one-line)** | Guest Stay detail network/DOM for each **requested** section matches `result.data` facts; unavailable sections match blocker; roomType/ratePlan depth owned when find grid lacked them |
@@ -242,12 +242,14 @@ Private (not Git): `.private/pms-tools-replan-2026-09-07/{pms-docs-capabilities.
 
 ## A5 — `hms_quote_stay`
 
+> **Historical A5 contract (superseded 2026-09-17):** The Room Type and Rate Availability/OSRRAV material below is retained for legacy fixture and diagnostic history only. The client-approved quote workflow is Front Desk → Availability → **Hotel Availability**, including adults/children/ages and read-only Availability Details. OSRRAV is never a fallback; CRS Check Availability remains forbidden. See `docs/plans/2026-09-17-002-feat-playwright-fetch-quote-plan.md`.
+
 | # | Field | Value |
 |---|-------|-------|
 | **1. toolId** | `hms_quote_stay` |
 | **2. Input schema** | **TS:** `quoteStayReadRequestSchema` — `{toolId:'hms_quote_stay', quoteRequestRef:Ref, quoteRequest:quoteRequestSchema, detail?:summary\|detail, admission?}` (`read-service-contracts.ts` L146–163). **quoteRequestSchema:** arrival, departure, rooms[{quantity, adultsPerRoom, childAges, roomTypeRef?, ratePlanRef?}], currency, org/agency/group refs, segments, authority bindings (`quote-request-normalization.ts`) |
 | **3. Output / verify fields** | **TS:** `quoteStayReadDataSchema` — `nightlyObservations[]` (date, roomType, availableCount, ratePlan, displayedAmount, currency, restrictions, observedAt), `bookable`, `stayTotal`, `occupancyPriced`, `held:false`, `unresolvedInputs[]`, coveredNights, missingNights, displayRateSum, requestedRooms. **Canonical:** Sep-07 `QuoteData` / `QuoteNight` / `NormalizedQuoteRoom` (L118–120). **Verify:** nightlyObservations match rate surface; **never** CRS Check Availability |
-| **4. Surface / denied** | **Surface:** Room Type Rate Availability (`room_type_rate_availability`). **Denied:** `deniedCommon` + `crs_check_availability`, `click_result_row`, `paging` (`read-tools.ts` L335) |
+| **4. Surface / denied** | **Current surface:** Hotel Availability + read-only Availability Details. **Legacy/diagnostic only:** Room Type Rate Availability (`room_type_rate_availability`/OSRRAV). **Denied:** `deniedCommon` + `crs_check_availability`, Reserve/create, `click_result_row`, `paging` (`read-tools.ts` L335) |
 | **5. Evidence** | **3949:** 582 reads; send_quote write 404 (74 pending). **Sep-07:** L150 U7, 42/253 rate labels. **420:** availability/rate 43 |
 | **6. Oracle** | Rate/availability UI or network body per night matches `nightlyObservations`; `held:false`; bookable false unless complete quote proved |
 | **7. Gaps** | **TS exists**. Live quote normalization vs wrapper candidate kind disagreement noted Sep-07 §4 |
@@ -288,11 +290,11 @@ Private (not Git): `.private/pms-tools-replan-2026-09-07/{pms-docs-capabilities.
 |---|-------|-------|
 | **1. toolId** | `hms_company_account_read` |
 | **2. Input schema** | **TS:** `companyAccountReadRequestSchema` — `{toolId:'hms_company_account_read', reservationRef:Ref, admission?}` (`read-service-contracts.ts` L167–173). **Sep-07:** L151 — exact linked account only |
-| **3. Output / verify fields** | **Canonical:** Sep-07 `CompanyData` — billingMode, paymentTerms, requiredPaperwork, billingReference, arAccountRef, organizationRef, agencyRef, negotiatedRateRefs, restrictions, audience (L121). **TS:** `companyAccountReadDataSchema` + `companyAccountContextDataSchema` ReadFacts (`company-account-read-contract.ts`, `context-read-contracts.ts`) |
-| **4. Surface / denied** | **Surface:** Company/Agency Billing (linked). **Denied:** `deniedCommon` + `autosave`, `arbitrary_company_search`, `credit_limit_read`, `contact_read` (`read-tools.ts` L489–495) |
-| **5. Evidence** | **3949:** 14 reads only. **Sep-07:** L151 U15, 59/253 curated bill-to contexts. **Astra 314:** 1 |
-| **6. Oracle** | Linked billing form fields match or `BLOCKED_COMPANY_READ_SURFACE_UNPROVEN` |
-| **7. Gaps** | **TS exists**. **Live blocker:** `COMPANY_ACCOUNT_READ_SURFACE_BLOCKER` (`company-account-read-contract.ts` L20–21). Defer live |
+| **3. Output / verify fields** | **Live dump-proved (2026-09-13):** Organization list `FSOGPF.LST` + Billing Profiles tab `FSOGPF.BPF` (`classPath: operations.common.fsbpfl`) — `organizationid`, `organizationname`, `araccountid`, `billingprofileid`, `accountstatus`, `accounttype`, `accountstanding`, `accountbalance`, `accountnumber`, `guaranteemethodcode`, `restrictedflag` (list). Agency list `FSBAPF.LST`. **Invent-forbidden (absent from FSOGPF.BPF + FSOGPF.LST dumps):** Sep-07 names `billingMode`, `paymentTerms`/`paymentTermClass`, `contractStatus`, `requiredPaperwork`, `billingReference` — cite EC2 `.private/wave-a-20260912/a8-payload/bpf-evt-exact.compare.v1.json` (`dodBillingTrio` all false; BPF `keyHits`/`valuesKeys` list). **TS:** `companyAccountReadDataSchema` + context ReadFacts — amend claim keys to dump-proved aliases; do not invent Sep-07 names |
+| **4. Surface / denied** | **Surface:** Profiles → Organization Profiles (`FSOGPF`) + Billing Profiles tab (`FSOGPF.BPF`); Booking Agency (`FSBAPF`). **Denied:** `deniedCommon` + `autosave`, `arbitrary_company_search` (popup `OSORGP` is search-only), `credit_limit_read`, `contact_read`, card PAN/CVV fields on BPF (`read-tools.ts` L489–495) |
+| **5. Evidence** | **Live:** FSOGPF.LST 50 rows; FSOGPF.BPF ~15kB form chrome; FSBAPF.LST 50 rows. **3949/Sep-07** historical demand only |
+| **6. Oracle** | Dump-proved org + BPF AR/account fields match claims; invent-forbidden Sep-07 trio must not be required |
+| **7. Gaps** | Wire driver off `FSOGPF`/`FSOGPF.BPF`/`FSBAPF` (replace fail-closed blocker). Negotiated Rates / Auto Transfer tab codes still unharvested (NGR/ATR 400) |
 
 ---
 

@@ -118,3 +118,10 @@ Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against lo
 - Recovery ledger: `docs/superpowers/plans/handoff-reports/2026-09-07-centurion-dashboard-tools-execution.md` (single task-status source).
 - Private briefs/reports: `.superpowers/sdd/centurion-dashboard-tools-20260907/`.
 - P0 in progress; no completed implementation units yet. All earlier sections above belong to other runs.
+
+# Centurion Nine-Day Corpus — 2026-09-17
+
+- Plan: docs/superpowers/plans/2026-09-17-centurion-nine-day-corpus-autonomous.md
+- Task 1: complete (commits 4baca2a9..a7e3c96e; U1 review clean after bounded candidate-query fix; focused 24 tests and TypeScript passed)
+- Task 2: complete (commits 680f1ad1..01f4c798; U2 review clean after strict date/owner/as-of fixes; focused 13 tests and TypeScript passed)
+- Task 3: complete (commits b8f7cd1d..8d6bc369; U3 review clean; focused 18 tests, TypeScript and Prettier passed; live Luna transport remains an explicit runtime blocker)

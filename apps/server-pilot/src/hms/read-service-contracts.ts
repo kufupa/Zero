@@ -11,6 +11,10 @@ import {
   linkedContextReferencePublicSchema,
   linkedContextReferenceSchema,
 } from './context-read-reference.js';
+import {
+  hmsDocumentReadDataSchema,
+  hmsDocumentReadRequestSchema,
+} from './hms-document-read-contract.js';
 import { quoteRequestSchema } from './quote-request-normalization.js';
 import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { createHash } from 'node:crypto';
@@ -136,6 +140,11 @@ export const hmsSentEmailAuditReadRequestSchema = z
   .strict();
 export type HmsSentEmailAuditReadRequest = z.infer<typeof hmsSentEmailAuditReadRequestSchema>;
 
+export const hmsReadDocumentReadRequestSchema = hmsDocumentReadRequestSchema
+  .extend({ admission: readAdmissionSchema.optional() })
+  .strict();
+export type HmsReadDocumentReadRequest = z.infer<typeof hmsReadDocumentReadRequestSchema>;
+
 /** Closed finance sections; selectors never expose PMS URLs or locators. */
 export const folioReadSectionIdSchema = z.enum([
   'balance',
@@ -157,6 +166,10 @@ export const folioReadRequestSchema = z
       .refine((sections) => new Set(sections).size === sections.length, {
         message: 'folio sections must be unique',
       }),
+    /** Optional bounded source-page size; omitted for the legacy one-page read. */
+    limit: z.number().int().min(1).max(50).optional(),
+    /** Provider continuation is opaque, but never unbounded at this boundary. */
+    cursor: z.string().min(1).max(1000).optional(),
     admission: readAdmissionSchema.optional(),
   })
   .strict();
@@ -519,6 +532,10 @@ const readFolioSectionDataSchema = z.union([
   readFolioDepositDataSchema,
 ]);
 
+const readFolioCurrencySchema = z.string().regex(/^[A-Z]{3}$/);
+const readFolioSignedMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/);
+const readFolioUnsignedMoneySchema = z.string().regex(/^(?:0|[1-9]\d*)\.\d{2}$/);
+
 /** Finance sections are closed at the receipt boundary, not merely top-level objects. */
 export const readFolioSectionSchema = z.union([
   z
@@ -532,9 +549,173 @@ export const readFolioSectionSchema = z.union([
   readSectionUnavailableSchema,
 ]);
 
-const readFolioCurrencySchema = z.string().regex(/^[A-Z]{3}$/);
-const readFolioSignedMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/);
-const readFolioUnsignedMoneySchema = z.string().regex(/^(?:0|[1-9]\d*)\.\d{2}$/);
+function folioPostingTextFact(value: z.ZodType<string>) {
+  return z.union([
+    z
+      .object({
+        state: z.literal('known'),
+        value,
+        data: value,
+        evidenceRef: readRefSchema,
+        observedAt: readTimestampSchema,
+        sourceUpdatedAt: readTimestampSchema.nullable(),
+        expiresAt: readTimestampSchema,
+      })
+      .strict(),
+    readFactUnknownSchema,
+  ]);
+}
+
+const readFolioTransactionSignedMoneySchema = readFolioSignedMoneySchema
+  .max(32)
+  .refine((value) => !/\d{12,}/.test(value), 'card-shaped amount is not permitted');
+
+const readFolioTransactionDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+  }, 'expected calendar date');
+
+const readFolioTransactionCodeSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,31}$/, 'expected a bounded transaction code')
+  .refine((value) => !/\d{12,}/.test(value), 'card-shaped code is not permitted');
+
+const readFolioTransactionMoneyFactSchema = readFolioMoneyFactSchema.superRefine(
+  (value, context) => {
+    if (value.state !== 'known') return;
+    if (!readFolioTransactionSignedMoneySchema.safeParse(value.value.amount).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['value', 'amount'],
+        message: 'transaction amount must be bounded signed two-decimal money',
+      });
+    }
+    if (value.value.basis !== 'ledger_movement') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['value', 'basis'],
+        message: 'transaction amount must use ledger_movement basis',
+      });
+    }
+    if (value.data.currency !== value.value.currency) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['data', 'currency'],
+        message: 'transaction amount data currency must match value currency',
+      });
+    }
+  },
+);
+
+const readFolioTransactionsPageSchema = readPageSchema
+  .extend({ returnedCount: z.number().int().nonnegative().max(50) })
+  .superRefine((page, context) => {
+    if (page.hasMore === true && page.nextCursor === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nextCursor'],
+        message: 'a page with more rows requires a continuation cursor',
+      });
+    }
+    if (page.hasMore !== true && page.nextCursor !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nextCursor'],
+        message: 'a page without more rows cannot carry a continuation cursor',
+      });
+    }
+  });
+
+const readFolioTransactionsAvailableSectionSchema = z
+  .object({
+    state: z.enum(['available', 'partial']),
+    data: z
+      .object({
+        items: z
+          .array(
+            z
+              .object({
+                transactionRef: folioPostingTextFact(readRefSchema),
+                folioRef: folioPostingTextFact(readRefSchema),
+                postingDate: folioPostingTextFact(readFolioTransactionDateSchema),
+                transactionCode: folioPostingTextFact(readFolioTransactionCodeSchema),
+                amount: readFolioTransactionMoneyFactSchema,
+              })
+              .strict(),
+          )
+          .max(50),
+        page: readFolioTransactionsPageSchema,
+      })
+      .strict(),
+    completeness: z.enum(['complete', 'partial', 'unknown']),
+    issues: z.array(readIssueSchema),
+  })
+  .strict()
+  .superRefine((section, context) => {
+    if (section.data.page.returnedCount !== section.data.items.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['data', 'page', 'returnedCount'],
+        message: 'page returnedCount must equal transaction item count',
+      });
+    }
+  });
+
+const readFolioLegacyTransactionsSectionSchema = z
+  .object({
+    state: z.enum(['available', 'partial']),
+    data: readFolioSectionDataSchema,
+    completeness: z.enum(['complete', 'partial', 'unknown']),
+    issues: z.array(readIssueSchema),
+  })
+  .strict()
+  .transform(() => ({
+    state: 'partial' as const,
+    data: {
+      items: [],
+      page: { returnedCount: 0, hasMore: null, nextCursor: null },
+    },
+    completeness: 'partial' as const,
+    issues: [readIssue('UNSUPPORTED_FORMAT')],
+  }));
+
+/** Bounded ledger postings, never item descriptions or payment credentials. */
+export const readFolioTransactionsSectionSchema = z.union([
+  readFolioTransactionsAvailableSectionSchema,
+  readFolioLegacyTransactionsSectionSchema,
+  readSectionUnavailableSchema,
+]);
+
+export function validateFolioTransactionCurrencies(
+  value: { currency: string; transactions?: unknown },
+  context: z.RefinementCtx,
+): void {
+  const transactions = value.transactions;
+  if (!transactions || typeof transactions !== 'object' || transactions === null) return;
+  const section = transactions as { data?: unknown };
+  if (!section.data || typeof section.data !== 'object' || section.data === null) return;
+  const items = (section.data as { items?: unknown }).items;
+  if (!Array.isArray(items)) return;
+  items.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const amount = (item as { amount?: unknown }).amount;
+    if (!amount || typeof amount !== 'object' || amount === null) return;
+    const knownAmount = amount as { state?: unknown; value?: unknown };
+    if (knownAmount.state !== 'known' || !knownAmount.value) return;
+    if (typeof knownAmount.value !== 'object' || knownAmount.value === null) return;
+    if ((knownAmount.value as { currency?: unknown }).currency !== value.currency) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['transactions', 'data', 'items', index, 'amount', 'value', 'currency'],
+        message: 'transaction amount currency must match folio currency',
+      });
+    }
+  });
+}
+
 const readFolioDepositAmountSchema = z
   .object({
     amount: readFolioUnsignedMoneySchema,
@@ -564,6 +745,10 @@ const readFolioDepositSummarySchema = z
   .strict();
 
 /** Closed finance payload used by the outer receipt schema for hms_read_folio. */
+export const READ_SERVICE_MAX_ROWS_SCANNED = 250;
+/** Bound-folio multi-read receipts may span several five-second requests. */
+export const READ_SERVICE_MAX_DURATION_MS = 10_000;
+
 export const readFolioDataSchema = z
   .object({
     reservationBinding: z.literal('exact_parent_redacted'),
@@ -573,7 +758,7 @@ export const readFolioDataSchema = z
     depositSummary: readFolioDepositSummarySchema.optional(),
     balance: readFolioSectionSchema.optional(),
     deposits: readFolioSectionSchema.optional(),
-    transactions: readFolioSectionSchema.optional(),
+    transactions: readFolioTransactionsSectionSchema.optional(),
     liabilityLocation: readFactSchema.optional(),
     authorization: readFactSchema.optional(),
     disclosure: z
@@ -595,16 +780,19 @@ export const readFolioDataSchema = z
         claimEligibility: z.enum(['full', 'partial', 'blocked']),
       })
       .strict(),
-    rowsScanned: z.number().int().min(0).max(50),
+    rowsScanned: z.number().int().min(0).max(READ_SERVICE_MAX_ROWS_SCANNED),
     bytesObserved: z
       .number()
       .int()
       .min(0)
-      .max(64 * 1024),
-    durationMs: z.number().int().min(0).max(5_000),
+      .max(256 * 1024),
+    durationMs: z.number().int().min(0).max(READ_SERVICE_MAX_DURATION_MS),
     observedAt: readTimestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    validateFolioTransactionCurrencies(value, context);
+  });
 
 export const readStatusSchema = z.enum([
   'ok',
@@ -629,6 +817,7 @@ export const readToolResultIdSchema = z.enum([
   'hms_read_notes_traces',
   'hms_list_documents',
   'hms_sent_email_audit',
+  'hms_read_document',
 ]);
 export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
 
@@ -671,6 +860,15 @@ const readResultSchemaBoundary = readResultSchemaBase.superRefine((value, contex
         code: z.ZodIssueCode.custom,
         path: ['data'],
         message: 'hms_quote_stay result data is not a closed quote payload',
+      });
+    }
+  }
+  if (value.toolId === 'hms_read_document' && value.data !== null) {
+    if (!hmsDocumentReadDataSchema.safeParse(value.data).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['data'],
+        message: 'hms_read_document result data is not a closed HMS byte payload',
       });
     }
   }

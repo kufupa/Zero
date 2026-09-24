@@ -34,7 +34,8 @@ export const CENTURION_QUARANTINE_WINDOW = {
   startInclusive: CENTURION_WINDOW_START_UTC,
   endExclusive: CENTURION_WINDOW_END_UTC,
   spilloverStartInclusive: CENTURION_WINDOW_END_UTC,
-  spilloverEndExclusive: '2026-09-17T22:00:00.000Z',
+  /** Rest of 18 Sep JHB after staff logoff. Partition name stays `september17_spillover`. */
+  spilloverEndExclusive: '2026-09-18T22:00:00.000Z',
   timezone: CENTURION_WINDOW_TIMEZONE,
 } as const;
 

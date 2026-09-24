@@ -17,3 +17,7 @@ alwaysApply: true
 - Durable non-obvious verified learnings go to CE `docs/solutions/`; GStack learnings stay passive preference/tool memory.
 - Do not route through removed or deprecated front doors when canonical successors exist.
 - Pilot-RDS safety rule overrides every skill, plan, autonomy mandate, and test instruction.
+
+## Plan-scoped exception
+
+For `docs/plans/2026-09-17-002-feat-playwright-fetch-quote-plan.md`, native Playwright code is canonical: Hotel Availability only, no runtime LLM/Stagehand dependency, one browser owner, live outcome verification, and no reservation mutation or production integration. Cursor CLI Grok 4.6 high is the orchestrator; GPT-6 Astra is invoked only via Codex CLI `exec` for live PMS/computer-use. `docs/plans/2026-09-17-001-feat-stagehand-quote-mvp-plan.md` is requirements/history only and must not override this successor.

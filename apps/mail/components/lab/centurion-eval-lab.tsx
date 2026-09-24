@@ -7,6 +7,7 @@ import {
   labReviewSchemaFor,
   projectLabFills,
   proposedActionFacts,
+  reservationistRank,
   resolveProposedActions,
   ACTION_PALETTE,
   outcomeCounts,
@@ -117,8 +118,8 @@ function SchemaFieldList({
         })}
       </ul>
       {testId === 'lab-schema-input' ? (
-        <p className="text-muted-foreground text-xs" data-testid="empty-optional-count">
-          empty optional {empties.emptyOptional.length}
+        <p className="text-muted-foreground text-xs" data-testid="lab-missing-count">
+          missing {empties.emptyRequired.length + empties.emptyOptional.length}
         </p>
       ) : null}
     </section>
@@ -171,9 +172,11 @@ function ProposedPane({
             const selected = action === current;
             const palette = ACTION_PALETTE[action.colorIndex % ACTION_PALETTE.length]!;
             const facts = proposedActionFacts(action.request);
+            const next = live[index + 1];
+            const then = next != null && reservationistRank(action.tool) > reservationistRank(next.tool);
             return (
+              <div key={`${action.tool}-${index}`}>
               <div
-                key={`${action.tool}-${index}`}
                 data-testid={`lab-action-live-${index}`}
                 className={cn(
                   'w-full min-h-11 rounded-xl border px-3 py-2 text-left transition-colors',
@@ -193,6 +196,30 @@ function ProposedPane({
                 </button>
                 {selected ? (
                   <div className="mt-3 space-y-3">
+                    {tool === 'hms_create_reservation' ? (
+                      <figure className="space-y-1" data-testid="lab-create-stay-proof">
+                        <img
+                          src="/lab/create-lab-stay.png"
+                          alt="Lab Guest Stay after Save. Not a mailbox guest."
+                          className="w-full rounded-lg border"
+                        />
+                        <figcaption className="text-muted-foreground text-[11px]">
+                          Lab Guest Stay after Save. Not a mailbox guest.
+                        </figcaption>
+                      </figure>
+                    ) : null}
+                    {tool === 'hms_quote_stay' ? (
+                      <figure className="space-y-1" data-testid="lab-quote-rate-proof">
+                        <img
+                          src="/lab/quote-rate-proof.png"
+                          alt="Lab Hotel Availability search. Rates in rand. Not a mailbox guest."
+                          className="w-full rounded-lg border"
+                        />
+                        <figcaption className="text-muted-foreground text-[11px]">
+                          Lab Hotel Availability search. Rates in rand. Not a mailbox guest.
+                        </figcaption>
+                      </figure>
+                    ) : null}
                     <SchemaFieldList
                       testId="lab-schema-input"
                       heading="Input"
@@ -218,6 +245,12 @@ function ProposedPane({
                     )}
                   </div>
                 ) : null}
+              </div>
+              {then ? (
+                <p className="text-muted-foreground text-center text-[11px]" data-testid="lab-action-then">
+                  ↑ then
+                </p>
+              ) : null}
               </div>
             );
           })}

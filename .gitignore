@@ -77,6 +77,9 @@ apps/server-pilot/.env.*
 .tmp-research/
 .tmp/
 
+# View-only eval lab snapshot (PII bodies; never commit)
+apps/mail/public/lab-centurion-index.json
+
 # Local clone of compound-engineering plugin (has its own .git)
 .cursor/compound-engineering/
 
@@ -93,6 +96,7 @@ Nava.zip
 .private/centurion-thread-corpus/
 .private/connected-mailbox-corpus/
 .private/centurion-corpus/
+.private/hms-catalog/
 .private/connected-mailbox-corpus-pdf/
 *.mbox
 *.mailbox-dump*

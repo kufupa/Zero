@@ -21,6 +21,7 @@ import {
 import { runtimeFingerprintSha256 as fingerprintRuntime } from '../src/hms/evidence-runtime.js';
 import { reviewedManifestSha256 } from '../src/hms/release-manifest-binding.js';
 import { QUOTE_STAY_IMPL_V1 } from '../src/hms/read-handler-index.js';
+import { hotelAvailabilitySurfaceManifestSchema } from '../src/hms/hotel-availability-contract.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -62,6 +63,34 @@ export function assertQuotePromotionEligible(): void {
   }
 }
 
+/** Never let the superseded Room Type and Rate Availability manifest promote. */
+export function assertHotelAvailabilityManifest(raw: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error('BLOCKED_QUOTE_MANIFEST_INVALID_JSON');
+  }
+  const value = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  const surfaceCandidate =
+    value.surfaceManifest && typeof value.surfaceManifest === 'object'
+      ? (value.surfaceManifest as Record<string, unknown>)
+      : value;
+  const surface = typeof surfaceCandidate.surface === 'string' ? surfaceCandidate.surface : '';
+  const functionName =
+    typeof surfaceCandidate.functionName === 'string' ? surfaceCandidate.functionName : '';
+  const searchPath =
+    typeof surfaceCandidate.searchPath === 'string' ? surfaceCandidate.searchPath : '';
+  if (surface !== 'hotel_availability' || /OSRRAV|room.?type.?rate/i.test(`${functionName} ${searchPath}`)) {
+    throw new Error('BLOCKED_QUOTE_MANIFEST_NOT_HOTEL_AVAILABILITY');
+  }
+  try {
+    hotelAvailabilitySurfaceManifestSchema.parse(surfaceCandidate);
+  } catch {
+    throw new Error('BLOCKED_QUOTE_MANIFEST_NOT_HOTEL_AVAILABILITY');
+  }
+}
+
 /** Test-only artifact seam shared by the real materializer after promotion eligibility. */
 export async function quoteArtifactSha256(
   pathValue: string | undefined,
@@ -86,6 +115,7 @@ export function buildQuoteRelease(input: {
   receiptSha256: string;
   releaseId?: string;
 }): Extract<HmsPortfolioToolReleaseV2, { evidenceKind: 'hms' }> {
+  assertHotelAvailabilityManifest(input.manifestRaw);
   const releaseId = input.releaseId?.trim() || randomUUID();
   const manifestSha256 = quoteReleaseManifestSha256(input.manifestRaw);
   return hmsPortfolioToolReleaseV2Schema.parse({
@@ -204,6 +234,7 @@ async function main(): Promise<void> {
     join(process.cwd(), 'src/hms/request-manifests/hms_quote_stay.availability.2.0.0.json');
   const manifestRaw = await readFile(manifestPath, 'utf8');
 
+  assertHotelAvailabilityManifest(manifestRaw);
   assertQuotePromotionEligible();
   const liveProofSha256 = await quoteArtifactSha256(
     process.env.HMS_QUOTE_LIVE_PROOF_PATH,

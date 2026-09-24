@@ -161,13 +161,27 @@ export const notesTracesListDataSchema = z
   })
   .strict();
 
+export type NotesTracesListData = z.infer<typeof notesTracesListDataSchema>;
+
+export const notesTracesSectionSchema = z.union([
+  availableSection(notesTracesListDataSchema),
+  readSectionUnavailableSchema,
+  notesTracesListDataSchema,
+]);
+export type NotesTracesSection = z.infer<typeof notesTracesSectionSchema>;
+
+/** New traces data must carry explicit availability/completeness state. */
+export const tracesSectionSchema = z.union([
+  availableSection(notesTracesListDataSchema),
+  readSectionUnavailableSchema,
+]);
+export type TracesSection = z.infer<typeof tracesSectionSchema>;
+
 export const notesTracesContextDataSchema = z
   .object({
-    notes: z.union([
-      availableSection(notesTracesListDataSchema),
-      readSectionUnavailableSchema,
-      notesTracesListDataSchema,
-    ]),
+    notes: notesTracesSectionSchema,
+    /** Optional for compatibility with the pre-traces notes-only contract. */
+    traces: tracesSectionSchema.optional(),
   })
   .strict();
 export type NotesTracesContextData = z.infer<typeof notesTracesContextDataSchema>;
@@ -190,6 +204,54 @@ function knownBoolean(value: unknown): boolean | null {
   return fact.state === 'known' && typeof fact.value === 'boolean' ? fact.value : null;
 }
 
+function customerVisible(item: NotesTraceItem): boolean {
+  return (
+    knownAudience(item.audience) === 'customer_disclosable' &&
+    knownBoolean(item.customerPrintable) === true
+  );
+}
+
+function filterListForAudience(data: NotesTracesListData): NotesTracesListData {
+  const items = data.items.filter(customerVisible);
+  return {
+    ...data,
+    items,
+    page:
+      data.page === null
+        ? null
+        : {
+            ...data.page,
+            returnedCount: items.length,
+          },
+  };
+}
+
+type AvailableNotesTracesSection = Extract<NotesTracesSection, { state: 'available' | 'partial' }>;
+
+function isAvailableNotesTracesSection(
+  section: NotesTracesSection,
+): section is AvailableNotesTracesSection {
+  return 'state' in section && (section.state === 'available' || section.state === 'partial');
+}
+
+function filterSectionForAudience(
+  section: TracesSection | undefined,
+): TracesSection | undefined;
+function filterSectionForAudience(
+  section: NotesTracesSection | undefined,
+): NotesTracesSection | undefined;
+function filterSectionForAudience(
+  section: NotesTracesSection | TracesSection | undefined,
+): NotesTracesSection | TracesSection | undefined {
+  if (section === undefined) return undefined;
+  if (!('state' in section)) return filterListForAudience(section);
+  if (!isAvailableNotesTracesSection(section)) return section;
+  return {
+    ...section,
+    data: filterListForAudience(section.data),
+  };
+}
+
 /**
  * Customer-facing reads must filter before the durable result is returned.
  * Unknown audience/printability is not disclosure permission, so it is
@@ -202,38 +264,15 @@ export function filterNotesForAudience(
   if (audience === 'staff') {
     return data;
   }
-  if (!('state' in data.notes)) {
-    return {
-      ...data,
-      notes: {
-        ...data.notes,
-        items: data.notes.items.filter((item) => {
-          return (
-            knownAudience(item.audience) === 'customer_disclosable' &&
-            knownBoolean(item.customerPrintable) === true
-          );
-        }),
-      },
-    };
+  const notes = filterSectionForAudience(data.notes);
+  const traces = filterSectionForAudience(data.traces);
+  if (data.traces === undefined) {
+    return { ...data, notes: notes as NotesTracesSection };
   }
-  if (data.notes.state === 'unavailable' || data.notes.state === 'not_requested') {
-    return data;
-  }
-  if (!data.notes.data) return data;
   return {
     ...data,
-    notes: {
-      ...data.notes,
-      data: {
-        ...data.notes.data,
-        items: data.notes.data.items.filter((item) => {
-          return (
-            knownAudience(item.audience) === 'customer_disclosable' &&
-            knownBoolean(item.customerPrintable) === true
-          );
-        }),
-      },
-    },
+    notes: notes as NotesTracesSection,
+    traces,
   };
 }
 

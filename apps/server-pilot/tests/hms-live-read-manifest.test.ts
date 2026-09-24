@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
 import {
   LIVE_GUEST_STAY_SEARCH_PATH,
   LIVE_NOTFOUND_CANARY,
+  buildLiveFolioReadManifest,
   buildLiveGuestStayReadManifest,
+  buildLiveOsnotsReadRule,
+  buildLiveSentEmailListManifest,
+  buildExactOsressSearchThenDetailManifest,
+  buildLiveGuestStayDetailChromeGetRules,
 } from '../src/hms/live-read-manifest.js';
-import {
-  BLOCK_CODES,
-  evaluateObservedRequest,
-} from '../src/hms/request-policy.js';
+import { BLOCK_CODES, evaluateObservedRequest } from '../src/hms/request-policy.js';
+import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
+import { describe, expect, it } from 'vitest';
 
 const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
 
@@ -16,6 +19,69 @@ function formBody(fields: Record<string, string>): string {
 }
 
 describe('live Guest Stay read manifest (HRCEN)', () => {
+  it('allows the observed search toolbar magic-wand image only as an inert GET', () => {
+    const assets = { rules: buildLiveGuestStayDetailChromeGetRules(ORIGIN) };
+    const url = `${ORIGIN}/web/resources/inforhms/images/toolbar/magic-wand.svg`;
+    expect(evaluateObservedRequest(assets, { url, method: 'GET', resourceType: 'image' }).action).toBe('allow');
+    expect(evaluateObservedRequest(assets, { url, method: 'POST', resourceType: 'xhr' }).action).toBe('block');
+    expect(evaluateObservedRequest(assets, { url: `${url}?action=save`, method: 'GET', resourceType: 'image' }).action).toBe('block');
+  });
+  it('allows the observed All Folios grid hover image, never a functional POST', () => {
+    const assets = { rules: buildLiveGuestStayDetailChromeGetRules(ORIGIN) };
+    const url = `${ORIGIN}/web/resources/inforhms/images/grid/grid-sort-hover.svg`;
+    expect(
+      evaluateObservedRequest(assets, { url, method: 'GET', resourceType: 'image' }).action,
+    ).toBe('allow');
+    expect(
+      evaluateObservedRequest(assets, { url, method: 'POST', resourceType: 'xhr' }).action,
+    ).toBe('block');
+    expect(
+      evaluateObservedRequest(assets, {
+        url: `${url}?action=save`,
+        method: 'GET',
+        resourceType: 'image',
+      }).action,
+    ).toBe('block');
+  });
+  it('allows only the exact Folio toolbar image GETs observed in the live tab', () => {
+    const assets = { rules: buildLiveGuestStayDetailChromeGetRules(ORIGIN) };
+    for (const file of [
+      'purchasing.svg',
+      'utilities.svg',
+      'clear-formatting.svg',
+      'expand-app-tray-vertical.svg',
+      'collapse-app-tray-vertical.svg',
+    ]) {
+      const url = `${ORIGIN}/web/resources/inforhms/images/toolbar/${file}`;
+      expect(
+        evaluateObservedRequest(assets, { url, method: 'GET', resourceType: 'image' }).action,
+        file,
+      ).toBe('allow');
+      expect(
+        evaluateObservedRequest(assets, { url, method: 'POST', resourceType: 'xhr' }).action,
+      ).toBe('block');
+    }
+  });
+  it.each([
+    '/web/resources/inforhms/images/hms/icon_morepending.png',
+    '/web/resources/inforhms/images/hms/toolbar/reserve.svg',
+  ])('allows only exact detail chrome GET %s', (path) => {
+    const assets = { rules: buildLiveGuestStayDetailChromeGetRules(ORIGIN) };
+    const url = `${ORIGIN}${path}`;
+    expect(
+      evaluateObservedRequest(assets, { url, method: 'GET', resourceType: 'image' }).action,
+    ).toBe('allow');
+    expect(
+      evaluateObservedRequest(assets, { url, method: 'POST', resourceType: 'xhr' }).action,
+    ).toBe('block');
+    expect(
+      evaluateObservedRequest(assets, {
+        url: `${url}?action=reserve`,
+        method: 'GET',
+        resourceType: 'image',
+      }).action,
+    ).toBe('block');
+  });
   const manifest = buildLiveGuestStayReadManifest(ORIGIN);
 
   it('exports reviewed search path + canary token', () => {
@@ -102,9 +168,7 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
     if (decision.action === 'block') {
       expect(decision.code).toBe(BLOCK_CODES.UNKNOWN_PATH);
     }
-    expect(manifest.rules.some((r) => r.id === 'live-osress-search')).toBe(
-      false,
-    );
+    expect(manifest.rules.some((r) => r.id === 'live-osress-search')).toBe(false);
   });
 
   it('allows empty OSRESV.HDR propertycode (open shell)', () => {
@@ -162,6 +226,90 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       ruleId: 'live-bsstrt-hdr',
     });
     expect(request('false').action).toBe('block');
+  });
+
+  it('allows both observed sent-email bootstrap refresh variants only', () => {
+    const sentManifest = buildLiveSentEmailListManifest(ORIGIN);
+    const request = (manurefresh: string) =>
+      evaluateObservedRequest(sentManifest, {
+        method: 'POST',
+        url: `${ORIGIN}/web/base/BSSTRT.HDR`,
+        resourceType: 'xhr',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        },
+        postData: formBody({
+          SYSTEM_FUNCTION_NAME: 'BSSTRT',
+          USER_FUNCTION_NAME: 'BSSTRT',
+          manurefresh,
+        }),
+      });
+
+    expect(request('yes').action).toBe('allow');
+    expect(request('true').action).toBe('allow');
+    expect(request('false').action).toBe('block');
+  });
+
+  it('includes authenticated bootstrap rules in the folio-only manifest', () => {
+    const folioManifest = buildLiveFolioReadManifest(ORIGIN);
+    const login = evaluateObservedRequest(folioManifest, {
+      method: 'GET',
+      url: `${ORIGIN}/web/base/logindisp?tenant=HMS_LEGACY`,
+      resourceType: 'document',
+      headers: {},
+      postData: '',
+    });
+    expect(login.action).toBe('allow');
+    const unrelated = evaluateObservedRequest(folioManifest, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/PSSNEL.HDR`,
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: formBody({
+        SYSTEM_FUNCTION_NAME: 'PSSNEL',
+        USER_FUNCTION_NAME: 'PSSNEL',
+        CURRENT_TAB_NAME: 'HDR',
+      }),
+    });
+    expect(unrelated.action).toBe('block');
+  });
+
+  it('allows only exact confirmation-bound OSRESV.FOL reads in folio manifest', () => {
+    const folioManifest = buildLiveFolioReadManifest(ORIGIN);
+    const fol = evaluateObservedRequest(folioManifest, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSRESV.FOL`,
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: formBody({
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'FOL',
+        propertycode: 'HRCEN',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+        confirmationnumber: 'actual-bound-confirmation',
+        reservationstayid: 'stay-from-correlated-row',
+        id: 'stay-from-correlated-row',
+      }),
+    });
+    expect(fol.action).toBe('allow');
+    const wrongProperty = evaluateObservedRequest(folioManifest, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSRESV.FOL`,
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: formBody({
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'FOL',
+        propertycode: 'OTHER',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+        confirmationnumber: 'actual-bound-confirmation',
+      }),
+    });
+    expect(wrongProperty.action).toBe('block');
   });
 
   it('blocks mutation-looking save path as unknown_path', () => {
@@ -242,8 +390,9 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
 
 describe('exact OSRESS.search candidate binding', () => {
   it('allows only body whose confirmation value equals selected candidate', async () => {
-    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
-      await import('../src/hms/live-read-manifest.js');
+    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
     const candidate = {
       id: 'c1',
       kind: 'confirmation' as const,
@@ -403,8 +552,9 @@ describe('exact OSRESS.search candidate binding', () => {
   });
 
   it('allows external_reference body including altered externalconfirmation (variableBody)', async () => {
-    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
-      await import('../src/hms/live-read-manifest.js');
+    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
     const candidate = {
       id: 'e1',
       kind: 'external_reference' as const,
@@ -436,10 +586,8 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
   it('Wave A1 detail manifest allows ExtJS OSRESV row-open; find manifest blocks it', async () => {
-    const {
-      buildExactOsressSearchManifest,
-      buildExactOsressSearchThenDetailManifest,
-    } = await import('../src/hms/live-read-manifest.js');
+    const { buildExactOsressSearchManifest, buildExactOsressSearchThenDetailManifest } =
+      await import('../src/hms/live-read-manifest.js');
     const candidate = {
       id: 'c1',
       kind: 'confirmation' as const,
@@ -540,6 +688,41 @@ describe('exact OSRESS.search candidate binding', () => {
       ruleId: 'live-osresv-hdr-detail-open',
     });
 
+    const notesReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSNOTS`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: formBody({
+        SYSTEM_FUNCTION_NAME: 'OSNOTS',
+        USER_FUNCTION_NAME: 'OSNOTS',
+        popup: 'true',
+        action: 'RESRETRIEVAL',
+        propertyCode: 'HRCEN',
+        confirmationNumber: 'CONF-42',
+      }),
+    };
+    expect(evaluateObservedRequest(findOnly, notesReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, notesReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osnots-read',
+    });
+    expect(
+      evaluateObservedRequest(detail, {
+        ...notesReq,
+        postData: formBody({
+          SYSTEM_FUNCTION_NAME: 'OSRESV',
+          USER_FUNCTION_NAME: 'OSNOTS',
+          popup: 'false',
+          action: 'load',
+          propertyCode: 'HRCEN',
+          confirmationNumber: 'CONF-42',
+        }),
+      }).action,
+    ).toBe('block');
+
     const hdrChromeBody = formBody({
       SYSTEM_FUNCTION_NAME: 'OSRESV',
       USER_FUNCTION_NAME: 'OSRESV',
@@ -582,6 +765,140 @@ describe('exact OSRESS.search candidate binding', () => {
         (evaluateObservedRequest(detail, hdrChromeReq) as { ruleId?: string }).ruleId ?? '',
       ),
     ).toBe(true);
+
+    const hdrMinimalBody = formBody({
+      CURRENT_TAB_NAME: 'HDR',
+      MENU_MODULE_KEY: '0',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      removescreenflows: 'yes',
+      propertycode: 'HRCEN',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+    });
+    const hdrMinimalReq = { ...hdrReq, postData: hdrMinimalBody };
+    expect(evaluateObservedRequest(findOnly, hdrMinimalReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, hdrMinimalReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open-minimal',
+    });
+
+    const hdrMinimalIdBody = formBody({
+      CURRENT_TAB_NAME: 'HDR',
+      MENU_MODULE_KEY: '0',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      removescreenflows: 'yes',
+      propertycode: 'HRCEN',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+      id: '123',
+    });
+    expect(evaluateObservedRequest(detail, { ...hdrReq, postData: hdrMinimalIdBody })).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open-minimal-id',
+    });
+
+    const hdrMinimalNoChromeBody = formBody({
+      CURRENT_TAB_NAME: 'HDR',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      propertycode: 'HRCEN',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+    });
+    const hdrMinimalNoChromeReq = { ...hdrReq, postData: hdrMinimalNoChromeBody };
+    expect(evaluateObservedRequest(detail, hdrMinimalNoChromeReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open-minimal-no-chrome',
+    });
+
+    const notesBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSNOTS',
+      USER_FUNCTION_NAME: 'OSNOTS',
+      popup: 'true',
+      action: 'RESRETRIEVAL',
+      propertyCode: 'HRCEN',
+      confirmationNumber: 'CONF-42',
+    });
+    expect(
+      evaluateObservedRequest(detail, {
+        method: 'POST',
+        url: `${ORIGIN}/web/base/OSNOTS`,
+        resourceType: 'xhr',
+        headers: {},
+        postData: notesBody,
+      }),
+    ).toEqual({ action: 'allow', ruleId: 'live-osnots-read' });
   });
 
+  it('blocks unreviewed OSNOTS controls', () => {
+    const body = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSNOTS',
+      USER_FUNCTION_NAME: 'OSNOTS',
+      popup: 'false',
+      action: 'load',
+      propertyCode: 'HRCEN',
+      confirmationNumber: 'CONF-42',
+    });
+    expect(
+      evaluateObservedRequest(
+        buildExactOsressSearchThenDetailManifest(ORIGIN, {
+          id: 'notes-osnots-test',
+          kind: 'confirmation',
+          value: 'CONF-42',
+        }),
+        {
+          method: 'POST',
+          url: `${ORIGIN}/web/base/OSNOTS`,
+          resourceType: 'xhr',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          postData: body,
+        },
+      ),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.CHANGED_FIXED_BODY,
+    });
+  });
+
+  it('binds OSNOTS to observed read controls and optional exact confirmation', () => {
+    const buildBoundOsnots = buildLiveOsnotsReadRule as unknown as (
+      origin: string,
+      confirmationNumber: string,
+    ) => ReturnType<typeof buildLiveOsnotsReadRule>;
+    const manifest = requestPolicyManifestSchema.parse({
+      rules: [buildBoundOsnots(ORIGIN, 'CONF-42')],
+    });
+    const request = (fields: Record<string, string>) => ({
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSNOTS`,
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: formBody(fields),
+    });
+    const base = {
+      SYSTEM_FUNCTION_NAME: 'OSNOTS',
+      USER_FUNCTION_NAME: 'OSNOTS',
+      popup: 'true',
+      action: 'RESRETRIEVAL',
+      propertyCode: 'HRCEN',
+      confirmationNumber: 'CONF-42',
+    };
+    expect(evaluateObservedRequest(manifest, request(base))).toEqual({
+      action: 'allow',
+      ruleId: 'live-osnots-read',
+    });
+    expect(
+      evaluateObservedRequest(manifest, request({ ...base, confirmationNumber: 'OTHER' })),
+    ).toMatchObject({ action: 'block', code: BLOCK_CODES.CHANGED_FIXED_BODY });
+    expect(evaluateObservedRequest(manifest, request({ ...base, popup: 'false' }))).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.CHANGED_FIXED_BODY,
+    });
+    expect(evaluateObservedRequest(manifest, request({ ...base, action: 'load' }))).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.CHANGED_FIXED_BODY,
+    });
+  });
 });

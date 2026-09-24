@@ -21,6 +21,7 @@ import {
   uploadMultipartParts,
 } from '@/lib/catchup-upload-client';
 import { formatFileSize } from '@/lib/utils';
+import { OutlookSetupDownloadButton } from '@/components/settings/outlook-setup-download';
 
 export function CatchupUploadContent() {
   const trpc = useTRPC();
@@ -234,6 +235,8 @@ export function CatchupUploadContent() {
               </p>
             </div>
           )}
+
+          <OutlookSetupDownloadButton />
         </div>
       </SettingsCard>
 

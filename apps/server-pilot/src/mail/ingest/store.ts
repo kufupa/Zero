@@ -186,6 +186,44 @@ export interface PersistOptions {
   activeIngestUidlClaimToken?: string;
 }
 
+export type PersistShadowSideEffectResult = { kind: 'ok' } | { kind: 'failed' };
+
+/**
+ * Shadow admission/rematch must not abort a committed inbound persist.
+ * Missing 0026/0027 (or the next optional column) used to roll back the mail
+ * row, quarantine as parse_failure, and DELE the POP3 copy.
+ */
+export async function runPersistShadowSideEffects(input: {
+  db: DB;
+  isHotelSent: boolean;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+}): Promise<PersistShadowSideEffectResult> {
+  try {
+    if (!input.isHotelSent) {
+      await enqueueShadowPrediction({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        db: input.db,
+      });
+    } else {
+      await rematchShadowPredictions({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        outboundMessageId: input.triggerMessageId,
+        db: input.db,
+      });
+    }
+    return { kind: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('persist shadow side-effect failed after commit:', message);
+    return { kind: 'failed' };
+  }
+}
+
 /**
  * Persist a parsed inbound message.
  *
@@ -319,6 +357,12 @@ export async function persistInboundMessage(
   let deferred: Omit<PersistDeferredResult, 'candidateAttachmentCleanupFailureCount'> | null = null;
   let malformedDeliveryOutcomeQuarantine = false;
   let reconciliation: PersistReconciledResult | null = null;
+  let persistShadowAfterCommit: {
+    isHotelSent: boolean;
+    transportId: string;
+    threadId: string;
+    triggerMessageId: string;
+  } | null = null;
   await db.transaction(async (tx) => {
     const transactionDb = tx as unknown as DB;
     await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
@@ -625,30 +669,15 @@ export async function persistInboundMessage(
         },
         tx as unknown as DB,
       );
-
-      // U13 shadow admission is a separate private purpose. It is queued only
-      // after this inbound row/attachment transaction has the same committed
-      // scope and never writes a draft, label, read state, or SMTP row.
-      if (!isHotelSent) {
-        await enqueueShadowPrediction({
-          transportId: transport.id,
-          threadId,
-          triggerMessageId: messageId,
-          db: tx as unknown as DB,
-        });
-      }
-    }
-
-    // External Sent/imported hotel mail is the delayed reference producer. A
-    // rematch reads only private prediction rows and appends an assessment;
-    // it never mutates the just-stored message or visible thread state.
-    if (isHotelSent && !opts.skipAiEnqueue) {
-      await rematchShadowPredictions({
+      // U13 shadow admission is a separate private purpose. Queue it only
+      // after this inbound row/attachment transaction commits so a missing
+      // shadow table cannot roll back stored mail or trigger POP3 DELE.
+      persistShadowAfterCommit = {
+        isHotelSent,
         transportId: transport.id,
         threadId,
-        outboundMessageId: messageId,
-        db: tx as unknown as DB,
-      });
+        triggerMessageId: messageId,
+      };
     }
 
     if (opts.promoteQuarantineId) {
@@ -657,6 +686,13 @@ export async function persistInboundMessage(
         .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
     }
   });
+
+  if (persistShadowAfterCommit) {
+    await runPersistShadowSideEffects({
+      db,
+      ...persistShadowAfterCommit,
+    });
+  }
 
   if (duplicate) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({

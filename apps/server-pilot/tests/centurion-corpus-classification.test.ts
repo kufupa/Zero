@@ -14,8 +14,8 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
-const WINDOW_START = '2026-09-07T22:00:00.000Z';
-const WINDOW_END = '2026-09-16T22:00:00.000Z';
+const WINDOW_START = '2026-09-08T22:00:00.000Z';
+const WINDOW_END = '2026-09-18T14:50:00.000Z';
 
 function sha(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -78,7 +78,7 @@ function manifestFor(
         ? {}
         : {
             spilloverStartInclusive: WINDOW_END,
-            spilloverEndExclusive: '2026-09-17T22:00:00.000Z',
+            spilloverEndExclusive: '2026-09-18T22:00:00.000Z',
           }),
       timezone: 'Africa/Johannesburg',
     },
@@ -102,10 +102,10 @@ function normalRecord(overrides: Partial<Record<string, unknown>> = {}): Record<
     to: ['centurion@example.test'],
     cc: [],
     bcc: [],
-    receivedAt: '2026-09-08T08:00:00.000Z',
+    receivedAt: '2026-09-10T08:00:00.000Z',
     sentAt: null,
-    createdAt: '2026-09-08T08:00:01.000Z',
-    eventAt: '2026-09-08T08:00:00.000Z',
+    createdAt: '2026-09-10T08:00:01.000Z',
+    eventAt: '2026-09-10T08:00:00.000Z',
     eventAtSource: 'received_at',
     eventAtFallback: false,
     inReplyTo: null,
@@ -319,7 +319,7 @@ describe('Centurion exhaustive classification and daily reports', () => {
     });
     expect(fixture.result.coverageAudit.core.includedUniqueIdCount).toBe(2);
     expect(fixture.result.dailyTables.coreTotals.total).toBe(2);
-    expect(fixture.result.dailyTables.days['2026-09-08']?.total).toBe(1);
+    expect(fixture.result.dailyTables.days['2026-09-10']?.total).toBe(1);
     expect(fixture.result.dailyTables.days['2026-09-09']?.total).toBe(1);
     expect(fixture.result.records[0]?.inputHash).toBe(
       sha(JSON.stringify(normalRecord({ id: 'normal-full', textBody: fullBody }))),

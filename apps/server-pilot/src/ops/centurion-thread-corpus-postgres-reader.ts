@@ -48,11 +48,11 @@ type ThreadCorpusMessageRow = {
   rawMime: ThreadCorpusRawMime;
 };
 
-/** Fixed production scope for the nine-day Centurion evidence snapshot. */
+/** Fixed production scope: 2026-09-09 00:00 through 2026-09-18 16:50 Africa/Johannesburg. */
 export const CENTURION_TRANSPORT_ID = 'transport-centurion' as const;
 export const CENTURION_WINDOW_TIMEZONE = 'Africa/Johannesburg' as const;
-export const CENTURION_WINDOW_START_UTC = '2026-09-07T22:00:00.000Z' as const;
-export const CENTURION_WINDOW_END_UTC = '2026-09-16T22:00:00.000Z' as const;
+export const CENTURION_WINDOW_START_UTC = '2026-09-08T22:00:00.000Z' as const;
+export const CENTURION_WINDOW_END_UTC = '2026-09-18T14:50:00.000Z' as const;
 
 export type CenturionCorpusWindow = {
   startInclusive: string;

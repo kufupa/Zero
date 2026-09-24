@@ -2,7 +2,7 @@
 title: "Never trust a live negative: the six-proof verification gate for HMS/PMS reads"
 module: infor-hms
 date: 2026-08-05
-last_updated: 2026-08-05
+last_updated: "2026-09-18"
 category: conventions
 problem_type: convention
 component: tooling
@@ -56,6 +56,11 @@ Any one of these produces a false negative that *looks* like a legitimate "not f
 
 Only when request + response + parser + scope + window are correct **and** a known-positive control is green may a remaining zero-row result be reported as "no record."
 
+A private audit bundle can retain the request digest, source projection, named
+checkpoints, trace, and postcondition evidence for these checks. It is a
+container for the six proofs, not a seventh proof; video never replaces the
+request, response, parser, scope, window, or known-positive control.
+
 ## Why This Matters
 
 The failure mode is silent and business-dangerous: a false negative makes the tool (or the drafting LLM built on it) tell a hotel guest "we have no reservation for you" when the booking exists — or stalls a whole build waiting for "better data" that was never the problem. Fixture-green is not live-green: fixtures encode our *assumptions* about the transport; live encodes reality. Each of the six bugs above passed fixtures. The gate converts "it returned nothing, so there's nothing" (an assumption) into "it returned nothing, and I have independently proven every layer plus a positive control, so there's genuinely nothing" (evidence). This is the concrete, checkable form of the Phase B empirical build-debug loop, and it generalizes to every new read surface (quote, folio, availability, communications) — the transport IDs differ but the discipline is identical.
@@ -105,3 +110,4 @@ if (gridWrap === null) {
 - Bug-fix that this convention generalizes: [../integration-issues/live-osress-gridresult-parse-canary-row-ok.md](../integration-issues/live-osress-gridresult-parse-canary-row-ok.md)
 - False-green gate (fixture/tsc-green != verified): [../workflow-issues/false-green-gate-unpersisted-tsc-fixes.md](../workflow-issues/false-green-gate-unpersisted-tsc-fixes.md)
 - Operator runbook (token sequence incl. known-positive control): [../../infor-hms/live-reservation-shadow-runbook.md](../../infor-hms/live-reservation-shadow-runbook.md)
+- Private Playwright audit-bundle pattern: [../architecture-patterns/private-playwright-audit-bundles-for-live-hms-read-tools.md](../architecture-patterns/private-playwright-audit-bundles-for-live-hms-read-tools.md)

@@ -12,6 +12,7 @@ import {
 } from '../src/hms/release-kernel.js';
 import {
   assertQuotePromotionEligible,
+  assertHotelAvailabilityManifest,
   buildQuoteRelease,
   quoteArtifactSha256,
 } from '../scripts/materialize-quote-release-v2.js';
@@ -23,9 +24,7 @@ import {
   buildLiveDepositLedgerManifest,
   buildLiveFolioReadManifest,
 } from '../src/hms/live-read-manifest.js';
-import { parseQuoteStayCandidateFromAuthoredSegment } from '../src/hms/quote-stay-candidate.js';
 import { FOLIO_READ_IMPL_V1, createReadToolHandler } from '../src/hms/read-handler-index.js';
-import { buildExactOsrravSearchManifest } from '../src/hms/live-read-manifest.js';
 import { fingerprintReadToolRegistry } from '../src/hms/read-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -34,6 +33,44 @@ import { join } from 'node:path';
 
 const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
 const HEX = 'a'.repeat(64);
+
+const HOTEL_AVAILABILITY_MANIFEST = JSON.stringify({
+  schemaVersion: 1,
+  surface: 'hotel_availability',
+  functionName: 'OSMPAV',
+  openPath: '/web/base/OSMPAV',
+  openMethod: 'POST',
+  openBody: { FUNCTION_CLASS: 'WEBL' },
+  searchPath: '/web/base/OSMPAV.search',
+  method: 'POST',
+  contentType: 'application/x-www-form-urlencoded',
+  noWrite: true,
+  fixedBody: {},
+  fields: {
+    property: 'property',
+    arrival: 'arrival',
+    departure: 'departure',
+    nights: 'nights',
+    currency: 'currency',
+    adults: 'adults',
+    children: 'children',
+    childAges: 'childAges',
+    roomGroups: 'rooms',
+  },
+  roomEncoding: 'json',
+  response: {
+    rowsPath: 'result.rows',
+    datePath: 'date',
+    roomTypePath: 'roomType',
+    ratePlanPath: 'ratePlan',
+    availableCountPath: 'available',
+    amountPath: 'amount',
+    currencyPath: 'currency',
+    restrictionsPath: 'restrictions',
+  },
+  discoveryEvidenceSha256: HEX,
+  discoveredAt: '2026-09-16T00:00:00.000Z',
+});
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -231,61 +268,25 @@ describe('reviewed release manifest binding', () => {
     );
   });
 
-  it('feeds each actual materializer assembly into the immutable handler path', async () => {
+  it('keeps superseded OSRRAV out of quote materialization', async () => {
     const registry = emptyActiveRegistryV2({
       toolsetVersion: '3.0.0',
       toolsetFingerprint: fingerprintReadToolRegistry(),
     });
     const findRelease = releaseFor(HEX);
     const quoteRaw = readFileSync(envelopePath('hms_quote_stay.availability.2.0.0.json'), 'utf8');
-    const quoteEnvelope = JSON.parse(quoteRaw) as { manifest: HmsSessionAuthorization['manifest'] };
-    const quoteRelease = buildQuoteRelease({
-      registry,
-      findRelease,
-      sourceRevision: 'local-materializer-test',
-      runtimeFingerprintSha256: HEX,
-      manifestRaw: quoteRaw,
-      liveProofSha256: HEX,
-      receiptSha256: HEX,
-      releaseId: randomUUID(),
-    });
-    expect(
-      createReadToolHandler(
-        quoteRelease,
-        authorizationForTool(
-          quoteRelease,
-          'hms_quote_stay',
-          'quote_availability_search',
-          'quote_availability_search',
-          quoteEnvelope.manifest,
-        ),
-      ).toolId,
-    ).toBe('hms_quote_stay');
-    const alteredQuoteManifest = {
-      ...quoteEnvelope.manifest,
-      rules: quoteEnvelope.manifest.rules.map((rule, index) =>
-        index === 0 ? { ...rule, path: '/altered-quote' } : rule,
-      ),
-    };
     expect(() =>
-      createReadToolHandler(
-        quoteRelease,
-        authorizationForTool(
-          quoteRelease,
-          'hms_quote_stay',
-          'quote_availability_search',
-          'quote_availability_search',
-          alteredQuoteManifest,
-        ),
-      ),
-    ).toThrow(/manifest.*digest|manifest.*binding/i);
-
-    const candidate = parseQuoteStayCandidateFromAuthoredSegment(
-      'arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR',
-    );
-    expect(candidate).not.toBeNull();
-    if (!candidate) return;
-    expect(buildExactOsrravSearchManifest(ORIGIN, candidate)).toEqual(quoteEnvelope.manifest);
+      buildQuoteRelease({
+        registry,
+        findRelease,
+        sourceRevision: 'local-materializer-test',
+        runtimeFingerprintSha256: HEX,
+        manifestRaw: quoteRaw,
+        liveProofSha256: HEX,
+        receiptSha256: HEX,
+        releaseId: randomUUID(),
+      }),
+    ).toThrow('BLOCKED_QUOTE_MANIFEST_NOT_HOTEL_AVAILABILITY');
 
     const folioRaw = readFileSync(envelopePath('hms_read_folio.folio.1.0.0.json'), 'utf8');
     const depositRaw = readFileSync(
@@ -357,6 +358,21 @@ describe('reviewed release manifest binding', () => {
 
     expect(() => assertQuotePromotionEligible()).toThrow(
       'BLOCKED_LIVE_PROOF_NOT_PROMOTION_ELIGIBLE',
+    );
+    expect(() =>
+      assertHotelAvailabilityManifest(HOTEL_AVAILABILITY_MANIFEST),
+    ).not.toThrow();
+    expect(() =>
+      assertHotelAvailabilityManifest(
+        JSON.stringify({
+          surface: 'room_type_rate_availability',
+          functionName: 'OSRRAV',
+          searchPath: '/room-type-rate-availability',
+        }),
+      ),
+    ).toThrow('BLOCKED_QUOTE_MANIFEST_NOT_HOTEL_AVAILABILITY');
+    expect(() => assertHotelAvailabilityManifest('{not-json')).toThrow(
+      'BLOCKED_QUOTE_MANIFEST_INVALID_JSON',
     );
     expect(() => assertFinancePromotionEligible()).toThrow(
       'BLOCKED_LIVE_PROOF_NOT_PROMOTION_ELIGIBLE',

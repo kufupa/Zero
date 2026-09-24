@@ -33,8 +33,41 @@ describe('projectNotesFromDetailDump', () => {
       expect(projected.data.notes.items[0]?.audience).toMatchObject({
         value: 'staff_only',
       });
+      expect(projected.data.notes.items[0]?.status).toMatchObject({
+        state: 'unknown',
+        value: null,
+        reasonCode: 'NOT_APPLICABLE',
+      });
+      expect(projected.data.notes.items[0]?.createdAt).toMatchObject({
+        state: 'unknown',
+        value: null,
+        reasonCode: 'NOT_APPLICABLE',
+      });
     }
     expect(projected.tracesReasonCode).toBe('SURFACE_UNPROVEN');
+  });
+
+  it('returns a complete empty list when a note field is present but empty', () => {
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote'],
+        values: { reservationnote: '' },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.data.notes).toEqual({
+      items: [],
+      page: { returnedCount: 0, hasMore: false, nextCursor: null },
+    });
+    expect(projected.claimKeys).toEqual([]);
   });
 
   it('returns notes unavailable when note keys absent from dump', () => {
@@ -83,6 +116,53 @@ describe('projectNotesFromDetailDump', () => {
     });
   });
 
+  it('keeps a masked note unavailable when another known note field is empty', () => {
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote', 'cancellationnote'],
+        values: { reservationnote: '', cancellationnote: 'masked' },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.data.notes).toMatchObject({
+      state: 'unavailable',
+      reasonCode: 'POLICY_UNAPPROVED',
+    });
+    expect(JSON.stringify(projected.data.notes)).not.toContain('masked');
+  });
+
+  it('marks known notes partial when a second note field is masked', () => {
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote', 'cancellationnote'],
+        values: { reservationnote: 'Known note', cancellationnote: 'protected' },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.data.notes).toMatchObject({
+      state: 'partial',
+      completeness: 'partial',
+      issues: [{ code: 'POLICY_UNAPPROVED' }],
+      data: { items: [{ permittedText: { value: 'Known note' } }] },
+    });
+  });
+
   it('retains bounded long note text instead of dropping it at 128 characters', () => {
     const text = 'x'.repeat(500);
     const projected = projectNotesFromDetailDump(
@@ -103,6 +183,37 @@ describe('projectNotesFromDetailDump', () => {
     expect(projected.claimKeys).toEqual(['notes.reservationnote']);
     if ('items' in projected.data.notes) {
       expect(projected.data.notes.items[0]?.permittedText.value).toHaveLength(500);
+    }
+  });
+
+  it('marks over-limit note text partial with explicit truncation evidence', () => {
+    const text = 'x'.repeat(2_001);
+    const projected = projectNotesFromDetailDump(
+      {
+        schemaVersion: 1,
+        surface: 'guest_stay_detail',
+        keys: ['reservationnote'],
+        values: { reservationnote: text },
+      },
+      {
+        resourceRef: 'notes-resource-test',
+        evidenceRef: 'ev-1',
+        observedAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-01-01T00:05:00.000Z'),
+        limit: 20,
+      },
+    );
+    expect(projected.data.notes).toMatchObject({
+      state: 'partial',
+      completeness: 'partial',
+      issues: [{ code: 'TRUNCATED' }],
+      data: {
+        items: [{ permittedText: { state: 'known', value: expect.any(String) } }],
+        page: { returnedCount: 1, hasMore: null, nextCursor: null },
+      },
+    });
+    if ('state' in projected.data.notes && projected.data.notes.state === 'partial') {
+      expect(projected.data.notes.data.items[0]?.permittedText.value).toHaveLength(2_000);
     }
   });
 });

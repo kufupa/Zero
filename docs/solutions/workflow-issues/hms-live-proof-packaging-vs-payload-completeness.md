@@ -1,6 +1,7 @@
 ---
 title: HMS live proof must gate payload quality not only packaging
 date: 2026-09-11
+last_updated: "2026-09-18"
 category: workflow-issues
 module: server-pilot-hms / centurion-dashboard-tools
 problem_type: workflow_issue
@@ -119,6 +120,10 @@ Do not start the next write/read tool in the kickoff sequence until the current 
 
 Green on the left column does **not** imply green on the right.
 
+The private audit-bundle pattern standardizes retention of results, events,
+traces, screenshots, and optional video, but remains packaging infrastructure;
+the semantic gates above still decide payload completeness.
+
 ### 7. Fixture discipline
 
 When building unit tests for grid parsers:
@@ -219,3 +224,7 @@ live run → parse result.v1.json → [NEW] payload policy assert → PHASE_A_PR
 - Related convention (negative-result six-proof gate): `docs/solutions/conventions/live-negative-result-verification-gate.md`
 - Related integration DoD tokens: `docs/solutions/integration-issues/live-osress-gridresult-parse-canary-row-ok.md`
 - Analogous false-green: `docs/solutions/workflow-issues/false-green-gate-unpersisted-tsc-fixes.md`
+- Soft-open / Wave A payload playbook (sibling): [infor-hms-soft-open-wave-a-pms-tool-payload-patterns.md](./infor-hms-soft-open-wave-a-pms-tool-payload-patterns.md)
+- Full Wave A three-gates playbook (payload + packaging + **visual** HITL): [hms-wave-a-read-tool-proof-three-gates-playbook.md](./hms-wave-a-read-tool-proof-three-gates-playbook.md)
+- UI-first Playwright HITL recorder build method: [hms-hitl-ui-first-playwright-recorder-build.md](./hms-hitl-ui-first-playwright-recorder-build.md)
+- Private Playwright audit-bundle pattern: [private-playwright-audit-bundles-for-live-hms-read-tools.md](../architecture-patterns/private-playwright-audit-bundles-for-live-hms-read-tools.md)

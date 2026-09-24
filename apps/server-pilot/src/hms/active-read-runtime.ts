@@ -159,6 +159,8 @@ export function buildHmsFindSessionAuthorization(input: {
   privateDigestKeyVersion: string;
   sourceRevision: string;
   expiresAt?: string;
+  /** Explicit private id for an isolated pre-promotion binding. */
+  prePromotionBindingId?: string;
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
   const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
@@ -174,7 +176,8 @@ export function buildHmsFindSessionAuthorization(input: {
     operationId: input.operationId,
     toolId: 'hms_find_reservation',
     discoveryOperationId: branch?.discoveryOperationId ?? 'guest_stay_search',
-    releaseId: release?.releaseId ?? PHASE_A_FIND_LEASE_RELEASE_ID,
+    releaseId:
+      release?.releaseId ?? input.prePromotionBindingId ?? PHASE_A_FIND_LEASE_RELEASE_ID,
     requestBranchId: branch?.id ?? 'guest_stay_search',
     manifest: input.manifest,
     manifestSha256: branch?.manifestSha256 ?? computedManifestSha,
@@ -249,6 +252,8 @@ export function buildHmsFolioSessionAuthorization(input: {
   privateDigestKeyVersion: string;
   sourceRevision: string;
   expiresAt?: string;
+  /** Explicit private id for an isolated pre-promotion binding. */
+  prePromotionBindingId?: string;
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
   const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
@@ -268,7 +273,7 @@ export function buildHmsFolioSessionAuthorization(input: {
     operationId: input.operationId,
     toolId: 'hms_read_folio',
     discoveryOperationId: branch?.discoveryOperationId ?? input.requestBranchId,
-    releaseId: release?.releaseId ?? randomUUID(),
+    releaseId: release?.releaseId ?? input.prePromotionBindingId ?? randomUUID(),
     requestBranchId: branch?.id ?? input.requestBranchId,
     manifest: input.manifest,
     manifestSha256: computedManifestSha,

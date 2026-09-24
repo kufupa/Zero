@@ -688,6 +688,24 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
 }
 
 /**
+ * Minimal authenticated-shell rules shared by standalone read surfaces.
+ * Keep Hotel Availability from inheriting Guest Stay POSTs (especially the
+ * superseded OSRRAV path) while still allowing login, COMMON/OSRESV landing,
+ * and the harmless BSSTRT shell bootstrap.
+ */
+export function buildLiveHmsAuthenticationRules(origin: string): RequestRule[] {
+  const allowed = new Set([
+    'live-login-get',
+    'live-common-get',
+    'live-osresv-get',
+    'live-login-post',
+    'live-bsstrt',
+    'live-bsstrt-hdr',
+  ]);
+  return buildLiveGuestStayFunctionalRules(origin).filter((rule) => allowed.has(rule.id));
+}
+
+/**
  * ExtJS Guest Stay result-row open (dblclick). Live proof 2026-09-12:
  * POST /web/base/OSRESV?USER_FUNCTION_NAME=OSRESV with confirmationnumber +
  * DEFAULT_VIEW / SAVE_FOR_HEADER / startUpView chrome. Inert read open only —
@@ -841,16 +859,120 @@ export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): Requ
   };
 }
 
+/**
+ * Minimal inert HDR detail loads observed from the live row-open path. The
+ * policy validator treats declared variable keys as required, so keep a
+ * narrow template for the common 8-key wire shape instead of making the
+ * broader optional-field template silently reject it.
+ */
+export function buildLiveOsresvHdrDetailOpenMinimalRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open-minimal',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      CURRENT_TAB_NAME: 'HDR',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: { pattern: 'HRCEN|', maxLength: 16 },
+    },
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Minimal HDR detail shape carrying the matched row's opaque `id`. */
+export function buildLiveOsresvHdrDetailOpenMinimalWithIdRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open-minimal-id',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      CURRENT_TAB_NAME: 'HDR',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      id: VAR64,
+      propertycode: { pattern: 'HRCEN|', maxLength: 16 },
+    },
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Minimal no-chrome 6-key HDR detail shape. */
+export function buildLiveOsresvHdrDetailOpenMinimalNoChromeRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open-minimal-no-chrome',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      CURRENT_TAB_NAME: 'HDR',
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+    },
+    variableBody: {
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: { pattern: 'HRCEN|', maxLength: 16 },
+    },
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
 /** Detail chrome assets observed after OSRESV tab strip / Guest Stay detail paints. */
 export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestRule[] {
   const toolbar = (id: string, file: string): RequestRule =>
+    getStaticRule(origin, id, `/web/resources/inforhms/images/toolbar/${file}`, ['image', 'other']);
+  return [
+    // Exact inert image GETs observed while opening the cancelled detail row
+    // (owner29). These are chrome only; no reserve action is permitted.
     getStaticRule(
       origin,
-      id,
-      `/web/resources/inforhms/images/toolbar/${file}`,
+      'live-osresv-more-pending-icon',
+      '/web/resources/inforhms/images/hms/icon_morepending.png',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-osresv-tb-reserve',
+      '/web/resources/inforhms/images/hms/toolbar/reserve.svg',
+      ['image'],
+    ),
+    // Observed while displaying the read-only All Folios grid (2026-09-17).
+    getStaticRule(
+      origin,
+      'live-grid-sort-hover',
+      '/web/resources/inforhms/images/grid/grid-sort-hover.svg',
       ['image', 'other'],
-    );
-  return [
+    ),
     getStaticRule(
       origin,
       'live-osresv-tab-scroll-left',
@@ -886,12 +1008,51 @@ export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestR
     toolbar('live-osresv-tb-add-ons', 'add-ons.svg'),
     toolbar('live-osresv-tb-employee-directory', 'employee-directory.svg'),
     toolbar('live-osresv-tb-search-organization', 'search-organization.svg'),
+    // Exact inert image requested by Guest Stay search chrome, observed 2026-09-17.
+    toolbar('live-osresv-tb-magic-wand', 'magic-wand.svg'),
     toolbar('live-osresv-tb-success-solid', 'success-solid.svg'),
     toolbar('live-osresv-tb-passport', 'passport.svg'),
     toolbar('live-osresv-tb-remove-passport', 'remove-passport.svg'),
     toolbar('live-osresv-tb-add-passport', 'add-passport.svg'),
     toolbar('live-osresv-tb-user-profile', 'user-profile.svg'),
+    toolbar('live-osresv-tb-building', 'building.svg'),
+    // Exact static image GETs captured while OSRESV.FOL rendered (2026-09-17).
+    toolbar('live-fol-tb-purchasing', 'purchasing.svg'),
+    toolbar('live-fol-tb-utilities', 'utilities.svg'),
+    toolbar('live-fol-tb-clear-formatting', 'clear-formatting.svg'),
+    toolbar('live-fol-tb-expand-app-tray', 'expand-app-tray-vertical.svg'),
+    toolbar('live-fol-tb-collapse-app-tray', 'collapse-app-tray-vertical.svg'),
   ];
+}
+
+/**
+ * Read-only notes/traces bootstrap observed while the detail surface paints.
+ *
+ * The endpoint is not an empty POST: the tenant sends a six-key form. Keep
+ * the function, property, popup, and action binding fixed. Confirmation stays
+ * variable until a discovery owner supplies the correlated value.
+ */
+export function buildLiveOsnotsReadRule(origin: string, confirmationNumber?: string): RequestRule {
+  return {
+    id: 'live-osnots-read',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSNOTS',
+    resourceTypes: ['xhr', 'fetch'],
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSNOTS',
+      USER_FUNCTION_NAME: 'OSNOTS',
+      popup: 'true',
+      action: 'RESRETRIEVAL',
+      propertyCode: 'HRCEN',
+      ...(confirmationNumber === undefined ? {} : { confirmationNumber }),
+    },
+    variableBody: confirmationNumber === undefined ? { confirmationNumber: VAR64 } : {},
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
 }
 
 /** Request-policy-only manifest for unit tests / production live sessions. */
@@ -958,8 +1119,7 @@ export function buildExactOsressSearchBody(
   const isSurname = candidate.kind === 'surname_dates';
   const v = isSurname ? candidate.surname : candidate.value;
   const isCanary = !isSurname && v === LIVE_NOTFOUND_CANARY;
-  const confVal =
-    isCanary || candidate.kind === 'confirmation' ? (isSurname ? unused : v) : unused;
+  const confVal = isCanary || candidate.kind === 'confirmation' ? (isSurname ? unused : v) : unused;
   const extVal =
     isCanary || candidate.kind === 'external_reference' ? (isSurname ? unused : v) : unused;
   const otherOr = isCanary ? v : unused;
@@ -1164,6 +1324,10 @@ export function buildExactOsressSearchThenDetailManifest(
       buildLiveOsresvLstDetailOpenRule(origin),
       buildLiveOsresvHdrDetailOpenRule(origin),
       buildLiveOsresvHdrDetailOpenWithChromeRule(origin),
+      buildLiveOsresvHdrDetailOpenMinimalRule(origin),
+      buildLiveOsresvHdrDetailOpenMinimalWithIdRule(origin),
+      buildLiveOsresvHdrDetailOpenMinimalNoChromeRule(origin),
+      buildLiveOsnotsReadRule(origin),
     ],
   });
 }
@@ -1466,6 +1630,27 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
       redirectPolicy: 'same-reviewed-chain',
     },
     {
+      // Authenticated login emits this equivalent inert refresh variant before
+      // PSSNEL opens. Keep it exact; do not turn manurefresh into an arbitrary
+      // caller-controlled field.
+      id: 'live-bsstrt-hdr-authenticated',
+      origin,
+      method: 'POST',
+      path: '/web/base/BSSTRT.HDR',
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'BSSTRT',
+        USER_FUNCTION_NAME: 'BSSTRT',
+        manurefresh: 'true',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
       id: 'live-pssnel-open',
       origin,
       method: 'POST',
@@ -1628,12 +1813,49 @@ export function buildLiveFolioFunctionalRules(origin: string): RequestRule[] {
       maxBodyBytes: 16_384,
       redirectPolicy: 'same-reviewed-chain',
     },
+    {
+      // Inert FOL tab read used only after the exact parent confirmation has
+      // been bound. No save/post/settlement action is permitted.
+      id: 'live-folio-osresv-fol',
+      origin,
+      method: 'POST',
+      path: '/web/base/OSRESV.FOL',
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'FOL',
+        propertycode: 'HRCEN',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {
+        confirmationnumber: VAR64,
+        // OSRESS's correlated row can provide these opaque bindings. They are
+        // accepted only as values returned by the same matched PMS response;
+        // callers cannot supply arbitrary IDs through the connected runner.
+        reservationstayid: VAR64,
+        id: VAR64,
+      },
+      maxBodyBytes: 16_384,
+      redirectPolicy: 'same-reviewed-chain',
+    },
   ];
 }
 
 export function buildLiveFolioReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
-    rules: [...buildLiveGuestStayChromeGetRules(origin), ...buildLiveFolioFunctionalRules(origin)],
+    // A fresh folio proof context still performs the normal authenticated
+    // login/COMMON bootstrap. Include only the shared auth rules plus the
+    // reviewed OSRESS read POSTs; never inherit Guest Stay search or writes.
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveHmsAuthenticationRules(origin),
+      ...buildLiveFolioFunctionalRules(origin),
+    ],
   });
 }
 

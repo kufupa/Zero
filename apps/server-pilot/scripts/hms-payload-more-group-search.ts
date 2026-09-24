@@ -212,7 +212,7 @@ async function main(): Promise<void> {
       searches.push({ label: trial.label, ...result });
     }
 
-    // More → Group Sales → Group Booking
+    // More → Group Sales → (hover) Group Booking / Events
     async function clickExact(label: string): Promise<boolean> {
       const loc = page.getByText(label, { exact: true }).first();
       const vis = await loc.isVisible().catch(() => false);
@@ -225,15 +225,44 @@ async function main(): Promise<void> {
       await page.waitForTimeout(2_000);
       return true;
     }
+    async function hoverThenClick(parent: string, child: string): Promise<boolean> {
+      const pLoc = page.getByText(parent, { exact: true }).first();
+      if (!(await pLoc.isVisible().catch(() => false))) {
+        log.push(`miss-hover-parent:${parent}`);
+        return false;
+      }
+      await pLoc.hover({ timeout: 8_000 }).catch(() => undefined);
+      await page.waitForTimeout(1_200);
+      const cLoc = page.getByText(child, { exact: true }).first();
+      if (!(await cLoc.isVisible().catch(() => false))) {
+        // try role=menuitem
+        const menuItem = page.getByRole('menuitem', { name: child }).first();
+        if (await menuItem.isVisible().catch(() => false)) {
+          await menuItem.click({ force: true, timeout: 8_000 }).catch(() => undefined);
+          log.push(`click-menuitem:${child}`);
+          await page.waitForTimeout(2_500);
+          return true;
+        }
+        log.push(`miss-hover-child:${child}`);
+        return false;
+      }
+      await cLoc.click({ force: true, timeout: 8_000 }).catch(() => undefined);
+      log.push(`hover-click:${parent}>${child}`);
+      await page.waitForTimeout(2_500);
+      return true;
+    }
     await clickExact('More');
-    await clickExact('Group Sales');
-    await clickExact('Group Booking');
+    await hoverThenClick('Group Sales', 'Group Booking');
     await clickExact('More');
-    await clickExact('Profiles');
-    await clickExact('Organization Profiles');
+    await hoverThenClick('Group Sales', 'Events');
+    await page.getByText('Event Reservations', { exact: true }).first().click({ force: true, timeout: 8_000 }).catch(() => {
+      log.push('miss:Event Reservations');
+    });
+    await page.waitForTimeout(2_000);
+    await clickExact('More');
+    await hoverThenClick('Profiles', 'Organization Profiles');
     await clickExact('More');
     await clickExact('Rate and Sales');
-
     const harvested = [
       ...new Set(
         caps

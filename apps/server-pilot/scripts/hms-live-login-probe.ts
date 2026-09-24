@@ -277,6 +277,7 @@ async function main(): Promise<void> {
   try {
     browser = await chromium.launch({
       headless: true,
+      executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
     });
     const context = await browser.newContext({
       acceptDownloads: false,
@@ -443,8 +444,16 @@ async function main(): Promise<void> {
         return keys.sort();
       });
       // Fill only — never log credential values. Abort-first inventory for next unknown.
-      await page.locator('input[name="userid"]').fill(secret.username);
-      await page.locator('input[name="password"]').fill(secret.password);
+      await page
+        .locator(
+          'input[name=userid], input[name=username], input[name=j_username], input[id*=userid], input[id*=username], input[id*=user]',
+        )
+        .first()
+        .fill(secret.username);
+      await page
+        .locator('input[name=password], input[type=password], input[id*=password]')
+        .first()
+        .fill(secret.password);
       const preBlockCount = events.filter((e) => e.decision === 'block').length;
       const loginResponsePromise = page
         .waitForResponse(
@@ -787,6 +796,20 @@ async function main(): Promise<void> {
     const propertyCodeInTitle = Boolean(
       (afterSubmit?.title || '').includes(secret.expectedPropertyCode),
     );
+    // Redacted shell diagnostic: runtime verification also requires the
+    // tenant/property name, while the older probe only reported the title.
+    // Record booleans/hashes, never the shell text itself.
+    const afterSubmitHtml = page ? await page.content().catch(() => '') : '';
+    const expectedPropertyNamePresent = Boolean(
+      secret.expectedPropertyName &&
+        afterSubmitHtml.toLocaleLowerCase().includes(secret.expectedPropertyName.toLocaleLowerCase()),
+    );
+    const shellBinding = {
+      htmlBytes: Buffer.byteLength(afterSubmitHtml),
+      expectedTenantPresent: afterSubmitHtml.includes(secret.expectedTenant),
+      expectedPropertyCodePresent: afterSubmitHtml.includes(secret.expectedPropertyCode),
+      expectedPropertyNamePresent,
+    };
     const phase =
       process.env.HMS_LIVE_CANARY_GUEST_STAY === '1' &&
       process.env.HMS_LIVE_CANARY_SUBMIT === '1'
@@ -806,6 +829,7 @@ async function main(): Promise<void> {
       afterSubmit,
       guestStayNav,
       propertyCodeInTitle,
+      shellBinding,
       xhrMeta: xhrMeta.slice(0, 20),
       documentAllowed,
       loginPostAllowed,

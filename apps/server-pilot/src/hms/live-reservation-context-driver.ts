@@ -11,9 +11,9 @@ import type {
   ReservationRow,
 } from './reservation-context-facade.js';
 import type {
-  ExactReservationCandidate,
   GuestStaySearchResult,
   LiveGuestStayDriver,
+  ReservationSearchCandidate,
 } from './live-guest-stay-driver.js';
 import type { PropertyReadLock } from './property-read-lock.js';
 import {
@@ -31,7 +31,7 @@ export interface LiveReservationContextDriver {
 
 export interface LiveReservationContextDriverOptions {
   guestStay: LiveGuestStayDriver;
-  candidateFor: (input: ReservationContextLookup) => ExactReservationCandidate;
+  candidateFor: (input: ReservationContextLookup) => ReservationSearchCandidate;
   now?: () => Date;
   evidenceRefFor?: (input: ReservationContextLookup) => string;
   propertyReadLock?: PropertyReadLock;

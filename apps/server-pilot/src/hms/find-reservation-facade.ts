@@ -59,6 +59,17 @@ async function navigate(page: HmsPage, origin: string): Promise<void> {
   let html = await page.content().catch(() => '');
   if (/name="search"/i.test(html)) return;
   const fixture = /data-tenant=|data-property-code=/i.test(html);
+  // Infor's authenticated COMMON shell accepts the reviewed OSRESS.search
+  // XHR directly.  The menu click path can leave a fresh proof context on an
+  // 813-byte OSRESV shell, so the standalone/live lane may deliberately keep
+  // this stable authenticated shell and use the same read-only search POST.
+  if (
+    !fixture &&
+    process.env.HMS_SKIP_GUEST_STAY_NAV === '1' &&
+    /\/web\/base\/(?:COMMON|OSRESV)/i.test(page.url())
+  ) {
+    return;
+  }
   if (!fixture) {
     // Soft-capture proven path: Front Desk → Guest Stay, then wait for search input.
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -115,6 +126,37 @@ async function navigate(page: HmsPage, origin: string): Promise<void> {
   }
 }
 
+export type OsressDiagnosticCode =
+  | 'HAS_PAGEDATA_MARKER'
+  | 'LOCALE_BOOTSTRAP'
+  | 'HTML_LOGIN_FORM'
+  | 'HTML_ERROR_SIGNAL'
+  | 'HTML_OTHER'
+  | 'NO_PAGEDATA_MARKER';
+
+/** Classify only safe response shape; never retain or log response values. */
+export function classifyOsressDiagnosticBody(text: string): OsressDiagnosticCode {
+  if (/pageData\s*:/.test(text) || /"pageData"\s*:/.test(text)) {
+    return 'HAS_PAGEDATA_MARKER';
+  }
+  if (
+    text.length < 2_000 &&
+    /loadLocalizedPage/i.test(text) &&
+    /langform/i.test(text) &&
+    /ewslanguage/i.test(text)
+  ) {
+    return 'LOCALE_BOOTSTRAP';
+  }
+  if (/type=["']password["']/i.test(text) || /name=["']userid["']/i.test(text)) {
+    return 'HTML_LOGIN_FORM';
+  }
+  if (/Unable to retrieve|success"\s*:\s*false/i.test(text)) {
+    return 'HTML_ERROR_SIGNAL';
+  }
+  if (/^\s*</.test(text)) return 'HTML_OTHER';
+  return 'NO_PAGEDATA_MARKER';
+}
+
 function emitOsressDiagnostic(body: string): void {
   if (process.env.HMS_PROOF_DIAGNOSTICS !== '1') return;
   const text = body;
@@ -124,15 +166,7 @@ function emitOsressDiagnostic(body: string): void {
     `${JSON.stringify({
       type: 'HMS_PROOF_DIAGNOSTIC',
       stage: 'osress_response',
-      code: /pageData\s*:/.test(text) || /"pageData"\s*:/.test(text)
-        ? 'HAS_PAGEDATA_MARKER'
-        : /type=["']password["']/i.test(text) || /name=["']userid["']/i.test(text)
-          ? 'HTML_LOGIN_FORM'
-          : /Unable to retrieve|success"\s*:\s*false/i.test(text)
-            ? 'HTML_ERROR_SIGNAL'
-            : /^\s*</.test(text)
-              ? 'HTML_OTHER'
-              : 'NO_PAGEDATA_MARKER',
+      code: classifyOsressDiagnosticBody(text),
       bytes: text.length,
       startsJson: text.trimStart().startsWith('{'),
       startsHtml: /^\s*</.test(text),
@@ -174,7 +208,12 @@ export function createFindReservationFacade(
     async searchExact(candidate) {
       await navigate(page, session.origin);
       const html = await page.content();
-      if (!/name="search"/i.test(html) && !/name="ff_confirmationnumber"/i.test(html)) {
+      const hasSearchControl =
+        /name="search"/i.test(html) || /name="ff_confirmationnumber"/i.test(html);
+      const allowDirectCommonSearch =
+        process.env.HMS_SKIP_GUEST_STAY_NAV === '1' &&
+        /\/web\/base\/(?:COMMON|OSRESV)/i.test(page.url());
+      if (!hasSearchControl && !allowDirectCommonSearch) {
         throw new HmsRuntimeError(
           'SCHEMA_DRIFT',
           'Guest Stay search field missing after navigate',
@@ -183,8 +222,11 @@ export function createFindReservationFacade(
       const selector = /name="search"/i.test(html)
         ? 'input[name="search"]'
         : 'input[name="ff_confirmationnumber"]';
-      // Fill for video/visibility.
-      await page.fill(selector, osressSearchFillValue(candidate));
+      // Fill for video/visibility when the search control exists.  The
+      // authenticated COMMON direct-XHR lane intentionally has no search DOM.
+      if (hasSearchControl) {
+        await page.fill(selector, osressSearchFillValue(candidate));
+      }
       // Prefer reviewed dataspy scaffold now that Guest Stay UI context is open.
       // ExtJS Enter returns pageData but often does not pin the confirmation slot
       // the way buildExactOsressSearchBody does.

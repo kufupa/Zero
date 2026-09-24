@@ -10,177 +10,150 @@ execution: code
 
 # Centurion PMS Read Tools — Autonomous Completion Plan
 
-**Execution posture:** Luna 5.6 `max` owns implementation, testing, live read checks, fixes, deployment, and handoff. The reservationist agent is not being built yet.
+**Execution posture:** Luna 5.6 `max` owns implementation, tests, live read checks and handoff. We are building deterministic tools for a future reservationist; no reservationist agent is built now.
 
-**Objective:** Finish reusable deterministic read tools that a future agent can call with guest/thread context, documented configuration, previous tool results, or explicitly assisted test inputs. Prove returned business facts through the real execution path.
+**Objective:** finish reusable, read-only PMS tools that accept only connected email context and prior results, reuse one authenticated PMS context, and return verified business facts through the real tool implementation.
 
-## Product Contract
+## Product contract
 
-### Included capabilities
+Included: `hms_find_reservation`, `hms_read_reservation`, `hms_quote_stay`, `hms_read_folio`, `hms_group_block_read`, `hms_company_account_read`, `hms_event_read`, `hms_read_notes_traces`, `hms_list_documents`, genuine stored-PMS-byte retrieval (`hms_read_document`), `hms_sent_email_audit`, and offline `mail_parse_channel_payload`.
 
-- Reservation/finance: `hms_find_reservation`, `hms_read_reservation`, `hms_read_folio`, `hms_quote_stay`.
-- Related records: `hms_group_block_read`, `hms_company_account_read`, `hms_event_read`, `hms_read_notes_traces`.
-- Documents/communications: `hms_list_documents`, `hms_sent_email_audit`.
-- Channel parsing: `mail_parse_channel_payload`.
+Permanent exclusions: `property_read_knowledge`, `mail_read_artifact`, mailbox-attachment substitutes, reservationist LLM, response generation, queues, app UI/routes, database/migrations, new evaluation infrastructure, OCR and comprehensive video-retention systems.
 
-### Permanent exclusions
+Success means every included capability has a truthful state and real positive evidence. Correct `missing_input`, `ambiguous`, `unavailable` or external `blocked` results are supported outcomes; they never become a false complete claim.
 
-- Never build or test `property_read_knowledge` or `mail_read_artifact`.
-- Do not substitute mailbox attachments or property-knowledge files for genuine HMS document reads.
-- `documents_list_existing` and `documents_read_existing` are mailbox-attachment adapters in this
-  revision, so they are outside the completion target. Keep their legacy code only for compatibility;
-  do not expose, promote, or count it as PMS document retrieval unless a genuine HMS-backed provider
-  is wired and separately proved.
-- Do not build a reservationist LLM, response generator, queue, new test database, generic evaluation platform, OCR pipeline, or comprehensive audit-video retention system.
+## Global constraints
 
-### Requirements
+- No PMS create, reserve, amend, cancel, save, submit, post, refund, complete-trace, generate, print, send, resend or permission-bypass action. Hotel Availability Search/details are reads; Reserve is forbidden.
+- Do not modify the mail app, DB schema, worker queue, `apps/server-pilot/src/ai/worker.ts`, production config or app deployment. Existing `apps/server-pilot/src/hms` modules, focused standalone scripts and DB-free tests may change. Normal worker composition is explicitly out of scope; do not add a migration, queue behavior, product feature or deployment.
+- Reuse current EC2 access/credentials and one validated native authenticated login/storage state per healthy runtime; each call still gets a fresh guarded proof context. Serialize live PMS calls by default; one PMS owner uses `/opt/nava/shared/hms-runtime/.hms-live-operation.v2.lock` with OS `flock`. No login per call, arbitrary parallel tabs or fake SQL locks.
+- Keep future code in a private EC2 staging directory, separate from `/home/ubuntu/repos/zero`; preserve unrelated dirty work. No destructive Git.
+- Never run tests against pilot/production RDS. Before test commands unset `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS`; never source production env files.
+- Keep guest data, credentials, videos and documents private. Never put raw PII in Git, web search, CI, SSM or external MCP.
 
-- R1. Every included capability is callable through its real reusable implementation and normal authorization boundary.
-- R2. Healthy authenticated PMS sessions are reused; each operation still gets fresh scope, authorization, and record binding.
-- R3. Results contain correct record-bound business facts, not merely successful requests, open screens, populated keys, status flags, or hashes.
-- R4. Historical emails provide representative test cases; email count is a coverage pool, not a completion quota.
-- R5. Reads remain read-only, privacy-safe, database-safe, and fail-closed at authorization boundaries.
-- R6. Delivered code, actual invocation path, and evidence agree. Registry flags alone never establish completion.
+## Autonomous Execution Mandate
 
-## Global Constraints
+**User granted full autonomy.** Continue through all units until the objective and DoD are evidenced or a genuine blocker remains. Do not pause for routine choices.
 
-- No PMS create, amend, cancel, save, submit, trace-complete, assign, post, refund, finalize, generate, print, email, resend, or permission-bypass operation.
-- Reuse existing EC2 access, credential mechanism, and HMS operation lock. One live PMS owner; serialize live calls by default.
-- Never run Vitest or another test runner against pilot or production RDS. Before every test command unset `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS`; never source `.env.production`.
-- No destructive Git, force-push, hook bypass, migrations, seeding, unrelated restarts, or overwriting shared dirty work.
-- Keep credentials, secrets, and guest evidence private. Authorized corpus may be read locally, but never send raw PII to web search, Git, CI, SSM, or external MCP.
-- Existing document reads stay included only where provider is proven to retrieve genuine HMS/PMS documents or bytes. Mailbox-only sources are not relabelled as PMS.
-- `property_read_knowledge` and `mail_read_artifact` remain excluded without discussion.
+- Choose safe reversible details and record decisions privately. Use `$caveman` and codegraph first; use targeted source reads if graph is incomplete.
+- Luna is default executor. Use bounded fresh-context subagents only when independently useful. Escalate one issue to Astra `xhigh` after two distinct failed fixes or 20 minutes without new evidence; escalate immediately for unresolved authorization/session safety or contradictory evidence.
+- Astra dispatch must include complete relevant context, exact DoD, reproduction, evidence, attempts, facts versus assumptions and dirty state. Require `$caveman`, codegraph, smallest fix and verification. Luna rechecks all advice.
+- Loop: reproduce → RCA → smallest fix → focused tests → real PMS proof → inspect evidence → fix red gates → continue. Failed scripts, test errors and deployment errors trigger RCA, not a status-only stop.
+- True blockers are inaccessible credentials, human-only interaction, unsafe/destructive ambiguity, safety conflict or external outage preventing required proof. Keep affected capability blocked; continue independent work. Never call blocked work complete.
 
-## Overnight Autonomous Execution Mandate
+## Connected-input acceptance
 
-**User granted full autonomy.** Continue until objective and Definition of Done are evidenced or a true blocker is reached. No routine user checkpoints.
+Each acceptance case starts with the actual customer/internal message answered by the selected Centurion gold reply, paired by reply relationship/timestamp. The allowed packet is that body (including quoted history already in it), subject, sender/recipients, timestamp, fixed property/timezone/locale/auth configuration, and actual results from earlier calls in the same case.
 
-### Decision authority and communication
+IDs present in that message or returned by tools are allowed. Manually discovered PMS IDs, gold-derived IDs/facts/answer hints, unrelated thread context, external attachments, manual browser/DB lookup between calls and fallback records are forbidden for acceptance. Existing assisted cases remain in the private ledger as diagnostic-only history; do not erase them.
 
-- Choose safe reversible details autonomously; preserve scope and acceptance gates. Use `$caveman` and codegraph-first navigation; stale/unindexed graph coverage falls back to targeted source reads.
-- Luna is default executor. No routine subagents or routine Astra reviews. Dispatch one bounded specialist only for approved escalation; otherwise work inline.
-- Better route to same DoD may be taken and recorded in private handoff.
+For reservation lookup, prefer exactly one confirmation/external reference
+derived from the supplied message. If no exact reference exists, the existing
+typed `surname_dates` path may use exactly one surname plus both arrival and
+departure dates derived from that message; multiple candidates remain
+ambiguous and must not be guessed between.
 
-### Astra escalation
+Use fresh Luna context with no gold summary or expected answer until calls/results/outcome are frozen. Maintain `.private/read-tool-test-inputs.md` with provenance, call chain, actual output reference, comparison, verdict and blocker. Synthetic/manual cases remain valid for offline regression only.
 
-Escalate to `gpt-6-astra` `xhigh`, fresh context, for one bounded issue after two distinct failed fixes of that defect or 20 minutes investigating without new evidence. Escalate immediately for unresolved authorization/session safety or contradictory evidence. Normal test/deploy duration is not a stall.
+## Implementation units
 
-Dispatch must include objective, unit, exact DoD, scope/safety constraints, worktree/revision/dirty state, architecture, reproduction, expected/actual behavior, evidence paths, attempted fixes, facts versus assumptions, session/lock ownership, and precise question. Tell Astra to use `$caveman` and codegraph, inspect linked context, preserve safety, and never weaken gates. Request root cause, smallest fix, verification, and remaining uncertainty. Luna verifies and resumes.
+### U1 — Honest acceptance gates
 
-### RCA and verification
+Create a per-tool fact/section/variant matrix. Reject status-only, response-size, empty-array, hash, screen-visibility and fixture-only success. Add wrong identity/date/amount, empty quote and null-folio-money counterexamples.
 
-FAIL → minimal reproduction → mechanism/root cause → smallest correct fix → focused tests → broader checks/build → live/runtime gate → evidence inspection → fix red gates → resume. Symptom patches, skipped gates, synthetic success, and “user can finish later” are not completion.
+**DoD:** matrix distinguishes complete, partial, unavailable, ambiguous and blocked; false positives fail.
 
-### AWS/Pilot safety
+### U2 — Reused authenticated runtime
 
-| Resource | Value |
-|---|---|
-| EC2 | `i-008f737974a9ba9b3` (`af-south-1`) |
-| Pilot RDS | `nava-zero-mail-pilot` (Postgres 16) |
-| Repo on EC2 | `/home/ubuntu/repos/zero` |
-| HMS lock | `/opt/nava/shared/hms-runtime/.hms-live-operation.v2.lock` |
-| Deploy/restart | Existing `ops-deploy.sh` / `ops-restart.sh` only when required |
+Audit runtime context lifecycle, operation leases, lock ownership, aborts, generation fences and direct HTTPS policy. Reset case-specific refs while retaining the validated native login/storage state; do not reuse a case page or proof context.
 
-Allowed: existing ops wrappers, bundle sync, deployment, read-only SSM checks, PM2 logs, health checks, and tests against disposable non-production databases. Forbidden: real mail credentials, pilot-RDS test runners, `VITEST_ALLOW_PILOT_RDS=1`, `.env.production` in test processes, destructive Git, forced writes, and authorization bypass.
+**DoD:** A → B → A returns correct records with one login; expiry, abort and delayed callbacks cannot cross-contaminate.
 
-Before every Vitest command:
+### U3 — Standalone real execution
 
-```bash
-unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
-```
+Provide a small private runner and reusable typed library using actual drivers. It must work without app worker, DB or registry. No stub handler, arbitrary URL/selector or dummy production authorization.
 
-Missing disposable DB is a safety blocker, not a reason to weaken gates.
+For the connected EC2 runner, the validated native-login path starts each guarded
+call in the HMS `COMMON` shell and issues the exact reviewed OSRESS search/detail
+requests through the authenticated page context. It deliberately skips fragile
+menu navigation in this lane; the exact request manifest remains the allowlist and
+the runner still serializes calls under the live-operation lock. The runner sets
+these scoped defaults itself (`HMS_SINGLE_CONTEXT_LOGIN=1` and
+`HMS_SKIP_GUEST_STAY_NAV=1`); they are not undocumented operator prerequisites.
+This is a standalone read-runner change only—no app worker, schema, migration or
+deployment change.
 
-### True blockers
+**DoD:** every included ID invokes real code and returns truthful typed output or explicit unavailable/blocked state. The private `hms-standalone-connected-read.ts` runner supports `HMS_CONNECTED_ALL_TOOLS=1` to dispatch the complete included set from one paired body; missing producer input/provider returns typed `manual_required`/`INPUT_MISSING`, never an invented ref.
 
-Stop only for missing access that cannot safely be obtained, human-only interaction, destructive ambiguity, safety conflict, or external outage preventing required proof. Keep blocked capabilities disabled and continue independent work. Never label blocked or unverified capabilities complete.
+### U4 — Reservation and finance
 
-## Assisted-Test Contract
+Finish exact/fallback reservation find, ambiguity/paging/negative handling, reservation details/policies/rates/operations, and folio balances/deposits/transactions with signed amounts/currency. Unknown money is not zero or paid.
 
-Manual assistance is allowed for tool testing. Cases may use manually discovered IDs, gold-derived inputs or expected facts, explicitly chosen fallback records, and controlled normalization. Record each case in `.private/read-tool-test-inputs.md`: tool, inputs, source, assistance, actual record tested, output, verdict, and unresolved dependency.
+**DoD:** connected positives plus wrong-record, empty, ambiguous, malformed and paging cases pass.
 
-Tool must still execute through real implementation and return observed output. Gold may define expectations or seed inputs; copied gold text never counts as retrieved PMS output. Fallback record proves tool works for supplied record, not that original email resolved to it. Assisted and email-derived cases labelled separately. No hidden browser/script rescue silently presented as normal tool behavior.
+### U5 — Replace quote with Hotel Availability
 
-## Implementation Units
+`hms_quote_stay` keeps its public ID but standalone execution uses **Hotel Availability** only. Existing Room Type and Rate Availability (`OSRRAV`) remains legacy/diagnostic code and is never a fallback or completion source.
 
-### U1. Freeze honest acceptance gates
+The standalone read-only runner must not invoke the legacy OSRRAV driver. Until
+a tenant-discovered Hotel Availability provider/manifest is installed, the
+standalone lane returns typed `manual_required` with an explicit provider
+unavailable field; this is not quote completion. The normal worker lane is out
+of scope and is not modified or used as evidence.
 
-Inspect private audit/handoff and source. Build matrix of required facts, sections, variants, evidence, and blockers. Replace status-only, response-size, empty-array, rotated-candidate, catalogue-hash, and fixture-only success rules. Use existing `hms-read-100-verify.mjs` and scoring tests as diagnostics, not authority. Add wrong identity/date/amount, empty quote, null folio money, and unbound-response counterexamples.
+Discover and verify the tenant’s actual Hotel Availability UI/request/response path before automating; do not guess a function or call it REST merely because it is HTTPS. Follow Front Desk → Availability → Hotel Availability. Search and read-only availability details are allowed; Reserve and CRS Check Availability are forbidden because they create a reservation.
 
-**DoD:** false positives fail; matrix distinguishes complete, partial, unavailable, ambiguous, and blocked.
+The discovered surface manifest must carry `surface: hotel_availability`; quote promotion rejects the superseded `room_type_rate_availability`/`OSRRAV` manifest at both assembly and CLI promotion boundaries.
 
-### U2. Reused authenticated runtime
+Submit and preserve exact arrival/departure, nights, room groups/quantities, adults per room, children and supplied child ages, currency and valid negotiated/group context. Fix the current flattened/first-room mapping. If tenant pricing requires a missing age or room allocation, return `missing_input`; never invent age, surcharge or rate. Override the documented 14-night default and verify dates actually applied.
 
-Audit `apps/server-pilot/src/hms/runtime.ts`, operation leasing, property lock, native context lifecycle, abort handling, and direct HTTP policy. Keep one healthy native context; fresh immutable operation scope/generation fence each call; discard unsafe context.
+Keep restrictions and legitimate sales strategy. Shop by Day is forbidden for a stay quote because it ignores restrictions; do not bypass exclusive/negotiated-rate context. Serialise separate occupancy searches and do not double-count shared inventory. Return source/time, matched criteria, nightly coverage, rates, currency, restrictions, tax/total basis, unresolved fields and `held:false`. Claim occupancy-priced only when the correlated PMS result supports exact criteria; a zero child surcharge can be correct.
 
-**DoD:** A → B → A returns correct records with one healthy login; expiry, abort, and delayed callbacks cannot cross-contaminate.
+Add tests for adult-only, children/ages, mixed rooms, missing ages, age boundaries observed in tenant, currency, negotiated context, restrictions, unavailable dates, stale results, session reset and no-write behavior. Acceptance requires connected email cases containing needed occupancy data. Record a replacement video: login → Hotel Availability → dates/adults/children/ages → Search → read-only details → matching rates, never Reserve. Old A5 video is superseded.
 
-### U3. Real normal execution path
+**DoD:** Hotel Availability child-aware result is verified through reusable tool; no OSRRAV fallback, invented input, restriction bypass or fabricated total.
 
-Trace `createAgentReadTools`, `executeReadToolRun`, `executeProductionReadTool`, registry/admission, and worker composition. Expose all included IDs through real typed dispatch. Fix discarded company/event results, unavailable quote authority, unsupported find fallback, missing metadata, and identity binding. No fourth executor or agent runtime.
+### U6 — Group/company/event/notes
 
-**DoD:** every included tool is callable through normal composition with truthful typed result or explicit unavailable/blocked status.
+Use source-specific providers and scoped refs. Return group identity/dates/status/blocks/pickup/delegates, linked company account/terms, real event details, and notes/traces with parent, text, source/date/state and paging semantics. Notes do not prove traces; status does not prove terms.
 
-### U4. Find, reservation, folio
+**DoD:** deep positive, wrong-parent, off-page, empty and long-text cases pass; genuine access gaps remain explicit.
 
-Fix exact find, safe surname/date fallback, ambiguity, bounds, paging, reservation detail, booked policy/rates, operations, folio balances/deposits/transactions/currency, and scoped authorization facts. Unknown is not zero/paid.
+### U7 — PMS documents and sent audit
 
-**DoD:** assisted and email-derived cases return checked facts; wrong-record, empty, ambiguous, and paging behavior safe.
+Prove actual HMS provider, parent/property scope, metadata, paging and retrieval of existing stored bytes. Keep mailbox-only adapters excluded; never generate documents. Sent rows prove recorded audit activity, not delivery.
 
-### U5. Current quotes
+**DoD:** metadata and bytes each have live positive evidence, wrong-parent/stale refs fail safely, and excluded providers cannot pass.
 
-Use verified current room/rate authority and consistent issuance-to-execution snapshot. Honor dates, occupancy, quantities, negotiated rates, and supported segments; never invent codes or downgrade rates. Validate nightly coverage, currency, restrictions, totals, and `held=false`; no CRS create.
+### U8 — Luna-led historical verification
 
-**DoD:** ordinary, multiroom, negotiated, unavailable, stale-authority, and missing-input cases return correct facts or truthful non-success.
+Use roughly 100 threads as a coverage pool, not a score quota. Normally prove two meaningful connected positives per tool plus relevant variants/negatives. Luna chooses tools and analyses results; no second LLM. Compare frozen actual outputs to gold/current PMS and classify drift, staff error, missing input, absent source, defect or external block. Expand only to cover missing capability; do not shift dates or invent child ages.
 
-### U6. Group/company/event/notes
+**DoD:** all selected cases classified, fixes rerun fresh and no known internal failure affects required behavior. No 100-thread perfect-score claim.
 
-Use existing source-specific drivers and server-minted scoped refs. Return group summary/blocks/pickup/delegates, reservation-linked company terms, event details, and notes/traces with length/state/paging/source-date semantics. No fabricated arithmetic or status-as-terms.
+### U9 — Isolated handoff
 
-**DoD:** deep sections and wrong-parent/off-page/empty/long-note cases pass; access gaps explicit.
+Run DB-free focused tests and final connected cross-tool batch from isolated EC2 staging. Record source hash, tested revision, invocation, login/context reuse, evidence and capability state. The deployed AI queue worker, its schema/heartbeat and normal queue dispatch are out of scope; they must not gate or trigger migrations for this standalone read-tool handoff. Do not deploy the mail app or touch unrelated work.
 
-### U7. HMS documents and sent audit
+**DoD:** tested code equals handed-off code; another operator can reproduce calls without undocumented assistance.
 
-Prove provider identity, property/parent scope, filters, paging, stale versions, and byte retrieval. Keep existing/finalized HMS documents distinct from mailbox attachments. No generate/print/resend. Sent rows are audit evidence, not delivery proof.
+## Verification and definition of done
 
-**DoD:** genuine HMS metadata/bytes work where accessible; excluded providers denied; mail-only evidence cannot pass as PMS delivery.
+Every capability needs a meaningful connected positive, applicable negative/edge behavior, input provenance, observation time and delivered-version evidence. Live proof uses read-only scripts under OS lock, never Vitest.
 
-### U8. Luna-led historical verification
+For permission concerns, recheck filters/loading/paging/alternate legitimate surfaces and positive controls. If still blocked, record continuous browser video from login through exact screen/failure with timestamps, steps, error and alternatives. Empty alone is not proof of missing permission; distinguish denied, no data, alternate source and unresolved.
 
-Use approximately 100 corpus threads as a coverage pool. Read latest Centurion response for expected facts, then preceding request/context. Luna chooses calls and analyses results; no second reservationist LLM. Manual IDs, gold inputs, and fallback records allowed when documented. Run actual tools; compare identity/date/amount/currency/status/content. Classify historical drift, staff error, ambiguity, missing source, tool defect, or external block. Do not spend hours on unhelpful threads; expand only for missing capability coverage.
+Complete only when U1–U9 applicable work is evidenced, all included tools use real reusable code and safe context reuse, Hotel Availability A5 is proven, focused gates pass, exclusions remain intact, and no required capability is unresolved/blocked. A genuine external blocker keeps overall completion incomplete.
 
-**DoD:** normally two meaningful positive examples per tool plus required variants/relevant negatives; all selected results classified; no known internal failure affecting required behavior. No 100-thread score claim.
+Sources: [Infor Hotel Availability](https://docs.infor.com/hms/2026.08/en-us/hmsolh/jxo1557688477063.html); [Infor CRS workflow](https://docs.infor.com/hms/2026.08/en-us/hmsolh/s_t1424428583967.html).
 
-### U9. Delivery and handoff
+## Current execution state (2026-09-16 UTC)
 
-Deploy through isolated existing release controls. Verify loaded revision, process path, registry, and one normal live read. Rerun affected cases and representative cross-tool smoke checks. Maintain one private handoff ledger with capability state, evidence, usage, and blockers.
+- **Verified live:** the standalone EC2 runner reaches HMS through the authenticated `COMMON` shell, serializes calls, reuses one browser launch, and returns a connected positive for `hms_find_reservation` → `hms_read_reservation` (complete detail). The all-included run invokes every included ID and records typed outcomes; it does not promote `manual_required`, `not_found`, partial or provider-unavailable results.
+- **Improved locally/live:** the runner now wires only actual Guest Stay detail projections for folio balance and notes; it does not synthesize money/notes when the dump is absent or masked. Focused DB-free gate: 85 tests pass; server TypeScript passes.
+- **Still incomplete:** Hotel Availability is the only allowed quote surface. Authenticated OSMPAV discovery/video returned only the generic shell; no search/response manifest or child-aware positive exists. OSRRAV remains diagnostic-only and is never a fallback. Documents/bytes, company, group, event, full folio and traces remain typed source/policy blockers until their real provider/data is proven. The runner now also attempts the reviewed PSSNEL sent-email observer using only the incoming sender and the matched confirmation; the latest live attempt failed closed with `SOURCE_UNAVAILABLE` after `session_failed`.
+- **Explicitly out of scope:** app worker, queue, heartbeat, schema/migration, database and deployment. Do not wait for or modify those systems to complete this standalone handoff.
 
-**DoD:** delivered code passes matrix, focused tests/build/runtime gates, and rollback verification; abandoned execution experiments removed without touching unrelated user work.
+## Execution mode
 
-## Verification Contract
-
-- Focused existing tests cover contracts, runtime/session lifecycle, dispatch, parsers, folio/quote completeness, notes, documents, and channel fields. Live PMS proof uses purpose-built read-only scripts under lock, never Vitest.
-- Every capability needs meaningful positive output, applicable negative/edge behavior, input provenance, observation time, and delivered-version evidence.
-- No tool passes solely on `status: ok`, field presence, response bytes, screen visibility, shared digest, or synthetic handler.
-- Maintain one private ledger; no raw PII in Git or external output.
-
-### Permission-blocker proof
-
-Recheck filters, loading, paging, alternate surfaces, and positive controls. If still blocked, record real browser video from login through normal navigation to exact screen/failure. No forced controls, stitched screenshots, idle tail, or cropped final seconds. Empty alone does not prove missing permission; classify denied, no data, alternate source, or unresolved. Store timestamps, steps, error, alternatives, and client-ready explanation privately; do not email automatically.
-
-## Definition of Done
-
-- [ ] U1–U9 applicable work complete; every included tool has truthful state.
-- [ ] Included tools callable through real composition with reused authenticated runtime.
-- [ ] No known internal defect affects required facts; red gates received RCA and verification.
-- [ ] Assisted-input ledger and private evidence agree with observed output and delivered revision.
-- [ ] Focused tests/build/runtime checks pass without pilot-RDS tests or forbidden writes.
-- [ ] Required live positives and meaningful negatives verified; genuine role blockers have valid videos.
-- [ ] Handoff separates working, partial, unavailable, and externally blocked capabilities.
-- [ ] Exclusions preserved; no reservationist agent claimed built.
-- [ ] No unresolved blocker affects a claimed-complete capability.
-
-## Execution Mode
-
-Autonomous. Resume at first incomplete unit. No routine checkpoint or user question. Stop only at verified DoD or true blocker.
+Autonomous. Resume the first incomplete unit and continue until verified DoD or true blocker.

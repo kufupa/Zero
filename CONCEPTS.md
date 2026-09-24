@@ -254,15 +254,73 @@ Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as 
 
 ### Packaging gate
 
-Proof that the live HMS runner authenticated, stayed `view_only`, produced digests/receipts, and captured a playable video. Necessary but not sufficient for tool promotion. Distinct from Payload gate.
+Proof that the live HMS runner authenticated, stayed `view_only`, produced digests/receipts, and captured a playable video. Necessary but not sufficient for tool promotion. Distinct from Payload gate and Visual gate.
+
+### Private audit bundle
+
+Per-run private evidence package linking applied inputs, visible owner-surface checkpoints, structured result, source projection, postcondition/readback, and optional media so a browser-backed tool can be reviewed without treating video alone as proof. Supports Packaging gate, Payload gate, and Visual gate; it does not replace them.
 
 ### Payload gate
 
-Proof that `result.v1.json` (or equivalent) satisfies the tool's field contract: required values present, allowed nulls explicit, forbidden sentinels rejected, and `claimKeys` honest relative to `unresolvedFields`. Requires a recorded live response fixture, not only synthetic happy-path GRID rows. Distinct from Packaging gate.
+Proof that `result.v1.json` (or equivalent) satisfies the tool's field contract: required values present, allowed nulls explicit, forbidden sentinels rejected, and `claimKeys` honest relative to `unresolvedFields`. Requires a recorded live response fixture, not only synthetic happy-path GRID rows. Distinct from Packaging gate and Visual gate.
+
+### Read-tool evidence contract
+
+A PMS read tool's agreement between the business facts it must return, the sources and actions it may use, the identity/scope binding required for each value, and the proof needed before promotion. A corpus demand does not authorize a mutation, and a policy guard or HTTP success does not prove role access or row validity.
+
+### Stagehand discovery
+
+Bounded model-assisted browser reconnaissance used to locate HMS menus, tabs, dialogs, owner surfaces, and request shapes before deterministic automation. It supplies route clues, not proof of reservation identity, stateful semantics, accounting meaning, role denial, or row binding; normal calls therefore run through deterministic adapters. Distinct from UI-first recorder and Soft-open.
+
+### Standalone Stagehand quote exception
+
+The standalone quote plan (`docs/plans/2026-09-17-001-feat-stagehand-quote-mvp-plan.md`) is a deliberate live-first development exception: `apps/server-pilot/tooling/stagehand/fetch-quote.mjs` may use Stagehand v4 code mode with the approved Azure GPT-6 Astra deployment for Hotel Availability navigation and extraction after deterministic login/CDP handoff. This exception does not authorize OSRRAV, reservation creation, production promotion, or invented values. The new path does not inherit the legacy request allowlist or unknown-request teardown; task instructions and visible-source checks remain mandatory.
+
+### liveProofDigest
+
+Sha256 of the operator-observed live digest that proved **that** Phase-B (or context) read tool. `deriveCapabilityState` treats a present `liveProofDigest` as `live_verified`. Distinct from `discoveryDigest` (HMS harvest/discovery bytes) and from fixtureDigest (parser contract). Sharing one digest across tools is invalid when the file did not exercise the tool (e.g. quote `liveProofDigest` pointing at a find/folio burn where quote was skipped).
+
+### productionActiveReadToolIds
+
+Allowlist of Phase-B `READ_TOOL_IDS` with `promotionEvidence.live` and capability state `live_verified` or `shadow_enabled`. Worker production path may only auto-run these. Distinct from `RESERVATION_CONTEXT_TOOL_IDS` (`hms_read_reservation`) and `U15_CONTEXT_READ_TOOL_IDS` (notes/group/company/event context branches). A1 HDR yes does not mean stuffing `hms_read_reservation` into this list.
+
+### Email-bound candidate
+
+Live unique-email scoring row whose confirmation/group/org token was extracted from **that** email (catalogue/gold), not borrowed from a pooled `softopen_ok_pool_rotate` list. Rotate may keep a session alive; it must not count as that email's proof.
+
+### Visual gate
+
+Proof that the **delivered** HITL recording (usually a short trimmed tail, not only `last.png`) shows the named **owner surface** painted—grid, folio lines, quote rate rows, etc.—without Start Center shell, login bounce, or a covering spinner for the review window. Dense multi-frame audit beats last-frame-only checks. Soft-open XHR green does not satisfy this gate. Distinct from Packaging gate (artifact exists) and Payload gate (JSON fields).
+
+### UI-first recorder
+
+Playwright packaging mode that drives real ExtJS chrome (menu search, Guest Stay quick-search, dblclick, tabs) so the camera paints the owner surface, instead of relying on in-page soft-open `fetch()` while the viewport stays on Start Center. Soft-open may still run after paint for payload; Visual gate judges painted frames. Distinct from Soft-open (payload path) and from Packaging gate alone (artifact exists).
+
+### Soft-open
+
+HMS session discipline: warm the shell, then open the **target** function early on a clean session before unrelated menu navigation. Early soft-open prevents overlay pollution that turns entitled surfaces into stub responses; stub size alone is not role denial.
+
+*Avoid: treating every short error body as an entitlement ceiling.*
+
+### Function-code harvest
+
+Capturing authoritative HMS function names from live UI XHR during a documented menu path, then soft-opening those names. Guesses from naming conventions are probes only until harvest confirms them.
+
+### Invent-forbid
+
+DoD posture that marks a required field unavailable because dumps prove it is absent across the relevant shells—not because the agent failed to invent a mapping. Requires a cited dump; invent-forbid usually pairs with a DoD contract amend rather than a synthetic fill to green a compare.
+
+### EXTERNAL_ROLE_GATE
+
+Terminal classification after the escalation ladder (playbook → harvest → clean soft-open → role-proof → alternate users when allowed) still cannot reach a surface: menu absent, corpus unbound, or a child shell blocked by security-rights after a clean parent open. Distinct from probe-order failures and from invent-forbid (which documents field absence inside an otherwise reachable shell).
 
 ### Tool promotion HITL
 
-Human batch review at a **wave boundary** after every tool in that wave has passed Packaging gate and Payload gate: watch the wave’s videos and check result payloads before the next wave may start. Inside a wave there is no human pause. Distinct from write-tool HITL proposal approve/execute.
+Human batch review at a **wave boundary** after every tool in that wave has passed Packaging gate, Payload gate, and (when a webm is required) Visual gate: watch the wave’s videos and check result payloads before the next wave may start. Inside a wave there is no human pause. Distinct from write-tool HITL proposal approve/execute.
+
+### Owner surface
+
+The Infor HMS screen the tool’s DoD names for human recognition (e.g. Hotel Availability for quote search, Folio tab, Group Booking list, Sent Email list)—not Start Center KPIs, Record View chrome alone, or an idle spinner over the right tab label. Room Type and Rate Availability (OSRRAV) is a legacy diagnostic surface and never satisfies the standalone quote screen requirement.
 
 ### HOST_ROUTE
 
@@ -547,5 +605,8 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
-- **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
+- **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture), Visual gate (painted owner surface in shipped frames), and Tool promotion HITL are separate; do not promote the next PMS tool on packaging or XHR alone.
+- **XHR / soft-open green** is not Visual gate — network bytes can prove payload while the camera still shows Start Center or Processing request.
+- **"813 stub" / short error body** is Soft-open / probe-order failure until clean early open proves otherwise — not automatically EXTERNAL_ROLE_GATE.
+- **Invent-forbid** documents dump-proven field absence inside a reachable shell; **EXTERNAL_ROLE_GATE** means the shell/menu/corpus itself stays unreachable after escalation.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.

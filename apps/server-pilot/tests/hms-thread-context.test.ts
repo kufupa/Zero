@@ -1,16 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
 import {
   THREAD_CONTEXT_MAX_BYTES,
   buildThreadContext,
   computeThreadStateVersion,
   extractLookupCandidates,
   filterExactReservationCandidates,
+  selectConnectedLookupCandidate,
   normalizeMessageText,
   type LookupCandidate,
   type ThreadContextMessage,
 } from '../src/ai/thread-context.js';
+import { describe, expect, it, vi } from 'vitest';
 
-function msg(partial: Partial<ThreadContextMessage> & Pick<ThreadContextMessage, 'id'>): ThreadContextMessage {
+function msg(
+  partial: Partial<ThreadContextMessage> & Pick<ThreadContextMessage, 'id'>,
+): ThreadContextMessage {
   return {
     transportId: 'transport-fixture',
     threadId: 'thread-fixture',
@@ -26,6 +29,38 @@ function msg(partial: Partial<ThreadContextMessage> & Pick<ThreadContextMessage,
 }
 
 describe('hms thread context', () => {
+  it('reads the labelled SynXis external confirmation, not a card-link UUID prefix', () => {
+    const body =
+      'The following reservation has been booked through SynXis CR.\nConfirmation Number/Cancellation Number: 7777SG001234 / \nReservation Details: https://example.invalid/reservation?rezGuidList=88887777-3651-4321-abcd-123456789abc';
+    const candidates = filterExactReservationCandidates(extractLookupCandidates(body));
+    expect(candidates).toEqual([
+      { id: expect.any(String), kind: 'external_reference', value: '7777SG001234' },
+    ]);
+  });
+
+  it('does not admit a bare UUID prefix as a reservation confirmation', () => {
+    expect(
+      filterExactReservationCandidates(
+        extractLookupCandidates(
+          'Reservation details: https://example.invalid/reservation?rezGuidList=88887777-3651-4321-abcd-123456789abc',
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      filterExactReservationCandidates(extractLookupCandidates('Booking for guest (88887777-1).')),
+    ).toEqual([{ id: expect.any(String), kind: 'confirmation', value: '88887777-1' }]);
+  });
+
+  it('requires the SynXis source marker and exact combined confirmation label', () => {
+    expect(
+      extractLookupCandidates('Confirmation Number/Cancellation Number: 7777SG001234 /'),
+    ).toEqual([]);
+    expect(
+      extractLookupCandidates(
+        'The following reservation has been booked through SynXis CR.\nReservation Comments: 7777SG001234',
+      ),
+    ).toEqual([]);
+  });
   it('always includes trigger and newest messages before older history', async () => {
     const trigger = msg({
       id: 'msg-trigger',
@@ -134,17 +169,19 @@ describe('hms thread context', () => {
   });
 
   it('keeps all queries transport and thread scoped', async () => {
-    const searchRelated = vi.fn(async (args: {
-      transportId: string;
-      threadId: string;
-      query: string;
-      maxResults: number;
-    }) => {
-      expect(args.transportId).toBe('transport-fixture');
-      expect(args.threadId).toBe('thread-fixture');
-      expect(args.maxResults).toBeLessThanOrEqual(20);
-      return [{ messageId: 'msg-related-1', excerpt: 'CONF-88421 found in related mail' }];
-    });
+    const searchRelated = vi.fn(
+      async (args: {
+        transportId: string;
+        threadId: string;
+        query: string;
+        maxResults: number;
+      }) => {
+        expect(args.transportId).toBe('transport-fixture');
+        expect(args.threadId).toBe('thread-fixture');
+        expect(args.maxResults).toBeLessThanOrEqual(20);
+        return [{ messageId: 'msg-related-1', excerpt: 'CONF-88421 found in related mail' }];
+      },
+    );
 
     const trigger = msg({
       id: 'msg-trigger',
@@ -181,12 +218,12 @@ describe('hms thread context', () => {
     expect(candidates.some((c) => c.kind === 'confirmation' && c.value === 'CONF-88421')).toBe(
       true,
     );
-    expect(
-      candidates.some((c) => c.kind === 'external_reference' && c.value === 'EXT-99102'),
-    ).toBe(true);
-    expect(candidates.every((c) => c.kind !== 'surname_dates' || (c.surname && c.arrivalDate))).toBe(
+    expect(candidates.some((c) => c.kind === 'external_reference' && c.value === 'EXT-99102')).toBe(
       true,
     );
+    expect(
+      candidates.every((c) => c.kind !== 'surname_dates' || (c.surname && c.arrivalDate)),
+    ).toBe(true);
     expect(candidates.some((c) => 'value' in c && c.value === 'hotel')).toBe(false);
   });
 
@@ -205,38 +242,93 @@ describe('hms thread context', () => {
     });
     expect(
       ctx.lookupCandidates.filter(
-        (candidate) =>
-          candidate.kind === 'confirmation' && candidate.value === 'CONF-88421',
+        (candidate) => candidate.kind === 'confirmation' && candidate.value === 'CONF-88421',
       ),
     ).toHaveLength(1);
   });
 
   it('keeps complete multi-hyphen bare exact tokens', () => {
-    const candidates = extractLookupCandidates(
-      'Use CONF-ABC-123-Z and EXT-WHOLESALE-88-2.',
-    );
-    expect(
-      candidates
-        .filter((c) => c.kind !== 'surname_dates')
-        .map((c) => c.value),
-    ).toEqual(['CONF-ABC-123-Z', 'EXT-WHOLESALE-88-2']);
+    const candidates = extractLookupCandidates('Use CONF-ABC-123-Z and EXT-WHOLESALE-88-2.');
+    expect(candidates.filter((c) => c.kind !== 'surname_dates').map((c) => c.value)).toEqual([
+      'CONF-ABC-123-Z',
+      'EXT-WHOLESALE-88-2',
+    ]);
   });
 
   it('extracts Centurion n° confirmation-letter subjects', () => {
-    const text =
-      'The Centurion Hotel_Confirmation Letter_Synthetic Guest (n°79798256-1)';
+    const text = 'The Centurion Hotel_Confirmation Letter_Synthetic Guest (n°79798256-1)';
     const candidates = extractLookupCandidates(text);
-    expect(
-      candidates.some(
-        (c) => c.kind === 'confirmation' && c.value === '79798256-1',
-      ),
-    ).toBe(true);
-    expect(
-      candidates.some((c) => c.kind === 'confirmation' && c.value === 'LETTER'),
-    ).toBe(false);
+    expect(candidates.some((c) => c.kind === 'confirmation' && c.value === '79798256-1')).toBe(
+      true,
+    );
+    expect(candidates.some((c) => c.kind === 'confirmation' && c.value === 'LETTER')).toBe(false);
     const exact = filterExactReservationCandidates(candidates);
     expect(exact).toHaveLength(1);
     expect(exact[0]!.value).toBe('79798256-1');
+  });
+
+  it('extracts an unlabelled numeric booking ref only from authored booking context', () => {
+    const candidates = extractLookupCandidates(
+      'Booking from 2026-08-20 to 2026-08-24 for the guest (79798256-1).',
+    );
+    expect(candidates).toEqual([
+      expect.objectContaining({ kind: 'confirmation', value: '79798256-1' }),
+    ]);
+    expect(extractLookupCandidates('> Booking for the guest (79798256-1).')).toEqual([]);
+    expect(extractLookupCandidates('Reference number 12345')).toEqual([]);
+  });
+
+  it('extracts explicit booking/reference labels from the supplied body', () => {
+    const candidates = extractLookupCandidates(
+      [
+        'booking reference: 6197775252',
+        'reference (please use this number in correspondence)*: 6082002',
+      ].join('\n'),
+    );
+    expect(candidates).toEqual([
+      expect.objectContaining({ kind: 'confirmation', value: '6197775252' }),
+      expect.objectContaining({ kind: 'confirmation', value: '6082002' }),
+    ]);
+    expect(extractLookupCandidates('reference number: 12345')).toEqual([]);
+    expect(extractLookupCandidates('reference date: 2026-08-20')).toEqual([]);
+    expect(extractLookupCandidates('> booking reference: 6197775252')).toEqual([
+      expect.objectContaining({ kind: 'confirmation', value: '6197775252' }),
+    ]);
+  });
+
+  it('classifies an anchored LekkeSlaap booking reference as external and suppresses its generic duplicate', () => {
+    expect(
+      extractLookupCandidates(
+        'LekkeSlaap booking reference number: LS-SYNTH-55\nBooking Reference: LS-SYNTH-55',
+      ),
+    ).toEqual([
+      expect.objectContaining({ kind: 'external_reference', value: 'LS-SYNTH-55' }),
+    ]);
+  });
+
+  it('keeps generic booking references as confirmations without the explicit provider label', () => {
+    expect(extractLookupCandidates('Booking Reference: LS-SYNTH-55')).toEqual([
+      expect.objectContaining({ kind: 'confirmation', value: 'LS-SYNTH-55' }),
+    ]);
+  });
+
+  it('extracts one conservative surname/date candidate from natural hotel request prose', () => {
+    const candidates = extractLookupCandidates(
+      '> 1. L.E Seloana\n> Check in 24 August, check out 28 August 2026',
+    );
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        kind: 'surname_dates',
+        surname: 'Seloana',
+        arrivalDate: '2026-08-24',
+        departureDate: '2026-08-28',
+      }),
+    ]);
+    expect(
+      extractLookupCandidates(
+        '1. L.E Seloana\n2. J.K Mokoena\nCheck in 24 August, check out 28 August 2026',
+      ).filter((candidate) => candidate.kind === 'surname_dates'),
+    ).toHaveLength(2);
   });
 
   it('filterExact drops pure-alpha false positives but keeps explicit prefixes', () => {
@@ -302,6 +394,41 @@ describe('hms thread context', () => {
       { id: 'c', kind: 'confirmation', value: 'CONF-1' },
       { id: 'e', kind: 'external_reference', value: 'EXT-99102' },
     ]);
+  });
+
+  it('admits one connected surname/date candidate when no exact reference exists', () => {
+    const candidate: LookupCandidate = {
+      id: 's',
+      kind: 'surname_dates',
+      surname: 'Synthetic',
+      arrivalDate: '2099-01-01',
+      departureDate: '2099-01-03',
+    };
+    expect(selectConnectedLookupCandidate([candidate])).toEqual(candidate);
+    expect(
+      selectConnectedLookupCandidate([
+        candidate,
+        {
+          id: 's2',
+          kind: 'surname_dates',
+          surname: 'Other',
+          arrivalDate: '2099-01-01',
+          departureDate: '2099-01-03',
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it('prefers one exact connected reference over incidental surname/date text', () => {
+    const exact: LookupCandidate = { id: 'c', kind: 'confirmation', value: 'CONF-1' };
+    const surname: LookupCandidate = {
+      id: 's',
+      kind: 'surname_dates',
+      surname: 'Synthetic',
+      arrivalDate: '2099-01-01',
+      departureDate: '2099-01-03',
+    };
+    expect(selectConnectedLookupCandidate([surname, exact])).toEqual(exact);
   });
 
   it('changes threadStateVersion after inbound, outbound, or sent revision', () => {

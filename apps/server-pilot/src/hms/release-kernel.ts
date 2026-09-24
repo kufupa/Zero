@@ -341,6 +341,40 @@ export function validateRoleProofV2ForTool(
   }
 }
 
+/** Pure Phase-A v1 role-proof validation for callers with a trusted snapshot. */
+export function validateRoleProofV1(
+  proof: HmsReadRoleProofV1,
+  now: Date,
+): HmsReadRoleProofV1 {
+  const parsed = hmsReadRoleProofV1Schema.parse(proof);
+  const issued = Date.parse(parsed.issuedAt);
+  const expires = Date.parse(parsed.expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
+    throw new Error('role proof dates invalid');
+  }
+  if (issued > now.getTime() || expires <= issued) {
+    throw new Error('role proof date order invalid');
+  }
+  if (expires < now.getTime()) {
+    throw new Error('role proof expired');
+  }
+  if (expires - issued > MAX_PROOF_TTL_MS) {
+    throw new Error('role proof TTL exceeds 30d');
+  }
+  if (parsed.propertyCode !== 'HRCEN') {
+    throw new Error('role proof property mismatch');
+  }
+  for (const action of V1_DENIED_ACTIONS) {
+    if (!parsed.deniedActions.includes(action)) {
+      throw new Error('role proof deniedActions incomplete');
+    }
+  }
+  if (!parsed.allowedSurfaces.includes('Guest Stay')) {
+    throw new Error('role proof surface invalid');
+  }
+  return parsed;
+}
+
 /** Phase A v1 role-proof loader — path + TTL + denied-action floor. */
 export async function loadHmsReadRoleProof(
   path: string,
@@ -367,38 +401,15 @@ export async function loadHmsReadRoleProof(
   } catch {
     throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof schema invalid');
   }
-  const issued = Date.parse(proof.issuedAt);
-  const expires = Date.parse(proof.expiresAt);
-  if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof dates invalid');
-  }
-  if (issued > now.getTime() || expires <= issued) {
-    throw new HmsRuntimeError(
-      'ROLE_SCOPE_INVALID',
-      'role proof date order invalid',
-    );
-  }
-  if (expires < now.getTime()) {
-    throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'role proof expired');
-  }
-  if (expires - issued > MAX_PROOF_TTL_MS) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof TTL exceeds 30d');
-  }
-  if (proof.propertyCode !== 'HRCEN') {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof property mismatch');
-  }
-  for (const action of V1_DENIED_ACTIONS) {
-    if (!proof.deniedActions.includes(action)) {
-      throw new HmsRuntimeError(
-        'ROLE_SCOPE_INVALID',
-        'role proof deniedActions incomplete',
-      );
+  try {
+    return validateRoleProofV1(proof, now);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'role proof invalid';
+    if (/expired/i.test(message)) {
+      throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', message);
     }
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', message);
   }
-  if (!proof.allowedSurfaces.includes('Guest Stay')) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof surface invalid');
-  }
-  return proof;
 }
 
 /**

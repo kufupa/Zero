@@ -28,6 +28,8 @@ import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
 import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
 import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
 import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
+import type { LiveHotelAvailabilityQuoteDriver } from './live-hotel-availability-driver.js';
+import type { QuoteRequest } from './quote-request-normalization.js';
 import type { CandidateToolId } from '../ai/candidate-draft-agent.js';
 import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
 import type { QuoteStayCandidate } from './quote-stay-candidate.js';
@@ -217,12 +219,20 @@ export type CreateReservationCandidateSessionInput = {
    * Live path supplies this after building HmsSessionAuthorization.
    */
   bindFindAuthorization?: (authorization: HmsSessionAuthorization) => void;
-  /** When hms_quote_stay is active — live OSRRAV driver. */
+  /** Legacy OSRRAV diagnostic driver; never used as Hotel Availability fallback. */
   quoteDriver?: LiveQuoteStayDriver;
   /** Opaque id → authored quote candidate (room+rate scoped). */
   quoteCandidates?: ReadonlyMap<string, QuoteStayCandidate>;
   /** Build per-call quote authorization (release-bound). */
   buildQuoteAuthorization?: (candidate: QuoteStayCandidate) => HmsSessionAuthorization;
+  /** Tenant-discovered child-aware Hotel Availability driver. */
+  hotelAvailabilityQuoteDriver?: LiveHotelAvailabilityQuoteDriver;
+  /** Opaque id → connected email-derived normalized Hotel Availability request. */
+  hotelAvailabilityRequests?: ReadonlyMap<string, QuoteRequest>;
+  /** Build authorization bound to the Hotel Availability request. */
+  buildHotelAvailabilityAuthorization?: (request: QuoteRequest) => HmsSessionAuthorization;
+  /** True for the normal read-only worker lane. Legacy OSRRAV is diagnostic-only there. */
+  readOnly?: boolean;
   /** Finance read adapter; the worker still owns the admission/lock boundary. */
   folioRead?: CandidateToolSession['readFolio'];
   /** Linked-context adapters; the worker still owns admission/lock/receipt. */
@@ -262,7 +272,17 @@ export function createReservationCandidateSession(
   }
 
   const activeToolIds = new Set<CandidateToolId>(['hms_find_reservation']);
-  if (quoteRelease && input.quoteDriver) {
+  if (
+    quoteRelease &&
+    (input.readOnly
+      ? input.hotelAvailabilityQuoteDriver &&
+        input.hotelAvailabilityRequests &&
+        input.buildHotelAvailabilityAuthorization
+      : input.quoteDriver ||
+        (input.hotelAvailabilityQuoteDriver &&
+          input.hotelAvailabilityRequests &&
+          input.buildHotelAvailabilityAuthorization))
+  ) {
     activeToolIds.add('hms_quote_stay');
   }
   if (input.folioRead) activeToolIds.add('hms_read_folio');
@@ -373,8 +393,52 @@ export function createReservationCandidateSession(
         err.name = 'AbortError';
         throw err;
       }
-      if (!quoteRelease || !input.quoteDriver || !input.buildQuoteAuthorization) {
+      const hotelRequest = input.hotelAvailabilityRequests?.get(candidateId);
+      if (
+        hotelRequest &&
+        input.hotelAvailabilityQuoteDriver &&
+        input.buildHotelAvailabilityAuthorization
+      ) {
+        if (input.handlerPathActive) void createReadToolHandler;
+        const authorization = input.buildHotelAvailabilityAuthorization(hotelRequest);
+        return input.hotelAvailabilityQuoteDriver.observeQuote(authorization, hotelRequest, signal);
+      }
+      if (input.readOnly) {
+        const observedAt = now();
+        return {
+          status: 'manual_required' as const,
+          draftReady: false,
+          data: buildQuoteStayReadData({
+            nightlyObservations: [],
+            requestedRooms: hotelRequest?.rooms.reduce((sum, room) => sum + room.quantity, 0) ?? 1,
+            requestRef: hotelRequest?.quoteRequestRef,
+            arrival: hotelRequest?.arrival,
+            departure: hotelRequest?.departure,
+            rooms: hotelRequest?.rooms,
+            currency: hotelRequest?.currency,
+            unresolvedInputs: ['hotel_availability_provider'],
+          }),
+          unresolvedFields: ['hotel_availability_provider'],
+          evidence: {
+            kind: 'hms' as const,
+            id: randomUUID(),
+            toolId: 'hms_quote_stay' as const,
+            toolVersion: '3.0.0-hotel-availability',
+            propertyCode: input.propertyCode ?? 'HRCEN',
+            observedAt: observedAt.toISOString(),
+            expiresAt: new Date(observedAt.getTime() + 15 * 60_000).toISOString(),
+            claimKeys: [],
+            sourceHash: createHash('sha256')
+              .update(`hotel-availability-provider:${candidateId}`)
+              .digest('hex'),
+          },
+        };
+      }
+      if (!quoteRelease) {
         throw new Error('hms_quote_stay not active in reservation session');
+      }
+      if (!input.quoteDriver || !input.buildQuoteAuthorization) {
+        throw new Error('hms_quote_stay Hotel Availability request is not authorized');
       }
       const quoteCand = input.quoteCandidates?.get(candidateId);
       if (!quoteCand) {

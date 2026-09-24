@@ -8,6 +8,8 @@ Eval membership: `apps/server-pilot/evals/hms/denominators.v1.json`.
 
 Official docs primary; docs prove product capability, not tenant entitlement or selectors.
 
+> **Current quote exception (2026-09-17):** This Phase-B matrix predates the client-approved standalone quote workflow. Current quote work uses Front Desk → Availability → **Hotel Availability**, with applied adults/children/ages and read-only Availability Details. The `room-type-rate-availability`/OSRRAV row below is diagnostic/legacy history only and never a quote fallback. CRS Check Availability remains forbidden. The historical Phase-B runtime allowlist is not evidence that the standalone quote has migrated into the production worker.
+
 ## Row schema
 
 ```typescript
@@ -23,7 +25,7 @@ type CapabilityRow = {
 };
 ```
 
-## Active read (autonomous discovery allowed)
+## Active read (autonomous discovery allowed — historical Phase-B baseline)
 
 | id | officialDocs | phase | credentialRequirement | autonomousAllowed | mutationRisk | evidenceNeeded |
 | --- | --- | --- | --- | --- | --- | --- |

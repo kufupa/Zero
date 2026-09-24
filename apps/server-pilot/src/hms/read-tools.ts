@@ -10,6 +10,7 @@ import { documentListReadDataSchema } from './document-list-contract.js';
 import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { folioReadDataSchema } from './folio-read-contract.js';
 import { eventReadDataSchema } from './event-read-contract.js';
+import { hmsDocumentReadDataSchema } from './hms-document-read-contract.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -19,6 +20,7 @@ export const READ_TOOL_IDS = [
   'hms_list_documents',
   'hms_sent_email_audit',
   'hms_read_folio',
+  'hms_read_document',
   'hms_company_account_read',
   'hms_group_block_read',
   'hms_event_read',
@@ -92,6 +94,7 @@ export const HMS_READ_TOOL_IDS = [
   'hms_list_documents',
   'hms_sent_email_audit',
   'hms_read_folio',
+  'hms_read_document',
   'hms_company_account_read',
   'hms_group_block_read',
   'hms_event_read',
@@ -102,6 +105,8 @@ export type HmsReadToolId = z.infer<typeof hmsReadToolIdSchema>;
 
 export const ROLE_SURFACE_IDS = [
   'guest_stay',
+  'hotel_availability',
+  /** Legacy diagnostic surface; never a production quote fallback. */
   'room_type_rate_availability',
   'sent_email',
   'tax_invoice',
@@ -347,9 +352,7 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     id: 'hms_quote_stay',
     version: '2.0.0',
     effect: 'read',
-    sourceUrls: [
-      'https://docs.infor.com/hms/3.8.x/en-us/useradminlist/HMS%203.8.4%20User%20Guide_70179.pdf',
-    ],
+    sourceUrls: ['https://docs.infor.com/hms/2026.08/en-us/hmsolh/jxo1557688477063.html'],
     privacyClass: 'minimized_hms',
     deniedActions: [...deniedCommon, 'crs_check_availability', 'click_result_row', 'paging'],
     candidateRequirement: 'unambiguous_dates_occupancy_room_rate_authored_segment',
@@ -359,23 +362,22 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
       defineRequestBranch({
         id: 'quote_availability_search',
         discoveryOperationId: 'quote_availability_search',
-        requiredRoleSurfaces: ['room_type_rate_availability'],
+        requiredRoleSurfaces: ['hotel_availability'],
         parserSchemaSha256: '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
         oracleKind: 'independent_rendered_observation',
       }),
     ],
     promotionEvidence: {
       fixture: true,
-      discovery: true,
-      // A parser/probe digest is not production quote authority. The worker
-      // currently fails closed until a trusted current-rate reference exists.
+      // The former OSRRAV probe is superseded by the client-mandated Hotel
+      // Availability surface. Tenant discovery is intentionally uncredited
+      // until the exact live function/request/response contract is observed.
+      discovery: false,
       live: false,
       shadow: false,
     },
     evidenceRefs: {
       fixtureDigest: '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
-      // Discovery = quote parser/fixture contract (not GOLD-EMAIL-TOOL-CATALOGUE.md).
-      discoveryDigest: '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
     },
     observationSchema: quoteStayReadDataSchema,
     claimKinds: ['quote_stay_summary'],
@@ -421,6 +423,37 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     },
     observationSchema: documentListReadDataSchema,
     claimKinds: ['document_metadata'],
+  },
+  hms_read_document: {
+    id: 'hms_read_document',
+    version: '1.0.0',
+    effect: 'read',
+    sourceUrls: ['https://docs.infor.com/hms/2025.x/en-us/hmsolh/pages/pssnel_help.html'],
+    privacyClass: 'minimized_hms',
+    deniedActions: [...deniedCommon, 'generate', 'print', 'send', 'open_attachment'],
+    candidateRequirement: 'exact_reservation_child_and_stored_document_ref',
+    attemptCap: 2,
+    discoveryOperationIds: ['tax_invoice_list'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'document_bytes',
+        discoveryOperationId: 'tax_invoice_list',
+        requiredRoleSurfaces: ['tax_invoice'],
+        parserSchemaSha256: '37bda81895056cc906f22611e3c8eaef7f519e1c10388499b3fe84a09878b558',
+        oracleKind: 'authorized_source_artifact',
+      }),
+    ],
+    promotionEvidence: {
+      fixture: true,
+      discovery: false,
+      live: false,
+      shadow: false,
+    },
+    evidenceRefs: {
+      fixtureDigest: '37bda81895056cc906f22611e3c8eaef7f519e1c10388499b3fe84a09878b558',
+    },
+    observationSchema: hmsDocumentReadDataSchema,
+    claimKinds: ['document_bytes'],
   },
   hms_sent_email_audit: {
     id: 'hms_sent_email_audit',

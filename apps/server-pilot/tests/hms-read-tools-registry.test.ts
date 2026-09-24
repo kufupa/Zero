@@ -35,6 +35,7 @@ const REQUIRED_TOOL_IDS: ReadToolId[] = [
   'hms_list_documents',
   'hms_sent_email_audit',
   'hms_read_folio',
+  'hms_read_document',
   'hms_company_account_read',
   'hms_group_block_read',
   'hms_event_read',
@@ -109,6 +110,7 @@ describe('READ_TOOLS portfolio registry', () => {
     expect(hmsReadToolIdSchema.safeParse('mail_read_artifact').success).toBe(false);
     expect(ROLE_SURFACE_IDS).toEqual([
       'guest_stay',
+      'hotel_availability',
       'room_type_rate_availability',
       'sent_email',
       'tax_invoice',
@@ -144,8 +146,6 @@ describe('READ_TOOLS portfolio registry', () => {
     });
     expect(READ_TOOLS.hms_quote_stay.evidenceRefs).toEqual({
       fixtureDigest:
-        '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
-      discoveryDigest:
         '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
     });
 
@@ -212,7 +212,7 @@ describe('READ_TOOLS portfolio registry', () => {
     ).toBe('planned');
 
     expect(capabilityStateFor('hms_find_reservation')).toBe('live_verified');
-    expect(capabilityStateFor('hms_quote_stay')).toBe('discovery_verified');
+    expect(capabilityStateFor('hms_quote_stay')).toBe('fixture_verified');
     expect(capabilityStateFor('hms_read_folio')).toBe('discovery_verified');
     expect(capabilityStateFor('hms_company_account_read')).toBe(
       'fixture_verified',

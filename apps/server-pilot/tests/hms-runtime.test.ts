@@ -264,6 +264,8 @@ describe('HMS runtime', () => {
       circuitCooldownMs?: number;
       healthStatusPath?: string;
       defaultTimeoutMs?: number;
+      runStartupCanary?: boolean;
+      reuseAuthenticatedStorageState?: boolean;
     } = {},
   ) {
     const secret = fixtureSecret(server.origin, opts.secret);
@@ -276,6 +278,8 @@ describe('HMS runtime', () => {
       healthStatusPath: opts.healthStatusPath,
       defaultTimeoutMs: opts.defaultTimeoutMs,
       requireViewOnly: true,
+      runStartupCanary: opts.runStartupCanary,
+      reuseAuthenticatedStorageState: opts.reuseAuthenticatedStorageState,
     });
     cleanup.push(() => runtime.close());
     return { runtime, secret };
@@ -816,6 +820,81 @@ describe('Task 2 production composition + browser guards', () => {
     expect(wsBeforeNav).toBe(true);
   });
 
+  it('projects blocked request fields before the guard aborts dispatch', async () => {
+    const server = await startHmsFixtureServer({ scenario: 'reservation-not-found' });
+    cleanup.push(server.close);
+    const secret = fixtureSecret(server.origin);
+    const projections: Record<string, unknown>[] = [];
+    const baseFactory = createFetchBrowserFactory();
+    let proofContext: {
+      dispatchRoute(input: {
+        url: string;
+        method: string;
+        resourceType: string;
+        headers: Record<string, string>;
+        postData: string | null;
+      }): Promise<unknown>;
+    } | undefined;
+    const capturingFactory: typeof baseFactory = async (input) => {
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          const context = await browser.newContext(opts) as typeof context & {
+            dispatchRoute(input: {
+              url: string;
+              method: string;
+              resourceType: string;
+              headers: Record<string, string>;
+              postData: string | null;
+            }): Promise<unknown>;
+          };
+          if (opts.storageState) proofContext = context;
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: capturingFactory,
+      runStartupCanary: false,
+      onRequestProjection: (projection) => projections.push(projection),
+    });
+    cleanup.push(() => runtime.close());
+    await runtime.start(AbortSignal.timeout(15_000));
+    const session = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    projections.length = 0;
+    expect(proofContext).toBeDefined();
+    const decision = await proofContext!.dispatchRoute({
+      url: `${server.origin}/web/base/OSACCT?USER_FUNCTION_NAME=OSACCT&FUNCTION_CLASS=MENU`,
+      method: 'POST',
+      resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: 'USER_FUNCTION_NAME=OSACCT&password=do-not-retain&FUNCTION_CLASS=MENU',
+    });
+    expect(decision).toMatchObject({ action: 'block', code: 'unknown_path' });
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      kind: 'runtime-request-projection',
+      method: 'POST',
+      path: '/web/base/OSACCT',
+      resourceType: 'xhr',
+      bodyFieldNames: ['FUNCTION_CLASS', 'USER_FUNCTION_NAME', 'password'],
+      queryKeys: ['FUNCTION_CLASS', 'USER_FUNCTION_NAME'],
+      safeTransportFields: {
+        FUNCTION_CLASS: 'MENU',
+        USER_FUNCTION_NAME: 'OSACCT',
+      },
+    });
+    expect(JSON.stringify(projections)).not.toContain('do-not-retain');
+    await session.close();
+  });
+
   it('popup closes and terminalizes context', async () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
@@ -1059,6 +1138,48 @@ describe('Task 2 production composition + browser guards', () => {
     });
   });
 
+  it('expired per-session authorization blocks before browser context', async () => {
+    const server = await startHmsFixtureServer();
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-session-expired',
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      requireSessionAuthorization: true,
+      runStartupCanary: false,
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(5_000));
+      await expect(
+        runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(5_000),
+          sessionAuthorization: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            discoveryOperationId: 'guest_stay_search',
+            releaseId: randomUUID(),
+            requestBranchId: 'guest_stay_search',
+            manifest: fixtureManifest(server.origin),
+            manifestSha256: 'a'.repeat(64),
+            roleProofPath: '/tmp/fixture-role-proof',
+            roleProofSha256: 'b'.repeat(64),
+            credentialVersionHmacSha256: 'c'.repeat(64),
+            runtimeFingerprintSha256: 'd'.repeat(64),
+            privateDigestKeyVersion: 'v1',
+            sourceRevision: 'test',
+            expiresAt: new Date(Date.now() - 1_000).toISOString(),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'ROLE_PROOF_EXPIRED' });
+      expect(runtime.stats().contextsCreated).toBe(0);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
   it('rejects a role proof issued in the future', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hms-role-future-'));
     const proofPath = join(dir, 'role-proof.json');
@@ -1135,6 +1256,42 @@ describe('Task 2 production composition + browser guards', () => {
     await s2.close();
     expect(runtime.stats().browserLaunches).toBe(1);
     expect(runtime.stats().contextsCreated).toBeGreaterThanOrEqual(3);
+  });
+
+  it('reuses one validated login across serialized read sessions', async () => {
+    const server = await startHmsFixtureServer();
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      reuseAuthenticatedStorageState: true,
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+
+      const first = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+      });
+      await first.close();
+      const second = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+      });
+      await second.close();
+
+      // Startup canary performs the sole login; both normal calls restore its
+      // validated native state into fresh proof contexts.
+      expect(server.requests.filter((request) => request.path === '/session')).toHaveLength(1);
+      expect(runtime.stats().browserLaunches).toBe(1);
+      expect(runtime.stats().contextsCreated).toBe(4);
+      expect(runtime.stats().contextsClosed).toBe(4);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+    }
   });
 
   it('health writes mode-0600 with fixed enums and heartbeat metadata', async () => {

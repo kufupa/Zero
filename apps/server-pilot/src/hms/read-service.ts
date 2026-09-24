@@ -8,6 +8,7 @@ import {
   documentsReadReadRequestSchema,
   hmsListDocumentsReadRequestSchema,
   hmsSentEmailAuditReadRequestSchema,
+  hmsReadDocumentReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
   companyAccountReadRequestSchema,
@@ -17,6 +18,7 @@ import {
   type ReadReasonCode,
   type ReadAdmission,
   type ReadResult,
+  type ReadToolResultId,
 } from './read-service-contracts.js';
 import {
   companyAccountContextDataSchema,
@@ -76,6 +78,7 @@ export const readRequestSchema = z.union([
   documentsReadReadRequestSchema,
   hmsListDocumentsReadRequestSchema,
   hmsSentEmailAuditReadRequestSchema,
+  hmsReadDocumentReadRequestSchema,
   folioReadRequestSchema,
   quoteStayReadRequestSchema,
   companyAccountReadRequestSchema,
@@ -90,6 +93,7 @@ export type ReadRequest =
   | z.infer<typeof documentsReadReadRequestSchema>
   | z.infer<typeof hmsListDocumentsReadRequestSchema>
   | z.infer<typeof hmsSentEmailAuditReadRequestSchema>
+  | z.infer<typeof hmsReadDocumentReadRequestSchema>
   | z.infer<typeof folioReadRequestSchema>
   | QuoteStayReadRequest
   | z.infer<typeof companyAccountReadRequestSchema>
@@ -129,6 +133,8 @@ export interface ReadHandlers {
     candidateId: string;
     reservationRef: string;
     sections: readonly string[];
+    limit?: number;
+    cursor?: string;
   }) => Promise<ReadResult<unknown>>;
   quoteStay?: (input: {
     quoteRequestRef: string;
@@ -153,6 +159,10 @@ export interface ReadHandlers {
     documentScope: 'sent_email' | 'tax_invoice';
   }) => Promise<ReadResult<unknown>>;
   readSentEmailAudit?: (input: { candidateId: string }) => Promise<ReadResult<unknown>>;
+  readDocument?: (input: {
+    candidateId: string;
+    documentRef: string;
+  }) => Promise<ReadResult<unknown>>;
 }
 
 export interface ReadExecutionContext {
@@ -679,9 +689,11 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
                     ? 'group_status'
                     : request.toolId === 'hms_event_read'
                       ? 'event_status'
-                      : request.toolId === 'hms_read_notes_traces'
-                        ? 'notes_trace_observation'
-                        : 'reservation_summary',
+                        : request.toolId === 'hms_read_notes_traces'
+                          ? 'notes_trace_observation'
+                          : request.toolId === 'hms_read_document'
+                            ? 'document_bytes'
+                          : 'reservation_summary',
       currentAppAccessProof: context.currentAppAccessProof,
       requireCurrentAppAccess: context.requireCurrentAppAccess,
     });
@@ -743,6 +755,39 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
   context.budget.total += 1;
 }
 
+/**
+ * Missing standalone providers are a truthful capability state, not a
+ * dispatcher exception.  Keep the result closed and machine-readable so a
+ * DB-free runner can exercise every included tool without pretending that a
+ * handler or PMS surface exists.
+ */
+function unavailableReadResult(input: {
+  toolId: ReadToolResultId;
+  scopeRef: string;
+  section: string;
+  reasonCode?: ReadReasonCode;
+}): ReadResult<unknown> {
+  const reasonCode = input.reasonCode ?? 'SOURCE_UNAVAILABLE';
+  return readResultSchema.parse({
+    toolId: input.toolId,
+    schemaVersion: 'hms-read/1',
+    status: 'manual_required',
+    data: null,
+    completeness: 'unknown',
+    unavailableSections: [{ section: input.section, reasonCode }],
+    scopeRef: readRefSchema.parse(input.scopeRef),
+    evidence: [],
+    page: null,
+    issues: [
+      {
+        code: reasonCode,
+        retryable: false,
+        safeNextAction: 'manual_review',
+      },
+    ],
+  }) as ReadResult<unknown>;
+}
+
 async function dispatchRead(
   context: ReadExecutionContext,
   request: ReadRequest,
@@ -774,6 +819,33 @@ async function dispatchRead(
       now: context.now(),
       result,
     });
+  }
+
+  if (parsed.toolId === 'hms_read_document') {
+    const handler = context.handlers?.readDocument;
+    if (!handler) {
+      return readResultSchema.parse({
+        toolId: parsed.toolId,
+        schemaVersion: 'hms-document/1',
+        status: 'manual_required',
+        data: null,
+        completeness: 'unknown',
+        unavailableSections: [{ section: 'document_bytes', reasonCode: 'SOURCE_UNAVAILABLE' }],
+        scopeRef: parsed.documentRef,
+        evidence: [],
+        page: null,
+        issues: [
+          {
+            code: 'SOURCE_UNAVAILABLE',
+            retryable: false,
+            safeNextAction: 'manual_review',
+          },
+        ],
+      }) as ReadResult<unknown>;
+    }
+    return readResultSchema.parse(
+      await handler({ candidateId: parsed.candidateId, documentRef: parsed.documentRef }),
+    ) as ReadResult<unknown>;
   }
 
   if (isHmsCommunicationRequest(parsed)) {
@@ -822,9 +894,28 @@ async function dispatchRead(
 
   if (parsed.toolId === 'hms_find_reservation') {
     const handler = context.handlers?.findReservation;
-    if (!handler)
-      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed reservation lookup is unavailable');
+    if (!handler && !context.reservationFacade) {
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.candidateId,
+        section: 'reservation_lookup',
+      });
+    }
     const lookupInput = toLookup(context, parsed.candidateId);
+    // A standalone/live caller may supply one facade that owns the opaque
+    // reservation-ref binding used by the immediately-following detail read.
+    // Do not mint the find result in a second throwaway facade: that would
+    // return a ref which the caller's context cannot resolve.
+    if (context.reservationFacade) {
+      return (await context.reservationFacade.findReservation(lookupInput)) as ReadResult<unknown>;
+    }
+    if (!handler) {
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.candidateId,
+        section: 'reservation_lookup',
+      });
+    }
     const facade = createReservationContextFacade({
       now: context.now,
       lookup: async (input) => normalizeHandlerResult(await handler(input)),
@@ -847,21 +938,30 @@ async function dispatchRead(
   if (parsed.toolId === 'hms_read_folio') {
     const handler = context.handlers?.readFolio;
     if (!handler) {
-      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed folio finance handler is unavailable');
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.reservationRef,
+        section: 'folio',
+      });
     }
-    return readResultSchema.parse(
-      await handler({
-        candidateId: parsed.candidateId,
-        reservationRef: parsed.reservationRef,
-        sections: parsed.sections,
-      }),
-    ) as ReadResult<unknown>;
+    const handlerInput = {
+      candidateId: parsed.candidateId,
+      reservationRef: parsed.reservationRef,
+      sections: parsed.sections,
+      ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
+      ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+    };
+    return readResultSchema.parse(await handler(handlerInput)) as ReadResult<unknown>;
   }
 
   if (parsed.toolId === 'hms_quote_stay') {
     const handler = context.handlers?.quoteStay;
     if (!handler) {
-      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed quote stay handler is unavailable');
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.quoteRequestRef,
+        section: 'quote',
+      });
     }
     return readResultSchema.parse(
       await handler({
@@ -875,10 +975,11 @@ async function dispatchRead(
   if (parsed.toolId === 'hms_company_account_read') {
     const handler = context.handlers?.readCompanyAccount;
     if (!handler) {
-      throw codedError(
-        'READ_HANDLER_UNAVAILABLE',
-        'typed company account context handler is unavailable',
-      );
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.reservationRef,
+        section: 'company_account',
+      });
     }
     const result = readResultSchema.parse(await handler({ reservationRef: parsed.reservationRef }));
     if (result.data !== null) companyAccountContextDataSchema.parse(result.data);
@@ -888,10 +989,11 @@ async function dispatchRead(
   if (parsed.toolId === 'hms_group_block_read') {
     const handler = context.handlers?.readGroupBlock;
     if (!handler) {
-      throw codedError(
-        'READ_HANDLER_UNAVAILABLE',
-        'typed group block context handler is unavailable',
-      );
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.groupRef,
+        section: 'group_block',
+      });
     }
     const result = readResultSchema.parse(
       await handler({ groupRef: parsed.groupRef, sections: parsed.sections }),
@@ -903,7 +1005,11 @@ async function dispatchRead(
   if (parsed.toolId === 'hms_event_read') {
     const handler = context.handlers?.readEvent;
     if (!handler) {
-      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed event context handler is unavailable');
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.eventRef,
+        section: 'event',
+      });
     }
     const result = readResultSchema.parse(await handler({ eventRef: parsed.eventRef }));
     if (result.data !== null) eventContextDataSchema.parse(result.data);
@@ -913,7 +1019,11 @@ async function dispatchRead(
   if (parsed.toolId === 'hms_read_notes_traces') {
     const handler = context.handlers?.readNotesTraces;
     if (!handler) {
-      throw codedError('READ_HANDLER_UNAVAILABLE', 'typed notes trace handler is unavailable');
+      return unavailableReadResult({
+        toolId: parsed.toolId,
+        scopeRef: parsed.resourceRef,
+        section: 'notes_traces',
+      });
     }
     const result = readResultSchema.parse(
       await handler({
@@ -932,7 +1042,13 @@ async function dispatchRead(
   }
 
   const facade = context.reservationFacade;
-  if (!facade) throw codedError('READ_HANDLER_UNAVAILABLE', 'reservation context is unavailable');
+  if (!facade) {
+    return unavailableReadResult({
+      toolId: parsed.toolId,
+      scopeRef: parsed.reservationRef,
+      section: 'reservation_context',
+    });
+  }
   const lookupInput = toLookup(context, parsed.reservationRef);
   const result = await facade.readReservation({
     ...lookupInput,

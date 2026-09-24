@@ -10,6 +10,8 @@ execution: code
 
 # Mail Artifact and HMS Read Expansion Implementation Plan
 
+> **Historical quote scope (superseded 2026-09-17):** This plan's Room Availability + Display Rates quote recipe is retained for decision history only. Current client-approved quote source is Front Desk → Availability → **Hotel Availability**; do not use this plan as execution guidance for quote work.
+
 > **For agentic workers:** REQUIRED SUB-SKILLS: `/nava-run` and `superpowers:subagent-driven-development`. Use TDD, SDD, per-task review, final correctness review, and fresh verification. Work in current `EC2-pilot` branch/worktree. Do not create another branch/worktree or commit unless user separately asks.
 
 **Execution posture:** Phase A is complete and frozen. Preserve its evidence and Gate G1 contract. After user replies `Continue`, Phase B first applies cheap list-only `hms_find_reservation` enrichment, then completes the original mail-artifact chain, then productionizes the existing fixture-backed `hms_quote_stay` contract as the sole additional live HMS tool.

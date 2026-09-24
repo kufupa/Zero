@@ -7,8 +7,11 @@ import {
   notesTraceItemSchema,
   notesTracesContextDataSchema,
   notesTracesListDataSchema,
+  notesTracesSectionSchema,
   type NotesTraceItem,
   type NotesTracesContextData,
+  type NotesTracesListData,
+  type NotesTracesSection,
 } from './context-read-contracts.js';
 import { z } from 'zod';
 
@@ -26,8 +29,11 @@ export const NOTES_TRACES_READ_PRIVACY_POLICY = {
 export const notesTracesReadDataSchema = notesTracesContextDataSchema;
 export const notesTracesItemSchema = notesTraceItemSchema;
 export const notesTracesListSchema = notesTracesListDataSchema;
+export { notesTracesSectionSchema };
 export type NotesTracesReadData = NotesTracesContextData;
 export type NotesTracesReadItem = NotesTraceItem;
+export type NotesTracesReadList = NotesTracesListData;
+export type NotesTracesReadSection = NotesTracesSection;
 export { filterNotesForAudience };
 
 export const notesTraceAudienceSchema = z.enum(['staff', 'customer']);

@@ -20,13 +20,26 @@ import {
   createFindReservationFacade,
   type FindReservationFacade,
 } from './find-reservation-facade.js';
-import { createReservationDetailFacade } from './reservation-detail-facade.js';
 import { HmsRuntimeError, type HmsReadSession, type HmsRuntime } from './runtime.js';
+import type { ReservationDetailDumpV1 } from './reservation-detail-projection.js';
+import { createReservationDetailFacade } from './reservation-detail-facade.js';
 import type { PropertyReadLock } from './property-read-lock.js';
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 
 export type { ExactReservationCandidate, ReservationSearchCandidate };
+
+/** Return only the validated detail `reservationstayid`, never the OSRESS row id. */
+export function extractValidatedReservationStayId(dump: ReservationDetailDumpV1): string | null {
+  const values = dump.values;
+  if (!values) return null;
+  for (const [key, value] of Object.entries(values)) {
+    if (key.toLowerCase() !== 'reservationstayid' || value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
 
 /** Frozen live Guest Stay list-row selectors (structure; not guest values). */
 export const LIVE_GUEST_STAY_ROW_SELECTORS = {
@@ -103,6 +116,8 @@ export interface LiveGuestStayDriver {
   ): Promise<{
     search: GuestStaySearchResult;
     dump: import('./reservation-detail-projection.js').ReservationDetailDumpV1;
+    /** Validated OSRESV.HDR reservationstayid from the detail dump, if present. */
+    reservationStayId?: string | null;
   }>;
   /** Digests-only receipt from most recent audited session close. */
   lastAuditReceipt(): import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null;
@@ -240,9 +255,13 @@ export function extractOsressPageData(text: string): Record<string, unknown> | n
   return null;
 }
 
-export function extractOsressDetailOpenHints(html: string): {
+export function extractOsressDetailOpenHints(
+  html: string,
+  candidate?: ReservationSearchCandidate,
+): {
   confirmationNumber: string | null;
   externalReference: string | null;
+  /** Legacy input name; this is the opaque OSRESS GRID.DATA.id only. */
   reservationStayId: string | null;
 } {
   const empty = {
@@ -260,13 +279,37 @@ export function extractOsressDetailOpenHints(html: string): {
   if (inner == null || typeof inner !== 'object') return empty;
   const data = (inner as Record<string, unknown>).DATA;
   if (!Array.isArray(data) || data.length < 1) return empty;
-  const row = data[0];
+  let rowIndex = 0;
+  if (candidate) {
+    // OSRESS can return several rows even when the caller's surname+dates
+    // candidate correlates to exactly one.  The old data[0] shortcut could
+    // therefore send another reservation's opaque id to HDR and receive only
+    // the 813-byte shell.  Reuse the same strict correlation predicate used
+    // for the public search result, and fail closed unless it identifies one
+    // raw row.
+    const parsedRows = parseLiveOsressGridRows(pageData);
+    if (!parsedRows) return empty;
+    const matchingIndexes = parsedRows
+      .map((parsed, index) =>
+        rowMatchesCandidate(parsed, candidate, {
+          allowExternalReferenceAlias: parsedRows.length === 1,
+        })
+          ? index
+          : -1,
+      )
+      .filter((index) => index >= 0);
+    if (matchingIndexes.length !== 1) return empty;
+    rowIndex = matchingIndexes[0]!;
+  }
+  const row = data[rowIndex];
   if (!row || typeof row !== 'object') return empty;
   const rec = row as Record<string, unknown>;
+  // OSRESS `id` is an opaque row binding.  The actual reservationstayid is
+  // resolved later from the correlated OSRESV.LST row before HDR is built.
   return {
     confirmationNumber: strOrNull(rec.confirmationnumber),
     externalReference: strOrNull(rec.externalconfirmation),
-    reservationStayId: strOrNull(rec.id) ?? strOrNull(rec.reservationstayid),
+    reservationStayId: strOrNull(rec.id),
   };
 }
 
@@ -362,8 +405,14 @@ function correlateObservations(
   fresh: ReservationObservation[],
   candidate: ReservationSearchCandidate,
   emptySignal: boolean,
+  options: { allowExternalReferenceAlias?: boolean } = {},
 ): GuestStaySearchResult {
-  const correlated = fresh.filter((row) => rowMatchesCandidate(row, candidate));
+  const correlated = fresh.filter((row) =>
+    rowMatchesCandidate(row, candidate, {
+      allowExternalReferenceAlias:
+        options.allowExternalReferenceAlias === true && fresh.length === 1,
+    }),
+  );
   if (correlated.length === 0 && (emptySignal || fresh.length === 0)) {
     return { outcome: 'not_found', observations: [], capped: false };
   }
@@ -459,6 +508,7 @@ function surnameMatchesGuestName(guestName: string | null, surname: string): boo
 function rowMatchesCandidate(
   row: ReservationObservation,
   candidate: ReservationSearchCandidate,
+  options: { allowExternalReferenceAlias?: boolean } = {},
 ): boolean {
   if (candidate.kind === 'surname_dates') {
     return (
@@ -471,7 +521,31 @@ function rowMatchesCandidate(
   if (candidate.kind === 'confirmation') {
     return (row.confirmationNumber ?? '').toUpperCase() === target;
   }
-  return (row.externalReference ?? '').toUpperCase() === target;
+  return matchesExternalReferenceCandidate(
+    candidate.value,
+    row.externalReference,
+    options.allowExternalReferenceAlias === true,
+  );
+}
+
+/**
+ * Match the exact external reference returned by OSRESS.  Two observed
+ * provider responses decorate an otherwise exact base with `--` and four
+ * digits.  That alias is accepted only for a base input, never by a prefix
+ * match, and only when the caller has proved a single complete live row.
+ */
+export function matchesExternalReferenceCandidate(
+  candidateValue: string,
+  observedValue: string | null,
+  allowDecoratedAlias = false,
+): boolean {
+  const candidate = candidateValue.trim().toUpperCase();
+  const observed = observedValue?.trim().toUpperCase() ?? '';
+  if (!candidate || !observed) return false;
+  if (observed === candidate) return true;
+  if (!allowDecoratedAlias || candidate.includes('--')) return false;
+  const decorated = /^(.*)--(\d{4})$/.exec(observed);
+  return decorated?.[1] === candidate;
 }
 
 function parseAllFreshRows(html: string): ReservationObservation[] {
@@ -516,13 +590,11 @@ export function parseAndCorrelateGuestStayHtml(
         gridRows,
         candidate,
         gridRows.length === 0 || NO_RESULTS_RE.test(html),
+        { allowExternalReferenceAlias: true },
       );
     }
     if (options.requireLiveEnvelope) {
-      throw new HmsRuntimeError(
-        'SCHEMA_DRIFT',
-        'live OSRESS grid structure unmapped',
-      );
+      throw new HmsRuntimeError('SCHEMA_DRIFT', 'live OSRESS grid structure unmapped');
     }
   }
   if (options.requireLiveEnvelope) {
@@ -784,14 +856,40 @@ export function createLiveGuestStayDriver(
           // detail facade attempts an inert row open.
           const rowCount = await facade.ensureSearchResultRows(candidate);
           const obs = search.observations[0]!;
-          const hints = extractOsressDetailOpenHints(html);
-          const matchToken =
-            (obs.confirmationNumber ||
-              obs.externalReference ||
-              hints.confirmationNumber ||
-              hints.externalReference ||
-              '').trim();
-          if (rowCount < 1 && !matchToken && !hints.reservationStayId) {
+          const hints = extractOsressDetailOpenHints(html, candidate);
+          const matchToken = (
+            obs.confirmationNumber ||
+            obs.externalReference ||
+            hints.confirmationNumber ||
+            hints.externalReference ||
+            ''
+          ).trim();
+          const opaqueRowId = hints.reservationStayId;
+          if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
+            process.stderr.write(
+              `${JSON.stringify({
+                type: 'HMS_PROOF_DIAGNOSTIC',
+                stage: 'reservation_detail_hints',
+                rowCount,
+                matchTokenKind: obs.confirmationNumber
+                  ? 'confirmation'
+                  : obs.externalReference
+                    ? 'external_reference'
+                    : hints.confirmationNumber
+                      ? 'hint_confirmation'
+                      : hints.externalReference
+                        ? 'hint_external_reference'
+                        : 'none',
+                matchTokenSha256: matchToken ? sha256Hex(matchToken) : null,
+                hasOpaqueRowId: Boolean(opaqueRowId),
+                opaqueRowIdSha256: opaqueRowId ? sha256Hex(opaqueRowId) : null,
+                hintConfirmationSha256: hints.confirmationNumber
+                  ? sha256Hex(hints.confirmationNumber)
+                  : null,
+              })}\n`,
+            );
+          }
+          if (rowCount < 1 && !matchToken && !opaqueRowId) {
             throw new HmsRuntimeError(
               'SCHEMA_DRIFT',
               'detail dump: matched pageData but grid row not rendered',
@@ -801,9 +899,22 @@ export function createLiveGuestStayDriver(
           const dump = await detail.openMatchedRowAndDump({
             captureValues: true,
             matchToken: matchToken || undefined,
-            reservationStayId: hints.reservationStayId,
+            reservationStayId: opaqueRowId,
           });
-          return { search, dump };
+          const resolvedReservationStayId = extractValidatedReservationStayId(dump);
+          if (!resolvedReservationStayId) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'detail dump missing validated reservationstayid',
+            );
+          }
+          return {
+            search,
+            dump,
+            // Downstream FOL/notes readers receive only the validated HDR id;
+            // the OSRESS opaque row id never leaves the detail opener.
+            reservationStayId: resolvedReservationStayId,
+          };
         },
         () => ({ outcome: 'succeeded', terminalCode: 'OK' }),
       );

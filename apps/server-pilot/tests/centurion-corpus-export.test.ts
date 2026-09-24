@@ -211,8 +211,8 @@ describe('Centurion nine-day corpus reader', () => {
     const messageQuery = fake.queries.find((query) => /FROM message AS m/i.test(query.text));
     expect(messageQuery?.values).toContain(CENTURION_TRANSPORT_ID);
     expect(messageQuery?.text).toMatch(/m\.transport_id\s*=\s*\$\d+/i);
-    expect(messageQuery?.values).toContain('2026-09-07T22:00:00.000');
-    expect(messageQuery?.values).toContain('2026-09-16T22:00:00.000');
+    expect(messageQuery?.values).toContain(CENTURION_WINDOW_START_UTC.slice(0, -1));
+    expect(messageQuery?.values).toContain(CENTURION_WINDOW_END_UTC.slice(0, -1));
     expect(messageQuery?.text).toMatch(/WITH\s+candidates\s+AS/i);
     expect(messageQuery?.text).toMatch(/in_window_threads/i);
     expect(messageQuery?.text).toMatch(/"eventAt"\s*>=/i);
@@ -244,7 +244,7 @@ describe('Centurion nine-day corpus reader', () => {
     await expect(
       reader.readCenturionSnapshot({
         transportId: CENTURION_TRANSPORT_ID,
-        startInclusive: '2026-09-08T22:00:00.000Z',
+        startInclusive: '2026-09-07T22:00:00.000Z',
         endExclusive: CENTURION_WINDOW_END_UTC,
       }),
     ).rejects.toThrow(/fixed|window/i);

@@ -160,17 +160,56 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
   unresolved.add('bookability_unproven');
 
   const rowCountByNight = new Map<string, number>();
+  const roomGroupCount = input.rooms?.length ?? 1;
+  const roomGroupsByNight = new Map<string, Set<number>>();
   for (const row of rows) {
     rowCountByNight.set(row.date, (rowCountByNight.get(row.date) ?? 0) + 1);
+    if (row.roomGroupIndex !== undefined) {
+      const groups = roomGroupsByNight.get(row.date) ?? new Set<number>();
+      groups.add(row.roomGroupIndex);
+      roomGroupsByNight.set(row.date, groups);
+    }
+  }
+  const mixedRoomGroupsCorrelated =
+    roomGroupCount === 1 ||
+    (rows.every((row) => row.roomGroupIndex !== undefined) &&
+      expectedNights.every((date) => {
+        const groups = roomGroupsByNight.get(date);
+        return groups?.size === roomGroupCount && [...groups].every((index) => index >= 0 && index < roomGroupCount);
+      }));
+  if (roomGroupCount > 1 && !mixedRoomGroupsCorrelated) {
+    unresolved.add('room_group_correlation_unresolved');
+  }
+  for (const row of rows) {
+    const groupIndex =
+      row.roomGroupIndex !== undefined
+        ? row.roomGroupIndex
+        : roomGroupCount === 1
+          ? 0
+          : null;
+    const requestedQuantity =
+      groupIndex !== null ? input.rooms?.[groupIndex]?.quantity : undefined;
+    if (
+      row.quantity !== undefined &&
+      requestedQuantity !== undefined &&
+      row.quantity !== requestedQuantity
+    ) {
+      unresolved.add(`quantity_mismatch:room_group:${groupIndex}`);
+    }
   }
   const exactNightCoverage =
     expectedNights.length > 0 &&
     missingNights.length === 0 &&
-    rows.length === expectedNights.length &&
+    rows.length === expectedNights.length * roomGroupCount &&
     rows.every((row) => expectedNights.includes(row.date)) &&
-    expectedNights.every((date) => rowCountByNight.get(date) === 1);
+    (roomGroupCount === 1
+      ? expectedNights.every((date) => rowCountByNight.get(date) === 1)
+      : mixedRoomGroupsCorrelated);
   const hasAmbiguousNight = [...unresolved].some(
     (value) => value.includes('.ambiguous') || value === 'ambiguous',
+  );
+  const hasQuantityMismatch = [...unresolved].some((value) =>
+    value.startsWith('quantity_mismatch:'),
   );
   const requestedCurrencyMatches = Boolean(
     input.currency && currencies.size === 1 && currencies.has(input.currency),
@@ -185,6 +224,7 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
     exactNightCoverage &&
     requestedCurrencyMatches &&
     !hasAmbiguousNight &&
+    !hasQuantityMismatch &&
     !input.roomMoveRequired &&
     quantity > 0;
 
@@ -192,7 +232,12 @@ export function buildQuoteStayReadData(input: QuoteObservationSummaryInput): Quo
   if (sumEligible) {
     const total = rows.reduce((sum, row) => {
       const value = cents(row.displayedAmount);
-      return value === null ? Number.NaN : sum + value * quantity;
+      const rowQuantity =
+        row.quantity ??
+        (row.roomGroupIndex !== undefined ? input.rooms?.[row.roomGroupIndex]?.quantity : undefined) ??
+        (roomGroupCount === 1 ? input.rooms?.[0]?.quantity : undefined) ??
+        (roomGroupCount === 1 ? quantity : 0);
+      return value === null || rowQuantity <= 0 ? Number.NaN : sum + value * rowQuantity;
     }, 0);
     if (Number.isFinite(total)) {
       displayRateSum = {

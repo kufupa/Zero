@@ -320,13 +320,13 @@ describe('Centurion quarantine recovery', () => {
     });
     const snapshot = await build([core, spillover], {
       [core.rawMimeS3Key]: inboundMime({ date: 'Tue, 15 Sep 2026 21:59:00 +0000' }),
-      [spillover.rawMimeS3Key]: inboundMime({ date: 'Wed, 16 Sep 2026 22:00:00 +0000' }),
+      [spillover.rawMimeS3Key]: inboundMime({ date: 'Fri, 18 Sep 2026 14:50:00 +0000' }),
     });
 
     expect(CENTURION_QUARANTINE_WINDOW).toMatchObject({
       timezone: 'Africa/Johannesburg',
-      startInclusive: '2026-09-07T22:00:00.000Z',
-      endExclusive: '2026-09-16T22:00:00.000Z',
+      startInclusive: '2026-09-08T22:00:00.000Z',
+      endExclusive: '2026-09-18T14:50:00.000Z',
     });
     expect(snapshot.counts.coreCount).toBe(1);
     expect(snapshot.counts.september17SpilloverCount).toBe(1);

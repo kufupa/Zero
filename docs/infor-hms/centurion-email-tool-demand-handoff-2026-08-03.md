@@ -1,5 +1,7 @@
 # Centurion email → PMS tool demand handoff
 
+> **Historical quote note (superseded 2026-09-17):** This demand handoff predates the client-approved Hotel Availability workflow. Any older Room Availability/Display Rates quote wording is evidence history, not execution guidance; current `hms_quote_stay` work uses Hotel Availability and read-only Availability Details. CRS Check Availability remains a write path.
+
 **Date:** 2026-08-03  
 **Audience:** any LLM / engineer with **zero prior context**  
 **Purpose:** reproduce the email pull + analysis process, honor guardrails, and use the tool conclusions without re-deriving from chat history.

@@ -34,7 +34,7 @@ export const GOLD_COMPARISON_SCHEMA_VERSION = 'centurion-gold-comparison-v1' as 
 export const GOLD_AUDIT_SCHEMA_VERSION = 'centurion-gold-audit-v1' as const;
 export const TOOL_DEMAND_REPORT_SCHEMA_VERSION = 'centurion-tool-demand-report-v1' as const;
 export const GOLD_COMPARATOR_PROMPT_VERSION = 'centurion-human-gold-comparator-v1' as const;
-export const GOLD_COMPARATOR_MODEL_ID = 'gpt-5.6-luna-max' as const;
+export const GOLD_COMPARATOR_MODEL_ID = 'gpt-6-luna' as const;
 export const DEFAULT_MAX_WORKERS = 5 as const;
 export const DEFAULT_MAX_RETRIES = 1 as const;
 

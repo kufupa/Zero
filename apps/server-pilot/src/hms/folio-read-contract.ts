@@ -1,14 +1,26 @@
 import {
   readFactSchema,
   readFolioSectionSchema,
+  readFolioTransactionsSectionSchema,
+  READ_SERVICE_MAX_DURATION_MS,
+  validateFolioTransactionCurrencies,
   type ReadFact,
   type ReadSection,
 } from './read-service-contracts.js';
 import { z } from 'zod';
 
 export const FOLIO_READ_MAX_ROWS = 50;
-export const FOLIO_READ_MAX_BYTES = 64 * 1024;
+/** Total source rows reported by one bounded base-FOL + All Folios read. */
+export const FOLIO_READ_MAX_TOTAL_ROWS = 250;
+/**
+ * Bound for the authenticated FOL source response.  This is deliberately
+ * separate from any UI/capture transport cap: the reviewed FOL response is
+ * about 85 KiB before its bounded transaction rows are projected.
+ */
+export const FOLIO_READ_MAX_BYTES = 256 * 1024;
 export const FOLIO_READ_MAX_DURATION_MS = 5_000;
+/** Bound-folio multi-read receipt cap; legacy paths remain five seconds. */
+export const FOLIO_BOUND_READ_MAX_DURATION_MS = READ_SERVICE_MAX_DURATION_MS;
 export const FOLIO_READ_MAX_SOURCE_AGE_MS = 5 * 60 * 1_000;
 
 export const FOLIO_READ_PRIVACY_POLICY = {
@@ -129,7 +141,7 @@ export const folioReadDataSchema = z
     depositSummary: legacyDepositSummarySchema.optional(),
     balance: readFolioSectionSchema.optional(),
     deposits: readFolioSectionSchema.optional(),
-    transactions: readFolioSectionSchema.optional(),
+    transactions: readFolioTransactionsSectionSchema.optional(),
     liabilityLocation: readFactSchema.optional(),
     authorization: readFactSchema.optional(),
     disclosure: z
@@ -139,12 +151,15 @@ export const folioReadDataSchema = z
         claimEligibility: z.enum(['full', 'partial', 'blocked']),
       })
       .strict(),
-    rowsScanned: z.number().int().min(0).max(FOLIO_READ_MAX_ROWS),
+    rowsScanned: z.number().int().min(0).max(FOLIO_READ_MAX_TOTAL_ROWS),
     bytesObserved: z.number().int().min(0).max(FOLIO_READ_MAX_BYTES),
-    durationMs: z.number().int().min(0).max(FOLIO_READ_MAX_DURATION_MS),
+    durationMs: z.number().int().min(0).max(FOLIO_BOUND_READ_MAX_DURATION_MS),
     observedAt: isoTimestamp,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    validateFolioTransactionCurrencies(value, context);
+  });
 
 export type FolioReadData = z.infer<typeof folioReadDataSchema>;
 

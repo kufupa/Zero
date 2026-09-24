@@ -381,6 +381,9 @@ async function createProductionHmsRuntimeInternal(
     requireAuditCapture: true,
     // Live opens must carry per-tool HmsSessionAuthorization.
     requireSessionAuthorization: true,
+    // Serialize read calls on one runtime and reuse the validated native login
+    // state; each call still gets a fresh guarded/proof context.
+    reuseAuthenticatedStorageState: !liveProof,
     sourceRevision,
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',
