@@ -13,16 +13,23 @@ export function resetLabIndexCache(): void {
   liveCache = null;
 }
 
+function labIndexBackendOrigin(requestUrl: URL): string {
+  // Match trpc/auth-client: empty VITE_PUBLIC_BACKEND_URL → same-origin /api/*.
+  const configured = String(import.meta.env.VITE_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
+  return configured || requestUrl.origin;
+}
+
 export async function loadCenturionLabIndex(request: Request): Promise<LabIndexLoadResult> {
   const url = new URL(request.url);
   if (url.pathname.startsWith('/mail/')) {
     throw new Error('centurion eval lab must not mount under /mail folders');
   }
-  if (liveCache && liveCache.origin === url.origin) return liveCache.result;
+  const backendOrigin = labIndexBackendOrigin(url);
+  if (liveCache && liveCache.origin === backendOrigin) return liveCache.result;
 
   const cookie = request.headers.get('cookie') ?? '';
   try {
-    const live = await fetch(new URL('/api/lab/centurion-index', url.origin), {
+    const live = await fetch(new URL('/api/lab/centurion-index', backendOrigin), {
       headers: cookie ? { cookie } : undefined,
       credentials: 'include',
     });
@@ -37,7 +44,7 @@ export async function loadCenturionLabIndex(request: Request): Promise<LabIndexL
       return { source: 'error', error: { status: 200, message: 'lab index empty' } };
     }
     const result = { index, source: 'live' as const };
-    liveCache = { origin: url.origin, result };
+    liveCache = { origin: backendOrigin, result };
     return result;
   } catch (err) {
     return {
