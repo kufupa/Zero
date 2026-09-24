@@ -113,8 +113,9 @@ export default function OutlookPanePage() {
     const previousAttempt = replyRetries.current.get(key);
     const now = Date.now();
     if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
+      replyRetries.current.delete(key);
       toast.error(
-        `${replyLabel}The safe retry window has expired. Check Outlook Drafts before refreshing the pane or retrying.`,
+        `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
       );
       return;
     }

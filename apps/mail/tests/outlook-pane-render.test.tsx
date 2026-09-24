@@ -215,9 +215,11 @@ describe('OutlookPanePage', () => {
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
-  it('blocks an unresolved reply retry after the native idempotency window expires', async () => {
+  it('allows a fresh reply operation after warning about an expired retry ID', async () => {
     const startedAt = Date.now();
-    sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    sendCommandMock
+      .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
+      .mockResolvedValueOnce({ entryId: 'draft-after-expiry', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
@@ -230,8 +232,15 @@ describe('OutlookPanePage', () => {
 
     expect(sendCommandMock).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts/i),
+      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
     );
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+
+    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
+    const freshPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
+    expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
   });
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
