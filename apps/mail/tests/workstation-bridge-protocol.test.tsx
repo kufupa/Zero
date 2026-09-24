@@ -101,7 +101,7 @@ describe('Workstation Bridge Protocol', () => {
   it('parses capabilities and the native send/delete result contracts', () => {
     const capabilities = BridgeCapabilitiesSchema.parse({
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.10',
+      addinVersion: '1.0.11',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -176,9 +176,15 @@ describe('Workstation Bridge Protocol', () => {
   });
 
   it('creates stable-operation identifiers distinct from transport request IDs', () => {
+    const startedAt = Date.now();
     const operationId = createOperationId();
     const request = createBridgeRequest('CREATE_DRAFT', { operationId });
     expect(operationId).toBeTruthy();
+    const [prefix, createdAt, uniqueId] = operationId.split('_');
+    expect(prefix).toBe('op');
+    expect(Number(createdAt)).toBeGreaterThanOrEqual(startedAt);
+    expect(Number(createdAt)).toBeLessThanOrEqual(Date.now());
+    expect(uniqueId).toMatch(/^[0-9a-f]{32}$/i);
     expect(request.requestId).not.toBe(operationId);
     expect(request.payload.operationId).toBe(operationId);
   });
@@ -354,14 +360,14 @@ describe('useOutlookBridge selection events', () => {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.10',
+      version: '1.0.11',
       bridgeProtocolVersion: 3,
     });
 
     const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
     respondToBridgeRequest(capabilitiesRequest, {
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.10',
+      addinVersion: '1.0.11',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -433,7 +439,7 @@ describe('useOutlookBridge selection events', () => {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.10',
+      version: '1.0.11',
       bridgeProtocolVersion: 3,
     });
 
@@ -461,7 +467,7 @@ describe('useOutlookBridge selection events', () => {
     const retryRequest = await waitForBridgeRequest('GET_CAPABILITIES', nextRequestIndex);
     respondToBridgeRequest(retryRequest, {
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.10',
+      addinVersion: '1.0.11',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -482,14 +488,14 @@ describe('useOutlookBridge selection events', () => {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.10',
+      version: '1.0.11',
       bridgeProtocolVersion: 3,
     });
 
     const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
     respondToBridgeRequest(capabilitiesRequest, {
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.10',
+      addinVersion: '1.0.11',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -526,13 +532,80 @@ describe('useOutlookBridge selection events', () => {
     });
   });
 
+  it('does not overwrite a newer selection with a delayed initial email read', async () => {
+    render(<BridgeProbe />);
+    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.11',
+      bridgeProtocolVersion: 3,
+    });
+    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 3,
+      addinVersion: '1.0.11',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['PING', 'GET_CAPABILITIES'],
+    });
+
+    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    act(() => {
+      for (const listener of listeners.get('message') ?? []) {
+        listener({
+          data: JSON.stringify({
+            requestId: 'evt_selection_newer',
+            version: 1,
+            action: 'ON_SELECTION_CHANGED',
+            success: true,
+            data: {
+              entryId: 'message-b',
+              storeId: 'store-b',
+              subject: 'Message B',
+              senderEmail: 'guest-b@example.com',
+              senderName: 'Guest B',
+              receivedTime: '2026-09-24T12:00:00Z',
+              bodyText: 'Selected message B',
+              bodyHtml: '<p>Selected message B</p>',
+            } satisfies WorkstationEmailPayload,
+          }),
+        });
+      }
+    });
+
+    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Message B'));
+
+    respondToBridgeRequest(activeEmailRequest, {
+      entryId: 'message-a',
+      storeId: 'store-a',
+      subject: 'Message A',
+      senderEmail: 'guest-a@example.com',
+      senderName: 'Guest A',
+      receivedTime: '2026-09-24T11:00:00Z',
+      bodyText: 'Stale initial read for A',
+      bodyHtml: '<p>Stale initial read for A</p>',
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Message B'));
+  });
+
   it('propagates native operation error codes through sendCommand rejections', async () => {
     render(<BridgeProbe />);
     respondToBridgeRequest(await waitForBridgeRequest('PING'), {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.10',
+      version: '1.0.11',
       bridgeProtocolVersion: 3,
     });
     respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), null, false);

@@ -39,6 +39,7 @@ export function useOutlookBridge() {
   const [activeEmail, setActiveEmail] = useState<WorkstationEmailPayload | null>(null);
   const [workstationInfo, setWorkstationInfo] = useState<WorkstationInfo | null>(null);
   const [capabilities, setCapabilities] = useState<BridgeCapabilities | null>(null);
+  const activeEmailSelectionGeneration = useRef(0);
   const pendingRequests = useRef(new Map<string, (resp: BridgeResponse) => void>());
   const pendingTimeouts = useRef(new Set<ReturnType<typeof setTimeout>>());
 
@@ -103,6 +104,7 @@ export function useOutlookBridge() {
       const parsed = parseBridgeMessage(raw);
 
       if (isSelectionChangedEvent(parsed)) {
+        activeEmailSelectionGeneration.current += 1;
         const email = WorkstationEmailPayloadSchema.safeParse(parsed.data);
         setActiveEmail(email.success ? email.data : null);
         return;
@@ -144,23 +146,25 @@ export function useOutlookBridge() {
         });
     };
 
-    const requestActiveEmail = (attempt: number) => {
+    const requestActiveEmail = (attempt: number, selectionGeneration: number) => {
       void sendCommand<Record<string, never>, WorkstationEmailPayload>(
         'GET_ACTIVE_EMAIL',
         {} as Record<string, never>,
       )
         .then((mail) => {
-          if (!isActive) return;
+          if (!isActive || activeEmailSelectionGeneration.current !== selectionGeneration) return;
           const email = WorkstationEmailPayloadSchema.safeParse(mail);
           setActiveEmail(email.success ? email.data : null);
         })
         .catch(() => {
-          if (!isActive) return;
+          if (!isActive || activeEmailSelectionGeneration.current !== selectionGeneration) return;
           setActiveEmail(null);
           if (attempt >= 1) return;
           const retryTimeout = setTimeout(() => {
             timeouts.delete(retryTimeout);
-            if (isActive) requestActiveEmail(attempt + 1);
+            if (isActive && activeEmailSelectionGeneration.current === selectionGeneration) {
+              requestActiveEmail(attempt + 1, selectionGeneration);
+            }
           }, ACTIVE_EMAIL_RETRY_DELAY_MS);
           timeouts.add(retryTimeout);
         });
@@ -183,7 +187,7 @@ export function useOutlookBridge() {
           });
         }
         requestCapabilities(0);
-        requestActiveEmail(0);
+        requestActiveEmail(0, activeEmailSelectionGeneration.current);
       })
       .catch(() => {
         if (isActive) setIsConnected(false);

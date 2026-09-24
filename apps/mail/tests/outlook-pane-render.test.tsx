@@ -24,7 +24,7 @@ vi.mock('sonner', () => ({
 
 const v3Capabilities = {
   bridgeProtocolVersion: 3,
-  addinVersion: '1.0.10',
+  addinVersion: '1.0.11',
   outlookVersion: '16.0',
   runtime: 'Classic Outlook for Windows',
   newOutlookSupported: false,
@@ -43,7 +43,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       workstationUser: 'ropperman',
       outlookEmail: 'ropperman@legacyhotels.co.za',
       outlookVersion: '16.0',
-      addinVersion: bridgeMockState.protocolVersion === 3 ? '1.0.10' : '1.0.8',
+      addinVersion: bridgeMockState.protocolVersion === 3 ? '1.0.11' : '1.0.8',
       bridgeProtocolVersion: bridgeMockState.protocolVersion,
     },
     capabilities: bridgeMockState.protocolVersion === 3 ? v3Capabilities : null,

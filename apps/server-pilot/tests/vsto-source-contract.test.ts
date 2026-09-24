@@ -3,10 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const vstoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../vsto/NavaOutlookAddin',
-);
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const vstoRoot = path.join(repositoryRoot, 'apps/server-pilot/vsto/NavaOutlookAddin');
 
 function read(file: string): string {
   return readFileSync(path.join(vstoRoot, file), 'utf8');
@@ -14,10 +12,9 @@ function read(file: string): string {
 
 const hasVstoSource = existsSync(path.join(vstoRoot, 'ThisAddIn.cs'));
 
-describe('VSTO source contract (Linux, no Outlook compile)', () => {
+describe('VSTO source availability in root CI', () => {
   it('reports unavailable private native source in root CI instead of silently skipping', () => {
-    expect(hasVstoSource).toBe(true);
-    const ci = readFileSync(path.resolve(vstoRoot, '../../../../.github/workflows/ci.yml'), 'utf8');
+    const ci = readFileSync(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
     expect(ci).toContain('tests/workstation-bridge-protocol.test.tsx');
     expect(ci).toContain('::warning::Private VSTO submodule unavailable');
     expect(ci).toContain('native source and installer contracts NOT verified');
@@ -25,7 +22,9 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(ci).toContain('tests/vsto-source-contract.test.ts');
     expect(ci).toContain('tests/outlook-addin-installer-nginx.test.ts');
   });
+});
 
+describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile)', () => {
   it('releases temporary Outlook Session references during PING', () => {
     const source = read('OutlookBridgeDispatcher.cs');
     const getUser = source.slice(
@@ -181,9 +180,9 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     );
   });
 
-  it('pins the Inno installer version to 1.0.10', () => {
+  it('pins the Inno installer version to 1.0.11', () => {
     const iss = readFileSync(path.resolve(vstoRoot, '../installer/setup.iss'), 'utf8');
-    expect(iss).toContain('AppVersion=1.0.10');
+    expect(iss).toContain('AppVersion=1.0.11');
   });
 
   it('compiles the typed mail operations into the installed VSTO assembly', () => {
@@ -320,6 +319,16 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
 
     expect(fingerprint).toContain('SHA256.Create()');
     expect(fingerprint).toContain('ComputeHash');
+  });
+
+  it('rejects expired operation IDs even after cache entries are pruned', () => {
+    const policy = read('OutlookMailOperationPolicy.cs');
+    const cache = read('OutlookBridgeOperationCache.cs');
+    expect(policy).toContain('OperationIdMaxAge = TimeSpan.FromMinutes(15)');
+    expect(policy).toContain('DateTimeOffset.FromUnixTimeMilliseconds');
+    expect(policy).toContain('operationId expired; check Outlook before starting a new operation.');
+    expect(cache).toContain('EnsureOperationId(operationId);');
+    expect(cache).toContain('TimeToLive = OutlookMailOperationPolicy.OperationIdMaxAge');
   });
 
   it('clears and verifies a saved sender override before using Outlook default account', () => {
@@ -712,11 +721,11 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     );
 
     expect(dispatcher).toContain('{ "version", ADDIN_VERSION }');
-    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.10"');
-    expect(assembly).toContain('AssemblyVersion("1.0.10.0")');
-    expect(assembly).toContain('AssemblyFileVersion("1.0.10.0")');
-    expect(iss).toContain('AppVersion=1.0.10');
-    expect(workflow).toContain('-Version 1.0.10.0');
+    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.11"');
+    expect(assembly).toContain('AssemblyVersion("1.0.11.0")');
+    expect(assembly).toContain('AssemblyFileVersion("1.0.11.0")');
+    expect(iss).toContain('AppVersion=1.0.11');
+    expect(workflow).toContain('-Version 1.0.11.0');
   });
 
   it('documents Office LTSC 2024 as a 16.0 but unverified runtime target', () => {

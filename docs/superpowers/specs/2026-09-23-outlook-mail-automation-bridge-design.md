@@ -95,11 +95,15 @@ an existing typed operation can cover the use case.
   Bodies are fetched separately by item ID, so listing does not load every
   mailbox body in one response. This is a bounded workstation view, not a
   server-side archive/search API.
-- Non-idempotent actions require an `operationId`. Successful responses are
-  cached in memory (maximum 256 entries, 15-minute TTL) so a client
-  timeout/retry does not repeat a send, move, delete, attachment, folder, or
-  draft creation. IDs must be non-empty and at most 128 characters. The cache
-  is not durable across Outlook/add-in restarts.
+- Non-idempotent actions require an `operationId` formatted as
+  `op_<UTC epoch milliseconds>_<random UUID>`. IDs expire 15 minutes after
+  creation; the bridge rejects expired IDs even after their cache entry is
+  pruned, so reusing an old ID cannot start the mutation again. In-progress,
+  completed, and ambiguous outcomes are held in a per-pane in-memory cache
+  (maximum 256 entries; 15-minute TTL). This cache does not survive pane or
+  Outlook/add-in restarts; the pane does not persist pending IDs, so it cannot
+  automatically retry after a restart. The pane stops retrying at 15 minutes
+  and instructs the user to check Drafts before starting a new operation.
 - `CREATE_REPLY_DRAFT` saves by default; the pane may request
   `openInComposer: true` to retain its current visible-compose behavior.
 - Legacy default-store folder-name payloads remain accepted for compatibility.
@@ -114,7 +118,7 @@ boundary; requests cannot name arbitrary COM members.
 ## Release/documentation changes
 
 - Bump protocol 2 to 3 and coordinate the native app/installer version to
-  1.0.9 (assembly 1.0.9.0).
+  1.0.11 (assembly 1.0.11.0).
 - Update the README's stale claim that the add-in only reads a selected inbox
   item and cannot send. Describe store/folder enumeration, read/draft/move/
   delete/send behaviors and their Outlook-policy caveats.

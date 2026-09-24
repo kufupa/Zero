@@ -282,7 +282,7 @@ export function createBridgeRequest<T>(action: BridgeAction, payload: T): Bridge
 }
 
 export function createOperationId(): string {
-  return `op_${crypto.randomUUID()}`;
+  return `op_${Date.now()}_${crypto.randomUUID().replace(/-/g, '')}`;
 }
 
 export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> {
