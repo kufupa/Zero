@@ -39,7 +39,10 @@ Add these reusable operations:
 
 - `LIST_STORES`, `LIST_FOLDERS`: enumerate the stores and recursively visible
   folders in the current Outlook profile. Return store ID, folder entry ID,
-  parent ID, display path, and default-folder type where available.
+  parent ID, display path, and default-folder type where available. Protocol-v3
+  callers receive `{ items, truncated }`; enumeration is bounded to 5,000
+  folders and depth 64. Legacy callers retain the array shape when complete,
+  while a capped legacy result fails explicitly instead of looking complete.
 - Store-aware `GET_FOLDER_EMAILS` and `GET_EMAIL_BY_ENTRY_ID`: accept stable
   `(entryId, storeId)` / `(folderEntryId, storeId)` addressing; folder listing
   returns immutable, bounded snapshots through opaque continuation tokens.
@@ -55,11 +58,13 @@ Add these reusable operations:
   message's store ID when creating a reply draft.
 - `LIST_ACCOUNTS`, `SEND_DRAFT`: expose only accounts with usable SMTP
   addresses; allow sending a saved draft using an explicit account, or the
-  default account only when `useDefaultAccount` is explicitly true. The action
-  only sends an item in a Drafts folder. A success means Outlook accepted the
-  send request, not recipient delivery. Outlook policy, Object Model Guard,
-  antivirus state, and Exchange Send As/Send on Behalf rights can still block
-  or prompt for a send.
+  default account only when `useDefaultAccount` is explicitly true. For the
+  default path, clear and verify that the saved draft has no `SendUsingAccount`
+  override before calling Outlook's session-default `Send`; refuse to send if
+  that cannot be confirmed. The action only sends an item in a Drafts folder.
+  A success means Outlook accepted the send request, not recipient delivery.
+  Outlook policy, Object Model Guard, antivirus state, and Exchange Send
+  As/Send on Behalf rights can still block or prompt for a send.
 - `DELETE_EMAIL` performs Outlook's normal delete/move-to-Deleted-Items
   behavior. `DELETE_EMAIL_PERMANENTLY` is explicit, requires a confirmation
   field, and only operates on items already in that store's Deleted Items.

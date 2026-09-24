@@ -285,6 +285,43 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('EnsureItemIsInDeletedItemsFolder');
   });
 
+  it('clears and verifies a saved sender override before using Outlook default account', () => {
+    const source = read('OutlookMailOperations.cs');
+    const sendDraft = source.slice(
+      source.indexOf('public Dictionary<string, object> SendDraft('),
+      source.indexOf('\n        private Outlook.Account ResolveAccountBySmtpAddress('),
+    );
+    const clearOverride = sendDraft.indexOf('draft.SendUsingAccount = null;');
+    const readBack = sendDraft.indexOf('account = draft.SendUsingAccount;', clearOverride);
+    const verifyClear = sendDraft.indexOf('if (account != null)', readBack);
+    const send = sendDraft.indexOf('draft.Send();');
+
+    expect(clearOverride).toBeGreaterThanOrEqual(0);
+    expect(readBack).toBeGreaterThan(clearOverride);
+    expect(verifyClear).toBeGreaterThan(readBack);
+    expect(send).toBeGreaterThan(verifyClear);
+    expect(sendDraft).toContain('no message was sent');
+  });
+
+  it('reports capped folder scans as truncated to negotiated clients and rejects silent legacy truncation', () => {
+    const source = read('OutlookMailOperations.cs');
+    const listFolders = source.slice(
+      source.indexOf('public object ListFolders('),
+      source.indexOf('\n        private void AppendStoreFolders('),
+    );
+    const traversal = source.slice(
+      source.indexOf('private void AppendFolderTree('),
+      source.indexOf('\n        private static string SafeFolderPath('),
+    );
+
+    expect(listFolders).toContain('if (_capabilitiesNegotiated)');
+    expect(listFolders).toContain('"items"');
+    expect(listFolders).toContain('"truncated"');
+    expect(listFolders).toContain('Folder enumeration was truncated');
+    expect(traversal).toContain('ref bool truncated');
+    expect(traversal).toContain('truncated = true;');
+  });
+
   it('stores new and reply drafts in the requested Outlook store Drafts folder', () => {
     const source = read('OutlookMailOperations.cs');
     expect(source).toContain(

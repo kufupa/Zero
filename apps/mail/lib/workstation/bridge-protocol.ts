@@ -81,6 +81,19 @@ export const FolderSummarySchema = z.object({
 
 export type FolderSummary = z.infer<typeof FolderSummarySchema>;
 
+export const FolderCollectionEnvelopeSchema = z.object({
+  items: z.array(FolderSummarySchema).max(5000),
+  truncated: z.boolean(),
+});
+
+// Unnegotiated callers keep the legacy array when complete. Protocol v3
+// callers receive an explicit completeness flag for bounded folder scans.
+export const FolderCollectionResultSchema = z.union([
+  z.array(FolderSummarySchema).max(5000),
+  FolderCollectionEnvelopeSchema,
+]);
+export type FolderCollectionResult = z.infer<typeof FolderCollectionResultSchema>;
+
 export const AccountSummarySchema = z.object({
   smtpAddress: z.string(),
   displayName: z.string(),

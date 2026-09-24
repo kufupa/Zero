@@ -10,6 +10,7 @@ import {
   AccountCollectionResultSchema,
   BridgeCapabilitiesSchema,
   DeleteEmailResultSchema,
+  FolderCollectionResultSchema,
   FolderEmailSummarySchema,
   FolderEmailPageSchema,
   FolderSummarySchema,
@@ -74,6 +75,26 @@ describe('Workstation Bridge Protocol', () => {
         receivedTime: '2026-09-17T12:00:00Z',
       }).storeId,
     ).toBe('store-1');
+  });
+
+  it('parses legacy and explicit-truncation folder collection results', () => {
+    const folder = {
+      storeId: 'store-1',
+      entryId: 'folder-1',
+      parentEntryId: 'root-1',
+      name: 'Inbox',
+      path: '\\Reservations\\Inbox',
+      depth: 1,
+    };
+
+    expect(FolderCollectionResultSchema.parse([folder])).toEqual([folder]);
+    expect(FolderCollectionResultSchema.parse({ items: [folder], truncated: true })).toEqual({
+      items: [folder],
+      truncated: true,
+    });
+    expect(() =>
+      FolderCollectionResultSchema.parse({ items: Array(5001).fill(folder), truncated: true }),
+    ).toThrow();
   });
 
   it('parses capabilities and the native send/delete result contracts', () => {
