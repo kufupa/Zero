@@ -243,6 +243,46 @@ describe('OutlookPanePage', () => {
     expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
   });
 
+  it('prunes expired operations before enforcing the unresolved reply limit', async () => {
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    sendCommandMock.mockRejectedValue(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    const operationIds = new Map<string, string>();
+
+    for (let index = 0; index < 257; index += 1) {
+      const entryId = `message-${index}`;
+      bridgeMockState.selectedEntryId = entryId;
+      pane.rerender(<OutlookPanePage />);
+
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      expect(sendCommandMock).toHaveBeenCalledTimes(index + 1);
+      const payload = sendCommandMock.mock.calls[index]?.[1] as { operationId: string };
+      operationIds.set(entryId, payload.operationId);
+      now += 15 * 60 * 1000 + 1;
+    }
+
+    bridgeMockState.selectedEntryId = 'message-0';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(257);
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
+    );
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(258));
+
+    const freshPayload = sendCommandMock.mock.calls[257]?.[1] as { operationId: string };
+    expect(freshPayload.operationId).not.toBe(operationIds.get('message-0'));
+  });
+
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
     sendCommandMock.mockImplementationOnce(

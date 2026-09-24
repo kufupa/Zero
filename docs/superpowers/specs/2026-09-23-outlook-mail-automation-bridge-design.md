@@ -102,8 +102,9 @@ an existing typed operation can cover the use case.
   completed, and ambiguous outcomes are held in a per-pane in-memory cache
   (maximum 256 entries; 15-minute TTL). This cache does not survive pane or
   Outlook/add-in restarts; the pane does not persist pending IDs, so it cannot
-  automatically retry after a restart. The pane stops retrying at 15 minutes
-  and instructs the user to check Drafts before starting a new operation.
+  automatically retry after a restart. The pane prunes expired IDs from its
+  active retry limit while retaining per-message warning markers; on a later
+  attempt it tells the user to check Drafts before starting with a fresh ID.
 - `CREATE_REPLY_DRAFT` saves by default; the pane may request
   `openInComposer: true` to retain its current visible-compose behavior.
 - Legacy default-store folder-name payloads remain accepted for compatibility.

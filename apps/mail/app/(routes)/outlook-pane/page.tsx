@@ -22,6 +22,7 @@ export default function OutlookPanePage() {
   const { isConnected, activeEmail, workstationInfo, capabilities, supportsAction, sendCommand } =
     useOutlookBridge();
   const replyRetries = useRef(new Map<string, PendingReplyOperation>());
+  const expiredReplyOutcomes = useRef(new Set<string>());
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
@@ -114,6 +115,15 @@ export default function OutlookPanePage() {
     const now = Date.now();
     if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
       replyRetries.current.delete(key);
+      expiredReplyOutcomes.current.add(key);
+    }
+    for (const [retryKey, attempt] of replyRetries.current) {
+      if (now - attempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
+        replyRetries.current.delete(retryKey);
+        expiredReplyOutcomes.current.add(retryKey);
+      }
+    }
+    if (expiredReplyOutcomes.current.delete(key)) {
       toast.error(
         `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
       );
