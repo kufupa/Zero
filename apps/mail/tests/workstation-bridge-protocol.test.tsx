@@ -432,7 +432,7 @@ describe('useOutlookBridge selection events', () => {
     });
   });
 
-  it('recovers v3 capabilities after a transient negotiation failure without exposing mutations early', async () => {
+  it('recovers v3 capabilities after repeated transient failures without exposing mutations early', async () => {
     render(<BridgeProbe />);
 
     respondToBridgeRequest(await waitForBridgeRequest('PING'), {
@@ -465,7 +465,13 @@ describe('useOutlookBridge selection events', () => {
     expect(screen.getByTestId('reply-supported').textContent).toBe('no');
 
     const retryRequest = await waitForBridgeRequest('GET_CAPABILITIES', nextRequestIndex);
-    respondToBridgeRequest(retryRequest, {
+    const recoveryRequestIndex = postMessage.mock.calls.length;
+    respondToBridgeRequest(retryRequest, null, false);
+
+    expect(screen.getByTestId('reply-supported').textContent).toBe('no');
+
+    const recoveryRequest = await waitForBridgeRequest('GET_CAPABILITIES', recoveryRequestIndex);
+    respondToBridgeRequest(recoveryRequest, {
       bridgeProtocolVersion: 3,
       addinVersion: '1.0.11',
       outlookVersion: '16.0',

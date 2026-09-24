@@ -33,7 +33,10 @@ interactive Outlook profile without repeatedly adding one-off COM plumbing.
 Keep an explicit action allowlist and typed JSON payloads. Never add arbitrary
 COM member dispatch, PowerShell, shell, filesystem, or script execution to the
 WebView bridge. Increment the protocol to v3 and expose `GET_CAPABILITIES` so
-the pane can discover the installed add-in's supported actions and limits.
+the pane can discover the installed add-in's supported actions and limits. If
+capability negotiation transiently fails on a protocol-v3 bridge, retry with
+exponential backoff capped at 30 seconds; protocol-v2 clients stay read-only,
+and clients that omit their protocol version get at most one retry.
 
 Add these reusable operations:
 
@@ -103,8 +106,10 @@ an existing typed operation can cover the use case.
   (maximum 256 entries; 15-minute TTL). This cache does not survive pane or
   Outlook/add-in restarts; the pane does not persist pending IDs, so it cannot
   automatically retry after a restart. The pane prunes expired IDs from its
-  active retry limit while retaining per-message warning markers; on a later
-  attempt it tells the user to check Drafts before starting with a fresh ID.
+  active retry limit while retaining at most 256 per-message warning markers.
+  If that marker cache fills, a bounded overflow flag requires a Drafts-check
+  confirmation before a new reply for any message the pane cannot track
+  individually; that conservative fallback remains for the pane session.
 - `CREATE_REPLY_DRAFT` saves by default; the pane may request
   `openInComposer: true` to retain its current visible-compose behavior.
 - Legacy default-store folder-name payloads remain accepted for compatibility.

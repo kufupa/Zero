@@ -11,6 +11,7 @@ import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
+const MAX_EXPIRED_REPLY_OUTCOMES = 256;
 const REPLY_OPERATION_CACHE_TTL_MS = 15 * 60 * 1000;
 
 type PendingReplyOperation = {
@@ -23,6 +24,8 @@ export default function OutlookPanePage() {
     useOutlookBridge();
   const replyRetries = useRef(new Map<string, PendingReplyOperation>());
   const expiredReplyOutcomes = useRef(new Set<string>());
+  const hasUntrackedExpiredReplyOutcomes = useRef(false);
+  const expiredOutcomeConfirmationKey = useRef<string | null>(null);
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
@@ -113,21 +116,43 @@ export default function OutlookPanePage() {
     const replyLabel = `Reply to “${subject}”: `;
     const previousAttempt = replyRetries.current.get(key);
     const now = Date.now();
+    const rememberExpiredOutcome = (expiredKey: string) => {
+      if (expiredReplyOutcomes.current.has(expiredKey)) return;
+      if (expiredReplyOutcomes.current.size >= MAX_EXPIRED_REPLY_OUTCOMES) {
+        hasUntrackedExpiredReplyOutcomes.current = true;
+        return;
+      }
+      expiredReplyOutcomes.current.add(expiredKey);
+    };
+
     if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
       replyRetries.current.delete(key);
-      expiredReplyOutcomes.current.add(key);
+      rememberExpiredOutcome(key);
     }
     for (const [retryKey, attempt] of replyRetries.current) {
       if (now - attempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
         replyRetries.current.delete(retryKey);
-        expiredReplyOutcomes.current.add(retryKey);
+        rememberExpiredOutcome(retryKey);
       }
     }
     if (expiredReplyOutcomes.current.delete(key)) {
+      if (hasUntrackedExpiredReplyOutcomes.current) {
+        expiredOutcomeConfirmationKey.current = key;
+      }
       toast.error(
         `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
       );
       return;
+    }
+    if (hasUntrackedExpiredReplyOutcomes.current && expiredOutcomeConfirmationKey.current !== key) {
+      expiredOutcomeConfirmationKey.current = key;
+      toast.error(
+        `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
+      );
+      return;
+    }
+    if (hasUntrackedExpiredReplyOutcomes.current) {
+      expiredOutcomeConfirmationKey.current = null;
     }
     if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
       toast.error(

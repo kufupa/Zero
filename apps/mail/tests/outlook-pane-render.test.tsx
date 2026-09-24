@@ -243,7 +243,7 @@ describe('OutlookPanePage', () => {
     expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
   });
 
-  it('prunes expired operations before enforcing the unresolved reply limit', async () => {
+  it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     sendCommandMock.mockRejectedValue(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
@@ -281,6 +281,18 @@ describe('OutlookPanePage', () => {
 
     const freshPayload = sendCommandMock.mock.calls[257]?.[1] as { operationId: string };
     expect(freshPayload.operationId).not.toBe(operationIds.get('message-0'));
+
+    bridgeMockState.selectedEntryId = 'message-999';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(258);
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
+    );
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(259));
   });
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {

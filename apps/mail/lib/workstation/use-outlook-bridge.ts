@@ -32,6 +32,7 @@ export type WorkstationInfo = {
 };
 
 const CAPABILITIES_RETRY_DELAY_MS = 250;
+const CAPABILITIES_RETRY_MAX_DELAY_MS = 30_000;
 const ACTIVE_EMAIL_RETRY_DELAY_MS = 250;
 
 export function useOutlookBridge() {
@@ -119,7 +120,22 @@ export function useOutlookBridge() {
 
     window.chrome.webview.addEventListener('message', handler);
 
-    const requestCapabilities = (attempt: number) => {
+    const scheduleCapabilitiesRetry = (attempt: number, protocolVersion?: number) => {
+      const isKnownV3Bridge = protocolVersion !== undefined && protocolVersion >= 3;
+      if (!isKnownV3Bridge && attempt >= 1) return;
+
+      const delay = Math.min(
+        CAPABILITIES_RETRY_DELAY_MS * 2 ** attempt,
+        CAPABILITIES_RETRY_MAX_DELAY_MS,
+      );
+      const retryTimeout = setTimeout(() => {
+        timeouts.delete(retryTimeout);
+        if (isActive) requestCapabilities(attempt + 1, protocolVersion);
+      }, delay);
+      timeouts.add(retryTimeout);
+    };
+
+    const requestCapabilities = (attempt: number, protocolVersion?: number) => {
       void sendCommand<Record<string, never>, BridgeCapabilities>(
         'GET_CAPABILITIES',
         {} as Record<string, never>,
@@ -132,17 +148,13 @@ export function useOutlookBridge() {
               ? negotiated.data
               : null,
           );
+          if (!negotiated.success) scheduleCapabilitiesRetry(attempt, protocolVersion);
         })
         .catch(() => {
           if (!isActive) return;
           // Keep v2 installations read-only, but recover if v3 negotiation hit a transient failure.
           setCapabilities(null);
-          if (attempt >= 1) return;
-          const retryTimeout = setTimeout(() => {
-            timeouts.delete(retryTimeout);
-            if (isActive) requestCapabilities(attempt + 1);
-          }, CAPABILITIES_RETRY_DELAY_MS);
-          timeouts.add(retryTimeout);
+          scheduleCapabilitiesRetry(attempt, protocolVersion);
         });
     };
 
@@ -186,7 +198,7 @@ export function useOutlookBridge() {
             bridgeProtocolVersion: info.bridgeProtocolVersion,
           });
         }
-        requestCapabilities(0);
+        requestCapabilities(0, info?.bridgeProtocolVersion);
         requestActiveEmail(0, activeEmailSelectionGeneration.current);
       })
       .catch(() => {
