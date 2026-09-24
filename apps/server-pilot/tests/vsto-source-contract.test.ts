@@ -287,7 +287,9 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
 
   it('stores new and reply drafts in the requested Outlook store Drafts folder', () => {
     const source = read('OutlookMailOperations.cs');
-    expect(source).toContain('MoveDraftToStore(reply, PayloadString(payload, "storeId"))');
+    expect(source).toContain(
+      'MoveDraftToStore(reply, PayloadString(payload, "storeId"), out draftPlacementWarning)',
+    );
     const createDraft = source.slice(
       source.indexOf('public Dictionary<string, object> CreateDraft('),
       source.indexOf('public Dictionary<string, object> UpdateDraft('),
@@ -304,6 +306,19 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
       createReplyDraft.indexOf('original.Reply'),
     );
     expect(source).toContain('draftPlacementWarning');
+  });
+
+  it('preserves a saved reply result when Outlook rejects composer display after a move', () => {
+    const source = read('OutlookMailOperations.cs');
+    expect(source).toContain('composerWarning');
+    expect(source).toContain(
+      'MoveDraftToStore(reply, PayloadString(payload, "storeId"), out draftPlacementWarning)',
+    );
+    expect(source).toMatch(
+      /if \(openInComposer\)[\s\S]*?reply\.Display\(\);[\s\S]*?catch \(System\.Exception ex\)/,
+    );
+    expect(source).toContain('result["locationUnverified"] = true;');
+    expect(source).not.toContain('if (draftPlacementWarning == null) throw;');
   });
 
   it('uses a shared folder-alias mapper for default and selected stores', () => {
