@@ -158,17 +158,17 @@ Output JSON only. Pick exactly one workflow primary folder, P0–P5 priority, Ur
 Sender domain does not override embedded commercial intent in guest/agency forwards (FW: of an RFQ/booking). Cold sales mail remains spam even when forwarded internally.
 
 ## Workflow primary folders (pick exactly one; eleven total)
-- bookings: normal stay request, guest/agency one-room voucher, quote or booking service
+- bookings: normal stay request, direct guest booking inquiry, quote or booking service
 - groups-events: 10+ rooms/delegates, rooming list, team/squad, conference, banquet, event, MICE or catering
 - manage-stay: confirmed-stay changes, arrivals, rooming, check-in/out or stay servicing
 - confirm-reconcile: confirmation, amendment reconciliation, duplicate/record matching or state verification
 - money-billing: payment, invoice, folio, deposit, commission or finance evidence
-- documents-delivery: vouchers, tax documents, attachments, delivery or document follow-up
+- documents-delivery: agency travel vouchers, tax documents, attachments, delivery or document follow-up
 - exceptions-recovery: cancellation risk, failed delivery, revenue escalation or recovery action
 - guest-experience: review, complaint, service recovery or guest-experience follow-up
 - internal-partner: Legacy Hotels/internal or known partner correspondence and handover
 - automated-channel: routine OTA/channel/PMS/system notification with no revenue SLA
-- unknown-review: ambiguous, security-sensitive or manual-review work
+- unknown-review: ambiguous, security-sensitive, external job applications/CVs or manual-review work
 Legacy v5 ops is an adapter label only; ops is never a v6 primary workflow folder.
 Legacy v5 aliases new-bookings, groups-events, and at-risk map to workflow folders through an adapter only.
 
@@ -177,7 +177,7 @@ P0 = immediate severe revenue/security/guest impact; P1 = same-day hard action; 
 
 ## Decision sequence
 1. Underlying commercial intent: stay/quote, group/event, stay management, confirmation, money, documents, exception, guest experience, internal/partner, automation, unknown, or spam.
-2. Group shape: groups-events requires 10+ rooms/delegates, a rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal. A sub-10 multi-room request alone remains bookings. Exceptions/revenue risk wins. One-room voucher stays bookings.
+2. Group shape: groups-events requires 10+ rooms/delegates, a rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal. A sub-10 multi-room request alone remains bookings. Exceptions/revenue risk wins. Agency travel vouchers route to documents-delivery (or money-billing if invoice/POP requested); one-room guest booking quote stays bookings.
 3. Revenue risk: explicit booking cancellation/amendment threat, unpaid near arrival, time-boxed OTA/SynXis action, or money-mail delivery failure → exceptions-recovery.
 4. Routine system mail: calendar "Canceled:" meeting and "FAILED TO INTEGRATE" channel/PMS notices → automated-channel unless real booking cancellation, revenue threat or hard reply SLA. Internal delivery failures → exceptions-recovery, sourceScope=internal_property, automationState=excluded_internal; never automated-channel.
 5. Urgency: tax invoice today, reply within Nh, arrival tomorrow unpaid, or check-in/CI today on real booking/agency voucher can be urgent. Subject URGENT, word cancel, or far-future date alone cannot make urgent.
@@ -566,6 +566,7 @@ const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   manual_review_required: 'review_required',
   mark_as_spam: 'review_required',
   'mark-as-spam': 'review_required',
+  read: 'review_required',
 };
 
 const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
@@ -626,20 +627,18 @@ function normalizeNovaOverlays(value: unknown): unknown {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase();
     if (!normalized || normalized === 'none') return {};
-    const alias = NOVA_OVERLAY_ALIASES[normalized];
-    if (!alias) throw new Error('model output contains an unknown overlay tag');
+    const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+    if (!alias) return {};
     return { [alias]: true };
   }
   if (!Array.isArray(value)) return value;
   const overlays: Record<string, boolean> = {};
   for (const overlay of value) {
-    if (
-      typeof overlay !== 'string' ||
-      !TRIAGE_OVERLAYS.includes(overlay as (typeof TRIAGE_OVERLAYS)[number])
-    ) {
-      throw new Error('model output contains an unknown overlay tag');
+    if (typeof overlay === 'string') {
+      const normalized = overlay.trim().toLowerCase();
+      const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+      if (alias) overlays[alias] = true;
     }
-    overlays[overlay] = true;
   }
   return overlays;
 }
@@ -665,11 +664,17 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   if (typeof structured.sourceScope === 'string') {
     structured.sourceScope =
       NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
+    if (!TRIAGE_SOURCE_SCOPES.includes(structured.sourceScope as (typeof TRIAGE_SOURCE_SCOPES)[number])) {
+      structured.sourceScope = 'external';
+    }
   }
   if (typeof structured.automationState === 'string') {
     structured.automationState =
       NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ??
       structured.automationState;
+    if (!TRIAGE_AUTOMATION_STATES.includes(structured.automationState as (typeof TRIAGE_AUTOMATION_STATES)[number])) {
+      structured.automationState = 'unknown';
+    }
   }
   if (typeof structured.humanAction === 'boolean') {
     // Observed Nova dialect: boolean humanAction means "needs human?" rather
@@ -678,6 +683,9 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   } else if (typeof structured.humanAction === 'string') {
     structured.humanAction =
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
+    if (!TRIAGE_HUMAN_ACTIONS.includes(structured.humanAction as (typeof TRIAGE_HUMAN_ACTIONS)[number])) {
+      structured.humanAction = 'review_required';
+    }
   }
   // The planner, not the model, owns the final read-only tag set. Nova's
   // observed markers and folder leaks are dropped; remaining unknown tags are

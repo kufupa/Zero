@@ -885,6 +885,401 @@ describe('workflow source and automation refinement', () => {
     expect(refined.humanAction).toBe('payment_or_finance');
     expect(refined.policyFlags).toContain('refine:hospitality-cloud-finance');
   });
+
+  describe('Centurion September 2026 quality fixes', () => {
+    it('preserves urgent and manage-stay for Booking.com date change with 12h deadline (Jaco Smit case)', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'The Centurion Hotel via Booking.com <6181746987-hmrp.xhzk.43en.rdhn@property.booking.com>',
+          subject: 'Request to change dates - Jaco Smit',
+          body: 'Booking.com Booking number: 6181746987. Request to change dates. Please respond within the next 12 hours. Jaco Smit would like to change dates.',
+        },
+        workflowOutput({
+          primaryFolder: 'manage-stay',
+          priority: 'P2',
+          urgent: true,
+          humanAction: 'amend_or_cancel',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('manage-stay');
+      expect(refined.urgent).toBe(true);
+      expect(refined.priority).toBe('P2');
+      expect(refined.primaryFolder).not.toBe('automated-channel');
+    });
+
+    it('routes Penny Mbobo forward of external client RFQ to bookings with quote overlay', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Penny Mbobo <pmbobo@legacyhotels.co.za>',
+          subject: 'FW: Quotation Request for Accommodation',
+          body: 'Good day Bungy,\n\nPlease quote as per the below and attached.\n\nKind regards,\nPenny\n\nFrom: scm@tswelopele.org\nCan you please send me a quotation for accommodation for 1 person. Check in: 27/09/2026.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('bookings');
+      expect(refined.overlays.quote).toBe(true);
+      expect(refined.suggestedTools).toContain('hms_quote_stay');
+      expect(refined.policyFlags).toContain('refine:staff-forwarded-rfq');
+      expect(refined.primaryFolder).not.toBe('internal-partner');
+    });
+
+    it('routes internal rate mapping discussions without guest stay to internal-partner (Cindy Martin case)', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Cindy Martin <cmartin@legacyhotels.co.za>',
+          subject: 'Dinner Allowance - Profitroom',
+          body: 'Good Afternoon Kamala, We received feedback from Profitroom on how the dinner allowance meal plan works on the booking channel: You will need to set up the rate in INFOR, including the dinner at a specific value. We will then map that specific rate with the dinner included as a package.',
+        },
+        workflowOutput({
+          primaryFolder: 'manage-stay',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('internal-partner');
+      expect(refined.policyFlags).toContain('refine:internal-system-mapping');
+    });
+
+    it('routes standalone agency travel vouchers to documents-delivery with artifact read tools', () => {
+      const refined = refineTriageOutput(
+        {
+          from: '"Nexus_TravX" <info@nexustravel.co.za>',
+          subject: 'Voucher A057096 Nasheley Hammond',
+          body: 'Good day, Kindly find the attached voucher for Nasheley Hammond. Kind regards.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('documents-delivery');
+      expect(refined.suggestedTools).toContain('hms_list_documents');
+      expect(refined.suggestedTools).toContain('mail_read_artifact');
+      expect(refined.policyFlags).toContain('refine:agency-voucher-delivery');
+    });
+
+    it('routes agency travel vouchers with invoice requests to money-billing', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Rennies BCD Travel <documents@renniesbcdtravel.com>',
+          subject: 'Voucher 0122436 and Tax Invoice request',
+          body: 'Good morning Bongi, Please see attached vouchers and assist with invoices for payment. Thank you.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('money-billing');
+      expect(refined.overlays.payment).toBe(true);
+      expect(refined.suggestedTools).toContain('hms_read_folio');
+      expect(refined.policyFlags).toContain('refine:voucher-invoice-request');
+    });
+
+    it('routes Tourvest travel agency vouchers without invoice requests to documents-delivery', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Serma Du Toit <serma.dutoit@travel.co.za>',
+          subject: 'The Centurion Hotel_Confirmation Letter_Hendrik Vermeulen (n°69497118-1)',
+          body: 'Good afternoon, Please see voucher attached as guarantee for this booking. Please confirm. Kind regards, Serma Du Toit, Tourvest Travel Services',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('documents-delivery');
+      expect(refined.suggestedTools).toContain('hms_list_documents');
+      expect(refined.policyFlags).toContain('refine:agency-voucher-delivery');
+    });
+
+    it('routes Tourvest travel vouchers with tax invoice requests to money-billing', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Livhuwani Tshindane <livhuwani.tshindane@travel.co.za>',
+          subject: 'The Centurion Hotel - 110412-24763 - Thursday 3 September 2026',
+          body: 'Good day Reservations, Please find attached voucher and kindly send us a tax invoice to facilitate payment. Tourvest Travel Services (Pty) Ltd.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('money-billing');
+      expect(refined.overlays.payment).toBe(true);
+      expect(refined.suggestedTools).toContain('hms_read_folio');
+      expect(refined.policyFlags).toContain('refine:voucher-invoice-request');
+    });
+
+    it('routes SynXis Res Confirmed with 48h arrival warning to automated-channel when no reply deadline exists', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'noreply@synxis.com',
+          subject: 'SynXis Res Confirmed (5940SG006899 ) ATTENTION!! Reservation Due to Arrive within 48 hours',
+          body: 'The following reservation has been confirmed. Guest: John Doe. Arrival: 02 Sep 2026.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('automated-channel');
+      expect(refined.urgent).toBe(false);
+      expect(refined.policyFlags).toContain('refine:system-mail-automated');
+    });
+
+    it('routes Travelit automated new booking notifications to automated-channel', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'notifications@travelit.co.za',
+          subject: 'New Booking 4795-129046 for Lactalis South Africa Pty Ltd, booking made through Travelit',
+          body: 'Booking reference 4795-129046 has been created in Travelit. Check-in 03 Sep 2026.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('automated-channel');
+      expect(refined.urgent).toBe(false);
+      expect(refined.policyFlags).toContain('refine:system-mail-automated');
+    });
+
+    it('routes external job applications to unknown-review at P5', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Mukundi Muthambi <mukundimuthambi1990@gmail.com>',
+          subject: 'Stock Controller Position Application',
+          body: 'Dear Hiring Manager, I would like to formally express my interest in the Stock Controller position at The Centurion Hotel. Attached is my CV.',
+        },
+        workflowOutput({
+          primaryFolder: 'unknown-review',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('unknown-review');
+      expect(refined.priority).toBe('P5');
+      expect(refined.urgent).toBe(false);
+      expect(refined.humanAction).toBe('review_required');
+      expect(refined.policyFlags).toContain('refine:job-application');
+    });
+
+    it('protects Nedbank payment confirmations from promo spam', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'epay-noreply@nedbank.co.za',
+          subject: 'Nedbank Merchant Payment Confirmation',
+          body: 'Click here to view your payment receipt. Special discount rate applied on purchase.',
+        },
+        workflowOutput({
+          primaryFolder: 'money-billing',
+          isSpam: false,
+        }),
+      );
+
+      expect(refined.isSpam).toBe(false);
+      expect(refined.primaryFolder).toBe('money-billing');
+    });
+
+    it('protects HotelPlanner group RFPs from promo spam', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Serena.Golfetto@hotelplanner.com',
+          subject: 'Group RFP 15 rooms - Centurion Hotel',
+          body: 'Please submit your discount room rate for this group conference booking. Click here to bid.',
+        },
+        workflowOutput({
+          primaryFolder: 'groups-events',
+          isSpam: false,
+        }),
+      );
+
+      expect(refined.isSpam).toBe(false);
+      expect(refined.primaryFolder).toBe('groups-events');
+    });
+
+    it('routes Hotels.com guest direct messages with mobility/shuttle requests to urgent manage-stay (Kevin Nelson case)', () => {
+      const refined = refineTriageOutput(
+        {
+          from: '0bfde47f-a8f5-44af-90ee-652b583dd90c_415cf5a2-0557-44bb-93f7-fb75eadd1600@m.expediapartnercentral.com',
+          subject: 'Hotels.com guest message from Kevin Nelson',
+          body: 'The Centurion Hotel Property ID: 526989. Kevin Nelson sent you a message: "Hi I am exited for my stay. I am interested in an airport shuttle. And I have some mobility issues. I use a cane to walk. Is there handles in the bathroom if possible". Reply. © 2026 Expedia, Inc. All rights reserved. I want to unsubscribe from these emails',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+          isSpam: true,
+          urgent: false,
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('manage-stay');
+      expect(refined.urgent).toBe(true);
+      expect(refined.priority).toBe('P2');
+      expect(refined.isSpam).toBe(false);
+      expect(refined.humanAction).toBe('amend_or_cancel');
+      expect(refined.suggestedTools).toContain('hms_find_reservation');
+      expect(refined.policyFlags).toContain('refine:ota-guest-message');
+    });
+
+    it('routes Hotels.com guest early check-in inquiries to urgent manage-stay (Mehrez OUESLATI case)', () => {
+      const refined = refineTriageOutput(
+        {
+          from: '0bfde47f-a8f5-44af-90ee-652b583dd90c_1a120791-ec06-456b-8f16-98d495162915@m.expediapartnercentral.com',
+          subject: 'Hotels.com guest message from Mehrez OUESLATI',
+          body: 'Mehrez OUESLATI sent you a message: "Good day, I have a booking from September 14 to 18th. I Will Land at Johannesburg on September 14th at 8:35. Is it possible to have my room at that time? Thank you". © 2026 Expedia, Inc. I want to unsubscribe',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+          isSpam: false,
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('manage-stay');
+      expect(refined.urgent).toBe(true);
+      expect(refined.priority).toBe('P2');
+      expect(refined.isSpam).toBe(false);
+      expect(refined.policyFlags).toContain('refine:ota-guest-message');
+    });
+
+    it('routes Infor PMS pre-stay guest registration notices to nonurgent manage-stay (Mandi Hattingh case)', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'centurion@legacyhotels.co.za',
+          subject: 'Pre Stay : Property HRCEN Confirmation No 14168848-1 Ms Mandi Hattingh',
+          body: 'Ms Mandi Hattingh Arrival : 02-09-2026 Departure : 04-09-2026 Room Type : DLXKNG Confirmation No : 14168848-1 Address --> 103 Mosselbank Street Mobile --> 0798805549 Arrival time --> 7:00 PM',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('manage-stay');
+      expect(refined.urgent).toBe(false);
+      expect(refined.priority).toBe('P4');
+      expect(refined.humanAction).toBe('verify_state');
+      expect(refined.suggestedTools).toContain('hms_find_reservation');
+      expect(refined.policyFlags).toContain('refine:pre-stay-notification');
+    });
+
+    it('routes night audit discrepancy reports from centurionnight to internal-partner', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Centurion Hotel Night Auditor <centurionnight@legacyhotels.co.za>',
+          subject: 'Credit Limit & Rate Discrepancy Report-30  Aug 2026',
+          body: 'Good morning, all Kindly find attached Discrepancy Report. Kind Regards Peter',
+        },
+        workflowOutput({
+          primaryFolder: 'manage-stay',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('internal-partner');
+      expect(refined.urgent).toBe(false);
+      expect(refined.priority).toBe('P4');
+      expect(refined.sourceScope).toBe('internal_property');
+      expect(refined.policyFlags).toContain('refine:internal-operations-report');
+    });
+
+    it('routes H-Pay payment result notifications forwarded internally to money-billing', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Legacy Hotels <hotels@legacyhotels.co.za>',
+          subject: 'FW: H-Pay: Payment result for reservation ID 22098684-1',
+          body: 'Transaction ID: 442599-F5. Payment result for reservation ID 22098684-1. Amount: ZAR 2,450.00. Status: Successful.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('money-billing');
+      expect(refined.overlays.payment).toBe(true);
+      expect(refined.suggestedTools).toContain('hms_read_folio');
+      expect(refined.policyFlags).toContain('refine:hospitality-cloud-finance');
+    });
+
+    it('routes explicit payment confirmations to money-billing with read_folio tool', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'lerato@ashcortravels.co.za',
+          subject: 'BOOKING REQUEST',
+          body: 'Good day I have now managed to process the links, payments have been made. Thank you, Ms. Lerato Tshehla',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('money-billing');
+      expect(refined.overlays.payment).toBe(true);
+      expect(refined.humanAction).toBe('payment_or_finance');
+      expect(refined.suggestedTools).toContain('hms_read_folio');
+      expect(refined.policyFlags).toContain('refine:payment-confirmation-or-billing');
+    });
+
+    it('routes Kyocera printer scans and IT server maintenance notices to internal-partner', () => {
+      const scanRefined = refineTriageOutput(
+        {
+          from: 'scans@legacyhotels.co.za',
+          subject: 'Scans',
+          body: '------------------- TASKalfa 3253ci [00:17:c8:8c:1e:63] -------------------',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+      expect(scanRefined.primaryFolder).toBe('internal-partner');
+      expect(scanRefined.policyFlags).toContain('refine:internal-operations-report');
+
+      const serverRefined = refineTriageOutput(
+        {
+          from: 'support@legacyhotels.co.za',
+          subject: 'Your Infor HMS interface server will restart at 12h00',
+          body: 'Please note that your Infor HMS interface server will be restarted at 12:00. Infor HMS interfaces will be down during this time.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+      expect(serverRefined.primaryFolder).toBe('internal-partner');
+      expect(serverRefined.policyFlags).toContain('refine:internal-system-mapping');
+    });
+
+    it('routes guest cancellations with flexible phrasing to exceptions-recovery', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'carla@2collaborate.co.za',
+          subject: 'Re: Bookings for Marianna Seyffert & Samkelo Blom',
+          body: 'Good evening You may cancel these two bookings. Thank you Carla',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('exceptions-recovery');
+      expect(refined.policyFlags).toContain('refine:booking-cancel-or-release');
+    });
+
+    it('routes group RFQs with pax and room counts to groups-events', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Leisure3@discoverafricatravel.co.za',
+          subject: 'DA11617 Group Accommodation Quote request -40 PAX /15 Rooms',
+          body: 'Dear Reservation Team, Hope you are doing well. Please find the required details below: 40 PAX / 15 Rooms for Centurion Hotel.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+        }),
+      );
+
+      expect(refined.primaryFolder).toBe('groups-events');
+      expect(refined.policyFlags).toContain('refine:groups-events-work');
+    });
+  });
 });
 
 const applyDbAvailable = TEST_DB_AVAILABLE && (await probeTestDb());

@@ -62,7 +62,7 @@ export const MailboxInline = ({ sender, className }: MailboxInlineProps) => {
 
   return (
     <span className={`inline-flex min-w-0 items-center gap-1 ${className ?? ''}`}>
-      <span className="font-semibold">{name}</span>
+      <span className="min-w-0 truncate font-semibold">{name}</span>
       <span className="text-sm text-muted-foreground dark:text-[#8C8C8C] break-all">{`<${addr}>`}</span>
     </span>
   );

@@ -57,13 +57,14 @@ export function CenturionCategoryPill({
         } as CSSProperties
       }
       className={cn(
-        'inline-block max-w-[14ch] truncate rounded px-1.5 py-0.5 text-xs font-medium no-underline hover:opacity-90',
+        'inline-block max-w-full truncate rounded px-1.5 py-0.5 text-xs font-medium no-underline hover:opacity-90',
         'bg-[var(--centurion-pill-bg)] text-[var(--centurion-pill-text)] dark:bg-[var(--centurion-pill-bg-dark)] dark:text-[var(--centurion-pill-text-dark)]',
         isUrgent &&
           pillSlug !== 'urgent' &&
           "relative after:absolute after:inset-y-0.5 after:right-0 after:w-0.5 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
         className,
       )}
+      title={title}
     >
       {title}
     </Link>

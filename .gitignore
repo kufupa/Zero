@@ -90,6 +90,7 @@ apps/mail/test-results/
 /live real data connection/
 Nava.ovpn
 Nava.zip
+.private/
 .private/centurion-thread-corpus/
 .private/connected-mailbox-corpus/
 .private/centurion-corpus/
@@ -127,7 +128,3 @@ docs/superpowers/plans/2026-07-29-centurion-spam-triage-audit.md
 .prime/agent/logs/
 
 .nava_azure_api_key
-
-# Local ADE / agent session caches (never commit)
-.orca-resume/
-.prime/

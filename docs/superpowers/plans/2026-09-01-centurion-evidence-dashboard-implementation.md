@@ -32,7 +32,6 @@
 | Mailbox volume | 2810 threads · 3820 msgs · 3447 in · 373 out | dump refresh |
 | Daily inbound pressure | mean/median/p90 msgs/day | dump refresh |
 | **Workflow triage mix** | 11 folder bars + Urgent overlay | **live from durable categories** |
-| **Daily answered vs unanswered** | 246/438 responded (conversation overlay) | **live_conversation_signals** |
 | Commercial demand mix | 1444/2810 (51.4%) — not revenue | census offline → folder map Phase 2b |
 | Outbound history coverage | 373 out · 359 outbound-bearing — not response rate | dump refresh |
 | Inbound-only retained gap | % no outbound in export | dump refresh |
@@ -164,17 +163,6 @@ export const SOURCE_FAMILY_CHART_COPY = {
   subtitle:
     'Inbound threads from frequent external/system-like source families. Public source role plus local pattern evidence. Not a KPI.',
   userLabel: 'Frequent sender/source families',
-} as const;
-```
-
-**Client card spec (thread-matching Task 9 hook):**
-
-```ts
-export const DAILY_ANSWERED_UNANSWERED_COPY = {
-  title: 'Daily reservation answered vs unanswered',
-  subtitle: 'Conversation signal overlay (cross-thread + quoted body). Not same as thread list replied badge.',
-  methodology: 'defensible-daily-chart-2026-09-01',
-  availability: 'live_conversation_signals',
 } as const;
 ```
 

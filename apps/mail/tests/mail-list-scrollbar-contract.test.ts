@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '../lib/scrollbar-chrome';
+
 const source = readFileSync(
   new URL('../components/mail/mail-list.tsx', import.meta.url),
   'utf8',
@@ -14,25 +16,16 @@ if (scrollMarker < 0 || vListStart < 0 || vListEnd < vListStart) {
 }
 
 const vListOpeningTag = source.slice(vListStart, vListEnd);
-const className = vListOpeningTag.match(/className="([^"]+)"/)?.[1] ?? '';
-const classTokens = className.split(/\s+/).filter(Boolean);
 
 describe('mail list scrollbar contract', () => {
   it('keeps the virtualized inbox list visible and horizontally contained', () => {
     expect(source).toContain('id="mail-list-scroll"');
-    expect(classTokens).toEqual(
-      expect.arrayContaining([
-        'scrollbar',
-        'scrollbar-w-1',
-        'scrollbar-thumb-accent/40',
-        'scrollbar-track-transparent',
-        'hover:scrollbar-thumb-accent',
-        'scrollbar-thumb-rounded-full',
-        'flex-1',
-        'overflow-x-hidden',
-      ]),
-    );
-    expect(classTokens).not.toContain('scrollbar-none');
+    expect(vListOpeningTag).toContain('NATIVE_VISIBLE_SCROLLBAR_CLASSES');
+    expect(vListOpeningTag).toContain('flex-1');
+    expect(vListOpeningTag).toContain('overflow-x-hidden');
+    expect(vListOpeningTag).not.toContain('scrollbar-none');
+    expect(vListOpeningTag).not.toContain('scrollbar-w-1');
+    expect(NATIVE_VISIBLE_SCROLLBAR_CLASSES).toContain('scrollbar-w-[14px]');
   });
 
   it('keeps pagination attached to the same VList scroll owner', () => {

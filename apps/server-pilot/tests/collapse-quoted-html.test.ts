@@ -24,6 +24,45 @@ describe('collapseQuotedHtml', () => {
     expect(out).toContain('prior');
   });
 
+  it('collapses Outlook #divRplyFwdMsg container into a single details toggle', () => {
+    const input = `<p>Here is my reply</p>
+<div id="divRplyFwdMsg" dir="ltr" class="gmail_quote" style="border-top:solid #E1E1E1 1.0pt;padding-top:3.0pt;">
+  <hr style="display:inline-block;width:98%" size="1">
+  <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
+    <b>From:</b> Centurion Hotel &lt;centurion@legacyhotels.co.za&gt;<br>
+    <b>Sent:</b> Wednesday, September 9, 2026 2:00 PM<br>
+    <b>To:</b> Guest &lt;guest@example.com&gt;<br>
+    <b>Subject:</b> RE: Booking Confirmation<br>
+  </div>
+  <div><br></div>
+  <div id="zero-quoted-content">
+    <p>Dear Guest, Your reservation is confirmed.</p>
+  </div>
+</div>`;
+
+    const out = collapseQuotedHtml(input);
+    const toggles = out.match(/<details class="quoted-toggle"/g) ?? [];
+
+    expect(toggles).toHaveLength(1);
+    expect(out).toContain('Here is my reply');
+    expect(out).toMatch(/quoted-toggle-body[\s\S]*centurion@legacyhotels\.co\.za[\s\S]*Your reservation is confirmed/);
+  });
+
+  it('collapses loose Outlook hr separator and header siblings', () => {
+    const input = `<p>Thank you</p>
+<hr>
+<b>From:</b> Martha Mthembu<br>
+<b>Sent:</b> Wednesday, September 9, 2026<br>
+<p>Original body text</p>`;
+
+    const out = collapseQuotedHtml(input);
+    const toggles = out.match(/<details class="quoted-toggle"/g) ?? [];
+
+    expect(toggles).toHaveLength(1);
+    expect(out).toContain('Thank you');
+    expect(out).toMatch(/quoted-toggle-body[\s\S]*Martha Mthembu/);
+  });
+
   it('does not double-wrap already collapsed quotes', () => {
     const once = collapseQuotedHtml(`<blockquote><p>x</p></blockquote>`);
     const twice = collapseQuotedHtml(once);

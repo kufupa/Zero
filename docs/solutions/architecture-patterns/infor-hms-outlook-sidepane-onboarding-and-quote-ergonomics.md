@@ -18,16 +18,16 @@ When integrating Infor HMS availability quoting and guest reservation workflows 
 
 ### 1. 4-Step Progressive Onboarding Flow
 - **Step 1: Mailbox Detection & Confirmation:** Auto-detects the active Outlook account (e.g. `reservations@centurion.co.za`), displays property affiliation (`The Centurion Hotel`), and requires a single confirmation click. Avoids extraneous explanatory filler text.
-- **Step 2: Streamlined Bridge Diagnostics:** Performs an immediate live handshake verifying cloud agent core connection (18ms ping) and hotel property binding. Cuts out noisy, redundant status lines (such as claiming VSTO is active when already running in Outlook) to keep the initial experience fast and trustworthy.
-- **Step 3: 3-Slide Interactive Primer:** Walks the reservationist through the three core actions:
-  1. Automatic Email Extraction: Detecting dates, guest counts, room configurations, and corporate accounts without re-typing.
-  2. Live Infor HMS Rates & Proof: Checking search inputs, executing the query, and verifying live rates against the screenshot proof.
-  3. Quotation Drafts: Setting clear human-in-the-loop expectations: "Nava AI can make quotation drafts, but you gotta review, change, and hit send."
+- **Step 2: Streamlined Bridge Diagnostics:** Performs an immediate live handshake verifying cloud agent core connection with an explicit server ping timestamp (`Server pinged at YYYY-MM-DD HH:MM:SS UTC · Active`) to assure the user of live freshness without cluttering with internal latency metrics or obvious VSTO boilerplate.
+- **Step 3: Actionable Bulleted Feature Tour:** Structures each slide into clear, bulleted action items:
+  1. Automatic Email Sync: Clear pilot action item to verify detected dates, night counts, and guest numbers before proceeding.
+  2. Live HMS Availability & Proof: Instructions to hit run and inspect the live Infor HMS audit capture.
+  3. Assisted Responses & Actions: Professional, general guidance emphasizing review-before-sending and full human control across expanding tools.
 - **Step 4: Seamless Tool Handoff:** Instantly unlocks the active inquiry quoting view for the open email.
 
 ### 2. Native Infor HMS Quoting UI
 - **Human-Readable Property Identification:** Replaces cryptic property code abbreviations (`HRCEN`) with clear, human-readable labels (`Centurion`) across headers and status indicators.
-- **Support & Direct Contact Line:** Sits cleanly at the bottom of the task pane, providing 1-click email feedback (`aroransh17@gmail.com`) and urgent WhatsApp contact (`+44 7505 014078`).
+- **Discreet Footnote Support Channel:** Sits as an understated, muted footnote at the bottom of the task pane without colored boxes or heavy banners, providing 1-click email feedback (`aroransh17@gmail.com`) and urgent WhatsApp access (`+44 7505 014078`).
 - **Strict Infor HMS Nomenclature:** Uses `SEARCH CRITERIA` and `ROOM RATES` section headers, `Property *`, `Dates of Stay *`, `Meal Plan *`, `Room Types & Occupancy *`, `Sales Strategy *`, and `Organization`.
 - **In-Pane 326px Calendar Widget:** 100% physically contained within the 380px pane (`left=29px, right=351px`), completely preventing horizontal scrollbars or OS popup z-index clipping.
 - **Dual Audit Proof Tabs:** Toggles between `Availability Results` (price grid) and `Search Criteria` (search inputs), with a 1-click `1000×800` unscaled modal view to inspect the native Infor HMS grid at 100% DPI.

@@ -16,12 +16,15 @@ import { gitHubEmojis } from '@tiptap/extension-emoji';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { CurvedArrow, X } from '../icons/icons';
 
-import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
+import { useTRPC } from '@/providers/query-provider';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSettings } from '@/hooks/use-settings';
+import { useThread } from '@/hooks/use-threads';
+import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { demoUpsertDraft } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { useTRPC } from '@/providers/query-provider';
-import { useSettings } from '@/hooks/use-settings';
+import { QuoteHistoryExpander } from './quote-history-expander';
+import type { ParsedMessage } from '@/types';
 
 import { cn, formatFileSize } from '@/lib/utils';
 import { serializeFiles } from '@/lib/schemas';
@@ -66,6 +69,7 @@ import { TemplateButton } from './template-button';
 import type { HeaderDebugLine } from '@/types';
 import { useDraft } from '@/hooks/use-drafts';
 import { m } from '@/paraglide/messages';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 
 const hasFileDrag = (dataTransfer: DataTransfer | null): boolean =>
   dataTransfer !== null && Array.from(dataTransfer.types).includes('Files');
@@ -87,6 +91,7 @@ interface EmailComposerProps {
     fromEmail?: string;
     scheduleAt?: string;
     draftId?: string;
+    excludeQuotedHistory?: boolean;
   }) => Promise<boolean>;
   onClose?: () => void;
   className?: string;
@@ -96,6 +101,7 @@ interface EmailComposerProps {
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
   replyToMessageId?: string | null;
+  replyToMessage?: ParsedMessage | null;
   headerPreview?: HeaderDebugLine[];
   /** Assisted drafts keep the same editor but make the human review step explicit. */
   sendButtonLabel?: string;
@@ -138,6 +144,7 @@ export function EmailComposer({
   editorClassName,
   syncReplyHeadersFromProps = false,
   replyToMessageId = null,
+  replyToMessage = null,
   headerPreview = [],
   sendButtonLabel = 'Send',
 }: EmailComposerProps) {
@@ -165,6 +172,20 @@ export function EmailComposer({
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [draftId, setDraftId] = useQueryState('draftId');
   const { data: serverDraft } = useDraft(draftId ?? null);
+  const { data: threadData } = useThread(threadId ?? null);
+
+  const resolvedReplyToMessage = useMemo(() => {
+    if (replyToMessage) return replyToMessage;
+    if (replyToMessageId && threadData?.messages) {
+      return (
+        threadData.messages.find((m) => m.id === replyToMessageId) ??
+        (threadData.latest?.id === replyToMessageId ? threadData.latest : null)
+      );
+    }
+    return null;
+  }, [replyToMessage, replyToMessageId, threadData?.messages, threadData?.latest]);
+
+  const [isQuoteExcluded, setIsQuoteExcluded] = useState(false);
 
   useEffect(() => {
     if (draftId) {
@@ -706,6 +727,7 @@ export function EmailComposer({
         fromEmail: values.fromEmail,
         scheduleAt,
         draftId: activeDraftIdRef.current ?? undefined,
+        excludeQuotedHistory: isQuoteExcluded,
       });
       if (!sent) return;
 
@@ -762,8 +784,8 @@ export function EmailComposer({
   const persistDraftOnce = useCallback((): Promise<'saved' | 'skipped' | 'failed'> => {
     if (saveInFlightRef.current) return saveInFlightRef.current;
 
-    let savePromiseRef: Promise<'saved' | 'skipped' | 'failed'> | null = null;
-    const savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
+    let savePromise: Promise<'saved' | 'skipped' | 'failed'> | null = null;
+    savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
       try {
         await drainComposeFileWork();
         const capturedRevision = revisionRef.current.localRevision;
@@ -857,14 +879,13 @@ export function EmailComposer({
         setAutosaveSuppressedAfterFailure(true);
         return 'failed';
       } finally {
-        if (saveInFlightRef.current === savePromiseRef) {
+        if (saveInFlightRef.current === savePromise) {
           saveInFlightRef.current = null;
         }
         setIsSavingDraft(false);
       }
     })();
 
-    savePromiseRef = savePromise;
     saveInFlightRef.current = savePromise;
     return savePromise;
   }, [
@@ -1333,7 +1354,12 @@ export function EmailComposer({
         ) : null}
 
         {/* Message Content */}
-        <div className="flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">
+        <div
+          className={cn(
+            'flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]',
+            NATIVE_VISIBLE_SCROLLBAR_CLASSES,
+          )}
+        >
           <div
             onClick={() => {
               editor.commands.focus();
@@ -1342,6 +1368,13 @@ export function EmailComposer({
           >
             <EditorContent editor={editor} className="h-full w-full max-w-full overflow-x-auto" />
           </div>
+          {resolvedReplyToMessage && (
+            <QuoteHistoryExpander
+              replyToMessage={resolvedReplyToMessage}
+              isExcluded={isQuoteExcluded}
+              onExcludeChange={setIsQuoteExcluded}
+            />
+          )}
         </div>
       </div>
 

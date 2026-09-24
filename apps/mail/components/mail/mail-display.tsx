@@ -21,14 +21,18 @@ import {
   Lock,
   HardDriveDownload,
   CopyIcon,
+  FileDown,
+  Loader2,
 } from 'lucide-react';
+import { triggerEmlDownload } from '@/lib/eml-download';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { cn, formatDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
+import { cn, formatDate, formatMessageHeaderDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -134,7 +138,6 @@ type Props = {
   onReply?: () => void;
   onReplyAll?: () => void;
   onForward?: () => void;
-  threadAttachments?: Attachment[];
 };
 
 const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
@@ -263,7 +266,7 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
   );
 };
 
-const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
+export const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   if (!attachments || attachments.length === 0) return null;
 
   const ordered = sortAttachmentsForDisplay(attachments);
@@ -313,23 +316,43 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   );
 };
 
-type ActionButtonProps = {
+export type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
   icon: React.ReactNode;
   text: string;
+  ariaLabel?: string;
+  'aria-label'?: string;
+  disabled?: boolean;
+  title?: string;
 };
 
-const ActionButton = ({ onClick, icon, text }: ActionButtonProps) => {
+export const ActionButton = ({
+  onClick,
+  icon,
+  text,
+  ariaLabel,
+  'aria-label': ariaLabelProp,
+  disabled,
+  title,
+}: ActionButtonProps) => {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-7 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
+      disabled={disabled}
+      title={title}
+      aria-label={ariaLabelProp ?? ariaLabel ?? text}
+      className={cn(
+        'inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] transition-colors',
+        disabled
+          ? 'opacity-60 cursor-not-allowed'
+          : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d]',
+      )}
     >
       {icon}
-      <div className="flex shrink-0 items-center justify-center gap-2.5 whitespace-nowrap pl-0.5 pr-1">
-        <div className="justify-start text-sm leading-none text-black dark:text-white">{text}</div>
-      </div>
+      <span className="hidden whitespace-nowrap pl-0.5 pr-1 text-sm leading-none text-black md:inline dark:text-white">
+        {text}
+      </span>
     </button>
   );
 };
@@ -459,13 +482,21 @@ const openAttachment = async (
   }
 };
 
-const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }: Props) => {
+const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
+  const timezone = useTimezone();
   const { data: threadData } = useThread(emailData.threadId ?? null);
   const { data: messageAttachments } = useAttachments(emailData.id);
+
+  const headerDate = useMemo(() => {
+    return emailData?.receivedOn
+      ? formatMessageHeaderDate(emailData.receivedOn, timezone)
+      : { display: '', tooltip: '' };
+  }, [emailData?.receivedOn, timezone]);
   //   const [unsubscribed, setUnsubscribed] = useState(false);
   //   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const [preventCollapse, setPreventCollapse] = useState(false);
+  const [isDownloadingEml, setIsDownloadingEml] = useState(false);
   const { folder } = useParams<{ folder: string }>();
   const categorySettings = useCategorySettings();
   const idToSlug = useMemo(
@@ -625,6 +656,20 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
     },
     [emailData.id, setMode, setActiveReplyId, setDraftId, setComposeState],
   );
+
+  const handleDownloadEml = useCallback(async () => {
+    if (!emailData?.id || isDownloadingEml) return;
+    setIsDownloadingEml(true);
+    try {
+      const { filename } = await triggerEmlDownload(emailData.id);
+      toast.success(`Downloaded ${filename} — drag into Infor PMS`);
+    } catch (err) {
+      console.error('Failed to download .eml:', err);
+      toast.error('Failed to download email file');
+    } finally {
+      setIsDownloadingEml(false);
+    }
+  }, [emailData?.id, isDownloadingEml]);
 
   useEffect(() => {
     if (!demo) {
@@ -1223,9 +1268,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                 </div>
               </>
             )}
-            {threadAttachments && threadAttachments.length > 0 && (
-              <ThreadAttachments attachments={threadAttachments} />
-            )}
           </div>
           <div className="flex cursor-pointer flex-col pb-2 duration-200" onClick={toggleCollapse}>
             <div className="mt-3 flex w-full min-w-0 items-start justify-between gap-4 px-4">
@@ -1411,8 +1453,11 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
 
                         <div className="flex shrink-0 items-center justify-center">
                           <div className="text-muted-foreground flex-nowrap! mr-2 flex flex-col items-end text-sm font-medium dark:text-[#8C8C8C]">
-                            <time className="whitespace-nowrap">
-                              {emailData?.receivedOn ? formatDate(emailData.receivedOn) : ''}
+                            <time
+                              className="whitespace-nowrap cursor-default"
+                              title={headerDate.tooltip}
+                            >
+                              {headerDate.display}
                             </time>
                             {shouldShowSeparateTime(emailData?.receivedOn) && (
                               <time className="whitespace-nowrap text-xs opacity-75">
@@ -1448,6 +1493,17 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                               >
                                 <Printer className="fill-iconLight dark:fill-iconDark mr-2 h-4 w-4" />
                                 {m['common.mailDisplay.print']()}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={isDownloadingEml}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleDownloadEml();
+                                }}
+                              >
+                                <FileDown className="fill-iconLight dark:text-iconDark mr-2 h-4 w-4" />
+                                Download Email (.eml)
                               </DropdownMenuItem>
                               {canDebugHeaders ? (
                                 <DropdownMenuItem onClick={toggleHeaderDebug}>
@@ -1541,6 +1597,32 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                             activeEmojis={reactions.filter((r) => r.hasReacted).map((r) => r.emoji)}
                           />
                         </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <ActionButton
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDownloadEml();
+                              }}
+                              disabled={isDownloadingEml}
+                              icon={
+                                isDownloadingEml ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                ) : (
+                                  <FileDown className="h-3.5 w-3.5 text-muted-foreground dark:text-[#9B9B9B]" />
+                                )
+                              }
+                              text={isDownloadingEml ? '...' : '.eml'}
+                              aria-label="Download .eml"
+                              title="Download .eml file (drag into Infor PMS)"
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>Download .eml file (drag into Infor PMS)</TooltipContent>
+                        </Tooltip>
+                        <ReactionPicker
+                          onSelectEmoji={handleToggleReaction}
+                          activeEmojis={reactions.filter((r) => r.hasReacted).map((r) => r.emoji)}
+                        />
                       </div>
                     </div>
 

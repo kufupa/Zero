@@ -69,8 +69,9 @@ import { useSession } from '@/lib/auth-client';
 import { cleanHtml } from '@/lib/email-utils';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
+import { useTimezone } from '@/hooks/use-timezone';
 import { m } from '@/paraglide/messages';
-import MailDisplay from './mail-display';
+import MailDisplay, { ThreadAttachments } from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
 import { format } from 'date-fns';
@@ -181,6 +182,7 @@ function ThreadActionButton({
 const isFullscreen = false;
 export function ThreadDisplay() {
   const isMobile = useIsMobile();
+  const timezone = useTimezone();
   const params = useParams<{ folder: string }>();
 
   const folder = params?.folder ?? 'inbox';
@@ -844,7 +846,7 @@ export function ThreadDisplay() {
             bodyPreview={draftVm.bodyPreview}
             savedAtLabel={
               m['common.threadDisplay.draftSavedPrefix']() +
-              formatDateWithWeekdayAndTime(draftVm.savedAtIso)
+              formatDateWithWeekdayAndTime(draftVm.savedAtIso, timezone)
             }
             draftBadge={m['common.threadDisplay.draftBadge']()}
             unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
@@ -878,7 +880,7 @@ export function ThreadDisplay() {
                 bodyPreview={candidateVm.bodyPreview}
                 savedAtLabel={
                   m['common.threadDisplay.draftSavedPrefix']() +
-                  formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
+                  formatDateWithWeekdayAndTime(candidateVm.savedAtIso, timezone)
                 }
                 draftBadge="AI draft"
                 unsentNotice={notice}
@@ -978,7 +980,7 @@ export function ThreadDisplay() {
                   className="hidden md:flex"
                 />
               </div>
-              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
                 <div
                   role="group"
                   aria-label="Thread reply actions"
@@ -986,6 +988,7 @@ export function ThreadDisplay() {
                 >
                   <button
                     type="button"
+                    aria-label={m['common.mail.reply']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('reply');
@@ -993,12 +996,13 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.mail.reply']()}
                     </span>
                   </button>
                   <button
                     type="button"
+                    aria-label={m['common.threadDisplay.replyAll']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('replyAll');
@@ -1006,12 +1010,13 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.threadDisplay.replyAll']()}
                     </span>
                   </button>
                   <button
                     type="button"
+                    aria-label={m['common.mail.forward']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('forward');
@@ -1019,7 +1024,7 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.mail.forward']()}
                     </span>
                   </button>
@@ -1125,8 +1130,8 @@ export function ThreadDisplay() {
                           <ArchiveX className="fill-iconLight dark:fill-iconDark mr-2" />
                           <span>{m['common.threadDisplay.moveToSpam']()}</span>
                         </DropdownMenuItem>
-                        {emailData.latest?.listUnsubscribe ||
-                        emailData.latest?.listUnsubscribePost ? (
+                        {emailData?.latest?.listUnsubscribe ||
+                        emailData?.latest?.listUnsubscribePost ? (
                           <DropdownMenuItem onClick={handleUnsubscribeProcess}>
                             <Folders className="fill-iconLight dark:fill-iconDark mr-2" />
                             <span>{m['common.mailDisplay.unsubscribe']()}</span>
@@ -1179,16 +1184,16 @@ export function ThreadDisplay() {
                     className="h-full w-full"
                   >
                     <MessageList
-                      messages={emailData.messages}
+                      messages={emailData?.messages ?? []}
                       isFullscreen={isFullscreen}
                       totalReplies={emailData?.totalReplies}
                       allThreadAttachments={allThreadAttachments}
                       mode={mode || undefined}
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
-                      trailing={threadDraftSection}
-                      linkedThreadIds={emailData.linkedThreadIds}
-                      conversationMessageCount={emailData.conversationMessageCount}
+                      leading={threadDraftSection}
+                      linkedThreadIds={emailData?.linkedThreadIds}
+                      conversationMessageCount={emailData?.conversationMessageCount}
                       onOpenLinkedThread={(threadId) => {
                         void clearComposeContext().then(() => setThreadId(threadId));
                       }}
@@ -1197,16 +1202,16 @@ export function ThreadDisplay() {
                 </AnimatePresence>
               ) : (
                 <MessageList
-                  messages={emailData.messages}
+                  messages={emailData?.messages ?? []}
                   isFullscreen={isFullscreen}
                   totalReplies={emailData?.totalReplies}
                   allThreadAttachments={allThreadAttachments}
                   mode={mode || undefined}
                   activeReplyId={activeReplyId || undefined}
                   isMobile={isMobile}
-                  trailing={threadDraftSection}
-                  linkedThreadIds={emailData.linkedThreadIds}
-                  conversationMessageCount={emailData.conversationMessageCount}
+                  leading={threadDraftSection}
+                  linkedThreadIds={emailData?.linkedThreadIds}
+                  conversationMessageCount={emailData?.conversationMessageCount}
                   onOpenLinkedThread={(threadId) => {
                     void clearComposeContext().then(() => setThreadId(threadId));
                   }}
@@ -1228,7 +1233,7 @@ interface MessageListProps {
   mode?: string;
   activeReplyId?: string;
   isMobile: boolean;
-  trailing?: ReactNode;
+  leading?: ReactNode;
   linkedThreadIds?: readonly string[];
   conversationMessageCount?: number;
   onOpenLinkedThread?: (threadId: string) => void;
@@ -1242,11 +1247,12 @@ const MessageList = ({
   mode,
   activeReplyId,
   isMobile,
-  trailing,
+  leading,
   linkedThreadIds,
   conversationMessageCount,
   onOpenLinkedThread,
 }: MessageListProps) => {
+  const timezone = useTimezone();
   const displayMessages = orderMessagesNewestFirst(messages || []);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
@@ -1289,10 +1295,18 @@ const MessageList = ({
             ) : null}
           </div>
         ) : null}
+        {allThreadAttachments && allThreadAttachments.length > 0 ? (
+          <div className="min-w-0 w-full max-w-full px-4">
+            <ThreadAttachments attachments={allThreadAttachments} />
+          </div>
+        ) : null}
+        {leading ? (
+          <div className={cn('duration-200', displayMessages.length > 0 && 'border-border border-b')}>
+            {leading}
+          </div>
+        ) : null}
         {displayMessages.map((message, index) => {
           const isReplyingToThisMessage = Boolean(mode && activeReplyId === message.id);
-          // After newest-first reverse, last visual index is chronologically oldest.
-          const isChronologicallyOldest = index === displayMessages.length - 1;
           const previousMessage = displayMessages[index - 1];
           const showThreadDivider =
             index > 0 &&
@@ -1300,22 +1314,18 @@ const MessageList = ({
             message.threadId !== previousMessage?.threadId;
 
           return (
-            <div key={message.id}>
+            <div key={message.id} className="min-w-0">
               {showThreadDivider ? (
                 <div className="border-border text-muted-foreground border-t px-4 py-2 text-xs">
                   Earlier thread
                   {message.receivedOn
-                    ? ` · ${formatDateWithWeekdayAndTime(
-                        typeof message.receivedOn === 'string'
-                          ? message.receivedOn.split('.')[0] || message.receivedOn
-                          : message.receivedOn,
-                      )}`
+                    ? ` · ${formatDateWithWeekdayAndTime(message.receivedOn, timezone)}`
                     : ''}
                 </div>
               ) : null}
               <div
                 className={cn(
-                  'duration-200',
+                  'min-w-0 duration-200',
                   index > 0 && !showThreadDivider && 'border-border border-t',
                 )}
               >
@@ -1334,19 +1344,11 @@ const MessageList = ({
                   isLoading={false}
                   index={index}
                   totalEmails={totalReplies}
-                  threadAttachments={isChronologicallyOldest ? allThreadAttachments : undefined}
                 />
               </div>
             </div>
           );
         })}
-        {trailing ? (
-          <div
-            className={cn('duration-200', displayMessages.length > 0 && 'border-border border-t')}
-          >
-            {trailing}
-          </div>
-        ) : null}
       </div>
     </ScrollArea>
   );

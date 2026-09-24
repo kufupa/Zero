@@ -20,3 +20,11 @@ export const MAIL_DISPLAY_BODY_SHELL_CLASS =
 
 /** Advertise shrink so nested chip scrollports work inside flex ScrollArea. */
 export const SCROLL_AREA_FLEX_MIN_W_CLASS = 'min-w-0';
+
+/**
+ * Radix ScrollArea Viewport injects a child with `display: table; min-width: 100%`.
+ * That table sizes to content min-width and inflates the whole thread pane
+ * (wide HTML mail / banner images). Force block + shrink on that child.
+ */
+export const SCROLL_AREA_VIEWPORT_CONTENT_CLASS =
+  '[&>div]:!block [&>div]:min-w-0 [&>div]:max-w-full [&>div]:w-full';

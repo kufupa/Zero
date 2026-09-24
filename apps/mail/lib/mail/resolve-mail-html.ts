@@ -21,18 +21,37 @@ const normalizeText = (value: string): string =>
 
 export const MAIL_BODY_STYLE_TAG = `<style data-nava-mail-font="1">
 :host, .mail-content-root, .nava-mail-body {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  contain: inline-size;
   font-family: Calibri, Arial, sans-serif;
   font-size: 11pt;
   color: #000000;
   white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 :host table {
+  table-layout: fixed !important;
+  width: 100% !important;
   max-width: 100% !important;
 }
 :host img {
   max-width: 100% !important;
+  height: auto !important;
   object-fit: contain;
+}
+:host td, :host th, :host p, :host div, :host li, :host span {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  max-width: 100% !important;
+}
+:host pre, :host code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
 }
 :host p.MsoNormal {
   margin: 0;

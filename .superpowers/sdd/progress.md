@@ -118,3 +118,15 @@ Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against lo
 - Recovery ledger: `docs/superpowers/plans/handoff-reports/2026-09-07-centurion-dashboard-tools-execution.md` (single task-status source).
 - Private briefs/reports: `.superpowers/sdd/centurion-dashboard-tools-20260907/`.
 - P0 in progress; no completed implementation units yet. All earlier sections above belong to other runs.
+
+# Outlook Mail Automation Bridge — Execution Ledger
+- Plan: `docs/superpowers/plans/2026-09-23-outlook-mail-automation-bridge.md`
+- Started: 2026-09-23
+- Worktree: `/tmp/zero-main-split` (root) and nested `apps/server-pilot/vsto`
+- Root branch/base: `feat/outlook-mail-automation-bridge` / `75d95fd655d489ee30dcd4dfa4602ae4d47b3fd0`
+- VSTO branch/base: `feat/outlook-mail-automation-bridge` / `64394c0dd9e174757a160339b27ead93bf636b7c`
+- Safety: original dirty Centurion worktree left untouched; DB variables unset for Vitest.
+- Research: Outlook 15.0 PIA/VSTO API availability verified from Microsoft docs; Office 2013-targeted solution compatibility is documented for Office 2016, not blanket-verified for later 16.0 products. Exact client product/build remains unknown from this Linux host.
+- Task 10: complete (root commit `24b2ca0ead2cc3eb8e4a07ed74b367664e376f07`; pane regression red then green, 6/6; task review approved; minor noted: no explicit absent-`storeId` interaction test).
+- Focused integration verification: mail pane/protocol 13/13; VSTO source-contract 27/27; root and VSTO `git diff --check` clean.
+- Remaining: full review/Greptile loops, Windows installer build, integrate on both `main` branches, publish and checksum-verify installer, and client Outlook runtime smoke test.

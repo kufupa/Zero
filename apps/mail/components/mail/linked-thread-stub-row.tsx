@@ -1,6 +1,7 @@
 import { Link2 } from 'lucide-react';
 import { memo } from 'react';
-import { cn, formatDateWithWeekdayAndTime } from '@/lib/utils';
+import { cn, formatThreadListDate } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import type { MailListThreadRow } from '@/types';
 
 type LinkedStub = NonNullable<MailListThreadRow['linkedStubs']>[number];
@@ -18,13 +19,10 @@ export const LinkedThreadStubRow = memo(function LinkedThreadStubRow({
   isKeyboardFocused,
   isKeyboardNavigationActive,
 }: LinkedThreadStubRowProps) {
+  const timezone = useTimezone();
   const dateLabel =
     stub.latestMessageAt != null
-      ? formatDateWithWeekdayAndTime(
-          typeof stub.latestMessageAt === 'string'
-            ? stub.latestMessageAt.split('.')[0] || stub.latestMessageAt
-            : stub.latestMessageAt,
-        )
+      ? formatThreadListDate(stub.latestMessageAt, timezone)
       : null;
 
   return (

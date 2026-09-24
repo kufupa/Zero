@@ -202,8 +202,11 @@ describe('per-message reply actions', () => {
     expect(recipientHeader).toContain('MAIL_RECIPIENT_FIELDS_CLASS');
     expect(actionGroup).toContain('flex w-full max-w-full flex-wrap');
     expect(actionGroup).not.toContain('sm:w-auto');
-    expect(actionButton).toContain('shrink-0');
+    // Compact pane: drop outer shrink-0; labels show from md up only.
+    expect(actionButton).not.toMatch(/<button[\s\S]*?className="[^"]*\bshrink-0\b/);
+    expect(actionButton).toMatch(/hidden[^"]*md:inline|md:inline[^"]*hidden/);
     expect(actionButton).toContain('whitespace-nowrap');
+    expect(actionButton).toMatch(/aria-label=\{(?:ariaLabelProp\s*\?\?\s*ariaLabel\s*\?\?\s*)?text\}/);
     expect(actionButton).not.toContain('shortcut?: string');
     expect(actionButton).not.toContain('shortcut &&');
     expect(actionButton).not.toContain('<kbd');
@@ -216,6 +219,7 @@ describe('per-message reply actions', () => {
     expect(source).toContain('className="flex w-full min-w-0 items-center justify-between"');
     expect(source).toContain('className="flex w-full min-w-0 items-center justify-start"');
     expect(source).toContain('className="flex w-full min-w-0 flex-col"');
+    // Timestamp cluster stays shrink-0; sender name must truncate (MailboxInline).
     expect(source).toContain('className="flex shrink-0 items-center justify-center"');
   });
 
@@ -259,7 +263,7 @@ describe('thread toolbar reply actions', () => {
     }
   });
 
-  it('uses native visible Reply, Reply all, and Forward controls with ReplyAll icon', () => {
+  it('uses native Reply, Reply all, and Forward controls with ReplyAll icon and compact labels', () => {
     const actionGroup = threadToolbarActionGroupSource();
 
     expect(actionGroup.match(/<button\b/g) ?? []).toHaveLength(3);
@@ -268,17 +272,23 @@ describe('thread toolbar reply actions', () => {
     expect(actionGroup).toContain("{m['common.mail.reply']()}");
     expect(actionGroup).toContain("{m['common.threadDisplay.replyAll']()}");
     expect(actionGroup).toContain("{m['common.mail.forward']()}");
-    expect(actionGroup).not.toContain('sr-only');
+    // Labels icon-only below md so Forward stays inside narrow panes.
+    expect(actionGroup).toMatch(/hidden[^"'\n]*md:inline|md:inline[^"'\n]*hidden/);
   });
 
   it('removes old standalone Reply all button and keeps toolbar wrapping contained', () => {
-    const toolbarStart = threadSource.indexOf("'flex shrink-0");
     const notesPanelIndex = threadSource.indexOf('<NotesPanel');
-    const toolbar = threadSource.slice(toolbarStart, notesPanelIndex);
+    const actionsClusterStart = threadSource.lastIndexOf(
+      'flex w-full min-w-0 flex-wrap items-center justify-end gap-2',
+      notesPanelIndex,
+    );
+    const toolbar = threadSource.slice(actionsClusterStart, notesPanelIndex);
 
+    expect(actionsClusterStart).toBeGreaterThan(-1);
     expect(threadSource).not.toContain(
       '<div className="flex items-center justify-center gap-2.5 pl-0.5 pr-1">',
     );
+    expect(toolbar).toContain('w-full');
     expect(toolbar).toContain('min-w-0');
     expect(toolbar).toContain('flex-wrap');
   });

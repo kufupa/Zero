@@ -156,17 +156,17 @@ FAIL → reproduce minimally → root cause (file:line) → smallest correct fix
 
 ### Done criteria
 
-- [x] **Task 0:** Corpus linkage audit artifacts in `.private/.../thread-linkage-audit-2026-09-02/` (waterfall, clusters, exemplars).
-- [x] Layer A: ordered References walk + canonical Message-ID + header index; ingest tests green.
-- [x] Layer B: `conversation-signals.ts` ports all 6 gold signal types; eval ≥221/438 recall, ≤4/192 FP. (**246/246 TP, 0 FP** on private gold.)
-- [x] Layer C: `mail_conversation_link` + `conversationId` resolver; deterministic discovery + backfill CLI; unit tests green. (Pilot `--apply`: 4040 active links after staff-internal subject_cluster fix.)
-- [x] Layer E: `mail.listThreads` exposes `conversationId`, `linkedThreadIds`, `conversationResponded`; inbox stub rows + merged timeline + badge wired in worktree.
-- [x] Layer B wired to triage metrics (`conversationResponded`) without breaking Phase 1 spam refine contract.
-- [x] Private dump exports ancestry headers OR documented omission with reader parity test.
-- [x] Handoff report with before/after waterfall + **UI exemplar** (Breakfast Pack thread ids when found in full corpus).
-- [x] Layer D unimplemented — residual enum shows **63** LLM-band pairs (≥10 gate open) but Task 14 not required for v1 UX; ship deterministic first.
-- [x] Phase 2 dashboard plan references Layer B card hook (Task 9).
-- [x] Deploy to EC2 pilot after integration merge; smoke: open linked conversation shows both thread bodies chronologically. (Deployed `feat/centurion-thread-matching` @ `92532000`; backfill 4040 active links; Breakfast Pack RE pair share conversationId.)
+- [ ] **Task 0:** Corpus linkage audit artifacts in `.private/.../thread-linkage-audit-2026-09-02/` (waterfall, clusters, exemplars).
+- [ ] Layer A: ordered References walk + canonical Message-ID + header index; ingest tests green.
+- [ ] Layer B: `conversation-signals.ts` ports all 6 gold signal types; eval ≥221/438 recall, ≤4/192 FP.
+- [ ] Layer C: `mail_conversation_link` + `conversationId` resolver; deterministic backfill from headers + B signals + subject clusters (guarded); gold eval on **link precision** ≥95% on enumerated high-confidence pairs.
+- [ ] Layer E: `mail.listThreads` exposes `conversationId`, `linkedThreadIds`, `conversationResponded`; inbox shows linked stub rows; thread detail merged timeline; replied badge uses `conversationResponded`.
+- [ ] Layer B wired to triage metrics (`conversationResponded`) without breaking Phase 1 spam refine contract.
+- [ ] Private dump exports ancestry headers OR documented omission with reader parity test.
+- [ ] Handoff report with before/after waterfall + **UI exemplar** (Breakfast Pack thread ids when found in full corpus).
+- [ ] Layer D unimplemented unless Task 13 residual gate documents ≥10 enumerated FN thread pairs after deterministic linker.
+- [ ] Phase 2 dashboard plan references Layer B card hook (Task 9).
+- [ ] Deploy to EC2 pilot after integration merge; smoke: open linked conversation shows both thread bodies chronologically.
 
 ### True blockers
 
@@ -323,9 +323,9 @@ unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
 pnpm --filter @zero/server exec vitest run tests/centurion-thread-linkage-audit.test.ts
 ```
 
-- [x] **Step 1:** Implement audit module (defensible + walkthrough + staff-brief subjects)
-- [x] **Step 2:** Subject normalize + spaced-artifact collapse (`normalizeConversationSubject`, `collapseSpacedSubjectArtifacts`)
-- [x] **Step 3:** PASS tests + run script; record counts in handoff
+- [ ] **Step 1:** Implement audit module (defensible + walkthrough + staff-brief subjects)
+- [ ] **Step 2:** Subject normalize + spaced-artifact collapse (`normalizeConversationSubject`, `collapseSpacedSubjectArtifacts`)
+- [ ] **Step 3:** PASS tests + run script; record counts in handoff
 
 **Note:** Breakfast Pack RE split is **staff-internal** (not 438 actionable) — full-corpus header replay in Task 12 backfill still required for inbox UX.
 
@@ -347,16 +347,16 @@ export function messageIdsEqual(a: string | null, b: string | null): boolean;
 export function buildReferenceChain(inReplyTo: string | null, references: readonly string[]): string[];
 ```
 
-- [x] **Step 1: Failing tests** — `<'A@b>'` equals `'a@b'`; quoted sublocal per RFC 5256 example; chain puts IRT last
+- [ ] **Step 1: Failing tests** — `<'A@b>'` equals `'a@b'`; quoted sublocal per RFC 5256 example; chain puts IRT last
 
 ```bash
 unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
 pnpm --filter @zero/server exec vitest run tests/message-id.test.ts
 ```
 
-- [x] **Step 2: Implement**
+- [ ] **Step 2: Implement**
 
-- [x] **Step 3: PASS**
+- [ ] **Step 3: PASS**
 
 ---
 
@@ -377,17 +377,17 @@ for id in reverse(refs):  // newest parent first per RFC walk
 fallback threadRootId = canonicalMessageId(parsed.messageId) ?? no-message-id-${uidl}
 ```
 
-- [x] **Step 1: Failing tests** — refs `[root, mid]` joins `mid` thread when both exist; transport isolation; duplicate MID deterministic
+- [ ] **Step 1: Failing tests** — refs `[root, mid]` joins `mid` thread when both exist; transport isolation; duplicate MID deterministic
 
-- [x] **Step 2: Add partial index** `message_transport_header_idx ON (transport_id, message_id_header) WHERE message_id_header IS NOT NULL`
+- [ ] **Step 2: Add partial index** `message_transport_header_idx ON (transport_id, message_id_header) WHERE message_id_header IS NOT NULL`
 
-- [x] **Step 3: Implement walk; remove unordered `LIMIT 1`**
+- [ ] **Step 3: Implement walk; remove unordered `LIMIT 1`**
 
-- [x] **Step 3b: Canonicalize on persist** — `messageIdHeader`, `inReplyTo`, `references` written canonical at insert (`store.ts:541-543`), not lookup-only
+- [ ] **Step 3b: Canonicalize on persist** — `messageIdHeader`, `inReplyTo`, `references` written canonical at insert (`store.ts:541-543`), not lookup-only
 
-- [x] **Step 3c: Duplicate MID tie-break** — if multiple rows share `(transport_id, message_id_header)`, pick lowest `(created_at, id)`; log metric only
+- [ ] **Step 3c: Duplicate MID tie-break** — if multiple rows share `(transport_id, message_id_header)`, pick lowest `(created_at, id)`; log metric only
 
-- [x] **Step 4: PASS**
+- [ ] **Step 4: PASS**
 
 **Non-goals:** subject merge; retroactive parent-late merge job (document as Task 8 follow-up).
 
@@ -429,11 +429,11 @@ export function isConversationResponded(signals: readonly ConversationSignal[]):
 
 Port from `defensible-daily-chart-2026-09-01.py` + `staff-email-brief-analysis-2026-09-01.py` index builders inline.
 
-- [x] **Step 1: Failing tests** — one fixture per archetype + index builder unit cases
+- [ ] **Step 1: Failing tests** — one fixture per archetype + index builder unit cases
 
-- [x] **Step 2: Implement detector + indexes in one module**
+- [ ] **Step 2: Implement detector + indexes in one module**
 
-- [x] **Step 3: PASS**
+- [ ] **Step 3: PASS**
 
 ---
 
@@ -448,13 +448,13 @@ Port from `defensible-daily-chart-2026-09-01.py` + `staff-email-brief-analysis-2
 - False responded on gold-unanswered ≤ **4/192** (2%)
 - Confusion matrix stdout: counts only, no PII
 
-- [x] **Step 1: Eval script reads defensible JSON + snapshot markdown (or postgres reader fixture)**
+- [ ] **Step 1: Eval script reads defensible JSON + snapshot markdown (or postgres reader fixture)**
 
-- [x] **Step 2: Failing gold test below threshold**
+- [ ] **Step 2: Failing gold test below threshold**
 
-- [x] **Step 3: Tune detector until gate passes**
+- [ ] **Step 3: Tune detector until gate passes**
 
-- [x] **Step 4: Record waterfall table in handoff**
+- [ ] **Step 4: Record waterfall table in handoff**
 
 ---
 
@@ -469,8 +469,8 @@ Enumerate actionable thread **pairs** where:
 - `quoted_hotel_header` without header parent edge
 - Subject cluster multi-thread with same participant set within 72h
 
-- [x] **Step 1:** Script outputs pair list with suggested `linkType` + confidence band
-- [x] **Step 2:** Handoff table: pairs for deterministic linker vs LLM residual
+- [ ] **Step 1:** Script outputs pair list with suggested `linkType` + confidence band
+- [ ] **Step 2:** Handoff table: pairs for deterministic linker vs LLM residual
 
 ---
 
@@ -512,13 +512,13 @@ export type ThreadSignals = {
 - Modify: `apps/server-pilot/src/ops/connected-mailbox-markdown-dump.ts`
 - Modify: `apps/server-pilot/tests/connected-mailbox-markdown-dump.test.ts`
 
-- [x] **Step 1: Failing test** — block includes `In-Reply-To` / `References` when DB row has them
+- [ ] **Step 1: Failing test** — block includes `In-Reply-To` / `References` when DB row has them
 
-- [x] **Step 2: Implement**
+- [ ] **Step 2: Implement**
 
-- [x] **Step 3: PASS**
+- [ ] **Step 3: PASS**
 
-- [x] **Step 4: Re-run `execute-reverse-joins` v2 script note in handoff (counts should rise if DB has headers)
+- [ ] **Step 4: Re-run `execute-reverse-joins` v2 script note in handoff (counts should rise if DB has headers)
 
 ---
 
@@ -529,7 +529,7 @@ export type ThreadSignals = {
 - Reference existing `diag-centurion-staff-shapes.ts` cross-thread counts for operator follow-up
 - Optional follow-up task: provisional `messageIdHeader` on `mail.send` insert
 
-- [x] **Step 1: Handoff section in `docs/superpowers/plans/handoff-reports/`**
+- [ ] **Step 1: Handoff section in `docs/superpowers/plans/handoff-reports/`**
 
 ---
 
@@ -545,11 +545,10 @@ export const DAILY_ANSWERED_UNANSWERED_COPY = {
   title: 'Daily reservation answered vs unanswered',
   subtitle: 'Conversation signal overlay (cross-thread + quoted body). Not same as thread list replied badge.',
   methodology: 'defensible-daily-chart-2026-09-01',
-  availability: 'live_conversation_signals',
 } as const;
 ```
 
-- [x] **Step 1: Card spec + `availability: live_conversation_signals`**
+- [ ] **Step 1: Card spec + `availability: live_conversation_signals`**
 
 ---
 
@@ -594,10 +593,10 @@ mail_conversation_link {
 
 **Precision gate:** On enumerated high-confidence pairs from Task 5, **≥95%** precision (manual allowlist in test fixture — opaque ids only in CI).
 
-- [x] **Step 1: Migration + idempotent upsert tests**
-- [x] **Step 2: Implement deterministic scorer + union-find**
-- [x] **Step 3: Backfill script + handoff pair counts**
-- [x] **Step 4: `listThreads` returns `conversationId`, `linkedThreadIds`, `conversationResponded`, `conversationMessageCount`**
+- [ ] **Step 1: Migration + idempotent upsert tests**
+- [ ] **Step 2: Implement deterministic scorer + union-find**
+- [ ] **Step 3: Backfill script + handoff pair counts**
+- [ ] **Step 4: `listThreads` returns `conversationId`, `linkedThreadIds`, `conversationResponded`, `conversationMessageCount`**
 
 ---
 
@@ -620,9 +619,9 @@ primaryThreadId: string;             // newest/latest in group
 
 **`get` additions:** `linkedThreadIds`, optional `mergedMessages` when `?mergeLinked=1`.
 
-- [x] **Step 1: Failing tests** — two linked threads → one `conversationId`; responded on sibling when outbound only on linked thread
-- [x] **Step 2: Implement query-time group resolver (no N+1 per row — batch conversation lookup)**
-- [x] **Step 3: PASS**
+- [ ] **Step 1: Failing tests** — two linked threads → one `conversationId`; responded on sibling when outbound only on linked thread
+- [ ] **Step 2: Implement query-time group resolver (no N+1 per row — batch conversation lookup)**
+- [ ] **Step 3: PASS**
 
 ---
 
@@ -641,9 +640,9 @@ primaryThreadId: string;             // newest/latest in group
 - Tooltip: "N messages across M linked threads"
 - Hide duplicate full rows for non-primary linked threads (filter in `use-threads`)
 
-- [x] **Step 1: Failing browser/unit test** — stub visible when API returns linked pair
-- [x] **Step 2: Implement list filter + stub component**
-- [x] **Step 3: Remove per-row N+1 `useThread` for replied icon where `listThreads` now carries `conversationResponded`
+- [ ] **Step 1: Failing browser/unit test** — stub visible when API returns linked pair
+- [ ] **Step 2: Implement list filter + stub component**
+- [ ] **Step 3: Remove per-row N+1 `useThread` for replied icon where `listThreads` now carries `conversationResponded`
 
 **Design review:** `gstack-plan-design-review` — stub density, accessibility, bulk-archive prompt.
 
@@ -655,10 +654,10 @@ primaryThreadId: string;             // newest/latest in group
 - Modify: `apps/mail/components/mail/thread-display.tsx`
 - Modify: `apps/mail/components/mail/mail-display.tsx`
 
-- [x] **Step 1:** `get` with `mergeLinked=1` loads chronological messages across `linkedThreadIds`
-- [x] **Step 2:** Light segment divider between thread sources (label: "Earlier thread" + date)
-- [x] **Step 3:** Banner: "Linked conversation (M threads)" + jump links
-- [x] **Step 4:** Reply composer targets latest inbound in **merged** set
+- [ ] **Step 1:** `get` with `mergeLinked=1` loads chronological messages across `linkedThreadIds`
+- [ ] **Step 2:** Light segment divider between thread sources (label: "Earlier thread" + date)
+- [ ] **Step 3:** Banner: "Linked conversation (M threads)" + jump links
+- [ ] **Step 4:** Reply composer targets latest inbound in **merged** set
 
 ---
 
@@ -703,24 +702,8 @@ primaryThreadId: string;             // newest/latest in group
 |------|--------|
 | eng | Split layers; canonical MID; ordered walk; index; gold contract; compose gap; hashTriageInput; conversationId overlay; backfill script → Tasks 0–13 |
 | ponytail | No subject **ingest** merge; deterministic C before LLM; port Python detector; union-find not full JWZ tree in hot path → A+B+C+E ship, D gated |
-| design | Option C stub rows; badge on `conversationResponded`; merged timeline default → Tasks 12–13 (see Design review detail below) |
+| design | Option C stub rows; badge on `conversationResponded`; merged timeline default → Tasks 12–13 |
 | devex | Eval CLI + audit + backfill scripts → Tasks 0, 5, 10 |
-
-### Design review detail (gstack-plan-design-review — Option C)
-
-**Chosen pattern:** stacked primary + linked stub (Option C), not full row merge (A) or dual full rows (B).
-
-| Dimension | Score | Why / what would make 10 |
-|-----------|------:|--------------------------|
-| Hierarchy | 8 | Primary carries subject/preview/badge; stub is secondary density. 10 = verified stub contrast in dark theme screenshot |
-| Clarity of “one conversation” | 8 | Banner + stub + jump links. 10 = user study or pilot smoke on Breakfast Pack pair |
-| Responded truth | 9 | Badge on `conversationResponded` (group), not per-thread `hasReplied` |
-| Density | 8 | Stub replaces second full row. Ops digests denylisted at link layer |
-| Archive / bulk | 7 | Member `thread_id`s preserved; “archive both?” deferred to follow-up — document in UI copy later |
-| A11y | 7 | Stub must be keyboard-focusable + announce “linked thread”. Verify in smoke |
-| Mental model vs Gmail | 8 | Overlay group ≈ Gmail conversation without rewriting store |
-
-**Non-goals locked for design:** no subject-only merge chips in list; no LLM “maybe linked?” badges in v1.
 
 ## Decisions locked
 

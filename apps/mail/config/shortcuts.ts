@@ -80,6 +80,14 @@ export function enhanceShortcutsWithMapping(shortcuts: Shortcut[]): EnhancedShor
 }
 
 const threadDisplayShortcuts: Shortcut[] = [
+  {
+    keys: ['mod', 'a'],
+    action: 'selectAll',
+    type: 'combination',
+    description: 'Select all emails',
+    scope: 'thread-display',
+    preventDefault: true,
+  },
   // {
   //   keys: ['i'],
   //   action: 'viewEmailDetails',

@@ -1,7 +1,7 @@
 ---
 title: EC2 Pilot ops-deploy, ops-restart, and ops-reboot Entry Points
 date: 2026-07-10
-last_updated: 2026-07-23
+last_updated: 2026-08-26
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -94,7 +94,16 @@ bash apps/server-pilot/deploy/ops-reboot.sh
 
 Wrappers orchestrate those guts (thin wrappers, thick guts). Migrate is opt-in (`--migrate`); never implied by a plain deploy.
 
-**VPN on every ship:** `ops-deploy.sh` runs a **HARD** VPN health assert after `:8788/health` (`vpn-health-assert.sh` over SSM). Unit down / HOST_ROUTE wrong / missing `172.24` route / STS fail aborts deploy. Hotel TCP is **SOFT** warn only unless `REQUIRE_HOTEL_PROBE=1`. Deploy never restages OpenVPN secrets or re-runs `vpn-install-always-on.sh` — see [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md).
+**Migration window semantics (`--migrate`):**
+
+- `ops-deploy.sh --migrate` order is: sync bundle → **migrate against the still-running old PM2 processes** (SSM: source `.env.production`, `pnpm db:migrate` from `apps/server-pilot`) → on-box deploy (rebuild + PM2 reload) → health. Migrations run from `apps/server-pilot/`, so the journal is `apps/server-pilot/drizzle/meta/_journal.json`.
+- This is a **rolling window, not a stop-the-world quiesce**: old code keeps serving between migrate and PM2 restart. It is safe for additive/backward-compatible schema changes only.
+- Safe under this flow: additive columns/tables, nullable columns, backfills that leave old-code invariants intact (e.g. `0019_outbound_smtp_attempt_fence.sql` adds two nullable timestamp columns and backfills them; old rows keep working).
+- NOT safe: renames/drops, tightening NOT NULL on existing columns without default+backfill, or anything where old code writing old-shaped rows corrupts new expectations. For those, plan a stop-the-world window (announce gap, deploy with PM2 stopped around migrate) and get explicit sign-off first.
+- `--quiesced` is unrelated to migrations: it means assets-only (install/build/sync, no PM2 mutation, no HTTP health) while current processes stay online. Do not use it as a "maintenance mode" for breaking migrations.
+- Fence-specific note: after deploying a fence-style change, stale `sending` queue rows are fenced by `smtp_attempted_at` and will NOT auto-retry; verify/requeue deliberately if any existed pre-deploy.
+
+**VPN on every ship:**
 
 ### Auto recovery after crash / reboot
 

@@ -360,37 +360,71 @@
     .tour-slide-box {
       border: 1px solid var(--line);
       border-radius: 4px;
-      padding: 16px;
+      padding: 14px 14px 16px 14px;
       background: #ffffff;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
       text-align: center;
-      min-height: 240px;
-      justify-content: center;
+      min-height: 260px;
+      justify-content: flex-start;
       align-items: center;
     }
     .tour-slide-icon {
-      width: 52px;
-      height: 52px;
+      width: 44px;
+      height: 44px;
       background: var(--infor-blue-light);
       color: var(--infor-blue);
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 22px;
+      font-size: 18px;
+      flex-shrink: 0;
+      margin-bottom: 2px;
     }
     .tour-slide-title {
-      font-size: 14px;
+      font-size: 13.5px;
       font-weight: 700;
       color: var(--ink-primary);
     }
-    .tour-slide-desc {
-      font-size: 12px;
+    .tour-slide-subtitle {
+      font-size: 11.5px;
       color: var(--ink-secondary);
-      line-height: 1.5;
-      max-width: 320px;
+      line-height: 1.45;
+      text-align: center;
+      margin-bottom: 2px;
+    }
+    .tour-slide-bullets {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      text-align: left;
+      margin-top: 4px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .tour-bullet-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: var(--ink-secondary);
+    }
+    .tour-bullet-icon {
+      color: var(--primary);
+      font-size: 11px;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .tour-bullet-text {
+      flex: 1;
+    }
+    .tour-bullet-text strong {
+      color: var(--ink-primary);
+      font-weight: 600;
     }
     .tour-pager-dots {
       display: flex;
@@ -1059,20 +1093,16 @@
       color: var(--ink-secondary);
     }
 
-    /* Minimal Support & Feedback Footer */
+    /* Discreet Footnote Footer */
     .pane-footer-minimal {
-      padding: 10px 12px;
+      padding: 8px 12px 10px 12px;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 4px;
-      font-size: 11px;
-      color: var(--ink-muted);
-      border-top: 1px solid var(--line);
+      border-top: 1px solid #f1f5f9;
       margin-top: auto;
       flex-shrink: 0;
-      background: var(--bg-subtle);
+      background: transparent;
       text-align: center;
     }
     .footer-feedback-line {
@@ -1081,19 +1111,20 @@
       justify-content: center;
       flex-wrap: wrap;
       gap: 6px;
-      font-size: 11px;
-      color: var(--ink-secondary);
+      font-size: 10.5px;
+      color: #94a3b8;
     }
-    .footer-link {
-      color: var(--infor-blue);
+    .footer-feedback-line a {
+      color: #64748b;
       text-decoration: none;
-      font-weight: 500;
+      transition: color 0.15s ease;
     }
-    .footer-link:hover {
+    .footer-feedback-line a:hover {
+      color: var(--ink-primary);
       text-decoration: underline;
     }
     .footer-sep {
-      color: var(--ink-subtle);
+      color: #cbd5e1;
     }
 
     /* 1000x800 Modal */
@@ -1275,7 +1306,7 @@
                   <span>Nava AI Cloud Bridge</span>
                   <span style="font-size: 10px; color: var(--success); font-weight: 700;">CONNECTED</span>
                 </div>
-                <div class="diag-desc" id="diagServerTimeText">Centurion Hotel · Latency 18ms · Live Sync Active</div>
+                <div class="diag-desc" id="diagServerTimeText">Centurion Hotel · Server pinged at 2026-09-24 21:20:44 UTC · Active</div>
               </div>
             </div>
           </div>
@@ -1303,10 +1334,10 @@
             <div class="tour-slide-icon" id="tourSlideIcon">
               <i class="fa-regular fa-envelope-open-text"></i>
             </div>
-            <h2 class="tour-slide-title" id="tourSlideTitle">Automatic Inquiry Extraction</h2>
-            <p class="tour-slide-desc" id="tourSlideDesc">
-              When a guest or corporate booker emails an inquiry, Nava detects dates, night counts, room configurations, and corporate accounts automatically. No manual re-typing.
-            </p>
+            <h2 class="tour-slide-title" id="tourSlideTitle">1. Automatic Email Sync</h2>
+            <div id="tourSlideContent" style="width: 100%;">
+              <!-- Subtitle and bullets dynamically injected -->
+            </div>
           </div>
 
           <div class="tour-pager-dots">
@@ -1716,12 +1747,12 @@
 
       </section>
 
-      <!-- Minimal Support & Feedback Footer -->
+      <!-- Discreet Pilot Footnote -->
       <footer class="pane-footer-minimal">
         <div class="footer-feedback-line">
-          <span>Feedback: <a href="mailto:aroransh17@gmail.com" class="footer-link">aroransh17@gmail.com</a></span>
+          <span>Pilot feedback: <a href="mailto:aroransh17@gmail.com">aroransh17@gmail.com</a></span>
           <span class="footer-sep">·</span>
-          <span>Urgent WhatsApp: <a href="https://wa.me/447505014078" target="_blank" class="footer-link">+44 7505 014078</a></span>
+          <span>WhatsApp: <a href="https://wa.me/447505014078" target="_blank">+44 7505 014078</a></span>
         </div>
       </footer>
 
@@ -1789,6 +1820,7 @@
     }
 
     function goToDiagnostics() {
+      updateServerPingTime();
       navigateToScreen('screen-diagnostics');
       showToast('Mailbox confirmed · Running bridge diagnostics');
     }
@@ -1804,22 +1836,50 @@
       showToast('Onboarding complete! Opened Infor HMS Quoting Tool');
     }
 
+    function updateServerPingTime() {
+      const now = new Date();
+      const year = now.getUTCFullYear();
+      const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(now.getUTCDate()).padStart(2, '0');
+      const hours = String(now.getUTCHours()).padStart(2, '0');
+      const mins = String(now.getUTCMinutes()).padStart(2, '0');
+      const secs = String(now.getUTCSeconds()).padStart(2, '0');
+      const timeStr = `${year}-${month}-${day} ${hours}:${mins}:${secs} UTC`;
+      const el = document.getElementById('diagServerTimeText');
+      if (el) {
+        el.innerText = `Centurion Hotel · Server pinged at ${timeStr} · Active`;
+      }
+    }
+
     // Tour Carousel Data & Controls
     const tourSlides = [
       {
         icon: '<i class="fa-regular fa-envelope-open-text"></i>',
-        title: '1. Automatic Email Extraction',
-        desc: 'When an inquiry arrives, Nava automatically detects arrival and departure dates, guest counts, room configurations, and corporate accounts directly from the email text.'
+        title: '1. Automatic Email Sync',
+        subtitle: 'When an inquiry arrives, key parameters are detected directly from the email thread.',
+        bullets: [
+          '<strong>Verify detected details:</strong> During the 1-month pilot, please check arrival dates, night counts, guest totals, and room types before proceeding.',
+          '<strong>Direct HMS pre-fill:</strong> Extracted parameters populate the search criteria automatically with zero manual re-typing.'
+        ]
       },
       {
         icon: '<i class="fa-solid fa-hotel"></i>',
-        title: '2. Check Inputs & Live Rates',
-        desc: 'Check your search inputs, hit run to query live Infor HMS availability, and inspect the live screenshot proof before quoting.'
+        title: '2. Live HMS Availability & Proof',
+        subtitle: 'Query real-time rates and restrictions directly from Infor HMS.',
+        bullets: [
+          '<strong>Run live search:</strong> Click <strong>Search Availability</strong> to retrieve live contracted rates, Best Available Rates, and meal plans.',
+          '<strong>Inspect screenshot proof:</strong> Please inspect the live Infor HMS audit capture (full-screen 1000×800) to confirm PMS rates.'
+        ]
       },
       {
-        icon: '<i class="fa-solid fa-reply-all"></i>',
-        title: '3. Quotation Drafts',
-        desc: 'Nava AI can make quotation drafts, but you gotta review, change, and hit send.'
+        icon: '<i class="fa-solid fa-wand-magic-sparkles"></i>',
+        title: '3. Assisted Responses & Actions',
+        subtitle: 'Accelerate daily reservation workflows while maintaining full human oversight.',
+        bullets: [
+          '<strong>Review before sending:</strong> Nava AI prepares drafted responses and action cards directly in Outlook. Review, edit, and confirm before dispatching.',
+          '<strong>Full human control:</strong> Nothing sends or updates automatically without your explicit action.',
+          '<strong>Continuous feature rollout:</strong> Rate quoting is active now; guest lookups, folios, and reservation changes will expand throughout the pilot.'
+        ]
       }
     ];
     let currentTourSlide = 0;
@@ -1849,7 +1909,20 @@
       const slide = tourSlides[currentTourSlide];
       document.getElementById('tourSlideIcon').innerHTML = slide.icon;
       document.getElementById('tourSlideTitle').innerText = slide.title;
-      document.getElementById('tourSlideDesc').innerText = slide.desc;
+      
+      let html = `<div class="tour-slide-subtitle">${slide.subtitle}</div>`;
+      if (slide.bullets && slide.bullets.length > 0) {
+        html += `<div class="tour-slide-bullets">`;
+        slide.bullets.forEach(b => {
+          html += `
+            <div class="tour-bullet-item">
+              <i class="fa-solid fa-circle-check tour-bullet-icon"></i>
+              <div class="tour-bullet-text">${b}</div>
+            </div>`;
+        });
+        html += `</div>`;
+      }
+      document.getElementById('tourSlideContent').innerHTML = html;
 
       // Update dots
       for (let i = 0; i < 3; i++) {

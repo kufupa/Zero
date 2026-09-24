@@ -7,6 +7,7 @@ import { resolveAuthSessionProfile } from './lib/auth-profile.js';
 import { closeDb } from './db/client.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
+import { createEmlDownloadHandler } from './http/eml-download.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -42,6 +43,12 @@ app.get(
       messageId: c.req.param('messageId'),
       attachmentId: c.req.param('attachmentId'),
     }),
+);
+
+// EML message download: cookie session + mailbox_access join.
+const emlDownloadHandler = createEmlDownloadHandler(auth);
+app.get('/api/mail/messages/:messageId/download.eml', async (c) =>
+  emlDownloadHandler(c.req.raw, { messageId: c.req.param('messageId') }),
 );
 
 // tRPC endpoint. We use `@trpc/server/adapters/fetch`'s `fetchRequestHandler`

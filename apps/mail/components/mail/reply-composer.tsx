@@ -18,6 +18,7 @@ import {
 } from '@/lib/mail/header-debug';
 import { isAssistedDraft, useDraft, useEnsureEditableDraftForReply } from '@/hooks/use-drafts';
 import { constructReplyBody, constructForwardBody } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
 import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -65,6 +66,8 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
   const { handleUndoSend } = useUndoSend();
+
+  const timezone = useTimezone();
 
   const isAssistedDraftForId = (candidateId?: string | null) => {
     if (!candidateId) return false;
@@ -159,6 +162,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     attachments: File[];
     scheduleAt?: string;
     draftId?: string;
+    excludeQuotedHistory?: boolean;
   }): Promise<boolean> => {
     if (!replyToMessage) {
       toast.error('No message available to reply to.');
@@ -204,21 +208,27 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             ? [replyToMessage.sender]
             : [];
 
-      const emailBody =
-        mode === 'forward'
+      const emailBody = data.excludeQuotedHistory
+        ? data.message
+        : mode === 'forward'
           ? constructForwardBody(
               data.message,
-              new Date(replyToMessage.receivedOn || '').toLocaleString(),
+              replyToMessage.receivedOn || '',
               { ...replyToMessage.sender, subject: replyToMessage.subject },
               quoteAttributionRecipients,
               replyToMessage.decodedBody,
+              data.subject,
+              timezone,
             )
           : constructReplyBody(
               data.message,
-              new Date(replyToMessage.receivedOn || '').toLocaleString(),
+              replyToMessage.receivedOn || '',
               replyToMessage.sender,
               quoteAttributionRecipients,
               replyToMessage.decodedBody,
+              data.subject,
+              timezone,
+              replyToMessage.cc,
             );
 
       const serializedAttachments = await serializeFiles(data.attachments);
@@ -443,6 +453,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         autofocus={true}
         settingsLoading={settingsLoading}
         replyToMessageId={replyToMessage?.id ?? null}
+        replyToMessage={replyToMessage}
         headerPreview={headerPreview}
         sendButtonLabel={isAssistedDraftForId(draftId) ? 'Review & Send' : 'Send'}
       />

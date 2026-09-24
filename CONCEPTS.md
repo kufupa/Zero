@@ -22,7 +22,7 @@ SPA chrome that calls `connections.setDefault` to flip `is_default` and rescope 
 
 ### Mail shell
 
-Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML) must scroll inside the thread column; it must not shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
+Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML, banner-heavy mail) must stay width-contained inside the thread column; it must not inflate that column’s content width or shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
 
 ### Wide split
 
@@ -40,6 +40,16 @@ Staff-facing Close/X contract on Mid-width exclusive panes: clearing thread sele
 
 Reading-pane message order that shows the chronologically newest message first. Wire/`mail.get` order stays oldest → newest; the pane reverses only at the list boundary. `latest` remains the chronological last message (not the first visual row). Reply composer mounts above the target message. Distinct from Mail shell (column chrome) and from inbox list sort.
 
+Thread-level chrome that must stay above the whole message list (notably Thread Attachments) cannot hang on the chronologically oldest message — under newest-on-top that row paints mid-list or last, not at the top.
+
+### Thread Attachments
+
+Reading-pane strip that aggregates downloadable attachments across every message in the open thread and sits above the message list. Distinct from per-message attachment chips under a single message body. When many filenames are present, chips scroll horizontally inside a shrinkable row rather than widening the thread column.
+
+### One-click EML download
+
+Message-header reading action (`.eml` button and three-dots menu item) that exports a single email as an RFC 822 `.eml` file into Chrome/Edge's native download shelf in ~150ms. Bypasses cross-origin browser drag-and-drop restrictions by enabling staff to drag the file directly out of the browser's download shelf into external web enterprise applications like Infor HMS Web (recreating Outlook 2016 desktop drag-and-drop parity). Backed by direct presigned S3 URLs when raw MIME exists and on-the-fly RFC 822 synthesis fallback. Distinct from Thread Attachments (which exports files enclosed within an email).
+
 ### Reply action scope
 
 Mail-view distinction between an action attached to a rendered message, which targets that message, and a toolbar, context-menu, or hotkey action, which targets the thread's chronological latest message. This remains true when the reading pane presents messages newest-first; visual position does not redefine the thread-level target.
@@ -53,6 +63,8 @@ The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pi
 ### Unstamped Centurion routing
 
 When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` still routes: direct-To an active transport email (e.g. `navaai@`) wins first; else To/Cc/Bcc/From matching the Centurion transport email or its `send_from_config.aliases` lands on Centurion. Unknown unstamped mail still quarantines. Stamp present → header/alias lookup unchanged. Pilot deferral until IT stamps; not a replacement for relay stamp/strip.
+
+*Avoid: Forwarding hotel Sent to the ingest address as To — direct-To wins and parks the clone on the ingest transport instead of Centurion. Prefer ItemSend Auto-BCC so To stays the guest and Centurion equated From routing applies.*
 
 ### Quarantine promote
 
@@ -94,9 +106,15 @@ Hotel SMTP branding relay (`172.24.0.8` / `branding.legacyhotels.co.za`) that in
 
 ### Audit self-BCC
 
-Outbound practice of BCC'ing the active mailbox transport address on every `mail.send` so Zimbra/Outlook can file a Sent copy and the POP3 sink can ingest a return for reconciliation. Orthogonal to Rocketseed branding. Working-tree killswitch `MAIL_SELF_BCC=false|0|off` may disable it for testing once that gate is committed/deployed; until then, omit BCC on direct probe sends.
+Outbound practice of BCC'ing the active mailbox transport address on every Nava `mail.send` so Zimbra/Outlook can file a Sent copy and the POP3 sink can ingest a return for reconciliation. Orthogonal to Rocketseed branding. Working-tree killswitch `MAIL_SELF_BCC=false|0|off` may disable it for testing once that gate is committed/deployed; until then, omit BCC on direct probe sends.
 
-*Avoid: assuming the Centurion BCC causes Centurion banners; banners require a provisioned From on the Rocketseed path.*
+*Avoid: assuming the Centurion BCC causes Centurion banners; banners require a provisioned From on the Rocketseed path. Distinct from ItemSend Auto-BCC (hotel Outlook workstation VBA).*
+
+### ItemSend Auto-BCC
+
+Workstation Classic Outlook VBA that, on `Application_ItemSend`, adds the ingest mailbox as BCC on the **same** SMTP send the guest receives. Preserves Message-ID, In-Reply-To, References, and subject so POP3 ingest can store hotel-sent outbound on the Centurion transport and join threads. Distinct from Audit self-BCC (Nava app send path) and from SentItems Forward clones (second SMTP send that breaks threading).
+
+*Avoid: SentItems ItemAdd + Forward / Copy-then-Send shadow patterns; New Outlook / OWA / phone (no reliable VBA hook).*
 
 ### MAIL_TRANSPORT_MODE
 
@@ -140,9 +158,9 @@ Shared-inbox product rule that greying means “ball not with us”: when the ma
 
 ### Hotel-sent
 
-Inbound POP3/MIME copy whose From matches the active mailbox transport (or its send-from aliases)—typically an Outlook/Zimbra Sent copy filed back through the ingest sink. Persisted as outbound direction for the logical mailbox so shared-inbox reply state and Ball-in-court auto-read can treat it like a Nava send. Excludes self-recipient loopback copies that are not hotel-sent.
+Inbound POP3/MIME copy whose From matches the active mailbox transport (or its send-from aliases)—typically an Outlook/Zimbra Sent copy filed back through the ingest sink (including ItemSend Auto-BCC copies). Persisted as outbound direction for the logical mailbox so shared-inbox reply state and Ball-in-court auto-read can treat it like a Nava send. Excludes self-recipient loopback copies that are not hotel-sent.
 
-*Avoid: treating hotel-sent as a second POP3 account; the sink remains the Ingest mailbox.*
+*Avoid: treating hotel-sent as a second POP3 account; the sink remains the Ingest mailbox. Forward clones To=ingest are usually routed off Centurion and are not hotel-sent.*
 
 ### Draft lifecycle status
 
@@ -426,10 +444,6 @@ The pastel background/text pair used for primary hotel category chrome (nav rows
 
 Sidebar user-filing surface for custom folders built on mailLabel rows (slash names for nesting). Staff drag finished mail here so inbox stays unactioned work. Distinct from hotel AI Folders (category queues) and from system places (inbox/archive/spam/bin flags). Schema and API names stay mailLabel / labelIds / labels.*.
 
-### Spam-scoped My Folder
-
-A reserved user label (e.g. Quarantine for FortiMail digests) that lists under the Spam system folder with `labelIds` filtering, not under archive+labelIds. Archive-like chrome, move actions, and optimistic filing must treat these UUID routes as spam-scoped — route-filter alone is insufficient. Distinct from ordinary My folders (archive filing) and from folder-first spam membership (`spam_at` truth).
-
 ### File threads
 
 Exclusive user-label filing mutation: set the target user label on threads, archive them out of inbox, clear trash/spam placement, leave AI categoryIds untouched. Unfile is Move to Inbox (clear archive), which drops the thread from the folder list that filters archive+labelIds.
@@ -473,16 +487,6 @@ Ops corpus analysis over connected-mailbox exports (not product mail UI). Used f
 ### Actionable reservation thread
 
 A reservation-work thread in the analysis denominator: Luna intents for new booking, quote, group/event, or modify, after excluding pure channel confirmation digests and OTA system notices that carry no guest/agent request language. Distinct from the full mailbox thread count and from hotel-category Automated-channel filing in the SPA.
-
-### Responded actionable thread
-
-An actionable reservation thread with deterministic evidence that the hotel or its automation answered the commercial request, including evidence carried by reply headers, quoted hotel blocks, or a causally matched related message. Distinct from merely having an outbound message in the same source thread and from read/unread state.
-
-### Conversation-link overlay
-
-A secondary graph relation that groups distinct mail threads for inbox display without changing their authoritative source thread IDs.
-
-Weak evidence such as guarded subject, quoted-body, or orphan matches is bounded and deterministic; when discovery rules change, unsafe persisted edges are superseded rather than deleted.
 
 ### Trigger inbound
 
@@ -534,6 +538,28 @@ Mandatory dual review on every implementation plan: `gstack-plan-eng-review` as 
 
 Hard override that forbids Vitest (and similar runners) against pilot/production Postgres, including under overnight autonomy and “make tests green” pressure. Prefer disposable non-production databases for DB-required tests; prove pilot with read-only SQL/API, health checks, or purpose-built non-test scripts. Related: Pilot RDS vitest refuse, VITEST_ALLOW_PILOT_RDS, Wipe-safe pilot verify.
 
+## Outlook desktop taskpane domain
+
+### Outlook Task Pane
+
+Native WinForms `CustomTaskPane` instance hosted in Classic Outlook 2016 Explorer/Inspector windows, docked to the right edge and running an embedded Microsoft Edge WebView2 runtime.
+
+### VSTO WebView2 Bridge
+
+The .NET Framework 4.8 C# COM add-in registered in `HKCU\Software\Microsoft\Office\Outlook\Addins` that instantiates WebView2, points it to the canonical HTTPS task pane URL, and brokers bidirectional JSON messaging between the Outlook COM object model and web DOM.
+
+### Nava Task Pane Route
+
+The dedicated, responsive web route (`/outlook-pane`) in `apps/mail` styled for a narrow (~350–450px) taskpane viewport, rendering AI reservationist cards, active email inspection, and pilot actions.
+
+### Workstation Client
+
+Physical or virtual Windows PC on the hotel LAN running Classic Outlook 2016 with local POP3/PST storage against the hotel Zimbra server, connecting to `https://nava.legacyhotels.co.za` over hotel LAN/OpenVPN.
+
+### Workstation Bridge Protocol
+
+The versioned JSON RPC message contract exchanged over `window.chrome.webview.postMessage` and `WebMessageReceived` bridging Outlook COM capabilities (active email headers, selection change events, reply draft insertion) into the web client.
+
 ## Flagged ambiguities
 
 - **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
@@ -548,4 +574,19 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
 - **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
+- **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
+
+## Pilot measurement
+
+### Coverage-qualified mail baseline
+
+Observed mailbox service over an explicit arrival window and observation cutoff, qualified by reconciled incoming/sent source coverage and timestamp provenance. Missing sent mail, unknown source intervals and off-email work are not evidence of staff inactivity or lost revenue. Distinct from a complete baseline of all hotel operations and from Nava treatment-effect measurement.
+
+### Private reply shadow
+
+Background reply prediction sealed with its available-at-the-time inputs and later compared with observed staff replies and supporting facts. It stores private evaluation artifacts without exposing a draft, changing mailbox/work state or sending mail. Distinct from legacy Live reservation shadow, whose contract intentionally retains counters rather than business evidence or draft bodies.
+
+### Embedded task measurement
+
+Optional timing and quality comparison during visits already occurring in the one-person pilot. Assistance offered, actual exposure and complete task effort are separate observations; partial or abandoned timing cannot become a time-saving claim. Distinct from always-on passive mail-service metrics and from a hotel-wide revenue experiment.

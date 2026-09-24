@@ -403,9 +403,15 @@ function NavItem(item: NavItemProps & { href: string }) {
   const badgeTooltip = item.badgeTooltip;
   const unreadText = hasUnread ? (badgeTooltip ?? `${unreadCount} unread`) : undefined;
   const tooltipText = React.useMemo(() => {
-    if (state !== 'collapsed') return undefined;
     const base = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
-    return unreadText ? `${base}: ${unreadText}` : base;
+    if (state === 'collapsed') {
+      return unreadText ? `${base}: ${unreadText}` : base;
+    }
+    // Expanded rows: title-only visible; keep description on hover.
+    if (item.subtitle) {
+      return unreadText ? `${base}: ${unreadText}` : base;
+    }
+    return undefined;
   }, [state, item.subtitle, item.title, unreadText]);
   const linkAriaLabel = unreadText ? `${item.title}: ${unreadText}` : undefined;
 
@@ -428,8 +434,6 @@ function NavItem(item: NavItemProps & { href: string }) {
     resetSearchValue();
     setOpenMobile(false);
   };
-
-  const hasCustomTheme = Boolean(item.style);
 
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -483,17 +487,6 @@ function NavItem(item: NavItemProps & { href: string }) {
             {item.icon && <item.icon ref={iconRef} className="mr-2 shrink-0" />}
             <span className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-left">
               <span className="block truncate text-[13px] leading-tight">{item.title}</span>
-              {item.subtitle ? (
-                <span
-                  className={cn(
-                    hasCustomTheme
-                      ? 'block truncate text-[11px] leading-tight text-current opacity-80'
-                      : 'text-muted-foreground block truncate text-[11px] leading-tight dark:text-[#898989]',
-                  )}
-                >
-                  {item.subtitle}
-                </span>
-              ) : null}
             </span>
             {state !== 'collapsed' && hasUnread && (
               <Tooltip>
