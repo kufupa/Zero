@@ -171,12 +171,23 @@ export default function OutlookPanePage() {
       if (details.length || !opened || legacyReplyOpened) toast.warning(`${replyLabel}${message}`);
       else toast.success(`${replyLabel}${message}`);
     } catch (err) {
-      if (!(err instanceof Error && err.message.includes('timed out'))) {
+      const errorCode =
+        err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : null;
+      const hasUnknownOutcome = errorCode === 'OPERATION_OUTCOME_UNKNOWN';
+      const timedOut = err instanceof Error && err.message.includes('timed out');
+      if (!timedOut && !hasUnknownOutcome) {
         replyRetries.current.delete(key);
       }
-      toast.error(
-        `${replyLabel}Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
-      );
+      if (hasUnknownOutcome) {
+        const message =
+          'Outlook may have completed the reply, but did not confirm it. Check Outlook Drafts before retrying; any retry will reuse the same operation ID.';
+        setDraftStatus({ key, message });
+        toast.error(`${replyLabel}${message}`);
+      } else {
+        toast.error(
+          `${replyLabel}Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
+        );
+      }
     } finally {
       replyInFlight.current = false;
       setIsDraftPending(false);

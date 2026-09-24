@@ -33,7 +33,7 @@ jobs:
             env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
               tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
           else
-            echo '::warning::Private VSTO submodule unavailable; native source and installer contracts NOT verified in root CI. Windows VSTO workflow and runtime smoke test remain release gates.'
+            echo '::warning::Private VSTO submodule unavailable; native source and installer contracts NOT verified in root CI. Before merging or publishing, require a successful "Outlook VSTO installer" workflow in kufupa/nava-outlook-addin for the exact gitlink SHA and a Classic Outlook runtime smoke test.'
           fi
 
       - name: Lint JS

@@ -22,9 +22,10 @@ import {
   AccountPageSchema,
   type WorkstationEmailPayload,
 } from '../lib/workstation/bridge-protocol';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useOutlookBridge } from '../lib/workstation/use-outlook-bridge';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useState } from 'react';
 
 describe('Workstation Bridge Protocol', () => {
   it('uses protocol v3 and exposes the reusable mail action set', () => {
@@ -100,7 +101,7 @@ describe('Workstation Bridge Protocol', () => {
   it('parses capabilities and the native send/delete result contracts', () => {
     const capabilities = BridgeCapabilitiesSchema.parse({
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.9',
+      addinVersion: '1.0.10',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -267,10 +268,26 @@ describe('Workstation Bridge Protocol', () => {
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBeDefined();
   });
+
+  it('preserves structured native operation-outcome error codes', () => {
+    const parsed = parseBridgeMessage(
+      JSON.stringify({
+        requestId: 'req-unknown-outcome',
+        action: 'CREATE_REPLY_DRAFT',
+        success: false,
+        error: 'Outlook may have completed the operation.',
+        errorCode: 'OPERATION_OUTCOME_UNKNOWN',
+      }),
+    );
+
+    expect(parsed.errorCode).toBe('OPERATION_OUTCOME_UNKNOWN');
+  });
 });
 
 function BridgeProbe() {
-  const { isConnected, activeEmail, workstationInfo, supportsAction } = useOutlookBridge();
+  const { isConnected, activeEmail, workstationInfo, supportsAction, sendCommand } =
+    useOutlookBridge();
+  const [errorCode, setErrorCode] = useState('');
   return (
     <div>
       <span data-testid="connected">{isConnected ? 'yes' : 'no'}</span>
@@ -280,6 +297,22 @@ function BridgeProbe() {
       <span data-testid="reply-supported">
         {supportsAction('CREATE_REPLY_DRAFT') ? 'yes' : 'no'}
       </span>
+      <span data-testid="bridge-error-code">{errorCode}</span>
+      <button
+        type="button"
+        onClick={() => {
+          void sendCommand<Record<string, never>, unknown>(
+            'CREATE_REPLY_DRAFT',
+            {} as Record<string, never>,
+          ).catch((error: unknown) => {
+            if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
+              setErrorCode(error.code);
+            }
+          });
+        }}
+      >
+        Trigger bridge error
+      </button>
     </div>
   );
 }
@@ -321,14 +354,14 @@ describe('useOutlookBridge selection events', () => {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.9',
+      version: '1.0.10',
       bridgeProtocolVersion: 3,
     });
 
     const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
     respondToBridgeRequest(capabilitiesRequest, {
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.9',
+      addinVersion: '1.0.10',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -400,7 +433,7 @@ describe('useOutlookBridge selection events', () => {
       workstationUser: 'test-user',
       outlookEmail: 'test@example.com',
       outlookVersion: '16.0',
-      version: '1.0.9',
+      version: '1.0.10',
       bridgeProtocolVersion: 3,
     });
 
@@ -428,7 +461,7 @@ describe('useOutlookBridge selection events', () => {
     const retryRequest = await waitForBridgeRequest('GET_CAPABILITIES', nextRequestIndex);
     respondToBridgeRequest(retryRequest, {
       bridgeProtocolVersion: 3,
-      addinVersion: '1.0.9',
+      addinVersion: '1.0.10',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
       newOutlookSupported: false,
@@ -441,6 +474,77 @@ describe('useOutlookBridge selection events', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('reply-supported').textContent).toBe('yes'));
+  });
+
+  it('retries a transient initial email read without marking the bridge disconnected', async () => {
+    render(<BridgeProbe />);
+    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.10',
+      bridgeProtocolVersion: 3,
+    });
+
+    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
+    respondToBridgeRequest(capabilitiesRequest, {
+      bridgeProtocolVersion: 3,
+      addinVersion: '1.0.10',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['PING', 'GET_CAPABILITIES'],
+    });
+
+    const firstEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    const postMessage = window.chrome?.webview?.postMessage as unknown as {
+      mock: { calls: Array<[unknown]> };
+    };
+    const nextRequestIndex = postMessage.mock.calls.length;
+    respondToBridgeRequest(firstEmailRequest, null, false);
+
+    expect(screen.getByTestId('connected').textContent).toBe('yes');
+    const retryRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL', nextRequestIndex);
+    respondToBridgeRequest(retryRequest, {
+      entryId: 'mail-1',
+      subject: 'Availability',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17T12:00:00Z',
+      bodyText: 'Can you host us?',
+      bodyHtml: '<p>Can you host us?</p>',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connected').textContent).toBe('yes');
+      expect(screen.getByTestId('subject').textContent).toBe('Availability');
+    });
+  });
+
+  it('propagates native operation error codes through sendCommand rejections', async () => {
+    render(<BridgeProbe />);
+    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.10',
+      bridgeProtocolVersion: 3,
+    });
+    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), null, false);
+    respondToBridgeRequest(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trigger bridge error' }));
+    const mutationRequest = await waitForBridgeRequest('CREATE_REPLY_DRAFT');
+    respondToBridgeRequest(mutationRequest, null, false, 'OPERATION_OUTCOME_UNKNOWN');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('bridge-error-code').textContent).toBe('OPERATION_OUTCOME_UNKNOWN');
+    });
   });
 
   it('retains connected legacy reads when PING omits protocol and capabilities fail', async () => {
@@ -531,7 +635,12 @@ async function waitForBridgeRequest(
   return request!;
 }
 
-function respondToBridgeRequest(request: TestBridgeRequest, data: unknown, success = true): void {
+function respondToBridgeRequest(
+  request: TestBridgeRequest,
+  data: unknown,
+  success = true,
+  errorCode?: string,
+): void {
   const response = JSON.stringify({
     requestId: request.requestId,
     version: 1,
@@ -539,6 +648,7 @@ function respondToBridgeRequest(request: TestBridgeRequest, data: unknown, succe
     success,
     data,
     ...(success ? {} : { error: 'Unknown action: ' + request.action }),
+    ...(errorCode ? { errorCode } : {}),
   });
   act(() => {
     for (const listener of listeners.get('message') ?? []) {

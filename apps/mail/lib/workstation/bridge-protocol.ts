@@ -269,6 +269,7 @@ export interface BridgeResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+  errorCode?: string;
 }
 
 export function createBridgeRequest<T>(action: BridgeAction, payload: T): BridgeRequest<T> {
@@ -294,6 +295,7 @@ export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> 
       success: Boolean(json.success),
       data: json.data as T | undefined,
       error: typeof json.error === 'string' ? json.error : undefined,
+      errorCode: typeof json.errorCode === 'string' ? json.errorCode : undefined,
     };
   } catch (err) {
     return {

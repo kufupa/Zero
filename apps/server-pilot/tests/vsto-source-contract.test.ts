@@ -21,6 +21,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(ci).toContain('tests/workstation-bridge-protocol.test.tsx');
     expect(ci).toContain('::warning::Private VSTO submodule unavailable');
     expect(ci).toContain('native source and installer contracts NOT verified');
+    expect(ci).toContain('workflow in kufupa/nava-outlook-addin for the exact gitlink SHA');
     expect(ci).toContain('tests/vsto-source-contract.test.ts');
     expect(ci).toContain('tests/outlook-addin-installer-nginx.test.ts');
   });
@@ -180,9 +181,9 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     );
   });
 
-  it('pins the Inno installer version to 1.0.9', () => {
+  it('pins the Inno installer version to 1.0.10', () => {
     const iss = readFileSync(path.resolve(vstoRoot, '../installer/setup.iss'), 'utf8');
-    expect(iss).toContain('AppVersion=1.0.9');
+    expect(iss).toContain('AppVersion=1.0.10');
   });
 
   it('compiles the typed mail operations into the installed VSTO assembly', () => {
@@ -525,9 +526,14 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('submitted');
     expect(source).not.toContain('{ "sent", true }');
     expect(source).toContain('catch (System.Exception)');
-    expect(dispatcher).toContain('_operationCache.TryGet');
+    expect(dispatcher).toContain('_operationCache.TryBegin');
     expect(dispatcher).toContain('_operationCache.StoreCompleted');
+    expect(dispatcher).toContain('_operationCache.MarkIndeterminate');
     expect(dispatcher).toContain('operationId');
+    expect(dispatcher).toContain('OPERATION_OUTCOME_UNKNOWN');
+    expect(dispatcher.indexOf('_operationCache.TryBegin')).toBeLessThan(
+      dispatcher.indexOf('switch (action)'),
+    );
   });
 
   it('rejects nonblank legacy account identifiers without an SMTP separator', () => {
@@ -706,11 +712,11 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     );
 
     expect(dispatcher).toContain('{ "version", ADDIN_VERSION }');
-    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.9"');
-    expect(assembly).toContain('AssemblyVersion("1.0.9.0")');
-    expect(assembly).toContain('AssemblyFileVersion("1.0.9.0")');
-    expect(iss).toContain('AppVersion=1.0.9');
-    expect(workflow).toContain('-Version 1.0.9.0');
+    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.10"');
+    expect(assembly).toContain('AssemblyVersion("1.0.10.0")');
+    expect(assembly).toContain('AssemblyFileVersion("1.0.10.0")');
+    expect(iss).toContain('AppVersion=1.0.10');
+    expect(workflow).toContain('-Version 1.0.10.0');
   });
 
   it('documents Office LTSC 2024 as a 16.0 but unverified runtime target', () => {

@@ -32,6 +32,7 @@ export type WorkstationInfo = {
 };
 
 const CAPABILITIES_RETRY_DELAY_MS = 250;
+const ACTIVE_EMAIL_RETRY_DELAY_MS = 250;
 
 export function useOutlookBridge() {
   const [isConnected, setIsConnected] = useState(false);
@@ -62,7 +63,11 @@ export function useOutlookBridge() {
           if (resp.success) {
             resolve(resp.data as TResp);
           } else {
-            reject(new Error(resp.error || `Bridge action ${action} failed`));
+            const error = new Error(resp.error || `Bridge action ${action} failed`) as Error & {
+              code?: string;
+            };
+            if (resp.errorCode) error.code = resp.errorCode;
+            reject(error);
           }
         });
 
@@ -89,7 +94,6 @@ export function useOutlookBridge() {
     const timeouts = pendingTimeouts.current;
     const requests = pendingRequests.current;
     if (!window.chrome?.webview) {
-      setIsConnected(false);
       return;
     }
 
@@ -140,6 +144,28 @@ export function useOutlookBridge() {
         });
     };
 
+    const requestActiveEmail = (attempt: number) => {
+      void sendCommand<Record<string, never>, WorkstationEmailPayload>(
+        'GET_ACTIVE_EMAIL',
+        {} as Record<string, never>,
+      )
+        .then((mail) => {
+          if (!isActive) return;
+          const email = WorkstationEmailPayloadSchema.safeParse(mail);
+          setActiveEmail(email.success ? email.data : null);
+        })
+        .catch(() => {
+          if (!isActive) return;
+          setActiveEmail(null);
+          if (attempt >= 1) return;
+          const retryTimeout = setTimeout(() => {
+            timeouts.delete(retryTimeout);
+            if (isActive) requestActiveEmail(attempt + 1);
+          }, ACTIVE_EMAIL_RETRY_DELAY_MS);
+          timeouts.add(retryTimeout);
+        });
+    };
+
     sendCommand<
       Record<string, never>,
       WorkstationInfo & { version?: string; bridgeProtocolVersion?: number }
@@ -157,19 +183,7 @@ export function useOutlookBridge() {
           });
         }
         requestCapabilities(0);
-      })
-      .then(() =>
-        sendCommand<Record<string, never>, WorkstationEmailPayload>(
-          'GET_ACTIVE_EMAIL',
-          {} as Record<string, never>,
-        ),
-      )
-      .then((mail) => {
-        if (!isActive) return;
-        const email = WorkstationEmailPayloadSchema.safeParse(mail);
-        if (email.success) {
-          setActiveEmail(email.data);
-        }
+        requestActiveEmail(0);
       })
       .catch(() => {
         if (isActive) setIsConnected(false);

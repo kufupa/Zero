@@ -12,7 +12,7 @@ describe('Outlook add-in installer and nginx download route', () => {
     const issPath = path.join(root, 'vsto/installer/setup.iss');
     expect(existsSync(issPath)).toBe(true);
     const iss = readFileSync(issPath, 'utf8');
-    expect(iss).toContain('AppVersion=1.0.9');
+    expect(iss).toContain('AppVersion=1.0.10');
     expect(iss).toContain('PrivilegesRequired=lowest');
     expect(iss).toContain('RegisterTrust.exe');
     expect(iss).toContain('taskkill');

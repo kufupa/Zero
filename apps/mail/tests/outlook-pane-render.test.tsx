@@ -24,7 +24,7 @@ vi.mock('sonner', () => ({
 
 const v3Capabilities = {
   bridgeProtocolVersion: 3,
-  addinVersion: '1.0.9',
+  addinVersion: '1.0.10',
   outlookVersion: '16.0',
   runtime: 'Classic Outlook for Windows',
   newOutlookSupported: false,
@@ -43,7 +43,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       workstationUser: 'ropperman',
       outlookEmail: 'ropperman@legacyhotels.co.za',
       outlookVersion: '16.0',
-      addinVersion: bridgeMockState.protocolVersion === 3 ? '1.0.9' : '1.0.8',
+      addinVersion: bridgeMockState.protocolVersion === 3 ? '1.0.10' : '1.0.8',
       bridgeProtocolVersion: bridgeMockState.protocolVersion,
     },
     capabilities: bridgeMockState.protocolVersion === 3 ? v3Capabilities : null,
@@ -158,6 +158,30 @@ describe('OutlookPanePage', () => {
     const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
     const retryPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
     expect(firstPayload.operationId).toBeTruthy();
+    expect(retryPayload.operationId).toBe(firstPayload.operationId);
+  });
+
+  it('reuses the reply operation ID when Outlook reports an unknown outcome', async () => {
+    const indeterminateError = Object.assign(new Error('Outlook outcome is unknown.'), {
+      code: 'OPERATION_OUTCOME_UNKNOWN',
+    });
+    sendCommandMock
+      .mockRejectedValueOnce(indeterminateError)
+      .mockResolvedValueOnce({ entryId: 'draft-001', displayed: true });
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    expect(screen.getByRole('status').textContent).toMatch(
+      /Outlook may have completed.*Check Outlook Drafts before retrying/i,
+    );
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+
+    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
+    const retryPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
