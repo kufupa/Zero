@@ -1,10 +1,10 @@
-import { z } from 'zod';
 import { privateProcedure, router } from '../trpc.js';
+import { z } from 'zod';
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
   outlookEmail: z.string().default('unknown'),
-  outlookVersion: z.string().default('16.0'),
+  outlookVersion: z.string().default('unknown'),
 });
 
 export const workstationRouter = router({

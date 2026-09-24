@@ -24,6 +24,18 @@ jobs:
       - name: Install dependencies 📦
         run: pnpm install
 
+      - name: Check Outlook bridge source and installer contracts
+        shell: bash
+        run: |
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx
+          if test -f apps/server-pilot/vsto/NavaOutlookAddin/ThisAddIn.cs; then
+            env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
+              tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
+          else
+            echo '::warning::Private VSTO submodule unavailable; native source and installer contracts NOT verified in root CI. Before merging or publishing, require a successful "Outlook VSTO installer" workflow in kufupa/nava-outlook-addin for the exact gitlink SHA and a Classic Outlook runtime smoke test.'
+          fi
+
       - name: Lint JS
         run: pnpm dlx oxlint@latest --deny-warnings --ignore-pattern 'external/**'
 
