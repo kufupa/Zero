@@ -28,6 +28,8 @@ import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import { m } from '@/paraglide/messages';
 import { isAdminDashboardEnabled } from '@/lib/admin-dashboard/access';
 import { usePilotCapabilities } from '@/hooks/use-pilot-capabilities';
+import { useLabIndexLoad } from '@/lib/lab/lab-index-context';
+import { buildLabNavItems } from '@/lib/lab/centurion-eval';
 // import { Video } from 'lucide-react';
 import { NavUser } from './nav-user';
 import { NavMain } from './nav-main';
@@ -45,6 +47,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const showCatchupUpload = Boolean(capabilities.catchupUpload);
   const categorySettings = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
+  const labLoad = useLabIndexLoad();
 
   const { currentSection, navItems, footerItems } = useMemo(() => {
     // Find which section we're in based on the pathname
@@ -67,6 +70,17 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               color: category.color,
             })),
         );
+      }
+
+      if (currentSection === 'lab' && labLoad?.source === 'live') {
+        const byId = new Map(buildLabNavItems(labLoad.index).map((item) => [item.id, item]));
+        items = items.map((section) => ({
+          ...section,
+          items: section.items.map((item) => {
+            const live = item.id ? byId.get(item.id) : undefined;
+            return live ? { ...item, subtitle: live.subtitle } : item;
+          }),
+        }));
       }
 
       if (currentSection === 'settings' && items[0]) {
@@ -105,7 +119,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         footerItems: bottomNavItems,
       };
     }
-  }, [location.pathname, showAdminDashboard, showCatchupUpload, categorySettings, demoMode]);
+  }, [location.pathname, showAdminDashboard, showCatchupUpload, categorySettings, demoMode, labLoad]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();
