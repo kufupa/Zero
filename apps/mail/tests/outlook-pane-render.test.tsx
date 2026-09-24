@@ -11,7 +11,11 @@ import path from 'node:path';
 
 const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
-  bridgeMockState: { protocolVersion: 3 as number | undefined, selectedEntryId: '001' },
+  bridgeMockState: {
+    protocolVersion: 3 as number | undefined,
+    selectedEntryId: '001',
+    legacyReplySupported: undefined as boolean | undefined,
+  },
 }));
 
 vi.mock('sonner', () => ({
@@ -46,7 +50,10 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     supportsAction: (action: string) =>
       bridgeMockState.protocolVersion === 3
         ? v3Capabilities.supportedActions.includes(action)
-        : ['PING', 'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'CREATE_REPLY_DRAFT'].includes(action),
+        : (action === 'CREATE_REPLY_DRAFT' && bridgeMockState.legacyReplySupported === true) ||
+          ['PING', 'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'GET_EMAIL_BY_ENTRY_ID'].includes(
+            action,
+          ),
     activeEmail: {
       entryId: bridgeMockState.selectedEntryId,
       storeId: 'store-1',
@@ -84,11 +91,13 @@ describe('OutlookPanePage', () => {
   afterEach(() => {
     cleanup();
     sendCommandMock.mockClear();
+    vi.restoreAllMocks();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.error).mockClear();
     bridgeMockState.protocolVersion = 3;
     bridgeMockState.selectedEntryId = '001';
+    bridgeMockState.legacyReplySupported = undefined;
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
@@ -152,6 +161,55 @@ describe('OutlookPanePage', () => {
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
+  it('keeps an unresolved reply ID when another message reply succeeds', async () => {
+    sendCommandMock
+      .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
+      .mockResolvedValueOnce({ entryId: 'draft-for-002', displayed: true })
+      .mockResolvedValueOnce({ entryId: 'draft-for-001', displayed: true });
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    bridgeMockState.selectedEntryId = '001';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(3));
+
+    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
+    const secondPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
+    const retryPayload = sendCommandMock.mock.calls[2]?.[1] as { operationId: string };
+    expect(firstPayload.operationId).not.toBe(secondPayload.operationId);
+    expect(retryPayload.operationId).toBe(firstPayload.operationId);
+  });
+
+  it('blocks an unresolved reply retry after the native idempotency window expires', async () => {
+    const startedAt = Date.now();
+    sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
+    fireEvent.click(button);
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts/i),
+    );
+  });
+
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
     sendCommandMock.mockImplementationOnce(
@@ -193,6 +251,38 @@ describe('OutlookPanePage', () => {
       expect(screen.getByRole('status').textContent).toMatch(/location.*unverified/i);
     });
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
+  });
+
+  it('maps a legacy true reply result to an opened composer with unknown save status', async () => {
+    bridgeMockState.protocolVersion = 2;
+    bridgeMockState.legacyReplySupported = true;
+    sendCommandMock.mockResolvedValueOnce(true);
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(
+        /opened the reply composer.*save status is unconfirmed/i,
+      ),
+    );
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringMatching(/opened the reply composer.*save status is unconfirmed/i),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('reports a legacy false reply result as a failure', async () => {
+    bridgeMockState.protocolVersion = 2;
+    bridgeMockState.legacyReplySupported = true;
+    sendCommandMock.mockResolvedValueOnce(false);
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining('Outlook could not create the reply draft'),
+      ),
+    );
   });
 
   it('shows a folder placement warning in both the reply status and toast', async () => {
@@ -302,6 +392,9 @@ describe('OutlookPanePage', () => {
     render(<OutlookPanePage />);
 
     expect(screen.getByRole('alert').textContent).toMatch(/update the Outlook add-in/i);
+    expect(
+      screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled'),
+    ).toBe(true);
   });
 
   it('registers /outlook-pane as a top-level route', () => {

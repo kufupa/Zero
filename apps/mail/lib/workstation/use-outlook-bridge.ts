@@ -31,6 +31,8 @@ export type WorkstationInfo = {
   bridgeProtocolVersion?: number;
 };
 
+const CAPABILITIES_RETRY_DELAY_MS = 250;
+
 export function useOutlookBridge() {
   const [isConnected, setIsConnected] = useState(false);
   const [activeEmail, setActiveEmail] = useState<WorkstationEmailPayload | null>(null);
@@ -70,7 +72,8 @@ export function useOutlookBridge() {
     [],
   );
 
-  // v2 installers support reading selected messages; v3 mutations require negotiated capabilities.
+  // Without negotiated capabilities, the UI intentionally exposes legacy reads only. Mutations
+  // require protocol v3 because v2 has no operation-ID cache for safe retry handling.
   const supportsAction = useCallback(
     (action: BridgeAction) =>
       capabilities?.supportedActions.includes(action) ??
@@ -78,8 +81,7 @@ export function useOutlookBridge() {
         (action === 'PING' ||
           action === 'GET_ACTIVE_EMAIL' ||
           action === 'GET_FOLDER_EMAILS' ||
-          action === 'GET_EMAIL_BY_ENTRY_ID' ||
-          action === 'CREATE_REPLY_DRAFT')),
+          action === 'GET_EMAIL_BY_ENTRY_ID')),
     [capabilities, isConnected],
   );
 
@@ -91,6 +93,7 @@ export function useOutlookBridge() {
       return;
     }
 
+    let isActive = true;
     const handler = (event: { data: unknown }) => {
       const raw = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
       const parsed = parseBridgeMessage(raw);
@@ -110,11 +113,39 @@ export function useOutlookBridge() {
 
     window.chrome.webview.addEventListener('message', handler);
 
+    const requestCapabilities = (attempt: number) => {
+      void sendCommand<Record<string, never>, BridgeCapabilities>(
+        'GET_CAPABILITIES',
+        {} as Record<string, never>,
+      )
+        .then((raw) => {
+          if (!isActive) return;
+          const negotiated = BridgeCapabilitiesSchema.safeParse(raw);
+          setCapabilities(
+            negotiated.success && negotiated.data.bridgeProtocolVersion >= 3
+              ? negotiated.data
+              : null,
+          );
+        })
+        .catch(() => {
+          if (!isActive) return;
+          // Keep v2 installations read-only, but recover if v3 negotiation hit a transient failure.
+          setCapabilities(null);
+          if (attempt >= 1) return;
+          const retryTimeout = setTimeout(() => {
+            timeouts.delete(retryTimeout);
+            if (isActive) requestCapabilities(attempt + 1);
+          }, CAPABILITIES_RETRY_DELAY_MS);
+          timeouts.add(retryTimeout);
+        });
+    };
+
     sendCommand<
       Record<string, never>,
       WorkstationInfo & { version?: string; bridgeProtocolVersion?: number }
     >('PING', {} as Record<string, never>)
       .then((info) => {
+        if (!isActive) return;
         setIsConnected(true);
         if (info?.workstationUser) {
           setWorkstationInfo({
@@ -125,20 +156,7 @@ export function useOutlookBridge() {
             bridgeProtocolVersion: info.bridgeProtocolVersion,
           });
         }
-        return sendCommand<Record<string, never>, BridgeCapabilities>(
-          'GET_CAPABILITIES',
-          {} as Record<string, never>,
-        )
-          .then((raw) => {
-            const negotiated = BridgeCapabilitiesSchema.safeParse(raw);
-            if (negotiated.success && negotiated.data.bridgeProtocolVersion >= 3) {
-              setCapabilities(negotiated.data);
-            }
-          })
-          .catch(() => {
-            // Unknown action on installed v2 bridge: retain legacy read connectivity.
-            setCapabilities(null);
-          });
+        requestCapabilities(0);
       })
       .then(() =>
         sendCommand<Record<string, never>, WorkstationEmailPayload>(
@@ -147,16 +165,18 @@ export function useOutlookBridge() {
         ),
       )
       .then((mail) => {
+        if (!isActive) return;
         const email = WorkstationEmailPayloadSchema.safeParse(mail);
         if (email.success) {
           setActiveEmail(email.data);
         }
       })
       .catch(() => {
-        setIsConnected(false);
+        if (isActive) setIsConnected(false);
       });
 
     return () => {
+      isActive = false;
       for (const timeout of timeouts) {
         clearTimeout(timeout);
       }

@@ -10,10 +10,18 @@ import { Badge } from '@/components/ui/badge';
 import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 
+const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
+const REPLY_OPERATION_CACHE_TTL_MS = 15 * 60 * 1000;
+
+type PendingReplyOperation = {
+  operationId: string;
+  startedAt: number;
+};
+
 export default function OutlookPanePage() {
   const { isConnected, activeEmail, workstationInfo, capabilities, supportsAction, sendCommand } =
     useOutlookBridge();
-  const replyRetry = useRef<{ key: string; operationId: string } | null>(null);
+  const replyRetries = useRef(new Map<string, PendingReplyOperation>());
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
@@ -98,21 +106,35 @@ export default function OutlookPanePage() {
 
   const handleInsertAiDraft = async () => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
-    replyInFlight.current = true;
-    setIsDraftPending(true);
-    setDraftStatus(null);
     const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
     const subject =
       activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
     const replyLabel = `Reply to “${subject}”: `;
-    if (replyRetry.current?.key !== key) {
-      replyRetry.current = { key, operationId: createOperationId() };
+    const previousAttempt = replyRetries.current.get(key);
+    const now = Date.now();
+    if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
+      toast.error(
+        `${replyLabel}The safe retry window has expired. Check Outlook Drafts before refreshing the pane or retrying.`,
+      );
+      return;
     }
+    if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
+      toast.error(
+        `${replyLabel}Too many replies have unresolved outcomes. Check Outlook Drafts before refreshing the pane or starting another reply.`,
+      );
+      return;
+    }
+
+    replyInFlight.current = true;
+    setIsDraftPending(true);
+    setDraftStatus(null);
+    const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
+    replyRetries.current.set(key, attempt);
     try {
-      const result = await sendCommand<Record<string, unknown>, MailLocation>(
+      const result = await sendCommand<Record<string, unknown>, MailLocation | boolean>(
         'CREATE_REPLY_DRAFT',
         {
-          operationId: replyRetry.current.operationId,
+          operationId: attempt.operationId,
           entryId: activeEmail.entryId,
           ...(activeEmail.storeId ? { storeId: activeEmail.storeId } : {}),
           htmlBody: `<div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1F497D;">
@@ -124,25 +146,34 @@ export default function OutlookPanePage() {
           openInComposer: true,
         },
       );
-      replyRetry.current = null;
-      const opened = result?.displayed === true;
-      const details = [
-        result?.composerWarning,
-        result?.draftPlacementWarning,
-        result?.folderPlacementWarning,
-        result?.locationUnverified ? 'Draft location is unverified.' : null,
-      ].filter(Boolean);
-      const summary = opened
-        ? 'Outlook draft opened in composer.'
-        : result?.entryId
-          ? 'Outlook draft saved but not opened in composer.'
-          : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
+      if (result === false) throw new Error('Outlook could not create the reply draft.');
+      replyRetries.current.delete(key);
+      const legacyReplyOpened = result === true;
+      const replyResult = typeof result === 'object' && result !== null ? result : null;
+      const opened = legacyReplyOpened || replyResult?.displayed === true;
+      const details = legacyReplyOpened
+        ? []
+        : [
+            replyResult?.composerWarning,
+            replyResult?.draftPlacementWarning,
+            replyResult?.folderPlacementWarning,
+            replyResult?.locationUnverified ? 'Draft location is unverified.' : null,
+          ].filter(Boolean);
+      const summary = legacyReplyOpened
+        ? 'Outlook opened the reply composer; save status is unconfirmed.'
+        : opened
+          ? 'Outlook draft opened in composer.'
+          : replyResult?.entryId
+            ? 'Outlook draft saved but not opened in composer.'
+            : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
       const message = [summary, ...details].join(' ');
       setDraftStatus({ key, message });
-      if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
+      if (details.length || !opened || legacyReplyOpened) toast.warning(`${replyLabel}${message}`);
       else toast.success(`${replyLabel}${message}`);
     } catch (err) {
-      if (!(err instanceof Error && err.message.includes('timed out'))) replyRetry.current = null;
+      if (!(err instanceof Error && err.message.includes('timed out'))) {
+        replyRetries.current.delete(key);
+      }
       toast.error(
         `${replyLabel}Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
       );

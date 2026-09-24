@@ -285,6 +285,42 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('EnsureItemIsInDeletedItemsFolder');
   });
 
+  it('keeps explicit MOVE_TO_SPAM destinations and defaults only missing destinations', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const policy = read('OutlookMailOperationPolicy.cs');
+    const moveToSpam = operations.slice(
+      operations.indexOf('public Dictionary<string, object> MoveToSpam('),
+      operations.indexOf('public Dictionary<string, object> CreateFolder('),
+    );
+
+    expect(policy).toContain('NormalizeSpamMovePayload');
+    expect(policy).toContain('string.IsNullOrWhiteSpace(targetFolderEntryId)');
+    expect(policy).toContain('string.IsNullOrWhiteSpace(folderName)');
+    expect(moveToSpam).toContain('NormalizeSpamMovePayload(payload)');
+  });
+
+  it('clears whitespace MOVE_TO_SPAM folder IDs before folder resolution', () => {
+    const policy = read('OutlookMailOperationPolicy.cs');
+    const normalizer = policy.slice(
+      policy.indexOf('internal static Dictionary<string, object> NormalizeSpamMovePayload('),
+      policy.indexOf('private static string PayloadString('),
+    );
+
+    expect(normalizer).toContain('if (string.IsNullOrWhiteSpace(targetFolderEntryId))');
+    expect(normalizer).toContain('normalized.Remove("targetFolderEntryId")');
+  });
+
+  it('keeps cached operation payload fingerprints fixed-size', () => {
+    const cache = read('OutlookBridgeOperationCache.cs');
+    const fingerprint = cache.slice(
+      cache.indexOf('internal static string CanonicalFingerprint('),
+      cache.indexOf('private static void AppendCanonical('),
+    );
+
+    expect(fingerprint).toContain('SHA256.Create()');
+    expect(fingerprint).toContain('ComputeHash');
+  });
+
   it('clears and verifies a saved sender override before using Outlook default account', () => {
     const source = read('OutlookMailOperations.cs');
     const sendDraft = source.slice(

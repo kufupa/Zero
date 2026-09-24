@@ -277,6 +277,9 @@ function BridgeProbe() {
       <span data-testid="subject">{activeEmail?.subject ?? ''}</span>
       <span data-testid="protocol">{workstationInfo?.bridgeProtocolVersion ?? ''}</span>
       <span data-testid="send-supported">{supportsAction('SEND_DRAFT') ? 'yes' : 'no'}</span>
+      <span data-testid="reply-supported">
+        {supportsAction('CREATE_REPLY_DRAFT') ? 'yes' : 'no'}
+      </span>
     </div>
   );
 }
@@ -334,7 +337,7 @@ describe('useOutlookBridge selection events', () => {
       maxFolderDepth: 64,
       maxFolderCount: 5000,
       maxFolderSnapshotItems: 5000,
-      supportedActions: ['PING', 'GET_CAPABILITIES', 'SEND_DRAFT'],
+      supportedActions: ['PING', 'GET_CAPABILITIES', 'SEND_DRAFT', 'CREATE_REPLY_DRAFT'],
     });
 
     const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
@@ -352,6 +355,7 @@ describe('useOutlookBridge selection events', () => {
       expect(screen.getByTestId('connected').textContent).toBe('yes');
       expect(screen.getByTestId('protocol').textContent).toBe('3');
       expect(screen.getByTestId('send-supported').textContent).toBe('yes');
+      expect(screen.getByTestId('reply-supported').textContent).toBe('yes');
     });
   });
 
@@ -385,7 +389,58 @@ describe('useOutlookBridge selection events', () => {
       expect(screen.getByTestId('connected').textContent).toBe('yes');
       expect(screen.getByTestId('protocol').textContent).toBe('2');
       expect(screen.getByTestId('send-supported').textContent).toBe('no');
+      expect(screen.getByTestId('reply-supported').textContent).toBe('no');
     });
+  });
+
+  it('recovers v3 capabilities after a transient negotiation failure without exposing mutations early', async () => {
+    render(<BridgeProbe />);
+
+    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+      version: '1.0.9',
+      bridgeProtocolVersion: 3,
+    });
+
+    const firstCapabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
+    const postMessage = window.chrome?.webview?.postMessage as unknown as {
+      mock: { calls: Array<[unknown]> };
+    };
+    const nextRequestIndex = postMessage.mock.calls.length;
+    respondToBridgeRequest(firstCapabilitiesRequest, null, false);
+
+    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    respondToBridgeRequest(activeEmailRequest, {
+      entryId: 'mail-1',
+      subject: 'Availability',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17T12:00:00Z',
+      bodyText: 'Can you host us?',
+      bodyHtml: '<p>Can you host us?</p>',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('yes'));
+    expect(screen.getByTestId('reply-supported').textContent).toBe('no');
+
+    const retryRequest = await waitForBridgeRequest('GET_CAPABILITIES', nextRequestIndex);
+    respondToBridgeRequest(retryRequest, {
+      bridgeProtocolVersion: 3,
+      addinVersion: '1.0.9',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['PING', 'GET_CAPABILITIES', 'CREATE_REPLY_DRAFT'],
+    });
+
+    await waitFor(() => expect(screen.getByTestId('reply-supported').textContent).toBe('yes'));
   });
 
   it('retains connected legacy reads when PING omits protocol and capabilities fail', async () => {
@@ -400,6 +455,7 @@ describe('useOutlookBridge selection events', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connected').textContent).toBe('yes');
       expect(screen.getByTestId('send-supported').textContent).toBe('no');
+      expect(screen.getByTestId('reply-supported').textContent).toBe('no');
     });
   });
 
@@ -457,13 +513,17 @@ describe('useOutlookBridge selection events', () => {
 
 type TestBridgeRequest = { requestId: string; action: string };
 
-async function waitForBridgeRequest(action: string): Promise<TestBridgeRequest> {
+async function waitForBridgeRequest(
+  action: string,
+  afterCallIndex = 0,
+): Promise<TestBridgeRequest> {
   let request: TestBridgeRequest | undefined;
   await waitFor(() => {
     const postMessage = window.chrome?.webview?.postMessage as unknown as {
       mock: { calls: Array<[unknown]> };
     };
     request = postMessage.mock.calls
+      .slice(afterCallIndex)
       .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest)
       .find((candidate) => candidate.action === action);
     expect(request).toBeDefined();
