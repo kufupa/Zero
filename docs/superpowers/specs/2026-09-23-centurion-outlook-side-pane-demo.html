@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Nava Assistant — Outlook Onboarding & Infor HMS Tool</title>
-
+  <title>Nava AI — Outlook Onboarding & Infor HMS Tool</title>
+  
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-
+  
   <style>
     :root {
       color-scheme: light;
@@ -1059,18 +1059,41 @@
       color: var(--ink-secondary);
     }
 
-    /* Minimal Footer */
+    /* Minimal Support & Feedback Footer */
     .pane-footer-minimal {
-      padding: 12px;
+      padding: 10px 12px;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 6px;
+      gap: 4px;
       font-size: 11px;
-      color: var(--ink-subtle);
+      color: var(--ink-muted);
       border-top: 1px solid var(--line);
       margin-top: auto;
       flex-shrink: 0;
+      background: var(--bg-subtle);
+      text-align: center;
+    }
+    .footer-feedback-line {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--ink-secondary);
+    }
+    .footer-link {
+      color: var(--infor-blue);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .footer-link:hover {
+      text-decoration: underline;
+    }
+    .footer-sep {
+      color: var(--ink-subtle);
     }
 
     /* 1000x800 Modal */
@@ -1170,7 +1193,7 @@
     <!-- Step Controller to test any screen directly -->
     <div class="demo-step-switcher">
       <button class="demo-step-btn active" id="btnStep1" onclick="navigateToScreen('screen-welcome')">1. Welcome</button>
-      <button class="demo-step-btn" id="btnStep2" onclick="navigateToScreen('screen-diagnostics')">2. HMS Bridge</button>
+      <button class="demo-step-btn" id="btnStep2" onclick="navigateToScreen('screen-diagnostics')">2. Connection</button>
       <button class="demo-step-btn" id="btnStep3" onclick="navigateToScreen('screen-tour')">3. Tour</button>
       <button class="demo-step-btn" id="btnStep4" onclick="navigateToScreen('screen-tool')">4. Active Tool</button>
       <button class="demo-step-btn" style="color: var(--infor-blue); border-left: 1px solid var(--line); margin-left: 4px;" onclick="resetToBeginning()">↺ Restart</button>
@@ -1179,16 +1202,16 @@
 
   <!-- Outlook 380px Task Pane Container -->
   <div class="pane-container" id="paneRoot">
-
+    
     <!-- Clean Native Outlook Header -->
     <div class="pane-header">
       <div class="brand-cluster">
         <div class="brand-logo-mark">N</div>
-        <span class="brand-title">Nava Assistant</span>
+        <span class="brand-title">Nava AI</span>
       </div>
       <div class="connection-status" id="headerConnectionStatus">
         <span class="status-dot"></span>
-        <span id="headerStatusText">HRCEN</span>
+        <span id="headerStatusText">Centurion</span>
       </div>
     </div>
 
@@ -1204,7 +1227,7 @@
             <div class="onboard-hero-icon">
               <i class="fa-solid fa-hotel"></i>
             </div>
-            <h1 class="onboard-title">Welcome to Nava</h1>
+            <h1 class="onboard-title">Welcome to Nava AI</h1>
             <p class="onboard-subtitle">
               Your intelligent assistant for Infor HMS quoting and reservations, built directly into Outlook.
             </p>
@@ -1216,12 +1239,10 @@
               <i class="fa-regular fa-envelope text-slate-500"></i>
               <span>reservations@centurion.co.za</span>
             </div>
-            <span class="account-property-val">The Centurion Hotel · Property: <strong>HRCEN</strong></span>
+            <span class="account-property-val">The Centurion Hotel</span>
           </div>
 
-          <div style="font-size: 11.5px; color: var(--ink-secondary); line-height: 1.45;">
-            Nava connects this mailbox to Infor HMS to pull live rates and draft verified quotations without switching apps.
-          </div>
+
 
           <button class="btn-action-primary" id="btnStartConnect" onclick="goToDiagnostics()">
             <span>Confirm Account & Connect</span>
@@ -1241,51 +1262,27 @@
             </div>
             <h1 class="onboard-title">Connecting to Infor HMS</h1>
             <p class="onboard-subtitle">
-              Verifying local add-in handshake, cloud agent bridge, and live hotel property status.
+              Verifying connection and live hotel property status.
             </p>
           </div>
 
           <div class="diagnostics-list">
-            <!-- Item 1: Outlook VSTO Host -->
-            <div class="diagnostic-check-item verified" id="diagItem1">
+            <!-- Cloud Agent Connection -->
+            <div class="diagnostic-check-item verified" id="diagItemCloud">
               <i class="fa-solid fa-circle-check diag-icon"></i>
               <div class="diag-text-block">
                 <div class="diag-title-line">
-                  <span>Outlook VSTO Bridge</span>
-                  <span style="font-size: 10px; color: var(--success); font-weight: 700;">ACTIVE</span>
+                  <span>Nava AI Cloud Bridge</span>
+                  <span style="font-size: 10px; color: var(--success); font-weight: 700;">CONNECTED</span>
                 </div>
-                <div class="diag-desc">Outlook 2016 desktop add-in active</div>
-              </div>
-            </div>
-
-            <!-- Item 2: Cloud Agent Core -->
-            <div class="diagnostic-check-item verified" id="diagItem2">
-              <i class="fa-solid fa-circle-check diag-icon"></i>
-              <div class="diag-text-block">
-                <div class="diag-title-line">
-                  <span>Nava Agent Cloud</span>
-                  <span style="font-size: 10px; color: var(--success); font-weight: 700;">18ms PING</span>
-                </div>
-                <div class="diag-desc" id="diagServerTimeText">Connected · 2026-09-24 11:15 UTC</div>
-              </div>
-            </div>
-
-            <!-- Item 3: Infor HMS Session -->
-            <div class="diagnostic-check-item verified" id="diagItem3">
-              <i class="fa-solid fa-circle-check diag-icon"></i>
-              <div class="diag-text-block">
-                <div class="diag-title-line">
-                  <span>Infor HMS Gateway</span>
-                  <span style="font-size: 10px; color: var(--success); font-weight: 700;">HRCEN VERIFIED</span>
-                </div>
-                <div class="diag-desc">Property HRCEN · User: NAVAAI · Ready</div>
+                <div class="diag-desc" id="diagServerTimeText">Centurion Hotel · Latency 18ms · Live Sync Active</div>
               </div>
             </div>
           </div>
 
           <div style="padding: 8px 10px; background: var(--success-bg); border: 1px solid var(--success-line); border-radius: 3px; font-size: 11.5px; color: var(--success); font-weight: 600; display: flex; align-items: center; gap: 6px;">
-            <i class="fa-solid fa-shield-check"></i>
-            <span>All systems verified. Ready for live operations.</span>
+            <i class="fa-solid fa-circle-check"></i>
+            <span>Connected to Centurion Hotel. Ready for live operations.</span>
           </div>
 
           <button class="btn-action-primary" id="btnGoToTour" onclick="goToTour()">
@@ -1300,7 +1297,7 @@
       <!-- ============================================================ -->
       <section class="screen-view" id="screen-tour">
         <div class="onboard-card" style="padding: 12px;">
-
+          
           <div class="tour-slide-box" id="tourSlideBox">
             <!-- Slide Content Injected by JS -->
             <div class="tour-slide-icon" id="tourSlideIcon">
@@ -1334,7 +1331,7 @@
       <!-- SCREEN 4: PRODUCTION INFOR HMS QUOTING TOOL -->
       <!-- ============================================================ -->
       <section class="screen-view" id="screen-tool">
-
+        
         <!-- Minimal Email Context Bar -->
         <div class="email-context-bar">
           <div class="email-context-left">
@@ -1364,7 +1361,7 @@
                 <span>Property<span class="req">*</span></span>
               </label>
               <select class="field-select" id="propertySelect">
-                <option value="HRCEN" selected>HRCEN — The Centurion Hotel (ZAR)</option>
+                <option value="HRCEN" selected>Centurion Hotel (ZAR)</option>
                 <option value="HRBAK">HRBAK — The Bakubung Bush Lodge</option>
                 <option value="HRKWA">HRKWA — Kwa Maritane Bush Lodge</option>
               </select>
@@ -1375,7 +1372,7 @@
               <label class="field-label">
                 <span>Dates of Stay<span class="req">*</span></span>
               </label>
-
+              
               <div class="stay-dates-container" id="stayDatesCard">
                 <div class="stay-dates-header">
                   <div class="date-click-box active" id="boxArrival" onclick="toggleCalendar('arrival')">
@@ -1482,7 +1479,7 @@
                   <span>Room Type & Guest Count</span>
                   <span>Rooms</span>
                 </div>
-
+                
                 <!-- Group 1: Single Rooms -->
                 <div class="room-group-item">
                   <div class="group-label-info">
@@ -1559,7 +1556,7 @@
 
             <!-- Results Section (Room Rates) -->
             <div class="results-section" id="resultsSection">
-
+              
               <div class="card-header-bar" style="border: 1px solid var(--line); border-radius: 3px; background: #ffffff;">
                 <span class="card-title">
                   <i class="fa-solid fa-bed text-slate-500"></i>
@@ -1692,7 +1689,7 @@
                 </div>
                 <p>Dear Penny,</p>
                 <p style="margin-top: 4px;">Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for your CIDB delegation for the dates of <strong>15–17 September 2026 (2 nights)</strong> under your corporate agreement:</p>
-
+                
                 <table class="draft-table">
                   <thead>
                     <tr>
@@ -1719,11 +1716,13 @@
 
       </section>
 
-      <!-- Minimal Footer -->
+      <!-- Minimal Support & Feedback Footer -->
       <footer class="pane-footer-minimal">
-        <span>Nava Assistant</span>
-        <span>·</span>
-        <span>Infor HMS HRCEN</span>
+        <div class="footer-feedback-line">
+          <span>Feedback: <a href="mailto:aroransh17@gmail.com" class="footer-link">aroransh17@gmail.com</a></span>
+          <span class="footer-sep">·</span>
+          <span>Urgent WhatsApp: <a href="https://wa.me/447505014078" target="_blank" class="footer-link">+44 7505 014078</a></span>
+        </div>
       </footer>
 
     </div>
@@ -1735,7 +1734,7 @@
       <div class="modal-titlebar">
         <div style="display:flex; align-items:center; gap:8px;">
           <span style="width:8px; height:8px; background:#22c55e; border-radius:50%;"></span>
-          <span id="modalTitleText">Infor HMS — Hotel Availability Grid [HRCEN · Native 100% DPI]</span>
+          <span id="modalTitleText">Infor HMS — Hotel Availability Grid [Centurion · Native 100% DPI]</span>
         </div>
         <div class="modal-titlebar-right">
           <span style="font-family: monospace; color: #94a3b8;">1000 × 800 Window</span>
@@ -1779,11 +1778,7 @@
       document.getElementById('btnStep4').classList.toggle('active', screenId === 'screen-tool');
 
       // Update header status
-      if (screenId === 'screen-welcome') {
-        document.getElementById('headerStatusText').innerText = 'Setup';
-      } else {
-        document.getElementById('headerStatusText').innerText = 'HRCEN';
-      }
+      document.getElementById('headerStatusText').innerText = 'Centurion';
     }
 
     function resetToBeginning() {
@@ -1818,13 +1813,13 @@
       },
       {
         icon: '<i class="fa-solid fa-hotel"></i>',
-        title: '2. Direct Infor HMS Rates & Audit',
-        desc: 'Search live rates and restrictions in Infor HMS. Nava captures full-resolution screenshots of both the search criteria and the availability grid for audit verification.'
+        title: '2. Check Inputs & Live Rates',
+        desc: 'Check your search inputs, hit run to query live Infor HMS availability, and inspect the live screenshot proof before quoting.'
       },
       {
         icon: '<i class="fa-solid fa-reply-all"></i>',
-        title: '3. 1-Click Quotation Drafts',
-        desc: 'Pick your rate plan and draft a professional quotation table straight into your Outlook reply with verified terms, taxes, and deposit conditions ready to send.'
+        title: '3. Quotation Drafts',
+        desc: 'Nava AI can make quotation drafts, but you gotta review, change, and hit send.'
       }
     ];
     let currentTourSlide = 0;
@@ -1865,7 +1860,7 @@
       document.getElementById('btnTourPrev').disabled = (currentTourSlide === 0);
       const nextBtn = document.getElementById('btnTourNext');
       if (currentTourSlide === tourSlides.length - 1) {
-        nextBtn.innerHTML = '<span>Open Nava Assistant</span> <i class="fa-solid fa-arrow-right"></i>';
+        nextBtn.innerHTML = '<span>Open Nava AI</span> <i class="fa-solid fa-arrow-right"></i>';
       } else {
         nextBtn.innerHTML = '<span>Next</span> <i class="fa-solid fa-chevron-right"></i>';
       }
@@ -2072,14 +2067,14 @@
         tabRes.classList.remove('active');
         imgEl.src = 'quote-rate-proof.png';
         modalImgEl.src = 'quote-rate-proof.png';
-        document.getElementById('modalTitleText').innerText = 'Infor HMS — Search Criteria [HRCEN · Native 100% DPI]';
+        document.getElementById('modalTitleText').innerText = 'Infor HMS — Search Criteria [Centurion · Native 100% DPI]';
         showToast('Viewing Search Criteria');
       } else {
         tabRes.classList.add('active');
         tabCrit.classList.remove('active');
         imgEl.src = 'quote-rate-proof.png';
         modalImgEl.src = 'quote-rate-proof.png';
-        document.getElementById('modalTitleText').innerText = 'Infor HMS — Availability Results [HRCEN · Native 100% DPI]';
+        document.getElementById('modalTitleText').innerText = 'Infor HMS — Availability Results [Centurion · Native 100% DPI]';
         showToast('Viewing Availability Results');
       }
     }
