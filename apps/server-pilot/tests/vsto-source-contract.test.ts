@@ -323,14 +323,23 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
 
   it('validates composer options before reply side effects and cannot fail during post-save COM cleanup', () => {
     const source = read('OutlookMailOperations.cs');
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
     const reply = source.slice(
       source.indexOf('public Dictionary<string, object> CreateReplyDraft('),
       source.indexOf('private Outlook.MailItem MoveDraftToStore('),
     );
-    expect(reply.indexOf('PayloadBool(payload, "openInComposer", true)')).toBeGreaterThanOrEqual(0);
-    expect(reply.indexOf('PayloadBool(payload, "openInComposer", true)')).toBeLessThan(
+    expect(
+      reply.indexOf('OutlookMailOperationPolicy.ShouldOpenReplyComposer('),
+    ).toBeGreaterThanOrEqual(0);
+    expect(reply.indexOf('OutlookMailOperationPolicy.ShouldOpenReplyComposer(')).toBeLessThan(
       reply.indexOf('reply.Save();'),
     );
+    expect(dispatcher).toContain('private bool _capabilitiesNegotiated;');
+    expect(dispatcher).toContain(
+      'if (action == "GET_CAPABILITIES") _capabilitiesNegotiated = true;',
+    );
+    expect(dispatcher).toContain('internal void ResetCapabilityNegotiation()');
+    expect(read('TaskPaneControl.cs')).toContain('_dispatcher.ResetCapabilityNegotiation();');
     expect(reply).toContain('if (openInComposer)');
     expect(reply).toContain('SafeReleaseMailComObject(reply);');
     expect(reply).toContain('SafeReleaseMailComObject(original);');
@@ -400,7 +409,9 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
   it('requires explicit account selection and skips non-SMTP accounts', () => {
     const source = read('OutlookMailOperations.cs');
     const dispatcher = read('OutlookBridgeDispatcher.cs');
-    expect(source).toContain('if (string.IsNullOrWhiteSpace(smtpAddress)) continue;');
+    expect(source).toContain(
+      'if (!OutlookMailOperationPolicy.TryReadSmtpAddress(() => account.SmtpAddress, out smtpAddress)) continue;',
+    );
     expect(source).toContain('OutlookMailOperationPolicy.EnsureSendAccountSelection');
     expect(source).toContain('useDefaultAccount');
     expect(source).toContain('submitted');
@@ -488,6 +499,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(legacy).toContain('string storeId = folder.StoreID ?? "";');
     expect(legacy).not.toContain('row.BinaryToString(PR_STORE_ENTRYID)');
     expect(legacy).toContain('scanned < MaxPageSize * 20');
+    expect(legacy).toContain('table.Sort("ReceivedTime", true)');
     expect(legacy).not.toContain('columns.Add("ConversationID")');
   });
 
@@ -501,18 +513,28 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(location).toContain('if (parentFolder == null) throw new InvalidOperationException(');
     expect(location).toContain('string.IsNullOrWhiteSpace(storeId)');
     expect(location).toContain('string.IsNullOrWhiteSpace(folderEntryId)');
+    expect(location).toContain('string.IsNullOrWhiteSpace(entryId)');
+    expect(location).toContain('{ "entryId", entryId }');
     expect(location).not.toMatch(/catch\s*\{[\s\S]*?Some item providers/);
     expect(source).toContain('GetMailLocationAfterSave(draft, expectedLocation)');
     expect(source).toContain('result["locationUnverified"] = true;');
+    expect(
+      source.match(
+        /if \(!string\.IsNullOrWhiteSpace\(currentEntryId\)\) result\["entryId"\] = currentEntryId;/g,
+      ),
+    ).toHaveLength(2);
     const move = source.slice(
       source.indexOf('public Dictionary<string, object> MoveEmail('),
       source.indexOf('public Dictionary<string, object> MoveToSpam('),
     );
     expect(move).toContain('GetMailLocationAfterSave(movedMail, expectedLocation)');
     expect(move).toContain('location["locationUnverified"] = true;');
-    expect(move).toMatch(
+    expect(move).toContain('confirmedLocation["moveStatus"] = "confirmed";');
+    expect(move).toContain('location["moveStatus"] = "unconfirmed";');
+    expect(move).not.toMatch(
       /new Dictionary<string, object>\(expectedLocation\);\s*location\["moved"\] = true;/,
     );
+    expect(move).toContain('location["folderPlacementWarning"]');
     expect(move).not.toContain('new Dictionary<string, object> { { "moved", movedItem != null } }');
     expect(source).toContain('SafeReleaseMailComObject(movedItem);');
   });
@@ -531,6 +553,20 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).toContain('"continuationToken"');
     expect(source).toContain('"totalItems"');
     expect(source).toContain('"truncated"');
+  });
+
+  it('paginates usable SMTP accounts instead of raw provider slots', () => {
+    const source = read('OutlookMailOperations.cs');
+    const accounts = source.slice(
+      source.indexOf('public object ListAccounts('),
+      source.indexOf('public Dictionary<string, object> GetFolderEmailsPage('),
+    );
+    expect(accounts).toContain('int totalItems = result.Count;');
+    expect(accounts).toContain('if (slotCount > MaxAccountSlots)');
+    expect(accounts).toContain('GetCollectionPageOffset(payload, "accounts", totalItems');
+    expect(accounts).toContain('result.GetRange(offset, Math.Min(pageSize, totalItems - offset))');
+    expect(accounts).toContain('string displayName = smtpAddress;');
+    expect(accounts).not.toContain('GetCollectionPageOffset(payload, "accounts", accounts.Count');
   });
 
   it('clears Outlook Table default columns before adding the requested mail fields', () => {

@@ -96,8 +96,8 @@ export const AccountPageSchema = z.object({
 });
 
 export type AccountPage = z.infer<typeof AccountPageSchema>;
-// totalItems counts provider account slots; addressless/non-SMTP slots are omitted
-// from items, so a page may be shorter than pageSize even when truncated is true.
+// totalItems and continuation count usable SMTP accounts, excluding provider
+// slots without addresses. Pages are drawn from the same selectable set.
 export const AccountCollectionResultSchema = z.union([
   z.array(AccountSummarySchema).max(200),
   AccountPageSchema,
@@ -118,6 +118,19 @@ export const MailLocationSchema = z.object({
 });
 
 export type MailLocation = z.infer<typeof MailLocationSchema>;
+
+// A provider returning no MailItem cannot confirm that Move occurred. Its
+// expected target is informational only; cache the unconfirmed outcome on retry.
+export const MoveEmailResultSchema = z.discriminatedUnion('moveStatus', [
+  MailLocationSchema.extend({ moveStatus: z.literal('confirmed'), moved: z.literal(true) }),
+  MailLocationSchema.extend({
+    moveStatus: z.literal('unconfirmed'),
+    moved: z.never().optional(),
+    locationUnverified: z.literal(true),
+    folderPlacementWarning: z.string(),
+  }),
+]);
+export type MoveEmailResult = z.infer<typeof MoveEmailResultSchema>;
 
 export const BridgeCapabilitiesSchema = z.object({
   bridgeProtocolVersion: z.number(),

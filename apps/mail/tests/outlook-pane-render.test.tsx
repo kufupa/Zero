@@ -11,7 +11,7 @@ import path from 'node:path';
 
 const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
-  bridgeMockState: { protocolVersion: 3 as number | undefined },
+  bridgeMockState: { protocolVersion: 3 as number | undefined, selectedEntryId: '001' },
 }));
 
 vi.mock('sonner', () => ({
@@ -48,7 +48,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
         ? v3Capabilities.supportedActions.includes(action)
         : ['PING', 'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'CREATE_REPLY_DRAFT'].includes(action),
     activeEmail: {
-      entryId: '001',
+      entryId: bridgeMockState.selectedEntryId,
       storeId: 'store-1',
       subject: 'Suite Availability Request',
       senderEmail: 'guest@example.com',
@@ -84,6 +84,7 @@ describe('OutlookPanePage', () => {
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
     bridgeMockState.protocolVersion = 3;
+    bridgeMockState.selectedEntryId = '001';
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
@@ -188,6 +189,42 @@ describe('OutlookPanePage', () => {
       expect(screen.getByRole('status').textContent).toMatch(/location.*unverified/i);
     });
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
+  });
+
+  it('shows a folder placement warning in both the reply status and toast', async () => {
+    sendCommandMock.mockResolvedValueOnce({
+      entryId: 'draft-1',
+      displayed: true,
+      folderPlacementWarning: 'Outlook placed the reply outside the requested folder',
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toContain(
+        'Outlook placed the reply outside the requested folder',
+      ),
+    );
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Outlook placed the reply outside the requested folder'),
+    );
+  });
+
+  it('does not show the reply result from a previous selected message', async () => {
+    let finish!: (value: unknown) => void;
+    sendCommandMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
+
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('warns when connected but bridge capabilities and protocol version are unknown', () => {

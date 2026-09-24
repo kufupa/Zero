@@ -13,6 +13,7 @@ import {
   FolderEmailSummarySchema,
   FolderEmailPageSchema,
   FolderSummarySchema,
+  MoveEmailResultSchema,
   SendDraftResultSchema,
   StoreSummarySchema,
   StoreCollectionResultSchema,
@@ -112,6 +113,36 @@ describe('Workstation Bridge Protocol', () => {
         exchangeRetentionMayKeepRecoverableCopy: true,
       }).permanent,
     ).toBe(true);
+  });
+
+  it('distinguishes confirmed and unconfirmed move results', () => {
+    const location = {
+      entryId: 'mail-2',
+      storeId: 'store-1',
+      folderEntryId: 'target',
+      folderName: 'Archive',
+    };
+    expect(
+      MoveEmailResultSchema.parse({ ...location, moved: true, moveStatus: 'confirmed' }).moveStatus,
+    ).toBe('confirmed');
+    expect(
+      MoveEmailResultSchema.parse({
+        ...location,
+        entryId: '',
+        moveStatus: 'unconfirmed',
+        locationUnverified: true,
+        folderPlacementWarning: 'Could not verify whether the move completed.',
+      }).moveStatus,
+    ).toBe('unconfirmed');
+    expect(() =>
+      MoveEmailResultSchema.parse({
+        ...location,
+        moved: true,
+        moveStatus: 'unconfirmed',
+        locationUnverified: true,
+        folderPlacementWarning: 'Unknown',
+      }),
+    ).toThrow();
   });
 
   it('serializes a GET_ACTIVE_EMAIL request with protocol version', () => {

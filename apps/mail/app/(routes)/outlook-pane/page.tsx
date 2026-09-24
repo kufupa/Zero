@@ -16,7 +16,10 @@ export default function OutlookPanePage() {
   const replyRetry = useRef<{ key: string; operationId: string } | null>(null);
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
-  const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
+  const selectedKey = activeEmail?.entryId
+    ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
+    : null;
   const { data: session, isLoading } = useSession();
   const [testing, setTesting] = useState(false);
   const [testResults, setTestResults] = useState<{
@@ -123,6 +126,7 @@ export default function OutlookPanePage() {
       const details = [
         result?.composerWarning,
         result?.draftPlacementWarning,
+        result?.folderPlacementWarning,
         result?.locationUnverified ? 'Draft location is unverified.' : null,
       ].filter(Boolean);
       const summary = opened
@@ -131,7 +135,7 @@ export default function OutlookPanePage() {
           ? 'Outlook draft saved but not opened in composer.'
           : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
       const message = [summary, ...details].join(' ');
-      setDraftStatus(message);
+      setDraftStatus({ key, message });
       if (details.length || !opened) toast.warning(message);
       else toast.success(message);
     } catch (err) {
@@ -232,9 +236,9 @@ export default function OutlookPanePage() {
             <Send className="mr-1.5 h-3.5 w-3.5" />
             {isDraftPending ? 'Saving Outlook draft…' : 'Insert Draft in Outlook'}
           </Button>
-          {draftStatus && (
+          {draftStatus && draftStatus.key === selectedKey && (
             <p role="status" className="text-xs text-amber-200">
-              {draftStatus}
+              {draftStatus.message}
             </p>
           )}
         </CardContent>
