@@ -6,7 +6,7 @@ import {
 } from '../lib/public-backend-url';
 
 describe('resolvePublicBackendUrl', () => {
-  it('uses same-origin empty string when env is missing', () => {
+  it('treats explicit missing values as same-origin without reading Vite env', () => {
     expect(resolvePublicBackendUrl(undefined)).toBe('');
     expect(resolvePublicBackendUrl(null)).toBe('');
   });

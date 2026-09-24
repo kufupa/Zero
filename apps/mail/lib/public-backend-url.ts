@@ -7,10 +7,14 @@
  * naive concatenation becomes the literal path `"undefined/api/trpc"` — which
  * never hits the Node server (nginx 405) while auth (bare `baseURL: undefined`)
  * can still appear logged-in. Coerce missing / bogus values to same-origin `""`.
+ *
+ * Call with no args to read Vite env. Passing `undefined`/`null` explicitly
+ * still means "missing" (does not re-read env) so unit tests stay hermetic.
  */
 export function resolvePublicBackendUrl(
-  raw: string | undefined | null = import.meta.env.VITE_PUBLIC_BACKEND_URL,
+  ...args: [] | [string | null | undefined]
 ): string {
+  const raw = args.length === 0 ? import.meta.env.VITE_PUBLIC_BACKEND_URL : args[0];
   if (raw == null) return '';
   const trimmed = String(raw).trim();
   if (!trimmed || trimmed === 'undefined' || trimmed === 'null') return '';
@@ -18,16 +22,16 @@ export function resolvePublicBackendUrl(
 }
 
 export function publicBackendTrpcUrl(
-  raw?: string | undefined | null,
+  ...args: [] | [string | null | undefined]
 ): string {
-  return `${resolvePublicBackendUrl(raw)}/api/trpc`;
+  return `${resolvePublicBackendUrl(...args)}/api/trpc`;
 }
 
 export function publicBackendPath(
   path: string,
-  raw?: string | undefined | null,
+  ...args: [] | [string | null | undefined]
 ): string {
-  const base = resolvePublicBackendUrl(raw);
+  const base = resolvePublicBackendUrl(...args);
   const normalized = path.startsWith('/') ? path : `/${path}`;
   return `${base}${normalized}`;
 }

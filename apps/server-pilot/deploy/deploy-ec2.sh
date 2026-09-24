@@ -175,8 +175,21 @@ export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 pnpm --filter @zero/mail build
 
 echo "== assert SPA did not bake undefined/api =="
-if grep -R --include='*.js' -l 'undefined/api/trpc' "${MAIL_APP}/build/client/assets" >/dev/null 2>&1; then
+ASSETS_DIR="${MAIL_APP}/build/client/assets"
+if [ ! -d "$ASSETS_DIR" ]; then
+  echo "refusing deploy: missing SPA assets at ${ASSETS_DIR}" >&2
+  exit 1
+fi
+set +e
+grep -R --include='*.js' -l 'undefined/api/trpc' "$ASSETS_DIR" >/dev/null
+GREP_STATUS=$?
+set -e
+if [ "$GREP_STATUS" -eq 0 ]; then
   echo "refusing deploy: SPA contains literal undefined/api/trpc (missing VITE_PUBLIC_BACKEND_URL at build)" >&2
+  exit 1
+fi
+if [ "$GREP_STATUS" -ge 2 ]; then
+  echo "refusing deploy: failed scanning SPA assets for undefined/api/trpc (grep exit ${GREP_STATUS})" >&2
   exit 1
 fi
 
