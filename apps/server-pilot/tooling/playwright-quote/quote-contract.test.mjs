@@ -317,7 +317,7 @@ test('quantity multiplies exact cents; mixed currency or missing night yields no
   assert.ok(['missing_amount', 'incomplete_dates', 'unsupported_amount_format'].includes(missing.reason));
 });
 
-test('v2 rooms require ids; rate context accepts exactly one of code or name', () => {
+test('v2 rooms require ids; rate context accepts exactly one of code, name or nativeId', () => {
   const noId = normalizeQuoteRequest(v2([{ quantity: 1, adults: 1, children: 0, childAges: [] }]));
   assert.equal(noId.ok, false);
   assert.ok(issuePaths(noId).some((path) => path.includes('id')));
@@ -334,6 +334,14 @@ test('v2 rooms require ids; rate context accepts exactly one of code or name', (
   ));
   assert.equal(named.ok, true);
   assert.deepEqual(named.request.rateContext.organization, { name: 'Acme Hotels' });
+
+  const lookedUp = normalizeQuoteRequest(v2(
+    [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
+    { rateContext: { organization: { nativeId: '1842' }, agency: { nativeId: '91' } } },
+  ));
+  assert.equal(lookedUp.ok, true, lookedUp.ok ? '' : JSON.stringify(lookedUp.issues));
+  assert.deepEqual(lookedUp.request.rateContext.organization, { nativeId: '1842' });
+  assert.deepEqual(lookedUp.request.rateContext.agency, { nativeId: '91' });
 });
 
 test('published schema documents request and result contracts without selectors or authority digests', async () => {
@@ -350,6 +358,17 @@ test('published schema documents request and result contracts without selectors 
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('input_gap'));
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('partial'));
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('execution_failure'));
+  assert.deepEqual(schema.$defs.request.properties.search.properties.salesStrategy.enum, ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']);
+  const optionProps = schema.$defs.result.properties.groups.items.properties.options.items.properties;
+  assert.deepEqual(optionProps.room.required, ['code', 'label']);
+  assert.deepEqual(optionProps.rate.required, ['code', 'label']);
+  assert.ok(optionProps.availability);
+  assert.ok(optionProps.displayedSum);
+  assert.equal(schema.$defs.nativeCode.enum, undefined);
+  assert.equal(schema.$defs.constraints.properties.roomCodes.items.enum, undefined);
+  assert.equal(schema.$defs.constraints.properties.rateCodes.items.enum, undefined);
+  assert.ok(schema.$defs.result.description.includes('screenshots/group-N-availability-results.png'));
+  assert.ok(schema.$defs.result.description.includes('screenshots/group-N-criteria-applied.png'));
   assert.equal(schema.$defs.request.properties.details.default, 'summary');
   assert.equal(schema.$defs.request.properties.maxOptionsPerGroup.default, 50);
   assert.equal(schema.$defs.request.properties.maxOptionsPerGroup.maximum, 200);
@@ -441,6 +460,28 @@ test('orderOptions uses match class then full displayed-nightly sum with stable 
     'STQN:BAR',
     'DLXQN:BAR',
   ]);
+});
+
+test('salesStrategy accepts the dumped Hotel Availability labels', () => {
+  const room = [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }];
+  const search = { includeRestricted: false, includeAlternatives: true };
+  for (const salesStrategy of ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']) {
+    const result = normalizeQuoteRequest(v2(room, { search: { ...search, salesStrategy } }));
+    assert.equal(result.ok, true);
+    assert.equal(result.request.search.salesStrategy, salesStrategy);
+  }
+  const other = normalizeQuoteRequest(v2(room, { search: { ...search, salesStrategy: 'Corporate' } }));
+  assert.equal(other.ok, false);
+  assert.ok(issuePaths(other).includes('search.salesStrategy'));
+  const openCodes = normalizeQuoteRequest(v2([{
+    id: 'group-1',
+    quantity: 1,
+    adults: 1,
+    children: 0,
+    childAges: [],
+    required: { roomCodes: ['STQN'], rateCodes: ['BARRO'] },
+  }]));
+  assert.equal(openCodes.ok, true);
 });
 
 test('aggregateOutcome follows input-gap, fatal, partial, no-match, unavailable, then quote', () => {

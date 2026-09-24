@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { collectHmsStorageStateSecretValues, sanitizePlaywrightTraceFile } from '../../src/hms/trace-privacy.ts';
 
-export async function createAudit(directory, {video=false,secrets=[]}={}) {
+export async function createAudit(directory, {video=false,trace=true,secrets=[]}={}) {
   await mkdir(directory,{recursive:true,mode:0o700});
   await chmod(directory,0o700);
   await mkdir(join(directory,'screenshots'),{mode:0o700});
@@ -57,18 +57,22 @@ export async function createAudit(directory, {video=false,secrets=[]}={}) {
           recording=true;
         } catch {report.video.status='failed';fail('VIDEO_START_FAILED');}
       }
-      // The first screencast subscriber fixes frame dimensions for all clients.
-      // Starting trace first would downscale even a 1280px video to 800px.
-      try {
-        await context.tracing.start({screenshots:true,snapshots:true,sources:false});
-        tracing=true;
-      } catch {report.trace.status='failed';fail('TRACE_START_FAILED');throw new Error('TRACE_START_FAILED');}
+      if (trace) {
+        // The first screencast subscriber fixes frame dimensions for all clients.
+        // Starting trace first would downscale even a 1280px video to 800px.
+        try {
+          await context.tracing.start({screenshots:true,snapshots:true,sources:false});
+          tracing=true;
+        } catch {report.trace.status='failed';fail('TRACE_START_FAILED');throw new Error('TRACE_START_FAILED');}
+      } else {
+        report.trace.status='disabled';
+      }
       if(report.video.status==='failed') throw new Error('VIDEO_START_FAILED');
       event('capture_started');
     },
     async checkpoint(name) {
       if(!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error('INVALID_CHECKPOINT_NAME');
-      if(!tracing || finished) throw new Error('AUDIT_NOT_STARTED');
+      if(!page || finished) throw new Error('AUDIT_NOT_STARTED');
       if(await page.locator('input[type="password"]:visible').count()) {
         fail('CHECKPOINT_RETURNED_TO_LOGIN');throw new Error('CHECKPOINT_RETURNED_TO_LOGIN');
       }

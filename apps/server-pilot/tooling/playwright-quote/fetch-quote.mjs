@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Native Playwright quote workflow. Development exports have no import side effects.
 import { createRequire } from 'node:module';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -99,6 +99,10 @@ export async function selectSalesStrategy(page, label = 'BAR') {
   const input = page.locator('input[name="salesstrategy"]');
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger').click();
   const choices=await input.evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getStore().getRange().map(r=>({value:r.data.value,display:r.data.display})));
+  if(process.env.HMS_DUMP_SALES_STRATEGY==='1'){
+    const dumpPath=fileURLToPath(new URL('../../../../.private/create-screen/sales-strategy-store.json',import.meta.url));
+    await writeFile(dumpPath,JSON.stringify(choices,null,2),{mode:0o600});
+  }
   const choice=configuredChoice(choices,label);
   if(!choice){await page.keyboard.press('Escape');throw new Error('UNSUPPORTED_SALES_STRATEGY');}
   await page.getByRole('option',{name:choice.display,exact:true}).click();
@@ -187,7 +191,9 @@ export function projectCriteria(raw) {
 export function assertApplied(request, room, criteria, {resolvedContext={},startDate=request.arrivalDate,roomCodes='',rateCodes='',strategy}={}) {
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const label=request.search?.salesStrategy??(request.rateContext?'Preset':'BAR');
-  const salesStrategy=strategy!==undefined?strategy:request.rateContext?.group?null:({'BAR':'BAR','Preset':'PRESET','Negotiated Contracted':'CON'})[label];
+  const salesStrategy=strategy!==undefined?strategy:request.rateContext?.group?null:({
+    BAR:'BAR',Preset:'PRESET',Promotions:'PROMO',Wholesale:'WS','Negotiated Contracted':'CON',
+    'Group & Convention':'GNC',Government:'GOV','Comp / House Use':'CMPHS',Other:'OTH'})[label];
   if (salesStrategy===undefined) throw new Error('UNVERIFIED_SALES_STRATEGY');
   const expected = {propertyCodes:request.propertyCode,startDate:`${startDate}T00:00:00`,
     adultCount:room.adults,childCount:room.children,salesStrategy,lengthOfStay:'DY',shopByDay:false,
@@ -582,7 +588,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       searchCompleteness:{status:'not_started',searchCount:0}});
     request=normalized.request;
   }
-  const groups=[],cache=new Map(),issues=[];
+  const groups=[],cache=new Map(),issues=[],copiedShots=[];
   let fatal=false,searchCount=0;
   for(const [index,room] of request.rooms.entries()) {
     const prefix=`group-${index+1}`,signature=searchSignature(request,room);
@@ -619,13 +625,15 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         await saveEvidence(directory,`${prefix}-source.json`,{endpoint:'/api/internalBooking/hotelAvail/inquiryForGrid',windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
         let roomFacts=[];
         if(room.required?.bedTypes||room.preferred?.bedTypes)roomFacts=await readRoomFacts(page,request.propertyCode);
-        entry={source,details,roomFacts,detailIssues,sourceEvidence:`${prefix}-source.json`};cache.set(signature,entry);
+        entry={source,details,roomFacts,detailIssues,sourceEvidence:`${prefix}-source.json`,gridShotPrefix:prefix};cache.set(signature,entry);
       }
       if(!entry.roomFacts.length&&(room.required?.bedTypes||room.preferred?.bedTypes))entry.roomFacts=await readRoomFacts(page,request.propertyCode);
       const {source,details,roomFacts,detailIssues}=entry;
       await saveEvidence(directory,`${prefix}-criteria.json`,source.windows.map(w=>w.criteria));
-      // A cache hit can refer to an earlier page. Do not relabel current pixels.
+      // A cache hit can refer to an earlier page. Copy the first group's grid
+      // bytes instead of screenshotting whatever is on screen now.
       if(!reusedSource&&source.windows.at(-1)?.calendar)await checkpoint(`${prefix}-availability-results`);
+      if(reusedSource&&entry.gridShotPrefix)copiedShots.push(...await copyGroupGridShots(directory,entry.gridShotPrefix,prefix));
       const parsed=extractOptions(request,room,source.windows,source.resolvedContext);
       if(source.issues.length){parsed.issues.push(...source.issues);parsed.completeness.search='partial';}
       for(const option of parsed.options) {
@@ -708,7 +716,8 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
     groups,allocation,issues,searchCompleteness:{status:groups.every(g=>g.completeness.search==='complete')?'complete':'partial',searchCount,distinctSignatures:cache.size},
     publicReset:publicReset?{status:'verified',evidence:'public-reset.json'}:{status:'controls_reset'},
     limitations:['Displayed-rate sums are not PMS payable totals.','No hold, booking or price lock.',
-      'Joint allocation uses proven property/building/room-type identity only; sequential occupancy searches are not an atomic hold.']};
+      'Joint allocation uses proven property/building/room-type identity only; sequential occupancy searches are not an atomic hold.'],
+    screenshots:copiedShots};
 }
 
 export async function fetchQuote({requestPath,outputDir,env=process.env,video=false}) {
@@ -768,11 +777,67 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     try { if(browser) await browser.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
   }
-  result={...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory};
+  result=applyQuoteScreenshotContract({...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory});
   event('run_finished');
   await saveEvidence(directory,'result.json',result);
   await saveEvidence(directory,'summary.txt',summarize(result));
   return result;
+}
+
+const QUOTE_GRID_SHOTS = ['criteria-applied', 'availability-results'];
+
+export function quoteGridShotPaths(groupNumber) {
+  return QUOTE_GRID_SHOTS.map((name) => `screenshots/group-${groupNumber}-${name}.png`);
+}
+
+/** Copy both grid shots onto a later same-signature group. Missing source files are skipped. */
+export async function copyGroupGridShots(directory, fromPrefix, toPrefix) {
+  const copied = [];
+  for (const name of QUOTE_GRID_SHOTS) {
+    const rel = `screenshots/${toPrefix}-${name}.png`;
+    try {
+      await copyFile(join(directory, 'screenshots', `${fromPrefix}-${name}.png`), join(directory, rel));
+      copied.push(rel);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return copied;
+}
+
+function listedScreenshotPaths(result) {
+  const paths = [];
+  const items = [...(result?.screenshots ?? []), ...(result?.audit?.screenshots ?? [])];
+  for (const item of items) {
+    const path = typeof item === 'string' ? item : item?.path;
+    if (typeof path === 'string' && path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/** outcome quote requires both grid shots listed for every occupancy group. */
+export function applyQuoteScreenshotContract(result) {
+  const screenshots = listedScreenshotPaths(result);
+  const next = { ...result, screenshots };
+  if (next.outcome !== 'quote') return next;
+  const groupCount = Math.max(Array.isArray(next.groups) ? next.groups.length : 0, 1);
+  const missing = [];
+  for (let groupNumber = 1; groupNumber <= groupCount; groupNumber++) {
+    for (const path of quoteGridShotPaths(groupNumber)) {
+      if (!screenshots.includes(path)) missing.push(path);
+    }
+  }
+  if (!missing.length) return next;
+  return {
+    ...next,
+    outcome: 'partial',
+    issues: [...(next.issues ?? []), {
+      code: 'QUOTE_SCREENSHOT_MISSING',
+      path: 'screenshots',
+      reason: `outcome quote requires ${missing.join(', ')}.`,
+      action: 'A run without screenshots/group-N-availability-results.png is not a quote. screenshots/group-N-criteria-applied.png is required too.',
+    }],
+  };
 }
 
 export function resultEnvelope(partial={}) {

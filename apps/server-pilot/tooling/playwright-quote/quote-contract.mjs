@@ -53,6 +53,7 @@ const V2_ROOT = new Set([
 const ROOM_BASE = new Set(['quantity', 'adults', 'children', 'childAges', 'id']);
 const CONSTRAINT_FIELDS = new Set(['roomCodes', 'rateCodes', 'bedTypes', 'boardBases', 'features']);
 const NATIVE_CODE = /^[A-Z0-9_-]+$/;
+const SALES_STRATEGIES = new Set(['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const MONEY = /^(\d+)\.(\d{2})$/;
@@ -196,19 +197,21 @@ function parseConstraints(raw, path, issues) {
 function parseReference(raw, path, issues) {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
-    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each context reference must be an object.', 'Supply exactly one of code or name.'));
+    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each context reference must be an object.', 'Supply exactly one of code, name or nativeId.'));
     return undefined;
   }
   const keys = Object.keys(raw);
   for (const key of keys) {
-    if (key !== 'code' && key !== 'name') {
-      issues.push(issue('UNKNOWN_FIELD', `${path}.${key}`, 'References accept only code or name.', 'Remove extra fields.'));
+    if (key !== 'code' && key !== 'name' && key !== 'nativeId') {
+      issues.push(issue('UNKNOWN_FIELD', `${path}.${key}`, 'References accept only code, name or nativeId.', 'Remove extra fields.'));
     }
   }
   const hasCode = Object.hasOwn(raw, 'code');
   const hasName = Object.hasOwn(raw, 'name');
-  if (hasCode === hasName) {
-    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each reference supplies exactly one of native code or exact name.', 'Provide code or name, not both or neither.'));
+  const hasNativeId = Object.hasOwn(raw, 'nativeId');
+  const supplied = [hasCode, hasName, hasNativeId].filter(Boolean).length;
+  if (supplied !== 1) {
+    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each reference supplies exactly one of native code, exact name or party-lookup nativeId.', 'Provide code, name or nativeId, not a combination.'));
     return undefined;
   }
   if (hasCode) {
@@ -217,6 +220,13 @@ function parseReference(raw, path, issues) {
       return undefined;
     }
     return { code: raw.code };
+  }
+  if (hasNativeId) {
+    if (typeof raw.nativeId !== 'string' || !raw.nativeId.trim()) {
+      issues.push(issue('INVALID_RATE_CONTEXT', `${path}.nativeId`, 'nativeId must be a non-empty party-lookup candidate id.', 'Pass candidates[].nativeId from party-lookup.'));
+      return undefined;
+    }
+    return { nativeId: raw.nativeId.trim() };
   }
   if (typeof raw.name !== 'string' || !raw.name.trim()) {
     issues.push(issue('INVALID_RATE_CONTEXT', `${path}.name`, 'Name must be an exact non-empty string.', 'Use the exact picker label.'));
@@ -259,9 +269,10 @@ function parseSearch(raw, issues) {
     }
   }
   if (raw.salesStrategy !== undefined) {
-    if (typeof raw.salesStrategy !== 'string' || !raw.salesStrategy.trim()) {
-      issues.push(issue('INVALID_SEARCH', 'search.salesStrategy', 'salesStrategy must be a non-empty string.', 'Use a verified native strategy such as BAR.'));
-    } else search.salesStrategy = raw.salesStrategy.trim();
+    const salesStrategy = typeof raw.salesStrategy === 'string' ? raw.salesStrategy.trim() : '';
+    if (!SALES_STRATEGIES.has(salesStrategy)) {
+      issues.push(issue('INVALID_SEARCH', 'search.salesStrategy', 'salesStrategy must be one of the Hotel Availability store display labels.', 'Use a dumped label such as BAR, Preset, or Promotions.'));
+    } else search.salesStrategy = salesStrategy;
   }
   if (raw.includeRestricted !== undefined) {
     if (typeof raw.includeRestricted !== 'boolean') {

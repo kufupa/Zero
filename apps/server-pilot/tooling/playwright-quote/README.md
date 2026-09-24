@@ -68,7 +68,7 @@ node apps/server-pilot/tooling/stagehand/node_modules/playwright/cli.js install 
     login-complete.png
     hotel-availability.png
     group-1-criteria-applied.png
-    group-1-availability-results.png
+    group-1-availability-results.png   # after Search; missing this png is not a quote
     group-1-night-1-details.png
     group-1-room-information.png
     failure.png               # when capture started and failure screen is safe
@@ -78,6 +78,8 @@ node apps/server-pilot/tooling/stagehand/node_modules/playwright/cli.js install 
   group-1.json
   summary.txt
 ```
+
+A run without `screenshots/group-N-availability-results.png` (the after-search grid) is not a quote. Missing `screenshots/group-N-criteria-applied.png` is not a quote either. `result.json` lists both paths; outcome `quote` is refused when either path is absent.
 
 The adjacent `audit.mjs` is reusable by future native tools: create an audit,
 call `start(ownedPage, secretValues)` **after verified login**, use `checkpoint`

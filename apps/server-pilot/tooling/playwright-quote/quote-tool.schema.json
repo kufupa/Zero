@@ -51,10 +51,11 @@
     "contextRef": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Exactly one of native code or exact name. Multiple picker matches are an input gap.",
+      "description": "Exactly one of native code, exact name, or party-lookup nativeId. Multiple picker matches are an input gap.",
       "oneOf": [
         { "required": ["code"], "properties": { "code": { "$ref": "#/$defs/nativeCode" } } },
-        { "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } }
+        { "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
+        { "required": ["nativeId"], "properties": { "nativeId": { "type": "string", "minLength": 1, "description": "party-lookup candidate.nativeId for organization or bookingAgency." } } }
       ]
     },
     "issue": {
@@ -124,7 +125,11 @@
           "additionalProperties": false,
           "required": ["includeRestricted", "includeAlternatives"],
           "properties": {
-            "salesStrategy": { "type": "string", "minLength": 1, "description": "Default public strategy is the verified BAR choice. Scoped rates may need a different verified native strategy." },
+            "salesStrategy": {
+              "type": "string",
+              "enum": ["Preset", "BAR", "Promotions", "Wholesale", "Negotiated Contracted", "Group & Convention", "Government", "Comp / House Use", "Other"],
+              "description": "Hotel Availability sales-strategy display labels from the live store dump on 2026-09-23. Store values: PRESET, BAR, PROMO, WS, CON, GNC, GOV, CMPHS, OTH. Any other string is invalid."
+            },
             "includeRestricted": { "type": "boolean", "default": false, "description": "Restricted offers are information, not eligible offers." },
             "includeAlternatives": { "type": "boolean", "default": true }
           }
@@ -149,14 +154,14 @@
     "result": {
       "type": "object",
       "additionalProperties": false,
-      "description": "schemaVersion 2 result. Business outcome is separate from audit capture status. CLI exit 0 means quote, no_match or unavailable with requested capture complete; exit 2 covers partial, input_gap, execution_failure or incomplete capture.",
+      "description": "schemaVersion 2 result. Business outcome is separate from audit capture status. CLI exit 0 means quote, no_match or unavailable with requested capture complete; exit 2 covers partial, input_gap, execution_failure or incomplete capture. outcome quote requires screenshots/group-N-criteria-applied.png and screenshots/group-N-availability-results.png listed for every occupancy group. Missing either path is not a quote.",
       "required": ["schemaVersion", "outcome", "groups", "allocation", "searchCompleteness", "issues"],
       "properties": {
         "schemaVersion": { "const": 2 },
         "outcome": {
           "type": "string",
           "enum": ["quote", "no_match", "unavailable", "input_gap", "partial", "execution_failure"],
-          "description": "quote: every group has at least one eligible verified matching offer at the requested detail level and multi-group calls also have a checked allocation. no_match: complete requested search found no hard-requirement offer. unavailable: verified inventory shortage for the searched product/allocation. input_gap: missing, invalid or conflicting caller fields. partial: useful data with unestablished coverage, eligibility or joint allocation. execution_failure: browser or source failure."
+          "description": "quote: every group has at least one eligible verified matching offer at the requested detail level, multi-group calls also have a checked allocation, and screenshots lists screenshots/group-N-criteria-applied.png plus screenshots/group-N-availability-results.png for each group. Missing the after-search availability-results png is not a quote. Same for criteria-applied. no_match: complete requested search found no hard-requirement offer. unavailable: verified inventory shortage for the searched product/allocation. input_gap: missing, invalid or conflicting caller fields. partial: useful data with unestablished coverage, eligibility, joint allocation, or a missing quote screenshot. execution_failure: browser or source failure."
         },
         "requested": {
           "type": "object",
@@ -182,6 +187,23 @@
                     "rateScope": { "type": "string", "enum": ["public", "contextual", "unknown"] },
                     "eligibility": { "type": "string", "enum": ["verified", "conditional", "unknown"] },
                     "availability": { "type": "string", "enum": ["available", "unavailable", "restricted", "unknown"] },
+                    "room": {
+                      "type": "object",
+                      "required": ["code", "label"],
+                      "properties": {
+                        "code": { "$ref": "#/$defs/nativeCode" },
+                        "label": { "type": "string", "minLength": 1, "description": "On-screen room name beside the code." }
+                      }
+                    },
+                    "rate": {
+                      "type": "object",
+                      "required": ["code", "label"],
+                      "properties": {
+                        "code": { "$ref": "#/$defs/nativeCode" },
+                        "label": { "type": "string", "minLength": 1, "description": "On-screen rate name beside the code." }
+                      }
+                    },
+                    "displayedSum": { "type": ["string", "null"], "description": "Displayed nightly sum amount already returned by the CLI, or null when the sum is not established." },
                     "held": { "const": false },
                     "calculated": {
                       "type": "object",
@@ -217,6 +239,11 @@
         "cleanupError": { "type": "string" },
         "elapsedMs": { "type": "integer", "description": "Wall time for this invocation, including capture finalization." },
         "evidenceDirectory": { "type": "string", "description": "Private local bundle path. Not a public URL." },
+        "screenshots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Relative paths listed on result.json. outcome quote requires screenshots/group-N-criteria-applied.png and screenshots/group-N-availability-results.png for every occupancy group N."
+        },
         "audit": { "type": "object", "description": "Capture status is separate from business outcome." }
       }
     }

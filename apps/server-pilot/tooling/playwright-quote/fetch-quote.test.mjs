@@ -63,6 +63,46 @@ test('import has no CLI, browser or credential side effects',()=>{
   assert.equal(child.stdout.trim(),'import only');
   assert.equal(child.stderr,'');
 });
+test('skipped availability-results cannot be outcome quote',()=>{
+  const group={id:'group-1',outcome:'quote'};
+  const criteria='screenshots/group-1-criteria-applied.png';
+  const grid='screenshots/group-1-availability-results.png';
+  const skipped=quote.applyQuoteScreenshotContract({outcome:'quote',groups:[group],issues:[],screenshots:[criteria]});
+  assert.notEqual(skipped.outcome,'quote');
+  assert.equal(skipped.screenshots.includes(grid),false);
+  assert.equal(skipped.issues.at(-1).code,'QUOTE_SCREENSHOT_MISSING');
+  const skippedCriteria=quote.applyQuoteScreenshotContract({
+    outcome:'quote',groups:[group],audit:{screenshots:[{path:grid,bytes:1,sha256:'abc'}]},
+  });
+  assert.notEqual(skippedCriteria.outcome,'quote');
+  assert.deepEqual(skippedCriteria.screenshots,[grid]);
+  const listed=quote.applyQuoteScreenshotContract({outcome:'quote',groups:[group],screenshots:[criteria,grid]});
+  assert.equal(listed.outcome,'quote');
+  assert.deepEqual(listed.screenshots,[criteria,grid]);
+});
+test('cache hit copies availability-results bytes onto the later group',async()=>{
+  const {mkdtemp,writeFile,readFile:readBytes,rm,mkdir}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const dir=await mkdtemp(join(tmpdir(),'quote-cache-'));
+  await mkdir(join(dir,'screenshots'));
+  const bytes=Buffer.from('grid-png-bytes');
+  await writeFile(join(dir,'screenshots','group-1-criteria-applied.png'),bytes);
+  await writeFile(join(dir,'screenshots','group-1-availability-results.png'),bytes);
+  const copied=await quote.copyGroupGridShots(dir,'group-1','group-2');
+  assert.ok(copied.includes('screenshots/group-2-availability-results.png'));
+  assert.deepEqual(await readBytes(join(dir,'screenshots','group-2-availability-results.png')),bytes);
+  const result=quote.applyQuoteScreenshotContract({
+    outcome:'quote',
+    groups:[{id:'a'},{id:'b'}],
+    screenshots:[
+      'screenshots/group-1-criteria-applied.png',
+      'screenshots/group-1-availability-results.png',
+      ...copied,
+    ],
+  });
+  assert.equal(result.outcome,'quote');
+  await rm(dir,{recursive:true,force:true});
+});
 test('timeout and returned-login errors are execution failures, not unavailability',()=>{
   const timeout=new Error('waiting timed out'); timeout.name='TimeoutError';
   for(const error of [timeout,new Error('SESSION_RETURNED_TO_LOGIN')]) {
