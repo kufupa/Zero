@@ -72,6 +72,19 @@ export interface HeaderDebugLine {
   line: string;
 }
 
+export interface MessageReactionUser {
+  userId?: string | null;
+  email: string;
+  userName?: string | null;
+}
+
+export interface MessageReactionGroup {
+  emoji: string;
+  count: number;
+  users: MessageReactionUser[];
+  hasReacted: boolean;
+}
+
 export interface ParsedMessage {
   id: string;
   connectionId?: string;
@@ -99,6 +112,7 @@ export interface ParsedMessage {
   isDraft?: boolean;
   attachments?: Attachment[];
   debugHeaders?: HeaderDebugLine[];
+  reactions?: MessageReactionGroup[];
 }
 
 export interface IConnection {

@@ -29,6 +29,19 @@ export interface MailDebugHeaderLine {
   line: string;
 }
 
+export interface MessageReactionUser {
+  userId?: string | null;
+  email: string;
+  userName?: string | null;
+}
+
+export interface MessageReactionGroup {
+  emoji: string;
+  count: number;
+  users: MessageReactionUser[];
+  hasReacted: boolean;
+}
+
 export interface ParsedMessage {
   id: string;
   title: string;
@@ -54,6 +67,7 @@ export interface ParsedMessage {
   debugHeaders?: MailDebugHeaderLine[];
   listUnsubscribe?: string;
   listUnsubscribePost?: string;
+  reactions?: MessageReactionGroup[];
 }
 
 export interface ParsedDraft {

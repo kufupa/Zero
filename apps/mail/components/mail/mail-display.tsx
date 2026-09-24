@@ -63,6 +63,9 @@ import {
   setHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
 import { MailContent } from './mail-content';
+import { ReactionPicker } from './reactions/reaction-picker';
+import { ReactionBadges } from './reactions/reaction-badges';
+import { ReactionBanner, detectReactionNotification } from './reactions/reaction-banner';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { FileText } from 'lucide-react';
@@ -70,6 +73,8 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTRPC } from '@/providers/query-provider';
 import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
@@ -497,7 +502,101 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
     setHeaderDebugEnabledState(next);
   }, [headerDebugEnabled]);
 
-  //   const trpc = useTRPC();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  const [reactions, setReactions] = useState(emailData.reactions ?? []);
+
+  useEffect(() => {
+    setReactions(emailData.reactions ?? []);
+  }, [emailData.reactions]);
+
+  const toggleReactionMutation = useMutation(trpc.mail.toggleReaction.mutationOptions());
+
+  const handleToggleReaction = useCallback(
+    async (emoji: string) => {
+      setReactions((prev) => {
+        const existingIdx = prev.findIndex((g) => g.emoji === emoji);
+        if (existingIdx >= 0) {
+          const group = prev[existingIdx];
+          if (group.hasReacted) {
+            const newCount = group.count - 1;
+            if (newCount <= 0) {
+              return prev.filter((_, i) => i !== existingIdx);
+            }
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...group,
+              count: newCount,
+              hasReacted: false,
+              users: group.users.filter(
+                (u) => u.email.toLowerCase() !== (activeConnection?.email ?? '').toLowerCase(),
+              ),
+            };
+            return updated;
+          }
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...group,
+            count: group.count + 1,
+            hasReacted: true,
+            users: [
+              ...group.users,
+              {
+                email: activeConnection?.email ?? '',
+                userName: activeConnection?.name ?? null,
+              },
+            ],
+          };
+          return updated;
+        }
+        return [
+          ...prev,
+          {
+            emoji,
+            count: 1,
+            hasReacted: true,
+            users: [
+              {
+                email: activeConnection?.email ?? '',
+                userName: activeConnection?.name ?? null,
+              },
+            ],
+          },
+        ];
+      });
+
+      try {
+        const res = await toggleReactionMutation.mutateAsync({
+          messageId: emailData.id,
+          reaction: emoji,
+        });
+        if (res && res.reactions) {
+          setReactions(res.reactions);
+        }
+        if (emailData.threadId) {
+          void queryClient.invalidateQueries({
+            queryKey: trpc.mail.get.queryKey({ id: emailData.threadId }),
+          });
+        }
+      } catch {
+        setReactions(emailData.reactions ?? []);
+      }
+    },
+    [
+      emailData.id,
+      emailData.threadId,
+      emailData.reactions,
+      activeConnection,
+      toggleReactionMutation,
+      trpc,
+      queryClient,
+    ],
+  );
+
+  const reactionNotification = useMemo(() => {
+    return emailData ? detectReactionNotification(emailData) : null;
+  }, [emailData]);
 
   const isLastEmail = useMemo(
     () => emailData.id === threadData?.latest?.id,
@@ -1320,6 +1419,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                 {emailData?.receivedOn && formatTime(emailData.receivedOn)}
                               </time>
                             )}
+                            <ReactionBadges
+                              reactions={reactions}
+                              onToggleReaction={handleToggleReaction}
+                            />
                           </div>
 
                           {/* options menu */}
@@ -1433,6 +1536,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
                           />
+                          <ReactionPicker
+                            onSelectEmoji={handleToggleReaction}
+                            activeEmojis={reactions.filter((r) => r.hasReacted).map((r) => r.emoji)}
+                          />
                         </div>
                       </div>
                     </div>
@@ -1540,6 +1647,14 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
             <div className="min-h-0 overflow-hidden">
               <div className="h-fit w-full p-0">
                 {/* mail main body */}
+                {reactionNotification && (
+                  <ReactionBanner
+                    emoji={reactionNotification.emoji}
+                    reactorName={reactionNotification.reactorName}
+                    quotedSnippet={reactionNotification.quotedSnippet}
+                    className="mx-4 mt-2 mb-3"
+                  />
+                )}
                 {emailData?.decodedBody ? (
                   <MailContent
                     id={emailData.id}

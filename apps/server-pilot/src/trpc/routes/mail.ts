@@ -41,6 +41,7 @@ import {
   mailThread,
   message,
   attachment,
+  messageReaction,
   mailLabel,
   mailDraft,
   mailDraftRevision,
@@ -61,6 +62,7 @@ import {
   parseFromEmail,
   sendInput,
   toParsedMessage,
+  groupReactions,
   buildMetadataDebugHeaders,
 } from '../wire-compat.js';
 import {
@@ -114,6 +116,11 @@ function toIsoDateTime(value: string | Date): string {
   const d = value instanceof Date ? value : new Date(value);
   return d.toISOString();
 }
+
+export const toggleReactionInput = z.object({
+  messageId: z.string().min(1),
+  reaction: z.string().min(1).max(16),
+});
 
 /** Audit self-BCC is on unless MAIL_SELF_BCC is explicitly disabled. */
 export function isSelfBccEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -550,8 +557,25 @@ export const mailRouter = tRouter({
         list.push(row);
         attachmentsByMessage.set(row.messageId, list);
       }
+      const reactionRows =
+        messageIds.length > 0
+          ? await db
+              .select()
+              .from(messageReaction)
+              .where(inArray(messageReaction.messageId, messageIds))
+              .orderBy(asc(messageReaction.createdAt))
+          : [];
+      const reactionsByMessage = new Map<string, typeof reactionRows>();
+      for (const row of reactionRows) {
+        const list = reactionsByMessage.get(row.messageId) ?? [];
+        list.push(row);
+        reactionsByMessage.set(row.messageId, list);
+      }
+      const callerEmail = ctx.sessionUser.email || ctx.transportEmail;
       const parsedMessages = messages.map((m) => {
-        const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []);
+        const msgReactions = reactionsByMessage.get(m.id) ?? [];
+        const groupedReactions = groupReactions(msgReactions, callerEmail);
+        const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? [], groupedReactions);
         if (transportId !== 'transport-nava') return parsed;
         return {
           ...parsed,
@@ -787,6 +811,69 @@ export const mailRouter = tRouter({
     }
     return { updated: visibleIds.length };
   }),
+
+  /**
+   * Toggle an emoji reaction on a message for the current user.
+   * Returns updated grouped reactions for the message.
+   */
+  toggleReaction: mailboxProcedure
+    .input(toggleReactionInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+
+      const [msg] = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, transportId)))
+        .limit(1);
+
+      if (!msg) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Message not found' });
+      }
+
+      const userEmail = ctx.sessionUser.email || ctx.transportEmail;
+      const userName = ctx.sessionUser.name ?? null;
+      const userId = ctx.sessionUser.id ?? null;
+
+      const existing = await db
+        .select({ id: messageReaction.id })
+        .from(messageReaction)
+        .where(
+          and(
+            eq(messageReaction.messageId, input.messageId),
+            eq(messageReaction.userEmail, userEmail),
+            eq(messageReaction.reaction, input.reaction),
+          ),
+        )
+        .limit(1);
+
+      if (existing.length > 0) {
+        await db.delete(messageReaction).where(eq(messageReaction.id, existing[0].id));
+      } else {
+        await db.insert(messageReaction).values({
+          id: `reaction-${randomUUID()}`,
+          messageId: input.messageId,
+          transportId,
+          userId,
+          userName,
+          userEmail,
+          reaction: input.reaction,
+          source: 'internal',
+        });
+      }
+
+      const allRows = await db
+        .select()
+        .from(messageReaction)
+        .where(eq(messageReaction.messageId, input.messageId))
+        .orderBy(asc(messageReaction.createdAt));
+
+      return {
+        messageId: input.messageId,
+        reactions: groupReactions(allRows, userEmail),
+      };
+    }),
 
   modifyLabels: mailboxProcedure.input(modifyLabelsInput).mutation(async ({ input, ctx }) => {
     const db = getDb();

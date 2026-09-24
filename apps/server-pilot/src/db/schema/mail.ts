@@ -375,6 +375,30 @@ export const attachment = pgTable(
   ],
 );
 
+export const messageReaction = pgTable(
+  'message_reaction',
+  {
+    id: text('id').primaryKey(),
+    messageId: text('message_id')
+      .notNull()
+      .references(() => message.id, { onDelete: 'cascade' }),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+    userEmail: text('user_email').notNull(),
+    userName: text('user_name'),
+    reaction: text('reaction').notNull(),
+    source: text('source').notNull().default('internal'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('message_reaction_message_idx').on(t.messageId),
+    index('message_reaction_transport_idx').on(t.transportId),
+    uniqueIndex('message_reaction_user_unique_idx').on(t.messageId, t.userEmail, t.reaction),
+  ],
+);
+
 export const aiDraftGeneration = pgTable(
   'ai_draft_generation',
   {
