@@ -1,16 +1,21 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { toast } from 'sonner';
 import path from 'node:path';
 
 const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
-  bridgeMockState: { protocolVersion: 3 },
+  bridgeMockState: { protocolVersion: 3 as number | undefined },
+}));
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 const v3Capabilities = {
@@ -76,6 +81,8 @@ describe('OutlookPanePage', () => {
   afterEach(() => {
     cleanup();
     sendCommandMock.mockClear();
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.warning).mockClear();
     bridgeMockState.protocolVersion = 3;
   });
 
@@ -138,6 +145,56 @@ describe('OutlookPanePage', () => {
     const retryPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
     expect(firstPayload.operationId).toBeTruthy();
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
+  });
+
+  it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
+    let finish!: (value: unknown) => void;
+    sendCommandMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(button.hasAttribute('disabled')).toBe(true);
+    expect(button.textContent).toMatch(/saving/i);
+
+    await act(async () => finish({ entryId: 'draft-1', displayed: true }));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+  });
+
+  it('shows native composer and placement warnings without claiming the draft opened', async () => {
+    sendCommandMock.mockResolvedValueOnce({
+      entryId: 'draft-1',
+      displayed: false,
+      composerWarning: 'Outlook blocked the composer',
+      draftPlacementWarning: 'Reply stayed in the original Drafts folder',
+      locationUnverified: true,
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toMatch(/saved.*not opened/i);
+      expect(screen.getByRole('status').textContent).toMatch(/Outlook blocked the composer/);
+      expect(screen.getByRole('status').textContent).toMatch(/original Drafts folder/);
+      expect(screen.getByRole('status').textContent).toMatch(/location.*unverified/i);
+    });
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
+  });
+
+  it('warns when connected but bridge capabilities and protocol version are unknown', () => {
+    bridgeMockState.protocolVersion = undefined;
+    render(<OutlookPanePage />);
+    expect(screen.getByRole('alert').textContent).toMatch(/protocol v3 not confirmed/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/update the Outlook add-in/i);
   });
 
   it('warns when an older installed bridge cannot provide protocol v3 actions', () => {

@@ -53,6 +53,22 @@ export const StoreSummarySchema = z.object({
 
 export type StoreSummary = z.infer<typeof StoreSummarySchema>;
 
+export const StorePageSchema = z.object({
+  items: z.array(StoreSummarySchema).max(200),
+  totalItems: z.number().int().nonnegative(),
+  continuationToken: z.string().nullable(),
+  truncated: z.boolean(),
+});
+
+export type StorePage = z.infer<typeof StorePageSchema>;
+// Requests with pageSize/continuationToken opt in to a bounded live collection page.
+// Existing callers still receive an array if it fits; oversized arrays fail explicitly.
+export const StoreCollectionResultSchema = z.union([
+  z.array(StoreSummarySchema).max(200),
+  StorePageSchema,
+]);
+export type StoreCollectionResult = z.infer<typeof StoreCollectionResultSchema>;
+
 export const FolderSummarySchema = z.object({
   storeId: z.string(),
   entryId: z.string(),
@@ -72,6 +88,22 @@ export const AccountSummarySchema = z.object({
 
 export type AccountSummary = z.infer<typeof AccountSummarySchema>;
 
+export const AccountPageSchema = z.object({
+  items: z.array(AccountSummarySchema).max(200),
+  totalItems: z.number().int().nonnegative(),
+  continuationToken: z.string().nullable(),
+  truncated: z.boolean(),
+});
+
+export type AccountPage = z.infer<typeof AccountPageSchema>;
+// totalItems counts provider account slots; addressless/non-SMTP slots are omitted
+// from items, so a page may be shorter than pageSize even when truncated is true.
+export const AccountCollectionResultSchema = z.union([
+  z.array(AccountSummarySchema).max(200),
+  AccountPageSchema,
+]);
+export type AccountCollectionResult = z.infer<typeof AccountCollectionResultSchema>;
+
 export const MailLocationSchema = z.object({
   entryId: z.string(),
   storeId: z.string(),
@@ -79,6 +111,10 @@ export const MailLocationSchema = z.object({
   folderName: z.string(),
   displayed: z.boolean().optional(),
   moved: z.boolean().optional(),
+  composerWarning: z.string().optional(),
+  draftPlacementWarning: z.string().optional(),
+  folderPlacementWarning: z.string().optional(),
+  locationUnverified: z.boolean().optional(),
 });
 
 export type MailLocation = z.infer<typeof MailLocationSchema>;

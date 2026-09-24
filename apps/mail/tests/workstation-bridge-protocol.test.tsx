@@ -7,6 +7,7 @@ import {
   createOperationId,
   BRIDGE_PROTOCOL_VERSION,
   AccountSummarySchema,
+  AccountCollectionResultSchema,
   BridgeCapabilitiesSchema,
   DeleteEmailResultSchema,
   FolderEmailSummarySchema,
@@ -14,6 +15,9 @@ import {
   FolderSummarySchema,
   SendDraftResultSchema,
   StoreSummarySchema,
+  StoreCollectionResultSchema,
+  StorePageSchema,
+  AccountPageSchema,
   type WorkstationEmailPayload,
 } from '../lib/workstation/bridge-protocol';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -148,6 +152,38 @@ describe('Workstation Bridge Protocol', () => {
     expect(page.items).toHaveLength(1);
     expect(page.continuationToken).toBe('snapshot-1:200');
     expect(page.storeId).toBe('store-1');
+  });
+
+  it('parses bounded store/account pages and backwards-compatible legacy arrays', () => {
+    const store = { storeId: 'store-1', displayName: 'Reservations', isDefault: true };
+    const account = { smtpAddress: 'help@example.com', displayName: 'Help' };
+    expect(StoreCollectionResultSchema.parse([store])).toEqual([store]);
+    expect(AccountCollectionResultSchema.parse([account])).toEqual([account]);
+    expect(
+      StorePageSchema.parse({
+        items: [store],
+        totalItems: 400,
+        continuationToken: 'stores:200',
+        truncated: true,
+      }).continuationToken,
+    ).toBe('stores:200');
+    expect(
+      AccountPageSchema.parse({
+        items: [account],
+        totalItems: 400,
+        continuationToken: 'accounts:200',
+        truncated: true,
+      }).items,
+    ).toHaveLength(1);
+    expect(() => StoreCollectionResultSchema.parse(Array(201).fill(store))).toThrow();
+    expect(() =>
+      AccountCollectionResultSchema.parse({
+        items: Array(201).fill(account),
+        totalItems: 201,
+        continuationToken: null,
+        truncated: false,
+      }),
+    ).toThrow();
   });
 
   it('parses a valid email payload from C# bridge with headers', () => {
@@ -296,6 +332,21 @@ describe('useOutlookBridge selection events', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connected').textContent).toBe('yes');
       expect(screen.getByTestId('protocol').textContent).toBe('2');
+      expect(screen.getByTestId('send-supported').textContent).toBe('no');
+    });
+  });
+
+  it('retains connected legacy reads when PING omits protocol and capabilities fail', async () => {
+    render(<BridgeProbe />);
+    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
+      workstationUser: 'test-user',
+      outlookEmail: 'test@example.com',
+      outlookVersion: '16.0',
+    });
+    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), null, false);
+    respondToBridgeRequest(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    await waitFor(() => {
+      expect(screen.getByTestId('connected').textContent).toBe('yes');
       expect(screen.getByTestId('send-supported').textContent).toBe('no');
     });
   });

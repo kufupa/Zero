@@ -327,12 +327,15 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
       source.indexOf('public Dictionary<string, object> CreateReplyDraft('),
       source.indexOf('private Outlook.MailItem MoveDraftToStore('),
     );
-    expect(reply.indexOf('PayloadBool(payload, "openInComposer", false)')).toBeLessThan(
+    expect(reply.indexOf('PayloadBool(payload, "openInComposer", true)')).toBeGreaterThanOrEqual(0);
+    expect(reply.indexOf('PayloadBool(payload, "openInComposer", true)')).toBeLessThan(
       reply.indexOf('reply.Save();'),
     );
+    expect(reply).toContain('if (openInComposer)');
     expect(reply).toContain('SafeReleaseMailComObject(reply);');
     expect(reply).toContain('SafeReleaseMailComObject(original);');
     expect(reply).toContain('SafeReleaseMailComObject(draftsFolder);');
+    expect(reply).toContain('savedLocation["entryId"] = reply.EntryID ?? "";');
   });
 
   it('cannot turn a saved new or updated draft into an uncached error while reading its location', () => {
@@ -445,7 +448,7 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
       'public List<Dictionary<string, object>> GetConversationThread(',
     );
     const methodEnd = source.indexOf(
-      '\n        private Outlook.MailItem ResolveMailItem',
+      '\n        private List<Dictionary<string, object>> GetLegacyConversationThread',
       methodStart,
     );
     const method = source.slice(methodStart, methodEnd);
@@ -463,6 +466,71 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(method).toContain('list.Count < maxResults');
     expect(method).not.toContain('folder.GetTable(');
     expect(method).not.toContain('columns.Add("ConversationID")');
+  });
+
+  it('preserves bounded legacy conversationId/folder queries without restricting the seed path', () => {
+    const source = read('OutlookBridgeDispatcher.cs');
+    const seed = source.slice(
+      source.indexOf('public List<Dictionary<string, object>> GetConversationThread('),
+      source.indexOf('private List<Dictionary<string, object>> GetLegacyConversationThread('),
+    );
+    const legacy = source.slice(
+      source.indexOf('private List<Dictionary<string, object>> GetLegacyConversationThread('),
+      source.indexOf('private Outlook.MailItem ResolveMailItem('),
+    );
+    expect(seed).toContain('GetLegacyConversationThread(payload, maxResults)');
+    expect(seed).toContain('conversation.GetTable()');
+    expect(seed).not.toContain('ResolveFolder(');
+    expect(legacy).toContain('PayloadString(payload, "conversationId")');
+    expect(legacy).toContain('PayloadString(payload, "folder", "Inbox")');
+    expect(legacy).toContain('ResolveFolder(');
+    expect(legacy).toContain('mail.ConversationID');
+    expect(legacy).toContain('string storeId = folder.StoreID ?? "";');
+    expect(legacy).not.toContain('row.BinaryToString(PR_STORE_ENTRYID)');
+    expect(legacy).toContain('scanned < MaxPageSize * 20');
+    expect(legacy).not.toContain('columns.Add("ConversationID")');
+  });
+
+  it('rejects unverified mail parent/identities and preserves post-save warning fallbacks', () => {
+    const source = read('OutlookMailOperations.cs');
+    const location = source.slice(
+      source.indexOf('private Dictionary<string, object> GetMailLocation('),
+      source.indexOf('private Dictionary<string, object> GetMailLocationAfterSave('),
+    );
+    expect(location).toContain('parentObject as Outlook.MAPIFolder');
+    expect(location).toContain('if (parentFolder == null) throw new InvalidOperationException(');
+    expect(location).toContain('string.IsNullOrWhiteSpace(storeId)');
+    expect(location).toContain('string.IsNullOrWhiteSpace(folderEntryId)');
+    expect(location).not.toMatch(/catch\s*\{[\s\S]*?Some item providers/);
+    expect(source).toContain('GetMailLocationAfterSave(draft, expectedLocation)');
+    expect(source).toContain('result["locationUnverified"] = true;');
+    const move = source.slice(
+      source.indexOf('public Dictionary<string, object> MoveEmail('),
+      source.indexOf('public Dictionary<string, object> MoveToSpam('),
+    );
+    expect(move).toContain('GetMailLocationAfterSave(movedMail, expectedLocation)');
+    expect(move).toContain('location["locationUnverified"] = true;');
+    expect(move).toMatch(
+      /new Dictionary<string, object>\(expectedLocation\);\s*location\["moved"\] = true;/,
+    );
+    expect(move).not.toContain('new Dictionary<string, object> { { "moved", movedItem != null } }');
+    expect(source).toContain('SafeReleaseMailComObject(movedItem);');
+  });
+
+  it('bounds stores/accounts with explicit opt-in continuation and rejects silent legacy truncation', () => {
+    const source = read('OutlookMailOperations.cs');
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    expect(dispatcher).toContain('ListStores(payload)');
+    expect(dispatcher).toContain('ListAccounts(payload)');
+    expect(source).toContain('private static int GetCollectionPageOffset(');
+    expect(source).toContain('private static object FinishCollectionPage(');
+    expect(source).toContain(
+      'for (int i = offset + 1; i <= Math.Min(totalItems, offset + pageSize); i++)',
+    );
+    expect(source).toContain('throw new InvalidOperationException("Use pageSize to page');
+    expect(source).toContain('"continuationToken"');
+    expect(source).toContain('"totalItems"');
+    expect(source).toContain('"truncated"');
   });
 
   it('clears Outlook Table default columns before adding the requested mail fields', () => {
