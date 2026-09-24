@@ -14,7 +14,30 @@ function read(file: string): string {
 
 const hasVstoSource = existsSync(path.join(vstoRoot, 'ThisAddIn.cs'));
 
-describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile)', () => {
+describe('VSTO source contract (Linux, no Outlook compile)', () => {
+  it('reports unavailable private native source in root CI instead of silently skipping', () => {
+    expect(hasVstoSource).toBe(true);
+    const ci = readFileSync(path.resolve(vstoRoot, '../../../../.github/workflows/ci.yml'), 'utf8');
+    expect(ci).toContain('tests/workstation-bridge-protocol.test.tsx');
+    expect(ci).toContain('::warning::Private VSTO submodule unavailable');
+    expect(ci).toContain('native source and installer contracts NOT verified');
+    expect(ci).toContain('tests/vsto-source-contract.test.ts');
+    expect(ci).toContain('tests/outlook-addin-installer-nginx.test.ts');
+  });
+
+  it('releases temporary Outlook Session references during PING', () => {
+    const source = read('OutlookBridgeDispatcher.cs');
+    const getUser = source.slice(
+      source.indexOf('private string SafeCurrentUserAddress()'),
+      source.indexOf('private static string SafeRowValue('),
+    );
+    expect(getUser).toContain('Outlook.NameSpace session = null;');
+    expect(getUser).toContain('Marshal.ReleaseComObject(session)');
+  });
+
+  it('compiles pure policy helpers with the Framework C# compiler used by CI', () => {
+    expect(read('OutlookBridgeOperationCache.cs')).not.toContain('is IEnumerable sequence');
+  });
   it('ships the C# project files', () => {
     for (const file of [
       'ThisAddIn.cs',
@@ -314,6 +337,13 @@ describe.skipIf(!hasVstoSource)('VSTO source contract (Linux, no Outlook compile
     expect(dispatcher).toContain('_operationCache.TryGet');
     expect(dispatcher).toContain('_operationCache.StoreCompleted');
     expect(dispatcher).toContain('operationId');
+  });
+
+  it('rejects nonblank legacy account identifiers without an SMTP separator', () => {
+    const policy = read('OutlookMailOperationPolicy.cs');
+    expect(policy).toContain("address.IndexOf('@')");
+    const harness = readFileSync(path.resolve(vstoRoot, '../tests/BridgePolicyTests.cs'), 'utf8');
+    expect(harness).toContain('legacyExchangeAddress');
   });
 
   it('runs pure bridge policy and snapshot tests in the Windows build', () => {

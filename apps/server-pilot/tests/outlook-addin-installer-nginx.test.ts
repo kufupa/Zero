@@ -1,17 +1,18 @@
-import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
+import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hasVstoInstaller = existsSync(path.join(root, 'vsto/installer/setup.iss'));
 
 describe('Outlook add-in installer and nginx download route', () => {
-  it.skipIf(!hasVstoInstaller)('ships a zero-admin installer that kills Outlook, trusts the cert, and does not wipe other add-ins', () => {
+  it('ships a zero-admin installer that kills Outlook, trusts the cert, and does not wipe other add-ins', () => {
+    expect(hasVstoInstaller).toBe(true);
     const issPath = path.join(root, 'vsto/installer/setup.iss');
     expect(existsSync(issPath)).toBe(true);
     const iss = readFileSync(issPath, 'utf8');
-    expect(iss).toContain('AppVersion=1.0.8');
+    expect(iss).toContain('AppVersion=1.0.9');
     expect(iss).toContain('PrivilegesRequired=lowest');
     expect(iss).toContain('RegisterTrust.exe');
     expect(iss).toContain('taskkill');
@@ -42,11 +43,9 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(writeAt).toBeGreaterThan(storeAt);
   });
 
-  it.skipIf(!hasVstoInstaller)('aborts Setup if RegisterTrust, WebView2, or Outlook-still-running would leave a dead add-in', () => {
+  it('aborts Setup if RegisterTrust, WebView2, or Outlook-still-running would leave a dead add-in', () => {
     const iss = readFileSync(path.join(root, 'vsto/installer/setup.iss'), 'utf8');
-    expect(iss).toMatch(
-      /procedure EnsureTrust[\s\S]*RegisterTrust\.exe[\s\S]*FailSetup/,
-    );
+    expect(iss).toMatch(/procedure EnsureTrust[\s\S]*RegisterTrust\.exe[\s\S]*FailSetup/);
     expect(iss).toMatch(/Listing:\s*AnsiString/);
     expect(iss).toMatch(/AfterInstall:\s*RunPostCopyGates/);
     expect(iss).toMatch(/procedure FailSetup[\s\S]*RaiseException/);
@@ -67,7 +66,7 @@ describe('Outlook add-in installer and nginx download route', () => {
     expect(prepare).toMatch(/Outlook is still running|still running/i);
   });
 
-  it.skipIf(!hasVstoInstaller)('ships a fallback HKCU install.cmd that copies Release output then runs RegisterTrust', () => {
+  it('ships a fallback HKCU install.cmd that copies Release output then runs RegisterTrust', () => {
     const cmdPath = path.join(root, 'vsto/installer/install.cmd');
     expect(existsSync(cmdPath)).toBe(true);
     const cmd = readFileSync(cmdPath, 'utf8');
