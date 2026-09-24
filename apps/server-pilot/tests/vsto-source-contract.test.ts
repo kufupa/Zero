@@ -295,7 +295,14 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     const readBack = sendDraft.indexOf('account = draft.SendUsingAccount;', clearOverride);
     const verifyClear = sendDraft.indexOf('if (account != null)', readBack);
     const send = sendDraft.indexOf('draft.Send();');
+    const defaultAccountPath = sendDraft.slice(
+      sendDraft.indexOf('else if (useDefaultAccount)'),
+      send,
+    );
 
+    expect(defaultAccountPath).toContain('else if (useDefaultAccount)');
+    expect(defaultAccountPath).toContain('if (account != null)');
+    expect(defaultAccountPath).toContain('Outlook retained a saved sender account');
     expect(clearOverride).toBeGreaterThanOrEqual(0);
     expect(readBack).toBeGreaterThan(clearOverride);
     expect(verifyClear).toBeGreaterThan(readBack);
@@ -313,13 +320,41 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
       source.indexOf('private void AppendFolderTree('),
       source.indexOf('\n        private static string SafeFolderPath('),
     );
+    const finish = source.slice(
+      source.indexOf('private object FinishFolderCollection('),
+      source.indexOf('\n        private void AppendStoreFolders('),
+    );
+    const legacyTruncationGuard = finish.indexOf('if (truncated)');
+    const legacyTruncationError = finish.indexOf(
+      'throw new InvalidOperationException("Folder enumeration was truncated',
+    );
+    const legacyReturn = finish.indexOf('return folders;');
+    const nullFolderHandling = traversal.slice(
+      traversal.indexOf('if (folder == null)'),
+      traversal.indexOf('if (depth > MaxFolderDepth'),
+    );
+    const childFetch = traversal.indexOf('child = children[i];');
+    const nullChildCheck = traversal.indexOf('if (child == null)', childFetch);
+    const cappedChildEntryIdRead = traversal.indexOf(
+      'string childEntryId = child.EntryID',
+      childFetch,
+    );
+    const nullChildHandling = traversal.slice(nullChildCheck, cappedChildEntryIdRead);
 
     expect(listFolders).toContain('if (_capabilitiesNegotiated)');
     expect(listFolders).toContain('"items"');
     expect(listFolders).toContain('"truncated"');
-    expect(listFolders).toContain('Folder enumeration was truncated');
+    expect(legacyTruncationGuard).toBeGreaterThanOrEqual(0);
+    expect(legacyTruncationError).toBeGreaterThan(legacyTruncationGuard);
+    expect(legacyReturn).toBeGreaterThan(legacyTruncationError);
     expect(traversal).toContain('ref bool truncated');
     expect(traversal).toContain('truncated = true;');
+    expect(nullFolderHandling).toContain('truncated = true;');
+    expect(nullFolderHandling).toContain('return;');
+    expect(nullChildCheck).toBeGreaterThan(childFetch);
+    expect(cappedChildEntryIdRead).toBeGreaterThan(nullChildCheck);
+    expect(nullChildHandling).toContain('truncated = true;');
+    expect(nullChildHandling).toContain('break;');
   });
 
   it('stores new and reply drafts in the requested Outlook store Drafts folder', () => {
