@@ -169,6 +169,41 @@
       "when": 1788998788983,
       "tag": "0023_message_reaction",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788998800000,
+      "tag": "0024_read_tool_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788998900000,
+      "tag": "0025_read_tool_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788999000000,
+      "tag": "0026_mail_baseline_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789036800000,
+      "tag": "0027_ai_shadow_evaluation",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789123200000,
+      "tag": "0028_ai_shadow_first_repair",
+      "breakpoints": true
     }
   ]
 }
