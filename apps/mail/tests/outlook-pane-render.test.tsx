@@ -50,7 +50,10 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     activeEmail: {
       entryId: bridgeMockState.selectedEntryId,
       storeId: 'store-1',
-      subject: 'Suite Availability Request',
+      subject:
+        bridgeMockState.selectedEntryId === '001'
+          ? 'Suite Availability Request'
+          : 'Different Guest Request',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
@@ -83,6 +86,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockClear();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
+    vi.mocked(toast.error).mockClear();
     bridgeMockState.protocolVersion = 3;
     bridgeMockState.selectedEntryId = '001';
   });
@@ -224,6 +228,65 @@ describe('OutlookPanePage', () => {
     pane.rerender(<OutlookPanePage />);
     await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
 
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('identifies the original message in a late reply success toast', async () => {
+    let finish!: (value: unknown) => void;
+    sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
+
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining('Suite Availability Request'),
+    );
+    expect(toast.success).not.toHaveBeenCalledWith(
+      expect.stringContaining('Different Guest Request'),
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('preserves warnings and identifies the original message in a late reply warning toast', async () => {
+    let finish!: (value: unknown) => void;
+    sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () =>
+      finish({
+        entryId: 'draft-for-001',
+        displayed: false,
+        composerWarning: 'Outlook blocked the composer',
+      }),
+    );
+
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Suite Availability Request'),
+    );
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Outlook blocked the composer'),
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('identifies the original message in a late reply error toast', async () => {
+    let fail!: (reason: Error) => void;
+    sendCommandMock.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => fail(new Error('Bridge unavailable')));
+
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Suite Availability Request'));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Bridge unavailable'));
     expect(screen.queryByRole('status')).toBeNull();
   });
 

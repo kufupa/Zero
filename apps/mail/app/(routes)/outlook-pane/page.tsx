@@ -102,6 +102,9 @@ export default function OutlookPanePage() {
     setIsDraftPending(true);
     setDraftStatus(null);
     const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
+    const subject =
+      activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
+    const replyLabel = `Reply to “${subject}”: `;
     if (replyRetry.current?.key !== key) {
       replyRetry.current = { key, operationId: createOperationId() };
     }
@@ -136,12 +139,12 @@ export default function OutlookPanePage() {
           : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
       const message = [summary, ...details].join(' ');
       setDraftStatus({ key, message });
-      if (details.length || !opened) toast.warning(message);
-      else toast.success(message);
+      if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
+      else toast.success(`${replyLabel}${message}`);
     } catch (err) {
       if (!(err instanceof Error && err.message.includes('timed out'))) replyRetry.current = null;
       toast.error(
-        `Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
+        `${replyLabel}Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
       );
     } finally {
       replyInFlight.current = false;
