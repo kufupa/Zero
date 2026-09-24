@@ -2243,6 +2243,8 @@ describe('deploy config', () => {
     );
     expect(deploy).toContain('export VITE_PUBLIC_BACKEND_URL=""');
     expect(deploy).toContain('unset VITE_PUBLIC_APP_URL');
+    expect(deploy).toContain('assert SPA did not bake undefined/api');
+    expect(deploy).toContain('undefined/api/trpc');
     expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
     expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
     expect(deploy).toContain(

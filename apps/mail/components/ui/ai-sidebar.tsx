@@ -23,6 +23,7 @@ import { useAgent } from 'agents/react';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
 import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
+import { resolvePublicBackendUrl } from '@/lib/public-backend-url';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 
@@ -364,7 +365,7 @@ function AISidebar({ className }: AISidebarProps) {
   const agent = useAgent({
     agent: 'ZeroAgent',
     name: activeConnection?.id ? String(activeConnection.id) : 'general',
-    host: `${import.meta.env.VITE_PUBLIC_BACKEND_URL}`,
+    host: resolvePublicBackendUrl() || (typeof window !== 'undefined' ? window.location.origin : ''),
     onError: (e) => console.log(e),
     onMessage,
   });
