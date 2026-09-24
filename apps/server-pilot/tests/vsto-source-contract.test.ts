@@ -321,6 +321,60 @@ describe('VSTO source contract (Linux, no Outlook compile)', () => {
     expect(source).not.toContain('if (draftPlacementWarning == null) throw;');
   });
 
+  it('validates composer options before reply side effects and cannot fail during post-save COM cleanup', () => {
+    const source = read('OutlookMailOperations.cs');
+    const reply = source.slice(
+      source.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+      source.indexOf('private Outlook.MailItem MoveDraftToStore('),
+    );
+    expect(reply.indexOf('PayloadBool(payload, "openInComposer", false)')).toBeLessThan(
+      reply.indexOf('reply.Save();'),
+    );
+    expect(reply).toContain('SafeReleaseMailComObject(reply);');
+    expect(reply).toContain('SafeReleaseMailComObject(original);');
+    expect(reply).toContain('SafeReleaseMailComObject(draftsFolder);');
+  });
+
+  it('cannot turn a saved new or updated draft into an uncached error while reading its location', () => {
+    const source = read('OutlookMailOperations.cs');
+    for (const operation of ['CreateDraft', 'UpdateDraft']) {
+      const start = source.indexOf(`public Dictionary<string, object> ${operation}(`);
+      const next = source.indexOf('\n        public ', start + 1);
+      const method = source.slice(start, next);
+      expect(method, operation).toContain('GetMailLocationAfterSave(');
+      expect(method, operation).toContain('SafeReleaseMailComObject(draft);');
+    }
+    expect(source).toContain('locationUnverified');
+  });
+
+  it('makes post-mutation COM cleanup best-effort across mail mutations', () => {
+    const source = read('OutlookMailOperations.cs');
+    for (const operation of [
+      'SendDraft',
+      'MoveEmail',
+      'CreateFolder',
+      'DeleteEmail',
+      'DeleteEmailPermanently',
+    ]) {
+      const start = source.indexOf(`public Dictionary<string, object> ${operation}(`);
+      const next = source.indexOf('\n        public ', start + 1);
+      const method = source.slice(start, next);
+      expect(method, operation).toContain('SafeReleaseMailComObject(');
+    }
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    for (const operation of [
+      'AddAttachmentToDraft',
+      'SetEmailCategory',
+      'SetFollowUpFlag',
+      'MarkEmailRead',
+    ]) {
+      const start = dispatcher.indexOf(`public bool ${operation}(`);
+      const next = dispatcher.indexOf('\n        public ', start + 1);
+      const method = dispatcher.slice(start, next);
+      expect(method, operation).toContain('SafeReleaseMailComObject(');
+    }
+  });
+
   it('uses a shared folder-alias mapper for default and selected stores', () => {
     const dispatcher = read('OutlookBridgeDispatcher.cs');
     const operations = read('OutlookMailOperations.cs');
