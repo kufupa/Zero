@@ -166,11 +166,19 @@ pnpm --filter @zero/server build
 
 echo "== build mail SPA =="
 # Empty string = same-origin /api via nginx. No host is baked into this shared artifact.
+# NEVER leave VITE_PUBLIC_BACKEND_URL unset: Vite then emits JS `undefined`, and
+# `undefined + '/api/trpc'` becomes the literal path `undefined/api/trpc`.
 export VITE_PUBLIC_BACKEND_URL=""
 unset VITE_PUBLIC_APP_URL
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 pnpm --filter @zero/mail build
+
+echo "== assert SPA did not bake undefined/api =="
+if grep -R --include='*.js' -l 'undefined/api/trpc' "${MAIL_APP}/build/client/assets" >/dev/null 2>&1; then
+  echo "refusing deploy: SPA contains literal undefined/api/trpc (missing VITE_PUBLIC_BACKEND_URL at build)" >&2
+  exit 1
+fi
 
 echo "== sync SPA to ${WEB_ROOT} =="
 sudo mkdir -p "$WEB_ROOT"
