@@ -139,14 +139,11 @@ function ProposedPane({
   const actions = resolveProposedActions(row);
   const live = actions.filter((item) => item.status === 'live' || item.status === 'needs_human');
   const folded = actions.filter((item) => item.status === 'done' || item.status === 'superseded');
-  // Prefer the clicked live index when it matches the tool route; otherwise first tool match.
+  // Clicked stack index always wins; tool route only seeds when index empty/out of range.
   const indexed = live[actionIndex] || null;
   const current =
-    (selectedTool
-      ? indexed?.tool === selectedTool
-        ? indexed
-        : live.find((item) => item.tool === selectedTool) || indexed
-      : indexed) ||
+    indexed ||
+    (selectedTool ? live.find((item) => item.tool === selectedTool) : null) ||
     live[0] ||
     null;
   const tool = current?.tool || selectedTool || row.tools[0] || 'hms_find_reservation';
