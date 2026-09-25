@@ -1,0 +1,269 @@
+// Tiny Draft 2020-12 subset shared by the create CLI and offline tests.
+// Ajv is not a repo dependency (only an uninstalled devDependency of
+// zod-to-json-schema). $ref siblings other than description are not used.
+// Descriptions are ignored at validation time.
+import { readFile } from 'node:fs/promises';
+
+const schemaUrl = new URL('./create-tool.schema.json', import.meta.url);
+
+function deref(schema, root) {
+  if (!schema?.$ref) return schema;
+  const prefix = '#/$defs/';
+  if (!schema.$ref.startsWith(prefix)) throw new Error(`unsupported $ref ${schema.$ref}`);
+  const target = root.$defs?.[schema.$ref.slice(prefix.length)];
+  if (!target) throw new Error(`missing $ref ${schema.$ref}`);
+  return target;
+}
+
+function typeList(schema) {
+  if (!schema.type) return null;
+  return Array.isArray(schema.type) ? schema.type : [schema.type];
+}
+
+function matchesType(type, data) {
+  if (type === 'null') return data === null;
+  if (type === 'string') return typeof data === 'string';
+  if (type === 'boolean') return typeof data === 'boolean';
+  if (type === 'integer') return Number.isInteger(data);
+  if (type === 'number') return typeof data === 'number' && !Number.isNaN(data);
+  if (type === 'object') return data !== null && typeof data === 'object' && !Array.isArray(data);
+  if (type === 'array') return Array.isArray(data);
+  return false;
+}
+
+function check(schema, data, path, errors, root) {
+  schema = deref(schema, root);
+  if (schema.oneOf) {
+    const matched = schema.oneOf.some((sub) => {
+      const nested = [];
+      check(sub, data, path, nested, root);
+      return nested.length === 0;
+    });
+    if (!matched) errors.push(`${path} oneOf`);
+    return;
+  }
+  if (schema.allOf) {
+    for (const sub of schema.allOf) check(sub, data, path, errors, root);
+  }
+  if (schema.if) {
+    const ifErrors = [];
+    check(schema.if, data, path, ifErrors, root);
+    if (ifErrors.length === 0 && schema.then) check(schema.then, data, path, errors, root);
+  }
+  if (Object.hasOwn(schema, 'const') && data !== schema.const) {
+    errors.push(`${path} const`);
+    return;
+  }
+  if (schema.enum && !schema.enum.includes(data)) {
+    errors.push(`${path} enum`);
+    return;
+  }
+  const types = typeList(schema);
+  if (types && !types.some((type) => matchesType(type, data))) {
+    errors.push(`${path} type`);
+    return;
+  }
+  if (typeof data === 'string') {
+    if (schema.minLength != null && data.length < schema.minLength) errors.push(`${path} minLength`);
+    if (schema.pattern && !new RegExp(schema.pattern).test(data)) errors.push(`${path} pattern`);
+  }
+  if (typeof data === 'number') {
+    if (schema.minimum != null && data < schema.minimum) errors.push(`${path} minimum`);
+    if (schema.maximum != null && data > schema.maximum) errors.push(`${path} maximum`);
+  }
+  if (Array.isArray(data)) {
+    if (schema.maxItems != null && data.length > schema.maxItems) errors.push(`${path} maxItems`);
+    if (schema.items) {
+      data.forEach((item, index) => check(schema.items, item, `${path}[${index}]`, errors, root));
+    }
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const props = schema.properties;
+    if (schema.required) {
+      for (const key of schema.required) {
+        if (!Object.hasOwn(data, key)) errors.push(`${path}.${key} required`);
+      }
+    }
+    if (schema.additionalProperties === false && props) {
+      for (const key of Object.keys(data)) {
+        if (!Object.hasOwn(props, key)) errors.push(`${path}.${key} additionalProperties`);
+      }
+    }
+    if (props) {
+      for (const [key, sub] of Object.entries(props)) {
+        if (Object.hasOwn(data, key)) check(sub, data[key], `${path}.${key}`, errors, root);
+      }
+    }
+  }
+}
+
+export function validate(schema, data, root) {
+  const errors = [];
+  check(schema, data, '$', errors, root);
+  return { ok: errors.length === 0, errors };
+}
+
+export async function loadCreateToolSchema() {
+  return JSON.parse(await readFile(schemaUrl, 'utf8'));
+}
+
+const ROOM_LABELS = {
+  'Standard Queen': 'STQN',
+  'Standard Twin': 'STWN',
+  'Standard King': 'SKNG',
+  'Executive King': 'EXKNG',
+  'Luxury King': 'LUXKNG',
+  Suite: 'SUITE',
+  'Deluxe King': 'DLXKNG',
+  'Deluxe Queen': 'DLXQN',
+  'Deluxe Twin': 'DLXTWN',
+};
+
+const TRACK_LABELS = {
+  'Airline Rate': 'AIR',
+  'Best Available': 'BAR',
+  Complimentary: 'COM',
+  'Corporate Rate': 'COR',
+  'Day Use': 'DAY',
+  'Domestic Leisure': 'DOML',
+  Educational: 'EDU',
+  'Extended Stay': 'EXST',
+  'GDS BAR': 'GDSB',
+  'GDS Negotiated': 'GDSN',
+  'Group and Convention': 'GNC',
+  Government: 'GOV',
+  'House Use': 'HSE',
+  'Legacy Lifestyle Corporate': 'LLC',
+  'Online Chinese Market': 'OTA1',
+  'OTA Automated': 'OTAA',
+  'Legacy Public Website': 'OWS',
+  Promotions: 'PROMO',
+  'Redemption Rate': 'RED',
+  Specials: 'SPE',
+  'STO Rate': 'STO',
+};
+
+const NATIVE_ID_FIELDS = new Set(['agency', 'organization', 'arAccount', 'profileId']);
+
+function normalizeNativeIdValue(field, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (typeof value.nativeId === 'string' && value.nativeId.trim()) {
+    const nativeId = value.nativeId.trim();
+    if (field === 'profileId' && /^\d+$/.test(nativeId)) return Number(nativeId);
+    return nativeId;
+  }
+  return value;
+}
+
+export function normalizeCreateLabels(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const next = { ...data };
+  for (const field of NATIVE_ID_FIELDS) {
+    if (Object.hasOwn(next, field)) next[field] = normalizeNativeIdValue(field, next[field]);
+  }
+  if (typeof next.roomType === 'string' && ROOM_LABELS[next.roomType]) next.roomType = ROOM_LABELS[next.roomType];
+  if (typeof next.track === 'string' && TRACK_LABELS[next.track]) next.track = TRACK_LABELS[next.track];
+  return next;
+}
+
+export function validateCreateRequest(data, schema) {
+  return validate(schema.$defs.request, data, schema);
+}
+
+export function parseShop(argv) {
+  return argv.includes('--shop');
+}
+
+export function shopRowsFromRecords(records) {
+  if (!Array.isArray(records)) throw new Error('shop records');
+  const rows = [];
+  for (const record of records) {
+    if (!record || typeof record !== 'object') continue;
+    const roomType = String(record.roomType || '').trim();
+    const code = String(record.code || '').trim();
+    const name = String(record.name || '').trim();
+    if (!roomType || !code || !name) continue;
+    rows.push({ roomType, code, name });
+  }
+  return rows;
+}
+
+export function shopRowsFromTexts(lines) {
+  const rooms = new Set(['EXKNG', 'LUXKNG', 'SUITE', 'STQN', 'STWN', 'DLXKNG', 'DLXQN', 'DLXTWN', 'SKNG']);
+  let roomType = '';
+  const rows = [];
+  for (const line of lines || []) {
+    const text = String(line || '').replace(/\s+/g, ' ').trim();
+    if (!text || text === 'Current Rates' || text.startsWith('HRCEN')) continue;
+    if (rooms.has(text)) {
+      roomType = text;
+      continue;
+    }
+    const match = text.match(/^([A-Z0-9]{2,8})\s+(.+)$/);
+    if (match && roomType) rows.push({ roomType, code: match[1], name: match[2] });
+  }
+  return rows;
+}
+
+export function shopResult(records, lines = []) {
+  const fromRecords = shopRowsFromRecords(records);
+  return {
+    salesStrategy: 'BAR',
+    rowClicked: false,
+    rows: fromRecords.length ? fromRecords : shopRowsFromTexts(lines),
+  };
+}
+
+export function refuseRateRowClick() {
+  throw new Error('RATE_ROW_CLICK_REFUSED');
+}
+
+export function parseStopBefore(argv) {
+  const index = argv.indexOf('--stop-before');
+  if (index === -1) return { ok: true, stopBefore: null };
+  const value = argv[index + 1];
+  if (value !== 'availability') {
+    return { ok: false, exitCode: 2, error: 'Required: --stop-before availability' };
+  }
+  return { ok: true, stopBefore: 'availability' };
+}
+
+const STAY_FILL = ['arrival', 'departure', 'adults', 'sourceOfBusiness', 'roomType', 'ratePlan', 'track', 'guaranteeType', 'filled.png'];
+
+export function stayActions(stopBefore) {
+  if (stopBefore === 'availability') return [...STAY_FILL];
+  return [...STAY_FILL, 'firstName', 'lastName', 'checkAvailability', 'availability.png', 'save', 'saved.png'];
+}
+
+export function parseRequestPath(argv) {
+  const index = argv.indexOf('--request');
+  const value = index === -1 ? undefined : argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    return { ok: false, exitCode: 2, error: 'Required: --request <path>' };
+  }
+  return { ok: true, path: value };
+}
+
+export async function loadCreateRequest(argv) {
+  const parsed = parseRequestPath(argv);
+  if (!parsed.ok) return parsed;
+  const schema = await loadCreateToolSchema();
+  let text;
+  try {
+    text = await readFile(parsed.path, 'utf8');
+  } catch (error) {
+    return { ok: false, exitCode: 2, error: `request file: ${error.message}` };
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    return { ok: false, exitCode: 2, error: `invalid request JSON: ${error.message}` };
+  }
+  data = normalizeCreateLabels(data);
+  const result = validateCreateRequest(data, schema);
+  if (!result.ok) {
+    return { ok: false, exitCode: 2, error: `invalid request: ${result.errors.join('; ')}` };
+  }
+  return { ok: true, exitCode: 0, request: data };
+}
