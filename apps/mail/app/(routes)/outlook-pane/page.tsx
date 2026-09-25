@@ -19,7 +19,69 @@ import {
   ChevronDown,
   Utensils,
   Ban,
+  Building2,
+  Network,
+  Sparkles,
+  ArrowRight,
+  Clock,
 } from 'lucide-react';
+
+type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
+
+type TourSlide = {
+  title: string;
+  subtitle: string;
+  bullets: Array<{ title: string; desc: string }>;
+};
+
+const TOUR_SLIDES: TourSlide[] = [
+  {
+    title: '1. Automatic Email Sync',
+    subtitle: 'When an inquiry arrives, key parameters are detected directly from the email thread.',
+    bullets: [
+      {
+        title: 'Direct HMS pre-fill:',
+        desc: 'Extracted details automatically populate your fields with zero manual re-typing.',
+      },
+      {
+        title: 'Verify auto-filled details:',
+        desc: 'During the pilot, please check the email vs the AI auto-filled details to make sure everything is correct.',
+      },
+    ],
+  },
+  {
+    title: '2. Live Infor HMS Actions & Proof',
+    subtitle: 'Execute live PMS tasks directly without switching windows or navigating Infor HMS manually.',
+    bullets: [
+      {
+        title: 'Automated execution:',
+        desc: 'Simply hit run and Nava AI performs the task directly inside Infor HMS for you.',
+      },
+      {
+        title: 'Inspect screenshot proof:',
+        desc: 'Please inspect the live Infor HMS audit capture (full-screen 1000×800) to verify live PMS details.',
+      },
+    ],
+  },
+  {
+    title: '3. Assisted Responses & Actions',
+    subtitle: 'Accelerate daily reservation workflows with AI-assisted drafting.',
+    bullets: [
+      {
+        title: 'Drafted responses & actions:',
+        desc: 'Nava AI prepares suggested replies and action cards directly in your Outlook window.',
+      },
+      {
+        title: 'Check details & tone:',
+        desc: 'Always check both the details and the tone of the drafted response before sending the email.',
+      },
+      {
+        title: 'Expanding capabilities:',
+        desc: 'Availability quoting is active now; guest lookups, folios, and reservation changes will roll out throughout the pilot.',
+      },
+    ],
+  },
+];
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
@@ -144,6 +206,49 @@ export default function OutlookPanePage() {
     folderTable: null,
     serverPing: null,
   });
+
+  // Onboarding & Screen State
+  const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('nava_onboarding_completed');
+      if (saved === 'true') return 'tool';
+    }
+    return 'welcome';
+  });
+  const [tourSlideIndex, setTourSlideIndex] = useState(0);
+  const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
+  const [pingErrorMessage, setPingErrorMessage] = useState<string | null>(null);
+
+  const detectedEmail =
+    workstationInfo?.outlookEmail || session?.user?.email || 'reservations@centurion.co.za';
+  const detectedProperty = workstationInfo?.workstationUser
+    ? `${workstationInfo.workstationUser} · The Centurion Hotel`
+    : 'The Centurion Hotel';
+
+  const executeServerPing = async () => {
+    setPingState('loading');
+    setPingErrorMessage(null);
+    try {
+      const resp = await trpcClient.workstation.ping.mutate({
+        workstationUser: workstationInfo?.workstationUser ?? 'unknown',
+        outlookEmail: detectedEmail,
+        outlookVersion: workstationInfo?.outlookVersion ?? '16.0',
+      });
+      if (resp?.status === 'ok') {
+        const d = resp.serverTime ? new Date(resp.serverTime) : new Date();
+        const formatted = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} UTC`;
+        setServerPingTimeStr(formatted);
+        setPingState('success');
+      } else {
+        setPingState('error');
+        setPingErrorMessage('Server ping returned non-OK status');
+      }
+    } catch (err) {
+      setPingState('error');
+      setPingErrorMessage(err instanceof Error ? err.message : 'Connection failed');
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -451,7 +556,257 @@ export default function OutlookPanePage() {
           </div>
         )}
 
-        {/* Scrollable Body */}
+        {/* Top Step Switcher Navigation Bar */}
+        <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
+          <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
+            <span className="text-[11px] text-[#64748b]">Step</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {(
+              [
+                { id: 'welcome', label: '1. Welcome' },
+                { id: 'diagnostics', label: '2. Connection' },
+                { id: 'tour', label: '3. Tour' },
+                { id: 'tool', label: '4. Quote Tool' },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setCurrentScreen(item.id);
+                  if (item.id === 'diagnostics' && pingState === 'idle') {
+                    void executeServerPing();
+                  }
+                }}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                  currentScreen === item.id
+                    ? 'bg-[#1a4332] text-white font-semibold'
+                    : 'text-[#64748b] hover:bg-[#e2e8f0]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
+        {currentScreen === 'welcome' && (
+          <div className="flex flex-1 flex-col p-4 animate-in fade-in duration-150">
+            <div className="my-auto flex flex-col items-center text-center">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
+                <Building2 className="h-6 w-6" />
+              </div>
+              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava AI</h1>
+              <p className="mt-1 text-xs text-[#64748b] leading-relaxed">
+                Your intelligent assistant for Infor HMS quoting and reservations, built directly into Outlook.
+              </p>
+
+              <div className="my-5 w-full rounded border border-[#e2e8f0] bg-[#f8fafc] p-3 text-left">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#64748b]">
+                  Detected Outlook Account
+                </span>
+                <div className="mt-1.5 flex items-center gap-2 text-xs font-semibold text-[#1e293b]">
+                  <Mail className="h-4 w-4 text-[#64748b]" />
+                  <span>{detectedEmail}</span>
+                </div>
+                <span className="mt-1 block text-[11px] text-[#64748b]">{detectedProperty}</span>
+              </div>
+
+              <Button
+                type="button"
+                onClick={() => {
+                  setCurrentScreen('diagnostics');
+                  void executeServerPing();
+                }}
+                className="flex w-full items-center justify-center gap-2 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023]"
+              >
+                <span>Confirm Account & Connect</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* SCREEN 2: SYSTEM & INFOR HMS BRIDGE CHECK */}
+        {currentScreen === 'diagnostics' && (
+          <div className="flex flex-1 flex-col p-4 animate-in fade-in duration-150">
+            <div className="my-auto flex flex-col items-center text-center">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
+                <Network className="h-6 w-6" />
+              </div>
+              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Infor HMS</h1>
+              <p className="mt-1 text-xs text-[#64748b]">
+                Verifying connection and live hotel property status.
+              </p>
+
+              <div className="my-5 w-full space-y-3 text-left">
+                <div
+                  className={`flex items-start gap-2.5 rounded border p-3 ${
+                    pingState === 'success'
+                      ? 'border-emerald-200 bg-emerald-50/50'
+                      : pingState === 'error'
+                        ? 'border-rose-200 bg-rose-50/50'
+                        : 'border-[#e2e8f0] bg-white'
+                  }`}
+                >
+                  {pingState === 'loading' && (
+                    <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-[#0066cc]" />
+                  )}
+                  {pingState === 'success' && (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  )}
+                  {pingState === 'error' && (
+                    <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  )}
+                  {pingState === 'idle' && (
+                    <Clock className="h-4 w-4 shrink-0 text-slate-400" />
+                  )}
+
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-[#1e293b]">Nava AI Cloud Bridge</span>
+                      {pingState === 'success' && (
+                        <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
+                      )}
+                      {pingState === 'loading' && (
+                        <span className="text-[10px] font-bold text-blue-700">CONNECTING…</span>
+                      )}
+                      {pingState === 'error' && (
+                        <span className="text-[10px] font-bold text-rose-700">ERROR</span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-[#64748b]">
+                      {pingState === 'success' &&
+                        `Centurion Hotel · Server pinged at ${serverPingTimeStr} · Active`}
+                      {pingState === 'loading' && `Pinging server from ${detectedEmail}…`}
+                      {pingState === 'error' && (pingErrorMessage || 'Failed to connect to server')}
+                      {pingState === 'idle' && 'Waiting to initiate handshake…'}
+                    </div>
+                  </div>
+                </div>
+
+                {pingState === 'success' && (
+                  <div className="flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <span>Connected to Centurion Hotel. Ready for live operations.</span>
+                  </div>
+                )}
+
+                {pingState === 'error' && (
+                  <Button
+                    type="button"
+                    onClick={() => void executeServerPing()}
+                    className="w-full bg-rose-600 text-xs text-white hover:bg-rose-700"
+                  >
+                    Retry Connection
+                  </Button>
+                )}
+              </div>
+
+              <Button
+                type="button"
+                disabled={pingState !== 'success'}
+                onClick={() => {
+                  setTourSlideIndex(0);
+                  setCurrentScreen('tour');
+                }}
+                className="flex w-full items-center justify-center gap-2 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023] disabled:opacity-50"
+              >
+                <span>Next: 60-Second Feature Tour</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
+        {currentScreen === 'tour' && (
+          <div className="flex flex-1 flex-col p-3 animate-in fade-in duration-150">
+            <div className="my-auto flex flex-col items-center rounded border border-[#e2e8f0] bg-white p-4 text-center">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
+                {tourSlideIndex === 0 && <Mail className="h-5 w-5" />}
+                {tourSlideIndex === 1 && <Building2 className="h-5 w-5" />}
+                {tourSlideIndex === 2 && <Sparkles className="h-5 w-5" />}
+              </div>
+              <h2 className="text-sm font-bold text-[#1e293b]">
+                {TOUR_SLIDES[tourSlideIndex]?.title}
+              </h2>
+              <p className="mt-1 text-xs text-[#64748b]">
+                {TOUR_SLIDES[tourSlideIndex]?.subtitle}
+              </p>
+
+              <div className="mt-4 w-full space-y-2 text-left">
+                {TOUR_SLIDES[tourSlideIndex]?.bullets.map((b) => (
+                  <div key={b.title} className="flex items-start gap-2 rounded bg-[#f8fafc] p-2 text-xs">
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                    <div>
+                      <strong className="text-[#1e293b]">{b.title}</strong>{' '}
+                      <span className="text-[#475569]">{b.desc}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Dots */}
+              <div className="my-4 flex justify-center gap-1.5">
+                {[0, 1, 2].map((idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setTourSlideIndex(idx)}
+                    className={`h-2 rounded-full transition-all ${
+                      idx === tourSlideIndex ? 'w-5 bg-[#1a4332]' : 'w-2 bg-[#cbd5e1]'
+                    }`}
+                    aria-label={`Slide ${idx + 1}`}
+                  />
+                ))}
+              </div>
+
+              {/* Prev/Next buttons */}
+              <div className="flex w-full items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={tourSlideIndex === 0}
+                  onClick={() => setTourSlideIndex((i) => Math.max(0, i - 1))}
+                  className="flex-1 text-xs"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Previous
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (tourSlideIndex < TOUR_SLIDES.length - 1) {
+                      setTourSlideIndex((i) => i + 1);
+                    } else {
+                      if (typeof window !== 'undefined') {
+                        localStorage.setItem('nava_onboarding_completed', 'true');
+                      }
+                      setCurrentScreen('tool');
+                      toast.success('Onboarding complete! Opened Infor HMS Quoting Tool');
+                    }
+                  }}
+                  className="flex-1 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023]"
+                >
+                  {tourSlideIndex === TOUR_SLIDES.length - 1 ? (
+                    <>
+                      <span>Open Nava AI</span> <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                    </>
+                  ) : (
+                    <>
+                      <span>Next</span> <ChevronRight className="h-3.5 w-3.5 ml-1" />
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
+        {currentScreen === 'tool' && (
         <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
           
           {/* Email Context Bar */}
@@ -1131,6 +1486,7 @@ export default function OutlookPanePage() {
           )}
 
         </main>
+        )}
 
         {/* Minimal Pilot Footer */}
         <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">

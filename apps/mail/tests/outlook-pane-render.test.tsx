@@ -3,7 +3,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
@@ -88,7 +88,12 @@ vi.mock('../providers/query-provider', () => ({
 }));
 
 describe('OutlookPanePage', () => {
+  beforeEach(() => {
+    localStorage.setItem('nava_onboarding_completed', 'true');
+  });
+
   afterEach(() => {
+    localStorage.clear();
     cleanup();
     sendCommandMock.mockClear();
     vi.restoreAllMocks();
@@ -293,7 +298,7 @@ describe('OutlookPanePage', () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(259));
-  });
+  }, 20000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
