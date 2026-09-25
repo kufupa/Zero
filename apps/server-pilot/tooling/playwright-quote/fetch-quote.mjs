@@ -217,7 +217,11 @@ async function expandCriteria(page) {
 
 const normalizedText=value=>String(value??'').trim().replace(/\s+/g,' ').toLowerCase();
 export function matchReference(reference,rows) {
-  const matches=rows.filter(r=>reference.code!==undefined?r.code===reference.code:normalizedText(r.name)===normalizedText(reference.name));
+  const matches=rows.filter(r=>reference.nativeId!==undefined
+    ? String(r.id)===String(reference.nativeId)
+    : reference.code!==undefined
+      ? r.code===reference.code
+      : normalizedText(r.name)===normalizedText(reference.name));
   if (matches.length!==1) {
     const error=new Error(matches.length?'AMBIGUOUS_REFERENCE':'REFERENCE_NOT_FOUND');
     error.candidates=matches.map(r=>({code:r.code,name:r.name}));throw error;
@@ -226,8 +230,8 @@ export function matchReference(reference,rows) {
 }
 
 const contextControls={
-  organization:{field:'organization',nameFilter:'ff_companyname',codeFilter:'ff_companyid',id:'companyid',code:'companyid',name:'companyname'},
-  agency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
+  organization:{field:'organization',nameFilter:'ff_companyname',codeFilter:'ff_companyid',idFilter:'ff_companyid',id:'companyid',code:'companyid',name:'companyname'},
+  agency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',idFilter:'ff_travelagencyid',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
   group:{field:'groupname',nameFilter:'ff_groupsname',codeFilter:'ff_confirmationnumber',id:'propgroupbookingid',code:'confirmationnumber',name:'groupsname'},
 };
 
@@ -244,12 +248,13 @@ export async function resolveReference(page,kind,reference) {
   await expandCriteria(page);
   const input=page.locator(`input[name="${config.field}"]:visible`);
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger').click();
-  const filterName=reference.code!==undefined?config.codeFilter:config.nameFilter;
+  const filterName=reference.nativeId!==undefined?(config.idFilter??config.codeFilter):reference.code!==undefined?config.codeFilter:config.nameFilter;
+  const filterValue=reference.nativeId??reference.code??reference.name;
   const filter=page.locator(`input[name="${filterName}"]:visible`);
   await filter.waitFor();
   const popup=page.locator('.x-window:visible').filter({has:filter});
   try {
-    await filter.fill(reference.code??reference.name);
+    await filter.fill(filterValue);
     await filter.press('Enter');
     await page.waitForFunction(name=>{
       const input=document.querySelector(`input[name="${name}"]`),win=input?.closest('.x-window');

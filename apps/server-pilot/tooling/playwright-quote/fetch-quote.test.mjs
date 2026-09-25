@@ -277,8 +277,10 @@ test('picker references require unique exact normalized names or native codes',(
   const rows=[{id:'17',code:'12345',name:'Example Company'},{id:'18',code:'12346',name:'Example Company Extra'}];
   assert.equal(quote.matchReference?.({name:' example  company '},rows)?.id,'17');
   assert.equal(quote.matchReference({code:'12346'},rows).id,'18');
+  assert.equal(quote.matchReference({nativeId:'18'},rows).id,'18');
   assert.throws(()=>quote.matchReference({name:'Example'},rows),/REFERENCE_NOT_FOUND/);
   assert.throws(()=>quote.matchReference({name:'Example Company'},[...rows,{...rows[0],id:'19'}]),/AMBIGUOUS_REFERENCE/);
+  assert.throws(()=>quote.matchReference({nativeId:'17'},[...rows,{...rows[0],code:'99999'}]),/AMBIGUOUS_REFERENCE/);
 });
 test('search signatures share quantity/preferences only, never occupancy/context/currency/filter changes',()=>{
   const a=quote.searchSignature?.(request,request.rooms[0]);
