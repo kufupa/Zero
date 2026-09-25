@@ -161,8 +161,10 @@ fi
 echo "== pnpm install =="
 pnpm install --frozen-lockfile
 
-echo "== build server-pilot =="
-pnpm --filter @zero/server build
+if [ "$QUIESCED" != "1" ]; then
+  echo "== build server-pilot =="
+  pnpm --filter @zero/server build
+fi
 
 echo "== build mail SPA =="
 # Empty string = same-origin /api via nginx. No host is baked into this shared artifact.
