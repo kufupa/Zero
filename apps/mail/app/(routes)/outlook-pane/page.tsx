@@ -158,6 +158,15 @@ const fmtZAR = (val: number) =>
     .toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     .replace(/\s/g, ',');
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 export default function OutlookPanePage() {
   const { isConnected, activeEmail, workstationInfo, capabilities, supportsAction, sendCommand } =
     useOutlookBridge();
@@ -323,18 +332,32 @@ export default function OutlookPanePage() {
   };
 
   const handleDayClick = (day: number) => {
-    if (day <= 15) {
-      setArrivalDay(day);
-      setDepartureDay(day + nightsCount);
+    if (activeDateTab === 'arrival') {
+      const newArrival = Math.max(1, Math.min(29, day));
+      const newDeparture = departureDay <= newArrival ? Math.min(30, newArrival + 1) : Math.min(30, departureDay);
+      setArrivalDay(newArrival);
+      setDepartureDay(newDeparture);
+      setNightsCount(newDeparture - newArrival);
     } else {
-      setDepartureDay(day);
-      setNightsCount(Math.max(1, day - arrivalDay));
+      const newDeparture = Math.max(2, Math.min(30, day));
+      const newArrival = arrivalDay >= newDeparture ? Math.max(1, newDeparture - 1) : Math.max(1, arrivalDay);
+      setArrivalDay(newArrival);
+      setDepartureDay(newDeparture);
+      setNightsCount(newDeparture - newArrival);
     }
   };
 
   const handleQuickNights = (n: number) => {
-    setNightsCount(n);
-    setDepartureDay(arrivalDay + n);
+    const newDeparture = Math.min(30, arrivalDay + n);
+    if (newDeparture - arrivalDay < n) {
+      const newArrival = Math.max(1, 30 - n);
+      setArrivalDay(newArrival);
+      setDepartureDay(30);
+      setNightsCount(30 - newArrival);
+    } else {
+      setDepartureDay(newDeparture);
+      setNightsCount(n);
+    }
   };
 
   const handleExecuteSearch = () => {
@@ -342,7 +365,14 @@ export default function OutlookPanePage() {
     setTimeout(() => {
       setIsSearching(false);
       setHasSearched(true);
-      toast.success('Infor HMS availability query completed');
+      const plan = RATE_TABLE[selectedRateCode];
+      if (plan && !plan.restricted) {
+        toast.success(`Verified rate schedule: ${plan.name} (${orgAccount})`);
+      } else if (plan?.restricted) {
+        toast.warning(`Rate restriction: ${plan.name} (${plan.restrictionReason})`);
+      } else {
+        toast.error('Selected rate plan is not verified for this organization account');
+      }
     }, 400);
   };
 
@@ -409,16 +439,29 @@ export default function OutlookPanePage() {
       return;
     }
 
+    if (activePlan.restricted) {
+      toast.error(`Cannot insert draft: ${activePlan.name} is restricted (${activePlan.restrictionReason}).`);
+      return;
+    }
+
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
     const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
     replyRetries.current.set(key, attempt);
 
+    const safeSenderName = escapeHtml((currentSender.split(' ')[0] || 'Guest').trim());
+    const safePlanName = escapeHtml(activePlan.name);
+    const safeArrival = escapeHtml(String(arrivalDay));
+    const safeDeparture = escapeHtml(String(departureDay));
+    const safeNights = escapeHtml(String(nightsCount));
+    const safeSingleCount = escapeHtml(String(singleRoomsCount));
+    const safeTwinCount = escapeHtml(String(twinRoomsCount));
+
     const quotationHtml = `
       <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
-        <p>Dear ${currentSender.split(' ')[0] || 'Guest'},</p>
-        <p>Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for the dates of <strong>${arrivalDay}–${departureDay} September 2026 (${nightsCount} nights)</strong> under your corporate agreement:</p>
+        <p>Dear ${safeSenderName},</p>
+        <p>Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for the dates of <strong>${safeArrival}–${safeDeparture} September 2026 (${safeNights} nights)</strong> under your corporate agreement:</p>
         <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 10.5pt;">
           <thead>
             <tr style="background-color: #f8fafc; text-align: left;">
@@ -432,15 +475,15 @@ export default function OutlookPanePage() {
           <tbody>
             <tr>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">Executive King (Single)</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${singleRoomsCount}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${activePlan.name}</td>
+              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safeSingleCount}</td>
+              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safePlanName}</td>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(activePlan.singleNightly)}</td>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(singleSubtotal)}</td>
             </tr>
             <tr>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">Standard Twin (Twin Beds)</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${twinRoomsCount}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${activePlan.name}</td>
+              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safeTwinCount}</td>
+              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safePlanName}</td>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(activePlan.twinNightly)}</td>
               <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(twinSubtotal)}</td>
             </tr>
@@ -516,7 +559,7 @@ export default function OutlookPanePage() {
   return (
     <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
       {/* Strict 380px pane container */}
-      <div className="relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b] shadow-sm">
+      <div className="relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b] shadow-xs">
         
         {/* Outlook 2016 Header */}
         <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
@@ -638,7 +681,7 @@ export default function OutlookPanePage() {
               </div>
               <h1 className="text-base font-bold text-[#1e293b]">Connecting to Infor HMS</h1>
               <p className="mt-1 text-xs text-[#64748b]">
-                Verifying connection and live hotel property status.
+                Verifying Nava AI bridge and workstation API connection.
               </p>
 
               <div className="my-5 w-full space-y-3 text-left">
@@ -679,7 +722,7 @@ export default function OutlookPanePage() {
                     </div>
                     <div className="mt-0.5 text-[11px] text-[#64748b]">
                       {pingState === 'success' &&
-                        `Centurion Hotel · Server pinged at ${serverPingTimeStr} · Active`}
+                        `Centurion Hotel · API server pinged at ${serverPingTimeStr} · Active`}
                       {pingState === 'loading' && `Pinging server from ${detectedEmail}…`}
                       {pingState === 'error' && (pingErrorMessage || 'Failed to connect to server')}
                       {pingState === 'idle' && 'Waiting to initiate handshake…'}
@@ -690,7 +733,7 @@ export default function OutlookPanePage() {
                 {pingState === 'success' && (
                   <div className="flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                    <span>Connected to Centurion Hotel. Ready for live operations.</span>
+                    <span>Connected to Centurion Hotel workstation bridge · API ping verified.</span>
                   </div>
                 )}
 
@@ -846,7 +889,7 @@ export default function OutlookPanePage() {
                   id="propertySelect"
                   value={propertyCode}
                   onChange={(e) => setPropertyCode(e.target.value)}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-none focus:border-[#0066cc]"
+                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
                   <option value="HRCEN">Centurion Hotel (ZAR)</option>
                   <option value="HRBAK">HRBAK — The Bakubung Bush Lodge</option>
@@ -999,7 +1042,7 @@ export default function OutlookPanePage() {
                     if (next === 'room_only') setSelectedRateCode('BARRO');
                     else setSelectedRateCode('NCOR');
                   }}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-none focus:border-[#0066cc]"
+                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
                   <option value="breakfast">Bed & Breakfast (BAR)</option>
                   <option value="room_only">Room Only (BARRO)</option>
@@ -1090,7 +1133,7 @@ export default function OutlookPanePage() {
                     if (next === 'BAR') setSelectedRateCode('BAR');
                     else setSelectedRateCode('NCOR');
                   }}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-none focus:border-[#0066cc]"
+                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
                   <option value="Negotiated Contracted">Negotiated Contracted (Corporate NCOR1B)</option>
                   <option value="BAR">BAR — Best Available Rate</option>
@@ -1115,7 +1158,7 @@ export default function OutlookPanePage() {
                       value={orgAccount}
                       onChange={(e) => setOrgAccount(e.target.value)}
                       placeholder="e.g. CIDB"
-                      className="h-7 w-full rounded border border-[#cbd5e1] px-2 text-xs text-[#1e293b] outline-none focus:border-[#0066cc]"
+                      className="h-7 w-full rounded border border-[#cbd5e1] px-2 text-xs text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                     />
                   </div>
                   <div className="flex items-center gap-2 pt-1">
@@ -1328,7 +1371,7 @@ export default function OutlookPanePage() {
                   className="group relative h-28 w-full cursor-pointer overflow-hidden bg-slate-900"
                 >
                   <img
-                    src="/lab/quote-rate-proof.png"
+                    src="/quote-rate-proof.png"
                     alt="Infor HMS Availability Screen Proof"
                     className="h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:scale-102 group-hover:opacity-100"
                   />
@@ -1546,7 +1589,7 @@ export default function OutlookPanePage() {
 
             <div className="flex flex-1 items-start justify-center overflow-auto bg-[#0b0f19] p-3">
               <img
-                src="/lab/quote-rate-proof.png"
+                src="/quote-rate-proof.png"
                 alt="Infor HMS Full Resolution Availability Grid"
                 className="max-w-full rounded shadow-md"
               />

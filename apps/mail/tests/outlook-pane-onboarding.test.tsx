@@ -150,4 +150,29 @@ describe('OutlookPane Onboarding Flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /1\. Welcome/i }));
     expect(screen.getByText(/Welcome to Nava AI/i)).toBeDefined();
   });
+
+  it('correctly updates arrival and departure based on activeDateTab and clamps stay within September', () => {
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+
+    // Open calendar
+    fireEvent.click(screen.getByText(/Change Dates/i));
+
+    // By default activeDateTab is arrival (15)
+    // Click day 20 -> arrival becomes 20, departure becomes at least 21
+    fireEvent.click(screen.getByRole('button', { name: '20' }));
+    expect(screen.getByText('2026-09-20')).toBeDefined();
+
+    // Switch to departure tab
+    fireEvent.click(screen.getByText(/Departure Date/i));
+    // Click day 25 -> departure becomes 25, nights count is 5
+    fireEvent.click(screen.getByRole('button', { name: '25' }));
+    expect(screen.getByText('2026-09-25')).toBeDefined();
+    expect(screen.getAllByText(/5 Nights/i).length).toBeGreaterThan(0);
+
+    // Quick nights 7 when arrival is 20 -> should clamp departure to 27 or month-end (not 31)
+    fireEvent.click(screen.getByRole('button', { name: /7 Nights/i }));
+    expect(screen.getByText('2026-09-27')).toBeDefined();
+  });
 });
+
