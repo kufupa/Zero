@@ -200,7 +200,27 @@ export default function OutlookPanePage() {
   const [selectedRateCode, setSelectedRateCode] = useState('NCOR');
   const [proofTab, setProofTab] = useState<'results' | 'criteria'>('results');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [showDraftPreview, setShowDraftPreview] = useState(false);
+  const [draftedDetails, setDraftedDetails] = useState<{
+    entryId: string;
+    subject: string;
+    sender: string;
+    senderEmail: string;
+    agreementText: string;
+    mealText: string;
+    singleCount: number;
+    twinCount: number;
+    planName: string;
+    singleSubtotal: number;
+    twinSubtotal: number;
+    grandTotal: number;
+    arrivalDay: number;
+    departureDay: number;
+    nightsCount: number;
+  } | null>(null);
+
+  const showDraftPreview = Boolean(
+    draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
+  );
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);
@@ -458,10 +478,22 @@ export default function OutlookPanePage() {
     const safeSingleCount = escapeHtml(String(singleRoomsCount));
     const safeTwinCount = escapeHtml(String(twinRoomsCount));
 
+    const agreementDescription =
+      activePlan.code.startsWith('NCOR') && orgAccount.trim()
+        ? `under the ${escapeHtml(orgAccount.trim())} corporate agreement`
+        : 'at our standard rates';
+
+    const mealDescription =
+      mealPlan === 'room_only' || activePlan.code === 'BARRO'
+        ? 'room only (no meals included)'
+        : mealPlan === 'dinner_bed_breakfast'
+          ? 'dinner, bed & breakfast'
+          : 'breakfast included';
+
     const quotationHtml = `
       <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
         <p>Dear ${safeSenderName},</p>
-        <p>Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for the dates of <strong>${safeArrival}–${safeDeparture} September 2026 (${safeNights} nights)</strong> under your corporate agreement:</p>
+        <p>Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for the dates of <strong>${safeArrival}–${safeDeparture} September 2026 (${safeNights} nights)</strong> ${agreementDescription}:</p>
         <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 10.5pt;">
           <thead>
             <tr style="background-color: #f8fafc; text-align: left;">
@@ -490,7 +522,7 @@ export default function OutlookPanePage() {
           </tbody>
         </table>
         <p style="font-weight: bold; margin-top: 6px;">Quotation Total: ${fmtZAR(grandTotal)}</p>
-        <p style="font-size: 10pt; color: #64748b; margin-top: 6px;">Rate includes breakfast, secure parking and 15% VAT. Valid for 7 days subject to room availability.</p>
+        <p style="font-size: 10pt; color: #64748b; margin-top: 6px;">Rate includes ${escapeHtml(mealDescription)}, secure parking and 15% VAT. Valid for 7 days subject to room availability.</p>
         <p style="margin-top: 12px;">Warm regards,<br><strong>Centurion Reservations Team</strong><br>The Centurion Hotel</p>
       </div>
     `;
@@ -509,7 +541,23 @@ export default function OutlookPanePage() {
       );
       if (result === false) throw new Error('Outlook could not create the reply draft.');
       replyRetries.current.delete(key);
-      setShowDraftPreview(true);
+      setDraftedDetails({
+        entryId: activeEmail.entryId,
+        subject: currentSubject,
+        sender: currentSender,
+        senderEmail: currentSenderEmail,
+        agreementText: agreementDescription,
+        mealText: mealDescription,
+        singleCount: singleRoomsCount,
+        twinCount: twinRoomsCount,
+        planName: activePlan.name,
+        singleSubtotal,
+        twinSubtotal,
+        grandTotal,
+        arrivalDay,
+        departureDay,
+        nightsCount,
+      });
       const legacyReplyOpened = result === true;
       const replyResult = typeof result === 'object' && result !== null ? result : null;
       const opened = legacyReplyOpened || replyResult?.displayed === true;
@@ -865,9 +913,15 @@ export default function OutlookPanePage() {
                 </span>
               </div>
             </div>
-            <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
-              <Check className="h-3 w-3" /> Synced
-            </span>
+            {activeEmail ? (
+              <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                <Check className="h-3 w-3" /> Synced
+              </span>
+            ) : (
+              <span className="flex shrink-0 items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                Sample
+              </span>
+            )}
           </div>
 
           {/* Search Criteria Card */}
@@ -1413,20 +1467,29 @@ export default function OutlookPanePage() {
               )}
 
               {/* Outlook Email Draft Preview Box */}
-              {showDraftPreview && (
+              {showDraftPreview && draftedDetails && (
                 <div className="rounded border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] animate-in fade-in duration-200">
-                  <div className="mb-2 border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
-                    <strong>To:</strong> {currentSender} &lt;{currentSenderEmail}&gt;<br />
-                    <strong>Subject:</strong> RE: {currentSubject} — Quotation
+                  <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
+                    <div>
+                      <strong>To:</strong> {draftedDetails.sender} &lt;{draftedDetails.senderEmail}&gt;<br />
+                      <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDraftedDetails(null)}
+                      className="text-[10px] text-slate-400 hover:text-slate-600"
+                    >
+                      Dismiss
+                    </button>
                   </div>
-                  <p>Dear {currentSender.split(' ')[0] || 'Guest'},</p>
+                  <p>Dear {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
                   <p className="mt-1">
                     Thank you for contacting The Centurion Hotel. We are pleased to confirm availability
                     for your delegation for the dates of{' '}
                     <strong>
-                      {arrivalDay}–{departureDay} September 2026 ({nightsCount} nights)
+                      {draftedDetails.arrivalDay}–{draftedDetails.departureDay} September 2026 ({draftedDetails.nightsCount} nights)
                     </strong>{' '}
-                    under your corporate agreement:
+                    {draftedDetails.agreementText}:
                   </p>
 
                   <table className="my-2 w-full border-collapse text-[10.5px]">
@@ -1442,26 +1505,26 @@ export default function OutlookPanePage() {
                     <tbody>
                       <tr>
                         <td className="border border-[#cbd5e1] p-1">Executive King (Single)</td>
-                        <td className="border border-[#cbd5e1] p-1">{singleRoomsCount}</td>
-                        <td className="border border-[#cbd5e1] p-1">{activePlan.name}</td>
+                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.singleCount}</td>
+                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.planName}</td>
                         <td className="border border-[#cbd5e1] p-1">{fmtZAR(activePlan.singleNightly)}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(singleSubtotal)}</td>
+                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(draftedDetails.singleSubtotal)}</td>
                       </tr>
                       <tr>
                         <td className="border border-[#cbd5e1] p-1">Standard Twin (Twin Beds)</td>
-                        <td className="border border-[#cbd5e1] p-1">{twinRoomsCount}</td>
-                        <td className="border border-[#cbd5e1] p-1">{activePlan.name}</td>
+                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.twinCount}</td>
+                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.planName}</td>
                         <td className="border border-[#cbd5e1] p-1">{fmtZAR(activePlan.twinNightly)}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(twinSubtotal)}</td>
+                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(draftedDetails.twinSubtotal)}</td>
                       </tr>
                     </tbody>
                   </table>
 
                   <p className="mt-1 font-bold">
-                    Quotation Total: <span>{fmtZAR(grandTotal)}</span>
+                    Quotation Total: <span>{fmtZAR(draftedDetails.grandTotal)}</span>
                   </p>
                   <p className="mt-1 text-[10px] text-[#64748b]">
-                    Rate includes breakfast, secure parking and 15% VAT. Corporate direct billing on CIDB account. This quotation is valid for 7 days subject to room availability.
+                    Rate includes {draftedDetails.mealText}, secure parking and 15% VAT. Valid for 7 days subject to room availability.
                   </p>
                   <p className="mt-2 text-[#475569]">
                     Kind regards,<br />

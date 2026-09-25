@@ -5,7 +5,18 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 
-const { sendCommandMock, pingMutateMock } = vi.hoisted(() => ({
+const defaultMockEmail = {
+  entryId: '001',
+  storeId: 'store-1',
+  subject: 'Suite Availability Request',
+  senderEmail: 'guest@example.com',
+  senderName: 'David Miller',
+  receivedTime: '2026-09-17T12:00:00Z',
+  bodyText: 'We need 3 rooms for 4 nights.',
+  bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
+};
+
+const { sendCommandMock, pingMutateMock, activeEmailState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
   pingMutateMock: vi.fn().mockResolvedValue({
     status: 'ok',
@@ -13,6 +24,18 @@ const { sendCommandMock, pingMutateMock } = vi.hoisted(() => ({
     receivedEmail: 'ropperman@legacyhotels.co.za',
     serverTime: '2026-09-25T09:30:00.000Z',
   }),
+  activeEmailState: {
+    current: {
+      entryId: '001',
+      storeId: 'store-1',
+      subject: 'Suite Availability Request',
+      senderEmail: 'guest@example.com',
+      senderName: 'David Miller',
+      receivedTime: '2026-09-17T12:00:00Z',
+      bodyText: 'We need 3 rooms for 4 nights.',
+      bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
+    } as any,
+  },
 }));
 
 vi.mock('sonner', () => ({
@@ -31,16 +54,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     },
     capabilities: null,
     supportsAction: () => true,
-    activeEmail: {
-      entryId: '001',
-      storeId: 'store-1',
-      subject: 'Suite Availability Request',
-      senderEmail: 'guest@example.com',
-      senderName: 'David Miller',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'We need 3 rooms for 4 nights.',
-      bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
-    },
+    activeEmail: activeEmailState.current,
     sendCommand: sendCommandMock,
   }),
 }));
@@ -64,6 +78,7 @@ vi.mock('../providers/query-provider', () => ({
 describe('OutlookPane Onboarding Flow', () => {
   beforeEach(() => {
     localStorage.clear();
+    activeEmailState.current = { ...defaultMockEmail };
     pingMutateMock.mockReset();
     pingMutateMock.mockResolvedValue({
       status: 'ok',
@@ -174,5 +189,14 @@ describe('OutlookPane Onboarding Flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /7 Nights/i }));
     expect(screen.getByText('2026-09-27')).toBeDefined();
   });
+
+  it('displays Sample badge when no active email is present from bridge', () => {
+    activeEmailState.current = null;
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    expect(screen.getByText('Sample')).toBeDefined();
+    expect(screen.queryByText('Synced')).toBeNull();
+  });
 });
+
 
