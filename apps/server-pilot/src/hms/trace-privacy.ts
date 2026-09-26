@@ -717,14 +717,24 @@ function looksLikeDynamicSecret(value: string): boolean {
   if (/\b(?:token|secret|credential|password|session|cookie|authorization|bearer|jwt)\b/i.test(value)) {
     return true;
   }
-  // ExtJS generated component ids (container-1234-innerCt) are DOM structure,
-  // not credentials; HMS snapshots carry thousands of them.
-  if (/^[a-z]+(?:-[a-zA-Z]+)*-\d+(?:-(?:[a-zA-Z]+|\d+))*$/.test(value)) return false;
   return (
     value.length >= 16 &&
     /^[A-Za-z0-9+/_=-]+$/.test(value) &&
     /[0-9A-Z]/.test(value) &&
     !/^(?:[a-z]{2,3}[-_][A-Z]{2}|[0-9a-f]{8}-[0-9a-f-]{27})$/.test(value)
+  );
+}
+
+type DynamicScope = 'data' | 'trace' | 'snapshot' | 'dom';
+
+// ExtJS generated component ids (container-1234-innerCt) in frame-snapshot DOM
+// id/class attributes are structure, not credentials; HMS snapshots carry
+// thousands. The same shape in API JSON or any other field is still classified.
+function isExtJsDomId(key: string, value: string): boolean {
+  return (
+    /^(?:id|class|for|data-(?:componentid|boundview)|aria-(?:labelledby|describedby|controls|owns|activedescendant))$/.test(key) &&
+    /^[a-z]+(?:-[a-zA-Z]+)*-\d+(?:-(?:[a-zA-Z]+|\d+))*$/.test(value) &&
+    !looksLikeDynamicSecretName(value)
   );
 }
 
@@ -737,6 +747,7 @@ function collectTraceDynamicValues(
   key: string,
   out: Set<string>,
   resourceReferences: ReadonlySet<string>,
+  scope: DynamicScope = 'data',
 ): Set<string> {
   if (isCookieName(key)) collectCookieValues(value, out);
   if (typeof value === 'string') {
@@ -756,19 +767,22 @@ function collectTraceDynamicValues(
       } catch {
         // A malformed URL is still handled by the caller-provided variants.
       }
-    } else if (looksLikeDynamicSecret(value)) {
+    } else if (looksLikeDynamicSecret(value) && !(scope === 'dom' && isExtJsDomId(key, value))) {
       out.add(value);
     }
     return out;
   }
   if (Array.isArray(value)) {
     if (/^headers$/i.test(key)) collectHeaderValues(value, out);
-    for (const child of value) collectTraceDynamicValues(child, key, out, resourceReferences);
+    for (const child of value) collectTraceDynamicValues(child, key, out, resourceReferences, scope);
     return out;
   }
   if (!value || typeof value !== 'object') return out;
-  for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
-    collectTraceDynamicValues(child, childKey, out, resourceReferences);
+  const record = value as Record<string, unknown>;
+  const childScope: DynamicScope = scope !== 'trace' ? scope : record.type === 'frame-snapshot' ? 'snapshot' : 'data';
+  for (const [childKey, child] of Object.entries(record)) {
+    const nextScope: DynamicScope = childScope === 'snapshot' && key === 'snapshot' && childKey === 'html' ? 'dom' : childScope;
+    collectTraceDynamicValues(child, childKey, out, resourceReferences, nextScope);
   }
   return out;
 }
@@ -1014,7 +1028,7 @@ function parseJsonLinesForDynamicValues(
     } catch {
       privacyFailure();
     }
-    collectTraceDynamicValues(parsed, '', dynamicSecrets, resourceReferences);
+    collectTraceDynamicValues(parsed, '', dynamicSecrets, resourceReferences, 'trace');
   }
 }
 

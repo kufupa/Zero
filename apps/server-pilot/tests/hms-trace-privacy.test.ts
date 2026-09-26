@@ -273,21 +273,32 @@ describe('bounded native trace privacy', () => {
   it('keeps ExtJS generated DOM ids while redacting opaque and percent-encoded values', async () => {
     const extIds = ['container-1234-innerCt', 'treeview-1045-record-567', 'x-grid-cell-gridcolumn-1045', 'ext-element-12345'];
     const opaque = 'Q9xk2LmP7vR4tZ8wYb3N';
+    const extShapedCredential = 'accesskey-482910-rotation';
     const secret = 'Pilot/Session=Value';
     const encoded = encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
-    const snapshot = ['DIV', { id: extIds[0], class: `x-grid-cell ${extIds[2]}` }, ['TR', { id: extIds[1] }], ['SPAN', { id: extIds[3] }]];
+    const keywordId = 'session-1234-panel';
+    const snapshot = ['DIV', { id: extIds[0], class: `x-grid-cell ${extIds[2]}` }, ['TR', { id: extIds[1] }], ['SPAN', { id: extIds[3] }],
+      ['DIV', { id: keywordId }], ['LABEL', { for: extIds[2] }], ['COL', { class: extIds[2] }]];
+    const apiShapedCredential = 'grant-739201-rotation';
     const { root, rawPath, reviewPath } = await fixture({
       'trace.trace': [
-        JSON.stringify({ type: 'frame-snapshot', snapshot: { html: snapshot }, note: opaque }),
+        JSON.stringify({ type: 'frame-snapshot', snapshot: { html: snapshot }, note: opaque, grant: extShapedCredential }),
         JSON.stringify({ type: 'action', first: `a=${encoded}`, second: `b=${encoded}`, third: `c=${encoded}` }),
       ].join('\n'),
       'trace.network': '{"type":"resource-snapshot"}\n',
+      'resources/api.json': JSON.stringify({ id: apiShapedCredential, class: `${apiShapedCredential}-2` }),
     });
     try {
       await sanitize(rawPath, reviewPath, [secret]);
-      const text = Buffer.from(unzipSync(await readFile(reviewPath))['trace.trace']!).toString('utf8');
+      const output = unzipSync(await readFile(reviewPath));
+      const text = Buffer.from(output['trace.trace']!).toString('utf8');
+      const api = Buffer.from(output['resources/api.json']!).toString('utf8');
+      expect(api).toBe(JSON.stringify({ id: '[REDACTED]', class: '[REDACTED]' }));
+      expect(text).toContain(`{"class":"${extIds[2]}"}`);
       for (const id of extIds) expect(text).toContain(id);
       expect(text).not.toContain(opaque);
+      expect(text).not.toContain(extShapedCredential);
+      expect(text).not.toContain(keywordId);
       expect(text).not.toContain(encoded);
     } finally {
       await rm(root, { recursive: true, force: true });
