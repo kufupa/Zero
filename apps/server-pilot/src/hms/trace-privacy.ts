@@ -58,6 +58,7 @@ type SecretVariant = {
   bytes: Buffer;
   short: boolean;
   explicit: boolean;
+  percent?: RegExp;
 };
 
 function privacyFailure(): never {
@@ -439,7 +440,13 @@ function escapedSecretVariants(
     const bytes = Buffer.from(value, 'utf8');
     variantBytes += bytes.byteLength;
     if (variantBytes > MAX_SECRET_VARIANT_BYTES) privacyFailure();
-    variants.set(`text:${value}`, { text: value, bytes, short, explicit });
+    variants.set(`text:${value}`, {
+      text: value,
+      bytes,
+      short,
+      explicit,
+      percent: percentCaseInsensitivePattern(value),
+    });
   };
   const addBytes = (bytes: Buffer, short: boolean, explicit: boolean): void => {
     if (bytes.byteLength === 0 || variants.has(`bytes:${bytes.toString('base64')}`)) return;
@@ -571,11 +578,10 @@ function redactText(
       variant.text.length > 0 &&
       (includeShort || !variant.short || variant.explicit)
     ) {
-      result = result.split(variant.text).join(REDACTION);
-      const pattern = percentCaseInsensitivePattern(variant.text);
-      if (pattern) {
+      if (result.includes(variant.text)) result = result.split(variant.text).join(REDACTION);
+      if (variant.percent && result.includes('%')) {
         try {
-          result = result.replace(pattern, REDACTION);
+          result = result.replace(variant.percent, REDACTION);
         } catch {
           // Malformed/catastrophic percent patterns must not abort live proof.
           // split()+join already redacted the literal form.
@@ -711,6 +717,9 @@ function looksLikeDynamicSecret(value: string): boolean {
   if (/\b(?:token|secret|credential|password|session|cookie|authorization|bearer|jwt)\b/i.test(value)) {
     return true;
   }
+  // ExtJS generated component ids (container-1234-innerCt) are DOM structure,
+  // not credentials; HMS snapshots carry thousands of them.
+  if (/^[a-z]+(?:-[a-zA-Z]+)*-\d+(?:-(?:[a-zA-Z]+|\d+))*$/.test(value)) return false;
   return (
     value.length >= 16 &&
     /^[A-Za-z0-9+/_=-]+$/.test(value) &&
@@ -986,8 +995,7 @@ function containsSecretText(
       return false;
     }
     if (text.includes(variant.text)) return true;
-    const pattern = percentCaseInsensitivePattern(variant.text);
-    return pattern?.test(text) ?? false;
+    return variant.percent !== undefined && text.includes('%') && text.search(variant.percent) !== -1;
   });
 }
 
