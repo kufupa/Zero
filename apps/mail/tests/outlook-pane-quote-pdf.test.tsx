@@ -48,7 +48,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'We need 3 rooms for 4 nights.',
+      bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
     sendCommand: sendCommandMock,

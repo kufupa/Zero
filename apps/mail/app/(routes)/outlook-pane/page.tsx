@@ -168,7 +168,7 @@ const fmtZAR = (val: number) =>
     .replace(/\s/g, ',');
 
 function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'room_only' {
-  if (mealPlan === 'room_only' || planCode === 'BARRO') return 'room_only';
+  if (planCode === 'BARRO') return 'room_only';
   if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
   return 'bb';
 }
@@ -237,9 +237,7 @@ export default function OutlookPanePage() {
     if (!activeEmail) return;
     const text = `${activeEmail.subject || ''} ${activeEmail.bodyText || ''}`;
     const orgMatch = text.match(/\b(CIDB|SARS|Gauteng|Eskom|Standard Bank|Nedbank)\b/i);
-    if (orgMatch) {
-      setOrgAccount(orgMatch[1].toUpperCase());
-    }
+    setOrgAccount(orgMatch ? orgMatch[1].toUpperCase() : '');
   }, [activeEmail?.entryId, activeEmail?.subject, activeEmail?.bodyText]);
 
   // Diagnostic state
@@ -572,7 +570,7 @@ export default function OutlookPanePage() {
           ...(activeEmail.storeId ? { storeId: activeEmail.storeId } : {}),
           htmlBody: quotationHtml,
           replyAll: false,
-          openInComposer: true,
+          openInComposer: false,
         },
       );
       if (result === false) throw new Error('Outlook could not create the reply draft.');
@@ -1334,7 +1332,10 @@ export default function OutlookPanePage() {
               <div className="flex flex-col gap-1.5">
                 {/* 1. NCOR1B */}
                 <div
-                  onClick={() => setSelectedRateCode('NCOR')}
+                  onClick={() => {
+                    setSelectedRateCode('NCOR');
+                    if (mealPlan === 'room_only') setMealPlan('breakfast');
+                  }}
                   className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'NCOR'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
@@ -1358,7 +1359,10 @@ export default function OutlookPanePage() {
 
                 {/* 2. BAR */}
                 <div
-                  onClick={() => setSelectedRateCode('BAR')}
+                  onClick={() => {
+                    setSelectedRateCode('BAR');
+                    if (mealPlan === 'room_only') setMealPlan('breakfast');
+                  }}
                   className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'BAR'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
@@ -1382,7 +1386,10 @@ export default function OutlookPanePage() {
 
                 {/* 3. BARRO */}
                 <div
-                  onClick={() => setSelectedRateCode('BARRO')}
+                  onClick={() => {
+                    setSelectedRateCode('BARRO');
+                    setMealPlan('room_only');
+                  }}
                   className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'BARRO'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'

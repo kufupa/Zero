@@ -79,7 +79,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'We need 3 rooms for 4 nights.',
+      bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
     sendCommand: sendCommandMock,
@@ -131,7 +131,6 @@ describe('OutlookPanePage', () => {
     localStorage.clear();
     cleanup();
     sendCommandMock.mockReset();
-    vi.restoreAllMocks();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.error).mockClear();
@@ -281,6 +280,7 @@ describe('OutlookPanePage', () => {
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
     const freshPayload = createReplyCalls()[1]?.[1] as { operationId: string };
     expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
+    vi.spyOn(Date, 'now').mockRestore();
   });
 
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
@@ -333,6 +333,7 @@ describe('OutlookPanePage', () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
+    vi.spyOn(Date, 'now').mockRestore();
   }, 20000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {

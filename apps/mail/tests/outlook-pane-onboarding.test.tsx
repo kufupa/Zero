@@ -12,8 +12,8 @@ const defaultMockEmail = {
   senderEmail: 'guest@example.com',
   senderName: 'David Miller',
   receivedTime: '2026-09-17T12:00:00Z',
-  bodyText: 'We need 3 rooms for 4 nights.',
-  bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
+  bodyText: 'CIDB needs 3 rooms for 4 nights.',
+  bodyHtml: '<p>CIDB needs 3 rooms for 4 nights.</p>',
 };
 
 const { sendCommandMock, pingMutateMock, activeEmailState } = vi.hoisted(() => ({
