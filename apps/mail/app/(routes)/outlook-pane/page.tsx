@@ -493,6 +493,11 @@ export default function OutlookPanePage() {
       return;
     }
 
+    if (!supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
+      toast.error('This Outlook add-in cannot attach a quotation PDF. Update to protocol v3.');
+      return;
+    }
+
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
@@ -543,6 +548,7 @@ export default function OutlookPanePage() {
         : []),
     ];
     const quotationHtml = quoteWrapperHtml(guestFirstName);
+    let draftCreated = false;
 
     try {
       if (lines.length === 0) {
@@ -570,24 +576,22 @@ export default function OutlookPanePage() {
         },
       );
       if (result === false) throw new Error('Outlook could not create the reply draft.');
+      draftCreated = true;
       const legacyReplyOpened = result === true;
       const replyResult = typeof result === 'object' && result !== null ? result : null;
-      if (
-        !legacyReplyOpened &&
-        replyResult?.entryId &&
-        supportsAction('ADD_ATTACHMENT_TO_DRAFT')
-      ) {
-        await sendCommand('ADD_ATTACHMENT_TO_DRAFT', {
-          entryId: replyResult.entryId,
-          ...(replyResult.storeId
-            ? { storeId: replyResult.storeId }
-            : activeEmail.storeId
-              ? { storeId: activeEmail.storeId }
-              : {}),
-          fileName: pdf.fileName,
-          base64Data: pdf.pdfBase64,
-        });
+      if (!replyResult?.entryId) {
+        throw new Error('Outlook did not return a draft location, so the quotation PDF was not attached.');
       }
+      await sendCommand('ADD_ATTACHMENT_TO_DRAFT', {
+        entryId: replyResult.entryId,
+        ...(replyResult.storeId
+          ? { storeId: replyResult.storeId }
+          : activeEmail.storeId
+            ? { storeId: activeEmail.storeId }
+            : {}),
+        fileName: pdf.fileName,
+        base64Data: pdf.pdfBase64,
+      });
       replyRetries.current.delete(key);
       setDraftedDetails({
         entryId: activeEmail.entryId,
@@ -635,7 +639,7 @@ export default function OutlookPanePage() {
         err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : null;
       const hasUnknownOutcome = errorCode === 'OPERATION_OUTCOME_UNKNOWN';
       const timedOut = err instanceof Error && err.message.includes('timed out');
-      if (!timedOut && !hasUnknownOutcome) {
+      if (!timedOut && !hasUnknownOutcome && !draftCreated) {
         replyRetries.current.delete(key);
       }
       if (hasUnknownOutcome) {

@@ -140,7 +140,8 @@ describe('Outlook pane quote proposal PDF', () => {
     });
     const createCall = sendCommandMock.mock.calls.find((call) => call[0] === 'CREATE_REPLY_DRAFT');
     expect(createCall).toBeDefined();
-    const htmlBody = (createCall![1] as { htmlBody: string }).htmlBody;
+    if (!createCall) throw new Error('missing CREATE_REPLY_DRAFT');
+    const htmlBody = (createCall[1] as { htmlBody: string }).htmlBody;
     expect(htmlBody).toContain('Thank you for Choosing The Centurion Hotel.');
     expect(htmlBody).not.toContain('<table');
     expect(htmlBody).not.toMatch(/ZAR/i);
@@ -154,6 +155,38 @@ describe('Outlook pane quote proposal PDF', () => {
           fileName: 'Quote - CIDB 15-17 Sep.pdf',
           base64Data: 'JVBERw0KGgo=',
         }),
+      );
+    });
+  });
+
+  it('keeps the reply operation when attaching the PDF fails', async () => {
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') {
+        throw new Error('Outlook rejected the attachment');
+      }
+      return {
+        entryId: 'draft-99',
+        storeId: 'store-1',
+        folderEntryId: 'folder-drafts',
+        folderName: 'Drafts',
+        displayed: true,
+      };
+    });
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Outlook rejected the attachment'));
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      const createCalls = sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
+      expect(createCalls).toHaveLength(2);
+      const firstCreate = createCalls[0];
+      const retryCreate = createCalls[1];
+      if (!firstCreate || !retryCreate) throw new Error('missing CREATE_REPLY_DRAFT retry');
+      expect((firstCreate[1] as { operationId: string }).operationId).toBe(
+        (retryCreate[1] as { operationId: string }).operationId,
       );
     });
   });
