@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import { renderClaim, type ToolResult } from '../src/ai/draft-evidence.js';
+import { type ToolResult } from '../src/ai/draft-evidence.js';
 import {
   GROUP_BLOCK_READ_MAX_DAYS,
   GROUP_BLOCK_READ_PRIVACY_POLICY,
@@ -259,9 +259,9 @@ describe('group-block claims and registry', () => {
       toolResult(parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
     );
-    expect(claims).toHaveLength(1);
-    expect(claims[0]?.kind).toBe('group_block_summary');
-    expect(renderClaim(claims[0]!)).toContain('Group block summary');
+    // Fixture observations do not carry separately issued requester authority;
+    // the closed claim envelope must therefore emit no claim.
+    expect(claims).toEqual([]);
   });
 
   it.each(['create_request', 'amend_request', 'allocation_action'] as const)(

@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const source = readFileSync(
   new URL('../components/create/email-composer.tsx', import.meta.url),
@@ -48,5 +48,17 @@ describe('composer footer parity', () => {
     expect(source).not.toContain('ContentPreview');
     expect(source).not.toContain('Sparkles');
     expect(source.match(/aiBlocked:\s*false/g)).toHaveLength(4);
+  });
+
+  it('uses theme-aware foreground tokens for the Review & Send CTA content', () => {
+    const sendButtonStart = source.indexOf('const sendButton =');
+    const sendButtonEnd = source.indexOf('\n\n  return (', sendButtonStart);
+    const sendButton = source.slice(sendButtonStart, sendButtonEnd);
+
+    expect(sendButtonStart).toBeGreaterThanOrEqual(0);
+    expect(sendButtonEnd).toBeGreaterThan(sendButtonStart);
+    expect(sendButton).toContain('text-primary-foreground');
+    expect(sendButton).toContain('fill-primary-foreground');
+    expect(sendButton).not.toMatch(/(?:text|fill)-white\b/);
   });
 });

@@ -3,44 +3,32 @@
  * Disclosure gate runs before claim creation; extra fields rejected.
  * Requester trust comes only from separately issued TrustedRequesterAuthorizationV1.
  */
-import { createHash } from 'node:crypto';
-import { z } from 'zod';
-import type { EvidenceClaim } from '../ai/draft-evidence.js';
 import {
   type TrustedRequesterAuthorizationV1,
   type TrustedRequesterClaimKind,
   reservationReadDataSchema,
 } from './contracts.js';
 import {
+  validateTrustedRequesterAuthorization,
+  type TrustedRequesterSourceState,
+} from './requester-authorization.js';
+import {
   mapCompanyBillingClaim,
   companyAccountReadDataSchema,
 } from './company-account-read-contract.js';
 import {
-  mapDocumentMetadataClaim,
-  documentListReadDataSchema,
-} from './document-list-contract.js';
-import {
-  mapEventSummaryClaim,
-  eventReadDataSchema,
-} from './event-read-contract.js';
-import {
-  mapFolioDepositClaim,
-  folioReadDataSchema,
-} from './folio-read-contract.js';
-import {
-  mapGroupBlockClaim,
-  groupBlockReadDataSchema,
-} from './group-block-read-contract.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
-import {
   mapSentEmailAuditClaim,
   sentEmailAuditReadDataSchema,
 } from './sent-email-audit-contract.js';
+import { mapDocumentMetadataClaim, documentListReadDataSchema } from './document-list-contract.js';
+import { mapGroupBlockClaim, groupBlockReadDataSchema } from './group-block-read-contract.js';
+import { mapFolioDepositClaim, folioReadDataSchema } from './folio-read-contract.js';
+import { mapEventSummaryClaim, eventReadDataSchema } from './event-read-contract.js';
+import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { READ_TOOL_IDS, type ReadToolId } from './read-tools.js';
-import {
-  validateTrustedRequesterAuthorization,
-  type TrustedRequesterSourceState,
-} from './requester-authorization.js';
+import type { EvidenceClaim } from '../ai/draft-evidence.js';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 
 const claimableToolIds = [
   'hms_find_reservation',
@@ -63,9 +51,7 @@ const EVIDENCE_KIND_TO_TRUSTED_CLAIM = {
   company_billing_summary: 'company_billing',
   group_block_summary: 'group_status',
   event_summary: 'event_status',
-} as const satisfies Partial<
-  Record<EvidenceClaim['kind'], TrustedRequesterClaimKind>
->;
+} as const satisfies Partial<Record<EvidenceClaim['kind'], TrustedRequesterClaimKind>>;
 
 export type MapEnvelopeRequesterAuthorization = {
   authorization: unknown;
@@ -79,8 +65,7 @@ export type MapEnvelopeToClaimsOptions = {
   expiresAt?: string;
   /**
    * Separately issued server authorization.
-   * - omit: Phase A compat path (no auth gate; observation still cannot mint trust)
-   * - null: explicit missing → no claims
+   * - omit/null: missing authorization → no claims
    * - object: must validate for the emitted claim kind
    */
   requesterAuthorization?: MapEnvelopeRequesterAuthorization | null;
@@ -100,6 +85,22 @@ export const claimEnvelopeSchema = z
     ]),
     observedAt: z.string().min(1),
     evidenceId: z.string().min(1),
+    sourceHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    scopeVerified: z.boolean().optional(),
+    manifestSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    manifestSha256ByBranch: z.record(z.string().regex(/^[a-f0-9]{64}$/i)).optional(),
+    scopeHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
+    expiresAt: z.string().min(1).optional(),
     data: z.unknown(),
   })
   .strict();
@@ -123,10 +124,7 @@ function disclosureBlocksClaim(data: unknown): boolean {
   return false;
 }
 
-function withEvidenceIds(
-  claim: EvidenceClaim,
-  evidenceId: string,
-): EvidenceClaim {
+function withEvidenceIds(claim: EvidenceClaim, evidenceId: string): EvidenceClaim {
   return {
     ...claim,
     evidenceId,
@@ -164,9 +162,7 @@ function authorizeClaimKind(
 ): TrustedRequesterAuthorizationV1 | null {
   if (auth === null || auth === undefined) return null;
   const required =
-    EVIDENCE_KIND_TO_TRUSTED_CLAIM[
-      claimKind as keyof typeof EVIDENCE_KIND_TO_TRUSTED_CLAIM
-    ];
+    EVIDENCE_KIND_TO_TRUSTED_CLAIM[claimKind as keyof typeof EVIDENCE_KIND_TO_TRUSTED_CLAIM];
   if (!required) return null;
   return validateTrustedRequesterAuthorization({
     authorization: auth.authorization,
@@ -189,10 +185,36 @@ export function parseClaimEnvelope(
 /**
  * Map a closed observation envelope to at most one typed summary claim.
  * Rejects unknown keys, non-claimable toolIds, and unverified_negative.
- * When `requesterAuthorization` is provided (incl. null), auth gate applies;
- * observations never mint requester trust.
+ * A separately issued requester authorization is mandatory for every claim;
+ * observations never mint requester trust and omitted authorization fails
+ * closed.
  */
 export function mapEnvelopeToClaims(
+  raw: unknown,
+  options?: MapEnvelopeToClaimsOptions,
+): EvidenceClaim[] {
+  const claims = mapEnvelopeToClaimsInternal(raw, options);
+  const parsed = parseClaimEnvelope(raw);
+  if (!parsed.success) return claims;
+  return claims.map((claim) => ({
+    ...claim,
+    observedAt: parsed.data.observedAt,
+    ...(parsed.data.sourceHash ? { sourceHash: parsed.data.sourceHash } : {}),
+    ...(parsed.data.scopeVerified === undefined
+      ? {}
+      : { scopeVerified: parsed.data.scopeVerified }),
+    ...(parsed.data.manifestSha256 ? { manifestSha256: parsed.data.manifestSha256 } : {}),
+    ...(parsed.data.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: parsed.data.manifestSha256ByBranch }
+      : {}),
+    ...(parsed.data.scopeHash ? { scopeHash: parsed.data.scopeHash } : {}),
+    ...(parsed.data.requesterAuthorizationId
+      ? { requesterAuthorizationId: parsed.data.requesterAuthorizationId }
+      : {}),
+  }));
+}
+
+function mapEnvelopeToClaimsInternal(
   raw: unknown,
   options?: MapEnvelopeToClaimsOptions,
 ): EvidenceClaim[] {
@@ -206,17 +228,27 @@ export function mapEnvelopeToClaims(
   }
   if (disclosureBlocksClaim(envelope.data)) return [];
   if (observationAttemptsSelfTrust(envelope.data)) return [];
+  if (
+    envelope.manifestSha256ByBranch &&
+    envelope.manifestSha256 &&
+    !Object.values(envelope.manifestSha256ByBranch).includes(envelope.manifestSha256)
+  ) {
+    return [];
+  }
 
   const authOpt = options?.requesterAuthorization;
-  const authRequired = authOpt !== undefined;
-  if (authRequired && authOpt === null) return [];
+  if (authOpt === undefined || authOpt === null) return [];
 
   const evidenceId = envelope.evidenceId;
-  const expiresAt = options?.expiresAt;
+  const expiresAt = options?.expiresAt ?? envelope.expiresAt;
 
   const gate = (kind: EvidenceClaim['kind']): boolean => {
-    if (!authRequired) return true;
-    return authorizeClaimKind(authOpt, kind) !== null;
+    const validated = authorizeClaimKind(authOpt, kind);
+    return (
+      validated !== null &&
+      (envelope.requesterAuthorizationId === undefined ||
+        envelope.requesterAuthorizationId === validated.authorizationId)
+    );
   };
 
   if (envelope.toolId === 'hms_find_reservation') {
@@ -267,6 +299,11 @@ export function mapEnvelopeToClaims(
           id: claimId(`${evidenceId}:quote_stay_summary`),
           kind: 'quote_stay_summary',
           value: {
+            requestRef: data.data.requestRef ?? null,
+            coveredNights: data.data.coveredNights ?? observations.map((row) => row.date),
+            missingNights: data.data.missingNights ?? [],
+            displayRateSum: data.data.displayRateSum ?? null,
+            unresolvedInputs: data.data.unresolvedInputs ?? [],
             nights: observations.map((row) => ({
               date: row.date,
               roomType: row.roomType,
@@ -275,9 +312,7 @@ export function mapEnvelopeToClaims(
               displayedAmount: row.displayedAmount,
               currency: row.currency,
               rateBasis: row.rateBasis,
-              restrictions: Array.isArray(row.restrictions)
-                ? row.restrictions.join(', ')
-                : '',
+              restrictions: Array.isArray(row.restrictions) ? row.restrictions.join(', ') : '',
             })),
             bookable: false,
             stayTotal: null,
@@ -419,6 +454,13 @@ export function toolResultToClaimEnvelope(result: {
     toolId: string;
     toolVersion: string;
     observedAt: string;
+    sourceHash?: string;
+    scopeVerified?: boolean;
+    manifestSha256?: string;
+    manifestSha256ByBranch?: Record<string, string>;
+    scopeHash?: string;
+    requesterAuthorizationId?: string;
+    expiresAt?: string;
   };
 }): unknown {
   return {
@@ -426,6 +468,19 @@ export function toolResultToClaimEnvelope(result: {
     toolVersion: result.evidence.toolVersion,
     status: result.status,
     observedAt: result.evidence.observedAt,
+    ...(result.evidence.sourceHash ? { sourceHash: result.evidence.sourceHash } : {}),
+    ...(result.evidence.scopeVerified === undefined
+      ? {}
+      : { scopeVerified: result.evidence.scopeVerified }),
+    ...(result.evidence.manifestSha256 ? { manifestSha256: result.evidence.manifestSha256 } : {}),
+    ...(result.evidence.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: result.evidence.manifestSha256ByBranch }
+      : {}),
+    ...(result.evidence.scopeHash ? { scopeHash: result.evidence.scopeHash } : {}),
+    ...(result.evidence.requesterAuthorizationId
+      ? { requesterAuthorizationId: result.evidence.requesterAuthorizationId }
+      : {}),
+    ...(result.evidence.expiresAt ? { expiresAt: result.evidence.expiresAt } : {}),
     evidenceId: result.evidence.id,
     data: result.data,
   };

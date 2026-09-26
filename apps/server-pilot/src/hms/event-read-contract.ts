@@ -29,20 +29,13 @@ export const EVENT_READ_PRIVACY_POLICY = {
  * Live blocker — view_only Group Sales menu lacks Events / Event Reservation;
  * heuristic event function opens return 400. Observed 2026-08-06 (Task 17).
  */
-export const EVENT_READ_SURFACE_BLOCKER =
-  'BLOCKED_EVENT_READ_SURFACE_UNPROVEN';
+export const EVENT_READ_SURFACE_BLOCKER = 'BLOCKED_EVENT_READ_SURFACE_UNPROVEN';
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoTimestamp = z.string().datetime();
 const currencyCode = z.string().regex(/^[A-Z]{3}$/);
 const money = z.string().regex(/^(?:0|[1-9]\d*)\.\d{2}$/);
-const eventStatusSchema = z.enum([
-  'inquiry',
-  'tentative',
-  'confirmed',
-  'cancelled',
-  'completed',
-]);
+const eventStatusSchema = z.enum(['inquiry', 'tentative', 'confirmed', 'cancelled', 'completed']);
 const recipientClassSchema = z.enum([
   'authorized_event_contact',
   'internal_events',
@@ -61,13 +54,7 @@ const inquiryClassSchema = z.enum([
 ]);
 const itemSummarySchema = z
   .object({
-    itemClass: z.enum([
-      'venue',
-      'catering',
-      'equipment',
-      'accommodation',
-      'other_approved',
-    ]),
+    itemClass: z.enum(['venue', 'catering', 'equipment', 'accommodation', 'other_approved']),
     count: z.number().int().min(0),
     total: money,
   })
@@ -92,22 +79,24 @@ export const eventReadDataSchema = z
     endAt: isoTimestamp,
     layoutClass: z.string().min(1).max(64).nullable(),
     attendeeCount: z.number().int().min(0),
-    setupMinutes: z.number().int().min(0).max(24 * 60).nullable(),
-    teardownMinutes: z.number().int().min(0).max(24 * 60).nullable(),
-    approvedItemSummary: z
-      .array(itemSummarySchema)
-      .max(EVENT_READ_MAX_ITEMS),
+    setupMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 60)
+      .nullable(),
+    teardownMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 60)
+      .nullable(),
+    approvedItemSummary: z.array(itemSummarySchema).max(EVENT_READ_MAX_ITEMS),
     currency: currencyCode,
     total: money,
     linkedGroupClass: z.enum(['group_block', 'none', 'unknown']),
     linkedAccountClass: z.enum(['company', 'agency', 'none', 'unknown']),
-    depositStatus: z.enum([
-      'not_required',
-      'due',
-      'partial',
-      'paid',
-      'unknown',
-    ]),
+    depositStatus: z.enum(['not_required', 'due', 'partial', 'paid', 'unknown']),
     disclosure: z
       .object({
         recipientClass: recipientClassSchema,
@@ -120,6 +109,10 @@ export const eventReadDataSchema = z
   .strict();
 
 export type EventReadData = z.infer<typeof eventReadDataSchema>;
+
+// Normal executor payload preserves HMS source identity and separate deposit
+// facts; the older fixture kernel remains unchanged below.
+export { eventContextDataSchema, type EventContextData } from './context-read-contracts.js';
 
 const privateFieldsSchema = z
   .object({
@@ -158,15 +151,7 @@ export const eventReadFixtureInputSchema = z
         detailNavigationProvenInert: z.boolean(),
         reviewedRequestManifest: z.boolean(),
         mutationEventsObserved: z.array(
-          z.enum([
-            'double_click',
-            'calculate',
-            'post',
-            'copy',
-            'cancel',
-            'print',
-            'save',
-          ]),
+          z.enum(['double_click', 'calculate', 'post', 'copy', 'cancel', 'print', 'save']),
         ),
       })
       .strict(),
@@ -176,20 +161,24 @@ export const eventReadFixtureInputSchema = z
     endAt: isoTimestamp.nullable(),
     layoutClass: z.string().min(1).max(64).nullable(),
     attendeeCount: z.number().int().min(0).nullable(),
-    setupMinutes: z.number().int().min(0).max(24 * 60).nullable(),
-    teardownMinutes: z.number().int().min(0).max(24 * 60).nullable(),
+    setupMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 60)
+      .nullable(),
+    teardownMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 60)
+      .nullable(),
     approvedItemSummary: z.array(itemSummarySchema).max(EVENT_READ_MAX_ITEMS),
     currency: currencyCode.nullable(),
     total: money.nullable(),
     linkedGroupClass: z.enum(['group_block', 'none', 'unknown']),
     linkedAccountClass: z.enum(['company', 'agency', 'none', 'unknown']),
-    depositStatus: z.enum([
-      'not_required',
-      'due',
-      'partial',
-      'paid',
-      'unknown',
-    ]),
+    depositStatus: z.enum(['not_required', 'due', 'partial', 'paid', 'unknown']),
     recipientClass: recipientClassSchema,
     inquiryClass: inquiryClassSchema,
     observedAt: isoTimestamp,
@@ -217,17 +206,12 @@ function cents(value: string): bigint {
   return BigInt(whole!) * 100n + BigInt(fraction!);
 }
 
-export function parseEventReadFixture(
-  rawInput: EventReadFixtureInput,
-): EventReadKernelResult {
+export function parseEventReadFixture(rawInput: EventReadFixtureInput): EventReadKernelResult {
   const parsed = eventReadFixtureInputSchema.safeParse(rawInput);
   if (!parsed.success) return fail('EVENT_CONTRACT_OR_SCHEMA_DRIFT');
   const input = parsed.data;
 
-  if (
-    input.candidate.exactEventReferenceHash !==
-    input.candidate.observedEventReferenceHash
-  ) {
+  if (input.candidate.exactEventReferenceHash !== input.candidate.observedEventReferenceHash) {
     return fail('EVENT_EXACT_REFERENCE_MISMATCH');
   }
 
@@ -235,11 +219,11 @@ export function parseEventReadFixture(
   const observedAt = Date.parse(input.observedAt);
   const roleIssuedAt = Date.parse(input.roleProof.issuedAt);
   const roleExpiresAt = Date.parse(input.roleProof.expiresAt);
-  const surfacesProven = EVENT_READ_PRIVACY_POLICY.allowedSurfaces.every(
-    (surface) => input.roleProof.allowedSurfaces.includes(surface),
+  const surfacesProven = EVENT_READ_PRIVACY_POLICY.allowedSurfaces.every((surface) =>
+    input.roleProof.allowedSurfaces.includes(surface),
   );
-  const actionsDenied = EVENT_READ_PRIVACY_POLICY.deniedActions.every(
-    (action) => input.roleProof.deniedActions.includes(action),
+  const actionsDenied = EVENT_READ_PRIVACY_POLICY.deniedActions.every((action) =>
+    input.roleProof.deniedActions.includes(action),
   );
   if (
     input.roleProof.credentialMode !== 'view_only' ||
@@ -297,10 +281,7 @@ export function parseEventReadFixture(
   if (Date.parse(input.endAt) < Date.parse(input.startAt)) {
     return fail('EVENT_DATE_OR_COUNT_INCONSISTENT');
   }
-  const itemTotal = input.approvedItemSummary.reduce(
-    (sum, item) => sum + cents(item.total),
-    0n,
-  );
+  const itemTotal = input.approvedItemSummary.reduce((sum, item) => sum + cents(item.total), 0n);
   if (itemTotal !== cents(input.total)) {
     return fail('EVENT_CURRENCY_OR_TOTAL_INCONSISTENT');
   }
@@ -324,10 +305,7 @@ export function parseEventReadFixture(
     disclosure: {
       recipientClass: input.recipientClass,
       inquiryClass: input.inquiryClass,
-      claimEligibility: eventSummaryClaimEligibility(
-        input.recipientClass,
-        input.inquiryClass,
-      ),
+      claimEligibility: eventSummaryClaimEligibility(input.recipientClass, input.inquiryClass),
     },
     observedAt: input.observedAt,
   });
@@ -343,28 +321,15 @@ export const eventSummaryClaimValueSchema = z
     attendeeCount: z.number().int().min(0),
     currency: currencyCode,
     total: money,
-    depositStatus: z.enum([
-      'not_required',
-      'due',
-      'partial',
-      'paid',
-      'unknown',
-    ]),
-    responseCredit: z.enum([
-      'full_existing_event_status',
-      'partial_status_only',
-    ]),
+    depositStatus: z.enum(['not_required', 'due', 'partial', 'paid', 'unknown']),
+    responseCredit: z.enum(['full_existing_event_status', 'partial_status_only']),
     observedAt: isoTimestamp,
   })
   .strict();
 
-export type EventSummaryClaimValue = z.infer<
-  typeof eventSummaryClaimValueSchema
->;
+export type EventSummaryClaimValue = z.infer<typeof eventSummaryClaimValueSchema>;
 
-export function mapEventSummaryClaim(
-  data: EventReadData,
-): EventSummaryClaimValue | null {
+export function mapEventSummaryClaim(data: EventReadData): EventSummaryClaimValue | null {
   const parsed = eventReadDataSchema.parse(data);
   const eligibility = eventSummaryClaimEligibility(
     parsed.disclosure.recipientClass,
@@ -380,10 +345,7 @@ export function mapEventSummaryClaim(
     currency: parsed.currency,
     total: parsed.total,
     depositStatus: parsed.depositStatus,
-    responseCredit:
-      eligibility === 'full'
-        ? 'full_existing_event_status'
-        : 'partial_status_only',
+    responseCredit: eligibility === 'full' ? 'full_existing_event_status' : 'partial_status_only',
     observedAt: parsed.observedAt,
   });
 }

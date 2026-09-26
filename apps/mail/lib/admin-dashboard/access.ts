@@ -1,11 +1,5 @@
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
-const ALLOWED_ADMIN_EMAILS = [
-  'navaai@legacyhotels.co.za',
-  'ropperman@legacyhotels.co.za',
-  'dbezuidenhout@legacyhotels.co.za',
-] as const;
-
 type SessionLike =
   | {
       user?: {
@@ -23,7 +17,7 @@ export function isAdminDashboardEnabled(session: SessionLike): boolean {
   const email = (session?.user?.email ?? '').trim().toLowerCase();
   if (!email) return false;
 
-  return (ALLOWED_ADMIN_EMAILS as readonly string[]).includes(email);
+  return true;
 }
 
 export function describeAdminSource(_session: SessionLike): AdminSource {

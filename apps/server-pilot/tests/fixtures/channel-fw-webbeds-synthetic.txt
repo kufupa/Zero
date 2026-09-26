@@ -1,0 +1,24 @@
+From: reservations@centurion-example.test
+Subject: FWD: WebBeds reservation — please action
+
+Hi team,
+
+Please see below for the channel booking details.
+
+Regards,
+Front desk
+
+----- Original Message -----
+From: WebBeds Channel Manager <noreply-channel@webbeds-example.test>
+Date: Mon, 8 Sep 2026 09:15:00 +0200
+
+WebBeds Booking Notification
+
+Booking Reference: WB-TEST-12345
+Hotel: Centurion Lake Hotel (TEST)
+Guest Name: TESTGUEST, Sample
+Check-in Date: 2026-10-15
+Check-out Date: 2026-10-18
+Room: Standard Twin (TEST)
+
+Payment: Virtual card not supplied — property to collect.

@@ -1,10 +1,14 @@
 /**
  * FE ↔ pilot wire format helpers — ParsedMessage shape and send input coercion.
  */
-import { z } from 'zod';
-import type { ParsedMessage, MessageReactionGroup, MessageReactionUser } from '../lib/driver/types.js';
-import type { message } from '../db/schema/mail.js';
 import { sanitizeEmailHtml } from '../mail/sanitize-email-html.js';
+import type {
+  ParsedMessage,
+  MessageReactionGroup,
+  MessageReactionUser,
+} from '../lib/driver/types.js';
+import type { message } from '../db/schema/mail.js';
+import { z } from 'zod';
 
 export type MessageRow = typeof message.$inferSelect;
 
@@ -29,13 +33,62 @@ const recipientInput = z.union([
   }),
 ]);
 
-const serializedAttachmentInput = z.object({
+export const serializedAttachmentInput = z.object({
   name: z.string(),
   type: z.string(),
   size: z.number(),
   lastModified: z.number(),
   base64: z.string(),
 });
+
+/** Closed U6 approval token accepted only as an opaque, server-validated value. */
+const draftApprovalInput = z
+  .object({
+    version: z.string(),
+    purpose: z.string(),
+    draftId: z.string(),
+    generationId: z.string(),
+    transportId: z.string(),
+    threadId: z.string(),
+    revisionId: z.string(),
+    threadStateVersion: z.string(),
+    policyVersion: z.string(),
+    approvedByUserId: z.string(),
+    approvedAt: z.string(),
+    bodyDigest: z.string(),
+    recipientDigest: z.string(),
+    attachmentDigest: z.string(),
+    evidenceDigest: z.string(),
+    routeBinding: z
+      .object({
+        routeId: z.string(),
+        modelId: z.string(),
+        purpose: z.literal('draft'),
+        protocol: z.literal('in_process'),
+        access: z.literal('current_app'),
+        egress: z.literal('none'),
+        retention: z.literal('bounded'),
+        usage: z.literal('reported'),
+        release: z
+          .object({
+            releaseId: z.string(),
+            releaseVersion: z.string(),
+            sourceRevision: z.string(),
+            fingerprint: z.string(),
+            purpose: z.literal('draft'),
+            capabilityFamilyVersions: z.record(z.string()),
+            issuedAt: z.string(),
+            expiresAt: z.string(),
+            withdrawn: z.boolean(),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
+    fingerprint: z.string(),
+    signature: z.string(),
+  })
+  .strict();
 
 /** FE mail.send payload — mirrors create-email.tsx / reply-composer.tsx. */
 export const sendInput = z
@@ -59,6 +112,10 @@ export const sendInput = z
     scheduleAt: z.string().optional(),
     /** Prior message HTML — appended when client html lacks quoted body. */
     originalMessage: z.string().optional(),
+    /** Explicit human approval for an AI draft; never inferred from confirmStaleDraft. */
+    draftApproval: draftApprovalInput.optional(),
+    /** Compatibility alias for non-React/API callers; normalized to draftApproval. */
+    approval: draftApprovalInput.optional(),
   })
   .transform((input) => {
     const baseHtml = input.message ?? input.html ?? '';
@@ -84,6 +141,7 @@ export const sendInput = z
       inReplyTo: input.inReplyTo,
       references: input.references,
       scheduleAt: input.scheduleAt,
+      draftApproval: input.draftApproval ?? input.approval,
     };
   });
 
@@ -203,7 +261,6 @@ function plainTextToDisplayHtml(text: string): string {
   return `<div>${escaped.replaceAll('\n', '<br />')}</div>`;
 }
 
-/** Group raw reaction rows into wire format grouped by emoji. */
 export function groupReactions(
   rows: Array<{
     reaction: string;
@@ -290,10 +347,8 @@ export function toParsedMessage(
     threadId: row.threadId,
     messageId: row.messageIdHeader ?? undefined,
     inReplyTo: row.inReplyTo ?? undefined,
-    references:
-      row.references && row.references.length > 0 ? row.references.join(' ') : undefined,
+    references: row.references && row.references.length > 0 ? row.references.join(' ') : undefined,
     isDraft: false,
-    reactions,
     attachments: attachments.map((a) => ({
       attachmentId: a.attachmentId,
       filename: a.filename,
@@ -302,6 +357,7 @@ export function toParsedMessage(
       body: '',
       headers: [],
     })),
+    reactions,
   };
 }
 
@@ -313,9 +369,7 @@ export function buildMetadataDebugHeaders(
   transportEmail: string,
 ): MailDebugHeaderLine[] {
   const xZeroMailbox =
-    row.direction === 'outbound'
-      ? transportEmail
-      : row.ownerHeaderValue ?? '(missing)';
+    row.direction === 'outbound' ? transportEmail : (row.ownerHeaderValue ?? '(missing)');
 
   const lines: MailDebugHeaderLine[] = [
     { key: 'x-zero-mailbox', line: `X-Zero-Mailbox: ${xZeroMailbox}` },

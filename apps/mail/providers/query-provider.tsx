@@ -266,7 +266,9 @@ const getUrl = () => publicBackendTrpcUrl();
 
 const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const body = typeof options?.body === 'string' ? options.body : '';
+  const timeoutMs = body.includes('quoteProposalPdf') ? 60_000 : 5_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   if (options?.signal) {
     options.signal.addEventListener(
       'abort',

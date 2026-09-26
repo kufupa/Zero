@@ -14,65 +14,69 @@ import {
   X,
 } from '../icons/icons';
 import {
+  clearReplyComposeContext,
+  openReplyComposeContext,
+  type ReplyComposeMode,
+} from '@/lib/mail/reply-compose-context';
+import {
+  buildReservedSpamLabelIdSet,
+  isArchiveLikeMailFolder,
+  isReservedSpamScopedLabelId,
+} from '@/lib/mail/route-filter';
+import {
+  buildThreadDraftViewModel,
+  canRefreshHmsCandidate,
+  hmsCandidateNotice,
+} from '@/lib/mail/thread-draft-view-model';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
+import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
+import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
+import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
+import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
+import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
+import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
+import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
+import type { ParsedMessage, Attachment, Sender } from '@/types';
+import { resolveImportantState } from '@/lib/mail/important-ui';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
+import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import type { ParsedMessage, Attachment, Sender } from '@/types';
-import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
+import { useTRPC } from '@/providers/query-provider';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
+import { useLabels } from '@/hooks/use-labels';
+import { useSession } from '@/lib/auth-client';
 import { cleanHtml } from '@/lib/email-utils';
-import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
-import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
-import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
-import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
-import {
-  buildThreadDraftViewModel,
-  canRefreshHmsCandidate,
-  hmsCandidateNotice,
-} from '@/lib/mail/thread-draft-view-model';
-import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { useTimezone } from '@/hooks/use-timezone';
 import { m } from '@/paraglide/messages';
 import MailDisplay, { ThreadAttachments } from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
-import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
-import { resolveImportantState } from '@/lib/mail/important-ui';
-import { buildReservedSpamLabelIdSet, isArchiveLikeMailFolder, isReservedSpamScopedLabelId } from '@/lib/mail/route-filter';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { useLabels } from '@/hooks/use-labels';
-import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
-import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
-import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
-import {
-  clearReplyComposeContext,
-  openReplyComposeContext,
-  type ReplyComposeMode,
-} from '@/lib/mail/reply-compose-context';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { useSession } from '@/lib/auth-client';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
@@ -83,11 +87,7 @@ const escapePrintHtml = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
-  (mailboxes || [])
-    .map(formatMailboxPlain)
-    .filter(Boolean)
-    .map(escapePrintHtml)
-    .join('; ');
+  (mailboxes || []).map(formatMailboxPlain).filter(Boolean).map(escapePrintHtml).join('; ');
 
 interface ThreadDisplayProps {
   threadParam?: any;
@@ -393,7 +393,8 @@ export function ThreadDisplay() {
   };
 
   const isInArchive = isArchiveLikeMailFolder(folder, reservedSpamLabelIds);
-  const isInSpam = folder === FOLDERS.SPAM || isReservedSpamScopedLabelId(folder, reservedSpamLabelIds);
+  const isInSpam =
+    folder === FOLDERS.SPAM || isReservedSpamScopedLabelId(folder, reservedSpamLabelIds);
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(async () => {
     await clearComposeContext();
@@ -860,7 +861,7 @@ export function ThreadDisplay() {
         {aiDraftCandidateVms.map((candidateVm) => {
           const notice =
             hmsCandidateNotice(candidateVm) ??
-            'Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists.';
+            'AI candidate — human review required. Open the reply editor to review before sending.';
           const refreshPending =
             candidateVm.refreshState === 'queued' ||
             candidateVm.refreshState === 'claimed' ||
@@ -892,6 +893,7 @@ export function ThreadDisplay() {
                 onRefresh={handleRefreshHmsCandidate}
                 canRefresh={canRefreshHmsCandidate(candidateVm)}
                 refreshPending={refreshPending || refreshHmsCandidate.isPending}
+                reviewRequired
               />
             </div>
           );
@@ -926,7 +928,7 @@ export function ThreadDisplay() {
                 <div className="mt-4">
                   <button
                     onClick={() => setIsComposeOpen('true')}
-                    className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                    className="inline-flex h-7 cursor-pointer items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <Mail className="mr-1 h-3.5 w-3.5 fill-[#959595]" />
                     <div className="flex items-center justify-center gap-2.5 px-0.5">
@@ -951,7 +953,7 @@ export function ThreadDisplay() {
           <>
             <div
               className={cn(
-                'flex shrink-0 min-w-0 flex-wrap items-center px-1 pb-[10px] md:px-3 md:pb-[11px] md:pt-[12px]',
+                'flex min-w-0 shrink-0 flex-wrap items-center px-1 pb-[10px] md:px-3 md:pb-[11px] md:pt-[12px]',
                 isMobile && 'bg-panelLight dark:bg-panelDark sticky top-0 z-10 mt-2',
               )}
             >
@@ -991,7 +993,7 @@ export function ThreadDisplay() {
                       e.stopPropagation();
                       openComposeForLatestMessage('reply');
                     }}
-                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                    className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
                     <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
@@ -1005,7 +1007,7 @@ export function ThreadDisplay() {
                       e.stopPropagation();
                       openComposeForLatestMessage('replyAll');
                     }}
-                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                    className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />
                     <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
@@ -1019,7 +1021,7 @@ export function ThreadDisplay() {
                       e.stopPropagation();
                       openComposeForLatestMessage('forward');
                     }}
-                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                    className="inline-flex h-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 transition-colors hover:bg-gray-100 dark:border-none dark:bg-[#313131] dark:hover:bg-[#404040]"
                   >
                     <Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />
                     <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
@@ -1033,7 +1035,7 @@ export function ThreadDisplay() {
                     <TooltipTrigger asChild>
                       <button
                         onClick={handleToggleStar}
-                        className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                        className="inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg bg-white transition-colors hover:bg-gray-100 dark:bg-[#313131] dark:hover:bg-[#404040]"
                       >
                         <Star
                           className={cn(
@@ -1058,7 +1060,7 @@ export function ThreadDisplay() {
                     <TooltipTrigger asChild>
                       <button
                         onClick={() => moveThreadTo('archive')}
-                        className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                        className="inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg bg-white transition-colors hover:bg-gray-100 dark:bg-[#313131] dark:hover:bg-[#404040]"
                       >
                         <Archive className="fill-iconLight dark:fill-iconDark" />
                       </button>
@@ -1075,7 +1077,7 @@ export function ThreadDisplay() {
                       <TooltipTrigger asChild>
                         <button
                           onClick={() => moveThreadTo('bin')}
-                          className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg border border-[#FCCDD5] bg-[#FDE4E9] hover:bg-[#fccdd5]/70 dark:border-[#6E2532] dark:bg-[#411D23] dark:hover:bg-[#6E2532]/70 cursor-pointer transition-colors"
+                          className="inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg border border-[#FCCDD5] bg-[#FDE4E9] transition-colors hover:bg-[#fccdd5]/70 dark:border-[#6E2532] dark:bg-[#411D23] dark:hover:bg-[#6E2532]/70"
                         >
                           <Trash className="fill-[#F43F5E]" />
                         </button>
@@ -1089,7 +1091,12 @@ export function ThreadDisplay() {
 
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <button type="button" aria-label="Thread actions" aria-haspopup="menu" className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white cursor-pointer focus:outline-hidden focus:ring-0 dark:bg-[#313131] transition-colors">
+                    <button
+                      type="button"
+                      aria-label="Thread actions"
+                      aria-haspopup="menu"
+                      className="focus:outline-hidden inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg bg-white transition-colors focus:ring-0 dark:bg-[#313131]"
+                    >
                       <ThreeDots className="fill-iconLight dark:fill-iconDark" />
                     </button>
                   </DropdownMenuTrigger>
@@ -1250,11 +1257,14 @@ const MessageList = ({
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
   return (
-    <ScrollArea className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
+    <ScrollArea
+      className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')}
+      type="auto"
+    >
       <div className="min-w-0 pb-4">
         {linkedThreadIds && linkedThreadIds.length > 0 ? (
           <div className="border-border bg-muted/30 text-muted-foreground mx-4 mb-3 rounded-lg border px-3 py-2 text-sm">
-            <p className="font-medium text-foreground">
+            <p className="text-foreground font-medium">
               Linked conversation ({linkedThreadCount} threads)
             </p>
             {conversationMessageCount ? (
@@ -1264,18 +1274,22 @@ const MessageList = ({
             ) : null}
             {onOpenLinkedThread ? (
               <div className="mt-2 flex flex-wrap gap-2">
-                {[...new Set([...(linkedThreadIds ?? []), ...displayMessages.map((m) => m.threadId).filter(Boolean)])].map(
-                  (threadId) =>
-                    threadId ? (
-                      <button
-                        key={threadId}
-                        type="button"
-                        className="text-primary hover:underline text-xs"
-                        onClick={() => onOpenLinkedThread(threadId)}
-                      >
-                        Open thread {threadId.slice(0, 8)}
-                      </button>
-                    ) : null,
+                {[
+                  ...new Set([
+                    ...(linkedThreadIds ?? []),
+                    ...displayMessages.map((m) => m.threadId).filter(Boolean),
+                  ]),
+                ].map((threadId) =>
+                  threadId ? (
+                    <button
+                      key={threadId}
+                      type="button"
+                      className="text-primary text-xs hover:underline"
+                      onClick={() => onOpenLinkedThread(threadId)}
+                    >
+                      Open thread {threadId.slice(0, 8)}
+                    </button>
+                  ) : null,
                 )}
               </div>
             ) : null}
@@ -1309,23 +1323,28 @@ const MessageList = ({
                     : ''}
                 </div>
               ) : null}
-              <div className={cn('min-w-0 duration-200', index > 0 && !showThreadDivider && 'border-border border-t')}>
-              {isReplyingToThisMessage ? (
-                <div
-                  className="border-border border-b px-4 py-3"
-                  id={`reply-composer-${message.id}`}
-                >
-                  <ReplyCompose messageId={message.id} />
-                </div>
-              ) : null}
-              <MailDisplay
-                emailData={message}
-                isFullscreen={isFullscreen}
-                isMuted={false}
-                isLoading={false}
-                index={index}
-                totalEmails={totalReplies}
-              />
+              <div
+                className={cn(
+                  'min-w-0 duration-200',
+                  index > 0 && !showThreadDivider && 'border-border border-t',
+                )}
+              >
+                {isReplyingToThisMessage ? (
+                  <div
+                    className="border-border border-b px-4 py-3"
+                    id={`reply-composer-${message.id}`}
+                  >
+                    <ReplyCompose messageId={message.id} />
+                  </div>
+                ) : null}
+                <MailDisplay
+                  emailData={message}
+                  isFullscreen={isFullscreen}
+                  isMuted={false}
+                  isLoading={false}
+                  index={index}
+                  totalEmails={totalReplies}
+                />
               </div>
             </div>
           );

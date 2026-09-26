@@ -2,19 +2,6 @@
  * Worker-scoped active registry load + per-tool session authorization builders.
  * Live path never unions every active manifest into process-wide Guest Stay authority.
  */
-import { access } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
-import type { RequestPolicyManifest } from './contracts.js';
-import {
-  FIND_RESERVATION_IMPL_V1,
-  FIND_RESERVATION_IMPL_V2,
-  MAIL_ARTIFACT_IMPL_V1,
-  QUOTE_STAY_IMPL_V1,
-  assertHandlerIndexCovers,
-  createReadToolHandler,
-  listHandlerIndexEntries,
-} from './read-handler-index.js';
-import type { ReadToolId } from './read-tools.js';
 import {
   HMS_RUNTIME_ABI_VERSION,
   isRegistryCutoverComplete,
@@ -24,29 +11,21 @@ import {
   type HmsPortfolioToolReleaseV2,
   type HmsSessionAuthorization,
 } from './release-kernel.js';
-
-/** Binding-check stub — firewall never uses this empty-path lease. */
-const BINDING_STUB_MANIFEST = {
-  rules: [
-    {
-      id: 'binding-stub',
-      origin: 'https://binding.invalid',
-      method: 'GET' as const,
-      path: '/binding-stub',
-      resourceTypes: ['other' as const],
-      fixedQuery: {},
-      variableQuery: {},
-      fixedBody: {},
-      variableBody: {},
-      maxBodyBytes: 4096,
-      redirectPolicy: 'same-reviewed-chain' as const,
-    },
-  ],
-} satisfies RequestPolicyManifest;
+import {
+  FIND_RESERVATION_IMPL_V1,
+  FIND_RESERVATION_IMPL_V2,
+  QUOTE_STAY_IMPL_V1,
+  assertHandlerIndexCovers,
+  createReadToolHandler,
+  listHandlerIndexEntries,
+} from './read-handler-index.js';
+import type { RequestPolicyManifest } from './contracts.js';
+import type { ActiveReadToolId, ReadToolId } from './read-tools.js';
+import { access } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 
 /** Well-known Phase A find lease id — not a promoted release. */
-export const PHASE_A_FIND_LEASE_RELEASE_ID =
-  '00000000-0000-4000-8000-0000000000a1';
+export const PHASE_A_FIND_LEASE_RELEASE_ID = '00000000-0000-4000-8000-0000000000a1';
 
 export type ActiveReadRuntimeState = {
   releases: Map<ReadToolId, HmsPortfolioToolReleaseV2>;
@@ -69,11 +48,12 @@ function emptyState(): ActiveReadRuntimeState {
 }
 
 export function availableImplementationDigestsFromHandlerIndex(): Map<
-  ReadToolId,
+  ActiveReadToolId,
   ReadonlySet<string>
 > {
-  const map = new Map<ReadToolId, Set<string>>();
+  const map = new Map<ActiveReadToolId, Set<string>>();
   for (const entry of listHandlerIndexEntries()) {
+    if (entry.toolId === 'mail_read_artifact') continue;
     let set = map.get(entry.toolId);
     if (!set) {
       set = new Set();
@@ -85,7 +65,6 @@ export function availableImplementationDigestsFromHandlerIndex(): Map<
   for (const [toolId, digest] of [
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V1],
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V2],
-    ['mail_read_artifact', MAIL_ARTIFACT_IMPL_V1],
     ['hms_quote_stay', QUOTE_STAY_IMPL_V1],
   ] as const) {
     let set = map.get(toolId);
@@ -106,6 +85,11 @@ export function getCachedActiveReadRuntime(): ActiveReadRuntimeState | null {
 
 export function clearCachedActiveReadRuntimeForTests(): void {
   cached = null;
+}
+
+/** Test-only registry injection for route/worker contract tests; production never calls this. */
+export function __setCachedActiveReadRuntimeForTests(state: ActiveReadRuntimeState | null): void {
+  cached = state;
 }
 
 /**
@@ -130,8 +114,7 @@ export async function loadWorkerActiveReadSet(input: {
     releaseRoot: input.releaseRoot,
     runtimeAbiVersion: HMS_RUNTIME_ABI_VERSION,
     runtimeFingerprintSha256: input.runtimeFingerprintSha256,
-    availableImplementationDigests:
-      availableImplementationDigestsFromHandlerIndex(),
+    availableImplementationDigests: availableImplementationDigestsFromHandlerIndex(),
   });
 
   assertHandlerIndexCovers({
@@ -139,38 +122,13 @@ export async function loadWorkerActiveReadSet(input: {
     immediatePredecessor: loaded.predecessors,
   });
 
-  // Constructing a handler for each active release proves the index path is live.
+  // Mail auth is self-contained. HMS handler binding is intentionally deferred
+  // until the exact reviewed manifest is available; a synthetic stub must not
+  // be allowed to stand in for a release payload digest.
   for (const [, release] of loaded.releases) {
     if (release.evidenceKind === 'mail') {
-      createReadToolHandler(release, {
-        operationId: randomUUID(),
-        releaseId: release.releaseId,
-        grantPolicySha256: release.grantPolicySha256,
-        s3IdentitySha256: release.s3IdentitySha256,
-        runtimeFingerprintSha256: release.runtimeFingerprintSha256,
-        privateDigestKeyVersion: release.privateDigestKeyVersion,
-        sourceRevision: release.sourceRevision,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-      continue;
+      throw new Error('excluded mail release cannot enter active worker runtime');
     }
-    const branch = release.requestBranches[0]!;
-    createReadToolHandler(release, {
-      operationId: randomUUID(),
-      toolId: release.toolId,
-      discoveryOperationId: branch.discoveryOperationId,
-      releaseId: release.releaseId,
-      requestBranchId: branch.id,
-      manifest: BINDING_STUB_MANIFEST,
-      manifestSha256: branch.manifestSha256,
-      roleProofPath: '/tmp/unused',
-      roleProofSha256: release.roleProofSha256,
-      credentialVersionHmacSha256: release.credentialVersionHmacSha256,
-      runtimeFingerprintSha256: release.runtimeFingerprintSha256,
-      privateDigestKeyVersion: release.privateDigestKeyVersion,
-      sourceRevision: release.sourceRevision,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
   }
 
   const handlerPathActive = true;
@@ -192,6 +150,7 @@ export async function loadWorkerActiveReadSet(input: {
 
 export function buildHmsFindSessionAuthorization(input: {
   operationId: string;
+  requestBranchId: string;
   manifest: RequestPolicyManifest;
   roleProofPath: string;
   roleProofSha256: string;
@@ -202,18 +161,15 @@ export function buildHmsFindSessionAuthorization(input: {
   expiresAt?: string;
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
-  const release =
-    input.release && input.release.evidenceKind === 'hms'
-      ? input.release
-      : null;
-  const branch =
-    release?.requestBranches.find((b) => b.id === 'guest_stay_search') ??
-    release?.requestBranches[0] ??
-    null;
-  const computedManifestSha = createHash('sha256')
-    .update(JSON.stringify(input.manifest))
-    .digest('hex');
-
+  const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
+  const branch = release?.requestBranches.find((b) => b.id === input.requestBranchId) ?? null;
+  if (release && !branch) {
+    throw new Error(`request branch is not enabled on release: ${input.requestBranchId}`);
+  }
+  const computedManifestSha = sha256Hex(JSON.stringify(input.manifest));
+  if (branch && branch.manifestSha256 !== computedManifestSha) {
+    throw new Error('find branch manifest digest mismatch');
+  }
   return {
     operationId: input.operationId,
     toolId: 'hms_find_reservation',
@@ -225,15 +181,11 @@ export function buildHmsFindSessionAuthorization(input: {
     roleProofPath: input.roleProofPath,
     roleProofSha256: release?.roleProofSha256 ?? input.roleProofSha256,
     credentialVersionHmacSha256:
-      release?.credentialVersionHmacSha256 ??
-      input.credentialVersionHmacSha256,
-    runtimeFingerprintSha256:
-      release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
-    privateDigestKeyVersion:
-      release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
+      release?.credentialVersionHmacSha256 ?? input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
+    privateDigestKeyVersion: release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
     sourceRevision: release?.sourceRevision ?? input.sourceRevision,
-    expiresAt:
-      input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
+    expiresAt: input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
   };
 }
 
@@ -257,39 +209,77 @@ export function buildHmsQuoteSessionAuthorization(input: {
   expiresAt?: string;
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
-  const release =
-    input.release && input.release.evidenceKind === 'hms'
-      ? input.release
-      : null;
+  const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
   const branch =
     release?.requestBranches.find((b) => b.id === 'quote_availability_search') ??
     release?.requestBranches[0] ??
     null;
-  const computedManifestSha = createHash('sha256')
-    .update(JSON.stringify(input.manifest))
-    .digest('hex');
+  const computedManifestSha = sha256Hex(JSON.stringify(input.manifest));
+  if (branch && branch.manifestSha256 !== computedManifestSha) {
+    throw new Error('quote branch manifest digest mismatch');
+  }
 
   return {
     operationId: input.operationId,
     toolId: 'hms_quote_stay',
-    discoveryOperationId:
-      branch?.discoveryOperationId ?? 'quote_availability_search',
+    discoveryOperationId: branch?.discoveryOperationId ?? 'quote_availability_search',
     releaseId: release?.releaseId ?? randomUUID(),
     requestBranchId: branch?.id ?? 'quote_availability_search',
     manifest: input.manifest,
-    manifestSha256: branch?.manifestSha256 ?? computedManifestSha,
+    manifestSha256: computedManifestSha,
     roleProofPath: input.roleProofPath,
     roleProofSha256: release?.roleProofSha256 ?? input.roleProofSha256,
     credentialVersionHmacSha256:
-      release?.credentialVersionHmacSha256 ??
-      input.credentialVersionHmacSha256,
-    runtimeFingerprintSha256:
-      release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
-    privateDigestKeyVersion:
-      release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
+      release?.credentialVersionHmacSha256 ?? input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
+    privateDigestKeyVersion: release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
     sourceRevision: release?.sourceRevision ?? input.sourceRevision,
-    expiresAt:
-      input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
+    expiresAt: input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
+  };
+}
+
+export function buildHmsFolioSessionAuthorization(input: {
+  operationId: string;
+  requestBranchId: 'folio_summary' | 'deposit_ledger_summary';
+  manifest: RequestPolicyManifest;
+  roleProofPath: string;
+  roleProofSha256: string;
+  credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  sourceRevision: string;
+  expiresAt?: string;
+  release?: HmsPortfolioToolReleaseV2 | null;
+}): HmsSessionAuthorization {
+  const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
+  if (release && release.toolId !== 'hms_read_folio') {
+    throw new Error('folio authorization requires hms_read_folio release');
+  }
+  const branch = release?.requestBranches.find((b) => b.id === input.requestBranchId) ?? null;
+  if (release && !branch) {
+    throw new Error(`request branch is not enabled on folio release: ${input.requestBranchId}`);
+  }
+  const computedManifestSha = sha256Hex(JSON.stringify(input.manifest));
+  if (branch && branch.manifestSha256 !== computedManifestSha) {
+    throw new Error('folio branch manifest digest mismatch');
+  }
+
+  return {
+    operationId: input.operationId,
+    toolId: 'hms_read_folio',
+    discoveryOperationId: branch?.discoveryOperationId ?? input.requestBranchId,
+    releaseId: release?.releaseId ?? randomUUID(),
+    requestBranchId: branch?.id ?? input.requestBranchId,
+    manifest: input.manifest,
+    manifestSha256: computedManifestSha,
+    roleProofPath: input.roleProofPath,
+    roleProofSha256: release?.roleProofSha256 ?? input.roleProofSha256,
+    credentialVersionHmacSha256:
+      release?.credentialVersionHmacSha256 ?? input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
+    privateDigestKeyVersion: release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
+    sourceRevision: release?.sourceRevision ?? input.sourceRevision,
+    expiresAt: input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
   };
 }
 

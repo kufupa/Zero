@@ -3,18 +3,6 @@
  * DB-backed cases skip unless disposable TEST_DATABASE_URL + CONFIRM=1.
  * Never pilot RDS. HMS_DB_TEST_REQUIRED=1 fails closed when disposable missing.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
-import {
-  classifyHmsShadowFailure,
-  finishHmsShadowRun,
-  hmsShadowMetricsSchema,
-  HMS_MANUAL_OPS_REQUIRED,
-  resolveHmsShadowPreBrowser,
-} from '../src/ai/hms-shadow.js';
-import { shouldRetryAiFailure } from '../src/ai/run-ledger.js';
 import {
   filterExactReservationCandidates,
   requireExactlyOneExactCandidate,
@@ -23,19 +11,17 @@ import {
   type ThreadContext,
 } from '../src/ai/thread-context.js';
 import {
+  classifyHmsShadowFailure,
+  finishHmsShadowRun,
+  hmsShadowMetricsSchema,
+  HMS_MANUAL_OPS_REQUIRED,
+  resolveHmsShadowPreBrowser,
+} from '../src/ai/hms-shadow.js';
+import {
   minimizeToolResultForModel,
   createMockCandidateSession,
   createCandidateTools,
 } from '../src/ai/candidate-draft-agent.js';
-import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import type { ToolResult } from '../src/ai/draft-evidence.js';
-import {
-  TEST_DB_AVAILABLE,
-  probeTestDb,
-  withSeededTestDb,
-} from './helpers/test-db.js';
-import { __setDbForTests } from '../src/db/client.js';
-import { eq, sql } from 'drizzle-orm';
 import {
   aiDraftGeneration,
   aiWorkflowRun,
@@ -43,20 +29,27 @@ import {
   mailDraftRevision,
 } from '../src/db/schema/mail.js';
 import { enqueueAiRun, claimNextAiRun, markAiRunRunning } from '../src/ai/run-ledger.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
 import { aiWorkerOwnerId, executeAiRun } from '../src/ai/worker.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
-import { randomUUID } from 'node:crypto';
 import { mailThread, message } from '../src/db/schema/mail.js';
+import { shouldRetryAiFailure } from '../src/ai/run-ledger.js';
+import type { ToolResult } from '../src/ai/draft-evidence.js';
+import { __setDbForTests } from '../src/db/client.js';
+import { describe, expect, it, vi } from 'vitest';
+import { TRANSPORT_ID } from '../src/db/seed.js';
+import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { eq, sql } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
 
 describe('hms shadow lane/mode (DB-free)', () => {
   it('hms-shadow never imports drafts / persistAiCandidateDraft', () => {
-    const source = readFileSync(
-      join(here, '..', 'src', 'ai', 'hms-shadow.ts'),
-      'utf8',
-    );
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'hms-shadow.ts'), 'utf8');
     expect(source).not.toMatch(/from ['"]\.\/drafts/);
     expect(source).not.toMatch(/persistAiCandidateDraft\s*\(/);
     expect(source).toMatch(/finishHmsShadowRun/);
@@ -97,9 +90,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
     expect(source).toMatch(/lane !== 'hms'/);
     // off mode claims none
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
-    expect(source).toMatch(
-      /dependencyRevision:\s*'playwright-1\.52\.0-chromium-1169'/,
-    );
+    expect(source).toMatch(/dependencyRevision:\s*'playwright-1\.52\.0-chromium-1169'/);
     // No production mock fallback on HMS path
     const hmsBlock = source.slice(
       source.indexOf("executorLane === 'hms'"),
@@ -132,7 +123,9 @@ describe('hms shadow lane/mode (DB-free)', () => {
   it('CandidateSessionFactory is async Promise-returning', () => {
     const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
     expect(source).toMatch(/export type CandidateSessionFactory/);
-    expect(source).toMatch(/Promise<import\('\.\/candidate-draft-agent\.js'\)\.CandidateToolSession>/);
+    expect(source).toMatch(
+      /Promise<import\('\.\/candidate-draft-agent\.js'\)\.CandidateToolSession>/,
+    );
   });
 
   it('enabled mode rejected at env; shadow metrics schema is strict', () => {
@@ -194,13 +187,12 @@ describe('hms shadow lane/mode (DB-free)', () => {
   it('refresh route source fails closed with HMS_MANUAL_OPS_REQUIRED in shadow', () => {
     const ai = readFileSync(join(here, '..', 'src', 'trpc', 'routes', 'ai.ts'), 'utf8');
     expect(ai).toMatch(/HMS_MANUAL_OPS_REQUIRED/);
-    expect(ai).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'shadow'/);
-    const drafts = readFileSync(
-      join(here, '..', 'src', 'trpc', 'routes', 'drafts.ts'),
-      'utf8',
-    );
+    expect(ai).toMatch(/HMS_DRAFT_ENRICHMENT_MODE\s*===\s*['"]shadow['"]/);
+    const drafts = readFileSync(join(here, '..', 'src', 'trpc', 'routes', 'drafts.ts'), 'utf8');
     expect(drafts).toMatch(/HMS_MANUAL_OPS_REQUIRED|hmsMode === 'shadow'/);
-    expect(drafts).toMatch(/executorLane,\s*'hms'|executorLane === 'hms'|eq\(aiWorkflowRun\.executorLane, 'hms'\)/);
+    expect(drafts).toMatch(
+      /executorLane,\s*'hms'|executorLane === 'hms'|eq\(aiWorkflowRun\.executorLane, 'hms'\)/,
+    );
     expect(HMS_MANUAL_OPS_REQUIRED).toBe('HMS_MANUAL_OPS_REQUIRED');
   });
 
@@ -335,15 +327,11 @@ describe('hms shadow lane/mode (DB-free)', () => {
       sentAt: null,
       attachmentIds: [] as string[],
     };
-    const stubBuild = async (
-      input: BuildThreadContextInput,
-    ): Promise<ThreadContext> => ({
+    const stubBuild = async (input: BuildThreadContextInput): Promise<ThreadContext> => ({
       includedMessageIds: [msg.id],
       threadStateVersion: `v:${input.latestDraftRevisionId ?? 'null'}`,
       normalizedText: msg.textBody ?? '',
-      lookupCandidates: [
-        { id: 'cand-1', kind: 'confirmation', value: 'ONLY-ONE-1' },
-      ],
+      lookupCandidates: [{ id: 'cand-1', kind: 'confirmation', value: 'ONLY-ONE-1' }],
       authorizedAttachmentIds: [],
     });
 
@@ -457,8 +445,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
             claimKeys: [],
           },
         }),
-        recheckArtifactIdentity: async ({ expectedSha256 }) =>
-          expectedSha256 === 'a'.repeat(64),
+        recheckArtifactIdentity: async ({ expectedSha256 }) => expectedSha256 === 'a'.repeat(64),
       },
       {
         signal: new AbortController().signal,
@@ -581,9 +568,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
                   ? 'grant-v1'
                   : second.grantDigest,
             attachmentStateVersion:
-              pass === 1
-                ? 'attachments-v1'
-                : (second.attachmentStateVersion ?? 'attachments-v1'),
+              pass === 1 ? 'attachments-v1' : (second.attachmentStateVersion ?? 'attachments-v1'),
             context: base,
             pdfAttachmentIds: second.pdfs ?? ['a'],
           };
@@ -615,9 +600,9 @@ describe('hms shadow lane/mode (DB-free)', () => {
     await expect(run({ grantDigest: null })).resolves.toEqual({
       kind: 'authorization_denied',
     });
-    await expect(
-      run({ attachmentStateVersion: 'attachments-v2' }),
-    ).resolves.toEqual({ kind: 'stale_thread' });
+    await expect(run({ attachmentStateVersion: 'attachments-v2' })).resolves.toEqual({
+      kind: 'stale_thread',
+    });
     await expect(run({ identityOk: false })).resolves.toEqual({
       kind: 'stale_thread',
     });
@@ -679,12 +664,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('hms shadow persistence (dispo
         db,
       });
       expect(claimed?.id).toBe(run.id);
-      await markAiRunRunning({
-        runId: claimed!.id,
-        claimOwner: claimed!.claimOwner!,
-        claimToken: claimed!.claimToken!,
-        deadlineAt: claimed!.deadlineAt!,
-      }, db);
+      await markAiRunRunning(
+        {
+          runId: claimed!.id,
+          claimOwner: claimed!.claimOwner!,
+          claimToken: claimed!.claimToken!,
+          deadlineAt: claimed!.deadlineAt!,
+        },
+        db,
+      );
 
       const ok = await finishHmsShadowRun(
         {
@@ -728,75 +716,74 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('hms shadow persistence (dispo
       // so it sees rows seeded in this uncommitted transaction.
       __setDbForTests({ db, conn: null as never });
       try {
-      process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
-      process.env.AI_DRAFTS_ENABLED = 'false';
-      const transportId = TRANSPORT_ID;
-      const threadId = randomUUID();
-      const messageId = randomUUID();
-      await db.insert(mailThread).values({
-        id: threadId,
-        transportId,
-        threadRootId: `<root-${threadId}@example.com>`,
-        subject: 'Booking CONF-XYZ',
-        snippet: 'x',
-        latestMessageAt: new Date(),
-      });
-      await db.insert(message).values({
-        id: messageId,
-        transportId,
-        threadId,
-        direction: 'inbound',
-        fromAddress: 'guest@example.com',
-        toAddresses: ['nava@example.com'],
-        subject: 'Booking CONF-XYZ',
-        textBody: 'Please check confirmation CONF-XYZ',
-        receivedAt: new Date(),
-      });
-
-      const before = await snapshotForbidden(db, transportId);
-      const run = await enqueueAiRun(
-        {
+        process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
+        process.env.AI_DRAFTS_ENABLED = 'false';
+        const transportId = TRANSPORT_ID;
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId,
+          threadRootId: `<root-${threadId}@example.com>`,
+          subject: 'Booking CONF-XYZ',
+          snippet: 'x',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
           transportId,
           threadId,
-          triggerMessageId: messageId,
-          runKind: 'candidate_draft',
-          idempotencyKey: `hms-shadow-exec:${messageId}`,
-          modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'draft-v1',
-          executorLane: 'hms',
-        },
-        db,
-      );
-      await claimNextAiRun({
-        ownerId: aiWorkerOwnerId('hms'),
-        lane: 'hms',
-        db,
-      });
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Booking CONF-XYZ',
+          textBody: 'Please check confirmation CONF-XYZ',
+          receivedAt: new Date(),
+        });
 
-      const result = await executeAiRun(run.id, {
-        candidateSessionFactory: async () => {
-          throw Object.assign(
-            new Error('Guest SynthPII Address 99 Fake Rd CONF-LEAK'),
-            { failureClass: 'POLICY_BLOCK' },
-          );
-        },
-      });
-      expect(result.state).toBe('dead_letter');
+        const before = await snapshotForbidden(db, transportId);
+        const run = await enqueueAiRun(
+          {
+            transportId,
+            threadId,
+            triggerMessageId: messageId,
+            runKind: 'candidate_draft',
+            idempotencyKey: `hms-shadow-exec:${messageId}`,
+            modelId: 'amazon.nova-lite-v1:0',
+            promptVersion: 'draft-v1',
+            executorLane: 'hms',
+          },
+          db,
+        );
+        await claimNextAiRun({
+          ownerId: aiWorkerOwnerId('hms'),
+          lane: 'hms',
+          db,
+        });
 
-      const [finished] = await db
-        .select()
-        .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.id, run.id))
-        .limit(1);
-      expect(finished?.failureClass).toBe('POLICY_BLOCK');
-      expect(finished?.lastError).toBe('POLICY_BLOCK');
-      expect(finished?.lastError).not.toMatch(/SynthPII|Fake Rd|CONF-LEAK/);
+        const result = await executeAiRun(run.id, {
+          candidateSessionFactory: async () => {
+            throw Object.assign(new Error('Guest SynthPII Address 99 Fake Rd CONF-LEAK'), {
+              failureClass: 'POLICY_BLOCK',
+            });
+          },
+        });
+        expect(result.state).toBe('dead_letter');
 
-      const after = await snapshotForbidden(db, transportId);
-      expect(after).toEqual(before);
+        const [finished] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, run.id))
+          .limit(1);
+        expect(finished?.failureClass).toBe('POLICY_BLOCK');
+        expect(finished?.lastError).toBe('POLICY_BLOCK');
+        expect(finished?.lastError).not.toMatch(/SynthPII|Fake Rd|CONF-LEAK/);
 
-      delete process.env.HMS_DRAFT_ENRICHMENT_MODE;
-      delete process.env.AI_DRAFTS_ENABLED;
+        const after = await snapshotForbidden(db, transportId);
+        expect(after).toEqual(before);
+
+        delete process.env.HMS_DRAFT_ENRICHMENT_MODE;
+        delete process.env.AI_DRAFTS_ENABLED;
       } finally {
         __setDbForTests(null);
       }
@@ -807,9 +794,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('hms shadow persistence (dispo
     await withSeededTestDb(async (db) => {
       process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
       const before = await snapshotForbidden(db, TRANSPORT_ID);
-      const { enqueueHmsCandidateRefresh } = await import(
-        '../src/trpc/routes/drafts.js'
-      );
+      const { enqueueHmsCandidateRefresh } = await import('../src/trpc/routes/drafts.js');
       await expect(
         enqueueHmsCandidateRefresh({
           db,

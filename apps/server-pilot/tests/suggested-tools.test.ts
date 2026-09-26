@@ -28,7 +28,6 @@ describe('suggestReadTools', () => {
     ]);
     expect(suggestReadTools('documents-delivery', {}, 'document_or_delivery')).toEqual([
       'hms_list_documents',
-      'mail_read_artifact',
     ]);
   });
 
@@ -60,7 +59,6 @@ describe('suggestReadTools', () => {
     expect(DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS).toEqual([
       'hms_find_reservation',
       'hms_quote_stay',
-      'mail_read_artifact',
     ]);
   });
 

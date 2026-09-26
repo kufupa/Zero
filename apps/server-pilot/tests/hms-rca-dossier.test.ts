@@ -95,7 +95,6 @@ describe('hms-rca-dossier', () => {
         'hms_quote_stay',
         'hms_read_folio',
         'hms_sent_email_audit',
-        'mail_read_artifact',
       ].sort(),
     );
 

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "propertyCode": "HRCEN",
+  "arrivalDate": "2026-09-24",
+  "departureDate": "2026-09-27",
+  "rooms": [
+    {
+      "id": "group-1",
+      "quantity": 1,
+      "adults": 1,
+      "children": 0,
+      "childAges": []
+    }
+  ],
+  "rateContext": {
+    "agency": { "code": "REPLACE_WITH_EXACT_PICKER_CODE" }
+  },
+  "search": { "includeRestricted": false, "includeAlternatives": true }
+}

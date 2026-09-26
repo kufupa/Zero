@@ -30,6 +30,7 @@ import {
   isHmsEnrichedGeneration,
   resolveHmsCandidateVisibility,
 } from '../trpc/routes/drafts.js';
+import { issueTrustedRequesterAuthorization } from './requester-authorization.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverPilotRoot = join(here, '..', '..');
@@ -558,7 +559,12 @@ function sha(hexChar: string): string {
 
 function parseAvailableClaimIds(userPrompt: string): string[] {
   try {
-    const parsed = JSON.parse(userPrompt) as { availableClaimIds?: string[] };
+    // The claim-safe runner now wraps the plan payload in bounded prepared
+    // input. Extract only its code-owned allowlist rather than parsing the
+    // whole prompt as JSON.
+    const json = /Available claim IDs:\s*(\[[^\]]*\])/s.exec(userPrompt)?.[1] ?? userPrompt;
+    const parsed = JSON.parse(json) as { availableClaimIds?: string[] } | string[];
+    if (Array.isArray(parsed)) return parsed.filter((id): id is string => typeof id === 'string');
     return Array.isArray(parsed.availableClaimIds) ? parsed.availableClaimIds : [];
   } catch {
     return [];
@@ -602,6 +608,47 @@ function hmsEv(
     expiresAt,
     claimKeys,
     sourceHash: sha(hashChar),
+    scopeVerified: true,
+  };
+}
+
+function journeyClaimAuthorization(now: Date) {
+  const currentState = {
+    operationId: 'production-boundary-journey',
+    mailboxGrant: {
+      sha256: sha('a'),
+      transportId: 'journey-transport',
+      active: true,
+    },
+    thread: {
+      transportId: 'journey-transport',
+      threadId: 'journey-thread',
+      stateVersion: 'journey-state-v1',
+    },
+    requester: {
+      identity: 'journey-requester',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: ['reservation_summary'],
+      forwarded: false,
+      spoofed: false,
+    },
+  } as const;
+  const key = Buffer.alloc(32, 0x41);
+  const expectedPrivateDigestKeyVersion = 'journey-key-v1';
+  const authorization = issueTrustedRequesterAuthorization(currentState, {
+    key,
+    keyVersion: expectedPrivateDigestKeyVersion,
+    issuedAt: now,
+    expiresAt: new Date(now.getTime() + 2 * 60 * 60 * 1000),
+  });
+  if (!authorization) throw new Error('journey requester authorization could not be issued');
+  return {
+    authorization,
+    currentState,
+    key,
+    expectedPrivateDigestKeyVersion,
+    now,
   };
 }
 
@@ -619,6 +666,7 @@ export async function runHmsDraftPipelineJourneys(
 
   {
     const session = createMockCandidateSession({
+      claimAuthorization: journeyClaimAuthorization(now),
       lookupCandidates: new Map([
         ['cand-res-1', { id: 'cand-res-1', kind: 'confirmation', value: 'CONF-1' }],
       ]),

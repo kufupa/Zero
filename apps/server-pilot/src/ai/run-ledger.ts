@@ -1,19 +1,78 @@
-import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
-import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun } from '../db/schema/mail.js';
+import {
+  companyAccountContextDataSchema,
+  eventContextDataSchema,
+  groupBlockContextDataSchema,
+  notesTracesContextDataSchema,
+} from '../hms/context-read-contracts.js';
+import {
+  readRefSchema,
+  readReservationBindingSchema,
+  readResultSchema,
+  type ReadReservationBinding,
+  type ReadResult,
+} from '../hms/read-service-contracts.js';
+import {
+  existingDocumentListDataSchema,
+  existingDocumentReadDataSchema,
+} from '../mail/artifacts/existing-document-contracts.js';
+import {
+  assertReadAdmissionIssuer,
+  READ_CLEANUP_RESERVE_MS,
+  type ReadAdmissionIssuer,
+} from '../hms/read-admission.js';
+import {
+  reservationContextReadResultSchema,
+  reservationFindResultSchema,
+} from '../hms/reservation-context-contract.js';
 import type {
   aiExecutorLaneEnum,
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { parseEnv } from '../env.js';
+import { and, desc, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
+import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
+import { readRequestSchema } from '../hms/read-service.js';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { getDb, type DB } from '../db/client.js';
+import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
-export const CLEANUP_RESERVE_MS = 10_000;
+export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
+export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
+export const READ_TOOL_RUN_KIND = 'read_tool' as const;
+export const MAIL_BASELINE_GENERATION_VERSION = 'mail-baseline-generation-v1';
+
+/** Stable analytics generation identity for retries and immutable restatements. */
+export function mailBaselineGenerationKey(input: {
+  transportId: string;
+  threadId: string;
+  sourceMessageId: string;
+  sourceVintage: string;
+  interpretationVersion: string;
+}): string {
+  const canonical = [
+    MAIL_BASELINE_GENERATION_VERSION,
+    input.transportId,
+    input.threadId,
+    input.sourceMessageId,
+    input.sourceVintage,
+    input.interpretationVersion,
+  ].join('\u001f');
+  return `${MAIL_BASELINE_GENERATION_VERSION}:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
+}
+
+export function canClaimReadToolRun(input: {
+  runKind: AiWorkflowRunKind | string;
+  lane: AiExecutorLane | string;
+  readServiceEnabled: boolean;
+}): boolean {
+  return input.runKind !== READ_TOOL_RUN_KIND || (input.lane === 'hms' && input.readServiceEnabled);
+}
+export const CLEANUP_RESERVE_MS = READ_CLEANUP_RESERVE_MS;
 
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];
 export type AiWorkflowRunState = (typeof aiWorkflowRunStateEnum.enumValues)[number];
@@ -26,6 +85,20 @@ export const NONTERMINAL_AI_RUN_STATES = [
   'running',
   'retry_wait',
 ] as const satisfies readonly AiWorkflowRunState[];
+
+const NONTERMINAL_AI_RUN_STATE_SET = new Set<AiWorkflowRunState>(NONTERMINAL_AI_RUN_STATES);
+
+function isTerminalReadRun(run: AiWorkflowRun): boolean {
+  return (
+    run.runKind === READ_TOOL_RUN_KIND &&
+    !NONTERMINAL_AI_RUN_STATE_SET.has(run.state) &&
+    run.state !== 'succeeded'
+  );
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
 
 export type AiRunFence = {
   runId: string;
@@ -59,9 +132,7 @@ export function mergeTerminalRunMetrics(
   terminal: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const base =
-    existing && typeof existing === 'object'
-      ? (existing as Record<string, unknown>)
-      : {};
+    existing && typeof existing === 'object' ? (existing as Record<string, unknown>) : {};
   const readBudget = base.readBudget;
   return {
     ...base,
@@ -82,12 +153,7 @@ export function nextReadBudget(
   const byTool = { ...rawBudget.byTool };
   const total = Number(rawBudget.total ?? 0);
   const perTool = Number(byTool[toolId] ?? 0);
-  if (
-    !Number.isFinite(total) ||
-    !Number.isFinite(perTool) ||
-    total < 0 ||
-    perTool < 0
-  ) {
+  if (!Number.isFinite(total) || !Number.isFinite(perTool) || total < 0 || perTool < 0) {
     return null;
   }
   if (total >= PLAN_TOTAL_CAPS[planKind] || perTool >= READ_TOOLS[toolId].attemptCap) {
@@ -179,6 +245,12 @@ export interface EnqueueAiRunInput {
   promptVersion: string;
   promptHash?: string;
   executorLane?: AiExecutorLane;
+  /** Closed, trusted read request; only present for read_tool runs. */
+  readRequest?: Record<string, unknown>;
+  /** Private typed receipt reference; only present for read_tool runs. */
+  readResultRef?: string;
+  /** Non-serializable server-issued admission provenance. */
+  readAdmissionIssuer?: ReadAdmissionIssuer;
 }
 
 export interface AiRunScopeFilter {
@@ -205,6 +277,9 @@ export interface MarkAiRunSucceededInput {
   mastraScorerId?: string;
   generationId?: string;
   metrics?: Record<string, unknown>;
+  readResultRef?: string;
+  readResult?: ReadResult<unknown>;
+  readResultExpiresAt?: Date;
 }
 
 export interface MarkAiRunRetryInput {
@@ -299,46 +374,198 @@ export function toAiRunFence(run: AiWorkflowRun): AiRunFence | null {
 
 export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   assertMailRunLinks(input);
-  const now = new Date();
-  const id = randomUUID();
-
-  const [inserted] = await db
-    .insert(aiWorkflowRun)
-    .values({
-      id,
+  let readAdmissionBinding: ReadReservationBinding | undefined;
+  let readAdmissionIssuer: ReturnType<typeof assertReadAdmissionIssuer> | undefined;
+  if (input.runKind === 'read_tool') {
+    if (input.executorLane !== 'hms') {
+      throw new Error('read_tool runs must use the hms executor lane');
+    }
+    if (input.modelId !== NOT_APPLICABLE_MODEL_ID) {
+      throw new Error('read_tool runs require modelId=not_applicable');
+    }
+    if (input.promptVersion !== READ_TOOL_PROMPT_VERSION) {
+      throw new Error(`read_tool runs require promptVersion=${READ_TOOL_PROMPT_VERSION}`);
+    }
+    if (!input.readRequest || typeof input.readRequest !== 'object')
+      throw new Error('read_tool runs require a closed readRequest');
+    if (!input.readResultRef) throw new Error('read_tool runs require a private readResultRef');
+    const parsedReadRequest = readRequestSchema.parse(input.readRequest);
+    const admission = 'admission' in parsedReadRequest ? parsedReadRequest.admission : undefined;
+    if (!admission) throw new Error('read_tool runs require trusted admission');
+    readAdmissionIssuer = assertReadAdmissionIssuer({
+      issuer: input.readAdmissionIssuer,
+      admission,
+      request: parsedReadRequest as unknown as Record<string, unknown>,
       transportId: input.transportId,
       threadId: input.threadId,
       triggerMessageId: input.triggerMessageId,
-      runKind: input.runKind,
-      idempotencyKey: input.idempotencyKey,
-      modelId: input.modelId,
-      promptVersion: input.promptVersion,
-      promptHash: input.promptHash,
-      executorLane: input.executorLane ?? 'default',
-      state: 'queued',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
-    .returning();
-
-  if (inserted) return inserted;
-
-  const [existing] = await db
-    .select()
-    .from(aiWorkflowRun)
-    .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
-    .limit(1);
-  if (!existing) {
-    throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    });
+    if (
+      (parsedReadRequest.toolId === 'hms_find_reservation' && admission.reservationRef !== null) ||
+      (parsedReadRequest.toolId === 'hms_quote_stay' && admission.reservationRef !== null) ||
+      ((parsedReadRequest.toolId === 'hms_read_reservation' ||
+        parsedReadRequest.toolId === 'hms_read_folio') &&
+        admission.reservationRef !== parsedReadRequest.reservationRef) ||
+      (parsedReadRequest.toolId === 'hms_company_account_read' &&
+        admission.reservationRef !== parsedReadRequest.reservationRef) ||
+      (parsedReadRequest.toolId === 'hms_group_block_read' &&
+        admission.reservationRef !== parsedReadRequest.groupRef) ||
+      (parsedReadRequest.toolId === 'hms_event_read' &&
+        admission.reservationRef !== parsedReadRequest.eventRef) ||
+      (parsedReadRequest.toolId === 'hms_read_notes_traces' &&
+        admission.reservationRef !== parsedReadRequest.resourceRef)
+    ) {
+      throw new Error('read_tool reservation reference is not bound to trusted admission');
+    }
+    if (
+      parsedReadRequest.toolId === 'hms_read_reservation' ||
+      parsedReadRequest.toolId === 'hms_read_folio'
+    ) {
+      if (!parsedReadRequest.candidateId) {
+        throw new Error('resolved read_tool runs require a server-bound candidateId');
+      }
+      readAdmissionBinding = readReservationBindingSchema.parse({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        candidateId: parsedReadRequest.candidateId,
+        reservationRef: admission.reservationRef,
+        reservationRefIssuedAt: admission.reservationRefIssuedAt,
+        reservationRefExpiresAt: admission.reservationRefExpiresAt,
+      });
+    }
+    input.readRequest = parsedReadRequest;
+    input.readResultRef = readRefSchema.parse(input.readResultRef);
   }
-  return existing;
+  const now = new Date();
+  const id = randomUUID();
+  const values = {
+    id,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    runKind: input.runKind,
+    idempotencyKey: input.idempotencyKey,
+    modelId: input.modelId,
+    promptVersion: input.promptVersion,
+    promptHash: input.promptHash,
+    readRequest: input.readRequest,
+    readResultRef: input.readResultRef,
+    ...(readAdmissionBinding || readAdmissionIssuer
+      ? {
+          metrics: {
+            ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
+            ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
+          },
+        }
+      : {}),
+    executorLane: input.executorLane ?? 'default',
+    state: 'queued' as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  if (input.runKind !== READ_TOOL_RUN_KIND) {
+    const [inserted] = await db
+      .insert(aiWorkflowRun)
+      .values(values)
+      .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
+      .returning();
+
+    if (inserted) return inserted;
+
+    const [existing] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
+      .limit(1);
+    if (!existing) {
+      throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    }
+    return existing;
+  }
+
+  return db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(aiWorkflowRun)
+      .values(values)
+      .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
+      .returning();
+    if (inserted) return inserted;
+
+    const [existing] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
+      .limit(1)
+      .for('update');
+    if (!existing) {
+      throw new Error(`failed to enqueue or load AI run for key ${input.idempotencyKey}`);
+    }
+    if (!isTerminalReadRun(existing)) return existing;
+
+    const retryPrefix = `${escapeLikePrefix(input.idempotencyKey)}:attempt:`;
+    const [succeededAttempt] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.runKind, READ_TOOL_RUN_KIND),
+          like(aiWorkflowRun.idempotencyKey, `${retryPrefix}%`),
+          eq(aiWorkflowRun.state, 'succeeded'),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+      .limit(1)
+      .for('update');
+    if (succeededAttempt) return succeededAttempt;
+
+    const [activeAttempt] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.runKind, READ_TOOL_RUN_KIND),
+          like(aiWorkflowRun.idempotencyKey, `${retryPrefix}%`),
+          inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+      .limit(1)
+      .for('update');
+    if (activeAttempt) return activeAttempt;
+
+    const retryKey = `${input.idempotencyKey}:attempt:${randomUUID()}`;
+    const [retry] = await tx
+      .insert(aiWorkflowRun)
+      .values({
+        ...values,
+        id: randomUUID(),
+        idempotencyKey: retryKey,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+    if (!retry) {
+      throw new Error(`failed to enqueue retry for key ${input.idempotencyKey}`);
+    }
+    return retry;
+  });
 }
 
 export async function claimNextAiRun(input: ClaimNextAiRunInput) {
+  if (input.runKind === 'read_tool' && input.lane !== 'hms') return null;
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const env = parseEnv(process.env as Record<string, string | undefined>);
+  if (
+    !canClaimReadToolRun({
+      runKind: input.runKind ?? '',
+      lane: input.lane,
+      readServiceEnabled: env.HMS_READ_SERVICE_ENABLED,
+    })
+  )
+    return null;
   const staleRunTimeoutMs = input.staleRunTimeoutMs ?? env.AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
@@ -516,7 +743,7 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
       inArray(aiWorkflowRun.state, input.expectedStates),
     );
     const [current] = await tx
-      .select({ metrics: aiWorkflowRun.metrics })
+      .select({ metrics: aiWorkflowRun.metrics, runKind: aiWorkflowRun.runKind })
       .from(aiWorkflowRun)
       .where(predicate)
       .limit(1)
@@ -529,6 +756,11 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
         mastraTraceId: input.mastraTraceId,
         mastraScorerId: input.mastraScorerId,
         generationId: input.generationId,
+        ...(input.readResultRef === undefined ? {} : { readResultRef: input.readResultRef }),
+        ...(input.readResult === undefined ? {} : { readResult: input.readResult }),
+        ...(input.readResultExpiresAt === undefined
+          ? {}
+          : { readResultExpiresAt: input.readResultExpiresAt }),
         metrics: mergeTerminalRunMetrics(current.metrics, input.metrics),
         finishedAt: now,
         updatedAt: now,
@@ -539,6 +771,87 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
       .returning();
     return row ?? null;
   });
+}
+
+export interface ReadAiRunReceiptInput {
+  readResultRef: string;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  requesterAuthorizationId: string;
+  now?: Date;
+}
+
+/**
+ * Read a private typed receipt only for the exact triggering mail scope and
+ * trusted requester that admitted the run. Expired or unbound receipts are
+ * deliberately indistinguishable from a missing receipt.
+ */
+export async function readAiRunReceipt(
+  input: ReadAiRunReceiptInput,
+  db: DB = getDb(),
+): Promise<{ readResultRef: string; result: ReadResult<unknown>; expiresAt: Date } | null> {
+  const ref = readRefSchema.parse(input.readResultRef);
+  const [run] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.readResultRef, ref))
+    .limit(1);
+  if (
+    !run ||
+    run.runKind !== 'read_tool' ||
+    run.state !== 'succeeded' ||
+    run.transportId !== input.transportId ||
+    run.threadId !== input.threadId ||
+    run.triggerMessageId !== input.triggerMessageId ||
+    !run.readResult ||
+    !run.readResultExpiresAt
+  ) {
+    return null;
+  }
+  const request = readRequestSchema.safeParse(run.readRequest);
+  const admission =
+    request.success && 'admission' in request.data ? request.data.admission : undefined;
+  if (!admission || admission.requesterAuthorizationId !== input.requesterAuthorizationId) {
+    return null;
+  }
+  const now = input.now ?? new Date();
+  if (run.readResultExpiresAt.getTime() <= now.getTime()) return null;
+  const result = readResultSchema.parse(run.readResult);
+  let concrete: unknown;
+  if (result.toolId === 'hms_find_reservation') {
+    concrete = reservationFindResultSchema.parse(result);
+  } else if (result.toolId === 'hms_read_reservation') {
+    concrete = reservationContextReadResultSchema.parse(result);
+  } else if (result.toolId === 'documents_list_existing') {
+    if (result.data !== null) existingDocumentListDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_read_folio') {
+    if (result.data !== null) folioReadDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_quote_stay') {
+    concrete = result;
+  } else if (result.toolId === 'hms_company_account_read') {
+    if (result.data !== null) companyAccountContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_group_block_read') {
+    if (result.data !== null) groupBlockContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_event_read') {
+    if (result.data !== null) eventContextDataSchema.parse(result.data);
+    concrete = result;
+  } else if (result.toolId === 'hms_read_notes_traces') {
+    if (result.data !== null) notesTracesContextDataSchema.parse(result.data);
+    concrete = result;
+  } else {
+    if (result.data !== null) existingDocumentReadDataSchema.parse(result.data);
+    concrete = result;
+  }
+  return {
+    readResultRef: ref,
+    result: concrete as ReadResult<unknown>,
+    expiresAt: run.readResultExpiresAt,
+  };
 }
 
 export async function markAiRunRetry(input: MarkAiRunRetryInput, db: DB = getDb()) {

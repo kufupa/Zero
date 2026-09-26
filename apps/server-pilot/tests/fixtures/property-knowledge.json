@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "property-knowledge-fixture/v1",
+  "fixtureKind": "synthetic",
+  "authoritative": false,
+  "propertyRef": "HRCEN",
+  "entries": [
+    {
+      "entryRef": "knowledge-checkin-current",
+      "topic": "check_in_out",
+      "content": "Synthetic fixture: approved current check-in/out content.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-checkin-current",
+      "sourceHash": "bfd0f353890b39a50f2e5176e2037a3139d8efa87770012745f4320b80ab4fb0",
+      "version": "v3",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-checkin-v3"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-checkin-current"]
+    },
+    {
+      "entryRef": "knowledge-checkin-future",
+      "topic": "check_in_out",
+      "content": "Synthetic fixture: future check-in/out version.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-checkin-future",
+      "sourceHash": "8ee744165cfb79554a8f5a6b5f67f7ce0bccbeeda00f46c0e99a97dd585d621c",
+      "version": "v4",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-07T09:00:00.000Z",
+        "approvalRef": "approval-checkin-v4"
+      },
+      "effectiveFrom": "2026-10-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-checkin-future"]
+    },
+    {
+      "entryRef": "knowledge-checkin-expired",
+      "topic": "check_in_out",
+      "content": "Synthetic fixture: expired check-in/out version.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-checkin-expired",
+      "sourceHash": "d9644b03984a754ec859379c3f3dea1dacd41aa2757600790566bd9e3faf2f61",
+      "version": "v2",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-01-01T09:00:00.000Z",
+        "approvalRef": "approval-checkin-v2"
+      },
+      "effectiveFrom": "2026-01-01T00:00:00.000Z",
+      "effectiveUntil": "2026-08-01T00:00:00.000Z",
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-checkin-expired"]
+    },
+    {
+      "entryRef": "knowledge-room-future",
+      "topic": "room_types",
+      "content": "Synthetic fixture: future room type information.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-room-future",
+      "sourceHash": "144d13ba461339bae8a227f99eb3f37449c20648624cdfdcfc8f4fdefbab78b6",
+      "version": "v2",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-07T09:00:00.000Z",
+        "approvalRef": "approval-room-v2"
+      },
+      "effectiveFrom": "2026-10-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-room-future"]
+    },
+    {
+      "entryRef": "knowledge-room-expired",
+      "topic": "room_types",
+      "content": "Synthetic fixture: expired room type information.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-room-expired",
+      "sourceHash": "29767fe789a93e5c1c16bf4fa2da9508ed52bae0a0ad2d41eff31935d52d31dd",
+      "version": "v1",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-01-01T09:00:00.000Z",
+        "approvalRef": "approval-room-v1"
+      },
+      "effectiveFrom": "2026-01-01T00:00:00.000Z",
+      "effectiveUntil": "2026-08-01T00:00:00.000Z",
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-room-expired"]
+    },
+    {
+      "entryRef": "knowledge-cancel-a",
+      "topic": "cancellation",
+      "content": "Synthetic fixture: cancellation source A.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-cancel-a",
+      "sourceHash": "a7fc18c8f7f10eb3fc4853bbb3330975887dbe5549599281ca620dcb593181e9",
+      "version": "v1",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-cancel-a"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-cancel-a"]
+    },
+    {
+      "entryRef": "knowledge-cancel-b",
+      "topic": "cancellation",
+      "content": "Synthetic fixture: cancellation source B conflicts.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-cancel-b",
+      "sourceHash": "be723e04be2de22c863ba4b72df96dbc2e7bde948c78093bdb1bb3e56f8fc97a",
+      "version": "v2",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-02T09:00:00.000Z",
+        "approvalRef": "approval-cancel-b"
+      },
+      "effectiveFrom": "2026-09-02T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-cancel-b"]
+    },
+    {
+      "entryRef": "knowledge-deposit-unapproved",
+      "topic": "deposits_payment",
+      "content": "Synthetic fixture: unapproved bank instruction with account 1234567890.",
+      "sourceKind": "mail_attachment",
+      "sourceRef": "doc-deposit-unapproved",
+      "sourceHash": "85e0c9139b2a0c70d1748490874e7ed7b669eaeecee12a943af5515f87012433",
+      "version": "draft-1",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "pending",
+        "approvedAt": null,
+        "approvalRef": null
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-deposit-unapproved"]
+    },
+    {
+      "entryRef": "knowledge-compliance-secret",
+      "topic": "compliance_documents",
+      "content": "Synthetic fixture: approved document contains card number 4111 1111 1111 1111 and must not be returned.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-compliance-secret",
+      "sourceHash": "45436b5a75befae7a26bfb5a7f74a9a6eb22dfb20336acee03d986535187203b",
+      "version": "v1",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-compliance-v1"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-compliance-secret"]
+    },
+    {
+      "entryRef": "knowledge-room-staff",
+      "topic": "room_types",
+      "content": "Synthetic fixture: staff-only room inventory note.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-room-staff",
+      "sourceHash": "4a87ee392dead536dbf5fe2d0adcad3d4ebfbb5b1da602180df3a8842cebe9eb",
+      "version": "v3",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-room-v3"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "staff_only",
+      "documentRefs": ["doc-room-staff"]
+    },
+    {
+      "entryRef": "knowledge-transport-changed-document",
+      "topic": "parking_transport",
+      "content": "Synthetic fixture: linked transport document content.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-transport-changed",
+      "sourceHash": "4f8459fe7dc59b66d8eaa047d2ef0056e66fa5635ad8cbcadac1a23874d8479c",
+      "version": "v1",
+      "ownerRef": "owner-property-ops",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-transport-v1"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "HRCEN",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-transport-changed"]
+    },
+    {
+      "entryRef": "knowledge-wrong-property",
+      "topic": "amenities",
+      "content": "Synthetic fixture: another property's amenity list.",
+      "sourceKind": "approved_property_document",
+      "sourceRef": "doc-wrong-property",
+      "sourceHash": "0898b61085c6b0319ac672174e68a55e0bcd3a61f23efe5df1dbeeef40f63bf4",
+      "version": "v1",
+      "ownerRef": "owner-other-property",
+      "approval": {
+        "status": "approved",
+        "approvedAt": "2026-09-01T09:00:00.000Z",
+        "approvalRef": "approval-other-property"
+      },
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveUntil": null,
+      "propertyRef": "OTHER",
+      "audience": "customer_disclosable",
+      "documentRefs": ["doc-wrong-property"]
+    }
+  ]
+}

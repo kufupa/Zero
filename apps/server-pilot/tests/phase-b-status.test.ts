@@ -37,7 +37,7 @@ describe('phase-b-status', () => {
     }
   });
 
-  it('filters by --tool and reports find as fixture_verified (demoted)', () => {
+  it('filters by --tool and reports find as live_verified after soft proof', () => {
     const report = buildPhaseBStatusReport({
       kind: 'tool',
       toolId: 'hms_find_reservation',
@@ -45,13 +45,14 @@ describe('phase-b-status', () => {
     expect(report.tools).toHaveLength(1);
     expect(report.tools[0]).toMatchObject({
       id: 'hms_find_reservation',
-      capabilityState: 'fixture_verified',
+      capabilityState: 'live_verified',
       fixtureDigestPresent: true,
-      discoveryDigestPresent: false,
-      liveProofDigestPresent: false,
+      discoveryDigestPresent: true,
+      liveProofDigestPresent: true,
       activeReleaseId: null,
       privateArtifactIds: [],
     });
+    // Default snapshot still empty — productionActive comes from registry snapshot overlay.
     expect(report.productionActiveReadToolIds).toEqual([]);
   });
 
@@ -73,8 +74,9 @@ describe('phase-b-status', () => {
     expect(report.productionActiveReadToolIds).toEqual(['hms_find_reservation']);
     expect(report.tools[0]?.activeReleaseId).toBe(releaseId);
     expect(report.tools[0]?.privateArtifactIds).toEqual([artifactId]);
-    // Snapshot does not invent digests onto static contract rows.
-    expect(report.tools[0]?.discoveryDigestPresent).toBe(false);
+    // Static READ_TOOLS digests remain visible; snapshot only overlays release/artifact IDs.
+    expect(report.tools[0]?.discoveryDigestPresent).toBe(true);
+    expect(report.tools[0]?.liveProofDigestPresent).toBe(true);
   });
 
   it('binds quote active release + empty private IDs from registry snapshot', () => {
@@ -158,7 +160,6 @@ describe('phase-b-status', () => {
   it('filters by known --wave sets', () => {
     expect(PHASE_B_WAVE_TOOLS.B1).toEqual([
       'hms_find_reservation',
-      'mail_read_artifact',
       'hms_quote_stay',
     ]);
     const b2 = buildPhaseBStatusReport({ kind: 'wave', waveId: 'B2' });
@@ -170,17 +171,17 @@ describe('phase-b-status', () => {
     expect(b0.tools).toEqual([]);
   });
 
-  it('fixture_verified tools report digests without inventing discovery/live', () => {
+  it('quote remains discovery-only until trusted current-rate authority exists', () => {
     const row = toolStatusRow('hms_quote_stay');
-    expect(row.capabilityState).toBe('fixture_verified');
+    expect(row.capabilityState).toBe('discovery_verified');
     expect(row.fixtureDigestPresent).toBe(true);
-    expect(row.discoveryDigestPresent).toBe(false);
+    expect(row.discoveryDigestPresent).toBe(true);
     expect(row.liveProofDigestPresent).toBe(false);
     expect(row.activeReleaseId).toBeNull();
     expect(row.privateArtifactIds).toEqual([]);
     expect(row.promotionEvidence).toEqual({
       fixture: true,
-      discovery: false,
+      discovery: true,
       live: false,
       shadow: false,
     });

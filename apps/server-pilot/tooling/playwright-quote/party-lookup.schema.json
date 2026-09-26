@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nava.local/playwright-quote/party-lookup.schema.json",
+  "title": "Party lookup tool",
+  "description": "Read-only Infor HMS profile search. Never auto-links. Group is not a v1 search kind.",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "query"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["organization", "bookingAgency", "guest", "arAccount"],
+          "description": "v1 search kinds. Live: A/R has an independent lookup. Group stays other_tool:hms_group_block_read."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "organizationName": { "type": "string", "minLength": 1 },
+            "externalOrganizationId": { "type": "string", "minLength": 1 },
+            "bookingAgencyName": { "type": "string", "minLength": 1 },
+            "iataNumber": { "type": "string", "minLength": 1 },
+            "arAccountName": { "type": "string", "minLength": 1 },
+            "profileId": { "type": "integer", "minimum": 1 },
+            "lastName": { "type": "string", "minLength": 1 },
+            "firstName": { "type": "string", "minLength": 1 },
+            "email": { "type": "string", "minLength": 1 },
+            "phone": { "type": "string", "minLength": 1 },
+            "postalCode": { "type": "string", "minLength": 1 },
+            "loyaltyProgramNumber": { "type": "string", "minLength": 1 },
+            "rewardsNumber": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nativeId", "kind", "displayName"],
+      "properties": {
+        "nativeId": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["organization", "bookingAgency", "guest", "arAccount"] },
+        "displayName": { "type": "string" },
+        "matchedOn": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "candidates"],
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": ["resolved", "ambiguous", "no_match", "input_gap", "execution_failure", "external_system_unavailable"]
+        },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/candidate" }
+        },
+        "associationEffects": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "linkedArAccount": { "type": ["string", "null"] },
+            "bookingAgencyContract": { "type": ["string", "null"] },
+            "iataNumber": { "type": ["string", "null"] },
+            "commissionPercent": { "type": ["string", "null"] }
+          }
+        },
+        "screenshots": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "criteria": { "type": "string" },
+            "results": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

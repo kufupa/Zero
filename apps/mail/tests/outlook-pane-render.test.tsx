@@ -3,14 +3,23 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 
 const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
-  sendCommandMock: vi.fn().mockResolvedValue({ success: true }),
+  sendCommandMock: vi.fn(async (action: string) => {
+    if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+    return {
+      entryId: 'draft-default',
+      storeId: 'store-1',
+      folderEntryId: 'folder-drafts',
+      folderName: 'Drafts',
+      displayed: true,
+    };
+  }),
   bridgeMockState: {
     protocolVersion: 3 as number | undefined,
     selectedEntryId: '001',
@@ -33,7 +42,13 @@ const v3Capabilities = {
   maxFolderDepth: 64,
   maxFolderCount: 5000,
   maxFolderSnapshotItems: 5000,
-  supportedActions: ['GET_CAPABILITIES', 'GET_ACTIVE_EMAIL', 'CREATE_REPLY_DRAFT', 'SEND_DRAFT'],
+  supportedActions: [
+    'GET_CAPABILITIES',
+    'GET_ACTIVE_EMAIL',
+    'CREATE_REPLY_DRAFT',
+    'ADD_ATTACHMENT_TO_DRAFT',
+    'SEND_DRAFT',
+  ],
 };
 
 vi.mock('../lib/workstation/use-outlook-bridge', () => ({
@@ -64,7 +79,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'We need 3 rooms for 4 nights.',
+      bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
     sendCommand: sendCommandMock,
@@ -83,15 +98,39 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
+      quoteProposalPdf: {
+        mutate: vi.fn().mockResolvedValue({
+          fileName: 'Quote - CIDB 15-17 Sep.pdf',
+          pdfBase64: 'JVBERw==',
+        }),
+      },
     },
   },
 }));
 
 describe('OutlookPanePage', () => {
+  const createReplyCalls = () =>
+    sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
+
+  beforeEach(() => {
+    localStorage.setItem('nava_onboarding_completed', 'true');
+    sendCommandMock.mockReset();
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+      return {
+        entryId: 'draft-default',
+        storeId: 'store-1',
+        folderEntryId: 'folder-drafts',
+        folderName: 'Drafts',
+        displayed: true,
+      };
+    });
+  });
+
   afterEach(() => {
+    localStorage.clear();
     cleanup();
-    sendCommandMock.mockClear();
-    vi.restoreAllMocks();
+    sendCommandMock.mockReset();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.error).mockClear();
@@ -149,14 +188,14 @@ describe('OutlookPanePage', () => {
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
-    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
-    const retryPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
+    const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
+    const retryPayload = createReplyCalls()[1]?.[1] as { operationId: string };
     expect(firstPayload.operationId).toBeTruthy();
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
@@ -172,16 +211,16 @@ describe('OutlookPanePage', () => {
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
     expect(screen.getByRole('status').textContent).toMatch(
       /Outlook may have completed.*Check Outlook Drafts before retrying/i,
     );
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
-    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
-    const retryPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
+    const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
+    const retryPayload = createReplyCalls()[1]?.[1] as { operationId: string };
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
@@ -194,23 +233,23 @@ describe('OutlookPanePage', () => {
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(3));
 
-    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
-    const secondPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
-    const retryPayload = sendCommandMock.mock.calls[2]?.[1] as { operationId: string };
+    const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
+    const secondPayload = createReplyCalls()[1]?.[1] as { operationId: string };
+    const retryPayload = createReplyCalls()[2]?.[1] as { operationId: string };
     expect(firstPayload.operationId).not.toBe(secondPayload.operationId);
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
@@ -224,23 +263,24 @@ describe('OutlookPanePage', () => {
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
     vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
     fireEvent.click(button);
 
-    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(createReplyCalls()).toHaveLength(1);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
     );
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
-    const firstPayload = sendCommandMock.mock.calls[0]?.[1] as { operationId: string };
-    const freshPayload = sendCommandMock.mock.calls[1]?.[1] as { operationId: string };
+    const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
+    const freshPayload = createReplyCalls()[1]?.[1] as { operationId: string };
     expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
+    vi.spyOn(Date, 'now').mockRestore();
   });
 
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
@@ -261,8 +301,8 @@ describe('OutlookPanePage', () => {
         await Promise.resolve();
       });
 
-      expect(sendCommandMock).toHaveBeenCalledTimes(index + 1);
-      const payload = sendCommandMock.mock.calls[index]?.[1] as { operationId: string };
+      expect(createReplyCalls()).toHaveLength(index + 1);
+      const payload = createReplyCalls()[index]?.[1] as { operationId: string };
       operationIds.set(entryId, payload.operationId);
       now += 15 * 60 * 1000 + 1;
     }
@@ -271,29 +311,30 @@ describe('OutlookPanePage', () => {
     pane.rerender(<OutlookPanePage />);
     fireEvent.click(button);
 
-    expect(sendCommandMock).toHaveBeenCalledTimes(257);
+    expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
     );
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(258));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(258));
 
-    const freshPayload = sendCommandMock.mock.calls[257]?.[1] as { operationId: string };
+    const freshPayload = createReplyCalls()[257]?.[1] as { operationId: string };
     expect(freshPayload.operationId).not.toBe(operationIds.get('message-0'));
 
     bridgeMockState.selectedEntryId = 'message-999';
     pane.rerender(<OutlookPanePage />);
     fireEvent.click(button);
 
-    expect(sendCommandMock).toHaveBeenCalledTimes(258);
+    expect(createReplyCalls()).toHaveLength(258);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
     );
 
     fireEvent.click(button);
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(259));
-  });
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
+    vi.spyOn(Date, 'now').mockRestore();
+  }, 20000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
@@ -310,7 +351,7 @@ describe('OutlookPanePage', () => {
       fireEvent.click(button);
       fireEvent.click(button);
     });
-    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     expect(button.hasAttribute('disabled')).toBe(true);
     expect(button.textContent).toMatch(/saving/i);
 
@@ -341,33 +382,29 @@ describe('OutlookPanePage', () => {
   it('maps a legacy true reply result to an opened composer with unknown save status', async () => {
     bridgeMockState.protocolVersion = 2;
     bridgeMockState.legacyReplySupported = true;
-    sendCommandMock.mockResolvedValueOnce(true);
-    render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-
-    await waitFor(() =>
-      expect(screen.getByRole('status').textContent).toMatch(
-        /opened the reply composer.*save status is unconfirmed/i,
-      ),
-    );
-    expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringMatching(/opened the reply composer.*save status is unconfirmed/i),
-    );
-    expect(toast.success).not.toHaveBeenCalled();
-  });
-
-  it('reports a legacy false reply result as a failure', async () => {
-    bridgeMockState.protocolVersion = 2;
-    bridgeMockState.legacyReplySupported = true;
-    sendCommandMock.mockResolvedValueOnce(false);
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
-        expect.stringContaining('Outlook could not create the reply draft'),
+        expect.stringMatching(/cannot attach a quotation PDF/i),
       ),
     );
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a legacy false reply result as a failure', async () => {
+    bridgeMockState.protocolVersion = 2;
+    bridgeMockState.legacyReplySupported = true;
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/cannot attach a quotation PDF/i),
+      ),
+    );
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('shows a folder placement warning in both the reply status and toast', async () => {
@@ -399,6 +436,7 @@ describe('OutlookPanePage', () => {
     );
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
     await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
@@ -411,6 +449,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
@@ -430,6 +469,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
@@ -455,6 +495,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 

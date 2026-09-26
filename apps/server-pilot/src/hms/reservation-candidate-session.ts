@@ -6,13 +6,9 @@
  * Live I/O still goes through LiveGuestStayDriver; createReadToolHandler proves
  * release/auth binding when a find release is active.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import type { LookupCandidate } from '../ai/thread-context.js';
-import type { ToolResult } from '../ai/draft-evidence.js';
-import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
-import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
 import {
   reservationReadDataSchema,
+  trustedRequesterAuthorizationV1Schema,
   type ReservationObservation,
   type ReservationReadData,
 } from './contracts.js';
@@ -25,31 +21,27 @@ import type {
   ExactReservationCandidate,
   GuestStaySearchResult,
   LiveGuestStayDriver,
+  ReservationSearchCandidate,
 } from './live-guest-stay-driver.js';
+import type { MapEnvelopeRequesterAuthorization } from './claim-envelope.js';
+import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
+import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
+import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
 import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
-import type { QuoteStayCandidate } from './quote-stay-candidate.js';
-import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
-import type { ReadToolId } from './read-tools.js';
-import { createReadToolHandler } from './read-handler-index.js';
-import type { HmsSessionAuthorization } from './release-kernel.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import type { CandidateToolId } from '../ai/candidate-draft-agent.js';
+import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
+import type { QuoteStayCandidate } from './quote-stay-candidate.js';
+import type { HmsSessionAuthorization } from './release-kernel.js';
+import { buildQuoteStayReadData } from './quote-stay-contract.js';
+import { createReadToolHandler } from './read-handler-index.js';
+import type { LookupCandidate } from '../ai/thread-context.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
+import type { ReadToolId } from './read-tools.js';
 
-const ACTIVE_STATUSES = new Set([
-  'reserved',
-  'confirmed',
-  'inhouse',
-  'in-house',
-  'arrived',
-]);
+const ACTIVE_STATUSES = new Set(['reserved', 'confirmed', 'inhouse', 'in-house', 'arrived']);
 
-const CANCELED_STATUSES = new Set([
-  'canceled',
-  'cancelled',
-  'no-show',
-  'noshow',
-  'no_show',
-]);
+const CANCELED_STATUSES = new Set(['canceled', 'cancelled', 'no-show', 'noshow', 'no_show']);
 
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -74,8 +66,7 @@ function reservationResult(args: {
   propertyCode?: string;
 }): ToolResult<ReservationReadData> {
   const draftReady =
-    args.draftReady ??
-    (args.status === 'ok' && args.unresolvedFields.length === 0);
+    args.draftReady ?? (args.status === 'ok' && args.unresolvedFields.length === 0);
   return {
     status: args.status,
     draftReady,
@@ -88,9 +79,7 @@ function reservationResult(args: {
       toolVersion: HMS_FIND_RESERVATION_TOOL_VERSION,
       propertyCode: args.propertyCode ?? 'HRCEN',
       observedAt: args.observedAt.toISOString(),
-      expiresAt: new Date(
-        args.observedAt.getTime() + RESERVATION_EVIDENCE_TTL_MS,
-      ).toISOString(),
+      expiresAt: new Date(args.observedAt.getTime() + RESERVATION_EVIDENCE_TTL_MS).toISOString(),
       claimKeys: args.claimKeys,
       sourceHash: sha256Hex(args.sourceSeed),
     },
@@ -108,6 +97,11 @@ function mapMatchedRow(
   if (!row.arrivalDate) unresolvedFields.push('arrivalDate');
   if (!row.departureDate) unresolvedFields.push('departureDate');
   if (!row.reservationStatus) unresolvedFields.push('reservationStatus');
+  const guestName = isSentinelGuestName(row.guestName) ? null : row.guestName;
+  if (!guestName) unresolvedFields.push('guestName');
+  // Search-grid roomType is optional (dataspy 1941 often omits roomtype).
+  // ratePlan is never a find claim — owned by hms_read_reservation.
+  if (!row.roomType) unresolvedFields.push('roomType');
 
   const statusLower = (row.reservationStatus ?? '').toLowerCase();
   const canceled = CANCELED_STATUSES.has(statusLower);
@@ -125,31 +119,35 @@ function mapMatchedRow(
     status = 'partial';
   }
 
-  const draftReady =
-    status === 'ok' &&
-    unresolvedFields.length === 0 &&
-    !canceled &&
-    active;
+  const draftReady = status === 'ok' && unresolvedFields.length === 0 && !canceled && active;
+
+  const claimKeys: string[] = [];
+  if (row.confirmationNumber) claimKeys.push('matches.0.confirmationNumber');
+  if (row.externalReference) claimKeys.push('matches.0.externalReference');
+  if (guestName) claimKeys.push('matches.0.guestName');
+  if (row.reservationStatus) claimKeys.push('matches.0.reservationStatus');
+  if (row.arrivalDate) claimKeys.push('matches.0.arrivalDate');
+  if (row.departureDate) claimKeys.push('matches.0.departureDate');
+  if (row.roomType) claimKeys.push('matches.0.roomType');
+  // Never claim ratePlan on find — even if a fixture invents rateplan.
 
   return reservationResult({
     status,
     data: reservationReadDataSchema.parse({
-      matches: [row],
+      matches: [
+        {
+          ...row,
+          guestName,
+          // Do not surface find-owned rate claims from GRID.
+          ratePlan: null,
+        },
+      ],
       matchCount: 1,
       capped: false,
     }),
     unresolvedFields: [...new Set(unresolvedFields)],
     observedAt,
-    claimKeys: [
-      'matches.0.confirmationNumber',
-      'matches.0.externalReference',
-      'matches.0.guestName',
-      'matches.0.reservationStatus',
-      'matches.0.arrivalDate',
-      'matches.0.departureDate',
-      'matches.0.roomType',
-      'matches.0.ratePlan',
-    ],
+    claimKeys,
     sourceSeed: `one:${row.confirmationNumber ?? row.externalReference ?? 'unknown'}`,
     draftReady,
   });
@@ -194,9 +192,9 @@ function mapSearchResult(
 
 export type CreateReservationCandidateSessionInput = {
   driver: LiveGuestStayDriver;
-  candidates: ReadonlyMap<string, ExactReservationCandidate>;
+  candidates: ReadonlyMap<string, ReservationSearchCandidate>;
   close: () => Promise<void>;
-  /** Test-only: inject non-exact lookup rows to prove manual_required gate. */
+  /** Additional lookup rows (e.g. surname_dates) merged into the session map. */
   extraLookupCandidates?: ReadonlyMap<string, LookupCandidate>;
   now?: () => Date;
   propertyCode?: string;
@@ -210,26 +208,30 @@ export type CreateReservationCandidateSessionInput = {
   /** True when worker loaded registry through createReadToolHandler index. */
   handlerPathActive?: boolean;
   /** Plan-scoped gate inputs — set when activeReleases non-empty. */
-  candidateBindings?: ReadonlyMap<
-    string,
-    import('./candidate-read-plan.js').CandidateBinding
-  >;
+  candidateBindings?: ReadonlyMap<string, import('./candidate-read-plan.js').CandidateBinding>;
   requesterAuthorization?: import('./contracts.js').TrustedRequesterAuthorizationV1;
+  /** Existing issued mapper proof; without it claims remain unavailable. */
+  claimAuthorization?: MapEnvelopeRequesterAuthorization | null;
   /**
    * Optional: bind find release via handler index before browser I/O.
    * Live path supplies this after building HmsSessionAuthorization.
    */
-  bindFindAuthorization?: (
-    authorization: HmsSessionAuthorization,
-  ) => void;
+  bindFindAuthorization?: (authorization: HmsSessionAuthorization) => void;
   /** When hms_quote_stay is active — live OSRRAV driver. */
   quoteDriver?: LiveQuoteStayDriver;
   /** Opaque id → authored quote candidate (room+rate scoped). */
   quoteCandidates?: ReadonlyMap<string, QuoteStayCandidate>;
   /** Build per-call quote authorization (release-bound). */
-  buildQuoteAuthorization?: (
-    candidate: QuoteStayCandidate,
-  ) => HmsSessionAuthorization;
+  buildQuoteAuthorization?: (candidate: QuoteStayCandidate) => HmsSessionAuthorization;
+  /** Finance read adapter; the worker still owns the admission/lock boundary. */
+  folioRead?: CandidateToolSession['readFolio'];
+  /** Linked-context adapters; the worker still owns admission/lock/receipt. */
+  companyAccountRead?: CandidateToolSession['readCompanyAccount'];
+  groupBlockRead?: CandidateToolSession['readGroupBlock'];
+  eventRead?: CandidateToolSession['readEvent'];
+  notesTracesRead?: CandidateToolSession['readNotesTraces'];
+  /** Exposed only so the U8 read adapter can fence the full dispatch. */
+  propertyReadLock?: import('./property-read-lock.js').PropertyReadLock;
 };
 
 /**
@@ -263,6 +265,7 @@ export function createReservationCandidateSession(
   if (quoteRelease && input.quoteDriver) {
     activeToolIds.add('hms_quote_stay');
   }
+  if (input.folioRead) activeToolIds.add('hms_read_folio');
 
   return {
     activeToolIds,
@@ -273,6 +276,8 @@ export function createReservationCandidateSession(
     activeReleases: input.activeReleases,
     candidateBindings: input.candidateBindings,
     requesterAuthorization: input.requesterAuthorization,
+    claimAuthorization: input.claimAuthorization,
+    propertyReadLock: input.propertyReadLock,
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
         const err = new Error('reservation session aborted');
@@ -291,23 +296,76 @@ export function createReservationCandidateSession(
           propertyCode: input.propertyCode,
         });
       }
-      // surname_dates never opens browser in production shadow.
+      // Wave 0b: surname_dates opens browser via dump-proved lastname filters.
       if (candidate.kind === 'surname_dates') {
-        return reservationResult({
-          status: 'manual_required',
-          data: emptyReservationData(),
-          unresolvedFields: ['surname_dates'],
-          observedAt: now(),
-          claimKeys: [],
-          sourceSeed: 'surname_dates_manual',
-          draftReady: false,
-          propertyCode: input.propertyCode,
-        });
+        const searchCandidate: ReservationSearchCandidate = candidate;
+        return input.driver.searchExactAndMap(searchCandidate, signal, (search) =>
+          mapSearchResult(search, now()),
+        );
       }
       const exact: ExactReservationCandidate = candidate;
-      return input.driver.searchExactAndMap(exact, signal, (search) =>
+      const result = await input.driver.searchExactAndMap(exact, signal, (search) =>
         mapSearchResult(search, now()),
       );
+      if (!input.claimAuthorization || result.status !== 'ok') return result;
+
+      const authorization = trustedRequesterAuthorizationV1Schema.safeParse(
+        input.claimAuthorization.authorization,
+      );
+      const receipt = input.driver.lastAuditReceipt();
+      const branch =
+        findRelease?.evidenceKind === 'hms'
+          ? findRelease.requestBranches.find((item) => item.id === 'guest_stay_search')
+          : undefined;
+      if (
+        !authorization.success ||
+        !receipt ||
+        receipt.artifactState !== 'complete' ||
+        receipt.operationOutcome !== 'succeeded' ||
+        receipt.terminalCode !== 'OK' ||
+        !branch
+      ) {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [
+            ...new Set([...result.unresolvedFields, 'requester_authorization', 'audit_capture']),
+          ],
+        };
+      }
+      if (result.evidence.kind !== 'hms') {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture'])],
+        };
+      }
+      const evidenceExpiry = Math.min(
+        Date.parse(result.evidence.expiresAt),
+        Date.parse(receipt.expiresAt),
+      );
+      if (!Number.isFinite(evidenceExpiry) || evidenceExpiry <= now().getTime()) {
+        return {
+          ...result,
+          status: 'manual_required',
+          draftReady: false,
+          unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture'])],
+        };
+      }
+      return {
+        ...result,
+        evidence: {
+          ...result.evidence,
+          scopeVerified: true,
+          artifactRef: receipt.artifactId,
+          manifestSha256: branch.manifestSha256,
+          manifestSha256ByBranch: { [branch.id]: branch.manifestSha256 },
+          requesterAuthorizationId: authorization.data.authorizationId,
+          expiresAt: new Date(evidenceExpiry).toISOString(),
+        },
+      };
     },
     quoteStay: async (candidateId, signal) => {
       if (signal.aborted) {
@@ -324,12 +382,10 @@ export function createReservationCandidateSession(
         return {
           status: 'manual_required' as const,
           draftReady: false,
-          data: quoteStayReadDataSchema.parse({
+          data: buildQuoteStayReadData({
             nightlyObservations: [],
-            bookable: false as const,
-            stayTotal: null,
-            occupancyPriced: false as const,
             requestedRooms: 1,
+            unresolvedInputs: ['quote_candidate'],
           }),
           unresolvedFields: ['quote_candidate'],
           evidence: {
@@ -341,9 +397,7 @@ export function createReservationCandidateSession(
             observedAt: observedAt.toISOString(),
             expiresAt: new Date(observedAt.getTime() + 15 * 60_000).toISOString(),
             claimKeys: [],
-            sourceHash: createHash('sha256')
-              .update(`missing-quote:${candidateId}`)
-              .digest('hex'),
+            sourceHash: createHash('sha256').update(`missing-quote:${candidateId}`).digest('hex'),
           },
         };
       }
@@ -351,14 +405,27 @@ export function createReservationCandidateSession(
         void createReadToolHandler;
       }
       const authorization = input.buildQuoteAuthorization(quoteCand);
-      return input.quoteDriver.observeExactQuote(
-        authorization,
-        quoteCand,
-        signal,
-      );
+      return input.quoteDriver.observeExactQuote(authorization, quoteCand, signal);
     },
     readArtifact: async () => {
       throw new Error('mail_read_artifact not active in reservation session');
+    },
+    ...(input.folioRead ? { readFolio: input.folioRead } : {}),
+    ...(input.companyAccountRead ? { readCompanyAccount: input.companyAccountRead } : {}),
+    ...(input.groupBlockRead ? { readGroupBlock: input.groupBlockRead } : {}),
+    ...(input.eventRead ? { readEvent: input.eventRead } : {}),
+    ...(input.notesTracesRead ? { readNotesTraces: input.notesTracesRead } : {}),
+    readReservationDetailDump: async (candidateId, signal) => {
+      if (signal.aborted) {
+        const err = new Error('reservation detail dump aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      const candidate = lookupCandidates.get(candidateId);
+      if (!candidate || candidate.kind === 'surname_dates') return null;
+      const exact: ExactReservationCandidate = candidate;
+      const { dump } = await input.driver.searchExactThenDetailDump(exact, signal);
+      return dump;
     },
     close: input.close,
   };

@@ -1,26 +1,3 @@
-import { useUndoSend } from '@/hooks/use-undo-send';
-import { constructReplyBody, constructForwardBody } from '@/lib/utils';
-import { useTimezone } from '@/hooks/use-timezone';
-import { useActiveConnection } from '@/hooks/use-connections';
-import { EmailComposer } from '../create/email-composer';
-import { useHotkeysContext } from 'react-hotkeys-hook';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
-import { useSettings } from '@/hooks/use-settings';
-import { useThread } from '@/hooks/use-threads';
-import { useSession } from '@/lib/auth-client';
-import { serializeFiles } from '@/lib/schemas';
-import { useDraft, useEnsureEditableDraftForReply } from '@/hooks/use-drafts';
-import {
-  getStaleDraftRetryInput,
-  isStaleDraftConflict,
-  shouldEnsureEditableDraftForReply,
-} from '@/lib/mail/draft-persistence';
-import { m } from '@/paraglide/messages';
-import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
-import type { Sender } from '@/types';
-import { useQueryState } from 'nuqs';
-import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -29,16 +6,39 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
+import {
+  getStaleDraftRetryInput,
+  isStaleDraftConflict,
+  shouldEnsureEditableDraftForReply,
+} from '@/lib/mail/draft-persistence';
 import {
   buildOutboundHeaderPreview,
   canShowHeaderDebug,
   isHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
+import { isAssistedDraft, useDraft, useEnsureEditableDraftForReply } from '@/hooks/use-drafts';
+import { constructReplyBody, constructForwardBody } from '@/lib/utils';
+import { useTimezone } from '@/hooks/use-timezone';
+import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
+import { useActiveConnection } from '@/hooks/use-connections';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { demoSendEmail } from '@/lib/demo/local-actions';
+import { EmailComposer } from '../create/email-composer';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useHotkeysContext } from 'react-hotkeys-hook';
+import { useTRPC } from '@/providers/query-provider';
+import { useMutation } from '@tanstack/react-query';
+import { useUndoSend } from '@/hooks/use-undo-send';
+import { useSettings } from '@/hooks/use-settings';
+import { Button } from '@/components/ui/button';
+import { useThread } from '@/hooks/use-threads';
+import { useSession } from '@/lib/auth-client';
+import { serializeFiles } from '@/lib/schemas';
+import { m } from '@/paraglide/messages';
+import type { Sender } from '@/types';
+import { useQueryState } from 'nuqs';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
-import { demoSendEmail } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 interface ReplyComposeProps {
   messageId?: string;
@@ -55,6 +55,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const { data: draft } = useDraft(draftId ?? null);
   const trpc = useTRPC();
   const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: approveDraft } = useMutation(trpc.drafts.approve.mutationOptions());
   const { mutateAsync: ensureEditableDraftForReply } = useEnsureEditableDraftForReply();
   const ensuredDraftKeyRef = useRef<string | null>(null);
   const [replyComposeViewportElement, setReplyComposeViewportElement] =
@@ -65,7 +66,15 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
   const { handleUndoSend } = useUndoSend();
+
   const timezone = useTimezone();
+
+  const isAssistedDraftForId = (candidateId?: string | null) => {
+    if (!candidateId) return false;
+    if (draft?.id === candidateId) return isAssistedDraft(draft);
+    if (latestDraft?.id === candidateId) return isAssistedDraft(latestDraft);
+    return false;
+  };
 
   // Find the specific message to reply to
   const replyToMessage =
@@ -168,8 +177,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       const userEmail = activeConnection.email.toLowerCase();
       const userName = activeConnection.name || session?.user?.name || '';
 
-      const senderEmail =
-        (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
+      const senderEmail = (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
       const fromEmail = userName.trim()
         ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
         : senderEmail;
@@ -223,13 +231,36 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
               replyToMessage.cc,
             );
 
+      const serializedAttachments = await serializeFiles(data.attachments);
+      let draftApproval: Awaited<ReturnType<typeof approveDraft>> | undefined;
+      const aiDraftBeingSent = !isFrontendOnlyDemo() && isAssistedDraftForId(data.draftId);
+      if (aiDraftBeingSent) {
+        try {
+          draftApproval = await approveDraft({
+            draftId: data.draftId!,
+            subject: data.subject,
+            html: emailBody,
+            text: '',
+            originalMessage: replyToMessage.decodedBody,
+            to: data.to,
+            cc: data.cc ?? [],
+            bcc: data.bcc ?? [],
+            attachments: serializedAttachments,
+          });
+        } catch (error) {
+          console.error('AI draft review failed:', error);
+          toast.error('Review the assisted draft before sending.');
+          return false;
+        }
+      }
+
       const sendInput = {
         to: toRecipients,
         cc: ccRecipients,
         bcc: bccRecipients,
         subject: data.subject,
         message: emailBody,
-        attachments: await serializeFiles(data.attachments),
+        attachments: serializedAttachments,
         fromEmail: fromEmail,
         draftId: data.draftId,
         replyToMessageId: replyToMessage?.id,
@@ -247,6 +278,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         isForward: mode === 'forward',
         originalMessage: replyToMessage.decodedBody,
         scheduleAt: data.scheduleAt,
+        ...(draftApproval ? { draftApproval } : {}),
       };
 
       const sendWithInput = async (input: typeof sendInput) =>
@@ -399,10 +431,13 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   if (!mode || !emailData) return null;
 
   return (
-    <div ref={setReplyComposeViewportElement} className="w-full rounded-2xl overflow-visible border">
+    <div
+      ref={setReplyComposeViewportElement}
+      className="w-full overflow-visible rounded-2xl border"
+    >
       <EmailComposer
         key={`reply-compose-${replyComposeInstanceId}`}
-        className="w-full max-w-none! pb-1 overflow-visible"
+        className="max-w-none! w-full overflow-visible pb-1"
         onSendEmail={handleSendEmail}
         onClose={async () => {
           setMode(null);
@@ -420,6 +455,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         replyToMessageId={replyToMessage?.id ?? null}
         replyToMessage={replyToMessage}
         headerPreview={headerPreview}
+        sendButtonLabel={isAssistedDraftForId(draftId) ? 'Review & Send' : 'Send'}
       />
       <Dialog open={showStaleDraftConfirmation} onOpenChange={setShowStaleDraftConfirmation}>
         <DialogContent showOverlay className="z-99999 sm:max-w-[425px]">

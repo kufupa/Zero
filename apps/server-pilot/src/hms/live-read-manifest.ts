@@ -14,10 +14,7 @@ import {
   type RequestPolicyManifest,
   type RequestRule,
 } from './contracts.js';
-import {
-  isoDateToHmsDisplay,
-  type QuoteStayCandidate,
-} from './quote-stay-candidate.js';
+import { isoDateToHmsDisplay, type QuoteStayCandidate } from './quote-stay-candidate.js';
 
 /** Guest Stay quick-search endpoint (not OSRESV). */
 export const LIVE_GUEST_STAY_SEARCH_PATH = '/web/base/OSRESS.search';
@@ -36,14 +33,7 @@ function getStaticRule(
   id: string,
   path: string,
   resourceTypes: Array<
-    | 'stylesheet'
-    | 'script'
-    | 'image'
-    | 'font'
-    | 'document'
-    | 'other'
-    | 'xhr'
-    | 'fetch'
+    'stylesheet' | 'script' | 'image' | 'font' | 'document' | 'other' | 'xhr' | 'fetch'
   >,
 ): RequestRule {
   return {
@@ -67,9 +57,7 @@ function getStaticRule(
  */
 export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] {
   return [
-    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
-      'stylesheet',
-    ]),
+    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', ['stylesheet']),
     getStaticRule(
       origin,
       'live-login-jquery',
@@ -95,12 +83,9 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/error-solid.svg',
       ['image'],
     ),
-    getStaticRule(
-      origin,
-      'live-login-logo-svg',
-      '/web/resources/inforhms/images/shared/logo.svg',
-      ['image'],
-    ),
+    getStaticRule(origin, 'live-login-logo-svg', '/web/resources/inforhms/images/shared/logo.svg', [
+      'image',
+    ]),
     // Live login also fetches shared/images/logo.svg typed as Playwright "other".
     {
       id: 'live-login-shared-logo-svg',
@@ -158,12 +143,9 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
       ['script'],
     ),
-    getStaticRule(
-      origin,
-      'live-common-aes',
-      '/web/resources/shared/scripts/cryptojs/aes.js',
-      ['script'],
-    ),
+    getStaticRule(origin, 'live-common-aes', '/web/resources/shared/scripts/cryptojs/aes.js', [
+      'script',
+    ]),
     getStaticRule(
       origin,
       'live-common-pbkdf2',
@@ -182,9 +164,7 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/shared/scripts/cryptojs/sha256-min.js',
       ['script'],
     ),
-    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
-      'script',
-    ]),
+    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', ['script']),
     getStaticRule(
       origin,
       'live-toolbar-dropdown',
@@ -198,24 +178,18 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       ['image'],
     ),
     // Soft-capture COMMON chrome GETs only (2026-08-03). Never mutation POSTs.
-    getStaticRule(
-      origin,
-      'live-toolbar-user',
-      '/web/resources/inforhms/images/toolbar/user.svg',
-      ['image', 'other'],
-    ),
-    getStaticRule(
-      origin,
-      'live-toolbar-help',
-      '/web/resources/inforhms/images/toolbar/help.svg',
-      ['image', 'other'],
-    ),
-    getStaticRule(
-      origin,
-      'live-toolbar-info',
-      '/web/resources/inforhms/images/toolbar/info.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-toolbar-user', '/web/resources/inforhms/images/toolbar/user.svg', [
+      'image',
+      'other',
+    ]),
+    getStaticRule(origin, 'live-toolbar-help', '/web/resources/inforhms/images/toolbar/help.svg', [
+      'image',
+      'other',
+    ]),
+    getStaticRule(origin, 'live-toolbar-info', '/web/resources/inforhms/images/toolbar/info.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-toolbar-logout',
@@ -288,12 +262,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/tree/caret-down.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-tree-folder',
-      '/web/resources/inforhms/images/tree/folder.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-tree-folder', '/web/resources/inforhms/images/tree/folder.svg', [
+      'image',
+      'other',
+    ]),
     // Soft-capture Front Desk expand (2026-08-03).
     getStaticRule(
       origin,
@@ -301,12 +273,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/tree/open-folder.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-tree-dot',
-      '/web/resources/inforhms/images/tree/dot.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-tree-dot', '/web/resources/inforhms/images/tree/dot.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-tree-plusminus-folder-closed',
@@ -338,12 +308,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/next-page.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-toolbar-copy',
-      '/web/resources/inforhms/images/toolbar/copy.svg',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-toolbar-copy', '/web/resources/inforhms/images/toolbar/copy.svg', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-toolbar-reset',
@@ -482,12 +450,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/filter-selected-notselected.svg',
       ['image', 'other'],
     ),
-    getStaticRule(
-      origin,
-      'live-slider-bg',
-      '/web/resources/inforhms/images/slider/slider-bg.png',
-      ['image', 'other'],
-    ),
+    getStaticRule(origin, 'live-slider-bg', '/web/resources/inforhms/images/slider/slider-bg.png', [
+      'image',
+      'other',
+    ]),
     getStaticRule(
       origin,
       'live-slider-thumb',
@@ -682,6 +648,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         confirmationnumber: VAR64,
         facebookid: VAR64,
         firstname: VAR64,
+        // Live ExtJS wire key (Wave A1 2026-09-12): guestfullname not guestNumber.
         guestfullname: VAR64,
         guestid: VAR64,
         hoteldate: VAR32,
@@ -720,10 +687,215 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
   ];
 }
 
+/**
+ * ExtJS Guest Stay result-row open (dblclick). Live proof 2026-09-12:
+ * POST /web/base/OSRESV?USER_FUNCTION_NAME=OSRESV with confirmationnumber +
+ * DEFAULT_VIEW / SAVE_FOR_HEADER / startUpView chrome. Inert read open only —
+ * never on find-only manifests.
+ */
+export function buildLiveOsresvOpenMatchedRowRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-open-matched-row',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {
+      USER_FUNCTION_NAME: { pattern: 'OSRESV', maxLength: 16 },
+    },
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+    },
+    variableBody: {
+      CURRENT_TAB_NAME: VAR64,
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      DEFAULT_VIEW: VAR64,
+      SAVE_FOR_HEADER: VAR64,
+      confirmationnumber: VAR64,
+      startUpView: VAR64,
+      GRIDPARAM_ADDON_SORT_ELEMENT_ALIAS_NAME: VAR64,
+      GRIDPARAM_ADDON_SORT_ELEMENT_TYPE: VAR64,
+    },
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/**
+ * Post-open LST hydrate after matched-row open (Wave A1 live 2026-09-12).
+ * Broader than shell COMPONENT_INFO_TYPE LST — detail-only manifests.
+ */
+export function buildLiveOsresvLstDetailOpenRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-lst-detail-open',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.LST',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'LST',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      ADDONS_REQUIRED: VAR64,
+      RUN_DS: VAR64,
+      filterfields: { pattern: '.{0,512}', maxLength: 512 },
+      filteroperator: { pattern: '.{0,128}', maxLength: 128 },
+      filtervalue: { pattern: '.{0,512}', maxLength: 512 },
+      ADDON_SORT_ELEMENT_ALIAS_NAME: VAR64,
+      ADDON_SORT_ELEMENT_TYPE: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/**
+ * Post-open HDR load after matched-row open (Wave A1 live 2026-09-12).
+ * ExtJS sometimes omits MENU_MODULE_KEY / removescreenflows (17 keys) and
+ * sometimes includes them (19 keys). Variable keys are required when declared,
+ * so keep two reviewed templates.
+ */
+export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+    },
+    variableBody: {
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: VAR64,
+      guestfullname: VAR64,
+      account: VAR64,
+      guestid: VAR64,
+      hoteldate: VAR64,
+      lastname: VAR64,
+      firstname: VAR64,
+      twitterid: VAR64,
+      facebookid: VAR64,
+      tripadvisorid: VAR64,
+      bookingdotcomid: VAR64,
+      room: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Same open with shell chrome keys present (MENU_MODULE_KEY / removescreenflows). */
+export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): RequestRule {
+  return {
+    id: 'live-osresv-hdr-detail-open-chrome',
+    origin,
+    method: 'POST',
+    path: '/web/base/OSRESV.HDR',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+    },
+    variableBody: {
+      MENU_MODULE_KEY: VAR32,
+      removescreenflows: VAR32,
+      confirmationnumber: VAR64,
+      reservationstayid: VAR64,
+      propertycode: VAR64,
+      guestfullname: VAR64,
+      account: VAR64,
+      guestid: VAR64,
+      hoteldate: VAR64,
+      lastname: VAR64,
+      firstname: VAR64,
+      twitterid: VAR64,
+      facebookid: VAR64,
+      tripadvisorid: VAR64,
+      bookingdotcomid: VAR64,
+      room: VAR64,
+    },
+    maxBodyBytes: 32_768,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Detail chrome assets observed after OSRESV tab strip / Guest Stay detail paints. */
+export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestRule[] {
+  const toolbar = (id: string, file: string): RequestRule =>
+    getStaticRule(
+      origin,
+      id,
+      `/web/resources/inforhms/images/toolbar/${file}`,
+      ['image', 'other'],
+    );
+  return [
+    getStaticRule(
+      origin,
+      'live-osresv-tab-scroll-left',
+      '/web/resources/inforhms/images/tab-bar/default-scroll-left-top.png',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-osresv-tab-scroll-right',
+      '/web/resources/inforhms/images/tab-bar/default-scroll-right-top.png',
+      ['image'],
+    ),
+    // Wave A1 live 2026-09-13: flag sprite GET blocked DETAIL_DUMP (POLICY_BLOCK).
+    getStaticRule(
+      origin,
+      'live-osresv-flags-sprite-16',
+      '/web/resources/inforhms/images/hms/flags/sprite-16x16.png',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-osresv-hms-tb-rate-details',
+      '/web/resources/inforhms/images/hms/toolbar/rate-details.svg',
+      ['image', 'other'],
+    ),
+    // Wave A1 live 2026-09-12: Guest Stay detail toolbar icons (OSRESV open).
+    toolbar('live-osresv-tb-luxury', 'luxury.svg'),
+    toolbar('live-osresv-tb-travel-plan', 'travel-plan.svg'),
+    toolbar('live-osresv-tb-confidential-rate', 'confidential-rate.svg'),
+    toolbar('live-osresv-tb-mail', 'mail.svg'),
+    toolbar('live-osresv-tb-tack', 'tack.svg'),
+    toolbar('live-osresv-tb-rate-details', 'rate-details.svg'),
+    toolbar('live-osresv-tb-add-ons', 'add-ons.svg'),
+    toolbar('live-osresv-tb-employee-directory', 'employee-directory.svg'),
+    toolbar('live-osresv-tb-search-organization', 'search-organization.svg'),
+    toolbar('live-osresv-tb-success-solid', 'success-solid.svg'),
+    toolbar('live-osresv-tb-passport', 'passport.svg'),
+    toolbar('live-osresv-tb-remove-passport', 'remove-passport.svg'),
+    toolbar('live-osresv-tb-add-passport', 'add-passport.svg'),
+    toolbar('live-osresv-tb-user-profile', 'user-profile.svg'),
+  ];
+}
+
 /** Request-policy-only manifest for unit tests / production live sessions. */
-export function buildLiveGuestStayReadManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveGuestStayReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -736,6 +908,20 @@ export function buildLiveGuestStayReadManifest(
 export type ExactReservationCandidate =
   | { id: string; kind: 'confirmation'; value: string }
   | { id: string; kind: 'external_reference'; value: string };
+
+/** Wave 0b: dump-proved lastname filter + stay dates (not firstname). */
+export type SurnameDatesReservationCandidate = {
+  id: string;
+  kind: 'surname_dates';
+  surname: string;
+  arrivalDate: string;
+  departureDate: string;
+};
+
+/** OSRESS.search candidate: exact identity or surname+dates. */
+export type ReservationSearchCandidate =
+  | ExactReservationCandidate
+  | SurnameDatesReservationCandidate;
 
 const EXACT_CHROME_FIXED = {
   // Soft-captured ExtJS Guest Stay dataspy "All" (HRCEN, 2026-08-03).
@@ -762,17 +948,22 @@ export const OSRESS_OR_UNUSED_TOKEN = '___NOMATCH___';
  * Not-found canary: all OR slots = candidate (matches live quick-search fill).
  * Real confirmation: only confirmation slot = value; other OR slots = unused.
  * Real external_reference: only externalconfirmation slots = value.
+ * Real surname_dates: lastname_filter family = surname; conf/ext/room unused;
+ * date window stays relative (±365); row correlate enforces arrival/departure.
  */
 export function buildExactOsressSearchBody(
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): Record<string, string> {
-  const v = candidate.value;
-  const isCanary = v === LIVE_NOTFOUND_CANARY;
   const unused = OSRESS_OR_UNUSED_TOKEN;
-  const confVal = isCanary || candidate.kind === 'confirmation' ? v : unused;
+  const isSurname = candidate.kind === 'surname_dates';
+  const v = isSurname ? candidate.surname : candidate.value;
+  const isCanary = !isSurname && v === LIVE_NOTFOUND_CANARY;
+  const confVal =
+    isCanary || candidate.kind === 'confirmation' ? (isSurname ? unused : v) : unused;
   const extVal =
-    isCanary || candidate.kind === 'external_reference' ? v : unused;
+    isCanary || candidate.kind === 'external_reference' ? (isSurname ? unused : v) : unused;
   const otherOr = isCanary ? v : unused;
+  const lastnameVal = isCanary || isSurname ? v : unused;
   // Canary stays tight (±30). Real lookups widen so future-dated stays resolve.
   const departWindow = isCanary ? '-30' : '-365';
   const arriveWindow = isCanary ? '+30' : '+365';
@@ -804,24 +995,24 @@ export function buildExactOsressSearchBody(
     MADDON_FILTER_OPERATOR_5: 'BEGINS',
     MADDON_FILTER_JOINER_5: 'OR',
     MADDON_FILTER_SEQNUM_5: '5',
-    MADDON_FILTER_VALUE_5: otherOr,
+    MADDON_FILTER_VALUE_5: lastnameVal,
     MADDON_LPAREN_5: 'false',
     MADDON_FILTER_ALIAS_NAME_6: 'secondlastname',
     MADDON_FILTER_OPERATOR_6: 'BEGINS',
     MADDON_FILTER_JOINER_6: 'OR',
     MADDON_FILTER_SEQNUM_6: '6',
-    MADDON_FILTER_VALUE_6: otherOr,
+    MADDON_FILTER_VALUE_6: lastnameVal,
     MADDON_RPAREN_6: 'false',
     MADDON_FILTER_ALIAS_NAME_7: 'alternatelastname',
     MADDON_FILTER_OPERATOR_7: 'BEGINS',
     MADDON_FILTER_JOINER_7: 'OR',
     MADDON_FILTER_SEQNUM_7: '7',
-    MADDON_FILTER_VALUE_7: otherOr,
+    MADDON_FILTER_VALUE_7: lastnameVal,
     MADDON_FILTER_ALIAS_NAME_8: 'aliaslastname',
     MADDON_FILTER_OPERATOR_8: 'BEGINS',
     MADDON_FILTER_JOINER_8: 'OR',
     MADDON_FILTER_SEQNUM_8: '8',
-    MADDON_FILTER_VALUE_8: otherOr,
+    MADDON_FILTER_VALUE_8: lastnameVal,
     MADDON_FILTER_ALIAS_NAME_9: 'loyaltynumber',
     MADDON_FILTER_OPERATOR_9: 'BEGINS',
     MADDON_FILTER_JOINER_9: 'OR',
@@ -838,16 +1029,91 @@ export function buildExactOsressSearchBody(
   return body;
 }
 
-/** Per-session OSRESS.search rule — candidate value is fixed, not variable. */
+/** UI fill token for video / ExtJS Enter fallback. */
+export function osressSearchFillValue(candidate: ReservationSearchCandidate): string {
+  return candidate.kind === 'surname_dates' ? candidate.surname : candidate.value;
+}
+
+/** Per-session OSRESS.search rule — filter + chrome fields variable.
+ * ExtJS Guest Stay quick-search (fill+Enter) posts a dataspy scaffold whose
+ * exact chrome/filter values drift vs our soft-capture snapshot; pinning them
+ * as fixedBody blocked live UI search (changed_fixed_body / missing_fixed_body).
+ * Path stays OSRESS.search only; mutation scan still fail-closes. Candidate
+ * binding enforced by fill + correlateObservations.
+ */
 export function buildExactOsressSearchRule(
   origin: string,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): RequestRule {
-  const body = buildExactOsressSearchBody(candidate);
-  const fixedBody: Record<string, string> = {};
-  for (const [key, value] of Object.entries(body)) {
-    fixedBody[key] = value;
-  }
+  void candidate;
+  const filterVar = { pattern: '.{0,128}', maxLength: 128 } as const;
+  const shortVar = { pattern: '.{0,64}', maxLength: 64 } as const;
+  const opVar = { pattern: '.{0,16}', maxLength: 16 } as const;
+  const joinVar = { pattern: '.{0,8}', maxLength: 8 } as const;
+  const variableBody: RequestRule['variableBody'] = {
+    COMPONENT_INFO_TYPE: shortVar,
+    GRID_ID: shortVar,
+    GRID_NAME: shortVar,
+    DATASPY_ID: shortVar,
+    SYSTEM_FUNCTION_NAME: shortVar,
+    USER_FUNCTION_NAME: shortVar,
+    CURRENT_TAB_NAME: shortVar,
+    MADDON_FILTER_ALIAS_NAME_1: shortVar,
+    MADDON_FILTER_OPERATOR_1: opVar,
+    MADDON_FILTER_JOINER_1: joinVar,
+    MADDON_FILTER_SEQNUM_1: joinVar,
+    MADDON_FILTER_VALUE_1: filterVar,
+    MADDON_FILTER_ALIAS_NAME_2: shortVar,
+    MADDON_FILTER_OPERATOR_2: opVar,
+    MADDON_FILTER_JOINER_2: joinVar,
+    MADDON_FILTER_SEQNUM_2: joinVar,
+    MADDON_FILTER_VALUE_2: filterVar,
+    MADDON_FILTER_ALIAS_NAME_3: shortVar,
+    MADDON_FILTER_OPERATOR_3: opVar,
+    MADDON_FILTER_JOINER_3: joinVar,
+    MADDON_FILTER_SEQNUM_3: joinVar,
+    MADDON_FILTER_VALUE_3: filterVar,
+    MADDON_LPAREN_3: joinVar,
+    MADDON_FILTER_ALIAS_NAME_4: shortVar,
+    MADDON_FILTER_OPERATOR_4: opVar,
+    MADDON_FILTER_JOINER_4: joinVar,
+    MADDON_FILTER_SEQNUM_4: joinVar,
+    MADDON_FILTER_VALUE_4: filterVar,
+    MADDON_FILTER_ALIAS_NAME_5: shortVar,
+    MADDON_FILTER_OPERATOR_5: opVar,
+    MADDON_FILTER_JOINER_5: joinVar,
+    MADDON_FILTER_SEQNUM_5: joinVar,
+    MADDON_FILTER_VALUE_5: filterVar,
+    MADDON_LPAREN_5: joinVar,
+    MADDON_FILTER_ALIAS_NAME_6: shortVar,
+    MADDON_FILTER_OPERATOR_6: opVar,
+    MADDON_FILTER_JOINER_6: joinVar,
+    MADDON_FILTER_SEQNUM_6: joinVar,
+    MADDON_FILTER_VALUE_6: filterVar,
+    MADDON_RPAREN_6: joinVar,
+    MADDON_FILTER_ALIAS_NAME_7: shortVar,
+    MADDON_FILTER_OPERATOR_7: opVar,
+    MADDON_FILTER_JOINER_7: joinVar,
+    MADDON_FILTER_SEQNUM_7: joinVar,
+    MADDON_FILTER_VALUE_7: filterVar,
+    MADDON_FILTER_ALIAS_NAME_8: shortVar,
+    MADDON_FILTER_OPERATOR_8: opVar,
+    MADDON_FILTER_JOINER_8: joinVar,
+    MADDON_FILTER_SEQNUM_8: joinVar,
+    MADDON_FILTER_VALUE_8: filterVar,
+    MADDON_FILTER_ALIAS_NAME_9: shortVar,
+    MADDON_FILTER_OPERATOR_9: opVar,
+    MADDON_FILTER_JOINER_9: joinVar,
+    MADDON_FILTER_SEQNUM_9: joinVar,
+    MADDON_FILTER_VALUE_9: filterVar,
+    MADDON_FILTER_ALIAS_NAME_10: shortVar,
+    MADDON_FILTER_OPERATOR_10: opVar,
+    MADDON_FILTER_JOINER_10: joinVar,
+    MADDON_FILTER_SEQNUM_10: joinVar,
+    MADDON_FILTER_VALUE_10: filterVar,
+    MADDON_RPAREN_10: joinVar,
+    externalconfirmation: filterVar,
+  };
   return {
     id: 'live-osress-search-exact',
     origin,
@@ -857,8 +1123,8 @@ export function buildExactOsressSearchRule(
     contentType: 'application/x-www-form-urlencoded',
     fixedQuery: {},
     variableQuery: {},
-    fixedBody,
-    variableBody: {},
+    fixedBody: {},
+    variableBody,
     maxBodyBytes: 16_384,
     redirectPolicy: 'same-reviewed-chain',
   };
@@ -867,13 +1133,37 @@ export function buildExactOsressSearchRule(
 /** Base live manifest + exact-bound OSRESS.search (only search allow path). */
 export function buildExactOsressSearchManifest(
   origin: string,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
       ...buildLiveGuestStayFunctionalRules(origin),
       buildExactOsressSearchRule(origin, candidate),
+    ],
+  });
+}
+
+/**
+ * Wave A1: exact OSRESS.search + inert ExtJS OSRESV row-open (detail dump).
+ * Must not be used for find Wave 0 — find denies detail open.
+ */
+export function buildExactOsressSearchThenDetailManifest(
+  origin: string,
+  candidate: ReservationSearchCandidate,
+): RequestPolicyManifest {
+  // Keep shell OSRESV.HDR (now guestNumber-aware) plus detail-open templates for
+  // the no-MENU 17-key ExtJS shape. Find-only manifests still omit row-open.
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveGuestStayDetailChromeGetRules(origin),
+      ...buildLiveGuestStayFunctionalRules(origin),
+      buildExactOsressSearchRule(origin, candidate),
+      buildLiveOsresvOpenMatchedRowRule(origin),
+      buildLiveOsresvLstDetailOpenRule(origin),
+      buildLiveOsresvHdrDetailOpenRule(origin),
+      buildLiveOsresvHdrDetailOpenWithChromeRule(origin),
     ],
   });
 }
@@ -896,12 +1186,18 @@ export function buildExactOsrravSearchBody(
   chrome: Record<string, string> = {},
 ): Record<string, string> {
   const start = isoDateToHmsDisplay(candidate.arrivalDate);
+  const requestedCurrency = candidate.currency ?? chrome.currency ?? 'ZAR';
+  const property = chrome.property || 'HRCEN';
+  // HRCEN: TRANSI sales strategy can return empty roomTypeInvArray even when
+  // roomtypes filter is valid. Prefer chrome value when present; otherwise leave
+  // unscoped so roomtypes+rateplans drive the inventory rows.
+  const salesstrategy = chrome.salesstrategy ?? '';
   return {
     extId: chrome.extId ?? '',
-    property: chrome.property ?? '',
+    property,
     roomtypes: candidate.roomType,
     rateplans: candidate.ratePlan,
-    salesstrategy: chrome.salesstrategy ?? '',
+    salesstrategy,
     showunavailable: chrome.showunavailable ?? '0',
     ratetype: chrome.ratetype ?? '',
     adults: String(candidate.adults),
@@ -909,7 +1205,7 @@ export function buildExactOsrravSearchBody(
     showavailableforsale: chrome.showavailableforsale ?? 'on',
     children: String(candidate.children),
     startdate: start,
-    currency: chrome.currency ?? 'ZAR',
+    currency: requestedCurrency,
     rowpagesize: chrome.rowpagesize ?? '14',
     pravailable: '',
     prsold: '',
@@ -933,12 +1229,11 @@ export function buildExactOsrravSearchBody(
     rtoutofinv: '',
     rtoverbookinglimit: '',
     rtphysicalinv: '',
-    salesstrategy_display:
-      chrome.salesstrategy_display ?? chrome.salesstrategy ?? '',
+    salesstrategy_display: chrome.salesstrategy_display || salesstrategy,
     ratetype_display: chrome.ratetype_display ?? '',
     adults_display: String(candidate.adults),
     children_display: String(candidate.children),
-    currency_display: chrome.currency_display ?? '',
+    currency_display: requestedCurrency,
     hoteldate: chrome.hoteldate ?? '',
     firstcolumndate: chrome.firstcolumndate ?? start,
     propertylabel: '',
@@ -964,10 +1259,31 @@ export function buildExactOsrravSearchRule(
   candidate: QuoteStayCandidate,
   chrome: Record<string, string> = {},
 ): RequestRule {
-  const body = buildExactOsrravSearchBody(candidate, chrome);
+  // The release binds this reviewed template, while the trusted producer
+  // binds candidate values in the request body. Candidate fields remain
+  // bounded variables; property and read-only chrome invariants stay fixed.
+  void chrome;
+  const body = buildExactOsrravSearchBody(candidate, {});
+  const variableBody: Record<string, { pattern: string; maxLength: number }> = {
+    extId: { pattern: '[A-Za-z0-9._:-]{0,64}', maxLength: 64 },
+    roomtypes: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
+    rateplans: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
+    // HRCEN: empty strategy returns inventory; TRANSI can empty roomTypeInvArray.
+    salesstrategy: { pattern: '[A-Za-z0-9]{0,32}', maxLength: 32 },
+    salesstrategy_display: { pattern: '.{0,64}', maxLength: 64 },
+    adults: { pattern: '[1-9][0-9]?', maxLength: 2 },
+    children: { pattern: '[0-9]{1,2}', maxLength: 2 },
+    startdate: { pattern: '[0-9]{2}-[A-Z]{3}-[0-9]{4}', maxLength: 11 },
+    currency: { pattern: '[A-Z]{3}', maxLength: 3 },
+    adults_display: { pattern: '[1-9][0-9]?', maxLength: 2 },
+    children_display: { pattern: '[0-9]{1,2}', maxLength: 2 },
+    currency_display: { pattern: '[A-Z]{3}', maxLength: 3 },
+    hoteldate: { pattern: '(?:|[0-9]{2}-[A-Z]{3}-[0-9]{4})', maxLength: 11 },
+    firstcolumndate: { pattern: '[0-9]{2}-[A-Z]{3}-[0-9]{4}', maxLength: 11 },
+  };
   const fixedBody: Record<string, string> = {};
   for (const [key, value] of Object.entries(body)) {
-    fixedBody[key] = value;
+    if (!variableBody[key]) fixedBody[key] = value;
   }
   return {
     id: 'live-osrrav-search-exact',
@@ -979,7 +1295,7 @@ export function buildExactOsrravSearchRule(
     fixedQuery: {},
     variableQuery: {},
     fixedBody,
-    variableBody: {},
+    variableBody,
     maxBodyBytes: 16_384,
     redirectPolicy: 'same-reviewed-chain',
   };
@@ -1195,9 +1511,7 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
 }
 
 /** Session manifest for Sent Email list (shared by audit + sent-document branches). */
-export function buildLiveSentEmailListManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveSentEmailListManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -1317,14 +1631,9 @@ export function buildLiveFolioFunctionalRules(origin: string): RequestRule[] {
   ];
 }
 
-export function buildLiveFolioReadManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveFolioReadManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
-    rules: [
-      ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveFolioFunctionalRules(origin),
-    ],
+    rules: [...buildLiveGuestStayChromeGetRules(origin), ...buildLiveFolioFunctionalRules(origin)],
   });
 }
 
@@ -1336,7 +1645,12 @@ export function buildLiveFolioReadManifest(
  */
 export function buildLiveDepositLedgerFunctionalRules(
   origin: string,
+  expectedPropertyCode = 'HRCEN',
 ): RequestRule[] {
+  const propertyCode = expectedPropertyCode.trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,16}$/.test(propertyCode)) {
+    throw new Error('deposit ledger expected property code is invalid');
+  }
   return [
     {
       id: 'live-osledg-open',
@@ -1396,7 +1710,7 @@ export function buildLiveDepositLedgerFunctionalRules(
       },
       variableBody: {
         closingdate: { pattern: '.{1,32}', maxLength: 32 },
-        property: { pattern: '^[A-Z0-9]{2,16}$', maxLength: 16 },
+        property: { pattern: propertyCode, maxLength: 16 },
       },
       maxBodyBytes: 65_536,
       redirectPolicy: 'same-reviewed-chain',
@@ -1406,11 +1720,12 @@ export function buildLiveDepositLedgerFunctionalRules(
 
 export function buildLiveDepositLedgerManifest(
   origin: string,
+  expectedPropertyCode = 'HRCEN',
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveDepositLedgerFunctionalRules(origin),
+      ...buildLiveDepositLedgerFunctionalRules(origin, expectedPropertyCode),
     ],
   });
 }
@@ -1425,9 +1740,7 @@ export const LIVE_GROUP_BLOCK_LIST_PATH = '/web/base/GSGRPB.LST';
  * Group block functional POSTs: GSGRPB open + GSGRPB.LST only.
  * BLK/HDR detail, save, create, assign, rooming, focus/input absent.
  */
-export function buildLiveGroupBlockFunctionalRules(
-  origin: string,
-): RequestRule[] {
+export function buildLiveGroupBlockFunctionalRules(origin: string): RequestRule[] {
   return [
     {
       id: 'live-gsgrpb-open',
@@ -1476,9 +1789,7 @@ export function buildLiveGroupBlockFunctionalRules(
   ];
 }
 
-export function buildLiveGroupBlockListManifest(
-  origin: string,
-): RequestPolicyManifest {
+export function buildLiveGroupBlockListManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
@@ -1486,5 +1797,3 @@ export function buildLiveGroupBlockListManifest(
     ],
   });
 }
-
-

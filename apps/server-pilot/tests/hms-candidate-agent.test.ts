@@ -1,4 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import {
+  CANDIDATE_TOOL_BUDGET,
+  HMS_CANDIDATE_TOOLSET_VERSION,
+  HMS_FIND_RESERVATION_TOOLSET_VERSION,
+  allToolEffectsAreRead,
+  assertToolRegistrySealed,
+  candidateToolEffects,
+  claimsFromToolResult as mapClaimsFromToolResult,
+  createCandidateTools,
+  createLeaseLostError,
+  createMockCandidateSession as makeMockCandidateSession,
+  isFatalCandidateGatheringError,
+  minimizeToolResultForModel,
+  runClaimSafeCandidateDraft,
+} from '../src/ai/candidate-draft-agent.js';
 import {
   EvidenceClaimSchema,
   HmsEvidenceRefSchema,
@@ -6,6 +20,7 @@ import {
   ToolResultSchema,
   assertNoUncitedCriticalLiterals,
   assertSelectedClaimsEligible,
+  evidenceClaimToPreparedFact,
   evaluateDraftReadiness,
   isEvidenceFresh,
   renderCandidate,
@@ -18,31 +33,83 @@ import {
   type MailEvidenceRef,
   type ToolResult,
 } from '../src/ai/draft-evidence.js';
-import {
-  CANDIDATE_TOOL_BUDGET,
-  HMS_CANDIDATE_TOOLSET_VERSION,
-  HMS_FIND_RESERVATION_TOOLSET_VERSION,
-  allToolEffectsAreRead,
-  assertToolRegistrySealed,
-  candidateToolEffects,
-  claimsFromToolResult,
-  createCandidateTools,
-  createLeaseLostError,
-  createMockCandidateSession,
-  isFatalCandidateGatheringError,
-  minimizeToolResultForModel,
-  runClaimSafeCandidateDraft,
-} from '../src/ai/candidate-draft-agent.js';
-import { classifyHmsShadowFailure } from '../src/ai/hms-shadow.js';
-import {
-  ThreadStateStaleError,
-  assertThreadStateVersionFresh,
-} from '../src/ai/drafts.js';
+import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai/bedrock/local.js';
+import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
+import { ThreadStateStaleError, assertThreadStateVersionFresh } from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
 import { HMS_FIND_RESERVATION_TOOL_VERSION } from '../src/hms/adapter.js';
+import { prepareDraftInput } from '../src/ai/prepared-draft-input.js';
+import { classifyHmsShadowFailure } from '../src/ai/hms-shadow.js';
+import { createMastraRuntime } from '../src/ai/mastra.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
+import { describe, expect, it, vi } from 'vitest';
 
 const now = new Date('2026-07-30T12:00:00.000Z');
+
+function claimAuthorizationFor(at: Date) {
+  const state = {
+    operationId: 'candidate-test-operation',
+    mailboxGrant: {
+      sha256: 'a'.repeat(64),
+      transportId: 'candidate-transport',
+      active: true,
+    },
+    thread: {
+      transportId: 'candidate-transport',
+      threadId: 'candidate-thread',
+      stateVersion: 'candidate-thread-v1',
+    },
+    requester: {
+      identity: 'candidate-requester',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: [
+        'reservation_summary',
+        'quote',
+        'document_metadata',
+        'sent_email_audit',
+        'folio_status',
+        'company_billing',
+        'group_status',
+        'event_status',
+      ],
+      forwarded: false,
+      spoofed: false,
+    },
+  };
+  const key = Buffer.alloc(32, 0x41);
+  const issued = issueTrustedRequesterAuthorization(state, {
+    key,
+    keyVersion: 'candidate-test-key-v1',
+    issuedAt: at,
+    expiresAt: new Date(at.getTime() + 15 * 60_000),
+  });
+  return {
+    authorization: issued,
+    currentState: state,
+    key,
+    expectedPrivateDigestKeyVersion: 'candidate-test-key-v1',
+    now: at,
+  } as const;
+}
+
+function createMockCandidateSession(
+  overrides: Parameters<typeof makeMockCandidateSession>[0] = {},
+) {
+  return makeMockCandidateSession({
+    claimAuthorization: claimAuthorizationFor(now),
+    ...overrides,
+  });
+}
+
+function claimsFromToolResult(
+  result: ToolResult<unknown>,
+  at: Date = new Date(),
+  authorization?: Parameters<typeof mapClaimsFromToolResult>[2],
+): EvidenceClaim[] {
+  if (authorization !== undefined) return mapClaimsFromToolResult(result, at, authorization);
+  return mapClaimsFromToolResult(result, at, claimAuthorizationFor(at));
+}
 
 function hmsEvidence(overrides: Partial<HmsEvidenceRef> = {}): HmsEvidenceRef {
   return {
@@ -55,6 +122,10 @@ function hmsEvidence(overrides: Partial<HmsEvidenceRef> = {}): HmsEvidenceRef {
     expiresAt: '2026-07-30T13:00:00.000Z',
     claimKeys: ['reservation.status', 'reservation.dates'],
     sourceHash: 'a'.repeat(64),
+    scopeVerified: true,
+    manifestSha256: 'c'.repeat(64),
+    manifestSha256ByBranch: { guest_stay_search: 'c'.repeat(64) },
+    scopeHash: 'd'.repeat(64),
     ...overrides,
   };
 }
@@ -169,34 +240,70 @@ describe('hms typed evidence contracts', () => {
     expect(isEvidenceFresh(stale, now)).toBe(false);
 
     expect(
-      evaluateDraftReadiness({
-        status: 'ok',
-        draftReady: true,
-        data: {},
-        unresolvedFields: [],
-        evidence: stale,
-      }, now).draftReady,
+      evaluateDraftReadiness(
+        {
+          status: 'ok',
+          draftReady: true,
+          data: {},
+          unresolvedFields: [],
+          evidence: stale,
+        },
+        now,
+      ).draftReady,
     ).toBe(false);
 
     expect(
-      evaluateDraftReadiness({
-        status: 'partial',
-        draftReady: true,
-        data: {},
-        unresolvedFields: ['inventory.nights'],
-        evidence: fresh,
-      }, now).draftReady,
+      evaluateDraftReadiness(
+        {
+          status: 'partial',
+          draftReady: true,
+          data: {},
+          unresolvedFields: ['inventory.nights'],
+          evidence: fresh,
+        },
+        now,
+      ).draftReady,
     ).toBe(false);
 
     expect(
-      evaluateDraftReadiness({
-        status: 'ambiguous',
-        draftReady: true,
-        data: {},
-        unresolvedFields: [],
-        evidence: fresh,
-      }, now).draftReady,
+      evaluateDraftReadiness(
+        {
+          status: 'ambiguous',
+          draftReady: true,
+          data: {},
+          unresolvedFields: [],
+          evidence: fresh,
+        },
+        now,
+      ).draftReady,
     ).toBe(false);
+  });
+
+  it('does not turn future observed evidence into a current claim', () => {
+    expect(
+      claimsFromToolResult(
+        okReservationResult({
+          evidence: hmsEvidence({
+            observedAt: '2099-01-01T00:00:00.000Z',
+            expiresAt: '2099-01-02T00:00:00.000Z',
+          }),
+        }),
+        now,
+      ),
+    ).toEqual([]);
+  });
+
+  it('preserves observed-time, source-hash, and scope proof on prepared claims', () => {
+    const claims = claimsFromToolResult(
+      okReservationResult({ evidence: hmsEvidence({ scopeVerified: true }) }),
+      now,
+    );
+    expect(claims[0]).toMatchObject({
+      observedAt: '2026-07-30T11:00:00.000Z',
+      sourceHash: 'a'.repeat(64),
+      scopeVerified: true,
+      expiresAt: '2026-07-30T13:00:00.000Z',
+    });
   });
 
   it('renders typed claims deterministically without free-form factual prose', () => {
@@ -226,9 +333,7 @@ describe('hms typed evidence contracts', () => {
       'Reservation status: Confirmed (confirmation CONF-88421).',
     );
     expect(renderClaim(claims[1]!)).toBe('Stay dates: 2026-08-01 to 2026-08-03.');
-    expect(renderClaim(claims[2]!)).toBe(
-      'Displayed rate: 1200.00 ZAR (per_room_per_night).',
-    );
+    expect(renderClaim(claims[2]!)).toBe('Displayed rate: 1200.00 ZAR (per_room_per_night).');
 
     const lines = renderFactualLines(
       ['claim-status', 'claim-dates', 'claim-rate'],
@@ -248,9 +353,7 @@ describe('hms typed evidence contracts', () => {
   });
 
   it('rejects missing claims and unknown claim kinds at the contract boundary', () => {
-    expect(() =>
-      renderFactualLines(['missing'], new Map()),
-    ).toThrow(/unknown claim/i);
+    expect(() => renderFactualLines(['missing'], new Map())).toThrow(/unknown claim/i);
 
     expect(() =>
       EvidenceClaimSchema.parse({
@@ -264,13 +367,47 @@ describe('hms typed evidence contracts', () => {
 });
 
 describe('claim-safe candidate agent', () => {
+  it('registered candidate workflow refuses raw body input before trace execution', async () => {
+    const mastra = createMastraRuntime(':memory:');
+    const workflow = mastra.getWorkflow('candidateDraft');
+    const rawRun = await workflow.createRun();
+    await expect(
+      rawRun.start({
+        inputData: {
+          transportId: 'transport-u5-i9',
+          threadId: 'thread-u5-i9',
+          triggerMessageId: 'message-u5-i9',
+          fromAddress: 'Guest Person <guest@example.com>',
+          subject: 'Booking',
+          body: 'Need a room',
+        },
+      }),
+    ).rejects.toThrow(/Invalid input data|prepared input|replyToAddress/i);
+
+    const preparedRun = await workflow.createRun();
+    const preparedResult = await preparedRun.start({
+      inputData: {
+        transportId: 'transport-u5-i9',
+        triggerMessageId: 'message-u5-i9',
+        replyToAddress: 'guest@example.com',
+        subject: 'Booking',
+        prepared: prepareDraftInput({
+          requestId: 'message-u5-i9',
+          threadId: 'thread-u5-i9',
+          audience: 'guest',
+          requestText: 'Need a room',
+        }),
+      },
+    });
+    expect(preparedResult.status).toBe('success');
+    expect(preparedResult.result?.draftBody.textBody).toContain('[');
+  });
+
   it('treats durable LEASE_LOST as fatal gathering failure', () => {
     const lost = createLeaseLostError();
     expect(isFatalCandidateGatheringError(lost)).toBe(true);
     expect(classifyHmsShadowFailure(lost)).toBe('LEASE_LOST');
-    expect(
-      isFatalCandidateGatheringError(new Error('transient parser blip')),
-    ).toBe(false);
+    expect(isFatalCandidateGatheringError(new Error('transient parser blip'))).toBe(false);
   });
 
   it('keeps candidate toolset stable while find reservation advances to 1.2.0', () => {
@@ -293,33 +430,81 @@ describe('claim-safe candidate agent', () => {
     const session = createMockCandidateSession();
     const bundle = createCandidateTools(session);
     assertToolRegistrySealed(bundle.tools);
-    expect(Object.keys(bundle.tools).sort()).toEqual([
-      'hms_find_reservation',
-      'hms_quote_stay',
-      'mail_read_artifact',
-    ].sort());
+    expect(Object.keys(bundle.tools).sort()).toEqual(
+      ['hms_find_reservation', 'hms_quote_stay'].sort(),
+    );
   });
 
-  it('fixture session may activate all three handlers; production allowlist is narrower', () => {
-    const fixture = createMockCandidateSession({
-      activeToolIds: new Set([
-        'hms_find_reservation',
-        'hms_quote_stay',
-        'mail_read_artifact',
-      ]),
+  it('rejects missing or false scope verification before creating a claim', () => {
+    for (const scopeVerified of [false, undefined]) {
+      const result = okReservationResult({
+        evidence: hmsEvidence({ scopeVerified }),
+      });
+      expect(evaluateDraftReadiness(result, now).draftReady).toBe(false);
+      expect(claimsFromToolResult(result, now)).toEqual([]);
+    }
+  });
+
+  it('preserves and binds manifest and scope joins through claim and prepared fact', () => {
+    const manifestSha256 = 'c'.repeat(64);
+    const scopeHash = 'd'.repeat(64);
+    const claims = claimsFromToolResult(
+      okReservationResult({
+        evidence: hmsEvidence({
+          scopeVerified: true,
+          manifestSha256,
+          manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+          scopeHash,
+        }),
+      }),
+      now,
+    );
+    expect(claims[0]).toMatchObject({
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
     });
-    expect(Object.keys(createCandidateTools(fixture).tools).sort()).toEqual([
-      'hms_find_reservation',
-      'hms_quote_stay',
-      'mail_read_artifact',
-    ]);
+    expect(evidenceClaimToPreparedFact(claims[0]!)).toMatchObject({
+      authority: 'authorized',
+      status: 'known',
+      scopeVerified: true,
+      manifestSha256,
+      manifestSha256ByBranch: { guest_stay_search: manifestSha256 },
+      scopeHash,
+    });
+  });
+
+  it('never turns an unscoped claim into an authorized-known prepared fact', () => {
+    const fact = evidenceClaimToPreparedFact(
+      EvidenceClaimSchema.parse({
+        id: 'claim-unscoped',
+        kind: 'reservation_summary',
+        value: { reservationStatus: 'Confirmed' },
+        evidenceId: 'ev-unscoped',
+        scopeVerified: false,
+      }),
+    );
+    expect(fact).toMatchObject({ authority: 'unknown', status: 'not_authorized' });
+  });
+
+  it('rejects a server requester join when no separately issued mapper proof is supplied', () => {
+    const result = okReservationResult({
+      evidence: hmsEvidence({ requesterAuthorizationId: 'auth-current-read' }),
+    });
+    expect(claimsFromToolResult(result, now)).toEqual([]);
+    expect(claimsFromToolResult(result, now, null)).toEqual([]);
+  });
+
+  it('permanently excluded mail artifact cannot be activated', () => {
+    const fixture = createMockCandidateSession({
+      activeToolIds: new Set(['hms_find_reservation', 'hms_quote_stay', 'mail_read_artifact']),
+    });
+    expect(() => createCandidateTools(fixture)).toThrow(/permanently excluded/i);
 
     const production = createMockCandidateSession({
       activeToolIds: new Set(['hms_find_reservation']),
     });
-    expect(Object.keys(createCandidateTools(production).tools)).toEqual([
-      'hms_find_reservation',
-    ]);
+    expect(Object.keys(createCandidateTools(production).tools)).toEqual(['hms_find_reservation']);
   });
 
   it('Phase B folio tool activates only when handler present', async () => {
@@ -354,10 +539,7 @@ describe('claim-safe candidate agent', () => {
       }),
     });
     const bundle = createCandidateTools(session);
-    expect(Object.keys(bundle.tools).sort()).toEqual([
-      'hms_find_reservation',
-      'hms_read_folio',
-    ]);
+    expect(Object.keys(bundle.tools).sort()).toEqual(['hms_find_reservation', 'hms_read_folio']);
     await expect(
       bundle.tools.hms_read_folio.execute!(
         { candidateId: 'cand-1' },
@@ -369,10 +551,7 @@ describe('claim-safe candidate agent', () => {
   it('only accepts opaque candidate IDs (no raw property/guest fields)', async () => {
     const session = createMockCandidateSession({
       lookupCandidates: new Map([
-        [
-          'cand-1',
-          { id: 'cand-1', kind: 'confirmation', value: 'CONF-88421' },
-        ],
+        ['cand-1', { id: 'cand-1', kind: 'confirmation', value: 'CONF-88421' }],
       ]),
       findReservation: async () => okReservationResult(),
     });
@@ -429,10 +608,7 @@ describe('claim-safe candidate agent', () => {
     expect(bundle.calls.filter((c) => !c.ok)).toHaveLength(CANDIDATE_TOOL_BUDGET);
 
     await expect(
-      bundle.tools.hms_find_reservation.execute!(
-        { candidateId: 'a' },
-        { abortSignal: signal },
-      ),
+      bundle.tools.hms_find_reservation.execute!({ candidateId: 'a' }, { abortSignal: signal }),
     ).rejects.toThrow(/budget exceeded/i);
   });
 
@@ -707,12 +883,7 @@ describe('claim-safe candidate agent', () => {
       }),
     ).toThrow(/unexpected tool/i);
 
-    await expect(
-      bundle.tools.mail_read_artifact.execute!(
-        { attachmentId: 'att-injected-by-email' },
-        { abortSignal: new AbortController().signal },
-      ),
-    ).rejects.toThrow(/unauthorized attachment/i);
+    expect(bundle.tools).not.toHaveProperty('mail_read_artifact');
 
     // Opaque map still required even if injection text mentions CONF.
     void injection;
@@ -742,10 +913,7 @@ describe('claim-safe candidate agent', () => {
       },
     };
     expect(claimsFromToolResult(artifact, now)).toEqual([]);
-    const minimized = minimizeToolResultForModel(
-      artifact,
-      claimsFromToolResult(artifact, now),
-    );
+    const minimized = minimizeToolResultForModel(artifact, claimsFromToolResult(artifact, now));
     expect(JSON.stringify(minimized)).not.toContain('CONF-PRIVATE-88421');
     expect(minimized.claimIds).toEqual([]);
   });
@@ -753,11 +921,16 @@ describe('claim-safe candidate agent', () => {
   it('off mode still runs existing skeleton flow', async () => {
     const skeleton = await generateSkeletonDraft({
       transportId: 't1',
-      threadId: 'th1',
       triggerMessageId: 'm1',
-      fromAddress: 'Guest Person <guest@example.com>',
+      replyToAddress: 'guest@example.com',
       subject: 'Booking',
-      body: 'Need a room',
+      deadlineAt: Date.now() + 30_000,
+      prepared: prepareDraftInput({
+        requestId: 'm1',
+        threadId: 'th1',
+        audience: 'guest',
+        requestText: 'Need a room',
+      }),
     });
     expect(skeleton.draftBody.textBody).toContain('[');
     expect(skeleton.draftBody.textBody).toContain(']');
@@ -824,19 +997,14 @@ describe('claim-safe candidate agent', () => {
 
   it('C3: worker-style gate — releases+bindings invoke plan steps; omissions refuse Full', async () => {
     const { randomUUID } = await import('node:crypto');
-    const {
-      resolvePlanScopedDraftGate,
-      canScoreFull,
-      executableReadStepsForPlan,
-    } = await import('../src/hms/candidate-read-plan.js');
-    const {
-      hmsPortfolioToolReleaseV2Schema,
-      HMS_RUNTIME_ABI_VERSION,
-    } = await import('../src/hms/release-kernel.js');
-    const { fingerprintReadToolRegistry } = await import('../src/hms/read-tools.js');
-    const { FIND_RESERVATION_IMPL_V1 } = await import(
-      '../src/hms/read-handler-index.js'
+    const { resolvePlanScopedDraftGate, canScoreFull, executableReadStepsForPlan } = await import(
+      '../src/hms/candidate-read-plan.js'
     );
+    const { hmsPortfolioToolReleaseV2Schema, HMS_RUNTIME_ABI_VERSION } = await import(
+      '../src/hms/release-kernel.js'
+    );
+    const { fingerprintReadToolRegistry } = await import('../src/hms/read-tools.js');
+    const { FIND_RESERVATION_IMPL_V1 } = await import('../src/hms/read-handler-index.js');
 
     const hex = (n: number | string) => String(n).repeat(64).slice(0, 64);
     const findRel = hmsPortfolioToolReleaseV2Schema.parse({
@@ -876,10 +1044,7 @@ describe('claim-safe candidate agent', () => {
     });
     const activeReleases = new Map([['hms_find_reservation' as const, findRel]]);
     const lookupCandidates = new Map([
-      [
-        'cand-1',
-        { id: 'cand-1', kind: 'confirmation' as const, value: 'CONF-88421' },
-      ],
+      ['cand-1', { id: 'cand-1', kind: 'confirmation' as const, value: 'CONF-88421' }],
     ]);
 
     // Empty releases → null gate (legacy / cutover pending).
@@ -898,9 +1063,7 @@ describe('claim-safe candidate agent', () => {
       now,
     });
     expect(planGate).not.toBeNull();
-    expect(planGate!.candidateBindings.get('cand-1')?.toolId).toBe(
-      'hms_find_reservation',
-    );
+    expect(planGate!.candidateBindings.get('cand-1')?.toolId).toBe('hms_find_reservation');
 
     // Complete reservation plan → executable find step, Full allowed.
     const completePlan = executableReadStepsForPlan(
@@ -910,9 +1073,7 @@ describe('claim-safe candidate agent', () => {
       planGate!.requesterAuthorization,
       { authoredSegment: 'Please confirm CONF-88421' },
     );
-    expect(completePlan.steps.map((s) => s.toolId)).toEqual([
-      'hms_find_reservation',
-    ]);
+    expect(completePlan.steps.map((s) => s.toolId)).toEqual(['hms_find_reservation']);
     expect(canScoreFull(completePlan)).toBe(true);
 
     let findCalls = 0;
@@ -953,8 +1114,7 @@ describe('claim-safe candidate agent', () => {
         activeReleases,
         findReservation: async () => okReservationResult(),
       }),
-      normalizedThreadText:
-        'Please confirm CONF-88421 and send folio plus documents',
+      normalizedThreadText: 'Please confirm CONF-88421 and send folio plus documents',
       signal: new AbortController().signal,
       now,
       planMode: 'production',
@@ -1008,7 +1168,8 @@ describe('claim-safe candidate agent', () => {
     expect(missing.outcome).toBe('insufficient_evidence');
     expect(missing.metrics.planScopedGateMissing).toBe(true);
 
-    // Empty releases → production legacy allowlist empty (cutover pending) → no I/O.
+    // Empty releases use the current production allowlist; the proven find
+    // lane may execute without plan-scoped releases.
     let legacyCalls = 0;
     const legacy = await runClaimSafeCandidateDraft({
       session: createMockCandidateSession({
@@ -1031,9 +1192,228 @@ describe('claim-safe candidate agent', () => {
         closingTemplate: 'invite_questions',
       }),
     });
-    expect(legacyCalls).toBe(0);
-    expect(legacy.outcome).toBe('insufficient_evidence');
+    expect(legacyCalls).toBe(1);
+    expect(legacy.outcome).toBe('candidate');
     expect(legacy.metrics.executablePlanStatus).toBeNull();
     expect(legacy.metrics.planScopedGateMissing).toBeUndefined();
+  });
+
+  it('normal candidate agent uses the prepared reply workflow when an approved adapter is injected', async () => {
+    const claims = claimsFromToolResult(okReservationResult(), now);
+    const route: LocalModelRouteEvidence = {
+      routeId: 'hms-agent-test-route',
+      purpose: 'draft',
+      protocol: 'in_process',
+      access: 'current_app',
+      egress: 'none',
+      retention: 'bounded',
+      usage: 'reported',
+      modelId: 'hms-agent-test-model',
+    };
+    let calls = 0;
+    const adapter = createLocalModelAdapter({
+      route,
+      transport: async ({ userPrompt }) => {
+        calls += 1;
+        expect(userPrompt).toContain('u5-prepared-draft-input-v1');
+        return {
+          output:
+            calls === 1
+              ? {
+                  outcome: 'candidate',
+                  salutation: 'generic',
+                  openingTemplate: 'acknowledge_request',
+                  selectedClaimIds: claims.map((claim) => claim.id),
+                  closingTemplate: 'invite_questions',
+                }
+              : { replyText: 'Your reservation is confirmed.' },
+          usage: { inputTokens: 10, outputTokens: 5, latencyMs: 1 },
+        };
+      },
+    });
+
+    const result = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates: new Map([
+          ['cand-1', { id: 'cand-1', kind: 'confirmation', value: 'CONF-88421' }],
+        ]),
+        findReservation: async () => okReservationResult(),
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: new AbortController().signal,
+      now,
+      modelAdapter: adapter,
+      replyRequestKind: 'reservation',
+      replyAsks: [{ code: 'reservation_status', label: 'reservation status', required: true }],
+    });
+
+    expect(result.outcome).toBe('candidate');
+    expect(result.textBody).toContain('reservation status: Confirmed.');
+    expect(result.textBody).not.toContain('Your reservation is confirmed.');
+    expect(result.metrics.preparedReplyOutcome).toBe('complete');
+    expect(calls).toBe(2);
+  });
+
+  it('normal candidate consumer refuses an unsupported action from non-action evidence', async () => {
+    const quoteResult = {
+      status: 'ok' as const,
+      draftReady: true,
+      data: {
+        nightlyObservations: [
+          {
+            date: '2026-08-01',
+            roomType: 'STD',
+            availableCount: 2,
+            ratePlan: 'BAR',
+            displayedAmount: '100.00',
+            currency: 'ZAR',
+            rateBasis: 'nightly' as const,
+            restrictions: ['none'],
+            observedAt: '2026-07-30T11:00:00.000Z',
+          },
+          {
+            date: '2026-08-02',
+            roomType: 'STD',
+            availableCount: 2,
+            ratePlan: 'BAR',
+            displayedAmount: '100.00',
+            currency: 'ZAR',
+            rateBasis: 'nightly' as const,
+            restrictions: ['none'],
+            observedAt: '2026-07-30T11:00:00.000Z',
+          },
+        ],
+        requestRef: 'quote-u5-c2',
+        arrival: '2026-08-01',
+        departure: '2026-08-03',
+        coveredNights: ['2026-08-01', '2026-08-02'],
+        missingNights: [],
+        bookable: false,
+        stayTotal: null,
+        occupancyPriced: false,
+        requestedRooms: 1,
+      },
+      unresolvedFields: [],
+      evidence: hmsEvidence({
+        toolId: 'hms_quote_stay',
+        claimKeys: ['quote.stay'],
+      }),
+    };
+    const quoteClaims = claimsFromToolResult(quoteResult, now);
+    let replyCalls = 0;
+    const adapter = createLocalModelAdapter({
+      route: {
+        routeId: 'hms-c2-consumer-route',
+        purpose: 'draft',
+        protocol: 'in_process',
+        access: 'current_app',
+        egress: 'none',
+        retention: 'bounded',
+        usage: 'reported',
+        modelId: 'hms-c2-consumer-model',
+      },
+      transport: async () => {
+        replyCalls += 1;
+        return {
+          output: JSON.stringify({
+            replyText:
+              'Your reservation is confirmed, but I cannot verify the booking was secured; your stay is on 2027-12-31 at 14:00.',
+          }),
+          usage: { inputTokens: 5, outputTokens: 5, latencyMs: 1 },
+        };
+      },
+    });
+    const result = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        activeToolIds: new Set(['hms_quote_stay']),
+        lookupCandidates: new Map([
+          ['quote-u5-c2', { id: 'quote-u5-c2', kind: 'surname_dates', value: '2026-08-01' }],
+        ]),
+        quoteStay: async () => quoteResult,
+      }),
+      normalizedThreadText: 'Please check availability for these dates.',
+      signal: new AbortController().signal,
+      now,
+      readPlan: { kind: 'quote', quote: true },
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: quoteClaims.map((claim) => claim.id),
+        closingTemplate: 'invite_questions',
+      }),
+      replyModelAdapter: adapter,
+      replyRequestKind: 'general',
+      replyAsks: [],
+    });
+
+    expect(result.outcome).not.toBe('candidate');
+    expect(['needs_clarification', 'insufficient_evidence']).toContain(result.outcome);
+    expect(result).not.toHaveProperty('textBody');
+    expect(replyCalls).toBe(1);
+    expect(result.metrics).toMatchObject({
+      preparedReplyMetrics: {
+        assessmentIssues: expect.arrayContaining(['UNSUPPORTED_ACTION_CLAIM']),
+      },
+    });
+  });
+
+  it('normal candidate agent refuses before generic model fallback when no approved route is injected', async () => {
+    const result = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates: new Map([
+          ['cand-1', { id: 'cand-1', kind: 'confirmation', value: 'CONF-88421' }],
+        ]),
+        findReservation: async () => okReservationResult(),
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: new AbortController().signal,
+      now,
+    });
+
+    expect(result.outcome).toBe('insufficient_evidence');
+    expect(result.metrics.modelRouteUnavailable).toBe(true);
+    expect(result.metrics.modelRoutePurpose).toBe('draft');
+  });
+
+  it('passes the worker cancellation signal and deadline through plan generation', async () => {
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
+    let received: { signal?: AbortSignal; deadlineAt?: number } | undefined;
+    const runInput = {
+      session: createMockCandidateSession({
+        lookupCandidates: new Map([
+          ['cand-1', { id: 'cand-1', kind: 'confirmation' as const, value: 'CONF-88421' }],
+        ]),
+        findReservation: async () => okReservationResult(),
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: controller.signal,
+      deadlineAt,
+      now,
+      planModel: async (prompt: {
+        systemPrompt: string;
+        userPrompt: string;
+        signal?: AbortSignal;
+        deadlineAt?: number;
+      }) => {
+        received = prompt;
+        return {
+          outcome: 'candidate',
+          salutation: 'generic',
+          openingTemplate: 'acknowledge_request',
+          selectedClaimIds: claimsFromToolResult(okReservationResult(), now).map(
+            (claim) => claim.id,
+          ),
+          closingTemplate: 'invite_questions',
+        };
+      },
+    } as Parameters<typeof runClaimSafeCandidateDraft>[0] & {
+      deadlineAt: number;
+    };
+
+    await runClaimSafeCandidateDraft(runInput);
+    expect(received?.signal).toBe(controller.signal);
+    expect(received?.deadlineAt).toBe(deadlineAt);
   });
 });

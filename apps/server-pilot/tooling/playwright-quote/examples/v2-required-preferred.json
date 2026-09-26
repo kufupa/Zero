@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "propertyCode": "HRCEN",
+  "arrivalDate": "2026-09-24",
+  "departureDate": "2026-09-27",
+  "rooms": [
+    {
+      "id": "group-1",
+      "quantity": 1,
+      "adults": 2,
+      "children": 0,
+      "childAges": [],
+      "required": { "bedTypes": ["queen"] },
+      "preferred": { "boardBases": ["breakfast"] }
+    }
+  ]
+}

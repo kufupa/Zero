@@ -22,16 +22,13 @@ import {
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
 import {
-  mailThread,
-  message,
-  attachment,
-  mailLabel,
-  mailDraft,
-  mailDraftRevision,
-  mailCategory,
-  mailThreadCategory,
-  messageReaction,
-} from '../../db/schema/mail.js';
+  assertDraftApprovalCurrent,
+  claimDraftApprovalForSend,
+  DraftApprovalError,
+  getDraftApprovalSigningSecret,
+  parseDraftApproval,
+  type DraftApproval,
+} from '../../ai/draft-approval.js';
 import {
   cancelOutbound,
   enqueueOutbound,
@@ -41,6 +38,22 @@ import {
   OutboundDeliveryUncertainError,
 } from '../../mail/send/outbound-queue.js';
 import {
+  mailThread,
+  message,
+  attachment,
+  messageReaction,
+  mailLabel,
+  mailDraft,
+  mailDraftRevision,
+  mailCategory,
+  mailThreadCategory,
+} from '../../db/schema/mail.js';
+import {
+  loadConversationMetaForThread,
+  loadConversationMetaForThreads,
+  stableConversationId,
+} from '../../mail/conversation-group.js';
+import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_FEEDBACK_PROMPT_VERSION,
   enqueueAiRun,
@@ -49,8 +62,8 @@ import {
   parseFromEmail,
   sendInput,
   toParsedMessage,
-  buildMetadataDebugHeaders,
   groupReactions,
+  buildMetadataDebugHeaders,
 } from '../wire-compat.js';
 import {
   getLatestInboundFromAddress,
@@ -66,17 +79,17 @@ import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
 import { processEmailHtmlForDisplay } from '../../mail/process-email-html.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import { buildThreadSearchConditions } from '../../mail/search/query.js';
+import { isVisibleDraftAssistanceEnabled, parseEnv } from '../../env.js';
 import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
+import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
-import { loadConversationMetaForThread, loadConversationMetaForThreads, stableConversationId } from '../../mail/conversation-group.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
-import { getDb } from '../../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
-import { parseEnv } from '../../env.js';
 import { z } from 'zod';
 
 import {
@@ -473,7 +486,11 @@ export const mailRouter = tRouter({
         .map((row) => [row.threadId, row.count]),
     );
 
-    const conversationMetaByThread = await loadConversationMetaForThreads(db, transportId, threadIds);
+    const conversationMetaByThread = await loadConversationMetaForThreads(
+      db,
+      transportId,
+      threadIds,
+    );
 
     return {
       threads: rows.map((r) => {
@@ -511,150 +528,146 @@ export const mailRouter = tRouter({
   get: mailboxProcedure
     .input(z.object({ id: z.string(), mergeLinked: z.boolean().optional() }))
     .query(async ({ input, ctx }) => {
-    const db = getDb();
-    const transportId = ctx.activeTransportId;
-    const thread = await requireThreadForTransport(db, input.id, transportId);
-    const conversation = await loadConversationMetaForThread(db, transportId, thread.id);
-    const mergeLinked = input.mergeLinked === true && conversation.linkedThreadIds.length > 0;
-    const threadIds = mergeLinked ? [thread.id, ...conversation.linkedThreadIds] : [thread.id];
-    const messages = await db
-      .select()
-      .from(message)
-      .where(and(eq(message.transportId, transportId), inArray(message.threadId, threadIds)))
-      .orderBy(asc(message.receivedAt));
-    const messageIds = messages.map((m) => m.id);
-    const attachmentRows =
-      messageIds.length > 0
-        ? await db
-            .select({
-              messageId: attachment.messageId,
-              attachmentId: attachment.id,
-              filename: attachment.filename,
-              mimeType: attachment.mimeType,
-              size: attachment.sizeBytes,
-            })
-            .from(attachment)
-            .where(inArray(attachment.messageId, messageIds))
-        : [];
-    const attachmentsByMessage = new Map<string, typeof attachmentRows>();
-    for (const row of attachmentRows) {
-      const list = attachmentsByMessage.get(row.messageId) ?? [];
-      list.push(row);
-      attachmentsByMessage.set(row.messageId, list);
-    }
-    const reactionRows =
-      messageIds.length > 0
-        ? await db
-            .select()
-            .from(messageReaction)
-            .where(inArray(messageReaction.messageId, messageIds))
-            .orderBy(asc(messageReaction.createdAt))
-        : [];
-    const reactionsByMessage = new Map<string, typeof reactionRows>();
-    for (const row of reactionRows) {
-      const list = reactionsByMessage.get(row.messageId) ?? [];
-      list.push(row);
-      reactionsByMessage.set(row.messageId, list);
-    }
-    const callerEmail = ctx.sessionUser.email || ctx.transportEmail;
-    const parsedMessages = messages.map((m) => {
-      const msgReactions = reactionsByMessage.get(m.id) ?? [];
-      const groupedReactions = groupReactions(msgReactions, callerEmail);
-      const parsed = toParsedMessage(
-        m,
-        attachmentsByMessage.get(m.id) ?? [],
-        groupedReactions,
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      const thread = await requireThreadForTransport(db, input.id, transportId);
+      const conversation = await loadConversationMetaForThread(db, transportId, thread.id);
+      const mergeLinked = input.mergeLinked === true && conversation.linkedThreadIds.length > 0;
+      const threadIds = mergeLinked ? [thread.id, ...conversation.linkedThreadIds] : [thread.id];
+      const messages = await db
+        .select()
+        .from(message)
+        .where(and(eq(message.transportId, transportId), inArray(message.threadId, threadIds)))
+        .orderBy(asc(message.receivedAt));
+      const messageIds = messages.map((m) => m.id);
+      const attachmentRows =
+        messageIds.length > 0
+          ? await db
+              .select({
+                messageId: attachment.messageId,
+                attachmentId: attachment.id,
+                filename: attachment.filename,
+                mimeType: attachment.mimeType,
+                size: attachment.sizeBytes,
+              })
+              .from(attachment)
+              .where(inArray(attachment.messageId, messageIds))
+          : [];
+      const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+      for (const row of attachmentRows) {
+        const list = attachmentsByMessage.get(row.messageId) ?? [];
+        list.push(row);
+        attachmentsByMessage.set(row.messageId, list);
+      }
+      const reactionRows =
+        messageIds.length > 0
+          ? await db
+              .select()
+              .from(messageReaction)
+              .where(inArray(messageReaction.messageId, messageIds))
+              .orderBy(asc(messageReaction.createdAt))
+          : [];
+      const reactionsByMessage = new Map<string, typeof reactionRows>();
+      for (const row of reactionRows) {
+        const list = reactionsByMessage.get(row.messageId) ?? [];
+        list.push(row);
+        reactionsByMessage.set(row.messageId, list);
+      }
+      const callerEmail = ctx.sessionUser.email || ctx.transportEmail;
+      const parsedMessages = messages.map((m) => {
+        const msgReactions = reactionsByMessage.get(m.id) ?? [];
+        const groupedReactions = groupReactions(msgReactions, callerEmail);
+        const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? [], groupedReactions);
+        if (transportId !== 'transport-nava') return parsed;
+        return {
+          ...parsed,
+          debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
+        };
+      });
+      const hasUnread = parsedMessages.some((m) => m.unread);
+      const hasReplied = mergeLinked
+        ? conversation.conversationResponded
+        : messages.some((m) => m.direction === 'outbound');
+      const labels = await db
+        .select({ id: mailLabel.id, name: mailLabel.name })
+        .from(mailLabel)
+        .where(eq(mailLabel.transportId, transportId));
+      const threadLabelIds = new Set(thread.labelIds ?? []);
+      const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
+      const latest = parsedMessages[parsedMessages.length - 1];
+
+      const draftRows = await db
+        .select()
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.threadId, input.id),
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.isSent, false),
+            inArray(mailDraft.status, ['active', 'candidate']),
+          ),
+        )
+        .orderBy(
+          sql`CASE ${mailDraft.status} WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END`,
+          desc(mailDraft.updatedAt),
+          desc(mailDraft.id),
+        );
+
+      const messageById = new Map(messages.map((row) => [row.id, row]));
+      const latestInbound = messages
+        .filter((row) => row.direction === 'inbound')
+        .toSorted((a, b) => {
+          const aTime = (a.receivedAt ?? a.createdAt).getTime();
+          const bTime = (b.receivedAt ?? b.createdAt).getTime();
+          return bTime - aTime;
+        })[0];
+      const latestInboundTime = latestInbound?.receivedAt ?? latestInbound?.createdAt ?? null;
+
+      const drafts = draftRows.map((draft) => {
+        const parent = draft.replyToMessageId ? messageById.get(draft.replyToMessageId) : undefined;
+        const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
+        const isStale =
+          parentTime !== null &&
+          latestInboundTime !== null &&
+          latestInboundTime.getTime() > parentTime.getTime();
+        return toDraftWire(draft, isStale);
+      });
+
+      const { categoryIds, categories } = await loadThreadCategoriesForGet(
+        db,
+        transportId,
+        thread.id,
       );
-      if (transportId !== 'transport-nava') return parsed;
+
       return {
-        ...parsed,
-        debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
+        id: thread.id,
+        transportId: thread.transportId,
+        subject: thread.subject,
+        snippet: thread.snippet,
+        isArchived: thread.isArchived,
+        isStarred: thread.isStarred,
+        isRead: thread.isRead,
+        labelIds: thread.labelIds,
+        snoozedUntil: thread.snoozedUntil,
+        latestMessageAt: thread.latestMessageAt,
+        messages: parsedMessages,
+        latest,
+        hasUnread,
+        hasReplied,
+        totalReplies: mergeLinked
+          ? Math.max(0, conversation.conversationMessageCount - 1)
+          : Math.max(0, parsedMessages.length - 1),
+        labels: threadLabels,
+        drafts,
+        categoryIds,
+        categories,
+        conversationId: conversation.conversationId,
+        linkedThreadIds: conversation.linkedThreadIds,
+        conversationResponded: conversation.conversationResponded,
+        conversationMessageCount: conversation.conversationMessageCount,
+        primaryThreadId: conversation.primaryThreadId,
       };
-    });
-    const hasUnread = parsedMessages.some((m) => m.unread);
-    const hasReplied = mergeLinked
-      ? conversation.conversationResponded
-      : messages.some((m) => m.direction === 'outbound');
-    const labels = await db
-      .select({ id: mailLabel.id, name: mailLabel.name })
-      .from(mailLabel)
-      .where(eq(mailLabel.transportId, transportId));
-    const threadLabelIds = new Set(thread.labelIds ?? []);
-    const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
-    const latest = parsedMessages[parsedMessages.length - 1];
-
-    const draftRows = await db
-      .select()
-      .from(mailDraft)
-      .where(
-        and(
-          eq(mailDraft.threadId, input.id),
-          eq(mailDraft.transportId, transportId),
-          eq(mailDraft.isSent, false),
-          inArray(mailDraft.status, ['active', 'candidate']),
-        ),
-      )
-      .orderBy(
-        sql`CASE ${mailDraft.status} WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END`,
-        desc(mailDraft.updatedAt),
-        desc(mailDraft.id),
-      );
-
-    const messageById = new Map(messages.map((row) => [row.id, row]));
-    const latestInbound = messages
-      .filter((row) => row.direction === 'inbound')
-      .toSorted((a, b) => {
-        const aTime = (a.receivedAt ?? a.createdAt).getTime();
-        const bTime = (b.receivedAt ?? b.createdAt).getTime();
-        return bTime - aTime;
-      })[0];
-    const latestInboundTime = latestInbound?.receivedAt ?? latestInbound?.createdAt ?? null;
-
-    const drafts = draftRows.map((draft) => {
-      const parent = draft.replyToMessageId ? messageById.get(draft.replyToMessageId) : undefined;
-      const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
-      const isStale =
-        parentTime !== null &&
-        latestInboundTime !== null &&
-        latestInboundTime.getTime() > parentTime.getTime();
-      return toDraftWire(draft, isStale);
-    });
-
-    const { categoryIds, categories } = await loadThreadCategoriesForGet(
-      db,
-      transportId,
-      thread.id,
-    );
-
-    return {
-      id: thread.id,
-      transportId: thread.transportId,
-      subject: thread.subject,
-      snippet: thread.snippet,
-      isArchived: thread.isArchived,
-      isStarred: thread.isStarred,
-      isRead: thread.isRead,
-      labelIds: thread.labelIds,
-      snoozedUntil: thread.snoozedUntil,
-      latestMessageAt: thread.latestMessageAt,
-      messages: parsedMessages,
-      latest,
-      hasUnread,
-      hasReplied,
-      totalReplies: mergeLinked
-        ? Math.max(0, conversation.conversationMessageCount - 1)
-        : Math.max(0, parsedMessages.length - 1),
-      labels: threadLabels,
-      drafts,
-      categoryIds,
-      categories,
-      conversationId: conversation.conversationId,
-      linkedThreadIds: conversation.linkedThreadIds,
-      conversationResponded: conversation.conversationResponded,
-      conversationMessageCount: conversation.conversationMessageCount,
-      primaryThreadId: conversation.primaryThreadId,
-    };
-  }),
+    }),
 
   markAsRead: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
     const db = getDb();
@@ -725,7 +738,11 @@ export const mailRouter = tRouter({
         const isQuarantine = lbl?.name.toLowerCase() === 'quarantine';
         const labelCond = isQuarantine
           ? and(isNotNull(mailThread.spamAt), isNull(mailThread.trashedAt))
-          : and(eq(mailThread.isArchived, true), isNull(mailThread.spamAt), isNull(mailThread.trashedAt));
+          : and(
+              eq(mailThread.isArchived, true),
+              isNull(mailThread.spamAt),
+              isNull(mailThread.trashedAt),
+            );
 
         const rows = await db
           .select({ id: mailThread.id })
@@ -835,17 +852,15 @@ export const mailRouter = tRouter({
         .limit(1);
 
       if (existing.length > 0) {
-        await db
-          .delete(messageReaction)
-          .where(eq(messageReaction.id, existing[0].id));
+        await db.delete(messageReaction).where(eq(messageReaction.id, existing[0].id));
       } else {
         await db.insert(messageReaction).values({
           id: `reaction-${randomUUID()}`,
           messageId: input.messageId,
           transportId,
           userId,
-          userEmail,
           userName,
+          userEmail,
           reaction: input.reaction,
           source: 'internal',
         });
@@ -1269,17 +1284,34 @@ export const mailRouter = tRouter({
             return rowTime.getTime() > parentTime.getTime();
           });
         }
-        // HMS-enriched AI drafts: evidence/thread freshness cannot use confirmStaleDraft.
-        await assertHmsDraftFreshForAction({
-          db,
-          transportId,
-          draft: sendingDraft,
-          conflict: 'STALE_AI_DRAFT',
-        });
+        // HMS-enriched AI drafts: evidence/thread freshness cannot use
+        // confirmStaleDraft. An explicit current approval is the only path
+        // that may proceed after the editor has changed the candidate.
+        if (sendingDraft.origin === 'ai' && !input.draftApproval) {
+          await assertHmsDraftFreshForAction({
+            db,
+            transportId,
+            draft: sendingDraft,
+            conflict: 'STALE_AI_DRAFT',
+          });
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_REQUIRED' });
+        }
+        if (sendingDraft.origin === 'ai' && input.draftApproval && hasNewerInbound) {
+          // Do not route an approval-bound AI draft through the generic manual
+          // stale dialog; its approval is invalid as soon as the thread moves.
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+        }
         if (hasNewerInbound && !input.confirmStaleDraft) {
           throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
         }
       }
+    }
+
+    if (sendingDraft?.origin === 'ai' && !input.draftApproval) {
+      throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_REQUIRED' });
+    }
+    if (sendingDraft?.origin === 'ai' && !isVisibleDraftAssistanceEnabled()) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'AI_DRAFTS_ROUTE_UNAVAILABLE' });
     }
 
     const { inReplyTo, references } = resolveReplyHeaders({
@@ -1321,6 +1353,49 @@ export const mailRouter = tRouter({
       attachments: smtpAttachments,
     };
 
+    const approvalPayload = {
+      draftId: sendingDraft?.id,
+      generationId: sendingDraft?.generationId,
+      transportId,
+      threadId,
+      subject: input.subject,
+      html,
+      text: input.text,
+      to: input.to,
+      cc: input.cc,
+      // Self-BCC is a server-derived filing copy, not user-reviewed input.
+      bcc: input.bcc,
+      attachments: (input.attachments ?? []).map((attachment) => ({
+        filename: attachment.name,
+        mimeType: attachment.type,
+        sizeBytes: attachment.size,
+        contentBase64: attachment.base64,
+      })),
+    };
+
+    let approvedDraft: DraftApproval | undefined;
+    if (sendingDraft?.origin === 'ai') {
+      try {
+        const signingSecret = getDraftApprovalSigningSecret();
+        approvedDraft = parseDraftApproval(input.draftApproval, signingSecret);
+        if (approvedDraft.approvedByUserId !== ctx.sessionUser.id) {
+          throw new DraftApprovalError('approval belongs to a different reviewer');
+        }
+        await assertDraftApprovalCurrent({
+          db,
+          approval: approvedDraft,
+          payload: approvalPayload,
+          loadThreadStateVersion: loadLiveThreadStateVersion,
+          signingSecret,
+        });
+      } catch (error) {
+        if (error instanceof DraftApprovalError) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+        }
+        throw error;
+      }
+    }
+
     const undoSecs = getUndoSendSeconds();
     const now = new Date();
     const scheduleAtMs = input.scheduleAt ? Date.parse(input.scheduleAt) : NaN;
@@ -1330,6 +1405,23 @@ export const mailRouter = tRouter({
       : new Date(now.getTime() + undoSecs * 1000);
 
     await db.transaction(async (tx) => {
+      if (approvedDraft && sendingDraft?.origin === 'ai') {
+        try {
+          await claimDraftApprovalForSend({
+            db: tx as unknown as DB,
+            approval: approvedDraft,
+            payload: approvalPayload,
+            queueMessageId: messageId,
+            loadThreadStateVersion: loadLiveThreadStateVersion,
+            signingSecret: getDraftApprovalSigningSecret(),
+          });
+        } catch (error) {
+          if (error instanceof DraftApprovalError) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+          }
+          throw error;
+        }
+      }
       await tx.insert(message).values({
         id: messageId,
         transportId,
@@ -1360,6 +1452,7 @@ export const mailRouter = tRouter({
         messageId,
         sendAt,
         smtpPayload,
+        draftApproval: approvedDraft,
         db: tx as unknown as typeof db,
       });
       if (input.draftId) {

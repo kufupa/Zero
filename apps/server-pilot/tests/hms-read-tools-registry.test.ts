@@ -12,6 +12,7 @@ import {
 import {
   CAPABILITY_PROMOTION_ORDER,
   HMS_READ_TOOL_IDS,
+  INCLUDED_READ_TOOL_IDS,
   READ_TOOLS,
   activeShadowToolIds,
   assertReadToolRegistrySealed,
@@ -23,12 +24,12 @@ import {
   nonOverlappingIntentMembership,
   portfolioAblationReplay,
   productionActiveReadToolIds,
+  productionActiveReservationContextToolIds,
   type CapabilityEvidenceRefs,
   type ReadToolId,
 } from '../src/hms/read-tools';
 
 const REQUIRED_TOOL_IDS: ReadToolId[] = [
-  'mail_read_artifact',
   'hms_find_reservation',
   'hms_quote_stay',
   'hms_list_documents',
@@ -40,8 +41,22 @@ const REQUIRED_TOOL_IDS: ReadToolId[] = [
 ];
 
 describe('READ_TOOLS portfolio registry', () => {
-  it('registers mail_read_artifact v2', () => {
+  it('keeps the excluded mail adapter out of active enumeration', () => {
     expect(READ_TOOLS.mail_read_artifact.version).toBe('2');
+    expect(listReadToolIds()).not.toContain('mail_read_artifact');
+    expect(hmsReadToolIdSchema.safeParse('mail_read_artifact').success).toBe(false);
+  });
+
+  it('freezes the approved read scope without property knowledge or mailbox artifacts', () => {
+    expect(INCLUDED_READ_TOOL_IDS).toEqual([
+      ...REQUIRED_TOOL_IDS,
+      'hms_read_reservation',
+      'hms_read_notes_traces',
+      'mail_parse_channel_payload',
+    ]);
+    expect(INCLUDED_READ_TOOL_IDS).not.toContain('property_read_knowledge' as never);
+    expect(INCLUDED_READ_TOOL_IDS).not.toContain('mail_read_artifact' as never);
+    expect(INCLUDED_READ_TOOL_IDS).not.toContain('documents_read_existing' as never);
   });
 
   it('lists every Phase B target tool with closed required fields', () => {
@@ -116,17 +131,35 @@ describe('READ_TOOLS portfolio registry', () => {
     ]);
   });
 
-  it('does not treat fixture contracts as production activation evidence', () => {
-    const active = productionActiveReadToolIds();
-    expect(active).toEqual([]);
+  it('activates soft-proven PMS read tools with liveProofDigest', () => {
+    const active = productionActiveReadToolIds().sort();
+    expect(active).toEqual(['hms_find_reservation']);
     expect(READ_TOOLS.hms_find_reservation.evidenceRefs).toEqual({
       fixtureDigest:
         '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+      discoveryDigest:
+        '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+      liveProofDigest:
+        '47a0121bd941d6508d924f3336a741b8eea4e70ec146d62d5635fae7e460a389',
+    });
+    expect(READ_TOOLS.hms_quote_stay.evidenceRefs).toEqual({
+      fixtureDigest:
+        '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
+      discoveryDigest:
+        '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
     });
 
-    for (const id of listReadToolIds()) {
-      expect(isProductionActiveReadTool(id)).toBe(false);
-    }
+    expect(isProductionActiveReadTool('hms_find_reservation')).toBe(true);
+    expect(isProductionActiveReadTool('hms_quote_stay')).toBe(false);
+    expect(isProductionActiveReadTool('hms_read_folio')).toBe(false);
+    expect(isProductionActiveReadTool('hms_event_read')).toBe(false);
+    expect(isProductionActiveReadTool('mail_read_artifact')).toBe(false);
+  });
+
+  it('exposes A1 as production-active context tool, not Phase-B READ_TOOL_IDS', () => {
+    expect(listReadToolIds()).not.toContain('hms_read_reservation');
+    expect(productionActiveReservationContextToolIds()).toEqual([]);
+    expect(productionActiveReadToolIds()).not.toContain('hms_read_reservation' as ReadToolId);
   });
 
   it('derives capability state only from present valid evidence refs', () => {
@@ -178,8 +211,9 @@ describe('READ_TOOLS portfolio registry', () => {
       }),
     ).toBe('planned');
 
-    expect(capabilityStateFor('hms_find_reservation')).toBe('fixture_verified');
-    expect(capabilityStateFor('hms_quote_stay')).toBe('fixture_verified');
+    expect(capabilityStateFor('hms_find_reservation')).toBe('live_verified');
+    expect(capabilityStateFor('hms_quote_stay')).toBe('discovery_verified');
+    expect(capabilityStateFor('hms_read_folio')).toBe('discovery_verified');
     expect(capabilityStateFor('hms_company_account_read')).toBe(
       'fixture_verified',
     );

@@ -8,7 +8,7 @@ type ThreadCorpusRawMime = {
   status: string | null;
 };
 
-type ThreadCorpusAttachmentSourceDescriptor = {
+export type ThreadCorpusAttachmentSourceDescriptor = {
   id: string;
   messageId: string;
   filename: string;
@@ -47,6 +47,96 @@ type ThreadCorpusMessageRow = {
   canonicalHeaders: Readonly<Record<string, readonly string[]>>;
   rawMime: ThreadCorpusRawMime;
 };
+
+/** Fixed production scope for the nine-day Centurion evidence snapshot. */
+export const CENTURION_TRANSPORT_ID = 'transport-centurion' as const;
+export const CENTURION_WINDOW_TIMEZONE = 'Africa/Johannesburg' as const;
+export const CENTURION_WINDOW_START_UTC = '2026-09-07T22:00:00.000Z' as const;
+export const CENTURION_WINDOW_END_UTC = '2026-09-16T22:00:00.000Z' as const;
+
+export type CenturionCorpusWindow = {
+  startInclusive: string;
+  endExclusive: string;
+  timezone: typeof CENTURION_WINDOW_TIMEZONE;
+};
+
+export type CenturionEventAtSource =
+  | 'sent_at_confirmed_outbound'
+  | 'received_at'
+  | 'sent_at_fallback'
+  | 'created_at'
+  | 'missing';
+
+export type CenturionBusinessDirection = 'inbound' | 'outbound' | 'unknown';
+
+export type CenturionBusinessDirectionSource =
+  | 'transport_identity'
+  | 'message_direction'
+  | 'unknown';
+
+export type CenturionCorpusMessageScope = 'in_window' | 'context_only' | 'missing_event_at';
+
+/**
+ * Complete message evidence used by the fixed Centurion snapshot. `direction` and
+ * `messageDirection` intentionally retain the persisted message value; business direction is
+ * a separate inference and must not overwrite it.
+ */
+export type CenturionCorpusMessageRow = {
+  id: string;
+  transportId: string;
+  threadId: string | null;
+  messageId: string | null;
+  direction: string;
+  messageDirection: string;
+  businessDirection: CenturionBusinessDirection;
+  businessDirectionSource: CenturionBusinessDirectionSource;
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+  from: readonly string[];
+  to: readonly string[];
+  cc: readonly string[];
+  bcc: readonly string[];
+  receivedAt: string | null;
+  sentAt: string | null;
+  createdAt: string | null;
+  eventAt: string | null;
+  eventAtSource: CenturionEventAtSource;
+  eventAtFallback: boolean;
+  inReplyTo: string | null;
+  references: readonly string[];
+  rawMimeLocator: string | null;
+  attachmentDescriptors: readonly ThreadCorpusAttachmentSourceDescriptor[];
+  confirmedOutbound: boolean;
+  queueState: string | null;
+  scope: CenturionCorpusMessageScope;
+  contextOnly: boolean;
+  dailyIncluded: boolean;
+};
+
+export type CenturionCorpusSnapshot = {
+  asOf: string;
+  transportId: typeof CENTURION_TRANSPORT_ID;
+  window: CenturionCorpusWindow;
+  messages: readonly CenturionCorpusMessageRow[];
+  counts: {
+    sourceRowCount: number;
+    includedMessageCount: number;
+    contextOnlyMessageCount: number;
+    missingEventAtCount: number;
+  };
+};
+
+export type CenturionCorpusSnapshotRequest = {
+  transportId?: typeof CENTURION_TRANSPORT_ID;
+  startInclusive?: string;
+  endExclusive?: string;
+};
+
+type UnscopedCenturionCorpusMessage = Omit<
+  CenturionCorpusMessageRow,
+  'attachmentDescriptors' | 'scope' | 'contextOnly' | 'dailyIncluded'
+>;
 
 type ActiveTransportScope = {
   asOf: string;
@@ -98,6 +188,7 @@ export type ThreadCorpusPostgresReaderOptions = {
 };
 
 export type ThreadCorpusPostgresReader = ThreadCorpusSnapshotReader & {
+  readCenturionSnapshot(request?: CenturionCorpusSnapshotRequest): Promise<CenturionCorpusSnapshot>;
   close(): Promise<void>;
 };
 
@@ -147,6 +238,39 @@ type QueueRow = {
   messageId?: unknown;
   transportId?: unknown;
   status?: unknown;
+};
+
+type CenturionTransportRow = {
+  id?: unknown;
+  email?: unknown;
+  ownerHeaderValue?: unknown;
+  sendFromConfig?: unknown;
+  isActive?: unknown;
+};
+
+type CenturionMessageRow = {
+  id?: unknown;
+  transportId?: unknown;
+  messageThreadId?: unknown;
+  resolvedThreadId?: unknown;
+  threadTransportId?: unknown;
+  messageId?: unknown;
+  direction?: unknown;
+  subject?: unknown;
+  textBody?: unknown;
+  htmlBody?: unknown;
+  fromAddress?: unknown;
+  toAddresses?: unknown;
+  ccAddresses?: unknown;
+  bccAddresses?: unknown;
+  receivedAt?: unknown;
+  sentAt?: unknown;
+  createdAt?: unknown;
+  inReplyTo?: unknown;
+  references?: unknown;
+  rawMimeLocator?: unknown;
+  confirmedQueueStatus?: unknown;
+  queueStatus?: unknown;
 };
 
 type Selection = {
@@ -453,6 +577,454 @@ async function readAttachmentDescriptors(
   };
 }
 
+function centurionWindowFrom(
+  request: CenturionCorpusSnapshotRequest = {},
+): CenturionCorpusWindow {
+  if (request.transportId !== undefined && request.transportId !== CENTURION_TRANSPORT_ID) {
+    throw new Error('Centurion transport scope is fixed');
+  }
+  if (
+    (request.startInclusive !== undefined &&
+      request.startInclusive !== CENTURION_WINDOW_START_UTC) ||
+    (request.endExclusive !== undefined && request.endExclusive !== CENTURION_WINDOW_END_UTC)
+  ) {
+    throw new Error('Centurion window is fixed');
+  }
+  return {
+    startInclusive: CENTURION_WINDOW_START_UTC,
+    endExclusive: CENTURION_WINDOW_END_UTC,
+    timezone: CENTURION_WINDOW_TIMEZONE,
+  };
+}
+
+function utcNaiveTimestamp(value: string): string {
+  return value.endsWith('Z') ? value.slice(0, -1) : value;
+}
+
+function normalizedAddress(value: unknown): string | null {
+  const text = textOrNull(value);
+  if (!text) return null;
+  const bracketed = text.match(/<\s*([^<>]+?)\s*>/);
+  return (bracketed?.[1] ?? text).trim().toLowerCase() || null;
+}
+
+function nestedIdentityValues(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value === null || value === undefined) return [];
+  if (typeof value === 'string') {
+    const parsed = stringArray(value);
+    return parsed.length > 0 ? parsed : [value];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => nestedIdentityValues(item, depth + 1));
+  }
+  if (typeof value !== 'object') return [];
+  return Object.values(value as Record<string, unknown>).flatMap((item) =>
+    nestedIdentityValues(item, depth + 1),
+  );
+}
+
+function transportIdentitySet(row: CenturionTransportRow): ReadonlySet<string> {
+  return new Set(
+    [row.email, row.ownerHeaderValue, ...nestedIdentityValues(row.sendFromConfig)]
+      .map(normalizedAddress)
+      .filter((value): value is string => value !== null),
+  );
+}
+
+function centurionTransportRow(row: CenturionTransportRow): ReadonlySet<string> {
+  if (textOrNull(row.id) !== CENTURION_TRANSPORT_ID || row.isActive === false) {
+    throw new Error('Centurion transport is unavailable');
+  }
+  return transportIdentitySet(row);
+}
+
+async function readCenturionTransport(
+  connection: ThreadCorpusPostgresClient,
+): Promise<ReadonlySet<string>> {
+  const rows = await connection<CenturionTransportRow>`
+    SELECT
+      id,
+      email,
+      owner_header_value AS "ownerHeaderValue",
+      send_from_config AS "sendFromConfig",
+      is_active AS "isActive"
+    FROM mailbox_transport
+    WHERE id = ${CENTURION_TRANSPORT_ID}
+      AND is_active = true
+  `;
+  const row = rows.find((candidate) => textOrNull(candidate.id) === CENTURION_TRANSPORT_ID);
+  if (!row) throw new Error('Centurion transport is unavailable');
+  return centurionTransportRow(row);
+}
+
+function eventAtForCenturionMessage(row: CenturionMessageRow): {
+  eventAt: string | null;
+  eventAtSource: CenturionEventAtSource;
+  eventAtFallback: boolean;
+  confirmedOutbound: boolean;
+} {
+  const direction = textOrNull(row.direction) ?? 'unknown';
+  const sentAt = timestampOrNull(row.sentAt);
+  const confirmedOutbound = direction === 'outbound' && textOrNull(row.confirmedQueueStatus ?? row.queueStatus) === 'sent' && sentAt !== null;
+  if (confirmedOutbound) {
+    return {
+      eventAt: sentAt,
+      eventAtSource: 'sent_at_confirmed_outbound',
+      eventAtFallback: false,
+      confirmedOutbound: true,
+    };
+  }
+  const receivedAt = timestampOrNull(row.receivedAt);
+  if (receivedAt) {
+    return {
+      eventAt: receivedAt,
+      eventAtSource: 'received_at',
+      eventAtFallback: false,
+      confirmedOutbound: false,
+    };
+  }
+  if (sentAt) {
+    return {
+      eventAt: sentAt,
+      eventAtSource: 'sent_at_fallback',
+      eventAtFallback: true,
+      confirmedOutbound: false,
+    };
+  }
+  const createdAt = timestampOrNull(row.createdAt);
+  if (createdAt) {
+    return {
+      eventAt: createdAt,
+      eventAtSource: 'created_at',
+      eventAtFallback: true,
+      confirmedOutbound: false,
+    };
+  }
+  return {
+    eventAt: null,
+    eventAtSource: 'missing',
+    eventAtFallback: true,
+    confirmedOutbound: false,
+  };
+}
+
+function inferCenturionBusinessDirection(
+  row: CenturionMessageRow,
+  identities: ReadonlySet<string>,
+): {
+  direction: CenturionBusinessDirection;
+  source: CenturionBusinessDirectionSource;
+} {
+  const from = stringArray(row.fromAddress);
+  const recipients = [
+    ...stringArray(row.toAddresses),
+    ...stringArray(row.ccAddresses),
+    ...stringArray(row.bccAddresses),
+  ];
+  const fromMatches = from.some((value) => {
+    const normalized = normalizedAddress(value);
+    return normalized !== null && identities.has(normalized);
+  });
+  const recipientMatches = recipients.some((value) => {
+    const normalized = normalizedAddress(value);
+    return normalized !== null && identities.has(normalized);
+  });
+  if (fromMatches) return { direction: 'outbound', source: 'transport_identity' };
+  if (recipientMatches) return { direction: 'inbound', source: 'transport_identity' };
+
+  const persistedDirection = textOrNull(row.direction);
+  if (persistedDirection === 'inbound' || persistedDirection === 'outbound') {
+    return { direction: persistedDirection, source: 'message_direction' };
+  }
+  return { direction: 'unknown', source: 'unknown' };
+}
+
+function mapCenturionMessageRow(
+  row: CenturionMessageRow,
+  identities: ReadonlySet<string>,
+): {
+  message: UnscopedCenturionCorpusMessage;
+  eventAt: string | null;
+} | null {
+  const id = textOrNull(row.id);
+  const transportId = textOrNull(row.transportId);
+  if (!id || transportId !== CENTURION_TRANSPORT_ID) return null;
+  const resolvedThreadId = textOrNull(row.resolvedThreadId);
+  const messageThreadId = textOrNull(row.messageThreadId);
+  const threadTransportId = textOrNull(row.threadTransportId);
+  if (resolvedThreadId && threadTransportId && threadTransportId !== transportId) return null;
+  const direction = textOrNull(row.direction) ?? 'unknown';
+  const event = eventAtForCenturionMessage(row);
+  const business = inferCenturionBusinessDirection(row, identities);
+  return {
+    eventAt: event.eventAt,
+    message: {
+      id,
+      transportId,
+      threadId:
+        resolvedThreadId && messageThreadId && threadTransportId === transportId
+          ? messageThreadId
+          : null,
+      messageId: textOrNull(row.messageId),
+      direction,
+      messageDirection: direction,
+      businessDirection: business.direction,
+      businessDirectionSource: business.source,
+      subject: textOrEmpty(row.subject),
+      textBody: textOrEmpty(row.textBody),
+      htmlBody: textOrEmpty(row.htmlBody),
+      from: stringArray(row.fromAddress),
+      to: stringArray(row.toAddresses),
+      cc: stringArray(row.ccAddresses),
+      bcc: stringArray(row.bccAddresses),
+      receivedAt: timestampOrNull(row.receivedAt),
+      sentAt: timestampOrNull(row.sentAt),
+      createdAt: timestampOrNull(row.createdAt),
+      eventAt: event.eventAt,
+      eventAtSource: event.eventAtSource,
+      eventAtFallback: event.eventAtFallback,
+      inReplyTo: textOrNull(row.inReplyTo),
+      references: stringArray(row.references),
+      rawMimeLocator: textOrNull(row.rawMimeLocator),
+      confirmedOutbound: event.confirmedOutbound,
+      queueState: textOrNull(row.confirmedQueueStatus ?? row.queueStatus),
+    },
+  };
+}
+
+async function readCenturionMessages(
+  connection: ThreadCorpusPostgresClient,
+  asOf: string,
+  window: CenturionCorpusWindow,
+  identities: ReadonlySet<string>,
+): Promise<UnscopedCenturionCorpusMessage[]> {
+  const snapshotAsOf = utcNaiveTimestamp(asOf);
+  const startInclusive = utcNaiveTimestamp(window.startInclusive);
+  const endExclusive = utcNaiveTimestamp(window.endExclusive);
+  const rows = await connection<CenturionMessageRow>`
+    WITH candidates AS (
+      SELECT
+        m.id,
+        m.thread_id AS "messageThreadId",
+        CASE
+          WHEN m.direction::text = 'outbound'
+            AND m.sent_at IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM outbound_send_queue AS q
+              WHERE q.message_id = m.id
+                AND q.transport_id = m.transport_id
+                AND q.status = 'sent'
+                AND q.created_at < ${snapshotAsOf}
+            ) THEN m.sent_at
+          WHEN m.received_at IS NOT NULL THEN m.received_at
+          WHEN m.sent_at IS NOT NULL THEN m.sent_at
+          ELSE m.created_at
+        END AS "eventAt"
+      FROM message AS m
+      LEFT JOIN mail_thread AS t ON t.id = m.thread_id
+      WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+        AND (m.created_at < ${snapshotAsOf} OR m.created_at IS NULL)
+        AND (t.id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
+    ),
+    in_window_threads AS (
+      SELECT DISTINCT c."messageThreadId" AS thread_id
+      FROM candidates AS c
+      WHERE c."eventAt" >= ${startInclusive}
+        AND c."eventAt" < ${endExclusive}
+        AND c."eventAt" < ${snapshotAsOf}
+        AND c."messageThreadId" IS NOT NULL
+    ),
+    selected_candidates AS (
+      SELECT c.id, c."messageThreadId", c."eventAt"
+      FROM candidates AS c
+      WHERE (
+        c."eventAt" >= ${startInclusive}
+        AND c."eventAt" < ${endExclusive}
+        AND c."eventAt" < ${snapshotAsOf}
+      )
+        OR (
+          c."eventAt" < ${startInclusive}
+          AND c."messageThreadId" IN (SELECT thread_id FROM in_window_threads)
+        )
+        OR c."eventAt" IS NULL
+    )
+    SELECT
+      m.id,
+      m.transport_id AS "transportId",
+      m.thread_id AS "messageThreadId",
+      t.id AS "resolvedThreadId",
+      t.transport_id AS "threadTransportId",
+      m.message_id_header AS "messageId",
+      m.direction::text AS "direction",
+      m.subject,
+      m.text_body AS "textBody",
+      m.html_body AS "htmlBody",
+      m.from_address AS "fromAddress",
+      m.to_addresses AS "toAddresses",
+      m.cc_addresses AS "ccAddresses",
+      m.bcc_addresses AS "bccAddresses",
+      m.received_at AS "receivedAt",
+      m.sent_at AS "sentAt",
+      m.created_at AS "createdAt",
+      m.in_reply_to AS "inReplyTo",
+      m."references" AS "references",
+      m.raw_mime_s3_key AS "rawMimeLocator",
+      (
+        SELECT q.status
+        FROM outbound_send_queue AS q
+        WHERE q.message_id = m.id
+          AND q.transport_id = m.transport_id
+          AND q.status = 'sent'
+          AND q.created_at < ${snapshotAsOf}
+        ORDER BY q.created_at DESC, q.id DESC
+        LIMIT 1
+      ) AS "confirmedQueueStatus"
+    FROM selected_candidates AS selected
+    INNER JOIN message AS m ON m.id = selected.id
+    LEFT JOIN mail_thread AS t ON t.id = m.thread_id
+    WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+      AND (m.created_at < ${snapshotAsOf} OR m.created_at IS NULL)
+      AND (t.id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
+    ORDER BY selected."eventAt" NULLS LAST, m.id
+  `;
+  return rows
+    .map((row) => mapCenturionMessageRow(row, identities))
+    .filter((row): row is NonNullable<ReturnType<typeof mapCenturionMessageRow>> => row !== null)
+    .map((row) => ({
+      ...row.message,
+      attachmentDescriptors: [],
+      scope: 'missing_event_at' as const,
+      contextOnly: false,
+      dailyIncluded: false,
+    }));
+}
+
+async function readCenturionAttachmentDescriptors(
+  connection: ThreadCorpusPostgresClient,
+  messageIds: readonly string[],
+  asOf: string,
+): Promise<ThreadCorpusAttachmentSourceDescriptor[]> {
+  if (messageIds.length === 0) return [];
+  const rows = await connection<AttachmentRow>`
+    SELECT
+      a.id,
+      a.message_id AS "messageId",
+      a.filename,
+      a.mime_type AS "contentType",
+      a.size_bytes AS "byteSize",
+      a.s3_key AS "s3Key",
+      a.is_inline AS "inline",
+      a.content_id AS "contentId"
+    FROM attachment AS a
+    INNER JOIN message AS m ON m.id = a.message_id
+    WHERE a.message_id = ANY(${messageIds})
+      AND m.transport_id = ${CENTURION_TRANSPORT_ID}
+      AND m.created_at < ${asOf}
+      AND a.created_at < ${asOf}
+    ORDER BY a.message_id, a.id
+  `;
+  const selected = new Set(messageIds);
+  return rows
+    .map(mapAttachmentRow)
+    .filter((row): row is ThreadCorpusAttachmentSourceDescriptor => row !== null)
+    .filter((row) => selected.has(row.messageId));
+}
+
+function classifyCenturionMessages(
+  messages: readonly UnscopedCenturionCorpusMessage[],
+  window: CenturionCorpusWindow,
+): CenturionCorpusMessageRow[] {
+  const mainThreadIds = new Set(
+    messages
+      .filter(
+        (message) =>
+          message.eventAt !== null &&
+          message.eventAt >= window.startInclusive &&
+          message.eventAt < window.endExclusive,
+      )
+      .map((message) => message.threadId)
+      .filter((threadId): threadId is string => threadId !== null),
+  );
+  const classified = messages.flatMap((message) => {
+    const inWindow =
+      message.eventAt !== null &&
+      message.eventAt >= window.startInclusive &&
+      message.eventAt < window.endExclusive;
+    const contextOnly =
+      !inWindow &&
+      message.eventAt !== null &&
+      message.eventAt < window.startInclusive &&
+      message.threadId !== null &&
+      mainThreadIds.has(message.threadId);
+    const missingEventAt = message.eventAt === null;
+    if (!inWindow && !contextOnly && !missingEventAt) return [];
+    return [
+      {
+        ...message,
+        scope: inWindow ? ('in_window' as const) : contextOnly ? ('context_only' as const) : ('missing_event_at' as const),
+        contextOnly,
+        dailyIncluded: inWindow,
+        attachmentDescriptors: [],
+      },
+    ];
+  });
+  const scopeRank: Record<CenturionCorpusMessageScope, number> = {
+    in_window: 0,
+    context_only: 1,
+    missing_event_at: 2,
+  };
+  return classified.sort((left, right) => {
+    const scopeOrder = scopeRank[left.scope] - scopeRank[right.scope];
+    if (scopeOrder !== 0) return scopeOrder;
+    if (left.eventAt === null && right.eventAt !== null) return 1;
+    if (left.eventAt !== null && right.eventAt === null) return -1;
+    const eventOrder = (left.eventAt ?? '').localeCompare(right.eventAt ?? '');
+    return eventOrder || left.id.localeCompare(right.id);
+  });
+}
+
+async function readCenturionSnapshotInTransaction(
+  connection: ThreadCorpusPostgresClient,
+  asOf: string,
+  window: CenturionCorpusWindow,
+): Promise<CenturionCorpusSnapshot> {
+  const identities = await readCenturionTransport(connection);
+  const messages = classifyCenturionMessages(
+    await readCenturionMessages(connection, asOf, window, identities),
+    window,
+  );
+  const descriptors = await readCenturionAttachmentDescriptors(
+    connection,
+    messages.map((message) => message.id),
+    asOf,
+  );
+  const descriptorsByMessageId = new Map<string, ThreadCorpusAttachmentSourceDescriptor[]>();
+  for (const descriptor of descriptors) {
+    const existing = descriptorsByMessageId.get(descriptor.messageId) ?? [];
+    existing.push(descriptor);
+    descriptorsByMessageId.set(descriptor.messageId, existing);
+  }
+  const completedMessages = messages.map((message) => ({
+    ...message,
+    attachmentDescriptors: (descriptorsByMessageId.get(message.id) ?? []).map((descriptor) => ({
+      ...descriptor,
+    })),
+  }));
+  return {
+    asOf,
+    transportId: CENTURION_TRANSPORT_ID,
+    window,
+    messages: completedMessages,
+    counts: {
+      sourceRowCount: completedMessages.length,
+      includedMessageCount: completedMessages.filter((message) => message.dailyIncluded).length,
+      contextOnlyMessageCount: completedMessages.filter((message) => message.contextOnly).length,
+      missingEventAtCount: completedMessages.filter((message) => message.eventAt === null).length,
+    },
+  };
+}
+
 async function readDraftRevisionLinks(
   connection: ThreadCorpusPostgresClient,
   messageIds: readonly string[],
@@ -668,6 +1240,24 @@ export function createThreadCorpusPostgresReader(
   let closing: Promise<void> | undefined;
 
   return {
+    async readCenturionSnapshot(
+      request: CenturionCorpusSnapshotRequest = {},
+    ): Promise<CenturionCorpusSnapshot> {
+      if (closed || closing) throw new Error('Reader is closed');
+      const window = centurionWindowFrom(request);
+      activeSnapshots += 1;
+      try {
+        return await connection.begin(
+          'isolation level repeatable read read only',
+          async (transaction) => {
+            const asOf = await resolveAsOf(transaction, selection.asOf);
+            return await readCenturionSnapshotInTransaction(transaction, asOf, window);
+          },
+        );
+      } finally {
+        activeSnapshots -= 1;
+      }
+    },
     async withRepeatableReadOnly<T>(
       load: (session: ThreadCorpusSnapshotReadSession) => Promise<T>,
     ): Promise<T> {

@@ -1,10 +1,50 @@
 import type { ParsedDraft } from '@zero/server/driver/types';
-import type { ParsedMessage } from '@/types';
 import { plainTextDraftPreview } from './draft-preview';
+import type { ParsedMessage } from '@/types';
 
 export type HmsCandidateFreshness = 'fresh' | 'stale_thread' | 'stale_evidence' | 'unknown';
 export type HmsCandidateOutcome = 'candidate' | 'needs_clarification' | 'insufficient_evidence';
 export type HmsRefreshState = 'queued' | 'claimed' | 'running' | 'retry_wait' | 'idle' | 'failed';
+
+export type DraftReviewInput = {
+  origin: 'manual' | 'ai';
+  isStale: boolean;
+  body: string;
+  subject: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  attachmentKeys: string[];
+  evidenceVersion: string | null | undefined;
+  approvedFingerprint?: string | null;
+};
+
+export type DraftReviewState = 'manual' | 'review' | 'approved';
+
+/** UI-only review identity; the server's closed approval token remains authoritative. */
+export function draftApprovalReviewFingerprint(
+  input: Omit<DraftReviewInput, 'approvedFingerprint'>,
+): string {
+  return [
+    input.origin,
+    input.isStale ? 'stale' : 'fresh',
+    input.body,
+    input.subject,
+    input.to.join('\u001f'),
+    input.cc.join('\u001f'),
+    input.bcc.join('\u001f'),
+    input.attachmentKeys.join('\u001f'),
+    input.evidenceVersion ?? '',
+  ].join('\u001e');
+}
+
+export function resolveDraftReviewState(input: DraftReviewInput): DraftReviewState {
+  if (input.origin === 'manual') return 'manual';
+  if (input.isStale) return 'review';
+  return input.approvedFingerprint === draftApprovalReviewFingerprint(input)
+    ? 'approved'
+    : 'review';
+}
 
 export type ThreadDraftViewModel = {
   id: string;

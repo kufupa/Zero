@@ -1,16 +1,16 @@
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { useSession } from '@/lib/auth-client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { getDemoDraft, type DemoDraft } from '@/lib/demo/local-store';
 import { parseRecipientToken, splitRecipientField } from '../lib/demo/recipient-parsing';
+import { getDemoDraft, type DemoDraft } from '@/lib/demo/local-store';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useTRPC } from '@/providers/query-provider';
+import { useSession } from '@/lib/auth-client';
 
-type DraftLike = {
+export type DraftLike = {
   id: string;
   threadId?: string | null;
   replyToMessageId?: string | null;
-  content?: string;
-  subject?: string;
+  content?: string | null;
+  subject?: string | null;
   updatedAt?: string;
   status?: 'active' | 'candidate' | 'discarded' | 'sent';
   origin?: 'manual' | 'ai';
@@ -23,6 +23,11 @@ type DraftLike = {
   cc?: string[];
   bcc?: string[];
 };
+
+/** AI drafts always take the explicit review/approval path before send. */
+export function isAssistedDraft(draft?: DraftLike | null): boolean {
+  return draft?.origin === 'ai';
+}
 
 const normalizeEmailList = (value: string): string[] => {
   const recipients = splitRecipientField(value)

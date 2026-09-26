@@ -1,0 +1,12 @@
+{
+  "name": "@zero/hms-stagehand-trial",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated development dependencies for the HMS Stagehand v4 read-tool trial",
+  "engines": { "node": ">=22.18.0" },
+  "dependencies": {
+    "@browserbasehq/stagehand": "4.1.0",
+    "playwright": "1.63.0"
+  }
+}

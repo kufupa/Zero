@@ -24,6 +24,8 @@ import {
   ROPPERMAN_USER_ID,
   DARREN_USER_EMAIL,
   DARREN_USER_ID,
+  KAMALA_USER_EMAIL,
+  KAMALA_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
@@ -50,6 +52,7 @@ describe('seed identity constants', () => {
       { id: MARTHA_USER_ID, name: 'Martha Mthembu', email: MARTHA_USER_EMAIL },
       { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
       { id: DARREN_USER_ID, name: 'Darren Bezuidenhout', email: DARREN_USER_EMAIL },
+      { id: KAMALA_USER_ID, name: 'Kamala Douglas', email: KAMALA_USER_EMAIL },
     ]);
   });
 
@@ -176,6 +179,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           MARTHA_USER_ID,
           ROPPERMAN_USER_ID,
           DARREN_USER_ID,
+          KAMALA_USER_ID,
         ]) {
           const rows = result.access.filter((r) => r.userId === userId);
           expect(rows).toEqual([
@@ -219,7 +223,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'transport-centurion has Nava + Centurion + Martha + Ropperman + Darren owner rows',
+      'transport-centurion has Nava + Centurion + Martha + Ropperman + Darren + Kamala owner rows',
       async () => {
         const access = await withSeededTestDb(async (db) => {
           return db
@@ -230,7 +234,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.transportId, 'transport-centurion'));
         });
-        expect(access).toHaveLength(5);
+        expect(access).toHaveLength(6);
         expect(access).toEqual(
           expect.arrayContaining([
             { userId: NAVA_USER_ID, role: 'owner' },
@@ -238,6 +242,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             { userId: MARTHA_USER_ID, role: 'owner' },
             { userId: ROPPERMAN_USER_ID, role: 'owner' },
             { userId: DARREN_USER_ID, role: 'owner' },
+            { userId: KAMALA_USER_ID, role: 'owner' },
           ]),
         );
       },
@@ -278,12 +283,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select({ transportId: mailboxAccess.transportId })
             .from(mailboxAccess)
             .where(eq(mailboxAccess.userId, DARREN_USER_ID));
+          const kamala = await db
+            .select({ transportId: mailboxAccess.transportId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, KAMALA_USER_ID));
           return {
             navaIds: nava.map((r) => r.transportId).sort(),
             cenIds: cen.map((r) => r.transportId),
             marthaIds: martha.map((r) => r.transportId),
             roppermanIds: ropperman.map((r) => r.transportId),
             darrenIds: darren.map((r) => r.transportId),
+            kamalaIds: kamala.map((r) => r.transportId),
           };
         });
         expect(outcome.navaIds).toContain('transport-davinci');
@@ -293,12 +303,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.marthaIds).toEqual(['transport-centurion']);
         expect(outcome.roppermanIds).toEqual(['transport-centurion']);
         expect(outcome.darrenIds).toEqual(['transport-centurion']);
+        expect(outcome.kamalaIds).toEqual(['transport-centurion']);
       },
       30000,
     );
 
     it(
-      'seeds navaai@, centurion@, martha@, ropperman@, and dbezuidenhout@ pilot users with emailVerified=true',
+      'seeds navaai@, centurion@, martha@, ropperman@, dbezuidenhout@, and kdouglas@ pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -309,7 +320,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             })
             .from(userTable);
         });
-        expect(users).toHaveLength(5);
+        expect(users).toHaveLength(6);
         expect(users).toEqual(
           expect.arrayContaining([
             {
@@ -335,6 +346,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             {
               id: DARREN_USER_ID,
               email: DARREN_USER_EMAIL,
+              emailVerified: true,
+            },
+            {
+              id: KAMALA_USER_ID,
+              email: KAMALA_USER_EMAIL,
               emailVerified: true,
             },
           ]),
@@ -366,9 +382,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             { id: MARTHA_USER_ID, email: MARTHA_USER_EMAIL },
             { id: ROPPERMAN_USER_ID, email: ROPPERMAN_USER_EMAIL },
             { id: DARREN_USER_ID, email: DARREN_USER_EMAIL },
+            { id: KAMALA_USER_ID, email: KAMALA_USER_EMAIL },
           ]),
         );
-        expect(remaining).toHaveLength(5);
+        expect(remaining).toHaveLength(6);
       },
       30000,
     );

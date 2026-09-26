@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,7 @@ import {
   isFreshProof,
   rankExactMailCandidates,
   runAcceptG1,
+  selectLatestInboundProofRows,
   validateRequestRuleCounts,
   type ProofCandidateMailRow,
 } from '../src/ops/hms-live-proof.js';
@@ -31,15 +32,20 @@ describe('hms live proof Phase A contracts', () => {
     id: string,
     subject: string,
     receivedAt: string,
+    options: Partial<
+      Pick<ProofCandidateMailRow, 'threadId' | 'direction' | 'createdAt'>
+    > = {},
   ): ProofCandidateMailRow => ({
     id,
-    threadId: `thread-${id}`,
+    threadId: options.threadId ?? `thread-${id}`,
     transportId: 'transport-centurion',
     textBody: null,
     htmlBody: null,
     subject,
     receivedAt: new Date(receivedAt),
     sentAt: null,
+    direction: options.direction ?? 'inbound',
+    createdAt: options.createdAt ?? null,
   });
 
   it('proof-video is a registered remote action with no lookup argv', () => {
@@ -50,7 +56,10 @@ describe('hms live proof Phase A contracts', () => {
     expect(proof).toMatch(/action !== 'proof-video'/);
     expect(proof).toMatch(/runProofVideo/);
     expect(proof).toMatch(/createCandidateTools/);
-    expect(proof).toMatch(/createProductionHmsProofRuntime/);
+    expect(proof).toMatch(/createPhaseAProofRuntime/);
+    expect(
+      readFileSync(join(here, '..', 'src', 'ops', 'hms-proof-composition.ts'), 'utf8'),
+    ).toMatch(/createProductionHmsProofRuntime/);
     expect(
       readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8'),
     ).not.toMatch(/createProductionHmsProofRuntime|createHmsLiveProofRuntime/);
@@ -190,6 +199,53 @@ describe('hms live proof Phase A contracts', () => {
     expect(selected.some((item) => item.messageId === 'duplicate-later')).toBe(
       false,
     );
+  });
+
+  it('selects the newest inbound per thread before ranking proof candidates', () => {
+    const rows = [
+      mailRow(
+        'historical-inbound',
+        'Reservation confirmation n°12345678-1',
+        '2026-01-01T00:00:00.000Z',
+        {
+          threadId: 'thread-current',
+          createdAt: new Date('2026-01-01T01:00:00.000Z'),
+        },
+      ),
+      mailRow(
+        'newer-outbound',
+        'Reservation confirmation n°12345678-2',
+        '2026-01-03T00:00:00.000Z',
+        {
+          threadId: 'thread-current',
+          direction: 'outbound',
+          createdAt: new Date('2026-01-03T01:00:00.000Z'),
+        },
+      ),
+      mailRow(
+        'current-inbound',
+        'Reservation confirmation n°12345678-3',
+        '2026-01-02T00:00:00.000Z',
+        {
+          threadId: 'thread-current',
+          createdAt: new Date('2026-01-02T01:00:00.000Z'),
+        },
+      ),
+      mailRow(
+        'other-thread-inbound',
+        'Reservation confirmation n°87654321-1',
+        '2026-01-04T00:00:00.000Z',
+      ),
+    ];
+
+    const currentRows = selectLatestInboundProofRows(rows);
+    expect(currentRows.map((row) => row.id)).toEqual([
+      'current-inbound',
+      'other-thread-inbound',
+    ]);
+    expect(
+      rankExactMailCandidates(currentRows).map((anchor) => anchor.messageId),
+    ).toEqual(['current-inbound', 'other-thread-inbound']);
   });
 
   it('rejects future, reversed, expired, and overlong proof windows', () => {
@@ -563,20 +619,46 @@ describe('hms live proof Phase A contracts', () => {
     }
   });
 
-  it('atomically reclaims a stale operation lock', () => {
+  it('rejects a held operation lock using the platform lock contract', async () => {
     const root = mkdtempSync(join(tmpdir(), 'hms-operation-stale-lock-'));
     const prior = process.env.HMS_SHARED_DIR;
     process.env.HMS_SHARED_DIR = root;
-    const lock = join(root, '.hms-live-operation.lock');
-    mkdirSync(lock);
-    writeFileSync(
-      join(lock, 'owner.v1.json'),
-      `${JSON.stringify({ pid: 999_999, bootId: 'stale', processStart: '0' })}\n`,
-    );
     try {
-      const release = acquireHmsOperationLock();
-      release();
-      expect(existsSync(lock)).toBe(false);
+      if (process.platform === 'linux') {
+        const lock = join(root, '.hms-live-operation.v2.lock');
+        const holder = spawn(
+          'flock',
+          ['-n', lock, '-c', 'printf locked; cat >/dev/null'],
+          { stdio: ['pipe', 'pipe', 'pipe'] },
+        );
+        try {
+          const [output] = await new Promise<[Buffer]>((resolve, reject) => {
+            holder.stdout?.once('data', (chunk: Buffer) => resolve([chunk]));
+            holder.once('error', reject);
+          });
+          expect(output.toString()).toBe('locked');
+          expect(() => acquireHmsOperationLock()).toThrow();
+        } finally {
+          holder.stdin?.end();
+          if (holder.exitCode === null) await new Promise<void>((resolve) => {
+            holder.once('exit', () => resolve());
+          });
+        }
+
+        const release = acquireHmsOperationLock();
+        release();
+        expect(existsSync(lock)).toBe(true);
+      } else {
+        const lock = join(root, '.hms-live-operation.lock');
+        mkdirSync(lock);
+        writeFileSync(
+          join(lock, 'owner.v1.json'),
+          `${JSON.stringify({ pid: 999_999, bootId: 'stale', processStart: '0' })}\n`,
+        );
+        const release = acquireHmsOperationLock();
+        release();
+        expect(existsSync(lock)).toBe(false);
+      }
     } finally {
       if (prior === undefined) delete process.env.HMS_SHARED_DIR;
       else process.env.HMS_SHARED_DIR = prior;
@@ -628,6 +710,38 @@ describe('hms live proof Phase A contracts', () => {
     expect(proof).toMatch(
       /rankExactMailCandidates\(rows, limit, processingDeadline\)/,
     );
+  });
+
+  it('proof-video discovers only current inbound trigger rows', () => {
+    const proof = readFileSync(
+      join(here, '..', 'src', 'ops', 'hms-live-proof.ts'),
+      'utf8',
+    );
+    const proofVideo = proof.slice(
+      proof.indexOf('async function runProofVideo()'),
+    );
+    const selectorStart = proof.indexOf(
+      'async function selectCurrentInboundExactCandidates(',
+    );
+    const selectorEnd = proof.indexOf(
+      'async function selectOldestExactCandidate(',
+      selectorStart,
+    );
+    const selector = proof.slice(selectorStart, selectorEnd);
+    expect(proofVideo).toMatch(/selectCurrentInboundExactCandidates\(/);
+    expect(proofVideo).not.toMatch(/selectOldestExactCandidates\(/);
+    expect(selector).toMatch(/selectDistinctOn\(\[message\.threadId\]/);
+    expect(selector).toMatch(/eq\(message\.direction, 'inbound'\)/);
+    expect(selector).toMatch(/receivedAt\} DESC NULLS LAST/);
+    expect(selector).toMatch(/desc\(message\.createdAt\)/);
+    expect(selector).toMatch(/desc\(message\.id\)/);
+    expect(selector).toMatch(/textBody: message\.textBody/);
+    expect(selector).toMatch(/htmlBody: message\.htmlBody/);
+    expect(selector).toMatch(/subject: message\.subject/);
+    expect(selector).toMatch(
+      /rankExactMailCandidates\([\s\S]*processingDeadline,\s*true/,
+    );
+    expect(selector).not.toMatch(/left\(/);
   });
 
   it('allowlist file is sorted unique repo-relative paths', () => {

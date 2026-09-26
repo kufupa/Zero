@@ -1,7 +1,7 @@
 ---
-title: Centurion Executive Dashboard and Read-Only PMS Tools - Plan
+title: Centurion Single Live Read-Only PMS Tool Proof - Plan
 date: 2026-09-06
-revised: 2026-09-07
+revised: 2026-09-11
 type: feat
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
@@ -9,133 +9,127 @@ product_contract_source: ce-plan-bootstrap
 execution: code
 execution_routing: gpt-5.6-luna-max
 coordination_model: astra-dispatch-dependency-gate-only
-execution_baseline: fresh-main-reconciliation-required
-review_status: prior-review-claims-certify-earlier-revision-only
+execution_baseline: 62169b437b49f87e923c8545e07f357e8ccc7bb6
+review_status: live-priority-amendment-approved-implementation-in-progress
 planning_mode: nava-plan-pipeline
 source_checkout: d80fbcd4b79bb5cf1580b25500b8f6e8e0f7b214
 supersedes_analysis: docs/superpowers/plans/2026-09-04-gold-response-tool-agent-architecture.md
 ---
 
-# Centurion Executive Dashboard and Read-Only PMS Tools - Plan
+# Centurion Single Live Read-Only PMS Tool Proof - Plan
 
-**Execution posture:** autonomous only once the user explicitly invokes implementation; this amendment authorizes planning/research, not product changes or deployment.
-
-- **First:** an executive email dashboard: incoming/outgoing trends, busy periods, conversations, business-folder mix, correspondents and clearly defined response/backlog metrics.
-- **Second:** build and prove useful read-only tools from the selected email corpus: reservation facts, finance/deposits, existing documents, availability/rates and bounded group/company context.
-- **Third:** connect the proven tools to drafting, private factual evaluation and human-reviewed assistance in the existing pilot.
-- **Research now, do not build:** PMS create/change/cancel, payment/refund, document generation and other business actions. Their reusable contracts live in the tool catalogue.
-- **Removed:** task timer/study, ingestion repair and a new capture-monitoring subsystem. The user owns feed repair; a few diagnostic metrics remain.
-- **Not a claim:** mail volume is not revenue or staff effort; tool fact-support coverage is not autonomous task completion.
-
----
+**Execution posture:** user approved implementation, then on 2026-09-11 explicitly narrowed this run to ONE complete live read-only tool and its final video, and authorized disabling the existing `hms-shadow-disabled` marker for the rest of this Codex session. This active contract supersedes the previous twelve-tool stopping condition and marker prohibition, and conflicting retained history below. Work in the existing isolated `feat/centurion-dashboard-tools` worktree; preserve existing changes.
 
 ## Goal Capsule
 
-- **Outcome:** give Centurion its first useful executive view of email operations, then deliver a tested read-only information toolkit for later AI drafting.
-- **Primary cohort:** Centurion. PMBOBO is supplementary research data, not an automatic control group or part of the client's performance totals.
-- **Sequence:** useful dashboard slice → corpus-prioritized read tools → request-aware service enrichment and drafting/private evaluation → supported visible assistance. Completing historical reconciliation or a master drafting agent is not a prerequisite for tools.
-- **Authority:** current user context and repository safety override older plans. Preserve the existing mail application, eleven folders, chronological Inbox, draft store, worker ledger, outbox and HMS release boundaries.
-- **Execution:** after an explicit user start, use task-by-task TDD through the repository's implementation workflow and the single routing policy in the Autonomous Execution Mandate, with independent reviews. Track progress outside this plan. No routine approvals; genuine access, privacy or destructive ambiguity remains a blocker.
-- **Completion:** software delivery is defined below. Current capability activation and approved model processing need their own evidence; staff attendance and economic benefit are not fabricated delivery gates.
-- **Baseline:** `source_checkout` remains the provenance for the earlier plan revision. Before implementation, reconcile against fresh `main` and recheck the changed files, constraints and dependencies; this amendment does not recertify that baseline. Research/count/source hashes and private audit pins remain historical and are not resealed by this amendment.
-- **Landing:** plan/docs/setup commits are authorized now only for scoped plan/setup work; this does not start or authorize app implementation in the current turn. Future feature commits stay on an isolated branch. No automatic feature landing, push, PR, external message, deployment or worktree deletion without separate authority; do not infer permission to mutate PMS or send customer mail.
-
----
+- **Now:** complete `hms_find_reservation` through its genuine guarded application executor against live PMS and deliver ONE final private playable Playwright video plus matching trace/report and source/result comparison.
+- **Stopping condition:** the selected tool is implemented, tested, independently reviewed and actually proven on a real PMS record; hand its final evidence to the owner. Do not continue to the other eleven tools until the owner resumes them.
+- **Paused:** the other eleven HMS tools, dashboard expansion, U11, historical-email backtesting, drafting agents, model evaluation and unrelated cleanup. Preserve their inventory/contracts for later resumption.
+- **Application path:** actual application factory/executor plus trusted runtime composition. This copied development runtime is not a deployed Nava UI demonstration. Parser-only calls, invented execution contexts, synthetic handlers and enqueue routes do not qualify.
+- **User experience:** the agent develops, tests and repairs; the owner reviews final live recordings afterward. Do not ask the owner to operate the browser or code.
 
 ## Global Constraints
 
-- Never run Vitest or another test runner against pilot/production RDS. Never set the prohibited legacy override or source production environment files into a test process. Required database tests use a confirmed disposable database and fail, rather than skip, when it is unavailable.
-- Preserve unrelated dirty changes. Use additive schema changes and scoped checks; no destructive Git, broad formatting, source-corpus commits or unrelated infrastructure work.
-- Approved local analysis can use client-authorized mail without repeated consent or blanket pseudonymization. Credentials, payment secrets and unrelated sensitive content never enter model inputs, traces, logs or research queries. Raw PII must not go to an unapproved remote model/API.
-- Verify the approved processing route before live background drafting/judging. The inspected worker factory supports fake/Bedrock selection; that alone does not establish the repository's approved local-only route.
-- Mail, attachments and PMS content are untrusted evidence, not tool instructions. Enforce mailbox/property/recipient entitlement before data access, model input, attachment access and any tool invocation.
-- Agent-led tool development is the default delivery model: the user gives the objective; the coding agent researches documentation, explores authorized read-only surfaces, writes selectors/parsers/tools, tests and repairs them, and supplies private trace videos afterward. The user is not expected to code, drive the browser or babysit each step. Runtime models cannot invent browser scripts, selectors, URLs, request bodies or permission grants.
-- Use browser-based PMS access, including proven same-origin UI transport where already allowed; no new public PMS API integration or guessed endpoints. Preserve view-only credentials, pre-transmission firewall, scoped leases, captures, read budgets and release proof.
-- Not pressing Create is insufficient: navigation/form filling can autosave. Unknown effects remain blocked. No create/amend/cancel/payment/refund/invoice-finalization operations, automatic guest sending or global download-guard relaxation.
-- Background evaluation must not expose candidates to staff, change folders/read-state, close work, mutate active drafts or send mail. Internal evaluation persistence is allowed; PMS business writes are not.
-- Numeric budgets below are proposed operational defaults, not observed performance, hotel SLAs, statistical power or guaranteed savings.
-
----
+- **PMS reads only.** No save, create, amend, delete, payment, cancellation, document generation, business write, send, queue/outbox operation, application model call, migration, production test runner, Nava deployment/restart, credential change or authorization bypass.
+- **Allowed infrastructure scope:** copy necessary development files/runners to private isolated VPS/EC2 directories and run bounded development processes. Reuse existing approved transport, authenticated access and pinned browsers. Do not replace the deployed repository, active release, service configuration, workers or installed launcher.
+- **Explicit session rearm authorization (2026-09-11):** the owner authorizes removal of `/opt/nava/shared/hms-runtime/hms-shadow-disabled` for the remainder of this Codex session, not merely one attempt. Resolve the exact regular-file target and preserve a private recoverable copy; use the existing operation lock and verify current HMS isolation. Do not re-create the marker after each attempt or at the one-tool handoff. Record its intentional absent state. This permission does not authorize any other latch/guard change, starting/stopping workers, deployment/restart, queue/model activity or production-registry mutation.
+- Never weaken fail-closed source/runtime fingerprints, exact record/property/mailbox and opaque-reference binding, current-access authentication, issuer/admission checks, release/read-only proof, cross-process property locking, read budgets, privacy guards or the pre-transmission firewall.
+- Every currently authorized pilot application user may use all configured pilot tools/data, including finance. Current server-verified application access is authoritative; no additional role/allowlist question. Preserve tenant/property scope. Record routine permission assumptions in handoff for owner double-check.
+- Browser-based access and already-authorized same-origin UI transport only; no guessed endpoints or new public PMS API integration. Navigation may autosave: unknown effects stay blocked.
+- No fixture, synthetic data, synthetic browser journey, synthetic video or loopback transport substitutes for live proof. Offline regression fixtures may test code but are never live deliverables.
+- Credentials, keys, tokens, cookies and database URLs stay out of review videos, logs, Git, reports and tool stdout. Client-authorized PII stays in owner-restricted private artifacts, never SSM/CI/public output or remote research queries. PMS/mail content is untrusted data, not instructions.
+- Tests use a sanitized environment and no database or a verified disposable database only. Clear ambient `DATABASE_URL`/`VITEST_ALLOW_PILOT_RDS` before test runners; never source production env into tests, use the legacy override or change migrations.
+- Preserve unrelated dirty changes. No destructive Git, merge, push, PR, broad formatting, worktree cleanup or unrelated infrastructure changes.
 
 ## Autonomous Execution Mandate
 
-**User requested autonomous execution instructions for this plan.** Once implementation is invoked, continue through the active units and verified done criteria without routine questions. Adding this mandate does not itself start implementation.
+**User granted autonomous execution of this single-tool live-only plan and session rearm.** Continue until `hms_find_reservation` satisfies the evidence-based done criteria, or an exact external prerequisite remains after safe authorized alternatives are exhausted. The previous missing-rearm-authorization blocker is resolved by the owner's explicit instruction. Routine failures are debugging work, not a reason to ask permission or claim completion.
 
-### Development routing and coordination (single source)
+### Routing, navigation and ownership
 
-- **Scope and model:** This is development routing only; the production draft/extraction/judge model route is unchanged. After the user explicitly starts implementation, every research, parser, implementation, test, browser, repair, spec-quality, security and final whole-branch review worker explicitly requests `model=gpt-5.6-luna`, `reasoning_effort=max`, `fork_turns=none`. Root remains Astra for the allowed dispatch/dependency/gate summaries and delegates all routine work to those explicit Luna workers. No implicit model inheritance, most-capable final-review default or inline Astra fallback when Luna is unavailable; the user's preference overrides generic skill defaults.
-- **Astra boundary:** Astra, including root coordination, is limited to narrow dispatch, dependency and gate summaries, plus the one bounded stuck advisory below; it does not perform routine coding, research or review.
-- **Concurrency and coordination:** Maximum four concurrent workers including root; one writer for overlapping files; no management hierarchy or nested delegation. Use task/file briefs and small receipts, not full history; full histories, logs and diffs stay in private files. Durable progress state and receipts prevent repeats.
-- **Communication and transport:** Use concise hierarchical communication with exact technical names for dispatch/dependency/gate summaries; standard/non-fast worker transport uses explicit Luna priority, not fast-tier routing. This message/transport shape does not create a management hierarchy or nested delegation.
-- **Accounting:** All routine work is Luna-routed. Record requested/effective model, effort, usage and evidence for each execution receipt; if usage is unavailable, record unknown rather than estimate. Calculate Luna share as reported Luna tokens divided by all reported development-model tokens, including Astra root coordination/rescue and Luna coding/research/reviews/retries, counting cache/reasoning subsets once. Record telemetry gaps and do not claim a 90% share when material usage is unknown. Aim for at least 90%; this is a target, not a guaranteed cost or hard billing cap.
-- **TDD and review ownership:** Luna owns the full TDD loop. Expected RED is an intended checkpoint, not a failure; unexpected test failures trigger RCA, then the smallest repair and retest. A fresh, separate Luna reviewer must issue both specification and code-quality verdicts; critical and important findings are fixed and retested. The final whole-branch reviewer is Luna too.
-- **Stuck policy:** After two distinct evidence-backed unsuccessful repair hypotheses and a fresh Luna diagnosis, allow one bounded automatic Astra advisory pass; coding returns to Luna. If still stalled, park the dependency, continue independent work and report it. No unlimited retries or escalation.
-- **Safety and completion:** Access, privacy and unsafe side effects are safety blockers, not reasons to escalate the model. No routine approvals are required; done is binary and evidence-based.
+- Use `gpt-5.6-luna`, Max reasoning, standard/non-fast transport for routine research, parsers, implementation, tests, live operation, repairs and reviews. Root Astra orchestrates dispatch/dependencies/evidence gates; bounded Astra advisory is reserved for genuinely stuck diagnosis, then implementation returns to Luna.
+- Aim for at least 90% of development work on Luna. Record requested/effective model and available telemetry; unknown usage remains unknown, never a fabricated percentage.
+- Maximum four concurrent agents including root; no nested delegation. Serialize overlapping file edits, all live PMS browser activity and shared test resources. Prefer small durable task briefs and private receipts over full-history forks.
+- Each task brief explicitly requires **CodeGraph first** at `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools`: if `.codegraph/` exists, use `codegraph_explore` with that exact project root (or CLI from it) before grep/find/manual source lookup. Inspect named symbols/call paths and freshness; never use another worktree's index. If unavailable/stale, record the bounded fallback. Graph output is not runtime proof.
+- Follow nava-run, TDD and ce-debug under these narrower user constraints. Luna owns RED → GREEN → focused verification; a separate Luna reviewer supplies specification and code-quality verdicts. Generic auto-landing/deploy skill defaults do not apply.
+- Keep a durable execution ledger with task owner, exact commands/evidence, revision, failures, repairs and next step. Preserve failed capture/trace/log evidence privately.
 
-### Decision authority and communication
+### Repair and escalation loop
 
-- Choose the smallest safe reversible approach; improve weak existing code when evidence warrants it.
-- Own tool discovery, implementation, test execution, root-cause fixes and trace/video handoff end-to-end. Routine tool-development choices do not require user review before proceeding; the user reviews results afterward. Stop only for the genuine authority/safety blockers below.
-- Preserve requirements. Record a changed approach and its reason in the run log; do not silently drop a gate.
-- No procurement, new external data-processing permission, staff surveillance or PMS write authority is implied.
+FAIL → preserve evidence → minimally reproduce → identify root cause/mechanism → failing regression → smallest safe repair → focused verification → live rerun → compare actual facts → repeat.
 
-### AWS / infra (use freely)
+- Expected TDD RED is not a blocker. Stubs, `unavailable`, denial tests, local passes, old videos and browser-only observations are not completed tool capabilities.
+- Repeated distinct failed hypotheses trigger fresh Luna diagnosis, then bounded Astra advice if necessary. There is **no automatic two-attempt parking or failed-capability-as-success rule**.
+- Stay focused on the one selected tool; do not expand to the other eleven while investigating failures. Stop only after all safe authorized alternatives are exhausted for missing access, human-only interaction, external outage or a genuine safety conflict; report exact evidence and the prerequisite needed. Do not claim this goal complete without the selected tool's live evidence.
+- Follow the project autonomy overlay only within the restrictions above. Its broad deploy/restart/migrate permissions are expressly superseded for this run.
 
-| Resource | ID / path |
-|----------|-----------|
-| EC2 | `i-008f737974a9ba9b3` (`af-south-1`) |
-| RDS | `nava-zero-mail-pilot` (Postgres 16) |
-| S3 | `nava-zero-mail-845242190536-af-south-1` |
-| Repo on EC2 | `/home/ubuntu/repos/zero` |
-| **Primary deploy** | `apps/server-pilot/deploy/ops-deploy.sh` (`--migrate` when schema) |
-| **Primary app bounce** | `apps/server-pilot/deploy/ops-restart.sh` |
-| **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
-| Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
+### Infrastructure and privacy anchors
 
-**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), read-only SSM checks, PM2 logs, health curl, and tests against a disposable non-production database.
+| Resource | Established route / constraint |
+| --- | --- |
+| EC2 | `i-008f737974a9ba9b3`, `af-south-1`; read-only SSM checks and isolated copied development files |
+| Existing remote repo | `/home/ubuntu/repos/zero`; inspect/reuse, do not deploy over it |
+| Browser | Playwright `1.52.0`, Chromium revision `1169`; verify actual pins |
+| Historical immutable proof layout | `/opt/nava/releases/<revision>/worktree`; reuse precedent without installer/stop/service lifecycle changes; the exact session marker removal above is now authorized |
+| Existing private captures | `/opt/nava/shared/hms-browser-artifacts`; private transfer route with authenticated digest checking |
+| Retention | Existing 24-hour capture TTL; retrieve in time, report earliest expiry, do not disable purge or extend retention silently |
 
-**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds, any Vitest/test command pointed at pilot or production RDS, setting `VITEST_ALLOW_PILOT_RDS=1`, or sourcing `.env.production` into a test process.
+The earlier installed `asm-exec` pin mismatch and `artifact-video/live-wave` placeholder require investigation, not a PMS-access failure claim. Use a verified scoped route with source/browser provenance intact; never switch off a checksum guard. Reuse actual machinery, not lifecycle-mutating wrapper steps.
 
-The overlay's allowed operations apply only within a subsequently authorized execution/deployment workflow, not this planning turn. Existing read-only PMS credentials are in scope; changing Exchange/VPN/mail credentials is not. Seed/reboot is not a prerequisite and must have a concrete in-scope reason.
+## Active Implementation Units
 
-### Pilot RDS safety
+### L1. Establish the one selected genuine live proof
 
-Before every test runner, clear ambient `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS`. Pass an independently verified disposable test connection only to the required test child. Never print it. A missing disposable database is a test blocker, not a reason to use pilot RDS. Production proof uses read-only checks or purpose-built non-test scripts.
+- Reuse the completed inventory and accepted entry/auth work; revalidate only current prerequisites needed by `hms_find_reservation`. Do not repeat completed research or build the other tools.
+- Selected tool: `hms_find_reservation`. Deferred inventory: `hms_read_reservation`, `hms_read_folio`, `hms_quote_stay`, `hms_list_documents`, HMS-source branches of `documents_list_existing`/`documents_read_existing`, `hms_sent_email_audit`, `hms_company_account_read`, `hms_group_block_read`, `hms_event_read`, `hms_read_notes_traces`.
+- Explicitly classify non-PMS `mail_read_artifact` and `property_read_knowledge` as outside PMS video proof; do not falsely certify them or expand dashboard work.
+- Create a checksummed private copied development runtime using the pinned EC2 browser and existing transport. Extract/reuse a trusted synchronous application execution seam if necessary; no tRPC enqueue, fabricated workflow run, invented user/issuer/admission or injected fake handler.
+- Reuse existing cross-process property isolation. Remove only the specifically authorized session marker after the stated checks; never clear other safety latches, stop a worker or fake isolation to launch proof.
+- Extend closed capture schemas explicitly where required, retaining all privacy/runtime guards.
+- Complete one real reservation tool invocation with observed source facts, genuine returned result and playable private recording. Scaling is deferred until a later owner request.
 
-### RCA and verification loop
+### L2. Finish and repair the selected reservation tool
 
-FAIL → reproduce minimally → identify cause/mechanism → smallest correct fix → focused tests → relevant broader checks → inspect evidence → resume. An expected RED is a TDD checkpoint, not a failed task; an unexpected failure enters RCA. Commit only under the applicable landing authority.
+- Use an existing live PMS record with sufficient positive coverage for `hms_find_reservation`. Independently observe visible facts, invoke the real application tool, then compare returned facts.
+- Probe relevant ambiguity, paging, legitimate absence, stale references and partial source coverage. Negative claims require request/response/parser/scope/window evidence and a known-positive control under the existing live-negative verification gate.
+- Debug every failure using the mandate loop. Implement missing source readers/contracts rather than counting `manual_required` handler placeholders as features.
+- Run focused reservation, admission, runtime/capture/privacy regressions and relevant build/type checks with safe test environments. Existing shared repairs needed for this tool remain required; do not start unrelated document/finance/quote/context work. Denial/guard tests supplement rather than replace successful live proof.
+- No historical-email backtest or drafting dependency is introduced.
 
-Do not accept symptom patches, missing-label success, required-test skips, fixture-only live claims or an agent's unverified success message. Continue other independent units when one external gate is unavailable.
+### L3. Record final private evidence on the completed revision
 
-### Execution-backend outage
+- Explicitly enable video, then verify one nonempty playable final video, trace and matching receipt/report for `hms_find_reservation`. Rerun it after relevant repairs; final evidence must match the completed source/runtime revision.
+- The final video shows real Chromium, the actual PMS record and visible facts, the genuine application invocation, and its actual returned result matching those facts.
+- Keep credential entry out of review media and scrub secret-bearing trace headers/cookies without misrepresenting source provenance.
+- Playwright is per-page: one final file may join **only actual contemporaneous** PMS and genuine result-viewer recordings. Label segments; retain originals and operation IDs, times and hashes. Do not claim a seamless single-page journey.
+- Never inject output into the PMS DOM or use `setContent` there. A separate private result viewer may render only the actual returned payload, never canned data.
+- Retrieve final artifacts under owner-restricted directories before the unchanged retention deadline and inspect the final review copies for secrets.
 
-For the exact Cursor bridge error `Execution backend unavailable. Do not retry tool calls — the execution environment is down.`, follow [the recovery playbook](../../solutions/workflow-issues/cursor-execution-backend-unavailable.md): short 5s/15s/45s retries, inspect Git/progress on recovery, never invent a Zero application RCA. After exhausted retries and verified sustained outage, record the external blocker. Use the product's goal-blocking rules; do not mark a goal blocked merely because one check failed.
+### L4. Independent review and handoff
 
-### Binary done criteria
+- Separate Luna review covers spec, code quality, guards, real application invocation, source/result comparison and evidence provenance. Fix valid findings and rerun impacted proof.
+- Provide the selected tool's private final video, trace/report, record/scenario, visible PMS facts, actual result/comparison, focused tests, repairs, source/runtime versions, digests and expiry. Mark the other eleven tools deferred, not verified and not part of this run's completion claim.
+- Record excluded non-PMS tools and any exact exhausted external dependency honestly. Earlier synthetic/expired evidence is historical only.
+- No landing/deploy/cleanup; leave the worktree ready for owner review.
 
-- [ ] Client metrics enforce cohort, coverage, clocks, permissions and unknown states on the server.
-- [ ] Corpus-prioritized read tools work independently of drafting, return typed facts/limitations, and have per-capability tests and read-only proof.
-- [ ] Private immutable predictions, delayed matching and versioned factual evaluation work after the tool milestone, without staff use or business writes.
-- [ ] Narrow visible assistance preserves human edits, permissions, evidence and explicit send approval.
-- [ ] No task timer, staff study, feed repair or capture-monitoring subsystem is introduced.
-- [ ] Active units and required local/disposable-DB/browser gates pass; runtime activation claims have their separate evidence.
-- [ ] Review findings, rollback checks and data-processing constraints are resolved for the released slice.
-- [ ] No unresolved blocker affects a claimed completed capability.
+## Active Verification and Definition of Done
 
-### True blockers
-
-Missing required access, human-only approval, unsafe production-data ambiguity, prohibited processing, or an external outage preventing required proof. Incomplete historical sent mail does not block new-request measurement after the recorded two-way-capture start; unknown intervals remain separate. Missing PMS role/surface proof blocks that capability's activation, not other tools. Never claim a blocked outcome happened.
-
----
+- [x] Inventory reconciles all applicable unions/callers and current remote registry (private source inventory and fresh registry report, 2026-09-10). This is not a live capability pass.
+- [ ] `hms_find_reservation` is implemented and succeeds through its real guarded application path against live PMS; no synthetic context/transport, stub or unavailable-as-success.
+- [ ] Its returned result has an independently checked source/result comparison using a sufficiently populated real record.
+- [ ] It has one final private playable video plus matching trace/report from the completed revision, with secret-safe review copies and explicit provenance.
+- [ ] Focused regressions/build/type checks and independent review pass; guards and read-only boundaries remain intact.
+- [ ] Handoff index includes exact paths, tests, repairs, revision/digests and earliest expiry; no unresolved prerequisite affects a claimed completed tool.
 
 ## Execution Mode
 
-Autonomous only after the user's explicit implementation invocation, using the repository's TDD/subagent-driven workflow, verification gates and central development-routing mandate. Reconcile fresh `main` against `source_checkout` before execution, then resume the first incomplete dependency-ready unit. No routine “which approach?” or “shall I continue?” handoff.
+Autonomous now. Resume L1 for `hms_find_reservation` only and proceed dependency-first without routine checkpoints, using the explicit session marker-removal permission. Development files may be copied to EC2; Nava services/repository must not be deployed or restarted. Stop after delivering the selected tool's completed live proof/video. The user's newest scope governs all retained material below.
 
 ---
 
-## Product Contract
+## Retained Earlier Product Contract — Reference Only
+
+Everything from this heading onward is preserved historical/product context. It does not authorize paused work, fixture deliverables, queues, models, migrations, deployment, restarts or a weaker live-completion gate. Earlier implementation/verification/DoD sections are inactive unless explicitly reactivated by the owner.
 
 ### Problem Frame
 
@@ -152,13 +146,13 @@ Current code has dashboard, browser-read and drafting foundations. Some tool reg
 | A1 | Current pilot reservationist | Optional assistance in the existing workflow; retains control of customer replies. |
 | A2 | Hotel manager | Defines service expectations; no individual ranking inferred from shared-mailbox data. |
 | A3 | Finance/groups/property staff | Remain the source for actions, exceptions and off-email work outside released read capabilities. |
-| A4 | Client executive | Sees authorized Centurion aggregates; mailbox-body access is a separate permission. |
-| A5 | Nava operator/developer | Reviews errors, data quality, tool releases and costs; research mailbox access is separately scoped. |
+| A4 | Client executive | Sees useful Centurion aggregates; current pilot application access also authorizes the application's tools/data under the owner-approved policy. |
+| A5 | Nava operator/developer | Reviews errors, data quality, tool releases and costs; same all-tool pilot access policy, with configured research/cohort boundaries preserved. |
 | A6 | Guest/booker/payer | Receives accurate authorized replies; shadow experimentation must not affect service. |
 
 ### Requirements
 
-Stable IDs retain their concepts; the earlier product revision changed sequencing and scope at the user's request, while this amendment changes execution routing only.
+Stable IDs retain their concepts; the earlier product revision changed sequencing and scope at the user's request, while this amendment adds Phase 2/B validation and CodeGraph navigation rules without changing product safety or counts.
 
 | ID | Requirement | Current disposition |
 | --- | --- | --- |
@@ -174,7 +168,7 @@ Stable IDs retain their concepts; the earlier product revision changed sequencin
 | R10 | Usable human exception handling, including groups/internal work. | Briefs and manual path now; full assignment/handoff UI deferred with U3/U4. |
 | R11 | Minimize build and maintenance complexity. | Reuse existing dashboard, worker, storage and browser release system. No warehouse or general evaluation platform. |
 | R12 | Reproducible tests, independent checks and reversible rollout. | U1/U11; no pilot-RDS tests or skipped-evidence green. |
-| R13 | Separate client service metrics from Nava capability/operating metrics. | Distinct audiences and permissions, not one misleading score. U10/U13. |
+| R13 | Separate client service metrics from Nava capability/operating metrics. | Distinct audience-oriented views, not one misleading score or an additional staff-role permission system. U10/U13. |
 | R14 | Make capture assumptions and limits visible. | User owns feed repair. Record a prospective two-way-capture start plus lean diagnostics; do not build import repair, source certification or a polling monitor. U12. |
 | R15 | Freeze unseen draft predictions and compare later replies without leakage. | Separate private artifacts; missing/changed-state references explicit. U13. |
 | R16 | Work with one intermittent user. | Dashboard/read tools/private evaluation do not depend on daily staff adoption; timer/study removed. U10/U13. |
@@ -444,6 +438,28 @@ Permit coding-time exploration using existing view-only credentials and public d
 
 No hot patch under an old release fingerprint. No automatic repair promotion from a judge score. Prioritize wrong-record/unsupported-field errors before cosmetic wording. An unavailable tool yields a partial or manual path, not broader permissions. Hand off private trace/video locations, tested scenarios, read-only proof, limitations and artifact expiry; exclude credential-entry/secrets from shareable evidence. User review afterward is not a routine prerequisite to coding/testing. Raw trace retention is unchanged; keep the minimum typed evidence needed for delayed comparison under approved evaluation retention.
 
+### KTD7a. Phase 2/B real-email capability validation gate
+
+Phase 3 may consume or promote a read capability only after this gate passes for that capability. A capability can be independently proved on authorized current controls even when the selected corpus has no eligible gold case; conversely, a gold-shaped example never proves a capability that was not independently exercised.
+
+- **Pinned cases and freeze:** Start from the private pinned selected-corpus manifest: **420 distinct selected records**, not 420 clean human-reply pairs; the strict external outbound candidate subset is **251**. A case is eligible only after verified same-request identity, legitimate inbound-before-gold horizon and required source/permission evidence. Before any result is available, freeze private case identifiers, selection/skip reasons, selection hash and development-versus-held-out membership by conversation. Do not turn an ineligible or ambiguous record into a pair.
+- **Blind tool input:** Only pre-reply legitimate request context may supply tool input. The target human outbound/gold is evaluator-only: it is not prompt context, a tool input, candidate key, reference-resolution input or implementation fixture that claims blindness. If a reservation/reference appears only in gold because it was created or identified after inbound, do not use it to build a current-state tool input or candidate; record missing pre-reply identifier/unsupported lookup. Missing original inbound, linkage, source or permission is explicitly `not-runnable`/`unscorable`, never an invented pair, zero-as-pass or silent exclusion.
+- **Bounded normal proof:** Use exact recorded membership and counts with representative per-capability cases, skip reasons and partial coverage; never claim all 420 records are testable. Run every proposed released capability through the actual normal trusted audited read executor/proof harness **without a drafting model**. Current-state comparison uses an independently checked authorized source, never only this parser, a second parser or a second LLM; gold is fallible corroboration and historical scoring requires same-time/version semantics. Preserve requester/mailbox/property grants, opaque refs minted by trusted context, known-positive/negative/ambiguity controls, locking, firewall, captures, expiry and read budgets. Email content never authorizes raw IDs, URLs or arbitrary browsing. Do not perform an exhaustive live sweep or invent a statistical quota.
+- **Mode-specific pass rules:** Persist `evaluationMode` on every case, runtime comparison receipt and report; aggregate and release-guard only within the same mode, never across current-state, historical-replay and future-shadow scores. `changed_state`, `unscorable`, `ambiguous`, `denied`, `missing_capability`, `not-runnable` and absent-gold cases never count toward a gold/historical pass. A current-source match cannot become a historical pass. Any unexplained material mismatch blocks the affected capability release pending root cause, repair, retest and new-release reproof.
+- **Holdout isolation:** While a case is labelled held-out/unseen, its outcome cannot inform tuning, repair hypotheses, fixture choice or retries. Once unsealed or used for repair, retire it to development/regression, preserve the original score and exposure record, and require fresh disjoint unseen evidence for a fresh accuracy claim. Prior exposure means previously inspected gold is not magically unseen.
+
+Keep these evaluation modes separate:
+
+| Mode | Permitted comparison | Boundary |
+| --- | --- | --- |
+| Current-state real record | Returned fields/bytes versus an independently checked current authorized PMS/document source; historical human outbound corroborates only when same time, version and semantics are proven | Reservation, payment and status may have changed, or a booking may have been created after inbound; price-only comparison is insufficient and historic outbound is not sole truth |
+| Historical replay | Only facts valid and available at the historical horizon | Never use today’s PMS state, target reply or future email/attachment/policy; missing snapshots yield thread-only or `unscorable` |
+| Future shadow | Generate and seal before the later staff reply, then use the existing unchanged fresh-sample gates | No staff display, draft mutation, folder/read-state change, send or business write |
+
+Record field-level `match`, `mismatch`, `changed_state`, `ambiguous`, `unscorable`, `denied` and `missing_capability` outcomes with actual input/output/source/version/time and private trace/video receipts. No unsupported pass is emitted. A true tool mistake creates a synthetic regression, guarded fix and new-release proof. A missing eligible gold example is a coverage gap, not a capability pass. Missing external proof blocks that capability's Phase 3 use/live claim, not the dashboard, independently useful work or framework coding.
+
+Reuse U1/U8/U11 and the relevant U9/U17/U7/U15/U16 read units. U5 dependencies and the Phase B→C release verification, Verification Contract and DoD consume this per-capability disposition; U13/U6 cannot use an unvalidated read. Reuse the [known-positive/negative live-result gate](../../solutions/conventions/live-negative-result-verification-gate.md), [as-of/source/manifest drift safeguards](../../solutions/logic-errors/centurion-triage-audit-createdat-vs-finishedat-spam-at.md) and [pilot-RDS test prohibition](../../solutions/database-issues/vitest-production-pilot-db-wipe.md); their historical counts/window details do not replace the canonical 420/253/251 counts or current tool bounds. Do not create a broad evaluation framework, commit raw corpus data or place raw corpus data in public fixtures; synthetic regression fixtures remain permitted. Do not run a pilot-RDS test runner. Existing ≥30 fresh cases, ≥5 per family, ≥90% overall and within each family, and zero-critical launch gates remain unchanged.
+
 ### KTD8. Narrow visible assistance
 
 After shadow gates, offer the current pilot only supported reply families through the existing editor. Do not auto-promote a historical shadow draft: regenerate/revalidate current context, entitlement, evidence and recipient scope. All new visible generation and refresh entry points explicitly inject U5's approved adapter, as do extraction/shadow/judging; missing route refuses before generic factory fallback or any model network call.
@@ -519,10 +535,10 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 - **Dependencies:** none.
 - **Files:** create `apps/server-pilot/scripts/reservation-pilot-gate.sh`, `apps/server-pilot/tests/reservation-pilot-gate.test.ts`, `apps/server-pilot/tests/fixtures/reservation-tools-pilot.json`; existing `apps/server-pilot/tests/draft-backtest-scorer.test.ts`, `apps/server-pilot/tests/ai-eval-runner.test.ts` and `apps/server-pilot/tests/ai-triage-input.test.ts` are extended with U5/U13, not an initial dashboard prerequisite.
 - **Interfaces:** gate modes `unit`, `db`, `browser`, `build`, each with a named slice; fixture manifest identifies synthetic data, source/hash versions, expected facts and rejected operations. Unit mode has no DB; required DB mode refuses absent/production-looking connections and never silently skips.
-- **Approach:** preserve the selected-corpus count/mapping hashes and development/holdout membership. Initial fixtures cover traffic/cohort/T0, ambiguous reservations, partial reads, wrong documents, folio/deposit differences and prohibited browser effects. Add shadow/negation/zero-label fixtures with their later units. The later inbound-first unseen set is sampled independently of reply existence; target 200 episodes for later triage promotion, not a tool-build gate or a statistical guarantee.
+- **Approach:** preserve the selected-corpus count/mapping hashes and development/holdout membership. U1 owns the private Phase 2/B case manifest and mode/holdout contract: it freezes case identifiers, `evaluationMode`, selection and skip reasons before any result and keeps development/holdout membership by conversation; gold targets never enter tool input or blind implementation fixtures. Initial fixtures cover traffic/cohort/T0, ambiguous reservations, partial reads, wrong documents, folio/deposit differences and prohibited browser effects. Add shadow/negation/zero-label fixtures with their later units. The later inbound-first unseen set is sampled independently of reply existence; target 200 episodes for later triage promotion, not a tool-build gate or a statistical guarantee.
 - **Patterns:** existing pure aggregate/eval tests and pilot-DB refusal. Local private references never copied into public fixtures.
 - **Execution note:** characterization first, then failing behavioral tests.
-- **Test scenarios:** production-looking or absent required DB is refused; required suite cannot skip green; forbidden external sockets fail fixture mode; private corpus paths cannot leak into public fixtures; later holdout selection excludes target/future context and is not restricted to replied cases.
+- **Test scenarios:** production-looking or absent required DB is refused; required suite cannot skip green; forbidden external sockets fail fixture mode; private corpus paths cannot leak into public fixtures; Phase 2/B freeze prevents target leakage and preserves conversation-level development/holdout membership; missing inbound/link/source/permission is explicit `not-runnable`/`unscorable`; a held-out outcome cannot tune, repair, choose fixtures or retry; unsealing retires it to development/regression while preserving the original score/exposure; later holdout selection excludes target/future context and is not restricted to replied cases.
 - **Verification:** run the gate's refusal tests with no ambient DB/model/browser credentials; expected refusal before any connection. Unit slices use synthetic data. DB mode verifies a disposable owned target and cleans only its exact owned resources; browser mode uses loopback fixture services and fake transports.
 
 ### U10. Executive email dashboard first
@@ -553,13 +569,13 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 
 - **Goal:** make real typed reads usable without a drafting model, then extend exact lookup to a useful resolved-reservation snapshot.
 - **Requirements:** R5/R6/R11/R12/R17; AE8/AE14/AE18.
-- **Dependencies:** U1 and the initial useful U10/U12 slice. No U5/U13 dependency; no historical-capture certification gate.
+- **Dependencies:** U1 and the initial useful U10/U12 slice. No U5/U13 dependency; no historical-capture certification gate. Phase 2/B validation is required before any Phase 3 consumer promotes a read capability.
 - **Files:** create `apps/server-pilot/src/hms/read-service-contracts.ts`, `apps/server-pilot/src/hms/read-service.ts`, `apps/server-pilot/src/hms/agent-read-tools.ts`, `apps/server-pilot/src/hms/reservation-context-contract.ts`, `apps/server-pilot/src/hms/reservation-context-facade.ts`, `apps/server-pilot/src/hms/live-reservation-context-driver.ts`, `apps/server-pilot/scripts/hms-read-tool-harness.ts`, `apps/server-pilot/tests/hms-read-service.test.ts`, `apps/server-pilot/tests/hms-normal-runtime-read-service.test.ts`, `apps/server-pilot/tests/hms-reservation-context.test.ts`, `apps/server-pilot/src/hms/property-read-lock.ts`, `apps/server-pilot/tests/hms-property-read-lock.test.ts`, `apps/server-pilot/drizzle/0023_read_tool_runs.sql`; modify `apps/server-pilot/src/hms/read-tools.ts`, `apps/server-pilot/src/hms/read-handler-index.ts`, `apps/server-pilot/src/hms/requester-authorization.ts`, `apps/server-pilot/src/hms/candidate-graph.ts`, `apps/server-pilot/src/hms/active-read-runtime.ts`, `apps/server-pilot/src/hms/release-kernel.ts`, `apps/server-pilot/src/hms/reservation-candidate-session.ts`, `apps/server-pilot/src/hms/production-runtime.ts`, `apps/server-pilot/src/ai/worker.ts`, `apps/server-pilot/src/ai/run-ledger.ts`, `apps/server-pilot/src/db/schema/mail.ts`, `apps/server-pilot/drizzle/meta/_journal.json`, `apps/server-pilot/src/env.ts`, `apps/server-pilot/tests/env.test.ts`.
 - **Interfaces:** `executeRead(context, request) -> ReadResult` is a closed discriminated union by tool ID; trusted context owns scope/candidates/signal/budget/release/capture. Public `hms_find_reservation({candidateId})` returns bounded matches and minted refs; `hms_read_reservation({reservationRef,sections?,detail?})` returns concrete core/stay/rates/policies/operations facts under the [catalogue contract](../../infor-hms/2026-09-07-corpus-driven-pms-tool-catalog.md). New versions preserve explicit predecessor adapters; no runtime arbitrary dispatcher or duplicate agent-visible aliases.
 - **Approach:** reuse release/authorization/candidate/runtime primitives. Replace seed-stub-only execution with explicit real typed dispatch while retaining binding checks. Add `read_tool` to the existing run-kind enum, with closed `readRequest` input and private `readResultRef` columns on ai_workflow_run; no separate job platform. Trusted admission binds the actual mailbox/thread/trigger, requested tool/release/input digest and idempotency key. Preserve the current required modelId column using an explicit `not_applicable` sentinel for this kind; exclude it from model usage/quality totals. Prompt-version storage records the read-contract version, not a model prompt. The HMS worker claims this kind under an independent `HMS_READ_SERVICE_ENABLED` switch even with drafting off; a default-lane worker cannot claim it. Resolve/revalidate refs and candidate bindings from bounded private request/result artifacts, not model-supplied record identity. Reuse the existing run fence, heartbeat, cancellation/deadline, durable per-branch budget and cleanup; persist a fenced typed result receipt without a draft, model client or workflow invocation. Browser ownership stays in the existing worker singleton, not HTTP/default AI lane. External deterministic callers enqueue/read a receipt; an already-claimed in-worker tool call reuses its fence rather than enqueuing a self-dependent job. Before PMS I/O, every worker/proof entry obtains the same tenant/property-scoped PostgreSQL advisory lock through `property-read-lock.ts`, held on a dedicated connection; lease/lock loss aborts and closes the session before further requests. Enable admissions only after all PMS-owning entries use that lock. The purpose-built proof harness normally uses the same read executor; any separate authorized proof runtime requires exclusive ownership under the same lock (or an explicitly stopped/drained worker), never a second uncoordinated process-local semaphore. Wire required auditSpec on every normal session and preserve one branch authorization per internal operation. Add only observed inert detail/history reads; simple linked identity is not privileged company billing. Optional unavailable sections cannot destroy valid facts or become zero values.
 - **Test first:** deterministic admission → claimed read_tool → no-model service call → typed receipt with fake browser/secret/storage must initially fail on missing worker dispatch/audit metadata, including drafting off. Add exact lookup → resolved ref → context fixtures and capture/cleanup assertions before driver work.
 - **Test scenarios:** expired/cross-mailbox/wrong-parent/wrong-branch refs rejected before I/O; unknown keys/raw URL/selector/script rejected; same-surname ambiguity; hidden guest fields; old release/schema mismatch; independent per-field freshness; too many children/rows/bytes/deadline; real handler versus stub; read_tool admission/claim/idempotency with drafting off and no model initialization; receipt replay/expired refs; two worker/proof processes cannot concurrently own one property; lock/heartbeat loss aborts without result overwrite; known positive and controlled negative; autosave/mutation blocked before transmission; abort/reclaim closes capture/session.
-- **Verification:** `bash apps/server-pilot/scripts/reservation-pilot-gate.sh unit reads` and `bash apps/server-pilot/scripts/reservation-pilot-gate.sh db reads` prove contracts, model-free admission/dispatch, worker/property ownership, receipts and leases. Authorized purpose-built non-test proof then confirms each enabled branch through the actual runtime, with known-positive/negative/ambiguous scenarios and private trace/video receipts. Fixture/blocker success is not live-read completion.
+- **Verification:** `bash apps/server-pilot/scripts/reservation-pilot-gate.sh unit reads` and `bash apps/server-pilot/scripts/reservation-pilot-gate.sh db reads` prove contracts, model-free admission/dispatch, worker/property ownership, receipts and leases. Authorized purpose-built non-test proof then confirms each enabled branch through the actual normal trusted audited runtime, with known-positive/negative/ambiguous scenarios and private trace/video receipts; U8's read executor/harness owns the runtime comparison receipt with `evaluationMode`, actual input/output/source/version/time and mode-specific outcome/guard, while U11 carries it into handoff without a new platform. The Phase 2/B manifest records exact membership, skip reasons and field-level outcomes without a drafting model. Fixture/blocker success is not live-read completion or Phase 3 release.
 
 ### U9. Existing documents and mail artifacts
 
@@ -625,13 +641,13 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 
 - **Goal:** produce useful guest text or a clear internal brief from the facts actually available.
 - **Requirements:** R4/R6/R10/R11; AE1–AE5/AE8/AE15.
-- **Dependencies:** U1 and the read-tool milestone (U8/U9/U17/U7/U15/U16 with explicit per-capability release/blocker status). U5 is scheduled after useful read-tool delivery; it is not their prerequisite. U2 later supplies live asks. Missing permission for one read must not prevent drafting from other proven sources.
+- **Dependencies:** U1 and the read-tool milestone (U8/U9/U17/U7/U15/U16 with explicit per-capability release/blocker status). Every capability branch/version consumed by U5 must first pass the KTD7a Phase 2/B gate; safe implementation and independent work may proceed before that proof. U5 is scheduled after useful read-tool delivery; it is not their prerequisite. U2 later supplies live asks. Missing permission for one read must not prevent drafting from other proven sources.
 - **Files:** create `apps/server-pilot/src/ai/reply-playbooks.ts`, `apps/server-pilot/src/ai/reply-assessment.ts`, `apps/server-pilot/src/ai/prepared-draft-input.ts`, `apps/server-pilot/tests/reply-playbooks.test.ts`, `apps/server-pilot/tests/reply-assessment.test.ts`, `apps/server-pilot/tests/prepared-draft-input.test.ts`, `apps/server-pilot/src/ai/bedrock/local.ts`, `apps/server-pilot/src/ai/local-model-routing.ts`, `apps/server-pilot/tests/local-model-adapter-contract.test.ts`, `apps/server-pilot/tests/shadow-model-routing.test.ts`; modify `apps/server-pilot/src/ai/bedrock/factory.ts`, `apps/server-pilot/src/env.ts`, `apps/server-pilot/tests/env.test.ts`, `apps/server-pilot/src/ai/candidate-draft-agent.ts`, `apps/server-pilot/src/ai/draft-evidence.ts`, `apps/server-pilot/src/ai/workflows/candidate-draft.ts`, `apps/server-pilot/src/ai/draft-backtest.ts`, `apps/server-pilot/tests/draft-backtest-scorer.test.ts`.
 - **Approach:** controlled module composition for all current asks; separate complete/partial/clarification/brief/abstain. Facts carry source, time and authority; policy uses versioned approved input, not facts mined from old replies. Prepare bounded inputs before workflow/trace serialization; approved local processing may use authorized PII, never secrets. U5 owns the reusable approved-transport adapter/routing guard on the existing ModelAdapter injection seam for extraction, drafting and judging. Missing/unproven transport fails before network/client initialization; no hosted/fake live fallback. Verify protocol/access/egress/retention at activation without guessing endpoints or provisioning a new service.
 - **Patterns:** existing typed claims/evidence renderer and artifact bounds; remove diagnostic harness language from guest body.
 - **Execution note:** test-first cases from synthetic counterparts of the retained audit.
 - **Test scenarios:** missing child ages asks once; receipt not funds-cleared; booking request not confirmed; cancellation request not completed; price missing bracket fails coverage; negation/amount/currency mismatch; group brief remains internal; unknown policy not invented; injected email cannot change bank/recipient/tool authority; attachment claim requires selected authorized bytes; sensitive/unrelated material never reaches adapter/trace; missing-route refusal with zero Bedrock calls, cancellation/deadline propagation, invalid model JSON, safe errors and actual model/usage provenance.
-- **Verification:** every supported module yields supported guest text or an explicit limitation. Complete quotes/documents require the released read/byte evidence; no read result invents completed actions.
+- **Verification:** every supported module yields supported guest text or an explicit limitation. Complete quotes/documents require the released read/byte evidence and a passed per-capability Phase 2/B gate; no read result invents completed actions.
 
 ### U2. Passive current-request and response baseline
 
@@ -649,7 +665,7 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 
 - **Goal:** learn continuously between staff visits without exposing or sending shadow replies.
 - **Requirements:** R6/R11/R12/R13/R15/R16; AE8/AE11/AE12/AE15.
-- **Dependencies:** U1/U12/U2/U5 and the relevant released read families; internal evaluation follows the tool milestone.
+- **Dependencies:** U1/U12/U2/U5 and the relevant released read families; every capability branch/version consumed by Phase 3 shadow evaluation requires its own passed KTD7a Phase 2/B gate. Internal evaluation follows the tool milestone.
 - **Files:** create `apps/server-pilot/src/db/schema/ai-shadow-evaluation.ts`, `apps/server-pilot/drizzle/0025_ai_shadow_evaluation.sql`, `apps/server-pilot/src/ai/shadow-evaluation.ts`, `apps/server-pilot/src/ai/shadow-reference-matcher.ts`, `apps/server-pilot/src/metrics/shadow-scorecard.ts`, `apps/server-pilot/tests/shadow-evaluation.test.ts`, `apps/server-pilot/tests/shadow-reference-matcher.test.ts`, `apps/server-pilot/tests/shadow-scorecard.test.ts`; modify `apps/server-pilot/drizzle/meta/_journal.json`, `apps/server-pilot/src/db/schema/index.ts`, `apps/server-pilot/src/ai/worker.ts`, `apps/server-pilot/src/ai/run-ledger.ts`, `apps/server-pilot/src/ai/thread-context.ts`, `apps/server-pilot/src/ai/eval-runner.ts`, `apps/server-pilot/src/ai/bedrock/factory.ts`, `apps/server-pilot/src/env.ts`, `apps/server-pilot/src/trpc/routes/admin-dashboard.ts`, `apps/mail/app/(routes)/settings/admin-dashboard/page.tsx`, `apps/server-pilot/tests/ai-eval-runner.test.ts`, `apps/server-pilot/tests/hms-shadow.test.ts`.
 - **Approach:** explicit new evaluation purpose/writer, immutable prediction plus append-only assessment revisions; existing run ledger/safe counters remain. Freeze as-of inputs before current-state context builder. Admission after new-inbound processing, delayed rematch after outbound ingest, bounded scheduled assessment. Bind versions, timing, scope, artifacts and sampling/skip reasons. Keep legacy HMS shadow's no-body contract intact.
 - **Model gate:** prove/reuse the approved local route through the current adapter interface before live runs. If absent, keep live generation/judging disabled and record access/processing blocker; do not silently use Bedrock on raw mail. Reuse U5's ModelAdapter/planModel approved-transport adapter and purpose-specific fail-closed routing. Verify route identity/protocol/model, worker access, real egress and retention; a loopback proxy does not prove local inference. No guessed endpoint or new inference infrastructure is authorized by this plan. Test missing-route refusal before client initialization, zero Bedrock fallback, timeout/cancellation, output validation, safe errors and truthful model/usage provenance. Fake fixtures prove plumbing, never live quality.
@@ -662,7 +678,7 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 
 - **Goal:** expose supported assistance during the existing pilot without requiring a new queue.
 - **Requirements:** R4/R7/R10/R16; AE6/AE7/AE8.
-- **Dependencies:** U5/U13 and relevant per-family shadow gates; only the independently released read capabilities are exposed.
+- **Dependencies:** U5/U13 and relevant per-family shadow gates; every capability branch/version consumed by visible assistance must have its own passed KTD7a Phase 2/B gate, while the separate per-family draft-quality gates remain required. Only independently released read capabilities are exposed.
 - **Files:** modify `apps/server-pilot/src/ai/drafts.ts`, `apps/server-pilot/src/trpc/routes/drafts.ts`, `apps/server-pilot/src/trpc/routes/mail.ts`, `apps/server-pilot/src/mail/send/outbound-queue.ts`, `apps/server-pilot/src/env.ts`, `apps/server-pilot/tests/outbound-queue.test.ts`; create `apps/server-pilot/src/ai/draft-approval.ts`, `apps/server-pilot/tests/draft-approval.test.ts`, `apps/server-pilot/tests/draft-refresh-generation.test.ts`, `apps/mail/tests/draft-assistance.test.tsx`; modify `apps/mail/components/mail/thread-display.tsx`, `apps/mail/components/mail/thread-draft-card.tsx`, `apps/mail/components/mail/reply-composer.tsx`, `apps/mail/hooks/use-drafts.ts`, `apps/mail/lib/mail/thread-draft-view-model.ts`, `apps/mail/components/create/email-composer.tsx` without replacing the editor.
 - **Approach:** validated draft-only purpose and named-person/family switches; current regeneration instead of promoting hidden historical drafts. Require the approved adapter at visible generation/refresh entry points, never generic fallback. Bind source/evidence/revision separately, fence refresh, preserve manual edits, distinguish guest candidate from internal brief. Show stale changes, revalidate evidence without replacing text, then bind explicit re-approval; no AI-bound Send anyway bypass. Persist exact approval in existing outbox; check at enqueue and before every actual SMTP transmission.
 - **Patterns:** existing immutable draft revisions, queue acceptance/undo/uncertainty and editor UX.
@@ -676,11 +692,11 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 - **Requirements:** R7/R9/R11/R12/R16/R18/R19; AE6–AE18.
 - **Dependencies:** applicable units in each released slice, not deferred U3/U4 or removed U14.
 - **Files:** create `apps/mail/tests/e2e/reservation-tools-pilot.spec.ts`, `apps/server-pilot/tests/reservation-tools-pilot-integration.test.ts`, `docs/infor-hms/dashboard-tools-pilot-runbook.md`, `apps/mail/vite.pilot-fixture.config.ts`; modify `apps/server-pilot/scripts/reservation-pilot-gate.sh` and relevant existing deploy verification wiring only when authorized.
-- **Interfaces:** run receipt binds revision/slice/cohort/source vintage/tool release/processing authority, gate outcomes, capability blockers, private trace/video paths and expiry. Runbook specifies fixture entry, actual runtime proof, kill switches and compatibility rollback; progress lives outside the plan.
-- **Approach:** journeys for executive traffic/T0 assumptions → independent reservation/finance/document/quote reads → later ask-aware/private prediction matching → supported visible draft. No timer or capture subsystem. Tool calls are verified without an LLM before later agent adaptation. Keep future-write contracts documented and absent from runtime registries.
+- **Interfaces:** U1 owns the private Phase 2/B manifest and mode/holdout contract. U8's read executor/harness owns the runtime comparison receipt; U11 binds its `evaluationMode`, capability branch/version, case membership/skip reasons, mode-specific aggregation/release guard, actual input/output/source/version/time, field-level outcomes, gate outcomes, capability blockers, private trace/video paths and expiry into the handoff. Runbook specifies fixture entry, actual runtime proof, kill switches and compatibility rollback; progress lives outside the plan.
+- **Approach:** journeys for executive traffic/T0 assumptions → independent reservation/finance/document/quote reads → Phase 2/B real-email capability validation → later ask-aware/private prediction matching → supported visible draft. No timer or capture subsystem. Tool calls are verified without an LLM before later agent adaptation. Keep future-write contracts documented and absent from runtime registries.
 - **Test first:** establish failing end-to-end fixture journeys for the released slice before final wiring. Use the actual Playwright runner, fake mail/PMS transports and isolated services.
-- **Test scenarios:** aggregate-only executive cannot inspect mail; research never leaks; known/unknown capture intervals render correctly; private shadow has no visible/send effect; source outage gives manual path; stale approval refuses transmission; changed tool fingerprint prevents stale release; model unavailable does not disable independently useful tools; no future-write registration; rollback preserves accepted SMTP outcomes without resend.
-- **Verification:** `bash apps/server-pilot/scripts/reservation-pilot-gate.sh browser pilot`, required disposable-DB slices and scoped builds pass with zero required skips. Independent code/security/UX findings are resolved for the released slice. Purpose-built live checks remain read-only; unavailable external authority is reported, never marked successful.
+- **Test scenarios:** aggregate-only executive cannot inspect mail; research never leaks; known/unknown capture intervals render correctly; private shadow has no visible/send effect; Phase 2/B case manifest is frozen before results and target leakage is rejected; mode-specific aggregation never pools current/replay/future scores; a held-out outcome cannot tune, repair, choose fixtures or retry, and unsealed exposure retires it to development/regression with original score preserved; source outage gives manual path; stale approval refuses transmission; changed tool fingerprint prevents stale release; model unavailable does not disable independently useful tools; no future-write registration; rollback preserves accepted SMTP outcomes without resend.
+- **Verification:** `bash apps/server-pilot/scripts/reservation-pilot-gate.sh browser pilot`, required disposable-DB slices and scoped builds pass with zero required skips. Independent code/security/UX findings are resolved for the released slice. The Phase 2/B receipt distinguishes no eligible gold coverage from an independently proved current capability. Purpose-built live checks remain read-only; unavailable external authority is reported, never marked successful.
 
 ---
 
@@ -690,7 +706,9 @@ Existing U-IDs keep their concepts. U3/U4 remain deferred; U14 is removed. U7/U9
 
 These are future implementation commands, not application suites run during planning. U1 implements the named gate and fails on unknown mode/slice, required skips or unsafe environment. Run from repository root.
 
-All future execution and review workers follow the central Development routing and coordination mandate above. Execution receipts record requested/effective model, effort, usage (or unknown when unavailable) and evidence; a fresh-main reconciliation is required before implementation. The final whole-branch review must be a separate Luna review with both specification and code-quality verdicts, and all critical/important findings must be fixed and retested. This amendment adds no application-test or live-capability validation.
+All future execution and review workers follow the central Development routing and coordination mandate above. Execution receipts record requested/effective model, effort, usage (or unknown when unavailable) and evidence; a fresh-main reconciliation is required before implementation. The final whole-branch review must be a separate Luna review with both specification and code-quality verdicts, and all critical/important findings must be fixed and retested. This amendment defines no application-test or live-capability result.
+
+Every root-dispatched brief and receipt also follows the literal CodeGraph-first rule above: record the assigned worktree root, queried project/root and query/result relevance, or the explicit no-index/tool-failure fallback. This worktree was observed without `.codegraph/` at setup on 2026-09-07; the user has since authorized local index creation in this assigned worktree only. Recheck for each actual task root and do not claim index completion from this amendment; never implicitly use or copy another worktree's index.
 
 | Gate | Command / scope | Required result |
 | --- | --- | --- |
@@ -701,7 +719,7 @@ All future execution and review workers follow the central Development routing a
 | Fixture browser | Same script: `browser dashboard`, `browser documents`, `browser pilot` | Real Playwright against loopback isolated services; desktop/mobile/keyboard/access/error/manual paths, no external sends |
 | Scoped builds | Same script: `build server`, `build mail` wraps `pnpm --filter @zero/server build` / `pnpm --filter @zero/mail build` | Backend TypeScript and actual React Router build; scripts/new contracts separately type-checked |
 | Formatting/static | Existing tooling on changed files; scoped diff whitespace check | No unrelated formatting; pre-existing failures reported separately |
-| Runtime read proof | `hms-read-tool-harness.ts` via existing authorized proof/runtime entry, no test runner | Exact role/property/source/release and positive/negative/ambiguity evidence; actual audited trace/video, zero business effects |
+| Runtime read proof + Phase 2/B gate | `hms-read-tool-harness.ts` via existing normal trusted audited proof/runtime entry, no drafting model or test runner | Exact role/property/source/release, frozen private case membership/skip reasons, persisted `evaluationMode` and mode-specific guard, field-level outcomes and positive/negative/ambiguity evidence; actual audited trace/video, zero business effects |
 
 The gate maps each named slice to the exact test files listed in its unit; tests are not selected by a broad live-looking filename glob. Database mode refuses missing required input. Clear ambient DATABASE_URL and VITEST_ALLOW_PILOT_RDS before every runner; the gate accepts a separately verified disposable connection through NAVA_TEST_DATABASE_URL and passes it only to the required child without logging it. Never source production env or set the prohibited override. Provision/verify an owned disposable target; cleanup is restricted to its exact owned resources.
 
@@ -709,15 +727,15 @@ Frontend Vite loads monorepo env files and a broad lint plugin, so clearing shel
 
 Migration 0023 is the next unused number in the inspected checkout: U8 adds the read_tool run kind and bounded request/result-reference columns. Apply/commit its enum migration and deploy kind-aware workers before enabling admission. U2 then uses 0024 for the baseline projection; U13 uses 0025 for shadow evaluation. Recheck numbering before execution, use focused additive SQL/journal changes, and test fresh plus already-migrated disposable databases. U12 adds no ingest/source-cycle/timing schema. The backend build excludes scripts/tests: separately type-check the harness, gate contracts and test-side schemas.
 
-Each unit follows the central mandate's concrete TDD cycle: add its named failing fixture/assertion → run its exact slice and inspect the intended RED → implement the smallest scoped change → rerun that slice and inspect evidence → applicable DB/browser/compatibility gates → separate review and fresh proof. Fixture success never promotes a new PMS branch by itself.
+Each unit follows the central mandate's concrete TDD cycle: add its named failing fixture/assertion → run its exact slice and inspect the intended RED → implement the smallest scoped change → rerun that slice and inspect evidence → applicable DB/browser/compatibility gates → separate review and fresh proof. Every root-dispatched brief carries the literal CodeGraph-first instruction and assigned worktree root; every receipt records graph queries/relevance or the explicit fallback. Fixture success never promotes a new PMS branch or Phase 3 capability by itself.
 
 ### Release ladder
 
 | Slice | Staff attendance needed? | Activation proof |
 | --- | --- | --- |
 | A: executive dashboard, T0 and lean diagnostics | No | Authorized cohort, truthful traffic/folder/time semantics, assumption/gap notes and no false response/revenue payload |
-| B: independent read toolkit | No coding/babysitting by founder | Per-tool schema/dispatch/runtime/role/source/field/negative/side-effect proof plus private traces/videos; precise blockers for unavailable branches |
-| C: ask-aware service and private drafting evaluation | No daily use | Approved model/storage route, causal inputs, source-linked request state, immutable predictions, real label availability and cost/retention caps |
+| B: independent read toolkit + Phase 2/B validation | No coding/babysitting by founder | Per-tool schema/dispatch/runtime/role/source/field/negative/side-effect proof, frozen real-email case disposition and private traces/videos; precise blockers for unavailable branches |
+| C: ask-aware service and private drafting evaluation | No daily use | Only Phase 2/B-released capabilities; approved model/storage route, causal inputs, source-linked request state, immutable predictions, real label availability and cost/retention caps |
 | D: supported visible assistance | Software no; usage cannot be fabricated | Per-family safety evidence, current reads, human edit/approval/send protections and named pilot scope |
 
 The read milestone means useful proven tools and explicit per-capability disposition, not “all registrations exist.” Do not stop at stubs. Complete implementation/testing, exhaust safe read-only alternatives for a blocked surface, and distinguish implemented, independently proved, live enabled and unavailable. A missing external permission blocks that branch, not all later work; never mark the blocked capability live or the entire deployment complete.
@@ -744,9 +762,12 @@ Access is checked at read time; export and artifact links are scoped/short-lived
 
 - [ ] Before implementation, fresh `main` is reconciled against the recorded `source_checkout`, and changed files, constraints and dependencies are rechecked; this amendment is not a baseline recertification.
 - [ ] Central development routing is followed: routine workers explicitly request Luna with `max` effort and `fork_turns=none`; root remains Astra for allowed summaries and delegates routine work; receipts record requested/effective model, effort, usage and evidence; the separate Luna final review issues both specification and code-quality verdicts, with critical/important findings fixed and retested.
+- [ ] Every root-dispatched brief includes the literal CodeGraph-first rule for its actual assigned worktree; receipts record project/root and query relevance or an explicit no-index/tool-failure fallback. No index is silently taken from `main` or another worktree.
 - [ ] Initial executive dashboard shows useful general email/business metrics, existing-folder breakdown and accessible bar/line charts; AI metrics are separate.
 - [ ] T0/configuration and lean diagnostics support new-request measurement without repairing old history or introducing a capture subsystem.
 - [ ] Active read units are implemented and independently callable without a drafting model; exact schema/fact/source/permission/limit contracts are enforced.
+- [ ] Each Phase 3-consumed read capability passes the Phase 2/B real-email gate with frozen private membership/skip reasons, no gold leakage, normal trusted audited no-model proof, field-level outcomes and private traces; absence of eligible gold cases is recorded as a coverage gap, never a gold-validation pass, and independent current proof remains separate.
+- [ ] Cases, comparison receipts and reports persist `evaluationMode` and mode-specific aggregation/release guards; current/replay/future scores are never pooled, and held-out exposure retires to development/regression with original outcomes preserved before any fresh disjoint claim.
 - [ ] Every claimed enabled read has current positive/negative/ambiguity, field/completeness and non-mutating transport proof; stubs/blocked permissions are not counted as shipped capabilities.
 - [ ] Existing documents have exact authorized bytes/version/type/recipient/price-visibility checks; metadata or generation never substitutes for retrieval.
 - [ ] Agent-owned tool handoff includes private trace/video receipts, scenarios, limitations and expiry; no coding/debugging/babysitting delegated to the user.
@@ -768,8 +789,9 @@ Planning completion is this amended canonical plan, durable tool catalogue, repr
 
 ## Developer Experience and Operating Handoff
 
-- **First useful result:** synthetic executive dashboard, then direct no-model reservation/finance/document read calls through the normal audited fixture runtime. Later add one sealed prediction and matched assessment. No live credentials for fixtures.
+- **First useful result:** synthetic executive dashboard, then direct no-model reservation/finance/document read calls through the normal audited fixture runtime and the Phase 2/B real-email capability disposition. Later add one sealed prediction and matched assessment. No live credentials for fixtures.
 - **Execution routing and receipts:** the Autonomous Execution Mandate above is the single routing policy: explicit Luna/max/`fork_turns=none` for routine development and review, root/Astra only within its stated narrow boundary. Keep task/file briefs and small receipts as the coordination surface; retain full histories, logs and diffs privately, and record requested/effective model, effort, usage and evidence with unknown or unavailable usage left unknown.
+- **Source navigation:** the CodeGraph-first task-brief rule above is the single source-navigation policy. This worktree was observed without `.codegraph/` at setup on 2026-09-07; the user has since authorized local index creation here only. Recheck per actual task, record the applicable fallback or query, and do not claim index completion from this amendment or use another worktree's index.
 - **Baseline and review status:** before implementation reconcile fresh `main` with `source_checkout`. Research/count/source hashes and private audit pins remain historical and are not resealed. The review disposition below is historical evidence for the earlier revision, not a certification of this amendment; no new validation is implied.
 - **Contract authority:** tool catalogue defines proposed public names/data/limits; primary product docs define evidence about capabilities, not executable endpoints. Existing versions retain adapters until consumers migrate.
 - **Errors:** stable reasons for missing T0, bad clocks, ambiguous refs, denied scope, unproved surface, stale release, missing bytes, incomplete quote, unapproved policy, absent model route and missing labels. Each maps to a safe next action.
@@ -783,7 +805,7 @@ Planning completion is this amended canonical plan, durable tool catalogue, repr
 
 ## Independent Review Disposition
 
-The assertions in this section are historical: they certify the earlier plan/catalogue revision, not this execution-routing amendment. No new review or validation is claimed for this document-only edit.
+The assertions in this section are historical: they certify the earlier plan/catalogue revision, not this plan-execution/validation amendment. No new review or validation is claimed for this document-only edit.
 
 Seven independent reviewers checked the earlier revised plan/catalogue for coherence, feasibility, scope/simplicity, product fit, design, security and adversarial cases. Six findings (two P1, three P2, one P3) were resolved: model-free worker admission/ownership, honest historical classification limits, action-pending wording, distinct event deposit fields, signed overbooked inventory and explicit alternative count ordering. A source-verified follow-up also prohibits the existing unknown-deposit-activity-to-paid fallback.
 

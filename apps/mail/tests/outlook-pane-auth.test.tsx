@@ -26,6 +26,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn() },
+      quoteProposalPdf: { mutate: vi.fn() },
     },
   },
 }));

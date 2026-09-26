@@ -36,7 +36,7 @@ export const PHASE_B_WAVE_TOOLS: Readonly<
   Record<PhaseBWaveId, readonly ReadToolId[]>
 > = {
   B0: [],
-  B1: ['hms_find_reservation', 'mail_read_artifact', 'hms_quote_stay'],
+  B1: ['hms_find_reservation', 'hms_quote_stay'],
   B2: ['hms_list_documents', 'hms_sent_email_audit'],
   B3: ['hms_read_folio'],
   B4: ['hms_company_account_read'],

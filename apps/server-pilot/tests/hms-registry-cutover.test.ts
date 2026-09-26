@@ -2,31 +2,6 @@
  * Task 13: plan-scoped immutable registry cutover + authorization + CAS.
  * Exercised via the brief suite list (imported alongside portfolio-release).
  */
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
-import {
-  MAX_TOTAL_READ_ATTEMPTS,
-  canScoreFull,
-  executableReadStepsForPlan,
-  selectRequestedFollowupClasses,
-  type CandidateBinding,
-} from '../src/hms/candidate-read-plan.js';
-import {
-  FIND_RESERVATION_IMPL_V1,
-  FIND_RESERVATION_IMPL_V2,
-  MAIL_ARTIFACT_IMPL_V1,
-  assertHandlerIndexCovers,
-  createReadToolHandler,
-  hasHandlerFor,
-} from '../src/hms/read-handler-index.js';
-import {
-  fingerprintReadToolRegistry,
-  productionActiveReadToolIds,
-} from '../src/hms/read-tools.js';
 import {
   HMS_RUNTIME_ABI_VERSION,
   emptyActiveRegistryV2,
@@ -49,6 +24,28 @@ import {
   assertCandidatePreservesActiveTools,
   runSourceRegistryTransaction,
 } from '../src/hms/source-registry-transaction.js';
+import {
+  FIND_RESERVATION_IMPL_V1,
+  FIND_RESERVATION_IMPL_V2,
+  MAIL_ARTIFACT_IMPL_V1,
+  assertHandlerIndexCovers,
+  createReadToolHandler,
+  hasHandlerFor,
+} from '../src/hms/read-handler-index.js';
+import {
+  MAX_TOTAL_READ_ATTEMPTS,
+  canScoreFull,
+  executableReadStepsForPlan,
+  selectRequestedFollowupClasses,
+  type CandidateBinding,
+} from '../src/hms/candidate-read-plan.js';
+import { fingerprintReadToolRegistry, productionActiveReadToolIds } from '../src/hms/read-tools.js';
+import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 function hex(n: number | string): string {
   return String(n).repeat(64).slice(0, 64);
@@ -127,15 +124,15 @@ function mailRelease(
 describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
   it('fails closed on missing/invalid registry', async () => {
     const root = await mkdtemp(join(tmpdir(), 'reg-missing-'));
-    await expect(
-      loadActiveReadRegistryV2(join(root, 'missing.json')),
-    ).rejects.toThrow(/missing/);
+    await expect(loadActiveReadRegistryV2(join(root, 'missing.json'))).rejects.toThrow(/missing/);
     await writeFile(join(root, 'bad.json'), '{"schemaVersion":1}\n');
     await expect(loadActiveReadRegistryV2(join(root, 'bad.json'))).rejects.toThrow();
   });
 
-  it('fixture constants cannot activate production without registry', () => {
-    expect(productionActiveReadToolIds()).toEqual([]);
+  it('fixture constants alone do not imply full registry cutover', () => {
+    expect(productionActiveReadToolIds().sort()).toEqual(
+      ['hms_find_reservation'].sort(),
+    );
     expect(
       isRegistryCutoverComplete({
         activeToolIds: new Set(),
@@ -145,37 +142,23 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
   });
 
   it('handler index covers active + differing predecessor', () => {
-    expect(hasHandlerFor('hms_find_reservation', FIND_RESERVATION_IMPL_V1)).toBe(
-      true,
-    );
+    expect(hasHandlerFor('hms_find_reservation', FIND_RESERVATION_IMPL_V1)).toBe(true);
     expect(hasHandlerFor('mail_read_artifact', MAIL_ARTIFACT_IMPL_V1)).toBe(true);
     assertHandlerIndexCovers({
       active: new Map([
-        [
-          'hms_find_reservation',
-          { implementationSha256: FIND_RESERVATION_IMPL_V2 },
-        ],
+        ['hms_find_reservation', { implementationSha256: FIND_RESERVATION_IMPL_V2 }],
       ]),
       immediatePredecessor: new Map([
-        [
-          'hms_find_reservation',
-          { implementationSha256: FIND_RESERVATION_IMPL_V1 },
-        ],
+        ['hms_find_reservation', { implementationSha256: FIND_RESERVATION_IMPL_V1 }],
       ]),
     });
     expect(() =>
       assertHandlerIndexCovers({
         active: new Map([
-          [
-            'hms_find_reservation',
-            { implementationSha256: FIND_RESERVATION_IMPL_V1 },
-          ],
+          ['hms_find_reservation', { implementationSha256: FIND_RESERVATION_IMPL_V1 }],
         ]),
         immediatePredecessor: new Map([
-          [
-            'hms_find_reservation',
-            { implementationSha256: FIND_RESERVATION_IMPL_V1 },
-          ],
+          ['hms_find_reservation', { implementationSha256: FIND_RESERVATION_IMPL_V1 }],
         ]),
       }),
     ).toThrow(/differ/);
@@ -187,6 +170,32 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
       implementationSha256: FIND_RESERVATION_IMPL_V1,
       predecessorReleaseId: null,
       rollbackAction: 'disable',
+      requestBranches: [
+        {
+          id: 'guest_stay_search',
+          discoveryOperationId: 'guest_stay_search',
+          manifestSha256: createHash('sha256')
+            .update(
+              JSON.stringify(
+                requestPolicyManifestSchema.parse({
+                  rules: [
+                    {
+                      id: 'r1',
+                      origin: 'https://example.test',
+                      method: 'GET',
+                      path: '/x',
+                      resourceTypes: ['document'],
+                      redirectPolicy: 'same-reviewed-chain',
+                    },
+                  ],
+                }),
+              ),
+            )
+            .digest('hex'),
+          discoverySha256: hex(9),
+          parserSchemaSha256: hex('a'),
+        },
+      ],
     });
     const manifest = requestPolicyManifestSchema.parse({
       rules: [
@@ -207,7 +216,7 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
       releaseId: release.releaseId,
       requestBranchId: 'guest_stay_search',
       manifest,
-      manifestSha256: hex(8),
+      manifestSha256: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
       roleProofPath: '/tmp/proof.v2.json',
       roleProofSha256: hex('c'),
       credentialVersionHmacSha256: hex('b'),
@@ -216,9 +225,7 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
       sourceRevision: release.sourceRevision,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
-    expect(createReadToolHandler(release, auth).toolId).toBe(
-      'hms_find_reservation',
-    );
+    expect(createReadToolHandler(release, auth).toolId).toBe('hms_find_reservation');
 
     const mail = mailRelease({
       releaseId: randomUUID(),
@@ -669,26 +676,16 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
   it('candidate deploy refuses orphaning; CAS crash restores; incomplete exit 20', async () => {
     assertCandidateDoesNotOrphanReleases({
       requiredDigests: new Map([
-        [
-          'hms_find_reservation',
-          new Set([FIND_RESERVATION_IMPL_V1, FIND_RESERVATION_IMPL_V2]),
-        ],
+        ['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V1, FIND_RESERVATION_IMPL_V2])],
       ]),
       availableDigests: new Map([
-        [
-          'hms_find_reservation',
-          new Set([FIND_RESERVATION_IMPL_V1, FIND_RESERVATION_IMPL_V2]),
-        ],
+        ['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V1, FIND_RESERVATION_IMPL_V2])],
       ]),
     });
     expect(() =>
       assertCandidateDoesNotOrphanReleases({
-        requiredDigests: new Map([
-          ['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V1])],
-        ]),
-        availableDigests: new Map([
-          ['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V2])],
-        ]),
+        requiredDigests: new Map([['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V1])]]),
+        availableDigests: new Map([['hms_find_reservation', new Set([FIND_RESERVATION_IMPL_V2])]]),
       }),
     ).toThrow(/orphan/);
 
@@ -847,10 +844,10 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
     expect(IncompleteRestoreError).toBeTruthy();
   });
 
-  it('cutover complete only when find+mail seeds and handler path active', () => {
+  it('cutover complete when the active find seed and handler path are present', () => {
     expect(
       isRegistryCutoverComplete({
-        activeToolIds: new Set(['hms_find_reservation', 'mail_read_artifact']),
+        activeToolIds: new Set(['hms_find_reservation']),
         handlerPathActive: true,
       }),
     ).toBe(true);
@@ -859,6 +856,6 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
         activeToolIds: new Set(['hms_find_reservation']),
         handlerPathActive: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

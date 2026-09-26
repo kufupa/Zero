@@ -1,9 +1,7 @@
-import { z } from 'zod';
-import type {
-  QuarantinedNegative,
-  ValidatedBusinessNotFound,
-} from '../hms/negative-result.js';
+import type { QuarantinedNegative, ValidatedBusinessNotFound } from '../hms/negative-result.js';
 import { toBusinessNotFoundToolStatus } from '../hms/negative-result.js';
+import type { PreparedFact } from './prepared-draft-input.js';
+import { z } from 'zod';
 
 export type HmsEvidenceRef = {
   kind: 'hms';
@@ -15,12 +13,24 @@ export type HmsEvidenceRef = {
   expiresAt: string;
   claimKeys: string[];
   sourceHash: string;
+  /** Private durable join to the finalized browser capture, when audited. */
+  artifactRef?: string;
+  /** All finalized branch artifacts joined by one typed result. */
+  artifactRefs?: string[];
+  scopeVerified?: boolean;
+  /** Exact reviewed branch manifest and finance scope joins, when present. */
+  manifestSha256?: string;
+  /** Every reviewed branch exercised by one normal finance result. */
+  manifestSha256ByBranch?: Record<string, string>;
+  scopeHash?: string;
+  /** Server-issued requester/access join for the concrete read. */
+  requesterAuthorizationId?: string;
 };
 
 export type MailEvidenceRef = {
   kind: 'mail_attachment';
   id: string;
-  toolId: 'mail_read_artifact';
+  toolId: 'mail_read_artifact' | 'mail_parse_channel_payload';
   toolVersion: string;
   attachmentId: string;
   observedAt: string;
@@ -29,13 +39,7 @@ export type MailEvidenceRef = {
 };
 
 export type ToolResult<T> = {
-  status:
-    | 'ok'
-    | 'partial'
-    | 'not_found'
-    | 'unverified_negative'
-    | 'ambiguous'
-    | 'manual_required';
+  status: 'ok' | 'partial' | 'not_found' | 'unverified_negative' | 'ambiguous' | 'manual_required';
   draftReady: boolean;
   data: T;
   unresolvedFields: string[];
@@ -72,8 +76,43 @@ export type EvidenceClaim = {
   evidenceId: string;
   /** Closed envelope claims always set evidenceIds (primary first). */
   evidenceIds?: string[];
+  observedAt?: string;
+  sourceHash?: string;
+  scopeVerified?: boolean;
+  manifestSha256?: string;
+  manifestSha256ByBranch?: Record<string, string>;
+  scopeHash?: string;
+  requesterAuthorizationId?: string;
   expiresAt?: string;
 };
+
+/** Convert a code-owned claim to the bounded fact shape used by U5 replies. */
+export function evidenceClaimToPreparedFact(claim: EvidenceClaim): PreparedFact {
+  const source =
+    claim.kind === 'document_metadata' || claim.kind === 'sent_email_audit' ? 'attachment' : 'hms';
+  const scopeAuthorized = claim.scopeVerified === true;
+  return {
+    key: `claim.${claim.kind}`,
+    label: claim.kind.replace(/_/g, ' '),
+    value: claim.value,
+    source,
+    authority: scopeAuthorized ? 'authorized' : 'unknown',
+    status: scopeAuthorized ? 'known' : 'not_authorized',
+    evidenceRef: claim.evidenceId,
+    ...(claim.observedAt ? { observedAt: claim.observedAt } : {}),
+    ...(claim.sourceHash ? { sourceHash: claim.sourceHash } : {}),
+    ...(claim.scopeVerified === undefined ? {} : { scopeVerified: claim.scopeVerified }),
+    ...(claim.manifestSha256 ? { manifestSha256: claim.manifestSha256 } : {}),
+    ...(claim.manifestSha256ByBranch
+      ? { manifestSha256ByBranch: claim.manifestSha256ByBranch }
+      : {}),
+    ...(claim.scopeHash ? { scopeHash: claim.scopeHash } : {}),
+    ...(claim.requesterAuthorizationId
+      ? { requesterAuthorizationId: claim.requesterAuthorizationId }
+      : {}),
+    ...(claim.expiresAt ? { expiresAt: claim.expiresAt } : {}),
+  };
+}
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/i);
 
@@ -89,6 +128,13 @@ export const HmsEvidenceRefSchema = z
     expiresAt: z.string().min(1),
     claimKeys: z.array(z.string().min(1)).max(64),
     sourceHash: sha256Hex,
+    artifactRef: z.string().min(1).optional(),
+    artifactRefs: z.array(z.string().min(1)).min(1).optional(),
+    scopeVerified: z.boolean().optional(),
+    manifestSha256: sha256Hex.optional(),
+    manifestSha256ByBranch: z.record(sha256Hex).optional(),
+    scopeHash: sha256Hex.optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -97,7 +143,7 @@ export const MailEvidenceRefSchema = z
   .object({
     kind: z.literal('mail_attachment'),
     id: z.string().min(1),
-    toolId: z.literal('mail_read_artifact'),
+    toolId: z.enum(['mail_read_artifact', 'mail_parse_channel_payload']),
     toolVersion: z.string().min(1),
     attachmentId: z.string().min(1),
     observedAt: z.string().min(1),
@@ -149,6 +195,13 @@ export const EvidenceClaimSchema = z
     value: z.unknown(),
     evidenceId: z.string().min(1),
     evidenceIds: z.array(z.string().min(1)).min(1).max(16).optional(),
+    observedAt: z.string().min(1).optional(),
+    sourceHash: sha256Hex.optional(),
+    scopeVerified: z.boolean().optional(),
+    manifestSha256: sha256Hex.optional(),
+    manifestSha256ByBranch: z.record(sha256Hex).optional(),
+    scopeHash: sha256Hex.optional(),
+    requesterAuthorizationId: z.string().min(1).optional(),
     expiresAt: z.string().min(1).optional(),
   })
   .strict();
@@ -157,12 +210,24 @@ export function isEvidenceFresh(
   evidence: HmsEvidenceRef | MailEvidenceRef,
   now: Date = new Date(),
 ): boolean {
+  const observed = Date.parse(evidence.observedAt);
+  if (Number.isNaN(observed) || observed > now.getTime()) return false;
+  if (!sha256Hex.safeParse(evidence.sourceHash).success) return false;
   if (evidence.kind === 'hms') {
+    if (evidence.scopeVerified !== true) return false;
+    if (
+      evidence.manifestSha256ByBranch &&
+      evidence.manifestSha256 &&
+      !Object.values(evidence.manifestSha256ByBranch).includes(evidence.manifestSha256)
+    ) {
+      return false;
+    }
     const expires = Date.parse(evidence.expiresAt);
     if (Number.isNaN(expires)) return false;
     return expires > now.getTime();
   }
-  // Mail attachment evidence has no TTL in the base ref; treat as fresh once observed.
+  // Mail attachment evidence has no TTL in the base ref; it is fresh only
+  // after a valid, non-future observation.
   return true;
 }
 
@@ -278,9 +343,7 @@ export function renderClaim(claim: EvidenceClaim): string {
       const rendered = rows
         .map((row) => {
           const item = asRecord(row);
-          const restrictions = Array.isArray(item.restrictions)
-            ? item.restrictions.join(', ')
-            : '';
+          const restrictions = Array.isArray(item.restrictions) ? item.restrictions.join(', ') : '';
           return `${String(item.date)} ${String(item.roomTypeClass)}: CON ${String(item.con)}, BLK ${String(item.blk)}, pickup ${String(item.pickup)}, remaining ${String(item.remaining)}, restrictions ${restrictions || 'none'}`;
         })
         .join('; ');
@@ -372,17 +435,13 @@ export function renderSalutation(salutation: 'first_name' | 'generic'): string {
   return salutation === 'first_name' ? 'Hi,' : 'Hello,';
 }
 
-export function renderOpening(
-  opening: 'acknowledge_request' | 'thanks_for_details',
-): string {
+export function renderOpening(opening: 'acknowledge_request' | 'thanks_for_details'): string {
   return opening === 'acknowledge_request'
     ? 'Thank you for your request. Here is what we can confirm from our records:'
     : 'Thank you for the details. Based on the information on file:';
 }
 
-export function renderClosing(
-  closing: 'invite_questions' | 'await_confirmation',
-): string {
+export function renderClosing(closing: 'invite_questions' | 'await_confirmation'): string {
   return closing === 'invite_questions'
     ? 'Please let us know if you have any questions.\n\nBest regards,\nFront Office'
     : 'We await your confirmation to proceed.\n\nBest regards,\nFront Office';
@@ -397,11 +456,7 @@ export function renderClarificationQuestions(questionCodes: readonly string[]): 
 /** Escape + paragraphize; model never supplies HTML. */
 export function textToSafeHtml(text: string): string {
   const escape = (s: string) =>
-    s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return text
     .split(/\n\n+/)
     .filter((p) => p.length > 0)
@@ -430,9 +485,7 @@ export function renderCandidate(
   | { outcome: 'candidate'; textBody: string; htmlBody: string; plan: CandidateDraftPlan } {
   if (plan.outcome !== 'candidate') return plan;
 
-  const factualLines = plan.selectedClaimIds.map((id) =>
-    renderClaim(requireClaim(claims, id)),
-  );
+  const factualLines = plan.selectedClaimIds.map((id) => renderClaim(requireClaim(claims, id)));
   const textBody = [
     renderSalutation(plan.salutation),
     renderOpening(plan.openingTemplate),
@@ -452,10 +505,7 @@ export function renderCandidate(
  * Square-bracket placeholder for facts we must not invent.
  * Prefer naming the read tool or a named blocker over vague "unknown".
  */
-export function formatMissingBracket(input: {
-  need: string;
-  acquisition: string;
-}): string {
+export function formatMissingBracket(input: { need: string; acquisition: string }): string {
   const need = input.need.trim();
   const acquisition = input.acquisition.trim();
   if (!need) throw new Error('missing bracket need required');
@@ -466,9 +516,7 @@ export function formatMissingBracket(input: {
 export function listMissingBrackets(
   fields: ReadonlyArray<{ field: string; acquisition: string }>,
 ): string[] {
-  return fields.map((f) =>
-    formatMissingBracket({ need: f.field, acquisition: f.acquisition }),
-  );
+  return fields.map((f) => formatMissingBracket({ need: f.field, acquisition: f.acquisition }));
 }
 
 /** Money / ISO date / confirmation-like tokens that must come from claims. */

@@ -31,7 +31,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { cn, formatDate, formatMessageHeaderDate } from '@/lib/utils';
+import { cn, formatDate, formatMessageHeaderDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
 import { useTimezone } from '@/hooks/use-timezone';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -67,8 +67,6 @@ import {
   setHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
 import { MailContent } from './mail-content';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ReactionPicker } from './reactions/reaction-picker';
 import { ReactionBadges } from './reactions/reaction-badges';
 import { ReactionBanner, detectReactionNotification } from './reactions/reaction-banner';
@@ -79,6 +77,8 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTRPC } from '@/providers/query-provider';
 import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
@@ -542,9 +542,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
     setReactions(emailData.reactions ?? []);
   }, [emailData.reactions]);
 
-  const toggleReactionMutation = useMutation(
-    trpc.mail.toggleReaction.mutationOptions(),
-  );
+  const toggleReactionMutation = useMutation(trpc.mail.toggleReaction.mutationOptions());
 
   const handleToggleReaction = useCallback(
     async (emoji: string) => {
@@ -567,38 +565,36 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
               ),
             };
             return updated;
-          } else {
-            const updated = [...prev];
-            updated[existingIdx] = {
-              ...group,
-              count: group.count + 1,
-              hasReacted: true,
-              users: [
-                ...group.users,
-                {
-                  email: activeConnection?.email ?? '',
-                  userName: activeConnection?.name ?? null,
-                },
-              ],
-            };
-            return updated;
           }
-        } else {
-          return [
-            ...prev,
-            {
-              emoji,
-              count: 1,
-              hasReacted: true,
-              users: [
-                {
-                  email: activeConnection?.email ?? '',
-                  userName: activeConnection?.name ?? null,
-                },
-              ],
-            },
-          ];
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...group,
+            count: group.count + 1,
+            hasReacted: true,
+            users: [
+              ...group.users,
+              {
+                email: activeConnection?.email ?? '',
+                userName: activeConnection?.name ?? null,
+              },
+            ],
+          };
+          return updated;
         }
+        return [
+          ...prev,
+          {
+            emoji,
+            count: 1,
+            hasReacted: true,
+            users: [
+              {
+                email: activeConnection?.email ?? '',
+                userName: activeConnection?.name ?? null,
+              },
+            ],
+          },
+        ];
       });
 
       try {
@@ -618,7 +614,15 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
         setReactions(emailData.reactions ?? []);
       }
     },
-    [emailData.id, emailData.threadId, emailData.reactions, activeConnection, toggleReactionMutation, trpc, queryClient],
+    [
+      emailData.id,
+      emailData.threadId,
+      emailData.reactions,
+      activeConnection,
+      toggleReactionMutation,
+      trpc,
+      queryClient,
+    ],
   );
 
   const reactionNotification = useMemo(() => {
@@ -1455,6 +1459,11 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                             >
                               {headerDate.display}
                             </time>
+                            {shouldShowSeparateTime(emailData?.receivedOn) && (
+                              <time className="whitespace-nowrap text-xs opacity-75">
+                                {emailData?.receivedOn && formatTime(emailData.receivedOn)}
+                              </time>
+                            )}
                             <ReactionBadges
                               reactions={reactions}
                               onToggleReaction={handleToggleReaction}
@@ -1582,6 +1591,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
                             }}
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
+                          />
+                          <ReactionPicker
+                            onSelectEmoji={handleToggleReaction}
+                            activeEmojis={reactions.filter((r) => r.hasReacted).map((r) => r.emoji)}
                           />
                         </div>
                         <Tooltip>

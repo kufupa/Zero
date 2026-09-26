@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "source": "wave-a-20260912-a3a4-packaging-sanitized",
+  "hdrBytesHint": 28506,
+  "fieldNamesSample": [
+    "property",
+    "emailtype",
+    "account",
+    "accountname",
+    "subject",
+    "emailaddress",
+    "attachment",
+    "userid",
+    "error"
+  ],
+  "toolbarSample": [
+    "All Sent Email",
+    "Email Type",
+    "Email Address",
+    "Attachment"
+  ],
+  "gridCols": [
+    "property",
+    "emailtype",
+    "account",
+    "accountname",
+    "subject",
+    "emailaddress",
+    "attachment",
+    "userid",
+    "error"
+  ],
+  "note": "Structure markers only; no row PII"
+}

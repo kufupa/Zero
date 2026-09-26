@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nava.local/playwright-quote/create-tool.schema.json",
+  "title": "Guest Stay New Record create tool",
+  "description": "Inspect $defs.request, $defs.shop, and $defs.result without a browser. Request enums are opened lists from .private/create-screen/new-record.md only. ratePlan is a caller-picked code from --shop, not an enum. Optional childAges is filled only through Enter Child Ages. Language, title, VIP, and settlement live in create-side-catalog.json and are not request keys; additionalProperties false rejects them. A result fact is { value, provenance } with provenance observed or unknown. observed means the tool read value from the stay screen. unknown means the value was not established, and value is then null. confirmationNumber, status, mealPlan, marketSegment, and totals use that fact shape. mealPlan and totals are not request fields. With dates filled and no rate selected, the Guarantee panel stayed hidden and deposit headers were blank, so depositDue and depositAmount stay explicit unknown until a number is on screen. Screenshot filenames are filled.png, availability.png, and saved.png.",
+  "$defs": {
+    "isoDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Gregorian calendar date YYYY-MM-DD."
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "provenance"
+      ],
+      "description": "Screen fact shape { value, provenance }. provenance observed means the create tool read value from the stay screen. provenance unknown means the value was not established; value is then null. confirmationNumber, status, mealPlan, marketSegment, and totals use this shape. mealPlan and totals are result facts only, never request fields.",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "observed",
+            "unknown"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": [
+              "provenance"
+            ],
+            "properties": {
+              "provenance": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "explicitUnknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "provenance"
+      ],
+      "description": "Explicit unknown fact. provenance is unknown and value is null. Used for depositDue and depositAmount, which this contract does not establish.",
+      "properties": {
+        "value": {
+          "type": "null"
+        },
+        "provenance": {
+          "const": "unknown"
+        }
+      }
+    },
+    "partyNativeRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nativeId"],
+      "description": "party-lookup guest candidate.nativeId for profileId.",
+      "properties": {
+        "nativeId": { "type": "string", "minLength": 1, "pattern": "^\\d+$" },
+        "kind": {
+          "type": "string",
+          "enum": ["guest"]
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Create request. Required keys are the caller-supplied stay and guest fields from the empty New Record inspection. Optional identity fields are not required. Language, title, VIP, settlement, meal plan, and totals are not request keys.",
+      "required": [
+        "arrival",
+        "departure",
+        "adults",
+        "sourceOfBusiness",
+        "roomType",
+        "ratePlan",
+        "track",
+        "firstName",
+        "lastName",
+        "guaranteeType"
+      ],
+      "properties": {
+        "arrival": {
+          "$ref": "#/$defs/isoDate",
+          "description": "Arrival date."
+        },
+        "departure": {
+          "$ref": "#/$defs/isoDate",
+          "description": "Departure date."
+        },
+        "adults": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16,
+          "description": "Opened Adults dropdown: every integer 0 through 16 inclusive."
+        },
+        "childAges": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "Optional ages entered through Enter Child Ages after Update Child Categories is checked. Each age is an integer 0 through 99. The main Child 0-02, 03-12, and 13-17 boxes stay read-only. Observed 2026-09-24: age 5 applied on an unsaved stay as children 1 and Child 03-12 count 1.",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99
+          }
+        },
+        "sourceOfBusiness": {
+          "type": "string",
+          "enum": [
+            "Booking.com",
+            "Call Center",
+            "Channel Manager",
+            "Consumer",
+            "CORPORATE WEB PORTAL",
+            "DOTW-XML",
+            "E-Mail",
+            "Event Specific Booking",
+            "Expedia",
+            "GDS",
+            "Hotelbeds",
+            "HyperGuest",
+            "Internal",
+            "Legacy Hotels",
+            "Mobile Message",
+            "Parsec-XML",
+            "TBOHolidays",
+            "TOUR",
+            "Tour Operator",
+            "Travel Agent",
+            "Trip.com",
+            "Voice Call",
+            "Walk in",
+            "Web B2B",
+            "Web B2C"
+          ],
+          "description": "Opened Source of Business descriptions. That lookup showed descriptions only."
+        },
+        "roomType": {
+          "type": "string",
+          "enum": [
+            "STQN",
+            "STWN",
+            "SKNG",
+            "EXKNG",
+            "LUXKNG",
+            "SUITE",
+            "DLXKNG",
+            "DLXQN",
+            "DLXTWN"
+          ],
+          "description": "Native room-type code from the opened Room Type lookup. The code is the value."
+        },
+        "ratePlan": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Caller-picked native rate-plan code from --shop. Not an enum. A 2026-09-24 BAR search on 14-SEP-2027 to 15-SEP-2027 returned BARRO, BAR, BWEBB, and BLRB. Preset returned no rows."
+        },
+        "track": {
+          "type": "string",
+          "enum": [
+            "AIR",
+            "BAR",
+            "COM",
+            "COR",
+            "DAY",
+            "DOML",
+            "EDU",
+            "EXST",
+            "GDSB",
+            "GDSN",
+            "GNC",
+            "GOV",
+            "HSE",
+            "LLC",
+            "OTA1",
+            "OTAA",
+            "OWS",
+            "PROMO",
+            "RED",
+            "SPE",
+            "STO"
+          ],
+          "description": "Native Track Code from the opened Track Code lookup. The code is the value."
+        },
+        "firstName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guaranteeType": {
+          "type": "string",
+          "enum": [
+            "Awaiting Voucher",
+            "Confirmation Received",
+            "Deposit Requested",
+            "Group Definite",
+            "Guaranteed By Agent",
+            "Guaranteed By Company",
+            "Guaranteed By Credit Card",
+            "Guaranteed By Deposit",
+            "Non-Guaranteed Group",
+            "Non-Guaranteed Individual"
+          ],
+          "description": "Opened Guarantee Type labels."
+        },
+        "agency": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Primary Booking Agency exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
+        },
+        "organization": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Organization exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
+        },
+        "arAccount": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional A/R Account exact name (party-lookup candidate.displayName). Live A/R is an independent lookup, not auto-filled from org/agency. nativeId is not accepted until picker-by-id selection exists. Not required."
+        },
+        "billingReference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Billing Reference text. Not required."
+        },
+        "profileId": {
+          "description": "Optional Profile ID integer or party-lookup guest nativeId. Not required.",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "$ref": "#/$defs/partyNativeRef" }
+          ]
+        }
+      }
+    },
+    "shopRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roomType", "code", "name"],
+      "properties": {
+        "roomType": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "shop": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Rate Shop Search output. rowClicked is false. The CLI closes the window with X and does not click a rate cell, Complete, or Update Stay.",
+      "required": ["salesStrategy", "rowClicked", "rows"],
+      "properties": {
+        "salesStrategy": { "const": "BAR" },
+        "rowClicked": { "const": false },
+        "rows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/shopRow" }
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Create result. Facts use { value, provenance }. depositDue and depositAmount stay explicit unknown. Screenshot filenames are filled.png, availability.png, and saved.png.",
+      "required": [
+        "confirmationNumber",
+        "status",
+        "mealPlan",
+        "marketSegment",
+        "totals",
+        "depositDue",
+        "depositAmount",
+        "screenshots"
+      ],
+      "properties": {
+        "confirmationNumber": {
+          "$ref": "#/$defs/fact"
+        },
+        "status": {
+          "$ref": "#/$defs/fact"
+        },
+        "mealPlan": {
+          "$ref": "#/$defs/fact",
+          "description": "PMS/rate-derived meal plan. Not a request field."
+        },
+        "marketSegment": {
+          "$ref": "#/$defs/fact"
+        },
+        "totals": {
+          "$ref": "#/$defs/fact",
+          "description": "PMS-derived totals display. Not a request field. A blank total is not zero."
+        },
+        "depositDue": {
+          "$ref": "#/$defs/explicitUnknown"
+        },
+        "depositAmount": {
+          "$ref": "#/$defs/explicitUnknown"
+        },
+        "screenshots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filled",
+            "availability",
+            "saved"
+          ],
+          "description": "Evidence filenames filled.png, availability.png, and saved.png.",
+          "properties": {
+            "filled": {
+              "const": "filled.png"
+            },
+            "availability": {
+              "const": "availability.png"
+            },
+            "saved": {
+              "const": "saved.png"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,34 +4,7 @@
   "symptom": "fixture_verified awaiting discovery",
   "structuralObservation": {
     "routeClass": "company_billing_read",
-    "envelopeDiscriminator": "surface_unproven",
-    "reprove20260807": {
-      "method": "exact_osress_search_then_osress_form_inventory",
-      "safeSurface": "OSRESS Guest Stay / Stay 360 SOB fields (no profile open)",
-      "foundCompanyishFieldNames": [
-        "company",
-        "companyname",
-        "organization",
-        "bookingagency",
-        "bookingagency2name",
-        "bookingagency3name",
-        "channel",
-        "channeldesc",
-        "marketsegment",
-        "marketsegmentdesc",
-        "source",
-        "sourceofbusiness",
-        "sourceofbusinessdesc",
-        "group",
-        "groupname",
-        "termandconditionreportname"
-      ],
-      "neededAbsent": ["billingmode", "paymentterms", "contractstatus"],
-      "openedOsacct": false,
-      "openedAgencyProfile": false,
-      "folioUnaffected": true,
-      "artifact": "/tmp/hms-company-linked-field-inventory.json"
-    }
+    "envelopeDiscriminator": "surface_unproven"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
@@ -49,6 +22,7 @@
     "osress_osacct_field_inventory",
     "billing_mode_terms_contract_absent",
     "reprove_exact_find_osress_sob_2026-08-07",
+    "companyish_names_present_billing_trio_absent",
     "no_reservation_linked_manifest_authored"
   ],
   "prediction": "Tenant view-only company billing surface with exact mode/terms/contract fields clears BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
@@ -56,13 +30,11 @@
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
     "pnpm exec vitest run tests/hms-live-company-account-read.test.ts tests/hms-company-account-read.test.ts"
   ],
-  "liveArtifactIds": [
-    "/tmp/hms-company-linked-field-inventory.json"
-  ],
+  "liveArtifactIds": [],
   "unresolvedGaps": [
     "BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
     "BLOCKED_NO_COMPANY_BILLING_ROLE_PROOF_V2",
     "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST"
   ],
-  "updatedAt": "2026-08-07T00:40:00.000Z"
+  "updatedAt": "2026-09-12T10:42:00.000Z"
 }

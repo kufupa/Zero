@@ -1,0 +1,10 @@
+Please see below.
+
+----- Forwarded Message -----
+RateTiger Booking Notification
+
+Booking Reference: RT-TEST-99881
+Guest Name: SAMPLEGUEST, RateTiger
+Check-in: 2026-11-01
+Check-out: 2026-11-04
+Virtual card not supplied

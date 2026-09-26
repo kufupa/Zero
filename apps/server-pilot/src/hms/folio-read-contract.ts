@@ -1,3 +1,9 @@
+import {
+  readFactSchema,
+  readFolioSectionSchema,
+  type ReadFact,
+  type ReadSection,
+} from './read-service-contracts.js';
 import { z } from 'zod';
 
 export const FOLIO_READ_MAX_ROWS = 50;
@@ -69,32 +75,63 @@ const depositStatusAmountSchema = z
   })
   .strict();
 
+const legacyDepositSummarySchema = z
+  .object({
+    total: unsignedMoney,
+    due: depositStatusAmountSchema.extend({
+      status: z.enum(['due', 'none_due']),
+    }),
+    paid: depositStatusAmountSchema.extend({
+      status: z.enum(['paid', 'none_paid']),
+    }),
+    refunded: depositStatusAmountSchema.extend({
+      status: z.enum(['refunded', 'none_refunded']),
+    }),
+    forfeited: depositStatusAmountSchema.extend({
+      status: z.enum(['forfeited', 'none_forfeited']),
+    }),
+    transferred: depositStatusAmountSchema.extend({
+      status: z.enum(['transferred', 'none_transferred']),
+    }),
+  })
+  .strict();
+
+export type FolioLegacyDepositSummary = z.infer<typeof legacyDepositSummarySchema>;
+
+/**
+ * Rich fields are optional so historical fixture/predecessor adapters remain
+ * parseable. New partial/live results populate these sections; they never
+ * substitute a legacy zero-valued deposit summary.
+ */
+export type FolioBalanceFact = ReadFact<{
+  amount: string;
+  currency: string;
+  basis: 'ledger_balance';
+  taxTreatment: 'unknown';
+}>;
+export type FolioDepositSection = ReadSection<{
+  items: Array<{
+    due: ReadFact<unknown>;
+    paid: ReadFact<unknown>;
+    refunded: ReadFact<unknown>;
+    forfeited: ReadFact<unknown>;
+    transferred: ReadFact<unknown>;
+    untransferred: ReadFact<unknown>;
+  }>;
+}>;
+
 export const folioReadDataSchema = z
   .object({
     reservationBinding: z.literal('exact_parent_redacted'),
     guestPrivacy: z.literal('identity_redacted'),
     currency: currencyCode,
-    totalBalance: signedMoney,
-    depositSummary: z
-      .object({
-        total: unsignedMoney,
-        due: depositStatusAmountSchema.extend({
-          status: z.enum(['due', 'none_due']),
-        }),
-        paid: depositStatusAmountSchema.extend({
-          status: z.enum(['paid', 'none_paid']),
-        }),
-        refunded: depositStatusAmountSchema.extend({
-          status: z.enum(['refunded', 'none_refunded']),
-        }),
-        forfeited: depositStatusAmountSchema.extend({
-          status: z.enum(['forfeited', 'none_forfeited']),
-        }),
-        transferred: depositStatusAmountSchema.extend({
-          status: z.enum(['transferred', 'none_transferred']),
-        }),
-      })
-      .strict(),
+    totalBalance: signedMoney.optional(),
+    depositSummary: legacyDepositSummarySchema.optional(),
+    balance: readFolioSectionSchema.optional(),
+    deposits: readFolioSectionSchema.optional(),
+    transactions: readFolioSectionSchema.optional(),
+    liabilityLocation: readFactSchema.optional(),
+    authorization: readFactSchema.optional(),
     disclosure: z
       .object({
         recipientClass: recipientClassSchema,
@@ -202,16 +239,12 @@ function status<TPresent extends string, TAbsent extends string>(
  * Fixture-only Folio + Deposit Ledger kernel. Sensitive source fields exist
  * only in private input memory and cannot fit the closed output schema.
  */
-export function parseFolioReadFixture(
-  rawInput: FolioReadFixtureInput,
-): FolioReadKernelResult {
+export function parseFolioReadFixture(rawInput: FolioReadFixtureInput): FolioReadKernelResult {
   const parsed = folioReadFixtureInputSchema.safeParse(rawInput);
   if (!parsed.success) return fail('FOLIO_CONTRACT_OR_SCHEMA_DRIFT');
   const input = parsed.data;
 
-  if (
-    input.binding.exactReservationScopeHash !== input.binding.observedScopeHash
-  ) {
+  if (input.binding.exactReservationScopeHash !== input.binding.observedScopeHash) {
     return fail('FOLIO_EXACT_RESERVATION_BINDING_MISMATCH');
   }
 
@@ -219,11 +252,11 @@ export function parseFolioReadFixture(
   const observedAt = Date.parse(input.observedAt);
   const issuedAt = Date.parse(input.roleProof.issuedAt);
   const expiresAt = Date.parse(input.roleProof.expiresAt);
-  const hasRequiredSurfaces = FOLIO_READ_PRIVACY_POLICY.allowedSurfaces.every(
-    (surface) => input.roleProof.allowedSurfaces.includes(surface),
+  const hasRequiredSurfaces = FOLIO_READ_PRIVACY_POLICY.allowedSurfaces.every((surface) =>
+    input.roleProof.allowedSurfaces.includes(surface),
   );
-  const deniesEveryAction = FOLIO_READ_PRIVACY_POLICY.deniedActions.every(
-    (action) => input.roleProof.deniedActions.includes(action),
+  const deniesEveryAction = FOLIO_READ_PRIVACY_POLICY.deniedActions.every((action) =>
+    input.roleProof.deniedActions.includes(action),
   );
   if (
     !input.roleProof.financeRead ||
@@ -296,36 +329,21 @@ export function parseFolioReadFixture(
       },
       refunded: {
         amount: input.depositSummary.refunded,
-        status: status(
-          input.depositSummary.refunded,
-          'refunded',
-          'none_refunded',
-        ),
+        status: status(input.depositSummary.refunded, 'refunded', 'none_refunded'),
       },
       forfeited: {
         amount: input.depositSummary.forfeited,
-        status: status(
-          input.depositSummary.forfeited,
-          'forfeited',
-          'none_forfeited',
-        ),
+        status: status(input.depositSummary.forfeited, 'forfeited', 'none_forfeited'),
       },
       transferred: {
         amount: input.depositSummary.transferred,
-        status: status(
-          input.depositSummary.transferred,
-          'transferred',
-          'none_transferred',
-        ),
+        status: status(input.depositSummary.transferred, 'transferred', 'none_transferred'),
       },
     },
     disclosure: {
       recipientClass: input.recipientClass,
       inquiryClass: input.inquiryClass,
-      claimEligibility: folioClaimEligibility(
-        input.recipientClass,
-        input.inquiryClass,
-      ),
+      claimEligibility: folioClaimEligibility(input.recipientClass, input.inquiryClass),
     },
     rowsScanned: input.rowsScanned,
     bytesObserved: input.bytesObserved,
@@ -339,23 +357,17 @@ export const folioDepositClaimValueSchema = z
   .object({
     currency: currencyCode,
     totalBalance: signedMoney,
-    depositSummary: folioReadDataSchema.shape.depositSummary,
-    responseCredit: z.enum([
-      'full_labelled_narrow_status',
-      'partial_status_only',
-    ]),
+    depositSummary: legacyDepositSummarySchema,
+    responseCredit: z.enum(['full_labelled_narrow_status', 'partial_status_only']),
     observedAt: isoTimestamp,
   })
   .strict();
 
-export type FolioDepositClaimValue = z.infer<
-  typeof folioDepositClaimValueSchema
->;
+export type FolioDepositClaimValue = z.infer<typeof folioDepositClaimValueSchema>;
 
-export function mapFolioDepositClaim(
-  data: FolioReadData,
-): FolioDepositClaimValue | null {
+export function mapFolioDepositClaim(data: FolioReadData): FolioDepositClaimValue | null {
   const parsed = folioReadDataSchema.parse(data);
+  if (parsed.totalBalance == null || parsed.depositSummary == null) return null;
   const eligibility = folioClaimEligibility(
     parsed.disclosure.recipientClass,
     parsed.disclosure.inquiryClass,
@@ -365,10 +377,7 @@ export function mapFolioDepositClaim(
     currency: parsed.currency,
     totalBalance: parsed.totalBalance,
     depositSummary: parsed.depositSummary,
-    responseCredit:
-      eligibility === 'full'
-        ? 'full_labelled_narrow_status'
-        : 'partial_status_only',
+    responseCredit: eligibility === 'full' ? 'full_labelled_narrow_status' : 'partial_status_only',
     observedAt: parsed.observedAt,
   });
 }

@@ -20,6 +20,14 @@ export type DepositLedgerDetailScope = {
 
 export interface FolioReadFacade {
   openOsressAndSearch(candidate: ExactReservationCandidate): Promise<string>;
+  /**
+   * OSRESV.FOL tab open (confirmation + optional stay id). Used when OSRESS
+   * dataspy lacks foliobalance columns.
+   */
+  openOsresvFol(input: {
+    confirmationNumber: string;
+    reservationStayId?: string | null;
+  }): Promise<string>;
   /** OSLEDG open + OSLEDG.LST date list (no confirmation column). */
   openDepositLedgerList(): Promise<string>;
   /**
@@ -29,8 +37,12 @@ export interface FolioReadFacade {
   openDepositLedgerDetail(scope: DepositLedgerDetailScope): Promise<string>;
 }
 
-export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade {
+export function createFolioReadFacade(
+  session: HmsReadSession,
+  options: { expectedPropertyCode?: string } = {},
+): FolioReadFacade {
   const page = session.page;
+  const expectedPropertyCode = options.expectedPropertyCode ?? 'HRCEN';
   return {
     async openOsressAndSearch(candidate) {
       await page
@@ -57,12 +69,31 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'folio OSRESS.search correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'folio OSRESS.search correlation failed');
       }
       return post.value || (await page.content());
+    },
+
+    async openOsresvFol(input) {
+      const confirmation = String(input.confirmationNumber || '').trim();
+      if (!confirmation) {
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'OSRESV.FOL requires confirmationNumber');
+      }
+      const fields: Record<string, string> = {
+        confirmationnumber: confirmation,
+        propertycode: expectedPropertyCode,
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'FOL',
+      };
+      const stayId = String(input.reservationStayId || '').trim();
+      if (stayId) {
+        fields.reservationstayid = stayId;
+        fields.id = stayId;
+      }
+      return page.postForm(`${session.origin}/web/base/OSRESV.FOL`, fields);
     },
 
     async openDepositLedgerList() {
@@ -93,15 +124,18 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'deposit OSLEDG.LST correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'deposit OSLEDG.LST correlation failed');
       }
       return post.value || (await page.content());
     },
 
     async openDepositLedgerDetail(scope) {
+      if (scope.property.toUpperCase() !== expectedPropertyCode.toUpperCase()) {
+        throw new HmsRuntimeError(
+          'PROPERTY_MISMATCH',
+          'deposit ledger detail property does not match the verified session property',
+        );
+      }
       const correlation = page.waitForCorrelatedResponse
         ? page.waitForCorrelatedResponse(LIVE_DEPOSIT_LEDGER_DETAIL_PATH)
         : Promise.resolve();
@@ -117,10 +151,7 @@ export function createFolioReadFacade(session: HmsReadSession): FolioReadFacade 
       ]);
       if (post.status === 'rejected') throw post.reason;
       if (correlated.status === 'rejected') {
-        throw new HmsRuntimeError(
-          'SCHEMA_DRIFT',
-          'deposit OSLEDG.DLD correlation failed',
-        );
+        throw new HmsRuntimeError('SCHEMA_DRIFT', 'deposit OSLEDG.DLD correlation failed');
       }
       return post.value || (await page.content());
     },

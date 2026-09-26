@@ -1,11 +1,6 @@
 /**
  * Outbound undo/schedule queue — unit + optional integration.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  FakeSmtpTransport,
-  __setSmtpTransportForTests,
-} from '../src/mail/send/smtp.js';
 import {
   RECLAIM_SENDING_AFTER_MS,
   __forceSendAtPastForTests,
@@ -16,15 +11,17 @@ import {
   serializeSmtpPayload,
   deserializeSmtpPayload,
 } from '../src/mail/send/outbound-queue.js';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { mailBaselineProjection } from '../src/db/schema/mail-baseline-projection.js';
 import { message, outboundSendQueue } from '../src/db/schema/mail.js';
-import {
-  TEST_DB_AVAILABLE,
-  probeTestDb,
-  withSeededTestDb,
-} from './helpers/test-db.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildDraftApproval } from '../src/ai/draft-approval.js';
 import { callerFor } from './helpers/trpc-caller.js';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { readFile } from 'node:fs/promises';
+
+const SIGNING_SECRET = 'u6-test-signing-secret';
 
 const reachable = await probeTestDb();
 
@@ -130,17 +127,11 @@ describe('isOutboundClaimable', () => {
   });
 
   it('sent/cancelled → not claimable', () => {
+    expect(isOutboundClaimable({ status: 'sent', sendAt: new Date(0), claimedAt: null }, now)).toBe(
+      false,
+    );
     expect(
-      isOutboundClaimable(
-        { status: 'sent', sendAt: new Date(0), claimedAt: null },
-        now,
-      ),
-    ).toBe(false);
-    expect(
-      isOutboundClaimable(
-        { status: 'cancelled', sendAt: new Date(0), claimedAt: null },
-        now,
-      ),
+      isOutboundClaimable({ status: 'cancelled', sendAt: new Date(0), claimedAt: null }, now),
     ).toBe(false);
   });
 });
@@ -161,6 +152,60 @@ describe('smtp payload serialize round-trip', () => {
     expect(queued.attachments?.[0]?.contentBase64).toBe(content.toString('base64'));
     const back = deserializeSmtpPayload(queued);
     expect(back.attachments?.[0]?.content).toEqual(content);
+  });
+
+  it('preserves the server-derived filing BCC in delayed SMTP payloads', () => {
+    const queued = serializeSmtpPayload({
+      from: 'nava@example.test',
+      to: ['guest@example.test'],
+      cc: [],
+      bcc: ['nava@example.test'],
+      subject: 'x',
+      html: '<p>x</p>',
+      text: 'x',
+    });
+    expect(queued.bcc).toEqual(['nava@example.test']);
+    expect(deserializeSmtpPayload(queued).bcc).toEqual(['nava@example.test']);
+  });
+
+  it('persists an AI draft approval alongside the exact SMTP payload', () => {
+    const approval = buildDraftApproval(
+      {
+        draftId: 'draft-1',
+        generationId: 'generation-1',
+        transportId: 'transport-1',
+        threadId: 'thread-1',
+        revisionId: 'revision-1',
+        threadStateVersion: 'state-1',
+        evidence: [{ kind: 'hms', id: 'evidence-1', sourceHash: 'source-1' }],
+        policyVersion: 'u6-draft-policy-v1',
+        approvedByUserId: 'user-1',
+        approvedAt: '2026-09-09T10:00:00.000Z',
+        origin: 'ai',
+        subject: 'approved',
+        html: '<p>approved</p>',
+        text: 'approved',
+        to: ['guest@example.test'],
+        cc: [],
+        bcc: [],
+        attachments: [],
+      },
+      SIGNING_SECRET,
+    );
+    const queued = serializeSmtpPayload(
+      {
+        from: 'nava@example.test',
+        to: ['guest@example.test'],
+        cc: [],
+        bcc: [],
+        subject: 'approved',
+        html: '<p>approved</p>',
+        text: 'approved',
+      },
+      approval,
+    );
+    expect(queued.draftApproval).toEqual(approval);
+    expect(deserializeSmtpPayload(queued).html).toBe('<p>approved</p>');
   });
 });
 
@@ -317,6 +362,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       expect(fake.sent).toHaveLength(1);
       await flushDue({ db });
       expect(fake.sent).toHaveLength(1);
+      const baselineRows = await db
+        .select({
+          sourceMessageId: mailBaselineProjection.sourceMessageId,
+          direction: mailBaselineProjection.direction,
+          evidence: mailBaselineProjection.evidence,
+        })
+        .from(mailBaselineProjection)
+        .where(eq(mailBaselineProjection.sourceMessageId, messageId));
+      expect(baselineRows).toHaveLength(1);
+      expect(baselineRows[0]).toMatchObject({ direction: 'outbound', sourceMessageId: messageId });
+      const evidence = baselineRows[0]?.evidence as
+        | {
+            answerState?: string;
+            unknownReason?: string;
+            delivery?: { status?: string };
+          }
+        | undefined;
+      expect(evidence?.delivery?.status).toBe('accepted');
+      expect(evidence?.answerState).toBe('unknown');
+      expect(evidence?.unknownReason).toBe('semantic_route_unavailable');
+      const [queueReceipt] = await db
+        .select({ smtpOutcomePersistedAt: outboundSendQueue.smtpOutcomePersistedAt })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId));
+      expect(queueReceipt?.smtpOutcomePersistedAt?.toISOString()).toBe(
+        (evidence?.delivery as { acceptedAt?: string } | undefined)?.acceptedAt,
+      );
     });
   }, 30000);
 
@@ -340,6 +412,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       await flushDue({ db });
       expect(fake.sent).toHaveLength(1);
 
+      const [accepted] = await db
+        .select({ smtpOutcomePersistedAt: outboundSendQueue.smtpOutcomePersistedAt })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId));
+      expect(accepted?.smtpOutcomePersistedAt).toBeTruthy();
+
       // Simulate crash after SMTP persist, before queue marked sent: stale sending + header.
       const stale = new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1000);
       await db
@@ -362,11 +440,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       expect(fake.sent).toHaveLength(1);
 
       const [q] = await db
-        .select({ status: outboundSendQueue.status })
+        .select({
+          status: outboundSendQueue.status,
+          smtpOutcomePersistedAt: outboundSendQueue.smtpOutcomePersistedAt,
+        })
         .from(outboundSendQueue)
         .where(eq(outboundSendQueue.messageId, messageId))
         .limit(1);
       expect(q?.status).toBe('sent');
+      expect(q?.smtpOutcomePersistedAt?.toISOString()).toBe(
+        accepted?.smtpOutcomePersistedAt?.toISOString(),
+      );
+      const [projection] = await db
+        .select({ evidence: mailBaselineProjection.evidence })
+        .from(mailBaselineProjection)
+        .where(eq(mailBaselineProjection.sourceMessageId, messageId))
+        .limit(1);
+      expect(
+        (projection?.evidence as { delivery?: { acceptedAt?: string } } | undefined)?.delivery
+          ?.acceptedAt,
+      ).toBe(accepted?.smtpOutcomePersistedAt?.toISOString());
     });
   }, 30000);
 

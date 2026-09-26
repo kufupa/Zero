@@ -3,19 +3,20 @@
  * One exact search; never CRS / result-click / paging / save.
  * Production rejects fixture HTML data-testid fallback.
  */
-import { createHash } from 'node:crypto';
-import type { ToolResult } from '../ai/draft-evidence.js';
-import type { QuoteNightObservation, QuoteStayReadData } from './quote-stay-contract.js';
-import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import {
   isoDateToHmsDisplay,
   quoteStayNightDates,
   type QuoteStayCandidate,
 } from './quote-stay-candidate.js';
-import type { HmsSessionAuthorization } from './release-kernel.js';
-import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import type { QuoteNightObservation, QuoteStayReadData } from './quote-stay-contract.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
+import type { HmsSessionAuthorization } from './release-kernel.js';
+import { buildQuoteStayReadData } from './quote-stay-contract.js';
+import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
+import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createQuoteStayFacade } from './quote-stay-facade.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
   'roomTypeCode',
@@ -35,6 +36,16 @@ function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
+}
+
 function assertNotAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     const err = new Error('quote observe aborted');
@@ -43,27 +54,111 @@ function assertNotAborted(signal: AbortSignal): void {
   }
 }
 
+/**
+ * Live OSRRAV.HDR.search often returns mixed literals:
+ * `{ "pageData": { values:{"availabilitydata":{...}}}}`
+ * (quoted pageData, unquoted values). extractOsressPageData JSON.parse fails.
+ * The `values` object itself uses quoted keys — brace-extract + JSON.parse.
+ */
+function extractOsrravValuesObject(text: string): Record<string, unknown> | null {
+  const markers = ['"values":', 'values:', "'values':"] as const;
+  for (const marker of markers) {
+    const idx = text.indexOf(marker);
+    if (idx < 0) continue;
+    const brace = text.indexOf('{', idx + marker.length - 1);
+    if (brace < 0) continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let quote = '';
+    let end = -1;
+    for (let j = brace; j < text.length; j++) {
+      const ch = text[j]!;
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === '\\') {
+          esc = true;
+          continue;
+        }
+        if (ch === quote) inStr = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inStr = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    try {
+      const parsed = JSON.parse(text.slice(brace, end + 1)) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* try next marker */
+    }
+  }
+  return null;
+}
+
 /** Parse Infor mixed object-literal / JSON search envelopes. */
-export function parseOsrravSearchEnvelope(
-  text: string,
-): Record<string, unknown> | null {
+export function parseOsrravSearchEnvelope(text: string): Record<string, unknown> | null {
   const fromPageData = extractOsressPageData(text);
-  if (fromPageData) return fromPageData;
+  if (fromPageData) {
+    const values = fromPageData.values;
+    if (
+      values &&
+      typeof values === 'object' &&
+      (values as { availabilitydata?: unknown }).availabilitydata
+    ) {
+      return fromPageData;
+    }
+  }
   try {
     const parsed = JSON.parse(text.trim()) as Record<string, unknown>;
     if (parsed.pageData && typeof parsed.pageData === 'object') {
       return parsed.pageData as Record<string, unknown>;
     }
+    if (
+      parsed.values &&
+      typeof parsed.values === 'object' &&
+      (parsed.values as { availabilitydata?: unknown }).availabilitydata
+    ) {
+      return parsed;
+    }
     return parsed;
   } catch {
-    return null;
+    /* mixed literal fallthrough */
   }
+  const values = extractOsrravValuesObject(text);
+  if (values && values.availabilitydata) {
+    return { values };
+  }
+  return fromPageData;
 }
 
 function isoFromHmsDate(raw: unknown): string | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   const t = raw.trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
+  if (mdy) {
+    const mm = mdy[1]!.padStart(2, '0');
+    const dd = mdy[2]!.padStart(2, '0');
+    return `${mdy[3]}-${mm}-${dd}`;
+  }
   const m = /^(\d{2})-([A-Z]{3})-(\d{4})/i.exec(t);
   if (!m) return null;
   const months: Record<string, string> = {
@@ -149,18 +244,12 @@ export function parseLiveQuoteAvailability(
   if (pageData.success === false) {
     const messages = Array.isArray(pageData.messages) ? pageData.messages : [];
     const types = messages
-      .map((m) =>
-        m && typeof m === 'object'
-          ? String((m as { type?: unknown }).type ?? '')
-          : '',
-      )
+      .map((m) => (m && typeof m === 'object' ? String((m as { type?: unknown }).type ?? '') : ''))
       .filter(Boolean);
     return {
       envelopeRecognized: true,
       rows: [],
-      unresolvedFields: types.includes('error')
-        ? ['quote_search_error']
-        : ['quote_search_failed'],
+      unresolvedFields: types.includes('error') ? ['quote_search_error'] : ['quote_search_failed'],
       currency: null,
     };
   }
@@ -186,15 +275,14 @@ export function parseLiveQuoteAvailability(
   const ad = availability as Record<string, unknown>;
   const currencyRaw = ad.uoc;
   const currency =
-    typeof currencyRaw === 'string' && /^[A-Z]{3}$/.test(currencyRaw)
-      ? currencyRaw
-      : null;
+    typeof currencyRaw === 'string' && /^[A-Z]{3}$/.test(currencyRaw) ? currencyRaw : null;
 
   const roomTypes = Array.isArray(ad.roomTypeInvArray)
     ? (ad.roomTypeInvArray as Record<string, unknown>[])
     : [];
   const rows: QuoteNightObservation[] = [];
   const unresolvedFields: string[] = [];
+  const rowCurrencies = new Set<string>();
   const observedAtIso = observedAt.toISOString();
 
   for (const [rti, rt] of roomTypes.entries()) {
@@ -210,16 +298,13 @@ export function parseLiveQuoteAvailability(
       const date = isoFromHmsDate(day.date);
       if (!date) continue;
       const n = day.numOfAvailable;
-      if (typeof n === 'number' && Number.isInteger(n) && n >= 0) {
+      if (typeof n === 'number' && Number.isInteger(n)) {
         availByDate.set(date, n);
       }
     }
     for (const [rpi, rp] of ratePlans.entries()) {
       const ratePlan = String(rp.ratePlanCode ?? '').trim();
-      const rateCurrency =
-        typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc)
-          ? rp.uoc
-          : currency;
+      const rateCurrency = typeof rp.uoc === 'string' && /^[A-Z]{3}$/.test(rp.uoc) ? rp.uoc : null;
       const daily = Array.isArray(rp.ratePlanDailyInvArray)
         ? (rp.ratePlanDailyInvArray as Record<string, unknown>[])
         : [];
@@ -228,8 +313,7 @@ export function parseLiveQuoteAvailability(
         const date = isoFromHmsDate(day.date);
         const amount = amountString(day.roomRate);
         const availableCount =
-          typeof day.combNumOfAvailable === 'number' &&
-          Number.isInteger(day.combNumOfAvailable)
+          typeof day.combNumOfAvailable === 'number' && Number.isInteger(day.combNumOfAvailable)
             ? day.combNumOfAvailable
             : date
               ? (availByDate.get(date) ?? null)
@@ -242,14 +326,8 @@ export function parseLiveQuoteAvailability(
         if (!ratePlan) unresolvedFields.push(`${prefix}.ratePlan`);
         if (!amount) unresolvedFields.push(`${prefix}.displayedAmount`);
         if (!rateCurrency) unresolvedFields.push(`${prefix}.currency`);
-        if (
-          date &&
-          roomType &&
-          ratePlan &&
-          amount &&
-          rateCurrency &&
-          availableCount !== null
-        ) {
+        if (date && roomType && ratePlan && amount && rateCurrency && availableCount !== null) {
+          rowCurrencies.add(rateCurrency);
           rows.push({
             date,
             roomType,
@@ -266,6 +344,11 @@ export function parseLiveQuoteAvailability(
     }
   }
 
+  if (!currency) unresolvedFields.push('source_currency_unresolved');
+  if (currency && [...rowCurrencies].some((rowCurrency) => rowCurrency !== currency)) {
+    unresolvedFields.push('source_currency_mismatch');
+  }
+
   return {
     envelopeRecognized: true,
     rows,
@@ -274,13 +357,19 @@ export function parseLiveQuoteAvailability(
   };
 }
 
-function emptyQuoteData(rooms: number): QuoteStayReadData {
-  return quoteStayReadDataSchema.parse({
+function emptyQuoteData(
+  candidate: QuoteStayCandidate,
+  unresolvedInputs: readonly string[] = [],
+): QuoteStayReadData {
+  return buildQuoteStayReadData({
     nightlyObservations: [],
-    bookable: false as const,
-    stayTotal: null,
-    occupancyPriced: false as const,
-    requestedRooms: rooms,
+    requestedRooms: candidate.rooms,
+    requestRef: candidate.quoteRequestRef,
+    arrival: candidate.arrivalDate,
+    departure: candidate.departureDate,
+    rooms: candidate.normalizedRooms,
+    currency: candidate.currency,
+    unresolvedInputs,
   });
 }
 
@@ -289,7 +378,8 @@ function quoteToolResult(input: {
   data: QuoteStayReadData;
   unresolvedFields: string[];
   observedAt: Date;
-  sourceSeed: string;
+  sourceSeed: unknown;
+  candidate: QuoteStayCandidate;
   draftReady: boolean;
   propertyCode?: string;
 }): ToolResult<QuoteStayReadData> {
@@ -310,14 +400,202 @@ function quoteToolResult(input: {
     unresolvedFields: input.unresolvedFields,
     evidence: {
       kind: 'hms',
-      id: '00000000-0000-4000-8000-000000000014',
+      id: randomUUID(),
       toolId: 'hms_quote_stay',
       toolVersion: '2.0.0',
       propertyCode: input.propertyCode ?? 'HRCEN',
       observedAt: input.observedAt.toISOString(),
       expiresAt: new Date(input.observedAt.getTime() + 15 * 60_000).toISOString(),
       claimKeys,
-      sourceHash: sha256Hex(input.sourceSeed),
+      sourceHash: sha256Hex(
+        canonicalJson({
+          candidate: input.candidate,
+          data: input.data,
+          propertyCode: input.propertyCode ?? 'HRCEN',
+          sourceSeed: input.sourceSeed,
+          unresolvedFields: input.unresolvedFields,
+        }),
+      ),
+    },
+  };
+}
+
+async function observeQuoteWithinSession(input: {
+  session: import('./runtime.js').HmsReadSession;
+  candidate: QuoteStayCandidate;
+  signal: AbortSignal;
+  observedAt: Date;
+}): Promise<ToolResult<QuoteStayReadData>> {
+  const { session, candidate, signal, observedAt } = input;
+  assertNotAborted(signal);
+  const facade = createQuoteStayFacade(session);
+  await facade.navigate();
+  const chrome = await facade.collectChromeDefaults();
+  const text = await facade.searchExact(candidate, chrome);
+  if (session.terminal() || session.violation()) {
+    return quoteToolResult({
+      candidate,
+      status: 'manual_required',
+      data: emptyQuoteData(candidate, ['request_policy']),
+      unresolvedFields: ['request_policy'],
+      observedAt,
+      sourceSeed: { stage: 'request_policy' },
+      draftReady: false,
+    });
+  }
+
+  assertNotAborted(signal);
+  const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
+  if (!parsed.envelopeRecognized) {
+    return quoteToolResult({
+      candidate,
+      status: 'manual_required',
+      data: emptyQuoteData(candidate, parsed.unresolvedFields),
+      unresolvedFields: parsed.unresolvedFields,
+      observedAt,
+      sourceSeed: { stage: 'quote_envelope_unrecognized' },
+      draftReady: false,
+    });
+  }
+
+  const nights = quoteStayNightDates(candidate);
+  const nightSet = new Set(nights);
+  const inWindow = parsed.rows.filter((row) => nightSet.has(row.date));
+  if (
+    inWindow.length === 0 &&
+    parsed.unresolvedFields.length === 0 &&
+    !parsed.unresolvedFields.includes('quote_search_error')
+  ) {
+    return quoteToolResult({
+      candidate,
+      status: 'unverified_negative',
+      data: emptyQuoteData(candidate, ['unverified_negative']),
+      unresolvedFields: ['unverified_negative'],
+      observedAt,
+      sourceSeed: { stage: 'quote_empty_unverified' },
+      draftReady: false,
+    });
+  }
+
+  const unresolved = [...parsed.unresolvedFields];
+  if (parsed.rows.some((row) => !nightSet.has(row.date))) {
+    unresolved.push('nightly.out_of_window');
+  }
+  const byNight = new Map<string, QuoteNightObservation[]>();
+  for (const row of inWindow) {
+    const matches = byNight.get(row.date) ?? [];
+    matches.push(row);
+    byNight.set(row.date, matches);
+  }
+  for (const night of nights) {
+    const rows = byNight.get(night) ?? [];
+    if (rows.length === 0) unresolved.push(`nightly.${night}`);
+    if (rows.length > 1) unresolved.push(`nightly.${night}.ambiguous`);
+  }
+
+  // Prefer rows matching authored room/rate when multiple; ambiguity remains
+  // explicit and no alternate row is silently selected.
+  const filtered = inWindow.filter(
+    (row) =>
+      row.roomType.toUpperCase() === candidate.roomType.toUpperCase() &&
+      row.ratePlan.toUpperCase() === candidate.ratePlan.toUpperCase(),
+  );
+  const useRows = filtered;
+  if (inWindow.length > 0 && filtered.length === 0) {
+    unresolved.push('room_rate_scope_mismatch');
+  }
+  const uniqueUnresolved = [...new Set(unresolved)];
+  const draftReady = uniqueUnresolved.length === 0 && useRows.length === nights.length;
+  const data = buildQuoteStayReadData({
+    nightlyObservations: useRows,
+    requestedRooms: candidate.rooms,
+    requestRef: candidate.quoteRequestRef,
+    arrival: candidate.arrivalDate,
+    departure: candidate.departureDate,
+    rooms: candidate.normalizedRooms,
+    currency: candidate.currency ?? parsed.currency ?? undefined,
+    sourceCurrency: parsed.currency,
+    unresolvedInputs: uniqueUnresolved,
+  });
+  return quoteToolResult({
+    candidate,
+    status: draftReady ? 'ok' : 'manual_required',
+    data,
+    unresolvedFields: uniqueUnresolved,
+    observedAt,
+    sourceSeed: {
+      stage: 'quote_live',
+      requestRef: candidate.quoteRequestRef ?? null,
+      rows: useRows,
+    },
+    draftReady,
+  });
+}
+
+function attachFinalizedQuoteReceipt(
+  result: ToolResult<QuoteStayReadData>,
+  session: import('./runtime.js').HmsReadSession,
+  auditSpec: HmsBrowserAuditSpec | undefined,
+  manifestSha256: string,
+): ToolResult<QuoteStayReadData> {
+  if (!auditSpec || result.evidence.kind !== 'hms') return result;
+  const receipt = typeof session.lastReceipt === 'function' ? session.lastReceipt() : null;
+  const expectedBranch = auditSpec.requestBranchId ?? 'quote_availability_search';
+  const receiptExpiry = receipt ? Date.parse(receipt.expiresAt) : Number.NaN;
+  const receiptMatches = Boolean(
+    receipt &&
+      receipt.artifactState === 'complete' &&
+      typeof receipt.artifactId === 'string' &&
+      receipt.artifactId.trim().length > 0 &&
+      receipt.toolId === auditSpec.toolId &&
+      receipt.toolVersion === auditSpec.toolVersion &&
+      receipt.operationId === auditSpec.operationId &&
+      receipt.executionClass === auditSpec.executionClass &&
+      receipt.inputClass === auditSpec.inputClass &&
+      receipt.operationOutcome === 'succeeded' &&
+      receipt.requestBranchId === expectedBranch &&
+      Number.isFinite(receiptExpiry) &&
+      receiptExpiry > Date.now(),
+  );
+  if (!receiptMatches) {
+    return {
+      ...result,
+      status: 'manual_required',
+      draftReady: false,
+      unresolvedFields: [...new Set([...result.unresolvedFields, 'audit_capture_receipt'])],
+    };
+  }
+  const artifactId = receipt!.artifactId;
+  const evidenceExpiry = Date.parse(result.evidence.expiresAt);
+  const effectiveExpiresAt = new Date(
+    Math.min(Number.isFinite(evidenceExpiry) ? evidenceExpiry : receiptExpiry, receiptExpiry),
+  ).toISOString();
+  return {
+    ...result,
+    evidence: {
+      ...result.evidence,
+      expiresAt: effectiveExpiresAt,
+      artifactRef: artifactId,
+      scopeVerified: true,
+      manifestSha256,
+      manifestSha256ByBranch: { [expectedBranch]: manifestSha256 },
+      sourceHash: sha256Hex(
+        canonicalJson({
+          sourceHash: result.evidence.sourceHash,
+          manifestSha256,
+          artifactId,
+          receipt: {
+            operationId: receipt!.operationId,
+            toolId: receipt!.toolId,
+            toolVersion: receipt!.toolVersion,
+            executionClass: receipt!.executionClass,
+            inputClass: receipt!.inputClass,
+            requestBranchId: receipt!.requestBranchId,
+            operationOutcome: receipt!.operationOutcome,
+            expiresAt: receipt!.expiresAt,
+          },
+        }),
+      ),
     },
   };
 }
@@ -333,6 +611,8 @@ export type LiveQuoteStayDriver = {
 export function createLiveQuoteStayDriver(input: {
   runtime: HmsRuntime;
   transportId: string;
+  /** Normal read sessions require the same audited execution seam as find. */
+  auditSpecFor?: (input: { candidate: QuoteStayCandidate }) => HmsBrowserAuditSpec | undefined;
 }): LiveQuoteStayDriver {
   const { runtime, transportId } = input;
 
@@ -362,11 +642,13 @@ export function createLiveQuoteStayDriver(input: {
       }
 
       const observedAt = new Date();
+      const auditSpec = input.auditSpecFor?.({ candidate });
       const nights = quoteStayNightDates(candidate);
       if (nights.length === 0) {
         return quoteToolResult({
+          candidate,
           status: 'manual_required',
-          data: emptyQuoteData(candidate.rooms),
+          data: emptyQuoteData(candidate, ['quote_input']),
           unresolvedFields: ['quote_input'],
           observedAt,
           sourceSeed: 'invalid-quote-nights',
@@ -378,99 +660,22 @@ export function createLiveQuoteStayDriver(input: {
         transportId,
         signal,
         allowUnstarted: true,
+        auditSpec,
         sessionAuthorization: authorization,
       });
 
+      let result: ToolResult<QuoteStayReadData>;
       try {
-        assertNotAborted(signal);
-        const facade = createQuoteStayFacade(session);
-        await facade.navigate();
-        const chrome = await facade.collectChromeDefaults();
-        const text = await facade.searchExact(candidate, chrome);
-        if (session.terminal() || session.violation()) {
-          return quoteToolResult({
-            status: 'manual_required',
-            data: emptyQuoteData(candidate.rooms),
-            unresolvedFields: ['request_policy'],
-            observedAt,
-            sourceSeed: 'policy-quote-search',
-            draftReady: false,
-          });
-        }
-
-        assertNotAborted(signal);
-        const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
-        if (!parsed.envelopeRecognized) {
-          return quoteToolResult({
-            status: 'manual_required',
-            data: emptyQuoteData(candidate.rooms),
-            unresolvedFields: parsed.unresolvedFields,
-            observedAt,
-            sourceSeed: 'quote-envelope-unrecognized',
-            draftReady: false,
-          });
-        }
-
-        const nightSet = new Set(nights);
-        const inWindow = parsed.rows.filter((row) => nightSet.has(row.date));
-        if (
-          inWindow.length === 0 &&
-          parsed.unresolvedFields.length === 0 &&
-          !parsed.unresolvedFields.includes('quote_search_error')
-        ) {
-          return quoteToolResult({
-            status: 'unverified_negative',
-            data: emptyQuoteData(candidate.rooms),
-            unresolvedFields: [],
-            observedAt,
-            sourceSeed: 'quote-empty-unverified',
-            draftReady: false,
-          });
-        }
-
-        const unresolved = [...parsed.unresolvedFields];
-        if (parsed.rows.some((row) => !nightSet.has(row.date))) {
-          unresolved.push('nightly.out_of_window');
-        }
-        const byNight = new Map<string, QuoteNightObservation[]>();
-        for (const row of inWindow) {
-          const matches = byNight.get(row.date) ?? [];
-          matches.push(row);
-          byNight.set(row.date, matches);
-        }
-        for (const night of nights) {
-          const rows = byNight.get(night) ?? [];
-          if (rows.length === 0) unresolved.push(`nightly.${night}`);
-          if (rows.length > 1) unresolved.push(`nightly.${night}.ambiguous`);
-        }
-
-        // Prefer rows matching authored room/rate when multiple.
-        const filtered = inWindow.filter(
-          (row) =>
-            row.roomType.toUpperCase() === candidate.roomType.toUpperCase() &&
-            row.ratePlan.toUpperCase() === candidate.ratePlan.toUpperCase(),
-        );
-        const useRows = filtered.length > 0 ? filtered : inWindow;
-        const uniqueUnresolved = [...new Set(unresolved)];
-        const draftReady = uniqueUnresolved.length === 0 && useRows.length === nights.length;
-        const data = quoteStayReadDataSchema.parse({
-          nightlyObservations: useRows,
-          bookable: false as const,
-          stayTotal: null,
-          occupancyPriced: false as const,
-          requestedRooms: candidate.rooms,
-        });
-        return quoteToolResult({
-          status: draftReady ? 'ok' : 'manual_required',
-          data,
-          unresolvedFields: uniqueUnresolved,
+        result = await observeQuoteWithinSession({
+          session,
+          candidate,
+          signal,
           observedAt,
-          sourceSeed: `quote-live:${candidate.arrivalDate}:${useRows.length}`,
-          draftReady,
         });
       } finally {
         await session.close();
       }
+      return attachFinalizedQuoteReceipt(result, session, auditSpec, authorization.manifestSha256);
     },
   };
 }

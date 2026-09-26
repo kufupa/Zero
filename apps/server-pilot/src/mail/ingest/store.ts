@@ -50,13 +50,11 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
-import {
-  buildReferenceChain,
-  canonicalMessageId,
-} from './message-id.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
+import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
+import { buildReferenceChain, canonicalMessageId } from './message-id.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
@@ -222,7 +220,7 @@ export async function persistInboundMessage(
     });
   }
 
-  const existingMessage = await findExistingInboundMessage(db, meta);
+  const existingMessage = await findExistingMessageByIngestIdentity(db, meta);
   if (existingMessage) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
       db,
@@ -468,7 +466,7 @@ export async function persistInboundMessage(
           textBody: parsed.textBody,
           htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
           rawMimeS3Key,
-          receivedAt: parsed.receivedAt ?? new Date(),
+          receivedAt: parsed.receivedAt,
           updatedAt: new Date(),
         })
         .where(and(eq(message.id, canonical.id), eq(message.transportId, canonical.transportId)));
@@ -557,7 +555,7 @@ export async function persistInboundMessage(
       textBody: parsed.textBody,
       htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
       rawMimeS3Key,
-      receivedAt: parsed.receivedAt ?? new Date(),
+      receivedAt: parsed.receivedAt,
       sentAt: parsed.receivedAt ?? null,
       isRead: isHotelSent,
     });
@@ -608,19 +606,49 @@ export async function persistInboundMessage(
       }
     }
 
-    if (!isHotelSent && !opts.skipAiEnqueue) {
+    if (!opts.skipAiEnqueue) {
       await enqueueAiRun(
         {
           transportId: transport.id,
           threadId,
           triggerMessageId: messageId,
           runKind: 'inbound_triage',
-          idempotencyKey: `inbound-triage:${messageId}`,
+          // An independently observed Sent copy has no Nava outbox row, but
+          // still needs one fenced analytics generation. Keep its key
+          // separate from inbound triage so retries cannot collide across
+          // directions or imply local delivery authority.
+          idempotencyKey: isHotelSent
+            ? `external-sent-baseline:${messageId}`
+            : `inbound-triage:${messageId}`,
           modelId: DEFAULT_AI_MODEL_ID,
           promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         },
         tx as unknown as DB,
       );
+
+      // U13 shadow admission is a separate private purpose. It is queued only
+      // after this inbound row/attachment transaction has the same committed
+      // scope and never writes a draft, label, read state, or SMTP row.
+      if (!isHotelSent) {
+        await enqueueShadowPrediction({
+          transportId: transport.id,
+          threadId,
+          triggerMessageId: messageId,
+          db: tx as unknown as DB,
+        });
+      }
+    }
+
+    // External Sent/imported hotel mail is the delayed reference producer. A
+    // rematch reads only private prediction rows and appends an assessment;
+    // it never mutates the just-stored message or visible thread state.
+    if (isHotelSent && !opts.skipAiEnqueue) {
+      await rematchShadowPredictions({
+        transportId: transport.id,
+        threadId,
+        outboundMessageId: messageId,
+        db: tx as unknown as DB,
+      });
     }
 
     if (opts.promoteQuarantineId) {
@@ -1308,7 +1336,7 @@ export async function quarantineParseFailure(
   };
 }
 
-async function findExistingInboundMessage(
+async function findExistingMessageByIngestIdentity(
   db: DB,
   meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
 ): Promise<{ id: string; transportId: string } | undefined> {
@@ -1316,11 +1344,7 @@ async function findExistingInboundMessage(
     .select({ id: message.id, transportId: message.transportId })
     .from(message)
     .where(
-      and(
-        eq(message.ingestMailboxId, meta.ingestMailboxId),
-        eq(message.pop3Uidl, meta.pop3Uidl),
-        eq(message.direction, 'inbound'),
-      ),
+      and(eq(message.ingestMailboxId, meta.ingestMailboxId), eq(message.pop3Uidl, meta.pop3Uidl)),
     )
     .limit(1);
   return rows[0];
@@ -1546,9 +1570,7 @@ async function findActiveTransportById(
       sendFromConfig: mailboxTransport.sendFromConfig,
     })
     .from(mailboxTransport)
-    .where(
-      and(eq(mailboxTransport.id, transportId), eq(mailboxTransport.isActive, true)),
-    )
+    .where(and(eq(mailboxTransport.id, transportId), eq(mailboxTransport.isActive, true)))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -1758,8 +1780,7 @@ async function resolveThreadId(args: {
     }
   }
 
-  const threadRootId =
-    canonicalMessageId(parsed.messageId) ?? `no-message-id-${pop3Uidl}`;
+  const threadRootId = canonicalMessageId(parsed.messageId) ?? `no-message-id-${pop3Uidl}`;
   const existing = await tx
     .select({ id: mailThread.id })
     .from(mailThread)
@@ -1827,9 +1848,7 @@ async function findParentThreadByMessageIdHeader(
   const parentRows = await tx
     .select({ threadId: message.threadId })
     .from(message)
-    .where(
-      and(eq(message.transportId, transportId), eq(message.messageIdHeader, canonicalHeader)),
-    )
+    .where(and(eq(message.transportId, transportId), eq(message.messageIdHeader, canonicalHeader)))
     .orderBy(asc(message.createdAt), asc(message.id))
     .limit(2);
   if (parentRows.length > 1) {

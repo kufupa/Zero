@@ -2,20 +2,16 @@
  * Centurion draft backtest — eval-only, no SMTP, no HMS writes, no product draft promote.
  * Purpose-built corpus scoring; never import from Vitest suites that touch pilot RDS.
  */
-import { createHash } from 'node:crypto';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import { join } from 'node:path';
 import {
   assertNoUncitedCriticalLiterals,
   formatMissingBracket,
   type EvidenceClaim,
 } from './draft-evidence.js';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import type { PreparedAsk, PreparedFact } from './prepared-draft-input.js';
+import { assessReply, type ReplyAssessment } from './reply-assessment.js';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 
 export const CENTURION_TRANSPORT_ID = 'transport-centurion';
 
@@ -28,10 +24,8 @@ export function isCenturionMailboxFrom(fromAddress: string | null | undefined): 
   return addr.startsWith('centurion@');
 }
 
-export type GoldPairingKind =
-  | 'centurion_outbound'
-  | 'forward_or_external'
-  | 'no_gold_reply';
+export type GoldPairingKind = 'centurion_outbound' | 'forward_or_external' | 'no_gold_reply';
+export type EvaluationMode = 'current-state' | 'historical-replay' | 'future-shadow';
 
 export type CorpusPair = {
   threadId: string;
@@ -67,6 +61,8 @@ export type DraftEvalRecord = {
   toneOverlap?: number;
   /** Gold reply id hash — dedupe key for centurion-from-replies sample. */
   goldMessageIdHash?: string;
+  /** Explicit boundary between current, historical, and future evaluation. */
+  evaluationMode: EvaluationMode;
 };
 
 export type FailureClass =
@@ -80,6 +76,7 @@ export type FailureClass =
 
 export type AggregateScorecard = {
   runId: string;
+  evaluationMode: EvaluationMode;
   scored: number;
   byClass: Record<FailureClass, number>;
   inventedFactRate: number;
@@ -119,7 +116,7 @@ export function pairCenturionGold(input: {
   messages: ReadonlyArray<{
     id: string;
     direction: 'inbound' | 'outbound';
-    transportId?: string | null;
+    transportId: string | null;
     createdAt: string;
     subject?: string | null;
   }>;
@@ -128,11 +125,22 @@ export function pairCenturionGold(input: {
   if (!inbound || inbound.direction !== 'inbound') {
     throw new Error('inbound message required for gold pairing');
   }
+  if (inbound.transportId !== CENTURION_TRANSPORT_ID) {
+    return {
+      threadId: input.threadId,
+      inboundMessageId: input.inboundMessageId,
+      inboundMessageIdHash: hashOpaqueId(input.inboundMessageId),
+      goldKind: 'no_gold_reply',
+      goldOutboundMessageId: null,
+    };
+  }
   const inboundAt = Date.parse(inbound.createdAt);
   const laterOutbound = input.messages
     .filter(
       (m) =>
-        m.direction === 'outbound' && Date.parse(m.createdAt) >= inboundAt,
+        m.direction === 'outbound' &&
+        m.transportId === CENTURION_TRANSPORT_ID &&
+        Date.parse(m.createdAt) >= inboundAt,
     )
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
@@ -141,8 +149,7 @@ export function pairCenturionGold(input: {
   if (first) {
     const subj = (first.subject ?? '').toLowerCase();
     goldKind =
-      /\bfw:|\bfwd:|forward(ed)?\b/.test(subj) ||
-      /\bexternal\b/.test(subj)
+      /\bfw:|\bfwd:|forward(ed)?\b/.test(subj) || /\bexternal\b/.test(subj)
         ? 'forward_or_external'
         : 'centurion_outbound';
   }
@@ -159,13 +166,16 @@ export function pairCenturionGold(input: {
 /**
  * Gold = message FROM centurion@ that replies on an existing thread
  * (at least one prior message). Trigger = latest prior message.
- * Direction ignored — BCC copies are often labeled inbound.
+ * Only an outbound Centurion message may be gold; the trigger must be the
+ * latest earlier inbound on the same Centurion transport.
  */
 export function pairCenturionFromReply(input: {
   threadId: string;
   goldMessageId: string;
   messages: ReadonlyArray<{
     id: string;
+    direction: 'inbound' | 'outbound';
+    transportId: string | null;
     fromAddress?: string | null;
     createdAt: string;
     subject?: string | null;
@@ -173,13 +183,21 @@ export function pairCenturionFromReply(input: {
 }): CorpusPair {
   const gold = input.messages.find((m) => m.id === input.goldMessageId);
   if (!gold) throw new Error('gold message required');
-  if (!isCenturionMailboxFrom(gold.fromAddress)) {
+  if (
+    gold.direction !== 'outbound' ||
+    gold.transportId !== CENTURION_TRANSPORT_ID ||
+    !isCenturionMailboxFrom(gold.fromAddress)
+  ) {
     throw new Error('gold must be from centurion@ mailbox');
   }
   const goldAt = Date.parse(gold.createdAt);
   const priors = input.messages
     .filter(
-      (m) => m.id !== gold.id && Date.parse(m.createdAt) < goldAt,
+      (m) =>
+        m.id !== gold.id &&
+        m.direction === 'inbound' &&
+        m.transportId === CENTURION_TRANSPORT_ID &&
+        Date.parse(m.createdAt) < goldAt,
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
@@ -216,6 +234,21 @@ export function extractCriticalTokens(text: string): string[] {
   return [...new Set(found.map(normalize))];
 }
 
+/** Deterministic fact/ask assessment used by offline scoring and normal replies. */
+export function assessDraftAgainstFacts(input: {
+  draftText: string;
+  asks: readonly PreparedAsk[];
+  facts: readonly PreparedFact[];
+  authorizedAttachmentRefs?: ReadonlySet<string> | readonly string[];
+}): ReplyAssessment {
+  return assessReply({
+    replyText: input.draftText,
+    asks: input.asks,
+    facts: input.facts,
+    authorizedAttachmentRefs: input.authorizedAttachmentRefs,
+  });
+}
+
 export function scoreDraftAgainstEvidence(input: {
   draftText: string;
   evidenceTokens: readonly string[];
@@ -223,6 +256,9 @@ export function scoreDraftAgainstEvidence(input: {
   goldKind: GoldPairingKind;
   selectedClaimIds?: readonly string[];
   claims?: ReadonlyMap<string, EvidenceClaim>;
+  asks?: readonly PreparedAsk[];
+  facts?: readonly PreparedFact[];
+  authorizedAttachmentRefs?: ReadonlySet<string> | readonly string[];
   goldCriticalCoverage?: number;
   toneOverlap?: number;
 }): FailureClass[] {
@@ -234,9 +270,7 @@ export function scoreDraftAgainstEvidence(input: {
 
   const allowed = new Set(
     [
-      ...input.evidenceTokens.map((t) =>
-        t.toLocaleLowerCase().replace(/\s+/g, ''),
-      ),
+      ...input.evidenceTokens.map((t) => t.toLocaleLowerCase().replace(/\s+/g, '')),
       ...input.bracketLines.flatMap((line) => extractCriticalTokens(line)),
     ].filter(Boolean),
   );
@@ -249,11 +283,7 @@ export function scoreDraftAgainstEvidence(input: {
     }
   }
 
-  if (
-    input.selectedClaimIds &&
-    input.claims &&
-    input.selectedClaimIds.length > 0
-  ) {
+  if (input.selectedClaimIds && input.claims && input.selectedClaimIds.length > 0) {
     try {
       assertNoUncitedCriticalLiterals({
         textBody: input.draftText,
@@ -265,10 +295,22 @@ export function scoreDraftAgainstEvidence(input: {
     }
   }
 
-  const needsFact =
-    /\b(confirm|rate|balance|deposit|availability|quote)\b/i.test(
-      input.draftText,
-    );
+  if (input.asks && input.facts) {
+    const assessment = assessDraftAgainstFacts({
+      draftText: input.draftText,
+      asks: input.asks,
+      facts: input.facts,
+      authorizedAttachmentRefs: input.authorizedAttachmentRefs,
+    });
+    if (assessment.issues.some((issue) => issue.severity === 'critical')) {
+      if (!classes.includes('INVENTED_FACT')) classes.push('INVENTED_FACT');
+    }
+    if (assessment.issues.some((issue) => issue.code === 'MISSING_BRACKET')) {
+      if (!classes.includes('MISSING_BRACKET')) classes.push('MISSING_BRACKET');
+    }
+  }
+
+  const needsFact = /\b(confirm|rate|balance|deposit|availability|quote)\b/i.test(input.draftText);
   const hasBracket = input.bracketLines.some((l) => l.includes('[MISSING:'));
   const hasEvidence = input.evidenceTokens.length > 0;
   if (needsFact && !hasEvidence && !hasBracket) {
@@ -310,10 +352,7 @@ function stripBracketLines(text: string): string {
 }
 
 /** Bracket kinds that structurally account for gold token classes (no value echo). */
-function structuralBracketCoversToken(
-  token: string,
-  brackets: readonly string[],
-): boolean {
+function structuralBracketCoversToken(token: string, brackets: readonly string[]): boolean {
   const joined = brackets.join('\n').toLowerCase();
   const t = token.toLowerCase();
   if (/(?:zar|r)\d/.test(t) || /^r[\d,.]+$/.test(t)) {
@@ -345,8 +384,7 @@ export function compareDraftToGold(input: {
       hit += 1;
     }
   }
-  const goldCriticalCoverage =
-    goldTokens.length === 0 ? 1 : hit / goldTokens.length;
+  const goldCriticalCoverage = goldTokens.length === 0 ? 1 : hit / goldTokens.length;
 
   const draftWords = softWordSet(stripBracketLines(input.draftText));
   const goldWords = softWordSet(input.goldText);
@@ -452,11 +490,7 @@ export function renderOfflineBracketDraft(input: {
   return { textBody, bracketLines };
 }
 
-export function appendEvalRecord(
-  root: string,
-  runId: string,
-  record: DraftEvalRecord,
-): void {
+export function appendEvalRecord(root: string, runId: string, record: DraftEvalRecord): void {
   const dir = join(root, runId);
   mkdirSync(dir, { recursive: true });
   appendFileSync(join(dir, 'results.jsonl'), `${JSON.stringify(record)}\n`, {
@@ -464,19 +498,28 @@ export function appendEvalRecord(
   });
 }
 
-export function loadScoredHashes(root: string, runId: string): Set<string> {
+export function loadScoredHashes(
+  root: string,
+  runId: string,
+  evaluationMode?: EvaluationMode,
+): Set<string> {
   const path = join(root, runId, 'results.jsonl');
   const out = new Set<string>();
   if (!existsSync(path)) return out;
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     if (!line.trim()) continue;
+    let row: DraftEvalRecord;
     try {
-      const row = JSON.parse(line) as DraftEvalRecord;
-      if (row.goldMessageIdHash) out.add(row.goldMessageIdHash);
-      else if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
+      row = JSON.parse(line) as DraftEvalRecord;
     } catch {
       /* skip corrupt line */
+      continue;
     }
+    if (evaluationMode && row.evaluationMode !== evaluationMode) {
+      throw new Error('persisted evaluation mode does not match requested mode');
+    }
+    if (row.goldMessageIdHash) out.add(row.goldMessageIdHash);
+    else if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
   }
   return out;
 }
@@ -489,11 +532,7 @@ export function evalDedupeKey(record: {
   return record.goldMessageIdHash ?? record.inboundMessageIdHash;
 }
 
-export function writeScorecard(
-  root: string,
-  runId: string,
-  card: AggregateScorecard,
-): void {
+export function writeScorecard(root: string, runId: string, card: AggregateScorecard): void {
   const dir = join(root, runId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'scorecard.json'), JSON.stringify(card, null, 2));
@@ -502,7 +541,17 @@ export function writeScorecard(
 export function aggregateRecords(
   runId: string,
   records: readonly DraftEvalRecord[],
+  requestedEvaluationMode?: EvaluationMode,
 ): AggregateScorecard {
+  const recordModes = records.map((record) => record.evaluationMode);
+  const modes = new Set(recordModes.filter(Boolean));
+  if (recordModes.some((mode) => !mode) || modes.size > 1) {
+    throw new Error('evaluation mode is required and records must not mix evaluation modes');
+  }
+  const evaluationMode = requestedEvaluationMode ?? recordModes[0] ?? 'historical-replay';
+  if (modes.size === 1 && !modes.has(evaluationMode)) {
+    throw new Error('evaluation mode does not match requested mode');
+  }
   const byClass: Record<FailureClass, number> = {
     INVENTED_FACT: 0,
     MISSING_BRACKET: 0,
@@ -546,6 +595,7 @@ export function aggregateRecords(
   const scored = records.length;
   return {
     runId,
+    evaluationMode,
     scored,
     byClass,
     inventedFactRate: scored === 0 ? 0 : byClass.INVENTED_FACT / scored,

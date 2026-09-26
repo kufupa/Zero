@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { claimsFromToolResult } from '../src/ai/candidate-draft-agent.js';
-import { renderClaim, type ToolResult } from '../src/ai/draft-evidence.js';
+import { type ToolResult } from '../src/ai/draft-evidence.js';
 import {
   EVENT_READ_PRIVACY_POLICY,
   eventReadDataSchema,
@@ -253,9 +253,9 @@ describe('event claims and registry', () => {
       toolResult(parsed.data),
       new Date('2026-08-06T00:01:00.000Z'),
     );
-    expect(claims).toHaveLength(1);
-    expect(claims[0]?.kind).toBe('event_summary');
-    expect(renderClaim(claims[0]!)).toContain('Event summary');
+    // Fixture observations do not carry separately issued requester authority;
+    // the closed claim envelope must therefore emit no claim.
+    expect(claims).toEqual([]);
   });
 
   it.each([

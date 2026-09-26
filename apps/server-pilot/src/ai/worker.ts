@@ -8,9 +8,11 @@ import {
   markAiRunRetry,
   markAiRunRunning,
   markAiRunSucceeded,
+  readAiRunReceipt,
   remainingRunBudgetMs,
   reserveReadAttempt,
   resolveDeployedTriagePromptVersion,
+  mailBaselineGenerationKey,
   RunDeadlineError,
   shouldRetryAiFailure,
   toAiRunFence,
@@ -21,37 +23,291 @@ import {
   type CandidateReadPlanKind,
 } from './run-ledger.js';
 import {
+  createFailedShadowPredictionSeal,
+  createShadowPredictionSeal,
+  createUnavailableShadowPredictionSeal,
+  assessDueShadowPredictions,
+  freezeShadowInput,
+  persistShadowPrediction,
+  purgeExpiredShadowDerivatives,
+  resolveShadowAdmissionPolicy,
+  shadowPredictionPrompt,
+  SHADOW_EVALUATION_MODE,
+  type ShadowMessageInput,
+} from './shadow-evaluation.js';
+import {
+  existingDocumentRefForRecord,
+  existingDocumentSha256FromRef,
+  existingDocumentScopeRef,
+  mailAttachmentRecord,
+  createExistingDocumentService,
+  type ExistingDocumentRecord,
+} from '../mail/artifacts/existing-document-service.js';
+import {
+  assertLinkedContextReference,
+  linkedContextReferenceSchema,
+  type LinkedContextReference,
+  type LinkedContextReferenceKind,
+} from '../hms/context-read-reference.js';
+import {
+  parseEnv,
+  requireHmsEvidenceHmacChildKey,
+  requireHmsReadRuntimeConfig,
+  requireHmsWorkerRuntimeConfig,
+  type AiExecutorLane,
+  type EnvInput,
+} from '../env.js';
+import {
+  companyAccountContextDataSchema,
+  eventContextDataSchema,
+  groupBlockContextDataSchema,
+  notesTracesContextDataSchema,
+} from '../hms/context-read-contracts.js';
+import {
   aiWorkflowRun,
   attachment,
   aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
   mailboxAccess,
+  mailboxTransport,
   message,
 } from '../db/schema/mail.js';
 import {
-  parseEnv,
-  requireHmsEvidenceHmacChildKey,
-  requireHmsWorkerRuntimeConfig,
-  type AiExecutorLane,
-  type EnvInput,
-} from '../env.js';
-import {
   validateWorkflowTriageOutput,
+  triageOutputSemanticHints,
+  TRIAGE_REVIEWER_VERSION,
   type ThreadSignals,
   type WorkflowTriageOutput,
 } from './triage.js';
+import {
+  quoteRequestAuthorityIssues,
+  unavailableQuoteReferenceAuthority,
+  type QuoteReferenceAuthorityLoader,
+} from '../hms/quote-request-normalization.js';
+import {
+  readResultSchema,
+  readReservationBindingSchema,
+  readReservationRef,
+  unknownFact,
+  type ReadResult,
+} from '../hms/read-service-contracts.js';
+import {
+  readAuthorizedArtifact,
+  readAuthorizedArtifactBytes,
+  type ArtifactData,
+  type AttachmentLocator,
+} from '../mail/artifacts/read-artifact.js';
+import {
+  createApprovedLocalModelAdapter,
+  createProductionShadowModelRouteFactory,
+  type ShadowModelRouteFactory,
+} from './bedrock/factory.js';
+import {
+  createProductionMailBaselineExtractionRouteFactory,
+  type MailBaselineExtractionRouteFactory,
+} from './mail-baseline-route-factory.js';
+import {
+  createProductionDraftModelRouteFactory,
+  type DraftModelRouteConfig,
+  type DraftModelRouteFactory,
+} from './draft-route-factory.js';
+import {
+  extractMailBaselineWithApprovedRoute,
+  resolveMailBaselineExtractionRoute,
+} from './mail-baseline-extraction.js';
+import {
+  buildCausalTriageMessages,
+  resolveTriageEventClock,
+  type TriageMessageRow,
+} from './triage-input.js';
+import {
+  prepareDraftInput,
+  serializePreparedDraftInput,
+  type PreparedAsk,
+} from './prepared-draft-input.js';
+import {
+  runPreparedReplyWorkflow,
+  type PreparedReplyWorkflowResult,
+} from './workflows/candidate-draft.js';
+import {
+  executeReadToolRun,
+  readRequestSchema,
+  type ReadExecutionContext,
+  executeTrustedSynchronousHmsFindReservation,
+  type TrustedSynchronousHmsFindSessionFactory,
+} from '../hms/read-service.js';
+import {
+  assertCurrentAppAccessProof,
+  issueCurrentAppAccessProof,
+  type CurrentAppAccessProof,
+} from '../hms/requester-authorization.js';
+import {
+  admitReadBranch,
+  assertPersistedReadAdmissionIssuer,
+  READ_BRANCH_WORST_CASE_MS,
+} from '../hms/read-admission.js';
+import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
+import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
+import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
-import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
-import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
+import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
+import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
+import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import { parseMailboxMeasurementConfig } from '../metrics/mail-measurement-config.js';
+import { reservationFindResultSchema } from '../hms/reservation-context-contract.js';
+import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../metrics/mail-baseline.js';
+import { buildReplyPlaybook, type ReplyRequestKind } from './reply-playbooks.js';
+import { quoteStayCandidateFromRequest } from '../hms/quote-stay-candidate.js';
+import { aiShadowPrediction } from '../db/schema/ai-shadow-evaluation.js';
+import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
+import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
+import {
+  issueReadAdmissionFromMailbox,
+  loadReadMailboxGrant,
+  positiveFindEvidence,
+} from '../hms/read-admission-issuer.js';
+import { LocalModelRouteUnavailableError } from './bedrock/local.js';
+import { folioReadDataSchema } from '../hms/folio-read-contract.js';
+import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
+import { and, asc, eq, inArray, lt, lte, or } from 'drizzle-orm';
 import { extractDraftFeedbackLabels } from './feedback.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
+import type { ToolResult } from './draft-evidence.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
+import { assessReply } from './reply-assessment.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
-import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { getS3Storage } from '../storage/s3.js';
+
+/** Code-owned asks derived from the bounded inbound request; no model chooses scope. */
+export function deriveWorkerReplyAsks(requestText: string): PreparedAsk[] {
+  const asks: PreparedAsk[] = [];
+  const add = (code: string, label: string, acquisition: string) => {
+    if (!asks.some((ask) => ask.code === code))
+      asks.push({ code, label, required: true, acquisition });
+  };
+  if (/\b(?:reservation|booking|confirmation)\b/i.test(requestText)) {
+    add('reservation_status', 'reservation status', 'approved reservation read');
+  }
+  if (/\b(?:price|rate|quote|cost|how much)\b/i.test(requestText)) {
+    add('price', 'price or rate', 'approved quote read');
+  }
+  if (/\b(?:payment|deposit|receipt|folio)\b/i.test(requestText)) {
+    add('payment_status', 'payment status', 'approved folio read');
+  }
+  if (/\b(?:document|invoice|attachment|attached)\b/i.test(requestText)) {
+    add('document', 'document', 'authorized attachment read');
+  }
+  if (/\b(?:arrival|departure|check[- ]?in|check[- ]?out|stay dates?)\b/i.test(requestText)) {
+    add('stay_dates', 'stay dates', 'approved reservation read');
+  }
+  return asks;
+}
+
+function workerReplyRequestKind(requestText: string): ReplyRequestKind {
+  if (/\b(?:payment|deposit|receipt|folio)\b/i.test(requestText)) return 'finance';
+  if (/\b(?:price|rate|quote|cost|how much)\b/i.test(requestText)) return 'quote';
+  if (/\b(?:reservation|booking|confirmation|stay|arrival|departure)\b/i.test(requestText)) {
+    return 'reservation';
+  }
+  if (/\b(?:document|invoice|attachment)\b/i.test(requestText)) return 'document';
+  return 'general';
+}
+
+export type PreparedWorkerCandidateReplyInput = {
+  requestId: string;
+  threadId?: string;
+  requestText: string;
+  asks?: readonly PreparedAsk[];
+  requestKind?: ReplyRequestKind;
+  adapter?: ModelAdapter;
+  /** Explicit purpose-bound route; absent remains unavailable. */
+  route?: DraftModelRouteConfig;
+  signal?: AbortSignal;
+  deadlineAt?: number;
+};
+
+/**
+ * Normal worker composition seam: bounded preparation precedes serialization
+ * and approved adapter invocation. Missing route returns a manual-review
+ * playbook before any client/network initialization.
+ */
+export async function runPreparedWorkerCandidateReply(
+  input: PreparedWorkerCandidateReplyInput,
+): Promise<PreparedReplyWorkflowResult> {
+  const asks = input.asks ?? deriveWorkerReplyAsks(input.requestText);
+  const prepared = prepareDraftInput({
+    requestId: input.requestId,
+    threadId: input.threadId,
+    audience: 'guest',
+    requestText: input.requestText,
+    asks,
+  });
+  const serializedInput = serializePreparedDraftInput(prepared);
+  let adapter: ModelAdapter;
+  try {
+    adapter =
+      input.adapter ??
+      createApprovedLocalModelAdapter({
+        purpose: 'draft',
+        route: input.route?.route,
+        transport: input.route?.transport,
+      });
+  } catch (error) {
+    if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
+    const fallback = buildReplyPlaybook({
+      audience: prepared.audience,
+      requestKind: input.requestKind ?? workerReplyRequestKind(prepared.requestText),
+      asks: prepared.asks,
+      facts: prepared.facts,
+      releasedCapabilities: prepared.releasedCapabilities,
+    });
+    const assessment = assessReply({
+      replyText: fallback.textBody,
+      asks: prepared.asks,
+      facts: prepared.facts,
+      audience: prepared.audience,
+    });
+    return {
+      outcome: fallback.outcome,
+      textBody: fallback.textBody,
+      htmlBody: fallback.htmlBody,
+      assessment,
+      serializedInput,
+      metrics: {
+        fallback: true,
+        modelRouteUnavailable: true,
+        modelRoutePurpose: 'draft',
+        manualReview: true,
+      },
+    };
+  }
+  const result = await runPreparedReplyWorkflow({
+    prepared,
+    requestKind: input.requestKind ?? workerReplyRequestKind(prepared.requestText),
+    adapter,
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
+  });
+  return {
+    ...result,
+    metrics: {
+      ...result.metrics,
+      ...(input.route?.route
+        ? {
+            routeBinding: {
+              ...input.route.route,
+              ...(input.route.release ? { release: input.route.release } : {}),
+            },
+          }
+        : {}),
+    },
+  };
+}
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
@@ -94,6 +350,12 @@ export interface RunAiWorkerDrainInput extends AiRunScopeFilter {
   timeoutMs: number;
   pollIntervalMs?: number;
   ownerId?: string;
+  /** Normal daemon composition for the purpose-bound extraction edge. */
+  mailBaselineExtractionRouteFactory?: MailBaselineExtractionRouteFactory;
+  shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
+  shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
+  shadowModelTransport?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelTransport'];
+  shadowModelRouteFactory?: ShadowModelRouteFactory;
 }
 
 export interface RunAiWorkerDrainResult {
@@ -329,16 +591,63 @@ async function failAiRun(
   return { runId: run.id, state: 'retry_wait' };
 }
 
+export type ReadAdmissionBinding = {
+  releaseId: string;
+  requestBranchId: string;
+  /** Non-browser existing-document reads carry null; PMS reads carry a digest. */
+  manifestSha256?: string | null;
+  requesterAuthorizationId: string;
+  inputDigest: string;
+  captureRequired: boolean;
+  captureBindingRef: string | null;
+  reservationRef: string | null;
+  reservationRefIssuedAt: string | null;
+  reservationRefExpiresAt: string | null;
+};
+
+export function assertReadAdmissionPlanBinding(input: {
+  readAdmission: ReadAdmissionBinding;
+  requesterAuthorizationId: string;
+}): void {
+  if (input.readAdmission.requesterAuthorizationId !== input.requesterAuthorizationId) {
+    throw Object.assign(
+      new Error('read admission requester is not the trusted plan authorization'),
+      {
+        failureClass: 'AUTH' as const,
+      },
+    );
+  }
+}
+
 export type CandidateSessionInput = {
   transportId: string;
   threadId: string;
+  triggerMessageId?: string;
+  /** Server-owned property scope bound by the normalized quote authority. */
+  propertyCode?: string;
   lookupCandidates: readonly import('./thread-context.js').LookupCandidate[];
   signal: AbortSignal;
   /** AI run UUID — becomes HMS browser audit operationId when capture is enabled. */
   runId?: string;
+  /** Private durable result reference bound into audited browser capture. */
+  readResultRef?: string;
   /** Claimed-run lease; tools reserve durable read budget against it before I/O. */
   readFence?: AiRunFence;
   readPlanKind?: CandidateReadPlanKind;
+  /** The independent read adapter wraps the complete dispatch in this lock. */
+  readOnly?: boolean;
+  /** Trusted release/input/capture admission for the production read path. */
+  readAdmission?: ReadAdmissionBinding;
+  /** Existing issued mapper proof; absence keeps normal claims fail-closed. */
+  claimAuthorization?: import('../hms/claim-envelope.js').MapEnvelopeRequesterAuthorization | null;
+  readToolId?:
+    | import('../hms/read-tools.js').ReadToolId
+    | 'hms_read_reservation'
+    | 'hms_read_notes_traces';
+  /** Resolved private source value for a server-owned linked context ref. */
+  linkedContextSourceRef?: string;
+  /** Closed finance section selection for the optional folio adapter. */
+  folioSections?: readonly string[];
   /** Authored quote candidates when hms_quote_stay is active. */
   quoteCandidates?: ReadonlyMap<
     string,
@@ -350,6 +659,16 @@ export type CandidateSessionFactory = (
   input: CandidateSessionInput,
 ) => Promise<import('./candidate-draft-agent.js').CandidateToolSession>;
 
+/**
+ * Lower-edge substitution for normal runtime proof.  The active release set
+ * remains loaded and validated by the real registry/handler path; tests may
+ * replace only the browser/PMS runtime opened by the live drivers.
+ */
+export type LiveHmsCandidateSessionFactoryOptions = {
+  runtime?: import('../hms/runtime.js').HmsRuntime;
+  activeReadState?: import('../hms/active-read-runtime.js').ActiveReadRuntimeState;
+};
+
 /** Singleton production HMS runtime — one Chromium process per HMS worker. */
 let productionHmsRuntime: import('../hms/runtime.js').HmsRuntime | null | undefined;
 
@@ -358,40 +677,200 @@ let productionActiveReadState:
   | null
   | undefined;
 
-async function getOrCreateProductionHmsRuntime(): Promise<import('../hms/runtime.js').HmsRuntime> {
-  if (productionHmsRuntime) return productionHmsRuntime;
-  const { createProductionHmsRuntime, resolveHmsSourceRevision } = await import(
-    '../hms/production-runtime.js'
-  );
+function synchronousReadError(code: 'READ_ABORTED' | 'READ_SYNC_DEADLINE', message: string) {
+  return Object.assign(new Error(message), {
+    code,
+    failureClass: 'RUN_DEADLINE' as const,
+  });
+}
+
+function assertSynchronousReadActive(signal: AbortSignal, deadlineAt: Date): void {
+  if (!Number.isFinite(deadlineAt.getTime()) || Date.now() >= deadlineAt.getTime()) {
+    throw synchronousReadError('READ_SYNC_DEADLINE', 'synchronous read deadline is expired');
+  }
+  if (signal.aborted) throw synchronousReadError('READ_ABORTED', 'read was aborted');
+}
+
+function deadlineBoundSynchronousReadSignal(
+  inputSignal: AbortSignal | undefined,
+  deadlineAt: Date,
+): AbortSignal {
+  const remaining = Math.max(0, deadlineAt.getTime() - Date.now());
+  const deadlineSignal = AbortSignal.timeout(remaining);
+  return inputSignal ? AbortSignal.any([inputSignal, deadlineSignal]) : deadlineSignal;
+}
+
+function awaitSynchronousReadSetup<T>(input: {
+  operation: () => Promise<T>;
+  signal: AbortSignal;
+  deadlineAt: Date;
+  onLateResolution?: (value: T) => void | Promise<void>;
+  onLateRejection?: (error: unknown) => void | Promise<void>;
+}): Promise<T> {
+  assertSynchronousReadActive(input.signal, input.deadlineAt);
+  let pending: Promise<T>;
+  try {
+    pending = input.operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      input.signal.removeEventListener('abort', onAbort);
+    };
+    const rejectForCurrentState = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        assertSynchronousReadActive(input.signal, input.deadlineAt);
+        reject(synchronousReadError('READ_ABORTED', 'read was aborted'));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onAbort = () => rejectForCurrentState();
+    const remaining = input.deadlineAt.getTime() - Date.now();
+    if (remaining <= 0) {
+      rejectForCurrentState();
+      return;
+    }
+    timer = setTimeout(rejectForCurrentState, remaining);
+    timer.unref?.();
+    input.signal.addEventListener('abort', onAbort, { once: true });
+    if (input.signal.aborted) onAbort();
+    pending.then(
+      (value) => {
+        if (settled) {
+          if (input.onLateResolution) {
+            void Promise.resolve(input.onLateResolution(value)).catch(() => undefined);
+          }
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) {
+          if (input.onLateRejection) {
+            void Promise.resolve(input.onLateRejection(error)).catch(() => undefined);
+          }
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+async function productionReadRuntimeFacts(
+  config: ReturnType<typeof requireHmsReadRuntimeConfig>,
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+) {
+  const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
   const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
   const { loadWorkerActiveReadSet } = await import('../hms/active-read-runtime.js');
-  const config = requireHmsWorkerRuntimeConfig(process.env as Record<string, string | undefined>);
-  const evidenceKey = requireHmsEvidenceHmacChildKey(
-    process.env as Record<string, string | undefined>,
-  );
   const sourceRevision = resolveHmsSourceRevision();
   const runtimeFp = runtimeFingerprintSha256({
     sourceRevision,
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',
   });
+  if (!productionActiveReadState) {
+    const load = () =>
+      loadWorkerActiveReadSet({
+        registryPath: config.activeRegistryPath,
+        releaseRoot: config.releaseRoot,
+        runtimeFingerprintSha256: runtimeFp,
+      });
+    productionActiveReadState =
+      signal && deadlineAt
+        ? await awaitSynchronousReadSetup({ operation: load, signal, deadlineAt })
+        : await load();
+    if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
+  }
+  return { sourceRevision, runtimeFp, active: productionActiveReadState };
+}
+
+async function getOrCreateProductionHmsRuntime(
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+): Promise<import('../hms/runtime.js').HmsRuntime> {
+  if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
+  if (productionHmsRuntime) return productionHmsRuntime;
+  const { createProductionHmsRuntime } = await import('../hms/production-runtime.js');
+  // The read lane is independent from draft mode: `off` still permits a
+  // model-free browser runtime when the read service is enabled.
+  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  const evidenceKey = requireHmsEvidenceHmacChildKey(
+    process.env as Record<string, string | undefined>,
+  );
   // Load active registry before browser start — fail closed if present+invalid.
-  productionActiveReadState = await loadWorkerActiveReadSet({
-    registryPath: config.activeRegistryPath,
-    releaseRoot: config.releaseRoot,
-    runtimeFingerprintSha256: runtimeFp,
-  });
-  const runtime = await createProductionHmsRuntime(config, {
-    evidenceHmac: {
-      secretArn: config.evidenceHmacSecretArn,
-      keyVersion: config.evidenceHmacKeyVersion,
-      key: evidenceKey.key,
-    },
-    sourceRevision,
-  });
-  await runtime.start(AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs)));
-  productionHmsRuntime = runtime;
-  return runtime;
+  const { sourceRevision } = await productionReadRuntimeFacts(config, signal, deadlineAt);
+  const create = () =>
+    createProductionHmsRuntime(config, {
+      evidenceHmac: {
+        secretArn: config.evidenceHmacSecretArn,
+        keyVersion: config.evidenceHmacKeyVersion,
+        key: evidenceKey.key,
+      },
+      sourceRevision,
+    });
+  const runtime =
+    signal && deadlineAt
+      ? await awaitSynchronousReadSetup({
+          operation: create,
+          signal,
+          deadlineAt,
+          onLateResolution: (lateRuntime) => lateRuntime.close(),
+        })
+      : await create();
+  let closeSequence = Promise.resolve();
+  const closeOnFailure = async () => {
+    // Never tear down a runtime that has become the shared worker singleton.
+    if (productionHmsRuntime === runtime) return;
+    const close = closeSequence.then(
+      () => runtime.close(),
+      () => runtime.close(),
+    );
+    closeSequence = close.catch(() => undefined);
+    await close.catch(() => undefined);
+  };
+  try {
+    const runtimeSignal = signal ?? AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs));
+    if (signal && deadlineAt) {
+      await awaitSynchronousReadSetup({
+        operation: () => runtime.start(runtimeSignal),
+        signal,
+        deadlineAt,
+        onLateResolution: closeOnFailure,
+        onLateRejection: closeOnFailure,
+      });
+      assertSynchronousReadActive(signal, deadlineAt);
+    } else {
+      await runtime.start(runtimeSignal);
+    }
+    productionHmsRuntime = runtime;
+    return runtime;
+  } catch (error) {
+    await closeOnFailure();
+    throw error;
+  }
+}
+
+/** Test-only access to the normal runtime accessor for offline lifecycle tests. */
+export async function __getOrCreateProductionHmsRuntimeForTests(
+  signal?: AbortSignal,
+  deadlineAt?: Date,
+): Promise<import('../hms/runtime.js').HmsRuntime> {
+  return getOrCreateProductionHmsRuntime(signal, deadlineAt);
 }
 
 /** Test / shutdown hook — closes singleton and clears handle. */
@@ -404,10 +883,21 @@ export async function closeProductionHmsRuntimeForTests(): Promise<void> {
   if (rt) await rt.close();
 }
 
-export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory {
+export function createLiveHmsCandidateSessionFactory(
+  options: LiveHmsCandidateSessionFactoryOptions = {},
+): CandidateSessionFactory {
   return async (input) => {
-    const runtime = await getOrCreateProductionHmsRuntime();
+    const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+    const propertyCode = input.propertyCode ?? config.expectedPropertyCode;
+    if (propertyCode !== config.expectedPropertyCode) {
+      throw Object.assign(
+        new Error('quote authority property does not match the configured live property'),
+        { failureClass: 'AUTH' as const },
+      );
+    }
+    const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
     const active =
+      options.activeReadState ??
       productionActiveReadState ??
       (await import('../hms/active-read-runtime.js')).getCachedActiveReadRuntime() ??
       null;
@@ -416,25 +906,48 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       '../hms/reservation-candidate-session.js'
     );
     const { filterExactReservationCandidates } = await import('./thread-context.js');
+    type LookupCandidate = import('./thread-context.js').LookupCandidate;
     const {
       buildHmsFindSessionAuthorization,
       assertFindHandlerBound,
       buildHmsQuoteSessionAuthorization,
       assertQuoteHandlerBound,
+      buildHmsFolioSessionAuthorization,
       placeholderDigest,
     } = await import('../hms/active-read-runtime.js');
     const {
       buildExactOsressSearchManifest,
       buildLiveGuestStayReadManifest,
       buildExactOsrravSearchManifest,
+      buildLiveGroupBlockListManifest,
       liveNotFoundCanaryCandidate,
     } = await import('../hms/live-read-manifest.js');
     const { createLiveQuoteStayDriver } = await import('../hms/live-quote-stay-driver.js');
+    const { createLiveFolioReadDriver, mergeFolioEvidence } = await import(
+      '../hms/live-folio-read-driver.js'
+    );
+    const { createLiveCompanyAccountReadDriver } = await import(
+      '../hms/live-company-account-read-driver.js'
+    );
+    const { createLiveGroupBlockDriver } = await import('../hms/live-group-block-driver.js');
+    const { createLiveEventReadDriver } = await import('../hms/live-event-read-driver.js');
+    const { observeNotesTraces } = await import('../hms/live-notes-traces-read-driver.js');
+    const { mintReadCandidateChildren } = await import('../hms/candidate-graph.js');
+    const { buildLiveFolioReadManifest, buildLiveDepositLedgerManifest } = await import(
+      '../hms/live-read-manifest.js'
+    );
+    const { createReadToolHandler } = await import('../hms/read-handler-index.js');
     const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } = await import(
       '../hms/production-runtime.js'
     );
     const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
-    const config = requireHmsWorkerRuntimeConfig(process.env as Record<string, string | undefined>);
+    const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
+    const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
+    const propertyReadLock = createPostgresPropertyReadLock({
+      tenantId: config.expectedTenant,
+      propertyCode: config.expectedPropertyCode,
+      databaseUrl: workerEnv.DATABASE_URL,
+    });
     const sourceRevision = resolveHmsSourceRevision();
     const runtimeFp = runtimeFingerprintSha256({
       sourceRevision,
@@ -447,8 +960,103 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const quoteReleaseRaw = active?.releases.get('hms_quote_stay') ?? null;
     const quoteRelease =
       quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms' ? quoteReleaseRaw : null;
+    const folioReleaseRaw = active?.releases.get('hms_read_folio') ?? null;
+    const folioRelease =
+      folioReleaseRaw && folioReleaseRaw.evidenceKind === 'hms' ? folioReleaseRaw : null;
+    const companyReleaseRaw = active?.releases.get('hms_company_account_read') ?? null;
+    const companyRelease =
+      companyReleaseRaw && companyReleaseRaw.evidenceKind === 'hms' ? companyReleaseRaw : null;
+    const groupReleaseRaw = active?.releases.get('hms_group_block_read') ?? null;
+    const groupRelease =
+      groupReleaseRaw && groupReleaseRaw.evidenceKind === 'hms' ? groupReleaseRaw : null;
+    const eventReleaseRaw = active?.releases.get('hms_event_read') ?? null;
+    const eventRelease =
+      eventReleaseRaw && eventReleaseRaw.evidenceKind === 'hms' ? eventReleaseRaw : null;
+    const notesReleaseRaw = active?.releases.get('hms_read_notes_traces' as never) ?? null;
+    const notesRelease =
+      notesReleaseRaw && notesReleaseRaw.evidenceKind === 'hms' ? notesReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
+    const surnameDates = input.lookupCandidates.filter(
+      (c): c is Extract<LookupCandidate, { kind: 'surname_dates' }> =>
+        c.kind === 'surname_dates',
+    );
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
+    const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
+    const candidates = new Map<
+      string,
+      import('../hms/live-read-manifest.js').ReservationSearchCandidate
+    >(exact.map((c) => [c.id, c]));
+    // Wave 0b: admit surname+dates only when no exact identity is present.
+    if (exact.length === 0) {
+      for (const c of surnameDates) {
+        candidates.set(c.id, c);
+      }
+    }
+    const planGate = input.readOnly
+      ? null
+      : resolvePlanScopedDraftGate({
+          activeReleases: active?.releases,
+          lookupCandidates: candidates,
+          operationId,
+        });
+    if (input.readOnly) {
+      const readAdmission = input.readAdmission;
+      const admittedRelease =
+        input.readToolId === 'hms_read_folio'
+          ? folioRelease
+          : input.readToolId === 'hms_quote_stay'
+            ? quoteRelease
+            : input.readToolId === 'hms_company_account_read'
+              ? companyRelease
+              : input.readToolId === 'hms_group_block_read'
+                ? groupRelease
+                : input.readToolId === 'hms_event_read'
+                  ? eventRelease
+                  : input.readToolId === 'hms_read_notes_traces'
+                    ? notesRelease
+                    : findRelease;
+      if (!admittedRelease || active?.handlerPathActive !== true) {
+        throw Object.assign(new Error('active read release is required for read admission'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      if (!readAdmission || readAdmission.releaseId !== admittedRelease.releaseId) {
+        throw Object.assign(new Error('read release admission does not match the active release'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      if (
+        !admittedRelease.requestBranches.some(
+          (branch) => branch.id === readAdmission.requestBranchId,
+        )
+      ) {
+        throw Object.assign(new Error('read request branch is not enabled on the active release'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      const admittedBranch = admittedRelease.requestBranches.find(
+        (branch) => branch.id === readAdmission.requestBranchId,
+      );
+      if (
+        !readAdmission.manifestSha256 ||
+        admittedBranch?.manifestSha256 !== readAdmission.manifestSha256
+      ) {
+        throw Object.assign(
+          new Error('read branch manifest admission does not match the active release'),
+          {
+            failureClass: 'AUTH' as const,
+          },
+        );
+      }
+      if (
+        readAdmission.captureRequired &&
+        (!input.readResultRef || readAdmission.captureBindingRef !== input.readResultRef)
+      ) {
+        throw Object.assign(new Error('read capture admission does not match the run fence'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+    }
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: input.transportId,
@@ -471,6 +1079,9 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         void liveNotFoundCanaryCandidate;
         const auth = buildHmsFindSessionAuthorization({
           operationId,
+          requestBranchId: input.readOnly
+            ? input.readAdmission!.requestBranchId
+            : 'guest_stay_search',
           manifest,
           roleProofPath: config.roleProofPath,
           roleProofSha256: findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
@@ -486,35 +1097,459 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         }
         return auth;
       },
+      // Draft sessions keep their driver-level lock. The independent read
+      // adapter instead owns this same dedicated lock around the full typed
+      // dispatch, avoiding nested advisory locks on separate connections.
+      propertyReadLock: input.readOnly ? undefined : propertyReadLock,
     });
     const quoteDriver = quoteRelease
       ? createLiveQuoteStayDriver({
           runtime,
           transportId: input.transportId,
+          auditSpecFor: () => ({
+            operationId,
+            toolId: 'hms_quote_stay',
+            toolVersion: '2.0.0',
+            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+            requestBranchId: 'quote_availability_search',
+          }),
         })
       : undefined;
+    const folioRead =
+      input.readOnly && folioRelease
+        ? async (candidateId: string, signal: AbortSignal): Promise<ToolResult<unknown>> => {
+            const readAdmission = input.readAdmission;
+            const candidate = candidates.get(candidateId);
+            if (!readAdmission || !candidate || candidate.kind !== 'confirmation') {
+              throw Object.assign(new Error('folio read candidate is not an exact reservation'), {
+                failureClass: 'AUTH' as const,
+              });
+            }
+            const sections = (input.folioSections ?? ['balance', 'deposits']) as readonly (
+              | 'balance'
+              | 'deposits'
+              | 'transactions'
+              | 'authorization'
+            )[];
+            const operationId = input.runId ?? `hms-folio-${Date.now()}`;
+            const scopeHash = createHash('sha256')
+              .update(
+                JSON.stringify([
+                  input.transportId,
+                  input.threadId,
+                  input.runId ?? null,
+                  candidateId,
+                  readAdmission.reservationRef,
+                ]),
+              )
+              .digest('hex');
+            const sessionId = randomUUID();
+            const parentEvidenceId = randomUUID();
+            const expiresAt = input.readFence?.deadlineAt ?? new Date(Date.now() + 15 * 60_000);
+            const folioDriver = createLiveFolioReadDriver({
+              runtime,
+              transportId: input.transportId,
+              expectedConfirmationToken: candidate.value,
+              expectedPropertyCode: propertyCode,
+              detailDumpFor: async () => {
+                const { dump } = await driver.searchExactThenDetailDump(candidate, signal);
+                return dump;
+              },
+              auditSpecFor: ({ branchId }) => ({
+                operationId,
+                toolId: 'hms_read_folio',
+                toolVersion: '1.0.0',
+                dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                executionClass: 'normal',
+                inputClass: 'authorized_exact',
+                requestBranchId: branchId,
+              }),
+            });
+            const steps: Array<
+              | Awaited<ReturnType<typeof folioDriver.observeFolioBalance>>
+              | Awaited<ReturnType<typeof folioDriver.observeDepositSummary>>
+            > = [];
+
+            const observe = async (branchId: 'folio_summary' | 'deposit_ledger_summary') => {
+              const branch = folioRelease.requestBranches.find((item) => item.id === branchId);
+              if (!branch) {
+                throw Object.assign(
+                  new Error(`active folio release has no ${branchId} request branch`),
+                  { failureClass: 'AUTH' as const },
+                );
+              }
+              const child = mintReadCandidateChildren({
+                sessionId,
+                parentEvidenceId,
+                tools: [{ toolId: 'hms_read_folio', requestBranchId: branch.id }],
+                propertyCode,
+                scopeHash,
+                expiresAt,
+              })[0]!;
+              const manifest =
+                branchId === 'folio_summary'
+                  ? buildLiveFolioReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
+                  : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN, propertyCode);
+              const authorization = buildHmsFolioSessionAuthorization({
+                operationId,
+                requestBranchId: branchId,
+                manifest,
+                roleProofPath: config.roleProofPath,
+                roleProofSha256: folioRelease.roleProofSha256 ?? placeholderDigest('folio-role'),
+                credentialVersionHmacSha256:
+                  folioRelease.credentialVersionHmacSha256 ?? placeholderDigest('folio-credential'),
+                runtimeFingerprintSha256: folioRelease.runtimeFingerprintSha256 ?? runtimeFp,
+                privateDigestKeyVersion: folioRelease.privateDigestKeyVersion ?? 'v1',
+                sourceRevision: folioRelease.sourceRevision ?? sourceRevision,
+                expiresAt: expiresAt.toISOString(),
+                release: folioRelease,
+              });
+              createReadToolHandler(folioRelease, authorization);
+              if (branchId === 'folio_summary') {
+                return folioDriver.observeFolioBalance(authorization, child, signal);
+              }
+              return folioDriver.observeDepositSummary(authorization, child, signal);
+            };
+
+            if (sections.includes('balance')) steps.push(await observe('folio_summary'));
+            if (sections.includes('deposits') || sections.includes('transactions')) {
+              steps.push(await observe('deposit_ledger_summary'));
+            }
+            if (steps.length === 0) {
+              return {
+                status: 'partial',
+                draftReady: false,
+                data: null,
+                unresolvedFields: sections.map((section) => `${section.toUpperCase()}_UNAVAILABLE`),
+                evidence: {
+                  kind: 'hms' as const,
+                  id: randomUUID(),
+                  toolId: 'hms_read_folio' as const,
+                  toolVersion: '1.0.0',
+                  propertyCode,
+                  observedAt: new Date().toISOString(),
+                  expiresAt: expiresAt.toISOString(),
+                  claimKeys: [],
+                  sourceHash: createHash('sha256').update('folio-empty').digest('hex'),
+                },
+              };
+            }
+            return mergeFolioEvidence(
+              steps,
+              {
+                recipientClass: 'unknown',
+                inquiryClass: 'other',
+              },
+              sections,
+              {
+                runId: operationId,
+                readResultRef: input.readResultRef ?? '',
+                transportId: input.transportId,
+                threadId: input.threadId,
+                triggerMessageId: input.triggerMessageId ?? '',
+                candidateId,
+                reservationRef: readAdmission.reservationRef ?? '',
+                inputDigest: readAdmission.inputDigest,
+                requesterAuthorizationId: readAdmission.requesterAuthorizationId,
+                releaseId: readAdmission.releaseId,
+                requestBranchIds:
+                  sections.includes('balance') &&
+                  (sections.includes('deposits') || sections.includes('transactions'))
+                    ? ['folio_summary', 'deposit_ledger_summary']
+                    : sections.includes('balance')
+                      ? ['folio_summary']
+                      : ['deposit_ledger_summary'],
+                captureBindingRef: readAdmission.captureBindingRef ?? input.readResultRef ?? '',
+                propertyCode,
+                confirmationToken: candidate.value,
+                manifestSha256ByBranch: Object.fromEntries(
+                  folioRelease.requestBranches.map((item) => [item.id, item.manifestSha256]),
+                ) as Partial<Record<'folio_summary' | 'deposit_ledger_summary', string>>,
+                scopeHash,
+              },
+            );
+          }
+        : undefined;
+
+    const contextAuthorization = (inputData: {
+      toolId: 'hms_company_account_read' | 'hms_group_block_read' | 'hms_event_read';
+      discoveryOperationId:
+        | 'reservation_linked_company_billing'
+        | 'group_block_list'
+        | 'event_list';
+      release: NonNullable<typeof companyRelease>;
+      branchId: string;
+    }) => {
+      const branch = inputData.release.requestBranches.find(
+        (candidate) => candidate.id === inputData.branchId,
+      );
+      if (!branch) {
+        throw Object.assign(new Error('linked context release branch is unavailable'), {
+          failureClass: 'AUTH' as const,
+        });
+      }
+      return {
+        operationId,
+        toolId: inputData.toolId,
+        discoveryOperationId: inputData.discoveryOperationId,
+        releaseId: inputData.release.releaseId,
+        requestBranchId: branch.id,
+        manifest:
+          inputData.toolId === 'hms_group_block_read'
+            ? buildLiveGroupBlockListManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
+            : buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+        manifestSha256: branch.manifestSha256,
+        roleProofPath: config.roleProofPath,
+        roleProofSha256: inputData.release.roleProofSha256 ?? placeholderDigest('u15-role'),
+        credentialVersionHmacSha256:
+          inputData.release.credentialVersionHmacSha256 ?? placeholderDigest('u15-credential'),
+        runtimeFingerprintSha256: inputData.release.runtimeFingerprintSha256 ?? runtimeFp,
+        privateDigestKeyVersion: inputData.release.privateDigestKeyVersion ?? 'v1',
+        sourceRevision: inputData.release.sourceRevision ?? sourceRevision,
+        expiresAt:
+          input.readFence?.deadlineAt.toISOString() ?? new Date(Date.now() + 60_000).toISOString(),
+      } as const;
+    };
+
+    const companyAccountRead =
+      input.readOnly && companyRelease
+        ? async (reservationRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const sourceReservationRef = input.linkedContextSourceRef ?? reservationRef;
+            const branch = companyRelease.requestBranches.find(
+              (candidate) => candidate.id === 'reservation_linked_company_billing',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_company_account_read',
+                scopeRef: reservationRef,
+                requestBranchId: 'reservation_linked_company_billing',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const child = mintReadCandidateChildren({
+              sessionId: randomUUID(),
+              parentEvidenceId: randomUUID(),
+              tools: [{ toolId: 'hms_company_account_read', requestBranchId: branch.id }],
+              propertyCode,
+              scopeHash: createHash('sha256').update(sourceReservationRef).digest('hex'),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            })[0]!;
+            const authorization = contextAuthorization({
+              toolId: 'hms_company_account_read',
+              discoveryOperationId: 'reservation_linked_company_billing',
+              release: companyRelease,
+              branchId: branch.id,
+            });
+            await createLiveCompanyAccountReadDriver().observeReservationLinkedBilling(
+              authorization,
+              child,
+              signal,
+            );
+            return unavailableU15Result({
+              toolId: 'hms_company_account_read',
+              scopeRef: reservationRef,
+              requestBranchId: branch.id,
+              observedAt: new Date(),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            });
+          }
+        : undefined;
+
+    const groupBlockRead =
+      input.readOnly && groupRelease
+        ? async (
+            groupRef: string,
+            _sections: readonly string[],
+            signal: AbortSignal,
+          ): Promise<ReadResult<unknown>> => {
+            const sourceGroupRef = input.linkedContextSourceRef ?? groupRef;
+            const branch = groupRelease.requestBranches.find(
+              (candidate) => candidate.id === 'group_block_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_group_block_read',
+                scopeRef: groupRef,
+                requestBranchId: 'group_block_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const startDate = new Date();
+            const endDate = new Date(startDate.getTime() + 31 * 86_400_000);
+            const candidate: GroupReadCandidate = {
+              id: createHash('sha256')
+                .update(`u15-group:${sourceGroupRef}`)
+                .digest('hex')
+                .slice(0, 32),
+              kind: 'group_block',
+              exactGroupReference: sourceGroupRef,
+              exactGroupReferenceHash: createHash('sha256')
+                .update(`group_ref:${sourceGroupRef}`)
+                .digest('hex'),
+              startDate: startDate.toISOString().slice(0, 10),
+              endDate: endDate.toISOString().slice(0, 10),
+            };
+            const authorization = contextAuthorization({
+              toolId: 'hms_group_block_read',
+              discoveryOperationId: 'group_block_list',
+              release: groupRelease as NonNullable<typeof companyRelease>,
+              branchId: branch.id,
+            });
+            createReadToolHandler(groupRelease, authorization);
+            return createLiveGroupBlockDriver({
+              runtime,
+              transportId: input.transportId,
+              auditSpec: input.runId
+                ? {
+                    operationId,
+                    toolId: 'hms_group_block_read',
+                    toolVersion: '1.0.0',
+                    dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                    executionClass: 'normal',
+                    inputClass: 'authorized_exact',
+                    requestBranchId: branch.id,
+                    sourceRevision: authorization.sourceRevision,
+                    roleProofSha256: authorization.roleProofSha256,
+                    roleProofExpiresAt: authorization.expiresAt,
+                  }
+                : undefined,
+            }).observeGroupBlockContext(authorization, candidate, signal);
+          }
+        : undefined;
+
+    const eventRead =
+      input.readOnly && eventRelease
+        ? async (eventRef: string, signal: AbortSignal): Promise<ReadResult<unknown>> => {
+            const sourceEventRef = input.linkedContextSourceRef ?? eventRef;
+            const branch = eventRelease.requestBranches.find(
+              (candidate) => candidate.id === 'event_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_event_read',
+                scopeRef: eventRef,
+                requestBranchId: 'event_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const candidate: EventReadCandidate = {
+              id: createHash('sha256')
+                .update(`u15-event:${sourceEventRef}`)
+                .digest('hex')
+                .slice(0, 32),
+              kind: 'event_summary',
+              exactEventReference: sourceEventRef,
+              exactEventReferenceHash: createHash('sha256')
+                .update(`event_ref:${sourceEventRef}`)
+                .digest('hex'),
+            };
+            const authorization = contextAuthorization({
+              toolId: 'hms_event_read',
+              discoveryOperationId: 'event_list',
+              release: eventRelease as NonNullable<typeof companyRelease>,
+              branchId: branch.id,
+            });
+            await createLiveEventReadDriver().observeEventListSummary(
+              authorization,
+              candidate,
+              signal,
+            );
+            return unavailableU15Result({
+              toolId: 'hms_event_read',
+              scopeRef: eventRef,
+              requestBranchId: branch.id,
+              observedAt: new Date(),
+              expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+            });
+          }
+        : undefined;
+
+    const notesTracesRead =
+      input.readOnly && notesRelease
+        ? async (notesInput: {
+            resourceRef: string;
+            states: readonly string[];
+            limit: number;
+            cursor?: string;
+            audience: 'staff' | 'customer';
+            signal: AbortSignal;
+          }): Promise<ReadResult<unknown>> => {
+            const sourceResourceRef = input.linkedContextSourceRef ?? notesInput.resourceRef;
+            const branch = notesRelease.requestBranches.find(
+              (candidate) => candidate.id === 'notes_traces_list',
+            );
+            if (!branch)
+              return unavailableU15Result({
+                toolId: 'hms_read_notes_traces',
+                scopeRef: notesInput.resourceRef,
+                requestBranchId: 'notes_traces_list',
+                observedAt: new Date(),
+                expiresAt: input.readFence?.deadlineAt ?? new Date(Date.now() + 60_000),
+              });
+            const { signal: notesSignal, ...notesRequest } = notesInput;
+            const exactCandidate = exact[0];
+            return observeNotesTraces(
+              {
+                operationId,
+                toolId: 'hms_read_notes_traces',
+                discoveryOperationId: 'notes_traces_list',
+                releaseId: notesRelease.releaseId,
+                requestBranchId: branch.id,
+                manifest: buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+                manifestSha256: branch.manifestSha256,
+                roleProofPath: config.roleProofPath,
+                roleProofSha256: notesRelease.roleProofSha256 ?? placeholderDigest('notes-role'),
+                credentialVersionHmacSha256:
+                  notesRelease.credentialVersionHmacSha256 ??
+                  placeholderDigest('notes-credential'),
+                runtimeFingerprintSha256: notesRelease.runtimeFingerprintSha256 ?? runtimeFp,
+                privateDigestKeyVersion: notesRelease.privateDigestKeyVersion ?? 'v1',
+                sourceRevision: notesRelease.sourceRevision ?? sourceRevision,
+                expiresAt:
+                  input.readFence?.deadlineAt.toISOString() ??
+                  new Date(Date.now() + 60_000).toISOString(),
+              },
+              {
+                ...notesRequest,
+                resourceRef: sourceResourceRef,
+                states: [...notesInput.states] as ('open' | 'completed')[],
+              },
+              notesSignal,
+              {
+                detailDumpFor: async (_notes, signal) => {
+                  if (!exactCandidate) return null;
+                  const { dump } = await driver.searchExactThenDetailDump(exactCandidate, signal);
+                  return dump;
+                },
+              },
+            );
+          }
+        : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
-    const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
-    const candidates = new Map(exact.map((c) => [c.id, c]));
-    const planGate = resolvePlanScopedDraftGate({
-      activeReleases: active?.releases,
-      lookupCandidates: candidates,
-      operationId,
-    });
     return createReservationCandidateSession({
       driver,
       candidates,
       close: async () => undefined,
+      propertyCode,
       runId: input.runId,
       readFence: input.readFence,
       readPlanKind: input.readPlanKind ?? 'reservation',
       activeReleases: active?.releases,
       handlerPathActive: active?.handlerPathActive === true,
-      candidateBindings: planGate?.candidateBindings,
-      requesterAuthorization: planGate?.requesterAuthorization,
+      candidateBindings: input.readOnly ? undefined : planGate?.candidateBindings,
+      requesterAuthorization: input.readOnly ? undefined : planGate?.requesterAuthorization,
+      claimAuthorization: input.claimAuthorization,
       quoteDriver,
       quoteCandidates: input.quoteCandidates,
+      folioRead,
+      companyAccountRead,
+      groupBlockRead,
+      eventRead,
+      notesTracesRead,
+      propertyReadLock: input.readOnly ? propertyReadLock : undefined,
       buildQuoteAuthorization: quoteRelease
         ? (quoteCand) => {
             const auth = buildHmsQuoteSessionAuthorization({
@@ -537,13 +1572,2529 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
   };
 }
 
+export type SynchronousHmsFindInput = {
+  /** Current authenticated application user; never a caller-authored identity. */
+  userId: string;
+  transportId: string;
+  threadId: string;
+  signal?: AbortSignal;
+  runtime?: import('../hms/runtime.js').HmsRuntime;
+  /** Test-only lower edge; admission and source checks remain production code. */
+  sessionFactory?: TrustedSynchronousHmsFindSessionFactory;
+};
+
+/**
+ * Current application read entry for the first exact reservation lookup.
+ * Admission, candidate identity, current app access and active release facts
+ * are derived from the real mailbox/database boundary before opening HMS.
+ * There is intentionally no ai_workflow_run, claim token, queue, model, or
+ * caller-selected reservation value on this path.
+ */
+export async function executeSynchronousHmsFindReservation(input: SynchronousHmsFindInput) {
+  if (input.signal?.aborted) {
+    throw synchronousReadError('READ_ABORTED', 'read was aborted');
+  }
+  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  if (!input.userId.trim()) {
+    throw Object.assign(new Error('synchronous read requires current application user access'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (input.transportId !== config.expectedTransportId) {
+    throw Object.assign(new Error('synchronous read transport does not match configuration'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (!parseEnv(process.env as Record<string, string | undefined>).HMS_READ_SERVICE_ENABLED) {
+    throw Object.assign(new Error('HMS_READ_SERVICE_DISABLED'), {
+      failureClass: 'POLICY_BLOCK' as const,
+    });
+  }
+
+  const now = new Date();
+  const deadlineAt = new Date(now.getTime() + config.runDeadlineMs);
+  const signal = deadlineBoundSynchronousReadSignal(input.signal, deadlineAt);
+  assertSynchronousReadActive(signal, deadlineAt);
+  const admissionWindow = admitReadBranch({
+    now,
+    deadlineAt,
+    worstCaseMs: READ_BRANCH_WORST_CASE_MS,
+  });
+  if (!admissionWindow.ok) {
+    throw Object.assign(new Error(admissionWindow.code), {
+      failureClass: 'RUN_DEADLINE' as const,
+    });
+  }
+
+  const runtimeFacts = await awaitSynchronousReadSetup({
+    operation: () => productionReadRuntimeFacts(config, signal, deadlineAt),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const findReleaseRaw = runtimeFacts.active?.releases.get('hms_find_reservation') ?? null;
+  const findRelease =
+    findReleaseRaw && findReleaseRaw.evidenceKind === 'hms' ? findReleaseRaw : null;
+  const branch = findRelease?.requestBranches.find(
+    (candidate) => candidate.id === 'guest_stay_search',
+  );
+  if (!findRelease || !branch || runtimeFacts.active?.handlerPathActive !== true) {
+    throw Object.assign(new Error('active reservation find release is required'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const db = getDb();
+  const operationId = randomUUID();
+  const readResultRef = `hms-sync-${randomUUID()}`;
+  const issued = await awaitSynchronousReadSetup({
+    operation: () =>
+      issueReadAdmissionFromMailbox({
+        db,
+        userId: input.userId,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        toolId: 'hms_find_reservation',
+        releaseId: findRelease.releaseId,
+        requestBranchId: branch.id,
+        manifestSha256: branch.manifestSha256,
+        propertyCode: config.expectedPropertyCode,
+        sourceRevision: findRelease.sourceRevision ?? runtimeFacts.sourceRevision,
+        captureBindingRef: readResultRef,
+      }),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const request = readRequestSchema.parse(issued.readRequest);
+  if (request.toolId !== 'hms_find_reservation' || !issued.candidateId) {
+    throw Object.assign(
+      new Error('synchronous reservation admission did not issue one candidate'),
+      {
+        failureClass: 'AUTH' as const,
+      },
+    );
+  }
+
+  const [trigger] = await awaitSynchronousReadSetup({
+    operation: () =>
+      db
+        .select({
+          id: message.id,
+          direction: message.direction,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          subject: message.subject,
+        })
+        .from(message)
+        .where(
+          and(
+            eq(message.id, issued.triggerMessageId),
+            eq(message.transportId, input.transportId),
+            eq(message.threadId, input.threadId),
+          ),
+        )
+        .limit(1),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  if (!trigger || trigger.direction !== 'inbound') {
+    throw Object.assign(new Error('synchronous read trigger is not current inbound mail'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  const { extractLookupCandidates, filterExactReservationCandidates, normalizeMessageText } =
+    await awaitSynchronousReadSetup({
+      operation: () => import('./thread-context.js'),
+      signal,
+      deadlineAt,
+    });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const triggerText = [
+    trigger.subject?.trim() ?? '',
+    normalizeMessageText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody }),
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const candidate = filterExactReservationCandidates(extractLookupCandidates(triggerText)).find(
+    (item) => item.id === issued.candidateId,
+  );
+  if (!candidate) {
+    throw Object.assign(new Error('synchronous read candidate is not in current trigger source'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const grant = await awaitSynchronousReadSetup({
+    operation: () =>
+      loadReadMailboxGrant({
+        db,
+        userId: input.userId,
+        transportId: input.transportId,
+      }),
+    signal,
+    deadlineAt,
+  });
+  assertSynchronousReadActive(signal, deadlineAt);
+  const currentAppAccessProof = issueCurrentAppAccessProof({
+    userId: grant.userId,
+    mailboxAccessId: grant.accessId,
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: issued.triggerMessageId,
+    expiresAt: deadlineAt,
+    now,
+  });
+  assertCurrentAppAccessProof({
+    proof: currentAppAccessProof,
+    requesterAuthorizationId: grant.accessId,
+    context: {
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: issued.triggerMessageId,
+    },
+    now: new Date(),
+  });
+  const runtime =
+    input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt));
+  assertSynchronousReadActive(signal, deadlineAt);
+  const liveSessionFactory = createLiveHmsCandidateSessionFactory({
+    runtime,
+    activeReadState: runtimeFacts.active,
+  });
+  const sessionFactory: TrustedSynchronousHmsFindSessionFactory =
+    input.sessionFactory ??
+    (async (sessionInput) => {
+      const session = await liveSessionFactory({
+        transportId: sessionInput.transportId,
+        threadId: sessionInput.threadId,
+        triggerMessageId: sessionInput.triggerMessageId,
+        propertyCode: sessionInput.propertyCode,
+        lookupCandidates: sessionInput.lookupCandidates,
+        signal: sessionInput.signal,
+        runId: sessionInput.runId,
+        readResultRef: sessionInput.readResultRef,
+        readFence: undefined,
+        readPlanKind: 'reservation',
+        readOnly: true,
+        readAdmission: sessionInput.readAdmission,
+        readToolId: 'hms_find_reservation',
+      });
+      return {
+        propertyReadLock: session.propertyReadLock,
+        close: session.close,
+        findReservation: async (lookup) => {
+          const legacy = await session.findReservation(lookup.candidateId, sessionInput.signal);
+          if (legacy.evidence.kind !== 'hms') {
+            throw Object.assign(new Error('reservation read returned non-HMS evidence'), {
+              failureClass: 'SCHEMA_DRIFT' as const,
+            });
+          }
+          return mapProductionReservationRead({
+            status: legacy.status,
+            data: legacy.data
+              ? { matches: legacy.data.matches as readonly ReservationRow[] }
+              : null,
+            evidence: {
+              kind: 'hms',
+              id: legacy.evidence.id,
+              observedAt: legacy.evidence.observedAt,
+              expiresAt: legacy.evidence.expiresAt,
+            },
+          });
+        },
+      };
+    });
+
+  return {
+    operationId,
+    candidateId: candidate.id,
+    ...(await executeTrustedSynchronousHmsFindReservation({
+      issued,
+      candidate,
+      currentAppAccessProof,
+      operationId,
+      readResultRef,
+      sourceRevision: findRelease.sourceRevision ?? runtimeFacts.sourceRevision,
+      propertyCode: config.expectedPropertyCode,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: issued.triggerMessageId,
+      deadlineAt,
+      now,
+      clock: () => new Date(),
+      signal,
+      sessionFactory,
+    })),
+  };
+}
+
+export type ProductionReservationRead = {
+  status: 'ok' | 'partial' | 'not_found' | 'unverified_negative' | 'ambiguous' | 'manual_required';
+  data: {
+    matches: readonly ReservationRow[];
+  } | null;
+  evidence: {
+    kind: 'hms';
+    id: string;
+    observedAt: string;
+    expiresAt: string;
+  };
+};
+
+/**
+ * Convert the legacy driver result into the closed reservation lookup shape.
+ * A negative without a reviewed canonical oracle is never promoted to
+ * `not_found`, and an ambiguous result never selects its first row.
+ */
+export function mapProductionReservationRead(
+  legacy: ProductionReservationRead,
+): ReservationLookupResult {
+  const evidence = {
+    evidenceRef: legacy.evidence.id,
+    observedAt: legacy.evidence.observedAt,
+    expiresAt: legacy.evidence.expiresAt,
+  };
+  if (legacy.status === 'partial' || legacy.status === 'manual_required') {
+    throw Object.assign(
+      new Error(`unsupported non-terminal reservation read status: ${legacy.status}`),
+      {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      },
+    );
+  }
+
+  if (
+    legacy.status === 'not_found' ||
+    legacy.status === 'unverified_negative' ||
+    !legacy.data ||
+    legacy.data.matches.length === 0
+  ) {
+    return { status: 'unverified_negative', ...evidence };
+  }
+
+  const rows = legacy.data.matches.map((row) => ({
+    ...row,
+    // Ambiguous rows are useful only for a bounded count/shape; never expose
+    // a guest identity or let the facade mint a selectable reference.
+    guestName:
+      legacy.status === 'ambiguous' || legacy.data!.matches.length > 1 ? null : row.guestName,
+  }));
+  if (legacy.status === 'ambiguous' || rows.length !== 1) {
+    return { status: 'ambiguous', rows, ...evidence };
+  }
+  return { status: 'matched', row: rows[0]!, ...evidence };
+}
+
+function readResultExpiry(result: ReadResult<unknown>, policyDeadline?: Date): Date {
+  const expiries = result.evidence
+    .map((evidence) => Date.parse(evidence.expiresAt))
+    .filter((value) => Number.isFinite(value));
+  if (expiries.length === 0) {
+    throw Object.assign(new Error('read result has no valid evidence expiry'), {
+      failureClass: 'SCHEMA_DRIFT' as const,
+    });
+  }
+  if (policyDeadline && Number.isFinite(policyDeadline.getTime())) {
+    expiries.push(policyDeadline.getTime());
+  }
+  return new Date(Math.min(...expiries));
+}
+
+function readAdmissionAuthError(messageText: string): Error & { failureClass: 'AUTH' } {
+  return Object.assign(new Error(messageText), { failureClass: 'AUTH' as const });
+}
+
+type MailDocumentAuthority = {
+  scope: ExistingDocumentScope;
+  records: ExistingDocumentRecord[];
+  locators: Map<string, AttachmentLocator>;
+  authorizedAttachmentIds: ReadonlySet<string>;
+  listHasMore: boolean;
+  listBlocker: string | null;
+  listWindowTruncated: boolean;
+};
+
+function readAdmissionAuthorizationId(request: Record<string, unknown>): string | null {
+  const admission = request.admission;
+  if (!admission || typeof admission !== 'object') return null;
+  const value = (admission as { requesterAuthorizationId?: unknown }).requesterAuthorizationId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+async function currentMailAttachmentAuthority(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  request: Record<string, unknown>;
+  attachmentId: string;
+  expectedLocator: AttachmentLocator;
+}): Promise<boolean> {
+  const authorizationId = readAdmissionAuthorizationId(input.request);
+  if (!authorizationId) return false;
+  const db = getDb();
+  const [grant] = await db
+    .select({ id: mailboxAccess.id })
+    .from(mailboxAccess)
+    .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
+    .where(
+      and(
+        eq(mailboxAccess.id, authorizationId),
+        eq(mailboxAccess.transportId, input.run.transportId),
+        eq(mailboxTransport.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (!grant) return false;
+
+  const [trigger] = await db
+    .select({
+      id: message.id,
+      receivedAt: message.receivedAt,
+      createdAt: message.createdAt,
+    })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.run.triggerMessageId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  if (!trigger) return false;
+
+  const [row] = await db
+    .select({
+      id: attachment.id,
+      messageId: attachment.messageId,
+      s3Key: attachment.s3Key,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      direction: message.direction,
+      receivedAt: message.receivedAt,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(
+      and(
+        eq(attachment.id, input.attachmentId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+      ),
+    )
+    .limit(1);
+  if (!row || row.direction !== 'inbound' || !row.receivedAt) return false;
+
+  const triggerAt = trigger.receivedAt ?? trigger.createdAt;
+  if (row.receivedAt > triggerAt) return false;
+  return (
+    row.messageId === input.expectedLocator.messageId &&
+    row.s3Key === input.expectedLocator.s3Key &&
+    row.mimeType === input.expectedLocator.mimeType &&
+    row.sizeBytes === input.expectedLocator.sizeBytes
+  );
+}
+
+/**
+ * Resolve the mail source from current DB rows. The worker creates this for
+ * every queued execution; no process-local document-ref map is authoritative.
+ */
+async function loadMailDocumentAuthority(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  request: Record<string, unknown>;
+  includeHashes: boolean;
+  requestedKind?:
+    | 'reservation_confirmation'
+    | 'tax_invoice'
+    | 'pro_forma'
+    | 'folio'
+    | 'statement'
+    | 'contract'
+    | 'supplier_compliance'
+    | 'property_information'
+    | 'other_existing';
+  requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+}): Promise<MailDocumentAuthority> {
+  const db = getDb();
+  const [trigger] = await db
+    .select({
+      id: message.id,
+      receivedAt: message.receivedAt,
+      createdAt: message.createdAt,
+    })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.run.triggerMessageId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  if (!trigger) throw readAdmissionAuthError('document trigger is no longer in scope');
+
+  const scope: ExistingDocumentScope = {
+    scopeRef: existingDocumentScopeRef({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+    }),
+    // The mail schema has no independently-authoritative property/guest/stay
+    // document identity. Keep these explicit as unknown instead of copying
+    // message labels into the source scope.
+    propertyRef: 'unknown',
+    guestRef: null,
+    stayStart: null,
+    stayEnd: null,
+    payerRef: null,
+    requestedKind: input.requestedKind ?? null,
+    requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
+  };
+
+  const requestedSource =
+    input.request.source === 'mail_attachment' || input.request.source === 'hms_sent_attachment'
+      ? input.request.source
+      : null;
+  const requestedLimit =
+    typeof input.request.limit === 'number'
+      ? Math.min(Math.max(Math.trunc(input.request.limit), 1), DOCUMENT_LIST_MAX_ROWS)
+      : 20;
+  const requestedCursor = typeof input.request.cursor === 'string' ? input.request.cursor : null;
+  const listRequest = input.includeHashes && input.request.toolId === 'documents_list_existing';
+  const sourcePredicate =
+    requestedSource === 'mail_attachment'
+      ? eq(message.direction, 'inbound')
+      : requestedSource === 'hms_sent_attachment'
+        ? eq(message.direction, 'outbound')
+        : undefined;
+  const causalHorizon = trigger.receivedAt
+    ? or(
+        and(eq(message.direction, 'inbound'), lte(message.receivedAt, trigger.receivedAt)),
+        and(eq(message.direction, 'outbound'), lte(message.sentAt, trigger.receivedAt)),
+      )
+    : eq(message.id, trigger.id);
+  const sourceQuery = db
+    .select({
+      id: attachment.id,
+      messageId: attachment.messageId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      s3Key: attachment.s3Key,
+      direction: message.direction,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(
+      and(
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+        causalHorizon,
+        sourcePredicate,
+      ),
+    )
+    .orderBy(
+      asc(message.receivedAt),
+      asc(message.sentAt),
+      asc(message.createdAt),
+      asc(attachment.id),
+    );
+  const rows = listRequest
+    ? await sourceQuery.limit(requestedCursor ? DOCUMENT_LIST_MAX_ROWS + 1 : requestedLimit + 1)
+    : await sourceQuery.limit(DOCUMENT_LIST_MAX_ROWS + 1);
+  const listWindowTruncated = listRequest && rows.length > DOCUMENT_LIST_MAX_ROWS;
+  const materializedRows = listRequest ? rows.slice(0, DOCUMENT_LIST_MAX_ROWS) : rows;
+  const authorizedAttachmentIds = new Set(materializedRows.map((row) => row.id));
+  const locators = new Map<string, AttachmentLocator>(
+    materializedRows.map((row) => [
+      row.id,
+      {
+        s3Key: row.s3Key,
+        mimeType: row.mimeType,
+        sizeBytes: row.sizeBytes,
+        messageId: row.messageId,
+      },
+    ]),
+  );
+  const records = materializedRows.map((row) =>
+    mailAttachmentRecord({
+      scope,
+      source: row.direction === 'outbound' ? 'hms_sent_attachment' : 'mail_attachment',
+      attachmentId: row.id,
+      authorizedAttachmentIds,
+      messageId: row.messageId,
+      filename: row.filename,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      s3Key: row.s3Key,
+      // Filename is a display/type hint only; message bodies are intentionally
+      // not selected for this conservative unknown-metadata path.
+      text: row.filename,
+      observedAt:
+        (row.direction === 'inbound' ? row.receivedAt : row.sentAt)?.toISOString() ?? null,
+    }),
+  );
+  if (!input.includeHashes) {
+    return {
+      scope,
+      records,
+      locators,
+      authorizedAttachmentIds,
+      listHasMore: false,
+      listBlocker: null,
+      listWindowTruncated: false,
+    };
+  }
+
+  const sourceIndices = records.reduce<number[]>((indices, record, index) => {
+    if (requestedSource === null || record.source === requestedSource) indices.push(index);
+    return indices;
+  }, []);
+  let aggregateBytes = 0;
+  let listBlocker: string | null = null;
+
+  const hashRecordAt = async (index: number): Promise<boolean> => {
+    const record = records[index];
+    if (!record || record.source !== 'mail_attachment' || !record.attachment || record.sha256) {
+      return true;
+    }
+    const sizeBytes = record.attachment.locator.sizeBytes;
+    if (aggregateBytes + sizeBytes > DOCUMENT_LIST_MAX_BYTES) {
+      listBlocker ??= 'LIST_BYTE_LIMIT';
+      return false;
+    }
+    const bytes = await readAuthorizedArtifactBytes({
+      attachmentId: record.attachment.attachmentId,
+      authorizedAttachmentIds,
+      s3: getS3Storage(),
+      signal: AbortSignal.timeout(30_000),
+      resolveLocator: async (attachmentId) => locators.get(attachmentId) ?? null,
+      expectedLocator: record.attachment.locator,
+      revalidate: () =>
+        currentMailAttachmentAuthority({
+          run: input.run,
+          request: input.request,
+          attachmentId: record.attachment!.attachmentId,
+          expectedLocator: record.attachment!.locator,
+        }),
+    });
+    if (!bytes) {
+      listBlocker ??= 'LIST_SOURCE_UNAVAILABLE';
+      return false;
+    }
+    aggregateBytes += bytes.body.byteLength;
+    records[index] = {
+      ...record,
+      sha256: bytes.sha256,
+      attachment: { ...record.attachment, expectedSha256: bytes.sha256 },
+    };
+    return true;
+  };
+
+  let pageStart = 0;
+  if (requestedCursor) {
+    let cursorFound = false;
+    const scanLimit = Math.min(sourceIndices.length, DOCUMENT_LIST_MAX_ROWS);
+    for (let sourceIndex = 0; sourceIndex < scanLimit; sourceIndex += 1) {
+      const recordIndex = sourceIndices[sourceIndex]!;
+      if (!(await hashRecordAt(recordIndex))) break;
+      if (existingDocumentRefForRecord(records[recordIndex]!) === requestedCursor) {
+        pageStart = sourceIndex + 1;
+        cursorFound = true;
+        break;
+      }
+    }
+    if (!cursorFound) listBlocker ??= 'LIST_CURSOR_UNRESOLVED';
+  }
+
+  if (!listBlocker) {
+    const pageIndices = sourceIndices.slice(pageStart, pageStart + requestedLimit);
+    for (const recordIndex of pageIndices) {
+      if (!(await hashRecordAt(recordIndex))) break;
+    }
+  }
+
+  const listHasMore =
+    listBlocker !== null ||
+    pageStart + requestedLimit < sourceIndices.length ||
+    listWindowTruncated;
+  return {
+    scope,
+    records,
+    locators,
+    authorizedAttachmentIds,
+    listHasMore,
+    listBlocker,
+    listWindowTruncated,
+  };
+}
+
+function createMailDocumentService(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  signal: AbortSignal;
+  request: Record<string, unknown>;
+}) {
+  const requestedKind =
+    input.request.toolId === 'documents_list_existing' &&
+    Array.isArray(input.request.kinds) &&
+    input.request.kinds.length === 1
+      ? (input.request.kinds[0] as Parameters<typeof loadMailDocumentAuthority>[0]['requestedKind'])
+      : undefined;
+  const requestedPriceVisibility =
+    input.request.toolId === 'documents_list_existing'
+      ? (input.request.requestedPriceVisibility as 'allowed' | 'forbidden' | 'unknown' | undefined)
+      : 'allowed';
+  let authorityPromise: Promise<MailDocumentAuthority> | undefined;
+  const authority = () =>
+    (authorityPromise ??= loadMailDocumentAuthority({
+      run: input.run,
+      request: input.request,
+      includeHashes: input.request.toolId === 'documents_list_existing',
+      requestedKind,
+      requestedPriceVisibility,
+    }));
+
+  const resolveCurrentLocator = async (attachmentId: string): Promise<AttachmentLocator | null> => {
+    const rows = await getDb()
+      .select({
+        id: attachment.id,
+        messageId: attachment.messageId,
+        s3Key: attachment.s3Key,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+      })
+      .from(attachment)
+      .innerJoin(message, eq(message.id, attachment.messageId))
+      .where(
+        and(
+          eq(attachment.id, attachmentId),
+          eq(message.threadId, input.run.threadId),
+          eq(message.transportId, input.run.transportId),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row) return null;
+    const locator = {
+      s3Key: row.s3Key,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      messageId: row.messageId,
+    } satisfies AttachmentLocator;
+    return (await currentMailAttachmentAuthority({
+      run: input.run,
+      request: input.request,
+      attachmentId,
+      expectedLocator: locator,
+    }))
+      ? locator
+      : null;
+  };
+
+  const source = (sourceId: 'mail_attachment' | 'hms_sent_attachment') => ({
+    source: sourceId,
+    async list({
+      scope,
+      limit,
+      cursor,
+    }: {
+      scope: ExistingDocumentScope;
+      limit: number;
+      cursor?: string;
+    }) {
+      const current = await authority();
+      if (current.scope.scopeRef !== scope.scopeRef) {
+        return { records: [], inventoryComplete: true, blocker: 'SCOPE_DENIED' };
+      }
+      // Sent-log metadata is intentionally non-retrievable. Keep the source
+      // outcome explicit even when the underlying thread has only inbound
+      // attachment rows.
+      const records =
+        sourceId === 'mail_attachment'
+          ? current.records.filter((record) => record.source === 'mail_attachment')
+          : current.records.filter((record) => record.source === sourceId);
+      if (current.listBlocker === 'LIST_CURSOR_UNRESOLVED') {
+        return {
+          records: [],
+          inventoryComplete: false,
+          hasMore: false,
+          blocker: current.listBlocker,
+        };
+      }
+      const pageLimit = Math.min(Math.max(Math.trunc(limit), 1), DOCUMENT_LIST_MAX_ROWS);
+      let start = 0;
+      let pageBlocker = current.listBlocker ?? undefined;
+      if (cursor) {
+        start = records.findIndex((record) => existingDocumentRefForRecord(record) === cursor);
+        if (start < 0) {
+          return {
+            records: [],
+            inventoryComplete: false,
+            hasMore: false,
+            blocker: 'LIST_CURSOR_UNRESOLVED',
+          };
+        }
+        if (
+          pageBlocker === undefined &&
+          current.listWindowTruncated &&
+          start + pageLimit >= records.length
+        ) {
+          pageBlocker = 'LIST_ROW_LIMIT';
+        }
+      }
+      const pageRecords = records.slice(start, start + pageLimit + 1);
+      const hasMore =
+        pageBlocker === 'LIST_ROW_LIMIT'
+          ? false
+          : current.listHasMore || start + pageRecords.length < records.length;
+      return {
+        records: pageRecords,
+        inventoryComplete: pageBlocker === undefined && !hasMore,
+        hasMore,
+        blocker: pageBlocker,
+      };
+    },
+  });
+
+  return createExistingDocumentService({
+    now: () => new Date(),
+    resolveScope: async (scopeRef) => {
+      const current = await authority();
+      return current.scope.scopeRef === scopeRef ? current.scope : null;
+    },
+    resolveDocument: async (documentRef) => {
+      const current = await authority();
+      const expectedSha256 = existingDocumentSha256FromRef(documentRef);
+      for (const record of current.records) {
+        const candidate = expectedSha256
+          ? {
+              ...record,
+              sha256: expectedSha256,
+              attachment: record.attachment ? { ...record.attachment, expectedSha256 } : undefined,
+            }
+          : record;
+        if (existingDocumentRefForRecord(candidate) === documentRef) {
+          return { record: candidate, scope: current.scope };
+        }
+      }
+      return null;
+    },
+    sources: {
+      mail_attachment: source('mail_attachment'),
+      hms_sent_attachment: source('hms_sent_attachment'),
+    },
+    readArtifact: async (attachmentValue) =>
+      readAuthorizedArtifact({
+        attachmentId: attachmentValue.attachmentId,
+        authorizedAttachmentIds: (await authority()).authorizedAttachmentIds,
+        s3: getS3Storage(),
+        signal: input.signal,
+        resolveLocator: resolveCurrentLocator,
+        expectedLocator: attachmentValue.locator,
+        revalidate: () =>
+          currentMailAttachmentAuthority({
+            run: input.run,
+            request: input.request,
+            attachmentId: attachmentValue.attachmentId,
+            expectedLocator: attachmentValue.locator,
+          }),
+      }),
+    readBytes: async (attachmentValue) =>
+      readAuthorizedArtifactBytes({
+        attachmentId: attachmentValue.attachmentId,
+        authorizedAttachmentIds: (await authority()).authorizedAttachmentIds,
+        s3: getS3Storage(),
+        signal: input.signal,
+        resolveLocator: resolveCurrentLocator,
+        expectedLocator: attachmentValue.locator,
+        expectedSha256: attachmentValue.expectedSha256,
+        revalidate: () =>
+          currentMailAttachmentAuthority({
+            run: input.run,
+            request: input.request,
+            attachmentId: attachmentValue.attachmentId,
+            expectedLocator: attachmentValue.locator,
+          }),
+      }),
+  });
+}
+
+/**
+ * Revalidate the issuer's authority from current DB state before any session or
+ * PMS boundary. The persisted JSON is evidence to check, never authority by
+ * itself: the mailbox access row and (for context reads) the succeeded parent
+ * receipt are looked up again here.
+ */
+async function assertCurrentReadAdmissionAuthority(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  request: Record<string, unknown>;
+  admission: ReadAdmissionBinding;
+  now: Date;
+  expectedPropertyCode: string;
+  expectedSourceRevision: string;
+}): Promise<CurrentAppAccessProof & { contextReference: LinkedContextReference | null }> {
+  const metrics =
+    input.run.metrics && typeof input.run.metrics === 'object'
+      ? (input.run.metrics as Record<string, unknown>)
+      : null;
+  let issuerData: ReturnType<typeof assertPersistedReadAdmissionIssuer>;
+  try {
+    const expectedToolId = input.request.toolId;
+    if (
+      expectedToolId !== 'hms_find_reservation' &&
+      expectedToolId !== 'hms_quote_stay' &&
+      expectedToolId !== 'hms_read_reservation' &&
+      expectedToolId !== 'hms_read_folio' &&
+      expectedToolId !== 'hms_company_account_read' &&
+      expectedToolId !== 'hms_group_block_read' &&
+      expectedToolId !== 'hms_event_read' &&
+      expectedToolId !== 'hms_read_notes_traces' &&
+      expectedToolId !== 'documents_list_existing' &&
+      expectedToolId !== 'documents_read_existing'
+    ) {
+      throw new Error('read admission request tool is not supported');
+    }
+    issuerData = assertPersistedReadAdmissionIssuer({
+      issuer: metrics?.readAdmissionIssuer,
+      request: input.request,
+      run: input.run,
+      expectedMailboxAccessId: input.admission.requesterAuthorizationId,
+      expectedToolId,
+    });
+  } catch (error) {
+    throw readAdmissionAuthError(
+      error instanceof Error ? error.message : 'read admission issuer provenance is invalid',
+    );
+  }
+
+  const [grant] = await getDb()
+    .select({ id: mailboxAccess.id })
+    .from(mailboxAccess)
+    .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
+    .where(
+      and(
+        eq(mailboxAccess.id, issuerData.mailboxAccessId),
+        eq(mailboxAccess.userId, issuerData.userId),
+        eq(mailboxAccess.transportId, input.run.transportId),
+        eq(mailboxTransport.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (!grant) throw readAdmissionAuthError('read admission mailbox grant is no longer active');
+
+  const [trigger] = await getDb()
+    .select({ id: message.id, direction: message.direction })
+    .from(message)
+    .where(
+      and(
+        eq(message.id, input.run.triggerMessageId),
+        eq(message.threadId, input.run.threadId),
+        eq(message.transportId, input.run.transportId),
+      ),
+    )
+    .limit(1);
+  if (!trigger || trigger.direction !== 'inbound') {
+    throw readAdmissionAuthError(
+      'read admission trigger is not the current scoped inbound message',
+    );
+  }
+
+  const issueCurrentAccess = () =>
+    issueCurrentAppAccessProof({
+      userId: issuerData.userId,
+      mailboxAccessId: issuerData.mailboxAccessId,
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      expiresAt: input.run.deadlineAt ?? new Date(input.now.getTime() + 5 * 60_000),
+      now: input.now,
+    });
+
+  if (
+    input.request.toolId !== 'hms_read_reservation' &&
+    input.request.toolId !== 'hms_read_folio' &&
+    input.request.toolId !== 'hms_company_account_read' &&
+    input.request.toolId !== 'hms_group_block_read' &&
+    input.request.toolId !== 'hms_event_read' &&
+    input.request.toolId !== 'hms_read_notes_traces'
+  ) {
+    if (issuerData.parentReadResultRef !== null || issuerData.evidenceExpiresAt !== null) {
+      throw readAdmissionAuthError('find admission unexpectedly carries a parent receipt');
+    }
+    return Object.assign(issueCurrentAccess(), { contextReference: null });
+  }
+
+  if (!issuerData.parentReadResultRef || !issuerData.evidenceExpiresAt) {
+    throw readAdmissionAuthError('resolved read admission has no parent positive receipt');
+  }
+  const issuedAtMs = Date.parse(issuerData.reservationRefIssuedAt ?? '');
+  const expiresAtMs = Date.parse(issuerData.reservationRefExpiresAt ?? '');
+  if (
+    !Number.isFinite(issuedAtMs) ||
+    !Number.isFinite(expiresAtMs) ||
+    issuedAtMs > input.now.getTime() ||
+    expiresAtMs <= input.now.getTime()
+  ) {
+    throw readAdmissionAuthError('resolved read admission reference is expired or not yet issued');
+  }
+
+  const [parent] = await getDb()
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.readResultRef, issuerData.parentReadResultRef),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.transportId, input.run.transportId),
+        eq(aiWorkflowRun.threadId, input.run.threadId),
+        eq(aiWorkflowRun.triggerMessageId, input.run.triggerMessageId),
+      ),
+    )
+    .limit(1);
+  if (!parent)
+    throw readAdmissionAuthError('resolved read admission parent receipt is out of scope');
+  const parentRequest = readRequestSchema.safeParse(parent.readRequest);
+  if (!parentRequest.success || parentRequest.data.toolId !== 'hms_find_reservation') {
+    throw readAdmissionAuthError('resolved read admission parent is not a find receipt');
+  }
+  const parentAdmission = parentRequest.data.admission;
+  if (!parentAdmission || parentAdmission.requesterAuthorizationId !== issuerData.mailboxAccessId) {
+    throw readAdmissionAuthError('resolved read admission parent requester is not current');
+  }
+  const parentMetrics =
+    parent.metrics && typeof parent.metrics === 'object'
+      ? (parent.metrics as Record<string, unknown>)
+      : null;
+  try {
+    assertPersistedReadAdmissionIssuer({
+      issuer: parentMetrics?.readAdmissionIssuer,
+      request: parentRequest.data as unknown as Record<string, unknown>,
+      run: parent,
+      expectedUserId: issuerData.userId,
+      expectedMailboxAccessId: issuerData.mailboxAccessId,
+      expectedToolId: 'hms_find_reservation',
+    });
+  } catch (error) {
+    throw readAdmissionAuthError(
+      error instanceof Error ? error.message : 'resolved read admission parent issuer is invalid',
+    );
+  }
+  const parentReceipt = await readAiRunReceipt(
+    {
+      readResultRef: issuerData.parentReadResultRef,
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      requesterAuthorizationId: issuerData.mailboxAccessId,
+      now: input.now,
+    },
+    getDb(),
+  );
+  if (!parentReceipt)
+    throw readAdmissionAuthError(
+      'resolved read admission parent receipt is expired or unavailable',
+    );
+  const parentResult = reservationFindResultSchema.safeParse(parentReceipt.result);
+  if (!parentResult.success)
+    throw readAdmissionAuthError('resolved read admission parent result is malformed');
+  const evidenceExpiry = positiveFindEvidence({ result: parentResult.data, now: input.now });
+  if (issuerData.evidenceExpiresAt !== evidenceExpiry) {
+    throw readAdmissionAuthError(
+      'resolved read admission evidence expiry was refreshed or tampered',
+    );
+  }
+  if (
+    (input.request.toolId === 'hms_read_reservation' ||
+      input.request.toolId === 'hms_read_folio') &&
+    parentRequest.data.candidateId !== input.request.candidateId
+  ) {
+    throw readAdmissionAuthError(
+      'resolved read admission candidate is not bound to the parent receipt',
+    );
+  }
+  let contextReference: LinkedContextReference | null = null;
+  const contextKind: LinkedContextReferenceKind | null =
+    input.request.toolId === 'hms_company_account_read'
+      ? 'company'
+      : input.request.toolId === 'hms_group_block_read'
+        ? 'group'
+        : input.request.toolId === 'hms_event_read'
+          ? 'event'
+          : input.request.toolId === 'hms_read_notes_traces'
+            ? 'notes'
+            : null;
+  if (contextKind) {
+    const parentBindings = Array.isArray(parentMetrics?.linkedContextReferences)
+      ? parentMetrics.linkedContextReferences
+          .map((value) => linkedContextReferenceSchema.safeParse(value))
+          .filter(
+            (value): value is { success: true; data: LinkedContextReference } => value.success,
+          )
+          .map((value) => value.data)
+      : [];
+    const requestedReference = input.admission.reservationRef;
+    const candidateBinding = parentBindings.find(
+      (binding) => binding.reference === requestedReference && binding.kind === contextKind,
+    );
+    if (!candidateBinding || !issuerData.contextReference) {
+      throw readAdmissionAuthError(
+        'resolved linked context reference is not bound to the parent source result',
+      );
+    }
+    try {
+      contextReference = assertLinkedContextReference({
+        binding: candidateBinding,
+        reference: requestedReference ?? '',
+        kind: contextKind,
+        parentReadResultRef: issuerData.parentReadResultRef,
+        propertyCode: input.expectedPropertyCode,
+        requestBranchId: parentRequest.data.admission?.requestBranchId ?? '',
+        sourceRevision: input.expectedSourceRevision,
+        now: input.now,
+        maximumExpiry: evidenceExpiry,
+      });
+      if (
+        issuerData.contextReference.reference !== contextReference.reference ||
+        issuerData.contextReference.sourceRef !== contextReference.sourceRef
+      ) {
+        throw new Error('queued context binding differs from the current parent binding');
+      }
+    } catch (error) {
+      throw readAdmissionAuthError(
+        error instanceof Error
+          ? error.message
+          : 'resolved linked context reference is stale or mismatched',
+      );
+    }
+  } else if (issuerData.contextReference !== null) {
+    throw readAdmissionAuthError('reservation context binding is invalid for this read branch');
+  }
+  return Object.assign(issueCurrentAccess(), { contextReference });
+}
+
+function unavailableU15Result(input: {
+  toolId:
+    | 'hms_company_account_read'
+    | 'hms_group_block_read'
+    | 'hms_event_read'
+    | 'hms_read_notes_traces';
+  scopeRef: string;
+  requestBranchId: string;
+  observedAt: Date;
+  expiresAt: Date;
+}): ReadResult<unknown> {
+  const evidenceRef = `u15-${input.toolId}-${input.observedAt.getTime()}`;
+  const expiresAt = input.expiresAt.toISOString();
+  const observedAt = input.observedAt.toISOString();
+  const unknownField = () =>
+    unknownFact({
+      reasonCode: 'SOURCE_UNAVAILABLE',
+      evidenceRef,
+      observedAt,
+      expiresAt,
+    });
+  const unavailableSection = (reasonCode: 'SOURCE_UNAVAILABLE' | 'SURFACE_UNPROVEN') => ({
+    state: 'unavailable' as const,
+    data: null,
+    reasonCode,
+    issues: [
+      {
+        code: reasonCode,
+        retryable: false,
+        safeNextAction: 'manual_review' as const,
+      },
+    ],
+  });
+  let data: unknown;
+  let unavailableSections: Array<{
+    section: string;
+    reasonCode: 'SOURCE_UNAVAILABLE' | 'SURFACE_UNPROVEN';
+  }>;
+  if (input.toolId === 'hms_company_account_read') {
+    data = {
+      companyRef: unknownField(),
+      billingMode: unknownField(),
+      paymentTerms: unknownField(),
+      requiredPaperwork: unknownField(),
+      billingReference: unknownField(),
+      arAccountRef: unknownField(),
+      organizationRef: unknownField(),
+      agencyRef: unknownField(),
+      negotiatedRateRefs: unknownField(),
+      restrictions: unknownField(),
+      audience: unknownField(),
+    };
+    unavailableSections = [{ section: 'company', reasonCode: 'SOURCE_UNAVAILABLE' }];
+    companyAccountContextDataSchema.parse(data);
+  } else if (input.toolId === 'hms_group_block_read') {
+    data = {
+      summary: {
+        state: 'available' as const,
+        data: {
+          groupRef: unknownField(),
+          status: unknownField(),
+          startDate: unknownField(),
+          endDate: unknownField(),
+          releasePolicy: unknownField(),
+          billingRef: unknownField(),
+        },
+        completeness: 'unknown' as const,
+        issues: [],
+      },
+      blocks: unavailableSection('SURFACE_UNPROVEN'),
+      delegates: unavailableSection('SOURCE_UNAVAILABLE'),
+    };
+    unavailableSections = [
+      { section: 'blocks', reasonCode: 'SURFACE_UNPROVEN' },
+      { section: 'delegates', reasonCode: 'SOURCE_UNAVAILABLE' },
+    ];
+    groupBlockContextDataSchema.parse(data);
+  } else if (input.toolId === 'hms_event_read') {
+    data = {
+      eventRef: unknownField(),
+      source: unknownField(),
+      masterRef: unknownField(),
+      status: unknownField(),
+      startAt: unknownField(),
+      endAt: unknownField(),
+      layout: unknownField(),
+      persons: unknownField(),
+      setup: unknownField(),
+      lines: unavailableSection('SURFACE_UNPROVEN'),
+      quotedAmount: unknownField(),
+      contractedAmount: unknownField(),
+      depositAmount: unknownField(),
+      depositReceived: unknownField(),
+      depositDueDate: unknownField(),
+      linkedRefs: unknownField(),
+    };
+    unavailableSections = [{ section: 'event', reasonCode: 'SURFACE_UNPROVEN' }];
+    eventContextDataSchema.parse(data);
+  } else {
+    data = { notes: unavailableSection('SOURCE_UNAVAILABLE') };
+    unavailableSections = [{ section: 'notes', reasonCode: 'SOURCE_UNAVAILABLE' }];
+    notesTracesContextDataSchema.parse(data);
+  }
+  return readResultSchema.parse({
+    toolId: input.toolId,
+    schemaVersion: 'hms-u15-context/1',
+    status: 'manual_required',
+    data,
+    completeness: 'unknown',
+    unavailableSections,
+    scopeRef: input.scopeRef,
+    evidence: [
+      {
+        evidenceRef,
+        sourceSystem: 'hms' as const,
+        sourceSurface: input.toolId,
+        requestBranchId: input.requestBranchId,
+        observedAt,
+        sourceUpdatedAt: null,
+        expiresAt,
+        scopeVerified: true,
+        artifactRef: null,
+      },
+    ],
+    page: null,
+    issues: [
+      {
+        code: 'SOURCE_UNAVAILABLE' as const,
+        retryable: false,
+        safeNextAction: 'manual_review' as const,
+      },
+    ],
+  }) as ReadResult<unknown>;
+}
+
+/**
+ * Normal worker read_tool executor.  The request contains only an opaque
+ * candidate ID; this function re-derives the bounded candidate map from the
+ * trigger thread before opening the audited, property-locked Guest Stay
+ * session.  No model/workflow client is constructed on this path.
+ */
+async function executeProductionReadTool(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  fence: AiRunFence;
+  signal: AbortSignal;
+  /** Tests may replace only the PMS/session boundary, not the executor. */
+  sessionFactory?: CandidateSessionFactory;
+  /** Lower browser/PMS edge substitution; registry and handler proof stay real. */
+  runtime?: import('../hms/runtime.js').HmsRuntime;
+  /** Internal server-owned source seam; absent production source fails closed. */
+  quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
+}): Promise<{
+  result: ReadResult<unknown>;
+  readResultRef: string;
+  linkedContextReferences?: import('../hms/context-read-reference.js').LinkedContextReference[];
+}> {
+  const request = readRequestSchema.parse(input.run.readRequest);
+  const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
+  // Existing-document reads are DB-backed mail-source reads, not HMS/PMS
+  // browser reads. Keep their release revision applicable without requiring
+  // an HMS build revision; every PMS branch still resolves a concrete HMS
+  // source revision below.
+  const sourceRevision =
+    request.toolId === 'documents_list_existing' || request.toolId === 'documents_read_existing'
+      ? 'mail-existing-documents-v1'
+      : resolveHmsSourceRevision();
+  const expectedPropertyCode =
+    request.toolId === 'hms_quote_stay'
+      ? request.quoteRequest.propertyCode
+      : request.toolId === 'hms_read_folio'
+        ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
+            .expectedPropertyCode
+        : 'HRCEN';
+  const admission = 'admission' in request ? request.admission : undefined;
+  if (!admission) {
+    throw Object.assign(new Error('read_tool requires trusted release/input/capture admission'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (
+    (request.toolId === 'hms_quote_stay' ||
+      request.toolId === 'hms_read_folio' ||
+      request.toolId === 'hms_company_account_read' ||
+      request.toolId === 'hms_group_block_read' ||
+      request.toolId === 'hms_event_read' ||
+      request.toolId === 'hms_read_notes_traces') &&
+    !admission.manifestSha256
+  ) {
+    throw Object.assign(new Error('read branch manifest admission is missing'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (
+    admission.captureRequired &&
+    (!input.run.readResultRef || admission.captureBindingRef !== input.run.readResultRef)
+  ) {
+    throw Object.assign(new Error('read capture admission does not match private result scope'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  const currentAppAccessProof = await assertCurrentReadAdmissionAuthority({
+    run: input.run,
+    request: request as unknown as Record<string, unknown>,
+    admission,
+    now: new Date(),
+    expectedPropertyCode,
+    expectedSourceRevision: sourceRevision,
+  });
+
+  // Mail-document reads revalidate through the DB-backed source adapter and
+  // never construct a PMS candidate/session. Reuse the accepted Postgres
+  // property advisory lock so the full typed dispatch and final byte checks
+  // share one real serialization boundary.
+  if (
+    request.toolId === 'documents_list_existing' ||
+    request.toolId === 'documents_read_existing'
+  ) {
+    const service = createMailDocumentService({
+      run: input.run,
+      signal: input.signal,
+      request: request as unknown as Record<string, unknown>,
+    });
+    const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
+    const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
+    const mailReadLock = createPostgresPropertyReadLock({
+      tenantId: input.run.transportId,
+      propertyCode: 'MAIL',
+      databaseUrl: workerEnv.DATABASE_URL,
+    });
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: 'MAIL',
+      sourceRevision,
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds: ['document_metadata'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      propertyReadLock: mailReadLock,
+      existingDocumentService: service,
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
+    };
+    const receipt = await mailReadLock.withLock(
+      async (propertyReadLockConnection) =>
+        executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: { ...readContext, propertyReadLockConnection },
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        }),
+      { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
+    );
+    return {
+      result: receipt.result,
+      readResultRef: receipt.readResultRef,
+      ...(receipt.linkedContextReferences.length > 0
+        ? { linkedContextReferences: receipt.linkedContextReferences }
+        : {}),
+    };
+  }
+
+  if (request.toolId === 'hms_quote_stay') {
+    const authorityResult = await (
+      input.quoteReferenceAuthorityLoader ?? unavailableQuoteReferenceAuthority
+    )({
+      now: new Date(),
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+    });
+    if (authorityResult.status !== 'ready') {
+      throw Object.assign(new Error(`quote reference authority is ${authorityResult.reason}`), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+    const authorityIssues = quoteRequestAuthorityIssues(
+      request.quoteRequest,
+      authorityResult.authority,
+      new Date(),
+    );
+    if (authorityIssues.length > 0) {
+      throw Object.assign(
+        new Error(`quote reference authority changed or is stale: ${authorityIssues.join(', ')}`),
+        { failureClass: 'AUTH' as const },
+      );
+    }
+    const quoteCandidate = quoteStayCandidateFromRequest(request.quoteRequest);
+    const sessionFactory =
+      input.sessionFactory ??
+      createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
+    const session = await sessionFactory({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: request.quoteRequest.propertyCode,
+      lookupCandidates: [],
+      signal: input.signal,
+      runId: input.run.id,
+      readResultRef: input.run.readResultRef ?? undefined,
+      readFence: input.fence,
+      readPlanKind: 'reservation',
+      readOnly: true,
+      readAdmission: admission,
+      readToolId: 'hms_quote_stay',
+      quoteCandidates: quoteCandidate
+        ? new Map([[request.quoteRequestRef, quoteCandidate]])
+        : new Map(),
+    });
+    const propertyReadLock = session.propertyReadLock;
+    if (!propertyReadLock) {
+      throw Object.assign(new Error('property read lock is required for quote dispatch'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const mapQuoteSessionResult = (legacy: ToolResult<unknown>): ReadResult<unknown> => {
+      const parsedData =
+        legacy.data == null
+          ? null
+          : (() => {
+              const parsed = quoteStayReadDataSchema.safeParse(legacy.data);
+              if (parsed.success) return parsed.data;
+              if (legacy.status === 'ok' || legacy.status === 'partial') {
+                throw Object.assign(new Error('quote read returned malformed typed data'), {
+                  failureClass: 'SCHEMA_DRIFT' as const,
+                });
+              }
+              return null;
+            })();
+      const unresolved = new Set([
+        ...legacy.unresolvedFields,
+        ...(parsedData?.unresolvedInputs ?? []),
+      ]);
+      const status = legacy.status === 'ok' && unresolved.size > 0 ? 'partial' : legacy.status;
+      const reasonCode =
+        status === 'unverified_negative'
+          ? 'UNVERIFIED_NEGATIVE'
+          : unresolved.size > 0 || status !== 'ok'
+            ? 'INCOMPLETE_QUOTE'
+            : null;
+      const unavailableSections: Array<{
+        section: string;
+        reasonCode: 'PARTIAL_WINDOW' | 'INCOMPLETE_QUOTE' | 'UNVERIFIED_NEGATIVE';
+      }> =
+        parsedData && parsedData.missingNights && parsedData.missingNights.length > 0
+          ? [{ section: 'nightly_coverage', reasonCode: 'PARTIAL_WINDOW' as const }]
+          : [];
+      if (reasonCode && unavailableSections.length === 0) {
+        unavailableSections.push({ section: 'quote_pricing', reasonCode });
+      }
+      return readResultSchema.parse({
+        toolId: 'hms_quote_stay',
+        schemaVersion: 'hms-quote/1',
+        status,
+        data: parsedData,
+        completeness:
+          parsedData && unresolved.size === 0 && parsedData.stayTotal !== null
+            ? 'complete'
+            : parsedData
+              ? 'partial'
+              : 'unknown',
+        unavailableSections,
+        scopeRef: request.quoteRequestRef,
+        evidence:
+          legacy.evidence.kind === 'hms'
+            ? [
+                {
+                  evidenceRef: legacy.evidence.id,
+                  sourceSystem: 'hms' as const,
+                  sourceSurface: 'room_type_rate_availability',
+                  requestBranchId: admission.requestBranchId,
+                  observedAt: legacy.evidence.observedAt,
+                  sourceUpdatedAt: null,
+                  expiresAt: legacy.evidence.expiresAt,
+                  scopeVerified: legacy.evidence.scopeVerified ?? legacy.status === 'ok',
+                  artifactRef: legacy.evidence.artifactRef ?? null,
+                  ...(legacy.evidence.artifactRefs
+                    ? { artifactRefs: legacy.evidence.artifactRefs }
+                    : {}),
+                  sourceHash: legacy.evidence.sourceHash,
+                  manifestSha256: admission.manifestSha256,
+                  manifestSha256ByBranch: {
+                    [admission.requestBranchId]: admission.manifestSha256!,
+                  },
+                },
+              ]
+            : [],
+        page: null,
+        issues: reasonCode
+          ? [
+              {
+                code: reasonCode,
+                retryable: false,
+                safeNextAction:
+                  reasonCode === 'INCOMPLETE_QUOTE'
+                    ? ('request_input' as const)
+                    : ('manual_review' as const),
+              },
+            ]
+          : [],
+      }) as ReadResult<unknown>;
+    };
+    const fallbackResult = (): ReadResult<unknown> =>
+      mapQuoteSessionResult({
+        status: 'manual_required',
+        draftReady: false,
+        data: buildQuoteStayReadData({
+          nightlyObservations: [],
+          requestedRooms: request.quoteRequest.rooms.reduce((sum, room) => sum + room.quantity, 0),
+          requestRef: request.quoteRequest.quoteRequestRef,
+          arrival: request.quoteRequest.arrival,
+          departure: request.quoteRequest.departure,
+          rooms: request.quoteRequest.rooms,
+          currency: request.quoteRequest.currency,
+          roomMoveRequired: request.quoteRequest.roomMoveRequired,
+          unresolvedInputs: ['room_or_rate_reference_required'],
+        }),
+        unresolvedFields: ['room_or_rate_reference_required'],
+        evidence: {
+          kind: 'hms',
+          id: randomUUID(),
+          toolId: 'hms_quote_stay',
+          toolVersion: '2.0.0',
+          propertyCode: request.quoteRequest.propertyCode,
+          observedAt: new Date().toISOString(),
+          expiresAt: input.fence.deadlineAt.toISOString(),
+          claimKeys: [],
+          sourceHash: createHash('sha256')
+            .update(
+              JSON.stringify({
+                quoteRequest: request.quoteRequest,
+                unresolved: ['room_or_rate_reference_required'],
+              }),
+            )
+            .digest('hex'),
+        },
+      });
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: request.quoteRequest.propertyCode,
+      sourceRevision,
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds: ['quote_stay_summary'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      readResultRef: input.run.readResultRef ?? '',
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
+      propertyReadLock,
+      handlers: {
+        quoteStay: async () => {
+          if (!quoteCandidate) return fallbackResult();
+          const legacy = await session.quoteStay(request.quoteRequestRef, input.signal);
+          if (legacy.evidence.kind !== 'hms') {
+            throw Object.assign(new Error('quote read returned a non-HMS evidence kind'), {
+              failureClass: 'SCHEMA_DRIFT' as const,
+            });
+          }
+          return mapQuoteSessionResult(legacy);
+        },
+      },
+    };
+    try {
+      const receipt = await propertyReadLock.withLock(
+        async (propertyReadLockConnection) =>
+          executeReadToolRun({
+            runKind: input.run.runKind,
+            executorLane: input.run.executorLane,
+            draftingEnabled: false,
+            request,
+            context: { ...readContext, propertyReadLockConnection },
+            resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+          }),
+        { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
+      );
+      return { result: receipt.result, readResultRef: receipt.readResultRef };
+    } finally {
+      await session.close?.();
+    }
+  }
+
+  if (
+    request.toolId === 'hms_company_account_read' ||
+    request.toolId === 'hms_group_block_read' ||
+    request.toolId === 'hms_event_read' ||
+    request.toolId === 'hms_read_notes_traces'
+  ) {
+    const sessionFactory =
+      input.sessionFactory ??
+      createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
+    const session = await sessionFactory({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      lookupCandidates: [],
+      signal: input.signal,
+      runId: input.run.id,
+      readResultRef: input.run.readResultRef ?? undefined,
+      readFence: input.fence,
+      readPlanKind: 'reservation',
+      readOnly: true,
+      readAdmission: admission,
+      readToolId: request.toolId,
+      linkedContextSourceRef: currentAppAccessProof.contextReference?.sourceRef,
+    });
+    const propertyReadLock = session.propertyReadLock;
+    if (!propertyReadLock) {
+      throw Object.assign(new Error('property read lock is required for linked context dispatch'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const fallback = () =>
+      unavailableU15Result({
+        toolId: request.toolId,
+        scopeRef:
+          request.toolId === 'hms_company_account_read'
+            ? request.reservationRef
+            : request.toolId === 'hms_group_block_read'
+              ? request.groupRef
+              : request.toolId === 'hms_event_read'
+                ? request.eventRef
+                : request.resourceRef,
+        requestBranchId: admission.requestBranchId,
+        observedAt: new Date(),
+        expiresAt: input.fence.deadlineAt,
+      });
+    const readContext: ReadExecutionContext = {
+      transportId: input.run.transportId,
+      mailboxId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      propertyCode: expectedPropertyCode,
+      sourceRevision,
+      parentRef: input.run.id,
+      branchId: admission.requestBranchId,
+      releaseId: admission.releaseId,
+      requester: {
+        authorizationId: admission.requesterAuthorizationId,
+        transportId: input.run.transportId,
+        threadId: input.run.threadId,
+        triggerMessageId: input.run.triggerMessageId,
+        allowedClaimKinds:
+          request.toolId === 'hms_company_account_read'
+            ? ['company_billing_summary']
+            : request.toolId === 'hms_group_block_read'
+              ? ['group_status']
+              : request.toolId === 'hms_event_read'
+                ? ['event_status']
+                : ['notes_trace_observation'],
+        expiresAt: input.fence.deadlineAt.toISOString(),
+      },
+      signal: input.signal,
+      budget: { total: 0, limit: 3 },
+      now: () => new Date(),
+      requireAdmissionBinding: true,
+      readResultRef: input.run.readResultRef ?? '',
+      requireCurrentAppAccess: true,
+      currentAppAccessProof,
+      propertyReadLock,
+      handlers: {
+        ...(request.toolId === 'hms_company_account_read'
+          ? {
+              readCompanyAccount: async ({ reservationRef }: { reservationRef: string }) =>
+                session.readCompanyAccount
+                  ? session.readCompanyAccount(
+                      currentAppAccessProof.contextReference?.sourceRef ?? reservationRef,
+                      input.signal,
+                    )
+                  : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_group_block_read'
+          ? {
+              readGroupBlock: async ({
+                groupRef,
+                sections,
+              }: {
+                groupRef: string;
+                sections: readonly string[];
+              }) =>
+                session.readGroupBlock
+                  ? session.readGroupBlock(
+                      currentAppAccessProof.contextReference?.sourceRef ?? groupRef,
+                      sections,
+                      input.signal,
+                    )
+                  : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_event_read'
+          ? {
+              readEvent: async ({ eventRef }: { eventRef: string }) =>
+                session.readEvent
+                  ? session.readEvent(
+                      currentAppAccessProof.contextReference?.sourceRef ?? eventRef,
+                      input.signal,
+                    )
+                  : fallback(),
+            }
+          : {}),
+        ...(request.toolId === 'hms_read_notes_traces'
+          ? {
+              readNotesTraces: async ({
+                resourceRef,
+                states,
+                limit,
+                cursor,
+                audience,
+              }: {
+                resourceRef: string;
+                states: readonly string[];
+                limit: number;
+                cursor: string | undefined;
+                audience: 'staff' | 'customer';
+              }) =>
+                session.readNotesTraces
+                  ? session.readNotesTraces({
+                      resourceRef: currentAppAccessProof.contextReference?.sourceRef ?? resourceRef,
+                      states,
+                      limit,
+                      cursor,
+                      audience,
+                      signal: input.signal,
+                    })
+                  : fallback(),
+            }
+          : {}),
+      },
+    };
+    try {
+      const receipt = await propertyReadLock.withLock(
+        async (propertyReadLockConnection) =>
+          executeReadToolRun({
+            runKind: input.run.runKind,
+            executorLane: input.run.executorLane,
+            draftingEnabled: false,
+            request,
+            context: { ...readContext, propertyReadLockConnection },
+            resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+          }),
+        { signal: input.signal, deadlineAt: input.fence.deadlineAt.getTime() },
+      );
+      return { result: receipt.result, readResultRef: receipt.readResultRef };
+    } finally {
+      await session.close?.();
+    }
+  }
+
+  const candidateId = request.candidateId;
+  if (!candidateId) {
+    throw Object.assign(
+      new Error('resolved reservation reads require a server-bound candidateId'),
+      {
+        failureClass: 'AUTH' as const,
+      },
+    );
+  }
+  if (request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio') {
+    const reservationRef = admission.reservationRef;
+    const reservationRefIssuedAt = admission.reservationRefIssuedAt;
+    const reservationRefExpiresAt = admission.reservationRefExpiresAt;
+    const metrics =
+      input.run.metrics && typeof input.run.metrics === 'object'
+        ? (input.run.metrics as Record<string, unknown>)
+        : null;
+    const persistedBinding = readReservationBindingSchema.safeParse(metrics?.readAdmissionBinding);
+    if (
+      !persistedBinding.success ||
+      !reservationRef ||
+      !reservationRefIssuedAt ||
+      !reservationRefExpiresAt
+    ) {
+      throw Object.assign(new Error('resolved reservation reference issuance is not trusted'), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+    const binding = persistedBinding.data;
+    const expectedReservationRef = readReservationRef({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      candidateId,
+      reservationRefExpiresAt,
+    });
+    const bindingMatches =
+      binding.transportId === input.run.transportId &&
+      binding.threadId === input.run.threadId &&
+      binding.triggerMessageId === input.run.triggerMessageId &&
+      binding.candidateId === candidateId &&
+      binding.reservationRef === reservationRef &&
+      binding.reservationRefIssuedAt === reservationRefIssuedAt &&
+      binding.reservationRefExpiresAt === reservationRefExpiresAt &&
+      reservationRef === request.reservationRef &&
+      reservationRef === expectedReservationRef;
+    if (!bindingMatches) {
+      throw Object.assign(
+        new Error('resolved reservation reference issuance binding is stale or forged'),
+        {
+          failureClass: 'AUTH' as const,
+        },
+      );
+    }
+    const nowMs = Date.now();
+    const issuedAtMs = Date.parse(reservationRefIssuedAt);
+    const expiresAtMs = Date.parse(reservationRefExpiresAt);
+    if (
+      !Number.isFinite(issuedAtMs) ||
+      !Number.isFinite(expiresAtMs) ||
+      issuedAtMs > nowMs ||
+      expiresAtMs <= nowMs
+    ) {
+      throw Object.assign(
+        new Error('resolved reservation reference is expired or not yet issued'),
+        {
+          failureClass: 'AUTH' as const,
+        },
+      );
+    }
+  }
+
+  const threadRows = await getDb()
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      threadId: message.threadId,
+      direction: message.direction,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+    })
+    .from(message)
+    .where(
+      and(eq(message.threadId, input.run.threadId), eq(message.transportId, input.run.transportId)),
+    );
+  const latestDraftRevisionId = await loadLatestThreadAffectingDraftRevisionId(getDb(), {
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+  });
+  const { buildThreadContext } = await import('./thread-context.js');
+  const context = await buildThreadContext({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    latestDraftRevisionId,
+    messages: threadRows.map((row) => ({
+      id: row.id,
+      transportId: row.transportId,
+      threadId: row.threadId,
+      direction: (row.direction === 'outbound' ? 'outbound' : 'inbound') as 'inbound' | 'outbound',
+      textBody: row.textBody,
+      htmlBody: row.htmlBody,
+      subject: row.subject,
+      receivedAt: row.receivedAt,
+      sentAt: row.sentAt,
+      attachmentIds: [],
+    })),
+  });
+  const candidate = context.lookupCandidates.find((item) => item.id === candidateId);
+  if (
+    !candidate ||
+    (candidate.kind !== 'confirmation' && candidate.kind !== 'external_reference')
+  ) {
+    throw Object.assign(new Error('opaque read candidate is not present in the trigger thread'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  const trustedReservationRef =
+    request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
+      ? admission.reservationRef
+      : null;
+  const expectedReservationRef =
+    request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio'
+      ? readReservationRef({
+          transportId: input.run.transportId,
+          threadId: input.run.threadId,
+          triggerMessageId: input.run.triggerMessageId,
+          candidateId,
+          reservationRefExpiresAt: admission.reservationRefExpiresAt!,
+        })
+      : null;
+  if (
+    (request.toolId === 'hms_read_reservation' || request.toolId === 'hms_read_folio') &&
+    (!trustedReservationRef ||
+      trustedReservationRef !== request.reservationRef ||
+      trustedReservationRef !== expectedReservationRef)
+  ) {
+    throw Object.assign(
+      new Error('resolved reservation reference is not server-bound to the exact candidate'),
+      {
+        failureClass: 'AUTH' as const,
+      },
+    );
+  }
+
+  const sessionFactory =
+    input.sessionFactory ??
+    createLiveHmsCandidateSessionFactory(input.runtime ? { runtime: input.runtime } : {});
+  const session = await sessionFactory({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    lookupCandidates: [candidate],
+    signal: input.signal,
+    runId: input.run.id,
+    readResultRef: input.run.readResultRef ?? undefined,
+    readFence: input.fence,
+    readPlanKind: 'reservation',
+    readOnly: true,
+    readAdmission: admission,
+    readToolId: request.toolId,
+    ...(request.toolId === 'hms_read_folio' ? { folioSections: request.sections } : {}),
+  });
+  const propertyReadLock = session.propertyReadLock;
+  if (!propertyReadLock) {
+    throw Object.assign(new Error('property read lock is required for production read dispatch'), {
+      failureClass: 'POLICY_BLOCK' as const,
+    });
+  }
+  const toLookup = (
+    candidateValue: string,
+  ): import('../hms/reservation-context-facade.js').ReservationContextLookup => ({
+    transportId: input.run.transportId,
+    mailboxId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    parentRef: input.run.id,
+    branchId: admission.requestBranchId,
+    propertyCode: expectedPropertyCode,
+    candidateId: candidateValue,
+    referenceKind: candidate?.kind === 'external_reference' ? 'external' : 'confirmation',
+    value: candidate && 'value' in candidate ? candidate.value : candidateValue,
+    observedAt: new Date(),
+    expiresAt: input.fence.deadlineAt,
+  });
+  const mapSessionResult = async (
+    lookup: import('../hms/reservation-context-facade.js').ReservationContextLookup,
+  ) => {
+    const legacy = await session.findReservation(lookup.candidateId, input.signal);
+    if (legacy.evidence.kind !== 'hms') {
+      throw Object.assign(new Error('reservation read returned a non-HMS evidence kind'), {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      });
+    }
+    return mapProductionReservationRead({
+      status: legacy.status,
+      data: legacy.data ? { matches: legacy.data.matches as readonly ReservationRow[] } : null,
+      evidence: {
+        kind: 'hms',
+        id: legacy.evidence.id,
+        observedAt: legacy.evidence.observedAt,
+        expiresAt: legacy.evidence.expiresAt,
+      },
+    });
+  };
+  const mapFolioSessionResult = async (): Promise<ReadResult<unknown>> => {
+    if (request.toolId !== 'hms_read_folio') {
+      throw Object.assign(new Error('folio result mapper called for a non-folio request'), {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      });
+    }
+    const folioRequest = request;
+    if (!session.readFolio) {
+      throw Object.assign(new Error('active folio session handler is unavailable'), {
+        failureClass: 'POLICY_BLOCK' as const,
+      });
+    }
+    const legacy = await session.readFolio(candidateId, input.signal);
+    if (legacy.evidence.kind !== 'hms') {
+      throw Object.assign(new Error('folio read returned a non-HMS evidence kind'), {
+        failureClass: 'SCHEMA_DRIFT' as const,
+      });
+    }
+    const parsedData =
+      legacy.data == null
+        ? null
+        : (() => {
+            const parsed = folioReadDataSchema.safeParse(legacy.data);
+            if (parsed.success) return parsed.data;
+            if (legacy.status === 'ok' || legacy.status === 'partial') {
+              throw Object.assign(new Error('folio read returned malformed typed data'), {
+                failureClass: 'SCHEMA_DRIFT' as const,
+              });
+            }
+            return null;
+          })();
+    const sectionValues = new Map<string, unknown>();
+    for (const section of folioRequest.sections) {
+      const sectionValue =
+        parsedData && section === 'balance'
+          ? parsedData.balance
+          : parsedData && section === 'deposits'
+            ? parsedData.deposits
+            : parsedData && section === 'transactions'
+              ? parsedData.transactions
+              : parsedData && section === 'authorization'
+                ? parsedData.authorization
+                : null;
+      sectionValues.set(section, sectionValue);
+    }
+    const unavailableSections = folioRequest.sections.flatMap((section) => {
+      const sectionValue = sectionValues.get(section) as
+        | { state?: string; reasonCode?: string }
+        | null
+        | undefined;
+      const available =
+        section === 'authorization'
+          ? sectionValue?.state === 'known'
+          : sectionValue?.state === 'available' || sectionValue?.state === 'partial';
+      if (available) {
+        return [];
+      }
+      const reasonCode = sectionValue?.reasonCode;
+      return [
+        {
+          section,
+          reasonCode: reasonCode ?? 'SOURCE_UNAVAILABLE',
+        },
+      ];
+    });
+    const hasPartialRequestedSection = folioRequest.sections.some((section) => {
+      const value = sectionValues.get(section) as
+        | { state?: string; completeness?: string }
+        | null
+        | undefined;
+      return value?.state === 'partial' || value?.completeness === 'partial';
+    });
+    const requestedCompleteness =
+      unavailableSections.length === 0 && !hasPartialRequestedSection
+        ? ('complete' as const)
+        : legacy.status === 'unverified_negative' &&
+            folioRequest.sections.every((section) =>
+              unavailableSections.some((item) => item.section === section),
+            )
+          ? ('unknown' as const)
+          : ('partial' as const);
+    const issueCode =
+      legacy.status === 'partial'
+        ? 'PARTIAL_WINDOW'
+        : legacy.status === 'manual_required'
+          ? 'SOURCE_UNAVAILABLE'
+          : legacy.status === 'unverified_negative'
+            ? 'UNVERIFIED_NEGATIVE'
+            : null;
+    const result = {
+      toolId: 'hms_read_folio' as const,
+      schemaVersion: 'hms-folio/1',
+      status:
+        legacy.status === 'ok' || legacy.status === 'partial'
+          ? legacy.status
+          : legacy.status === 'unverified_negative'
+            ? 'unverified_negative'
+            : 'manual_required',
+      data: parsedData,
+      completeness: requestedCompleteness,
+      unavailableSections,
+      scopeRef: folioRequest.reservationRef,
+      evidence: [
+        {
+          evidenceRef: legacy.evidence.id,
+          sourceSystem: 'hms' as const,
+          sourceSurface: 'folio',
+          requestBranchId: admission.requestBranchId,
+          observedAt: legacy.evidence.observedAt,
+          sourceUpdatedAt: null,
+          expiresAt: legacy.evidence.expiresAt,
+          scopeVerified: legacy.evidence.scopeVerified === true,
+          artifactRef: legacy.evidence.artifactRef ?? null,
+          ...(legacy.evidence.artifactRefs ? { artifactRefs: legacy.evidence.artifactRefs } : {}),
+          sourceHash: legacy.evidence.sourceHash,
+          manifestSha256: admission.manifestSha256,
+          ...(legacy.evidence.manifestSha256ByBranch
+            ? { manifestSha256ByBranch: legacy.evidence.manifestSha256ByBranch }
+            : {
+                manifestSha256ByBranch: {
+                  [admission.requestBranchId]: admission.manifestSha256!,
+                },
+              }),
+          ...(legacy.evidence.scopeHash ? { scopeHash: legacy.evidence.scopeHash } : {}),
+        },
+      ],
+      page: null,
+      issues: issueCode
+        ? [
+            {
+              code: issueCode,
+              retryable: false,
+              safeNextAction: 'manual_review' as const,
+            },
+          ]
+        : [],
+    };
+    return readResultSchema.parse(result) as ReadResult<unknown>;
+  };
+  const { createReservationContextFacade } = await import('../hms/reservation-context-facade.js');
+  const { projectReservationDetailDump } = await import('../hms/reservation-detail-projection.js');
+  const reservationFacade =
+    request.toolId === 'hms_read_reservation'
+      ? createReservationContextFacade({
+          now: () => new Date(),
+          reservationRefFor: () => trustedReservationRef!,
+          lookup: mapSessionResult,
+          readContext: async (lookup, row) => {
+            const dump =
+              session.readReservationDetailDump != null
+                ? await session.readReservationDetailDump(lookup.candidateId, input.signal)
+                : null;
+            if (!dump) {
+              return {
+                core: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                stay: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                rates: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                policies: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+                operations: { status: 'unavailable', reasonCode: 'SURFACE_UNPROVEN' },
+              };
+            }
+            const projected = projectReservationDetailDump(dump);
+            return {
+              core: {
+                status: projected.core.status,
+                confirmation: projected.core.confirmation ?? row.confirmationNumber,
+                externalReference: projected.core.externalReference ?? row.externalReference,
+                reservationStatus: projected.core.reservationStatus ?? row.reservationStatus,
+              },
+              stay: {
+                status: projected.stay.status,
+                arrival: projected.stay.arrival ?? row.arrivalDate,
+                departure: projected.stay.departure ?? row.departureDate,
+                roomType: projected.stay.roomType ?? row.roomType,
+                roomQuantity: projected.stay.roomQuantity,
+                adults: projected.stay.adults,
+              },
+              rates: projected.rates,
+              policies: projected.policies,
+              operations: projected.operations,
+            };
+          },
+        })
+      : undefined;
+  const readContext: ReadExecutionContext = {
+    transportId: input.run.transportId,
+    mailboxId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    propertyCode: expectedPropertyCode,
+    sourceRevision,
+    parentRef: input.run.id,
+    branchId: admission.requestBranchId,
+    releaseId: admission.releaseId,
+    requester: {
+      authorizationId: admission.requesterAuthorizationId,
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      allowedClaimKinds:
+        request.toolId === 'hms_read_folio' ? ['folio_deposit_summary'] : ['reservation_summary'],
+      expiresAt: input.fence.deadlineAt.toISOString(),
+    },
+    signal: input.signal,
+    budget: { total: 0, limit: 3 },
+    now: () => new Date(),
+    requireAdmissionBinding: true,
+    readResultRef: input.run.readResultRef ?? '',
+    requireCurrentAppAccess: true,
+    currentAppAccessProof,
+    propertyReadLock,
+    reservationFacade,
+    handlers: {
+      findReservation: async () => {
+        const mapped = await mapSessionResult(toLookup(candidateId));
+        return mapped;
+      },
+      ...(request.toolId === 'hms_read_folio'
+        ? { readFolio: async () => mapFolioSessionResult() }
+        : {}),
+    },
+  };
+  try {
+    const receipt = await propertyReadLock.withLock(
+      async (propertyReadLockConnection) => {
+        const lockedReadContext = { ...readContext, propertyReadLockConnection };
+        if (reservationFacade) {
+          const resolved = await reservationFacade.findReservation(toLookup(candidateId));
+          if (resolved.status !== 'ok' || !resolved.data?.matches[0]?.reservationRef) {
+            throw Object.assign(
+              new Error('reservation context could not resolve an entitled exact match'),
+              {
+                failureClass: 'AUTH' as const,
+              },
+            );
+          }
+          const expiresAt = Date.parse(resolved.evidence[0]?.expiresAt ?? '');
+          if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            throw Object.assign(new Error('reservation context reference is expired'), {
+              failureClass: 'AUTH' as const,
+            });
+          }
+        }
+        return executeReadToolRun({
+          runKind: input.run.runKind,
+          executorLane: input.run.executorLane,
+          draftingEnabled: false,
+          request,
+          context: lockedReadContext,
+          resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+        });
+      },
+      {
+        signal: input.signal,
+        deadlineAt: input.fence.deadlineAt.getTime(),
+      },
+    );
+    return {
+      result: receipt.result,
+      readResultRef: receipt.readResultRef,
+      ...(receipt.linkedContextReferences.length > 0
+        ? { linkedContextReferences: receipt.linkedContextReferences }
+        : {}),
+    };
+  } finally {
+    await session.close?.();
+  }
+}
+
+type ExecuteShadowPredictionInput = {
+  run: typeof aiWorkflowRun.$inferSelect;
+  fence: AiRunFence;
+  signal: AbortSignal;
+  shadowModelAdapter?: ModelAdapter;
+  shadowModelRoute?: LocalModelRouteEvidence;
+  shadowModelTransport?: LocalModelTransport;
+};
+
+/**
+ * Normal default-lane shadow worker. It reads the committed inbound thread,
+ * freezes the causal horizon, and writes only the private shadow store. The
+ * approved purpose route is resolved after freeze; missing route is a durable
+ * unavailable result and never falls through to Bedrock/fake initialization.
+ */
+async function executeShadowPredictionRun(
+  input: ExecuteShadowPredictionInput,
+): Promise<ExecuteAiRunResult> {
+  const { run, fence, signal } = input;
+  const db = getDb();
+  const predictionKey = run.idempotencyKey;
+  const [existing] = await db
+    .select({ id: aiShadowPrediction.id, predictionStatus: aiShadowPrediction.predictionStatus })
+    .from(aiShadowPrediction)
+    .where(eq(aiShadowPrediction.predictionKey, predictionKey))
+    .limit(1);
+  if (existing) {
+    const marked = await markAiRunSucceeded({
+      runId: run.id,
+      claimOwner: fence.claimOwner,
+      claimToken: fence.claimToken,
+      expectedStates: ['running'],
+      metrics: {
+        shadow: {
+          evaluationMode: SHADOW_EVALUATION_MODE,
+          predictionStatus: existing.predictionStatus,
+          idempotentReuse: true,
+        },
+      },
+    });
+    return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+  }
+
+  const [trigger] = await db
+    .select()
+    .from(message)
+    .where(
+      and(
+        eq(message.id, run.triggerMessageId),
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+      ),
+    )
+    .limit(1);
+  if (!trigger) throw new Error('shadow prediction trigger message not found');
+  if (trigger.direction !== 'inbound') {
+    throw new Error('shadow prediction trigger must be inbound');
+  }
+
+  const threadRows = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+    })
+    .from(message)
+    .where(and(eq(message.transportId, run.transportId), eq(message.threadId, run.threadId)))
+    .orderBy(asc(message.createdAt), asc(message.id));
+  const threadMessageIds = threadRows.map((row) => row.id);
+  const attachmentRows = threadMessageIds.length
+    ? await db
+        .select({ id: attachment.id, messageId: attachment.messageId })
+        .from(attachment)
+        .where(inArray(attachment.messageId, threadMessageIds))
+    : [];
+  const attachmentIdsByMessage = new Map<string, string[]>();
+  for (const row of attachmentRows) {
+    const ids = attachmentIdsByMessage.get(row.messageId) ?? [];
+    ids.push(row.id);
+    attachmentIdsByMessage.set(row.messageId, ids);
+  }
+  // `createdAt` is the availability clock. RFC822 received/sent clocks remain
+  // event evidence for matching and cannot pull a late-imported body into an
+  // earlier frozen context.
+  const asOfAt = trigger.createdAt;
+  const frozen = freezeShadowInput({
+    transportId: run.transportId,
+    threadId: run.threadId,
+    triggerMessageId: trigger.id,
+    asOfAt,
+    messages: threadRows.map(
+      (row): ShadowMessageInput => ({
+        ...row,
+        availableAt: row.createdAt,
+        attachmentIds: attachmentIdsByMessage.get(row.id) ?? [],
+      }),
+    ),
+  });
+
+  let adapter = input.shadowModelAdapter;
+  const route = input.shadowModelRoute;
+  if (!adapter || !route) {
+    try {
+      adapter = createApprovedLocalModelAdapter({
+        purpose: 'shadow',
+        route,
+        transport: input.shadowModelTransport,
+      });
+    } catch (error) {
+      if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
+      const seal = createUnavailableShadowPredictionSeal({
+        predictionKey,
+        transportId: run.transportId,
+        threadId: run.threadId,
+        triggerMessageId: run.triggerMessageId,
+        frozen,
+        sealedAt: new Date(),
+        reason: 'approved_shadow_route_unavailable',
+      });
+      const persisted = await persistShadowPrediction(seal, db);
+      const marked = await markAiRunSucceeded({
+        runId: run.id,
+        claimOwner: fence.claimOwner,
+        claimToken: fence.claimToken,
+        expectedStates: ['running'],
+        metrics: {
+          shadow: {
+            evaluationMode: SHADOW_EVALUATION_MODE,
+            predictionStatus: 'unavailable',
+            routeStatus: 'unavailable',
+            reason: 'approved_shadow_route_unavailable',
+            predictionId: persisted.row.id,
+          },
+        },
+      });
+      return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+    }
+  }
+
+  if (!route || route.purpose !== 'shadow') {
+    throw new LocalModelRouteUnavailableError('shadow route provenance is unavailable');
+  }
+  try {
+    if (signal.aborted) throw new Error('shadow prediction aborted');
+    const prompt = shadowPredictionPrompt(frozen);
+    const result = await adapter.invoke({
+      modelId: run.modelId === 'approved-local' ? 'approved-local' : run.modelId,
+      systemPrompt: prompt.systemPrompt,
+      userPrompt: prompt.userPrompt,
+      responseSchema: {
+        type: 'object',
+        required: ['outcome'],
+        additionalProperties: false,
+      },
+      signal,
+      deadlineAt: fence.deadlineAt.getTime(),
+    });
+    if (
+      result.provenance?.routeId !== route.routeId ||
+      result.provenance.modelId !== route.modelId ||
+      result.provenance.purpose !== 'shadow'
+    ) {
+      throw new Error('shadow model provenance mismatch');
+    }
+    const seal = createShadowPredictionSeal({
+      predictionKey,
+      transportId: run.transportId,
+      threadId: run.threadId,
+      triggerMessageId: run.triggerMessageId,
+      frozen,
+      output: result.output,
+      route,
+      modelUsage: {
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        latencyMs: result.usage.latencyMs,
+      },
+      sealedAt: new Date(),
+    });
+    const persisted = await persistShadowPrediction(seal, db);
+    const marked = await markAiRunSucceeded({
+      runId: run.id,
+      claimOwner: fence.claimOwner,
+      claimToken: fence.claimToken,
+      expectedStates: ['running'],
+      metrics: {
+        shadow: {
+          evaluationMode: SHADOW_EVALUATION_MODE,
+          predictionStatus: 'sealed',
+          routeStatus: 'available',
+          routeId: route.routeId,
+          modelId: route.modelId,
+          predictionId: persisted.row.id,
+          idempotentReuse: !persisted.inserted,
+        },
+      },
+    });
+    return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'shadow_prediction_failed';
+    const seal = createFailedShadowPredictionSeal({
+      predictionKey,
+      transportId: run.transportId,
+      threadId: run.threadId,
+      triggerMessageId: run.triggerMessageId,
+      frozen,
+      sealedAt: new Date(),
+      reason: 'shadow_prediction_failed',
+    });
+    await persistShadowPrediction(seal, db);
+    // The run ledger receives only a fixed safe class; raw model/fixture errors
+    // never enter metrics or logs. Outer failure handling applies fencing.
+    throw Object.assign(new Error('shadow prediction failed'), {
+      failureClass: /abort/i.test(reason) ? ('RUN_DEADLINE' as const) : ('UNKNOWN' as const),
+    });
+  }
+}
+
 export async function executeAiRun(
   runId: string,
   options: {
     shutdownSignal?: AbortSignal;
     /** Injectable claim-safe tool session (tests / Task 7 mocks). */
     candidateSessionFactory?: CandidateSessionFactory;
-    candidatePlanModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
+    candidatePlanModel?: (prompt: {
+      systemPrompt: string;
+      userPrompt: string;
+      signal?: AbortSignal;
+      deadlineAt?: number;
+    }) => Promise<unknown>;
+    /** Approved local adapter seams for normal plan/reply composition. */
+    candidateModelAdapter?: ModelAdapter;
+    candidateReplyModelAdapter?: ModelAdapter;
+    /** Explicit configured draft-purpose route; absent remains unavailable. */
+    candidateDraftRoute?: DraftModelRouteConfig;
+    candidateReplyAsks?: readonly PreparedAsk[];
+    /** Explicit purpose-bound mail extraction route; absent means unavailable. */
+    mailBaselineExtractionRoute?: {
+      route: LocalModelRouteEvidence;
+      transport: LocalModelTransport;
+    };
+    /** Explicit purpose-bound private shadow route; absent remains unavailable. */
+    shadowModelAdapter?: ModelAdapter;
+    shadowModelRoute?: LocalModelRouteEvidence;
+    shadowModelTransport?: LocalModelTransport;
+    /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
+    readToolExecutor?: (input: {
+      run: typeof aiWorkflowRun.$inferSelect;
+      fence: AiRunFence;
+      signal: AbortSignal;
+    }) => Promise<{
+      result: ReadResult<unknown>;
+      readResultRef: string;
+      linkedContextReferences?: import('../hms/context-read-reference.js').LinkedContextReference[];
+    }>;
+    /** Lower browser/PMS edge substitution for normal release-bound proof. */
+    hmsRuntime?: import('../hms/runtime.js').HmsRuntime;
+    /** Internal server-owned current quote authority; absent source fails closed. */
+    quoteReferenceAuthorityLoader?: QuoteReferenceAuthorityLoader;
   } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
@@ -589,6 +4140,29 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
+  if (run.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
+    await markAiRunDeadLetter({
+      runId,
+      claimOwner: owner,
+      claimToken,
+      expectedStates: ['running'],
+      lastError: 'shadow admission cap policy unavailable',
+      failureClass: 'POLICY_BLOCK',
+    });
+    return { runId, state: 'dead_letter' };
+  }
+
+  // Resolve the purpose-bound extraction edge before any inbound workflow
+  // client is initialized.  Missing config stays unavailable; the worker
+  // persists only the explicit source-observation boundary below.
+  const baselineRoute = resolveMailBaselineExtractionRoute({
+    approvedRoute: options.mailBaselineExtractionRoute
+      ? 'approved-local'
+      : process.env.AI_MODEL_ROUTE,
+    route: options.mailBaselineExtractionRoute?.route,
+    transport: options.mailBaselineExtractionRoute?.transport,
+  });
+
   const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
 
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -598,6 +4172,84 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    if (run.runKind === 'read_tool') {
+      if (run.executorLane !== 'hms') {
+        throw Object.assign(new Error('read_tool must execute on the HMS lane'), {
+          failureClass: 'POLICY_BLOCK' as const,
+        });
+      }
+      if (!env.HMS_READ_SERVICE_ENABLED) {
+        throw Object.assign(new Error('HMS_READ_SERVICE_DISABLED'), {
+          failureClass: 'POLICY_BLOCK' as const,
+        });
+      }
+      if (!run.readRequest || typeof run.readRequest !== 'object') {
+        throw Object.assign(new Error('read_tool request missing'), {
+          failureClass: 'SCHEMA_DRIFT' as const,
+        });
+      }
+      const executor =
+        options.readToolExecutor ??
+        ((args: {
+          run: typeof aiWorkflowRun.$inferSelect;
+          fence: AiRunFence;
+          signal: AbortSignal;
+        }) =>
+          executeProductionReadTool({
+            ...args,
+            sessionFactory: options.candidateSessionFactory,
+            runtime: options.hmsRuntime,
+            quoteReferenceAuthorityLoader: options.quoteReferenceAuthorityLoader,
+          }));
+      const read = await executor({ run, fence, signal });
+      const readResultRef = run.readResultRef ?? read.readResultRef;
+      if (!readResultRef) throw new Error('read_tool result reference missing');
+      const readResult: ReadResult<unknown> =
+        read.result.toolId === 'hms_find_reservation' &&
+        read.linkedContextReferences &&
+        read.linkedContextReferences.length > 0
+          ? (readResultSchema.parse({
+              ...read.result,
+              linkedContextRefs: read.linkedContextReferences.map((binding) => ({
+                kind: binding.kind,
+                reference: binding.reference,
+                expiresAt: binding.expiresAt,
+              })),
+            }) as ReadResult<unknown>)
+          : read.result;
+      const marked = await markAiRunSucceeded({
+        runId,
+        claimOwner: owner,
+        claimToken,
+        expectedStates: ['running'],
+        readResultRef,
+        readResult,
+        readResultExpiresAt: readResultExpiry(readResult, fence.deadlineAt),
+        metrics: {
+          readTool: true,
+          status: read.result.status,
+          schemaVersion: read.result.schemaVersion,
+          modelId: 'not_applicable',
+          promptVersion: run.promptVersion,
+          ...(read.linkedContextReferences && read.linkedContextReferences.length > 0
+            ? { linkedContextReferences: read.linkedContextReferences }
+            : {}),
+        },
+      });
+      return { runId, state: marked ? 'succeeded' : 'retry_wait' };
+    }
+
+    if (run.runKind === 'shadow_prediction') {
+      return await executeShadowPredictionRun({
+        run: runWithFence,
+        fence,
+        signal,
+        shadowModelAdapter: options.shadowModelAdapter,
+        shadowModelRoute: options.shadowModelRoute,
+        shadowModelTransport: options.shadowModelTransport,
+      });
+    }
 
     if (run.runKind === 'inbound_triage') {
       const [trigger] = await db
@@ -692,51 +4344,183 @@ export async function executeAiRun(
         })),
       );
 
-      const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-      const workflow = mastra.getWorkflow('mailTriage');
-      const workflowRun = await workflow.createRun();
-      const result = await workflowRun.start({
-        inputData: {
-          transportId: run.transportId,
-          threadId: run.threadId,
-          triggerMessageId: run.triggerMessageId,
-          subject: trigger?.subject ?? undefined,
-          from: trigger?.fromAddress ?? '',
-          to: trigger?.toAddresses ?? [],
-          cc: trigger?.ccAddresses ?? [],
-          bcc: trigger?.bccAddresses ?? [],
-          body: trigger?.textBody ?? trigger?.htmlBody ?? '',
-          messages,
-          threadSignals,
-          transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
-          asOf: run.createdAt.toISOString(),
-          modelId: run.modelId,
-          promptVersion: TRIAGE_PROMPT_VERSION,
-        },
-        // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
-        abortSignal: signal,
-      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
-      if (result.status !== 'success') {
-        throw new Error(`mail triage workflow failed: ${result.status}`);
+      const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
+      let output: WorkflowTriageOutput;
+      let mastraTraceId: string | undefined;
+      let workflowMetrics: Record<string, unknown> = {};
+      if (externalSentAnalyticsOnly) {
+        // Sent copies are analytics evidence, not a triage admission. Do not
+        // initialize the triage workflow or apply folder/read/spam changes.
+        output = validateWorkflowTriageOutput({
+          primaryFolder: 'unknown-review',
+          priority: 'P3',
+          urgent: false,
+          overlays: {},
+          isSpam: false,
+          suggestedTools: [],
+          sourceScope: 'external',
+          automationState: 'unknown',
+          humanAction: 'review_required',
+          confidence: 0,
+          rationale: 'External Sent copy is analytics-only evidence.',
+          policyFlags: ['analytics-only:external-sent'],
+          abstainReason: 'analytics_only_external_sent',
+        });
+      } else {
+        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
+        const workflow = mastra.getWorkflow('mailTriage');
+        const workflowRun = await workflow.createRun();
+        const result = await workflowRun.start({
+          inputData: {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            triggerMessageId: run.triggerMessageId,
+            subject: trigger?.subject ?? undefined,
+            from: trigger?.fromAddress ?? '',
+            to: trigger?.toAddresses ?? [],
+            cc: trigger?.ccAddresses ?? [],
+            bcc: trigger?.bccAddresses ?? [],
+            body: trigger?.textBody ?? trigger?.htmlBody ?? '',
+            messages,
+            threadSignals,
+            transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
+            asOf: run.createdAt.toISOString(),
+            modelId: run.modelId,
+            promptVersion: TRIAGE_PROMPT_VERSION,
+          },
+          // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
+          abortSignal: signal,
+        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
+        if (result.status !== 'success') {
+          throw new Error(`mail triage workflow failed: ${result.status}`);
+        }
+        output = validateWorkflowTriageOutput(result.result?.output);
+        mastraTraceId = result.result?.traceId;
+        workflowMetrics = (result.result?.metrics as Record<string, unknown>) ?? {};
       }
 
-      const output = validateWorkflowTriageOutput(result.result?.output);
+      const baselineHints = triageOutputSemanticHints(output);
+      const baselineRow = trigger
+        ? messages.find((candidate) => candidate.id === run.triggerMessageId)
+        : undefined;
+      let routedBaseline:
+        | Awaited<ReturnType<typeof extractMailBaselineWithApprovedRoute>>
+        | undefined;
+      if (baselineRow) {
+        const clock = resolveTriageEventClock(baselineRow);
+        routedBaseline = await extractMailBaselineWithApprovedRoute(
+          {
+            sourceVintage: run.createdAt.toISOString(),
+            observationCutoff: run.createdAt,
+            interpretationVersion: MAIL_BASELINE_INTERPRETATION_VERSION,
+            classifierVersion: baselineRoute.available
+              ? 'mail-baseline-semantic-v1'
+              : 'mail-baseline-observation-v1',
+            reviewerVersion: TRIAGE_REVIEWER_VERSION,
+            message: {
+              id: baselineRow.id,
+              transportId: run.transportId,
+              threadId: run.threadId,
+              direction: baselineRow.direction,
+              fromAddress: baselineRow.from,
+              toAddresses: baselineRow.to ?? [],
+              ccAddresses: baselineRow.cc ?? [],
+              bccAddresses: baselineRow.bcc ?? [],
+              subject: baselineRow.subject ?? null,
+              textBody: baselineRow.body,
+              receivedAt: baselineRow.receivedAt,
+              sentAt: baselineRow.sentAt,
+              createdAt: baselineRow.createdAt,
+              messageIdHeader: baselineRow.messageIdHeader,
+              inReplyTo: baselineRow.inReplyTo,
+              references: baselineRow.references,
+              source: baselineRow.direction === 'outbound' ? 'external_sent' : 'mail_event',
+              sourceBasis: clock.basis,
+              ...(baselineRow.direction === 'outbound'
+                ? { sendEvidence: { status: 'sent' as const } }
+                : {}),
+            },
+          },
+          baselineRoute,
+          { signal, deadlineAt: deadlineAt.getTime() },
+        );
+      }
 
       await db.transaction(async (tx) => {
-        const applyResult = await applyDurableTriageFromWorker({
-          db: tx as unknown as typeof db,
-          transportId: run.transportId,
-          threadId: run.threadId,
-          output,
-          writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
-          workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
-          forceUnsettle: run.metrics?.retagPending === true,
-          threadSignals,
-          from: trigger?.fromAddress ?? '',
-          to: trigger?.toAddresses ?? [],
-          cc: trigger?.ccAddresses ?? [],
-          bcc: trigger?.bccAddresses ?? [],
-        });
+        let applyMode: string;
+        if (externalSentAnalyticsOnly) {
+          applyMode = 'analytics_only_external_sent';
+        } else {
+          const applyResult = await applyDurableTriageFromWorker({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            output,
+            writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+            workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
+            forceUnsettle: run.metrics?.retagPending === true,
+            threadSignals,
+            from: trigger?.fromAddress ?? '',
+            to: trigger?.toAddresses ?? [],
+            cc: trigger?.ccAddresses ?? [],
+            bcc: trigger?.bccAddresses ?? [],
+          });
+          applyMode = applyResult.applyMode;
+        }
+
+        let baselineMetrics: Record<string, unknown> = {
+          status:
+            routedBaseline?.semanticRoute === 'approved_local_extraction'
+              ? 'persisted_semantic_projection'
+              : 'persisted_source_observation',
+          routeStatus: baselineRoute.available ? 'available' : 'unavailable',
+          routeId: baselineRoute.route,
+          extraction: routedBaseline?.semanticRoute ?? 'none',
+          triageClassifierVersion: baselineHints.classifierVersion,
+          ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
+        };
+        if (routedBaseline && baselineRow) {
+          const extraction = routedBaseline.extraction;
+          const configuredMeasurement = parseMailboxMeasurementConfig(
+            process.env.MAIL_MEASUREMENT_CONFIG_JSON,
+          );
+          const producerMeasurement =
+            configuredMeasurement?.transportId === run.transportId ? configuredMeasurement : null;
+          const generationId = mailBaselineGenerationKey({
+            transportId: run.transportId,
+            threadId: run.threadId,
+            sourceMessageId: baselineRow.id,
+            sourceVintage: run.createdAt.toISOString(),
+            interpretationVersion: extraction.interpretationVersion,
+          });
+          const persisted = await persistMailBaselineProjection(tx as unknown as typeof db, {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            generationId,
+            sourceVintage: extraction.sourceVintage,
+            interpretationVersion: extraction.interpretationVersion,
+            reviewerVersion: TRIAGE_REVIEWER_VERSION,
+            observationCutoff: run.createdAt,
+            measurementStartAt: producerMeasurement?.measurementStartAt ?? null,
+            coverage: {
+              configVersion: producerMeasurement ? String(producerMeasurement.version) : null,
+              startAt: producerMeasurement?.measurementStartAt ?? null,
+              endAt: run.createdAt.toISOString(),
+              basis: producerMeasurement?.captureAssumptionBasis ?? 'coverage_unconfigured',
+              complete:
+                producerMeasurement !== null && producerMeasurement.measurementStartAt !== null,
+              confirmedGapIntervals: producerMeasurement?.confirmedGapIntervals ?? [],
+            },
+            evidence: extraction.evidence,
+          });
+          baselineMetrics = {
+            ...baselineMetrics,
+            generationId,
+            inserted: persisted.inserted,
+            evidenceCount: extraction.evidence.length,
+            ...(routedBaseline.modelUsage ? { modelUsage: routedBaseline.modelUsage } : {}),
+          };
+        }
 
         const marked = await markAiRunSucceeded(
           {
@@ -744,12 +4528,13 @@ export async function executeAiRun(
             claimOwner: owner,
             claimToken,
             expectedStates: ['running'],
-            mastraTraceId: result.result?.traceId,
+            mastraTraceId,
             metrics: {
-              ...(result.result?.metrics as Record<string, unknown>),
+              ...workflowMetrics,
               durableWrite: env.AI_WRITE_GATE_ENABLED,
               workflowTriage: env.WORKFLOW_TRIAGE_V6,
-              applyMode: applyResult.applyMode,
+              applyMode,
+              mailBaseline: baselineMetrics,
             },
           },
           tx as unknown as typeof db,
@@ -798,25 +4583,27 @@ export async function executeAiRun(
       const subject = deriveReplySubject(trigger.subject);
       const hmsMode = env.HMS_DRAFT_ENRICHMENT_MODE;
 
-      // Off mode: existing skeleton workflow / evidence rules do not apply.
+      // Off mode still uses the normal prepared-input/assessment boundary.
+      // It must not enter the registered Mastra workflow with raw body text.
       if (hmsMode === 'off') {
-        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-        const workflow = mastra.getWorkflow('candidateDraft');
-        const workflowRun = await workflow.createRun();
-        const result = await workflowRun.start({
-          inputData: {
-            transportId: run.transportId,
-            threadId: run.threadId,
-            triggerMessageId: run.triggerMessageId,
-            fromAddress: trigger.fromAddress,
-            subject: trigger.subject ?? undefined,
-            body: trigger.textBody ?? trigger.htmlBody ?? '',
-          },
-          abortSignal: signal,
-        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
-        if (result.status !== 'success') {
-          throw new Error(`candidate draft workflow failed: ${result.status}`);
-        }
+        const requestText = trigger.textBody ?? trigger.htmlBody ?? '';
+        const replyAsks = options.candidateReplyAsks ?? deriveWorkerReplyAsks(requestText);
+        const preparedReply = await runPreparedWorkerCandidateReply({
+          requestId: run.triggerMessageId,
+          threadId: run.threadId,
+          requestText,
+          asks: replyAsks,
+          adapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+          route: options.candidateDraftRoute,
+          signal,
+          deadlineAt: deadlineAt.getTime(),
+        });
+        const persistedOutcome =
+          preparedReply.outcome === 'complete' || preparedReply.outcome === 'partial'
+            ? 'candidate'
+            : preparedReply.outcome === 'clarification'
+              ? 'needs_clarification'
+              : 'insufficient_evidence';
 
         const draft = await persistAiCandidateDraft({
           db,
@@ -830,9 +4617,17 @@ export async function executeAiRun(
           contextMessageIds: [run.triggerMessageId],
           toAddresses: [replyTo],
           subject,
-          textBody: result.result!.draftBody.textBody,
-          htmlBody: result.result!.draftBody.htmlBody,
-          outcome: 'candidate',
+          textBody: preparedReply.textBody,
+          htmlBody: preparedReply.htmlBody,
+          outcome: persistedOutcome,
+          ...(options.candidateDraftRoute?.release
+            ? {
+                routeBinding: {
+                  ...options.candidateDraftRoute.route,
+                  release: options.candidateDraftRoute.release,
+                },
+              }
+            : {}),
           persistDraft: true,
         });
         const marked = await markAiRunSucceeded({
@@ -846,7 +4641,10 @@ export async function executeAiRun(
             generationId: draft.generationId ?? generationId,
             modelId: run.modelId,
             hmsMode: 'off',
-            ...(result.result?.metrics as Record<string, unknown>),
+            ...(preparedReply.metrics as Record<string, unknown>),
+            preparedReplyOutcome: preparedReply.outcome,
+            preparedReplyAssessment: preparedReply.assessment.issues.map((issue) => issue.code),
+            preparedInputSerializedBytes: Buffer.byteLength(preparedReply.serializedInput, 'utf8'),
           },
         });
         if (!marked) {
@@ -1070,13 +4868,13 @@ export async function executeAiRun(
                     failureClass: 'AUTH' as const,
                   });
                 }
-                return readAuthorizedArtifact({
+                return (await readAuthorizedArtifact({
                   attachmentId,
                   authorizedAttachmentIds: currentAuthorized,
                   s3,
                   signal: artifactSignal,
                   resolveLocator: async (id) => currentLocators.get(id) ?? null,
-                });
+                })) as unknown as ToolResult<ArtifactData>;
               },
               recheckArtifactIdentity: async ({
                 attachmentId,
@@ -1167,6 +4965,11 @@ export async function executeAiRun(
             probeAttachmentIds: [],
             planMode: 'production',
             planModel: options.candidatePlanModel,
+            modelAdapter: options.candidateModelAdapter,
+            replyModelAdapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+            replyAsks:
+              options.candidateReplyAsks ?? deriveWorkerReplyAsks(pre.context.normalizedText),
+            deadlineAt: deadlineAt.getTime(),
             ...(planGate
               ? {
                   candidateBindings: planGate.candidateBindings,
@@ -1276,6 +5079,10 @@ export async function executeAiRun(
         normalizedThreadText: context.normalizedText,
         signal,
         planModel: options.candidatePlanModel,
+        modelAdapter: options.candidateModelAdapter,
+        replyModelAdapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
+        replyAsks: options.candidateReplyAsks ?? deriveWorkerReplyAsks(context.normalizedText),
+        deadlineAt: deadlineAt.getTime(),
         ...(planGate
           ? {
               candidateBindings: planGate.candidateBindings,
@@ -1430,13 +5237,48 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
   assertHmsLaneRuntimeReady();
 }
 
-export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunScopeFilter;
+export type RunAiWorkerOnceOptions = {
+  shutdownSignal?: AbortSignal;
+  readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
+  mailBaselineExtractionRoute?: NonNullable<
+    Parameters<typeof executeAiRun>[1]
+  >['mailBaselineExtractionRoute'];
+  mailBaselineExtractionRouteFactory?: MailBaselineExtractionRouteFactory;
+  candidatePlanModel?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidatePlanModel'];
+  candidateModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateModelAdapter'];
+  candidateReplyModelAdapter?: NonNullable<
+    Parameters<typeof executeAiRun>[1]
+  >['candidateReplyModelAdapter'];
+  candidateDraftRouteFactory?: DraftModelRouteFactory;
+  candidateReplyAsks?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateReplyAsks'];
+  shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
+  shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
+  shadowModelTransport?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelTransport'];
+  shadowModelRouteFactory?: ShadowModelRouteFactory;
+} & AiRunScopeFilter;
 
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const lane = env.AI_WORKER_LANE;
-  // hms + off: worker present for ops but claims none.
-  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off') {
+  const {
+    shutdownSignal,
+    readToolExecutor,
+    mailBaselineExtractionRoute,
+    mailBaselineExtractionRouteFactory,
+    candidatePlanModel,
+    candidateModelAdapter,
+    candidateReplyModelAdapter,
+    candidateDraftRouteFactory,
+    candidateReplyAsks,
+    shadowModelAdapter,
+    shadowModelRoute,
+    shadowModelTransport,
+    shadowModelRouteFactory,
+    ...scope
+  } = options;
+  // hms + off: drafting claims none, but an independently enabled read lane
+  // remains claimable without browser/model initialization.
+  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
     return false;
   }
   maybeInitHmsRuntime(lane);
@@ -1445,11 +5287,45 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const { shutdownSignal, ...scope } = options;
-  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...scope });
-  if (!claimed) return false;
+  const readOnlyLane =
+    lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
+  const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
+  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
+  if (!claimed) {
+    // Assessment and retention are private, bounded database lanes. They run
+    // only after the claim check, so a normal queued prediction cannot be
+    // hidden behind maintenance work; no route factory is initialized here.
+    const purge = await purgeExpiredShadowDerivatives({ limit: 100 });
+    const due = await assessDueShadowPredictions({ limit: 100 });
+    return purge.deletedPredictions > 0 || purge.deletedAdmissions > 0 || due.processed > 0;
+  }
+  // A stale run admitted under a policy that has since been unset is fenced
+  // through executeAiRun's policy-block path without constructing any route
+  // factory or model transport.
+  if (claimed.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
+    await executeAiRun(claimed.id, { shutdownSignal });
+    return true;
+  }
+  const composedMailBaselineExtractionRoute =
+    mailBaselineExtractionRoute ??
+    mailBaselineExtractionRouteFactory?.() ??
+    createProductionMailBaselineExtractionRouteFactory()();
+  const composedShadowModelRoute =
+    shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
+  const composedCandidateDraftRoute =
+    candidateDraftRouteFactory?.() ?? createProductionDraftModelRouteFactory()();
   await executeAiRun(claimed.id, {
     shutdownSignal,
+    readToolExecutor,
+    mailBaselineExtractionRoute: composedMailBaselineExtractionRoute,
+    candidatePlanModel,
+    candidateModelAdapter,
+    candidateReplyModelAdapter,
+    candidateDraftRoute: composedCandidateDraftRoute,
+    candidateReplyAsks,
+    shadowModelAdapter,
+    shadowModelRoute: shadowModelRoute ?? composedShadowModelRoute?.route,
+    shadowModelTransport: shadowModelTransport ?? composedShadowModelRoute?.transport,
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
@@ -1466,6 +5342,11 @@ export async function runAiWorkerDrain(
     promptVersion: input.promptVersion,
     idempotencyPrefix: input.idempotencyPrefix,
   };
+  const mailBaselineExtractionRouteFactory =
+    input.mailBaselineExtractionRouteFactory ??
+    createProductionMailBaselineExtractionRouteFactory();
+  const shadowModelRouteFactory =
+    input.shadowModelRouteFactory ?? createProductionShadowModelRouteFactory();
   const deadline = Date.now() + input.timeoutMs;
   let processed = 0;
 
@@ -1483,7 +5364,14 @@ export async function runAiWorkerDrain(
       };
     }
 
-    const worked = await runAiWorkerOnce({ ...scope });
+    const worked = await runAiWorkerOnce({
+      ...scope,
+      mailBaselineExtractionRouteFactory,
+      shadowModelAdapter: input.shadowModelAdapter,
+      shadowModelRoute: input.shadowModelRoute,
+      shadowModelTransport: input.shadowModelTransport,
+      shadowModelRouteFactory,
+    });
     if (worked) {
       processed += 1;
       continue;
@@ -1521,6 +5409,7 @@ async function closeAiWorkerResources(): Promise<void> {
 export async function runAiWorkerLoop(
   pollIntervalMs = 5_000,
   scope: AiRunScopeFilter = {},
+  mailBaselineExtractionRouteFactory: MailBaselineExtractionRouteFactory = createProductionMailBaselineExtractionRouteFactory(),
 ): Promise<void> {
   let stopping = false;
   const shutdown = new AbortController();
@@ -1533,7 +5422,11 @@ export async function runAiWorkerLoop(
 
   try {
     while (!stopping) {
-      const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
+      const worked = await runAiWorkerOnce({
+        ...scope,
+        shutdownSignal: shutdown.signal,
+        mailBaselineExtractionRouteFactory,
+      });
       if (!worked) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
@@ -1549,6 +5442,7 @@ async function main() {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   maybeInitHmsRuntime(env.AI_WORKER_LANE);
   const args = parseAiWorkerCliArgs(process.argv.slice(2));
+  const mailBaselineExtractionRouteFactory = createProductionMailBaselineExtractionRouteFactory();
   const scoped =
     args.drainPrefix !== undefined ||
     args.transportId !== undefined ||
@@ -1564,6 +5458,7 @@ async function main() {
       result = await runAiWorkerDrain({
         ...scopeFromCli(args),
         timeoutMs: args.timeoutMs,
+        mailBaselineExtractionRouteFactory,
       });
     } finally {
       await closeAiWorkerResources();
@@ -1592,7 +5487,11 @@ async function main() {
 
   // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
-  await runAiWorkerLoop(5_000, idempotencyPrefix ? { idempotencyPrefix } : {});
+  await runAiWorkerLoop(
+    5_000,
+    idempotencyPrefix ? { idempotencyPrefix } : {},
+    mailBaselineExtractionRouteFactory,
+  );
 }
 
 if (isCliEntry(import.meta.url, 'ai-worker')) {

@@ -1,4 +1,4 @@
-import { READ_TOOL_IDS, type ReadToolId } from '../hms/read-tools.js';
+import { READ_TOOL_IDS, type ActiveReadToolId, type ReadToolId } from '../hms/read-tools.js';
 import type { TriageHumanAction, TriageOverlay } from './triage.js';
 import type { AiWorkflowPrimarySlug } from './categories.js';
 
@@ -62,7 +62,7 @@ export function suggestReadTools(
     return ['hms_read_folio', 'hms_find_reservation'];
   }
   if (folder === 'documents-delivery') {
-    return ['hms_list_documents', 'mail_read_artifact'];
+    return ['hms_list_documents'];
   }
   if (folder === 'manage-stay' || folder === 'confirm-reconcile') {
     return ['hms_find_reservation'];
@@ -76,7 +76,6 @@ export function suggestReadTools(
   }
   if (action === 'document_or_delivery') {
     add('hms_list_documents');
-    add('mail_read_artifact');
   }
   if (
     hasBooking ||
@@ -92,5 +91,7 @@ export function suggestReadTools(
 
   // Keep static registry check close to planner output: tags must remain a
   // subset of the read-only registry even as the registry evolves.
-  return readTools.filter((tool) => READ_TOOL_IDS.includes(tool));
+  return readTools.filter((tool): tool is ActiveReadToolId =>
+    (READ_TOOL_IDS as readonly string[]).includes(tool),
+  );
 }

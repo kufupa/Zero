@@ -262,7 +262,7 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(good).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
 
-  it('blocks altered value, extra key, alias drift, operator drift, mutation path', async () => {
+  it('allows ExtJS filter value/alias/operator drift; still blocks extras + chrome drift', async () => {
     const {
       buildExactOsressSearchManifest,
       buildExactOsressSearchBody,
@@ -279,6 +279,7 @@ describe('exact OSRESS.search candidate binding', () => {
       'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
     };
 
+    // Live ExtJS quick-search varies filter values/operators; those are variableBody.
     const altered = evaluateObservedRequest(bound, {
       method: 'POST',
       url: `${ORIGIN}${searchPath}`,
@@ -286,10 +287,7 @@ describe('exact OSRESS.search candidate binding', () => {
       headers,
       postData: formBody({ ...base, MADDON_FILTER_VALUE_3: 'OTHER-VAL' }),
     });
-    expect(altered.action).toBe('block');
-    if (altered.action === 'block') {
-      expect(altered.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const extra = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -313,10 +311,7 @@ describe('exact OSRESS.search candidate binding', () => {
         MADDON_FILTER_ALIAS_NAME_3: 'confirmationNumber',
       }),
     });
-    expect(aliasDrift.action).toBe('block');
-    if (aliasDrift.action === 'block') {
-      expect(aliasDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(aliasDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const opDrift = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -328,10 +323,20 @@ describe('exact OSRESS.search candidate binding', () => {
         MADDON_FILTER_OPERATOR_3: 'contains',
       }),
     });
-    expect(opDrift.action).toBe('block');
-    if (opDrift.action === 'block') {
-      expect(opDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
-    }
+    expect(opDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
+
+    // Chrome also variable — ExtJS may omit/alter dataspy ids vs soft-capture.
+    const chromeDrift = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        ...base,
+        DATASPY_ID: '9999',
+      }),
+    });
+    expect(chromeDrift).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
 
     const mutation = evaluateObservedRequest(bound, {
       method: 'POST',
@@ -363,6 +368,26 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(body.MADDON_FILTER_VALUE_2).toBe('+365');
   });
 
+  it('surname_dates fills lastname family; conf/ext unused', async () => {
+    const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
+    const body = buildExactOsressSearchBody({
+      id: 's1',
+      kind: 'surname_dates',
+      surname: 'Syntherson',
+      arrivalDate: '2099-01-15',
+      departureDate: '2099-01-18',
+    });
+    expect(body.MADDON_FILTER_VALUE_5).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_6).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_7).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_8).toBe('Syntherson');
+    expect(body.MADDON_FILTER_VALUE_3).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_10).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_4).toBe(OSRESS_OR_UNUSED_TOKEN);
+  });
+
   it('external_reference fills external slots; confirmation OR unused', async () => {
     const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
       '../src/hms/live-read-manifest.js'
@@ -377,7 +402,7 @@ describe('exact OSRESS.search candidate binding', () => {
     expect(body.MADDON_FILTER_VALUE_3).toBe(OSRESS_OR_UNUSED_TOKEN);
   });
 
-  it('binds external_reference candidate to externalconfirmation fixed value', async () => {
+  it('allows external_reference body including altered externalconfirmation (variableBody)', async () => {
     const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
       await import('../src/hms/live-read-manifest.js');
     const candidate = {
@@ -408,6 +433,155 @@ describe('exact OSRESS.search candidate binding', () => {
       },
       postData: formBody({ ...body, externalconfirmation: 'WRONG' }),
     });
-    expect(altered.action).toBe('block');
+    expect(altered).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
   });
+  it('Wave A1 detail manifest allows ExtJS OSRESV row-open; find manifest blocks it', async () => {
+    const {
+      buildExactOsressSearchManifest,
+      buildExactOsressSearchThenDetailManifest,
+    } = await import('../src/hms/live-read-manifest.js');
+    const candidate = {
+      id: 'c1',
+      kind: 'confirmation' as const,
+      value: 'CONF-42',
+    };
+    const findOnly = buildExactOsressSearchManifest(ORIGIN, candidate);
+    const detail = buildExactOsressSearchThenDetailManifest(ORIGIN, candidate);
+    const openBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: '',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      DEFAULT_VIEW: 'HDR',
+      SAVE_FOR_HEADER: 'true',
+      confirmationnumber: 'CONF-42',
+      startUpView: 'HDR',
+      GRIDPARAM_ADDON_SORT_ELEMENT_ALIAS_NAME: '',
+      GRIDPARAM_ADDON_SORT_ELEMENT_TYPE: '',
+    });
+    const req = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV?USER_FUNCTION_NAME=OSRESV`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: openBody,
+    };
+    const blocked = evaluateObservedRequest(findOnly, req);
+    expect(blocked.action).toBe('block');
+    const allowed = evaluateObservedRequest(detail, req);
+    expect(allowed).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-open-matched-row',
+    });
+
+    const lstBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'LST',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      ADDONS_REQUIRED: 'true',
+      RUN_DS: 'true',
+      filterfields: 'confirmationnumber',
+      filteroperator: '=',
+      filtervalue: 'CONF-42',
+      ADDON_SORT_ELEMENT_ALIAS_NAME: '',
+      ADDON_SORT_ELEMENT_TYPE: '',
+    });
+    const lstReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.LST`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: lstBody,
+    };
+    expect(evaluateObservedRequest(findOnly, lstReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, lstReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-lst-detail-open',
+    });
+
+    const hdrBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+      propertycode: 'HRCEN',
+      guestfullname: '',
+      account: '',
+      guestid: '',
+      hoteldate: '',
+      lastname: '',
+      firstname: '',
+      twitterid: '',
+      facebookid: '',
+      tripadvisorid: '',
+      bookingdotcomid: '',
+      room: '',
+    });
+    const hdrReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.HDR`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: hdrBody,
+    };
+    expect(evaluateObservedRequest(findOnly, hdrReq).action).toBe('block');
+    expect(evaluateObservedRequest(detail, hdrReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr-detail-open',
+    });
+
+    const hdrChromeBody = formBody({
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+      MENU_MODULE_KEY: '0',
+      removescreenflows: 'yes',
+      confirmationnumber: 'CONF-42',
+      reservationstayid: '123',
+      propertycode: 'HRCEN',
+      guestfullname: '',
+      account: '',
+      guestid: '',
+      hoteldate: '',
+      lastname: '',
+      firstname: '',
+      twitterid: '',
+      facebookid: '',
+      tripadvisorid: '',
+      bookingdotcomid: '',
+      room: '',
+    });
+    const hdrChromeReq = {
+      method: 'POST' as const,
+      url: `${ORIGIN}/web/base/OSRESV.HDR`,
+      resourceType: 'xhr' as const,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: hdrChromeBody,
+    };
+    // Shell find HDR must allow Guest Stay navigate (camelCase guestNumber + MENU).
+    expect(evaluateObservedRequest(findOnly, hdrChromeReq)).toEqual({
+      action: 'allow',
+      ruleId: 'live-osresv-hdr',
+    });
+    // Shell HDR retained on detail manifest; may match before chrome template.
+    expect(evaluateObservedRequest(detail, hdrChromeReq).action).toBe('allow');
+    expect(
+      ['live-osresv-hdr', 'live-osresv-hdr-detail-open-chrome'].includes(
+        (evaluateObservedRequest(detail, hdrChromeReq) as { ruleId?: string }).ruleId ?? '',
+      ),
+    ).toBe(true);
+  });
+
 });

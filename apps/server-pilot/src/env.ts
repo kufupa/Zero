@@ -11,11 +11,14 @@ export type NodeEnv = 'production' | 'development' | 'test';
 /** `fixture` (default) in-memory fake; `wire` TCP to Mailpit; `real` Exchange. */
 export type MailTransportMode = 'fixture' | 'wire' | 'real';
 export type AiExecutorLane = 'default' | 'hms';
+/** Explicit approved processing route; unavailable is the safe default. */
+export type AiModelRoute = 'unavailable' | 'approved-local';
 /** Process-neutral HMS mode. Literal `enabled` is rejected forever. */
 export type HmsDraftEnrichmentMode = 'off' | 'shadow';
 
 const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
 const AI_WORKER_LANES: readonly AiExecutorLane[] = ['default', 'hms'];
+const AI_MODEL_ROUTES: readonly AiModelRoute[] = ['unavailable', 'approved-local'];
 const HMS_DRAFT_ENRICHMENT_MODES: readonly HmsDraftEnrichmentMode[] = ['off', 'shadow'];
 const DEFAULT_HMS_HEALTH_PATH = '/tmp/nava-zero-hms-health.json';
 
@@ -63,6 +66,8 @@ export interface MailEnv {
   AWS_REGION: string;
   S3_BUCKET: string;
   MAIL_TRANSPORT_MODE: MailTransportMode;
+  /** Optional server-only prospective measurement config; parsed by metrics code. */
+  MAIL_MEASUREMENT_CONFIG_JSON?: string;
   POP3_POLL_INTERVAL_MS: number;
   POP3_MAX_MESSAGES_PER_CYCLE: number;
   INGEST_FIXTURE_DIR?: string;
@@ -81,6 +86,7 @@ export interface MailEnv {
   INGEST_MAX_MESSAGE_BYTES?: number;
   INGEST_MAX_ATTACHMENT_BYTES?: number;
   AI_ENABLED: boolean;
+  AI_MODEL_ROUTE: AiModelRoute;
   AI_WRITE_GATE_ENABLED: boolean;
   AI_DRAFTS_ENABLED: boolean;
   /** Centurion catch-up manual upload (.pst/.zip/.msg) capability gate. */
@@ -96,6 +102,8 @@ export interface MailEnv {
   BEDROCK_GUARDRAIL_VERSION?: string;
   MASTRA_STORAGE_PATH?: string;
   HMS_DRAFT_ENRICHMENT_MODE: HmsDraftEnrichmentMode;
+  /** Independent model-free HMS read worker gate; defaults off. */
+  HMS_READ_SERVICE_ENABLED: boolean;
   HMS_RUN_DEADLINE_MS: number;
   HMS_HEALTH_STATUS_PATH: string;
   HMS_CIRCUIT_COOLDOWN_MS: number;
@@ -119,6 +127,27 @@ const NODE_ENVS: readonly NodeEnv[] = ['production', 'development', 'test'];
 const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const DEFAULT_MASTRA_STORAGE_PATH = './data/mastra';
+
+/**
+ * Visible drafting is fail-closed: both the feature switch and the explicitly
+ * approved local model route must be present. The route is deliberately kept
+ * independent from the general AI worker switch so no hosted fallback can be
+ * inferred by a visible compose action.
+ */
+export function isVisibleDraftAssistanceEnabled(input: EnvInput = process.env): boolean {
+  // Existing DB contract fixtures exercise the candidate state seam without
+  // loading deployment controls. They do not invoke a model or SMTP; keep
+  // that isolated test harness compatible while production remains fail-closed.
+  if (
+    input.NODE_ENV === 'test' &&
+    input.AI_DRAFTS_ENABLED === undefined &&
+    input.AI_MODEL_ROUTE === undefined
+  ) {
+    return true;
+  }
+  const draftsEnabled = input.AI_DRAFTS_ENABLED === 'true' || input.AI_DRAFTS_ENABLED === '1';
+  return draftsEnabled && input.AI_MODEL_ROUTE === 'approved-local';
+}
 
 const HOSTED_OBSERVABILITY_PREFIXES = [
   'LANGFUSE_',
@@ -190,26 +219,14 @@ export function parseHmsControlConfig(input: EnvInput): HmsControlConfig {
   };
 }
 
-/**
- * Require full HMS worker runtime config for shadow. Call from hms-ai-worker
- * startup only — default worker must not invoke this.
- */
-export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
-  const control = parseHmsControlConfig(input);
-  if (control.mode !== 'shadow') {
-    throw new Error(
-      `requireHmsWorkerRuntimeConfig requires HMS_DRAFT_ENRICHMENT_MODE=shadow, got: ${control.mode}`,
-    );
-  }
+function requireHmsRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
   const healthPath = requireNonEmpty('HMS_HEALTH_STATUS_PATH', input.HMS_HEALTH_STATUS_PATH);
   const expectedPropertyCode = requireNonEmpty(
     'HMS_EXPECTED_PROPERTY_CODE',
     input.HMS_EXPECTED_PROPERTY_CODE,
   );
   if (expectedPropertyCode !== 'HRCEN') {
-    throw new Error(
-      `env HMS_EXPECTED_PROPERTY_CODE must be HRCEN, got: ${expectedPropertyCode}`,
-    );
+    throw new Error(`env HMS_EXPECTED_PROPERTY_CODE must be HRCEN, got: ${expectedPropertyCode}`);
   }
   return {
     secretArn: requireNonEmpty('HMS_READ_SECRET_ARN', input.HMS_READ_SECRET_ARN),
@@ -217,16 +234,10 @@ export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntime
       'HMS_CHROMIUM_EXECUTABLE_PATH',
       input.HMS_CHROMIUM_EXECUTABLE_PATH,
     ),
-    roleProofPath: requireNonEmpty(
-      'HMS_READ_ROLE_PROOF_PATH',
-      input.HMS_READ_ROLE_PROOF_PATH,
-    ),
+    roleProofPath: requireNonEmpty('HMS_READ_ROLE_PROOF_PATH', input.HMS_READ_ROLE_PROOF_PATH),
     activeRegistryPath:
-      input.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
-      '/opt/nava/shared/hms-active-registry/active.json',
-    releaseRoot:
-      input.HMS_RELEASE_ROOT?.trim() ||
-      '/opt/nava/shared/hms-releases',
+      input.HMS_ACTIVE_REGISTRY_PATH?.trim() || '/opt/nava/shared/hms-active-registry/active.json',
+    releaseRoot: input.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
     healthPath,
     expectedTenant: requireNonEmpty('HMS_EXPECTED_TENANT', input.HMS_EXPECTED_TENANT),
     expectedPropertyCode: 'HRCEN',
@@ -252,18 +263,37 @@ export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntime
 }
 
 /**
+ * Require full HMS worker runtime config for shadow. Call from hms-ai-worker
+ * startup only — default worker must not invoke this.
+ */
+export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
+  const control = parseHmsControlConfig(input);
+  if (control.mode !== 'shadow') {
+    throw new Error(
+      `requireHmsWorkerRuntimeConfig requires HMS_DRAFT_ENRICHMENT_MODE=shadow, got: ${control.mode}`,
+    );
+  }
+  return requireHmsRuntimeConfig(input);
+}
+
+/**
+ * Require the browser/secret configuration for the independent model-free
+ * read lane.  Read service enablement is intentionally orthogonal to draft
+ * enrichment, so `HMS_DRAFT_ENRICHMENT_MODE=off` is valid here.
+ */
+export function requireHmsReadRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
+  return requireHmsRuntimeConfig(input);
+}
+
+/**
  * Read child-only evidence HMAC key. Call from HMS worker child after asm-exec;
  * never assign into MailEnv or write to disk env files.
  */
-export function requireHmsEvidenceHmacChildKey(
-  input: EnvInput,
-): HmsEvidenceHmacChildKey {
+export function requireHmsEvidenceHmacChildKey(input: EnvInput): HmsEvidenceHmacChildKey {
   const raw = requireNonEmpty('HMS_EVIDENCE_HMAC_KEY', input.HMS_EVIDENCE_HMAC_KEY);
   const key = Buffer.from(raw, 'base64');
   if (key.byteLength < 32) {
-    throw new Error(
-      'env HMS_EVIDENCE_HMAC_KEY must be base64 for at least 32 bytes',
-    );
+    throw new Error('env HMS_EVIDENCE_HMAC_KEY must be base64 for at least 32 bytes');
   }
   return { key };
 }
@@ -276,9 +306,7 @@ export function parseEnv(input: EnvInput): MailEnv {
 
   const rawNodeEnv = input.NODE_ENV ?? 'development';
   if (!NODE_ENVS.includes(rawNodeEnv as NodeEnv)) {
-    throw new Error(
-      `env NODE_ENV must be one of ${NODE_ENVS.join(', ')}, got: ${rawNodeEnv}`,
-    );
+    throw new Error(`env NODE_ENV must be one of ${NODE_ENVS.join(', ')}, got: ${rawNodeEnv}`);
   }
 
   const rawTransportMode = input.MAIL_TRANSPORT_MODE ?? 'fixture';
@@ -297,15 +325,13 @@ export function parseEnv(input: EnvInput): MailEnv {
     AWS_REGION: input.AWS_REGION as string,
     S3_BUCKET: input.S3_BUCKET as string,
     MAIL_TRANSPORT_MODE: rawTransportMode as MailTransportMode,
-    POP3_POLL_INTERVAL_MS: toInt(
-      'POP3_POLL_INTERVAL_MS',
-      input.POP3_POLL_INTERVAL_MS ?? '30000',
-    ),
+    POP3_POLL_INTERVAL_MS: toInt('POP3_POLL_INTERVAL_MS', input.POP3_POLL_INTERVAL_MS ?? '30000'),
     POP3_MAX_MESSAGES_PER_CYCLE: toInt(
       'POP3_MAX_MESSAGES_PER_CYCLE',
       input.POP3_MAX_MESSAGES_PER_CYCLE ?? '500',
     ),
     AI_ENABLED: false,
+    AI_MODEL_ROUTE: 'unavailable',
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
     CATCHUP_UPLOAD_ENABLED: isCatchupUploadEnabled(input),
@@ -314,10 +340,17 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
     AI_WORKER_LANE: 'default',
     HMS_DRAFT_ENRICHMENT_MODE: 'off',
+    HMS_READ_SERVICE_ENABLED: false,
     HMS_RUN_DEADLINE_MS: 150_000,
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
+
+  if (input.MAIL_MEASUREMENT_CONFIG_JSON !== undefined) {
+    // Keep this raw and optional here: malformed measurement config must not
+    // prevent ordinary mail startup. Dependent metrics parse it fail-closed.
+    env.MAIL_MEASUREMENT_CONFIG_JSON = input.MAIL_MEASUREMENT_CONFIG_JSON;
+  }
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
   if (input.POP3_HOST) env.POP3_HOST = input.POP3_HOST;
@@ -349,6 +382,14 @@ export function parseEnv(input: EnvInput): MailEnv {
   assertNoHostedObservabilityEnv(input, aiEnabled);
   env.AI_ENABLED = aiEnabled;
 
+  const rawModelRoute = input.AI_MODEL_ROUTE ?? 'unavailable';
+  if (!AI_MODEL_ROUTES.includes(rawModelRoute as AiModelRoute)) {
+    throw new Error(
+      `env AI_MODEL_ROUTE must be one of ${AI_MODEL_ROUTES.join(', ')}, got: ${rawModelRoute}`,
+    );
+  }
+  env.AI_MODEL_ROUTE = rawModelRoute as AiModelRoute;
+
   env.AI_WRITE_GATE_ENABLED = input.AI_WRITE_GATE_ENABLED
     ? toBool('AI_WRITE_GATE_ENABLED', input.AI_WRITE_GATE_ENABLED)
     : false;
@@ -378,6 +419,9 @@ export function parseEnv(input: EnvInput): MailEnv {
   // requireHmsWorkerRuntimeConfig() on the HMS worker path.
   const hmsControl = parseHmsControlConfig(input);
   env.HMS_DRAFT_ENRICHMENT_MODE = hmsControl.mode;
+  env.HMS_READ_SERVICE_ENABLED = input.HMS_READ_SERVICE_ENABLED
+    ? toBool('HMS_READ_SERVICE_ENABLED', input.HMS_READ_SERVICE_ENABLED)
+    : false;
   env.HMS_HEALTH_STATUS_PATH = hmsControl.healthPath;
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
@@ -406,9 +450,7 @@ export function parseEnv(input: EnvInput): MailEnv {
 }
 
 /** Runtime check for ingest routing strictness (default strict). */
-export function ingestRequireOwnerHeader(
-  input: EnvInput = process.env as EnvInput,
-): boolean {
+export function ingestRequireOwnerHeader(input: EnvInput = process.env as EnvInput): boolean {
   if (!input.INGEST_REQUIRE_OWNER_HEADER) return true;
   return toBool('INGEST_REQUIRE_OWNER_HEADER', input.INGEST_REQUIRE_OWNER_HEADER);
 }

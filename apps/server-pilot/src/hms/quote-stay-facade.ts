@@ -2,20 +2,14 @@
  * Tool-specific OSRRAV quote facade. This module alone owns raw page operations.
  * Production quote drivers receive only proven, inert operations.
  */
-import type { QuoteStayCandidate } from './quote-stay-candidate.js';
-import {
-  LIVE_QUOTE_STAY_SEARCH_PATH,
-  buildExactOsrravSearchBody,
-} from './live-read-manifest.js';
+import { LIVE_QUOTE_STAY_SEARCH_PATH, buildExactOsrravSearchBody } from './live-read-manifest.js';
 import { HmsRuntimeError, type HmsPage, type HmsReadSession } from './runtime.js';
+import type { QuoteStayCandidate } from './quote-stay-candidate.js';
 
 export interface QuoteStayFacade {
   navigate(): Promise<void>;
   collectChromeDefaults(): Promise<Record<string, string>>;
-  searchExact(
-    candidate: QuoteStayCandidate,
-    chrome: Record<string, string>,
-  ): Promise<string>;
+  searchExact(candidate: QuoteStayCandidate, chrome: Record<string, string>): Promise<string>;
 }
 
 async function navigateOsrrav(page: HmsPage, origin: string): Promise<void> {
@@ -51,9 +45,7 @@ async function navigateOsrrav(page: HmsPage, origin: string): Promise<void> {
   }
 }
 
-async function collectChromeDefaults(
-  page: HmsPage,
-): Promise<Record<string, string>> {
+async function collectChromeDefaults(page: HmsPage): Promise<Record<string, string>> {
   return page.evaluate(() => {
     const names = [
       'property',

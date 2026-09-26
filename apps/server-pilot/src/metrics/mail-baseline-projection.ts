@@ -1,0 +1,366 @@
+import {
+  MAIL_BASELINE_PROJECTION_VERSION,
+  reduceMailBaseline,
+  type MailBaselineCoverage,
+  type MailBaselineEvidence,
+  type MailBaselineProjection,
+  type MailBaselineReducerInput,
+} from './mail-baseline.js';
+import { mailBaselineProjection } from '../db/schema/mail-baseline-projection.js';
+import { and, asc, gt, inArray, isNull, lte, lt, or } from 'drizzle-orm';
+import { getDb, type DB } from '../db/client.js';
+import { createHash } from 'node:crypto';
+
+export type MailBaselineProjectionRowInput = {
+  id: string;
+  generationKey: string;
+  generationId: string;
+  projectionVersion: string;
+  transportId: string;
+  threadId: string;
+  sourceMessageId: string | null;
+  requestId: string;
+  askId: string;
+  eventKind: MailBaselineEvidence['eventType'];
+  direction: MailBaselineEvidence['direction'];
+  eventAt: Date | null;
+  observedAt: Date | null;
+  source: MailBaselineEvidence['source'];
+  sourceBasis: MailBaselineEvidence['sourceBasis'];
+  sourceVintage: string;
+  interpretationVersion: string;
+  classifierVersion: string | null;
+  reviewerVersion: string | null;
+  observationCutoff: Date;
+  measurementStartAt: Date | null;
+  coverage: MailBaselineCoverage;
+  evidence: Record<string, unknown>;
+};
+
+export type MailBaselineProjectionRow = typeof mailBaselineProjection.$inferSelect;
+type MailBaselineProjectionRowLike = MailBaselineProjectionRow | MailBaselineProjectionRowInput;
+
+function asDate(value: string | Date | null | undefined): Date | null {
+  if (value === null || value === undefined) return null;
+  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function compareSourceVintage(left: string, right: string): number {
+  const leftMillis = Date.parse(left);
+  const rightMillis = Date.parse(right);
+  if (Number.isFinite(leftMillis) && Number.isFinite(rightMillis)) return leftMillis - rightMillis;
+  return left.localeCompare(right, undefined, { numeric: true });
+}
+
+function hash(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function jsonSafeEvidence(evidence: MailBaselineEvidence): Record<string, unknown> {
+  return {
+    requiresHotelResponse: evidence.requiresHotelResponse ?? false,
+    requiresCustomerInformation: evidence.requiresCustomerInformation ?? false,
+    noReplyRequired: evidence.noReplyRequired ?? false,
+    answerState: evidence.answerState ?? null,
+    workState: evidence.workState ?? null,
+    substantive: evidence.substantive ?? false,
+    linkStrength: evidence.linkStrength ?? 'unknown',
+    delivery: evidence.delivery ?? null,
+    factKey: evidence.factKey ?? null,
+    unknownReason: evidence.unknownReason ?? null,
+  };
+}
+
+/** Convert semantic facts into immutable rows. No message body is accepted. */
+export function createMailBaselineProjectionRows(input: {
+  transportId: string;
+  threadId: string;
+  generationId: string;
+  sourceVintage: string;
+  interpretationVersion: string;
+  reviewerVersion?: string | null;
+  observationCutoff: string | Date;
+  measurementStartAt?: string | Date | null;
+  coverage?: MailBaselineCoverage;
+  evidence: readonly MailBaselineEvidence[];
+}): MailBaselineProjectionRowInput[] {
+  const cutoff = asDate(input.observationCutoff);
+  if (!cutoff) throw new Error('mail baseline projection cutoff must be a valid instant');
+  const measurementStartAt = asDate(input.measurementStartAt);
+  const coverage = input.coverage ?? {
+    startAt: measurementStartAt?.toISOString() ?? null,
+    endAt: cutoff.toISOString(),
+    basis: 'coverage_unconfigured',
+    complete: false,
+  };
+  return input.evidence.map((evidence) => {
+    const eventAt = asDate(evidence.eventAt);
+    const observedAt = asDate(evidence.observedAt);
+    const generationKey = [
+      input.transportId,
+      input.threadId,
+      input.generationId,
+      evidence.id,
+      MAIL_BASELINE_PROJECTION_VERSION,
+      input.interpretationVersion,
+    ].join(':');
+    return {
+      id: `mail-baseline:${hash(generationKey)}`,
+      generationKey,
+      generationId: input.generationId,
+      projectionVersion: MAIL_BASELINE_PROJECTION_VERSION,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      sourceMessageId: evidence.sourceMessageId ?? null,
+      requestId: evidence.requestId,
+      askId: evidence.askId,
+      eventKind: evidence.eventType,
+      direction: evidence.direction,
+      eventAt,
+      observedAt,
+      source: evidence.source,
+      sourceBasis: evidence.sourceBasis,
+      sourceVintage: input.sourceVintage,
+      interpretationVersion: input.interpretationVersion,
+      classifierVersion: evidence.classifierVersion ?? null,
+      reviewerVersion: input.reviewerVersion ?? evidence.reviewerVersion ?? null,
+      observationCutoff: cutoff,
+      measurementStartAt,
+      coverage,
+      evidence: jsonSafeEvidence(evidence),
+    };
+  });
+}
+
+export async function persistMailBaselineProjection(
+  db: DB = getDb(),
+  input: Parameters<typeof createMailBaselineProjectionRows>[0],
+): Promise<{ inserted: number; rows: MailBaselineProjectionRowInput[] }> {
+  const rows = createMailBaselineProjectionRows(input);
+  if (rows.length === 0) return { inserted: 0, rows };
+  const inserted = await db
+    .insert(mailBaselineProjection)
+    .values(rows)
+    .onConflictDoNothing({ target: mailBaselineProjection.generationKey })
+    .returning({ id: mailBaselineProjection.id });
+  return { inserted: inserted.length, rows };
+}
+
+export type MailBaselineProjectionQuery = {
+  transportIds: readonly string[];
+  threadIds?: readonly string[];
+  observationCutoff: string | Date;
+  since?: string | Date | null;
+  limit?: number;
+};
+
+export const MAIL_BASELINE_PROJECTION_QUERY_CAP = 10_000;
+
+export type MailBaselineProjectionPage = {
+  rows: MailBaselineProjectionRow[];
+  hasMore: boolean;
+};
+
+async function selectMailBaselineProjectionRows(
+  db: DB = getDb(),
+  query: MailBaselineProjectionQuery,
+  limit: number,
+): Promise<MailBaselineProjectionRow[]> {
+  const cutoff = asDate(query.observationCutoff);
+  if (!cutoff) throw new Error('mail baseline query cutoff must be a valid instant');
+  if (query.transportIds.length === 0) return [];
+  const conditions = [
+    inArray(mailBaselineProjection.transportId, [...query.transportIds]),
+    lte(mailBaselineProjection.observationCutoff, cutoff),
+    or(isNull(mailBaselineProjection.eventAt), lt(mailBaselineProjection.eventAt, cutoff)),
+  ];
+  if (query.threadIds?.length) {
+    conditions.push(inArray(mailBaselineProjection.threadId, [...query.threadIds]));
+  }
+  const since = asDate(query.since);
+  if (since)
+    conditions.push(
+      or(isNull(mailBaselineProjection.eventAt), gt(mailBaselineProjection.eventAt, since)),
+    );
+  return db
+    .select()
+    .from(mailBaselineProjection)
+    .where(and(...conditions))
+    .orderBy(asc(mailBaselineProjection.eventAt), asc(mailBaselineProjection.id))
+    .limit(limit);
+}
+
+/**
+ * Read a bounded page plus one lookahead row so callers can distinguish a
+ * complete population from a prefix that reached the safety cap.
+ */
+export async function queryMailBaselineProjectionPage(
+  db: DB = getDb(),
+  query: MailBaselineProjectionQuery,
+): Promise<MailBaselineProjectionPage> {
+  const limit = Math.min(Math.max(query.limit ?? 2000, 1), MAIL_BASELINE_PROJECTION_QUERY_CAP);
+  const rows = await selectMailBaselineProjectionRows(db, query, limit + 1);
+  return {
+    rows: rows.slice(0, limit),
+    hasMore: rows.length > limit,
+  };
+}
+
+/** Bounded, body-free projection read used by non-paginated consumers. */
+export async function queryMailBaselineProjection(
+  db: DB = getDb(),
+  query: MailBaselineProjectionQuery,
+): Promise<MailBaselineProjectionRow[]> {
+  return (await queryMailBaselineProjectionPage(db, query)).rows;
+}
+
+/**
+ * Select one immutable producer generation before reducing it. Projection
+ * rows are append-only, so an as-of read must exclude later observations and
+ * must never combine an older interpretation with a retry/version.
+ */
+export function selectMailBaselineGeneration(
+  rows: readonly MailBaselineProjectionRowLike[],
+  input: {
+    observationCutoff: string | Date;
+    sourceVintage: string;
+    interpretationVersion: string;
+    generationId?: string | null;
+  },
+): MailBaselineProjectionRowLike[] {
+  const cutoff = asDate(input.observationCutoff);
+  if (!cutoff) throw new Error('mail baseline generation cutoff must be a valid instant');
+  const eligible = rows.filter((row) => {
+    const rowCutoff = asDate(row.observationCutoff);
+    return (
+      rowCutoff !== null &&
+      rowCutoff.getTime() <= cutoff.getTime() &&
+      compareSourceVintage(row.sourceVintage, input.sourceVintage) <= 0 &&
+      row.interpretationVersion === input.interpretationVersion &&
+      (input.generationId === undefined ||
+        input.generationId === null ||
+        row.generationId === input.generationId)
+    );
+  });
+  if (eligible.length === 0) return [];
+  if (input.generationId) return eligible.filter((row) => row.generationId === input.generationId);
+
+  // A thread may receive independent asks/messages in different producer
+  // generations. Select the latest eligible generation per stable source fact
+  // rather than one generation for the whole thread.
+  const factKey = (row: MailBaselineProjectionRowLike): string => {
+    const payload = row.evidence ?? {};
+    const explicit = payload.factKey;
+    if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+    return [row.sourceMessageId ?? row.id, row.requestId, row.askId, row.eventKind].join(':');
+  };
+  const byFact = new Map<string, MailBaselineProjectionRowLike[]>();
+  for (const row of eligible) {
+    const list = byFact.get(factKey(row)) ?? [];
+    list.push(row);
+    byFact.set(factKey(row), list);
+  }
+  const selected: MailBaselineProjectionRowLike[] = [];
+  for (const factRows of byFact.values()) {
+    const generationIds = [...new Set(factRows.map((row) => row.generationId))];
+    const selectedGenerationId = generationIds
+      .map((generationId) => {
+        const generationRows = factRows.filter((row) => row.generationId === generationId);
+        const latestSourceVintage =
+          generationRows
+            .map((row) => row.sourceVintage)
+            .sort(compareSourceVintage)
+            .at(-1) ?? '';
+        const latestCutoff = Math.max(
+          ...generationRows.map(
+            (row) => asDate(row.observationCutoff)?.getTime() ?? Number.NEGATIVE_INFINITY,
+          ),
+        );
+        const latestCreated = Math.max(
+          ...generationRows.map((row) =>
+            'createdAt' in row
+              ? (asDate(row.createdAt)?.getTime() ?? Number.NEGATIVE_INFINITY)
+              : Number.NEGATIVE_INFINITY,
+          ),
+        );
+        return { generationId, latestSourceVintage, latestCutoff, latestCreated };
+      })
+      .sort(
+        (left, right) =>
+          compareSourceVintage(left.latestSourceVintage, right.latestSourceVintage) ||
+          left.latestCutoff - right.latestCutoff ||
+          left.latestCreated - right.latestCreated ||
+          left.generationId.localeCompare(right.generationId),
+      )
+      .at(-1)?.generationId;
+    if (selectedGenerationId)
+      selected.push(...factRows.filter((row) => row.generationId === selectedGenerationId));
+  }
+  return selected.sort(
+    (left, right) =>
+      (asDate(left.eventAt)?.getTime() ?? Number.NEGATIVE_INFINITY) -
+        (asDate(right.eventAt)?.getTime() ?? Number.NEGATIVE_INFINITY) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+function evidenceFromRow(row: MailBaselineProjectionRow): MailBaselineEvidence {
+  const payload = row.evidence ?? {};
+  return {
+    id: row.id,
+    requestId: row.requestId,
+    askId: row.askId,
+    threadId: row.threadId,
+    transportId: row.transportId,
+    eventType: row.eventKind as MailBaselineEvidence['eventType'],
+    direction: row.direction as MailBaselineEvidence['direction'],
+    eventAt: row.eventAt,
+    observedAt: row.observedAt,
+    source: row.source as MailBaselineEvidence['source'],
+    sourceBasis: row.sourceBasis as MailBaselineEvidence['sourceBasis'],
+    sourceMessageId: row.sourceMessageId,
+    requiresHotelResponse: payload.requiresHotelResponse === true,
+    requiresCustomerInformation: payload.requiresCustomerInformation === true,
+    noReplyRequired: payload.noReplyRequired === true,
+    answerState: (payload.answerState as MailBaselineEvidence['answerState']) ?? null,
+    workState: (payload.workState as MailBaselineEvidence['workState']) ?? null,
+    substantive: payload.substantive === true,
+    linkStrength: (payload.linkStrength as MailBaselineEvidence['linkStrength']) ?? 'unknown',
+    delivery: (payload.delivery as MailBaselineEvidence['delivery']) ?? null,
+    factKey: typeof payload.factKey === 'string' ? payload.factKey : undefined,
+    classifierVersion: row.classifierVersion,
+    reviewerVersion: row.reviewerVersion,
+    unknownReason: typeof payload.unknownReason === 'string' ? payload.unknownReason : null,
+  };
+}
+
+export function reduceProjectedMailBaseline(
+  rows: readonly MailBaselineProjectionRow[] | readonly MailBaselineProjectionRowInput[],
+  input: Pick<
+    MailBaselineReducerInput,
+    'observationCutoff' | 'sourceVintage' | 'interpretationVersion'
+  > &
+    Partial<
+      Pick<MailBaselineReducerInput, 'transportId' | 'threadId' | 'measurementStartAt' | 'coverage'>
+    > & { generationId?: string | null },
+): MailBaselineProjection {
+  const normalizedRows = selectMailBaselineGeneration(
+    rows,
+    input,
+  ) as readonly MailBaselineProjectionRow[];
+  const first = normalizedRows[0];
+  const evidence = normalizedRows.map(evidenceFromRow);
+  return reduceMailBaseline({
+    transportId: input.transportId ?? first?.transportId ?? '',
+    threadId: input.threadId ?? first?.threadId ?? '',
+    observationCutoff: input.observationCutoff,
+    sourceVintage: input.sourceVintage,
+    interpretationVersion: input.interpretationVersion,
+    // A retained row carries the producer's immutable T0/coverage snapshot.
+    // Never replace it with mutable read-time configuration.
+    measurementStartAt: first?.measurementStartAt ?? input.measurementStartAt ?? null,
+    coverage: (first?.coverage as MailBaselineCoverage | undefined) ?? input.coverage,
+    evidence,
+  });
+}

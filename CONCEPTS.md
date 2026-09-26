@@ -270,6 +270,18 @@ Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as 
 
 *Avoid: reading fixture-green as live-green; concluding "PMS has no record" from a single candidate over a narrow window with no positive control.*
 
+### Packaging gate
+
+Proof that the live HMS runner authenticated, stayed `view_only`, produced digests/receipts, and captured a playable video. Necessary but not sufficient for tool promotion. Distinct from Payload gate.
+
+### Payload gate
+
+Proof that `result.v1.json` (or equivalent) satisfies the tool's field contract: required values present, allowed nulls explicit, forbidden sentinels rejected, and `claimKeys` honest relative to `unresolvedFields`. Requires a recorded live response fixture, not only synthetic happy-path GRID rows. Distinct from Packaging gate.
+
+### Tool promotion HITL
+
+Human batch review at a **wave boundary** after every tool in that wave has passed Packaging gate and Payload gate: watch the wave’s videos and check result payloads before the next wave may start. Inside a wave there is no human pause. Distinct from write-tool HITL proposal approve/execute.
+
 ### HOST_ROUTE
 
 The instance default IPv4 route via the VPC gateway on the ENI (not via `tun`). Used as the live proof that split tunnel has not hijacked AWS egress.
@@ -446,6 +458,28 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 
 *Avoid: keeping a disabled modal as the primary click target; flipping the whole SPA into frontend-only demo mode to recover demo chrome; conflating this with Compose-close honesty (draft Save/Discard/Keep editing).*
 
+## Executive dashboard reports
+
+### Dashboard cohort
+
+A named source population that determines which mail activity an executive dashboard report describes.
+
+### Observation cutoff
+
+The "as of" boundary attached to a dashboard report, distinct from the reporting window that selects the interval being measured.
+
+### Dashboard snapshot
+
+Metric values together with their Dashboard cohort, reporting window, Observation cutoff, and source context.
+
+A prior snapshot may remain visible during a refresh, but its original interpretation context and stale status remain attached; its presence does not prove a new refresh succeeded.
+
+### Dashboard export
+
+A user-requested portable report carrying a Dashboard snapshot and its interpretation context.
+
+A new export requires an accepted refresh for the requested report selection; a retained snapshot alone is not a successful new export.
+
 ## Connected mailbox commercial analysis
 
 Ops corpus analysis over connected-mailbox exports (not product mail UI). Used for client-facing daily charts and WINDOW commercial KPIs.
@@ -539,6 +573,7 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
+- **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
 - **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
 

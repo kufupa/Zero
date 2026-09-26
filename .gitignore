@@ -93,6 +93,7 @@ Nava.zip
 .private/
 .private/centurion-thread-corpus/
 .private/connected-mailbox-corpus/
+.private/centurion-corpus/
 .private/connected-mailbox-corpus-pdf/
 *.mbox
 *.mailbox-dump*

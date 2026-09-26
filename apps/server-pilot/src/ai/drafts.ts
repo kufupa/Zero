@@ -1,13 +1,19 @@
-import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import type { DB } from '../db/client.js';
+import {
+  canonicalJson,
+  resolveDraftApprovalRouteBinding,
+  type DraftApprovalRouteBinding,
+} from './draft-approval.js';
 import {
   aiDraftGeneration,
+  aiWorkflowRun,
   mailDraft,
   mailDraftRevision,
   message,
 } from '../db/schema/mail.js';
+import { and, desc, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
 import { computeThreadStateVersion } from './thread-context.js';
+import type { DB } from '../db/client.js';
+import { randomUUID } from 'node:crypto';
 
 export class ThreadStateStaleError extends Error {
   constructor(message = 'thread state version stale') {
@@ -16,17 +22,20 @@ export class ThreadStateStaleError extends Error {
   }
 }
 
+/** A retry must not reuse an edited body under a different AI release. */
+export class DraftGenerationRouteMismatchError extends Error {
+  constructor(message = 'draft generation route release changed') {
+    super(message);
+    this.name = 'DraftGenerationRouteMismatchError';
+  }
+}
+
 /**
  * Revision kinds that participate in threadStateVersion.
  * Exclude `ai_generated` so candidate persist does not immediately self-stale.
  * Sent / edited / promoted / created = human or outbound state change.
  */
-export const THREAD_STATE_REVISION_KINDS = [
-  'created',
-  'promoted',
-  'edited',
-  'sent',
-] as const;
+export const THREAD_STATE_REVISION_KINDS = ['created', 'promoted', 'edited', 'sent'] as const;
 
 /** Fail closed when expected version does not match live thread hash. */
 export function assertThreadStateVersionFresh(expected: string, live: string): void {
@@ -39,19 +48,31 @@ export function assertThreadStateVersionFresh(expected: string, live: string): v
  */
 export async function loadLatestThreadAffectingDraftRevisionId(
   db: DB,
-  input: { transportId: string; threadId: string },
+  input: {
+    transportId: string;
+    threadId: string;
+    /** Queue revalidation may omit its own sent revision. */
+    excludeSentMessageIds?: readonly string[];
+  },
 ): Promise<string | null> {
+  const revisionConditions = [
+    eq(mailDraft.transportId, input.transportId),
+    eq(mailDraft.threadId, input.threadId),
+    inArray(mailDraftRevision.kind, [...THREAD_STATE_REVISION_KINDS]),
+  ];
+  if (input.excludeSentMessageIds?.length) {
+    revisionConditions.push(
+      or(
+        isNull(mailDraftRevision.sentMessageId),
+        notInArray(mailDraftRevision.sentMessageId, [...input.excludeSentMessageIds]),
+      )!,
+    );
+  }
   const [row] = await db
     .select({ id: mailDraftRevision.id })
     .from(mailDraftRevision)
     .innerJoin(mailDraft, eq(mailDraftRevision.draftId, mailDraft.id))
-    .where(
-      and(
-        eq(mailDraft.transportId, input.transportId),
-        eq(mailDraft.threadId, input.threadId),
-        inArray(mailDraftRevision.kind, [...THREAD_STATE_REVISION_KINDS]),
-      ),
-    )
+    .where(and(...revisionConditions))
     .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
     .limit(1);
   return row?.id ?? null;
@@ -68,8 +89,19 @@ export async function loadLiveThreadStateVersion(
     transportId: string;
     threadId: string;
     latestDraftRevisionId?: string | null;
+    /** Queue revalidation may exclude its own unsent outbound message. */
+    excludeMessageIds?: readonly string[];
+    /** Queue revalidation may exclude its own sent draft revision. */
+    excludeSentMessageIds?: readonly string[];
   },
 ): Promise<string> {
+  const messageConditions = [
+    eq(message.threadId, input.threadId),
+    eq(message.transportId, input.transportId),
+  ];
+  if (input.excludeMessageIds?.length) {
+    messageConditions.push(notInArray(message.id, [...input.excludeMessageIds]));
+  }
   const rows = await db
     .select({
       id: message.id,
@@ -78,9 +110,7 @@ export async function loadLiveThreadStateVersion(
       sentAt: message.sentAt,
     })
     .from(message)
-    .where(
-      and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)),
-    );
+    .where(and(...messageConditions));
 
   const latestDraftRevisionId =
     input.latestDraftRevisionId !== undefined
@@ -88,16 +118,14 @@ export async function loadLiveThreadStateVersion(
       : await loadLatestThreadAffectingDraftRevisionId(db, {
           transportId: input.transportId,
           threadId: input.threadId,
+          excludeSentMessageIds: input.excludeSentMessageIds,
         });
 
   return computeThreadStateVersion({
     messages: rows.map((m) => ({
       id: m.id,
-      direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
-        | 'inbound'
-        | 'outbound',
-      timestamp:
-        (m.sentAt ?? m.receivedAt)?.toISOString() ?? '1970-01-01T00:00:00.000Z',
+      direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as 'inbound' | 'outbound',
+      timestamp: (m.sentAt ?? m.receivedAt)?.toISOString() ?? '1970-01-01T00:00:00.000Z',
     })),
     latestDraftRevisionId,
   });
@@ -133,6 +161,8 @@ export interface PersistAiCandidateDraftInput {
    * no mailDraft / revision rows.
    */
   persistDraft?: boolean;
+  /** Complete trusted route/release provenance for a normal candidate run. */
+  routeBinding?: DraftApprovalRouteBinding;
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
@@ -157,7 +187,30 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         ),
       )
       .limit(1);
-    if (existingDraft[0]) return existingDraft[0];
+    if (existingDraft[0]) {
+      if (persistDraft && input.routeBinding && existingDraft[0].origin === 'ai') {
+        const [previousRun] = await input.db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.generationId, input.generationId),
+              eq(aiWorkflowRun.runKind, 'candidate_draft'),
+              eq(aiWorkflowRun.state, 'succeeded'),
+            ),
+          )
+          .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+          .limit(1);
+        const previousBinding = resolveDraftApprovalRouteBinding(previousRun?.metrics);
+        if (
+          !previousBinding ||
+          canonicalJson(previousBinding) !== canonicalJson(input.routeBinding)
+        ) {
+          throw new DraftGenerationRouteMismatchError();
+        }
+      }
+      return existingDraft[0];
+    }
 
     const existingRevision = await input.db
       .select({ draftId: mailDraftRevision.draftId })
@@ -291,10 +344,6 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
     };
   }
 
-  const [draft] = await input.db
-    .select()
-    .from(mailDraft)
-    .where(eq(mailDraft.id, draftId))
-    .limit(1);
+  const [draft] = await input.db.select().from(mailDraft).where(eq(mailDraft.id, draftId)).limit(1);
   return draft!;
 }

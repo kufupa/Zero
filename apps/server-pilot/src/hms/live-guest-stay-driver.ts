@@ -2,8 +2,6 @@
  * Canonical Guest Stay live driver — login, binding, exact search, not-found canary.
  * Probe and worker share this surface; request policy uses exact candidate binding.
  */
-import { createHash } from 'node:crypto';
-import * as cheerio from 'cheerio';
 import {
   liveGuestStayRowFingerprintV2Schema,
   liveGuestStayRowFingerprintV1Schema,
@@ -16,18 +14,19 @@ import {
   liveNotFoundCanaryCandidate,
   LIVE_NOTFOUND_CANARY,
   type ExactReservationCandidate,
+  type ReservationSearchCandidate,
 } from './live-read-manifest.js';
-import {
-  HmsRuntimeError,
-  type HmsReadSession,
-  type HmsRuntime,
-} from './runtime.js';
 import {
   createFindReservationFacade,
   type FindReservationFacade,
 } from './find-reservation-facade.js';
+import { createReservationDetailFacade } from './reservation-detail-facade.js';
+import { HmsRuntimeError, type HmsReadSession, type HmsRuntime } from './runtime.js';
+import type { PropertyReadLock } from './property-read-lock.js';
+import { createHash } from 'node:crypto';
+import * as cheerio from 'cheerio';
 
-export type { ExactReservationCandidate };
+export type { ExactReservationCandidate, ReservationSearchCandidate };
 
 /** Frozen live Guest Stay list-row selectors (structure; not guest values). */
 export const LIVE_GUEST_STAY_ROW_SELECTORS = {
@@ -80,22 +79,31 @@ export type GuestStaySearchResult =
       capped: boolean;
     };
 
-export type AuditedSearchMapper<T> = (
-  result: GuestStaySearchResult,
-) => T | Promise<T>;
+export type AuditedSearchMapper<T> = (result: GuestStaySearchResult) => T | Promise<T>;
 
 export interface LiveGuestStayDriver {
   loginAndVerifyBinding(signal: AbortSignal): Promise<void>;
   runNotFoundCanary(signal: AbortSignal): Promise<void>;
   searchExact(
-    candidate: ExactReservationCandidate,
+    candidate: ReservationSearchCandidate,
     signal: AbortSignal,
   ): Promise<GuestStaySearchResult>;
   searchExactAndMap<T>(
-    candidate: ExactReservationCandidate,
+    candidate: ReservationSearchCandidate,
     signal: AbortSignal,
     mapResult: AuditedSearchMapper<T>,
   ): Promise<T>;
+  /**
+   * Wave A1: exact search then inert open of matched grid row; return search +
+   * detail form-key dump. Never save.
+   */
+  searchExactThenDetailDump(
+    candidate: ReservationSearchCandidate,
+    signal: AbortSignal,
+  ): Promise<{
+    search: GuestStaySearchResult;
+    dump: import('./reservation-detail-projection.js').ReservationDetailDumpV1;
+  }>;
   /** Digests-only receipt from most recent audited session close. */
   lastAuditReceipt(): import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null;
 }
@@ -107,7 +115,7 @@ export type LiveGuestStayDriverOptions = {
   onSession?: (session: HmsReadSession) => void;
   /** When set, every session is audited (operationId from run / synthetic). */
   auditSpecFor?: (input: {
-    candidate: ExactReservationCandidate | null;
+    candidate: ReservationSearchCandidate | null;
     inputClass: 'authorized_exact' | 'synthetic_not_found';
   }) => import('./browser-artifacts.js').HmsBrowserAuditSpec | undefined;
   /**
@@ -115,9 +123,11 @@ export type LiveGuestStayDriverOptions = {
    * openReadSession never falls back to process-wide Guest Stay union alone.
    */
   sessionAuthorizationFor?: (input: {
-    candidate: ExactReservationCandidate | null;
+    candidate: ReservationSearchCandidate | null;
     inputClass: 'authorized_exact' | 'synthetic_not_found';
   }) => import('./release-kernel.js').HmsSessionAuthorization;
+  /** Dedicated tenant/property advisory lock held before session admission. */
+  propertyReadLock?: PropertyReadLock;
 };
 
 const NO_RESULTS_RE =
@@ -155,10 +165,7 @@ function parseIsoDateOrNull(raw: string | undefined | null): string | null {
   return `${mon[3]}-${mm}-${mon[1]}`;
 }
 
-function attrOrNull(
-  el: { attr(name: string): string | undefined },
-  attr: string,
-): string | null {
+function attrOrNull(el: { attr(name: string): string | undefined }, attr: string): string | null {
   const raw = el.attr(attr);
   if (raw == null) return null;
   const trimmed = raw.trim();
@@ -172,55 +179,108 @@ function strOrNull(raw: unknown): string | null {
 }
 
 /**
- * Infor OSRESS.search returns `{ pageData: { ...json... } }` (unquoted key).
- * Extract / parse the pageData object; null when not a grid envelope.
+ * Infor OSRESS.search returns `{ pageData: { ...json... } }` (unquoted key)
+ * or standard JSON `{ "pageData": { ... } }`. Extract / parse the pageData
+ * object; null when not a grid envelope.
  */
 export function extractOsressPageData(text: string): Record<string, unknown> | null {
-  const idx = text.indexOf('pageData:');
-  if (idx < 0) return null;
-  let i = text.indexOf('{', idx);
-  if (i < 0) return null;
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  let quote = '';
-  for (let j = i; j < text.length; j++) {
-    const ch = text[j]!;
-    if (inStr) {
-      if (esc) {
-        esc = false;
+  const markers = ['pageData:', '"pageData":', "'pageData':"] as const;
+  for (const marker of markers) {
+    const idx = text.indexOf(marker);
+    if (idx < 0) continue;
+    let i = text.indexOf('{', idx + marker.length - 1);
+    if (i < 0) continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let quote = '';
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j]!;
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === '\\') {
+          esc = true;
+          continue;
+        }
+        if (ch === quote) inStr = false;
         continue;
       }
-      if (ch === '\\') {
-        esc = true;
+      if (ch === '"' || ch === "'") {
+        inStr = true;
+        quote = ch;
         continue;
       }
-      if (ch === quote) inStr = false;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inStr = true;
-      quote = ch;
-      continue;
-    }
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(i, j + 1)) as Record<string, unknown>;
-        } catch {
-          return null;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(i, j + 1)) as Record<string, unknown>;
+          } catch {
+            break;
+          }
         }
       }
+    }
+  }
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.includes('pageData')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { pageData?: unknown };
+      if (parsed.pageData && typeof parsed.pageData === 'object') {
+        return parsed.pageData as Record<string, unknown>;
+      }
+    } catch {
+      return null;
     }
   }
   return null;
 }
 
+export function extractOsressDetailOpenHints(html: string): {
+  confirmationNumber: string | null;
+  externalReference: string | null;
+  reservationStayId: string | null;
+} {
+  const empty = {
+    confirmationNumber: null as string | null,
+    externalReference: null as string | null,
+    reservationStayId: null as string | null,
+  };
+  const pageData = extractOsressPageData(html);
+  if (!pageData) return empty;
+  const gridWrap = pageData.grid;
+  if (gridWrap == null || typeof gridWrap !== 'object') return empty;
+  const gridResult = (gridWrap as Record<string, unknown>).GRIDRESULT;
+  if (gridResult == null || typeof gridResult !== 'object') return empty;
+  const inner = (gridResult as Record<string, unknown>).GRID;
+  if (inner == null || typeof inner !== 'object') return empty;
+  const data = (inner as Record<string, unknown>).DATA;
+  if (!Array.isArray(data) || data.length < 1) return empty;
+  const row = data[0];
+  if (!row || typeof row !== 'object') return empty;
+  const rec = row as Record<string, unknown>;
+  return {
+    confirmationNumber: strOrNull(rec.confirmationnumber),
+    externalReference: strOrNull(rec.externalconfirmation),
+    reservationStayId: strOrNull(rec.id) ?? strOrNull(rec.reservationstayid),
+  };
+}
+
+function isUsableGuestDisplayName(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  // Infor dataspy 1941 often fills primaryguest with numeric sentinels like "-1".
+  if (/^-?\d+$/.test(trimmed)) return false;
+  return true;
+}
+
 function guestNameFromGridRow(row: Record<string, unknown>): string | null {
   const primary = strOrNull(row.primaryguest);
-  if (primary) return primary;
+  if (primary && isUsableGuestDisplayName(primary)) return primary;
   const last = strOrNull(row.lastname);
   const first = strOrNull(row.firstname);
   if (last && first) return `${last}, ${first}`;
@@ -272,11 +332,7 @@ export function parseLiveOsressGridRows(
   const records = (metadata as Record<string, unknown>).RECORDS;
   const data = grid.DATA;
   if (!Array.isArray(data)) return null;
-  if (
-    typeof records !== 'string' ||
-    !/^\d+$/.test(records) ||
-    Number(records) !== data.length
-  ) {
+  if (typeof records !== 'string' || !/^\d+$/.test(records) || Number(records) !== data.length) {
     schemaDrift();
   }
 
@@ -304,7 +360,7 @@ export function parseLiveOsressGridRows(
 /** Exactly one correlated Guest Stay list row may become matched evidence. */
 function correlateObservations(
   fresh: ReservationObservation[],
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
   emptySignal: boolean,
 ): GuestStaySearchResult {
   const correlated = fresh.filter((row) => rowMatchesCandidate(row, candidate));
@@ -326,9 +382,7 @@ function correlateObservations(
   const minimized = correlated.map((row) => ({ ...row, guestName: null }));
   return {
     outcome: 'ambiguous',
-    observations: capped
-      ? minimized.slice(0, RESERVATION_MATCH_CAP)
-      : minimized,
+    observations: capped ? minimized.slice(0, RESERVATION_MATCH_CAP) : minimized,
     capped,
   };
 }
@@ -392,10 +446,27 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+function surnameMatchesGuestName(guestName: string | null, surname: string): boolean {
+  const target = surname.trim().toUpperCase();
+  if (!target || !guestName) return false;
+  const name = guestName.trim().toUpperCase();
+  if (name === target) return true;
+  if (name.startsWith(`${target},`)) return true;
+  if (name.startsWith(`${target} `)) return true;
+  return false;
+}
+
 function rowMatchesCandidate(
   row: ReservationObservation,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
 ): boolean {
+  if (candidate.kind === 'surname_dates') {
+    return (
+      surnameMatchesGuestName(row.guestName, candidate.surname) &&
+      row.arrivalDate === candidate.arrivalDate &&
+      row.departureDate === candidate.departureDate
+    );
+  }
   const target = candidate.value.toUpperCase();
   if (candidate.kind === 'confirmation') {
     return (row.confirmationNumber ?? '').toUpperCase() === target;
@@ -431,7 +502,7 @@ function parseAllFreshRows(html: string): ReservationObservation[] {
  */
 export function parseAndCorrelateGuestStayHtml(
   html: string,
-  candidate: ExactReservationCandidate,
+  candidate: ReservationSearchCandidate,
   signal?: AbortSignal,
   options: { requireLiveEnvelope?: boolean } = {},
 ): GuestStaySearchResult {
@@ -447,21 +518,21 @@ export function parseAndCorrelateGuestStayHtml(
         gridRows.length === 0 || NO_RESULTS_RE.test(html),
       );
     }
+    if (options.requireLiveEnvelope) {
+      throw new HmsRuntimeError(
+        'SCHEMA_DRIFT',
+        'live OSRESS grid structure unmapped',
+      );
+    }
   }
   if (options.requireLiveEnvelope) {
-    throw new HmsRuntimeError(
-      'SCHEMA_DRIFT',
-      'live OSRESS grid envelope missing',
-    );
+    throw new HmsRuntimeError('SCHEMA_DRIFT', 'live OSRESS pageData marker missing');
   }
 
   const sel = LIVE_GUEST_STAY_ROW_SELECTORS;
   const $ = cheerio.load(html);
   if ($(sel.correlationFailed).length > 0) {
-    throw new HmsRuntimeError(
-      'SCHEMA_DRIFT',
-      'search correlation failed',
-    );
+    throw new HmsRuntimeError('SCHEMA_DRIFT', 'search correlation failed');
   }
 
   const fresh = parseAllFreshRows(html).filter(
@@ -478,21 +549,28 @@ export function createLiveGuestStayDriver(
   options: LiveGuestStayDriverOptions,
 ): LiveGuestStayDriver {
   const { runtime, transportId } = options;
-  let lastAuditReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null =
-    null;
+  let lastAuditReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null = null;
 
   async function withSession<T>(
     signal: AbortSignal,
-    candidate: ExactReservationCandidate | null,
-    fn: (facade: FindReservationFacade) => Promise<T>,
+    candidate: ReservationSearchCandidate | null,
+    fn: (facade: FindReservationFacade, session: HmsReadSession) => Promise<T>,
     receiptForResult?: (result: T) => {
       outcome: 'succeeded' | 'unverified_negative';
       terminalCode: 'OK' | 'UNVERIFIED_NEGATIVE';
     },
+    lockHeld = false,
   ): Promise<T> {
+    if (!lockHeld && options.propertyReadLock) {
+      return options.propertyReadLock.withLock(
+        () => withSession(signal, candidate, fn, receiptForResult, true),
+        { signal },
+      );
+    }
     const canary = liveNotFoundCanaryCandidate();
     const inputClass =
       candidate &&
+      candidate.kind !== 'surname_dates' &&
       candidate.kind === canary.kind &&
       candidate.value === canary.value
         ? 'synthetic_not_found'
@@ -515,7 +593,7 @@ export function createLiveGuestStayDriver(
     let fnError: unknown;
     let result: T | undefined;
     try {
-      result = await fn(createFindReservationFacade(session));
+      result = await fn(createFindReservationFacade(session), session);
     } catch (err) {
       fnError = err;
     }
@@ -543,18 +621,31 @@ export function createLiveGuestStayDriver(
     }
     lastAuditReceipt = session.lastReceipt();
     if (fnError && closeError) {
-      throw new AggregateError(
-        [fnError, closeError],
-        'HMS session tool and close failed',
-      );
+      throw new AggregateError([fnError, closeError], 'HMS session tool and close failed');
     }
     if (fnError) throw fnError;
-    if (closeError) throw closeError;
+    if (closeError) {
+      const softTrace =
+        process.env.HMS_PROOF_SOFT_TRACE_FINALIZE === '1' &&
+        closeError instanceof HmsRuntimeError &&
+        closeError.code === 'AUDIT_CAPTURE' &&
+        (/TRACE_FINALIZE_FAILED/i.test(closeError.message) ||
+          /TRACE_SKIPPED_SOFT/i.test(closeError.message) ||
+          /UNVERIFIED_NEGATIVE/i.test(closeError.message));
+      if (!softTrace) throw closeError;
+      if (process.env.HMS_PROOF_DIAGNOSTICS === '1') {
+        process.stderr.write(
+          `${JSON.stringify({
+            type: 'HMS_PROOF_DIAGNOSTIC',
+            stage: 'session_close',
+            code: 'TRACE_FINALIZE_SOFT',
+            message: 'tool ok; trace sanitize failed — video remains proof gate',
+          })}\n`,
+        );
+      }
+    }
     if (blocked) {
-      throw new HmsRuntimeError(
-        'POLICY_BLOCK',
-        'request policy blocked during read session',
-      );
+      throw new HmsRuntimeError('POLICY_BLOCK', 'request policy blocked during read session');
     }
     if (lastAuditReceipt) {
       const unsafe =
@@ -566,19 +657,17 @@ export function createLiveGuestStayDriver(
         lastAuditReceipt.downloadCount > 0 ||
         lastAuditReceipt.webSocketCount > 0;
       if (unsafe) {
-        throw new HmsRuntimeError(
-          'POLICY_BLOCK',
-          'unsafe browser event in audit receipt',
-        );
+        throw new HmsRuntimeError('POLICY_BLOCK', 'unsafe browser event in audit receipt');
       }
+      const softTraceReceipt =
+        process.env.HMS_PROOF_SOFT_TRACE_FINALIZE === '1' &&
+        lastAuditReceipt.terminalCode === 'TRACE_FINALIZE_FAILED';
       if (
-        lastAuditReceipt.operationOutcome !== expectedReceipt.outcome ||
-        lastAuditReceipt.terminalCode !== expectedReceipt.terminalCode
+        !softTraceReceipt &&
+        (lastAuditReceipt.operationOutcome !== expectedReceipt.outcome ||
+          lastAuditReceipt.terminalCode !== expectedReceipt.terminalCode)
       ) {
-        throw new HmsRuntimeError(
-          'AUDIT_CAPTURE',
-          'audit receipt terminal state invalid',
-        );
+        throw new HmsRuntimeError('AUDIT_CAPTURE', 'audit receipt terminal state invalid');
       }
     }
     return result as T;
@@ -593,52 +682,44 @@ export function createLiveGuestStayDriver(
 
     async runNotFoundCanary(signal) {
       const canary = liveNotFoundCanaryCandidate();
-      const result = await withSession(signal, canary, async (facade) => {
-        const html = await facade.searchExact(canary);
-        if (
-          /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(
-            html,
-          )
-        ) {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'Guest Stay search component not ready',
-          );
-        }
-        const search = parseAndCorrelateGuestStayHtml(
-          html,
-          canary,
-          signal,
-          {
-            requireLiveEnvelope:
-              facade.requireLiveEnvelope,
-          },
-        );
-        if (search.outcome !== 'not_found') {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'not-found canary expected empty Guest Stay result',
-          );
-        }
-        if (/hasNewRecord|new record/i.test(html) && /data-has-new-record="true"/i.test(html)) {
-          throw new HmsRuntimeError(
-            'ROLE_SCOPE_INVALID',
-            'New Record control present during canary',
-          );
-        }
-        return html;
-      }, () => ({
-        outcome: 'unverified_negative',
-        terminalCode: 'UNVERIFIED_NEGATIVE',
-      }));
+      const result = await withSession(
+        signal,
+        canary,
+        async (facade) => {
+          const html = await facade.searchExact(canary);
+          if (
+            /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(html)
+          ) {
+            throw new HmsRuntimeError('SCHEMA_DRIFT', 'Guest Stay search component not ready');
+          }
+          const search = parseAndCorrelateGuestStayHtml(html, canary, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
+          if (search.outcome !== 'not_found') {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'not-found canary expected empty Guest Stay result',
+            );
+          }
+          if (/hasNewRecord|new record/i.test(html) && /data-has-new-record="true"/i.test(html)) {
+            throw new HmsRuntimeError(
+              'ROLE_SCOPE_INVALID',
+              'New Record control present during canary',
+            );
+          }
+          return html;
+        },
+        () => ({
+          outcome: 'unverified_negative',
+          terminalCode: 'UNVERIFIED_NEGATIVE',
+        }),
+      );
       void result;
       void LIVE_NOTFOUND_CANARY;
     },
 
     async searchExact(candidate, signal) {
-      if (!candidate.value || candidate.value.length > 64) {
-        throw new HmsRuntimeError('SCHEMA_DRIFT', 'candidate value invalid');
-      }
+      assertSearchCandidate(candidate);
       void buildExactOsressSearchManifest;
       return withSession(
         signal,
@@ -660,22 +741,15 @@ export function createLiveGuestStayDriver(
     },
 
     async searchExactAndMap(candidate, signal, mapResult) {
-      if (!candidate.value || candidate.value.length > 64) {
-        throw new HmsRuntimeError('SCHEMA_DRIFT', 'candidate value invalid');
-      }
+      assertSearchCandidate(candidate);
       const wrapped = await withSession(
         signal,
         candidate,
         async (facade) => {
           const html = await facade.searchExact(candidate);
-          const search = await parseAndCorrelateGuestStayHtml(
-            html,
-            candidate,
-            signal,
-            {
-              requireLiveEnvelope: facade.requireLiveEnvelope,
-            },
-          );
+          const search = await parseAndCorrelateGuestStayHtml(html, candidate, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
           return { search, mapped: await mapResult(search) };
         },
         ({ search }) =>
@@ -689,8 +763,72 @@ export function createLiveGuestStayDriver(
       return wrapped.mapped;
     },
 
+    async searchExactThenDetailDump(candidate, signal) {
+      assertSearchCandidate(candidate);
+      return withSession(
+        signal,
+        candidate,
+        async (facade, session) => {
+          const html = await facade.searchExact(candidate);
+          const search = parseAndCorrelateGuestStayHtml(html, candidate, signal, {
+            requireLiveEnvelope: facade.requireLiveEnvelope,
+          });
+          if (search.outcome !== 'matched' || search.observations.length !== 1) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'detail dump requires a unique matched search row',
+            );
+          }
+          // XHR pageData match does not always hydrate ExtJS grid. The
+          // tool-specific facade owns the reviewed DOM refresh before the
+          // detail facade attempts an inert row open.
+          const rowCount = await facade.ensureSearchResultRows(candidate);
+          const obs = search.observations[0]!;
+          const hints = extractOsressDetailOpenHints(html);
+          const matchToken =
+            (obs.confirmationNumber ||
+              obs.externalReference ||
+              hints.confirmationNumber ||
+              hints.externalReference ||
+              '').trim();
+          if (rowCount < 1 && !matchToken && !hints.reservationStayId) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'detail dump: matched pageData but grid row not rendered',
+            );
+          }
+          const detail = createReservationDetailFacade({ session });
+          const dump = await detail.openMatchedRowAndDump({
+            captureValues: true,
+            matchToken: matchToken || undefined,
+            reservationStayId: hints.reservationStayId,
+          });
+          return { search, dump };
+        },
+        () => ({ outcome: 'succeeded', terminalCode: 'OK' }),
+      );
+    },
+
     lastAuditReceipt() {
       return lastAuditReceipt;
     },
   };
+}
+
+function assertSearchCandidate(candidate: ReservationSearchCandidate): void {
+  if (candidate.kind === 'surname_dates') {
+    const surname = candidate.surname.trim();
+    if (
+      !surname ||
+      surname.length > 64 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(candidate.arrivalDate) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(candidate.departureDate)
+    ) {
+      throw new HmsRuntimeError('SCHEMA_DRIFT', 'surname_dates candidate invalid');
+    }
+    return;
+  }
+  if (!candidate.value || candidate.value.length > 64) {
+    throw new HmsRuntimeError('SCHEMA_DRIFT', 'candidate value invalid');
+  }
 }

@@ -3,14 +3,15 @@
  * No plugin loader — behavior-changing releases add versioned factory entries.
  * Keep exactly active + immediate-predecessor entries while registry-referenced.
  */
-import { createHash } from 'node:crypto';
-import type { ToolResult } from '../ai/draft-evidence.js';
 import type {
   HmsPortfolioToolReleaseV2,
   HmsSessionAuthorization,
   MailArtifactAuthorization,
 } from './release-kernel.js';
+import { reviewedManifestSha256FromPayload } from './release-manifest-binding.js';
+import type { ToolResult } from '../ai/draft-evidence.js';
 import type { ReadToolId } from './read-tools.js';
+import { createHash } from 'node:crypto';
 
 export type CandidateReadHandler = {
   toolId: ReadToolId;
@@ -24,13 +25,8 @@ export type ReadHandlerFactory = (
 ) => CandidateReadHandler;
 
 /** Deterministic seed digests for find@1.2.0 and mail@2 first live releases. */
-export function seedImplementationDigest(
-  toolId: ReadToolId,
-  versionLabel: string,
-): string {
-  return createHash('sha256')
-    .update(`phase-b-handler:${toolId}@${versionLabel}`)
-    .digest('hex');
+export function seedImplementationDigest(toolId: ReadToolId, versionLabel: string): string {
+  return createHash('sha256').update(`phase-b-handler:${toolId}@${versionLabel}`).digest('hex');
 }
 
 export const FIND_RESERVATION_IMPL_V1 = seedImplementationDigest(
@@ -41,28 +37,22 @@ export const FIND_RESERVATION_IMPL_V2 = seedImplementationDigest(
   'hms_find_reservation',
   '1.2.0:v2',
 );
-export const MAIL_ARTIFACT_IMPL_V1 = seedImplementationDigest(
-  'mail_read_artifact',
-  '2:v1',
-);
+export const MAIL_ARTIFACT_IMPL_V1 = seedImplementationDigest('mail_read_artifact', '2:v1');
 
-export const QUOTE_STAY_IMPL_V1 = seedImplementationDigest(
-  'hms_quote_stay',
-  '2.0.0:v1',
-);
+export const QUOTE_STAY_IMPL_V1 = seedImplementationDigest('hms_quote_stay', '2.0.0:v1');
 
 export const SENT_EMAIL_AUDIT_IMPL_V1 = seedImplementationDigest(
   'hms_sent_email_audit',
   '1.0.0:v1',
 );
 
-export const LIST_DOCUMENTS_IMPL_V1 = seedImplementationDigest(
-  'hms_list_documents',
-  '1.0.0:v1',
-);
+export const LIST_DOCUMENTS_IMPL_V1 = seedImplementationDigest('hms_list_documents', '1.0.0:v1');
 
-export const FOLIO_READ_IMPL_V1 = seedImplementationDigest(
-  'hms_read_folio',
+export const FOLIO_READ_IMPL_V1 = seedImplementationDigest('hms_read_folio', '1.0.0:v1');
+
+/** U15 group list reader binding; source I/O remains in the existing worker driver. */
+export const GROUP_BLOCK_READ_IMPL_V1 = seedImplementationDigest(
+  'hms_group_block_read',
   '1.0.0:v1',
 );
 
@@ -109,14 +99,10 @@ function assertAuthMatchesRelease(
   if (authorization.releaseId !== release.releaseId) {
     throw new Error('authorization releaseId mismatch');
   }
-  if (
-    authorization.runtimeFingerprintSha256 !== release.runtimeFingerprintSha256
-  ) {
+  if (authorization.runtimeFingerprintSha256 !== release.runtimeFingerprintSha256) {
     throw new Error('authorization runtime fingerprint mismatch');
   }
-  if (
-    authorization.privateDigestKeyVersion !== release.privateDigestKeyVersion
-  ) {
+  if (authorization.privateDigestKeyVersion !== release.privateDigestKeyVersion) {
     throw new Error('authorization digest key version mismatch');
   }
   if (authorization.sourceRevision !== release.sourceRevision) {
@@ -140,20 +126,19 @@ function assertAuthMatchesRelease(
   if (authorization.toolId !== release.toolId) {
     throw new Error('HMS authorization toolId mismatch');
   }
-  if (
-    authorization.credentialVersionHmacSha256 !==
-    release.credentialVersionHmacSha256
-  ) {
+  if (authorization.credentialVersionHmacSha256 !== release.credentialVersionHmacSha256) {
     throw new Error('credential version HMAC mismatch');
   }
-  const branch = release.requestBranches.find(
-    (b) => b.id === authorization.requestBranchId,
-  );
+  const branch = release.requestBranches.find((b) => b.id === authorization.requestBranchId);
   if (!branch) {
     throw new Error('request branch not enabled on release');
   }
   if (branch.manifestSha256 !== authorization.manifestSha256) {
     throw new Error('branch manifest digest mismatch');
+  }
+  const computedManifestSha256 = reviewedManifestSha256FromPayload(authorization.manifest);
+  if (computedManifestSha256 !== authorization.manifestSha256) {
+    throw new Error('authorization manifest payload digest mismatch');
   }
   if (authorization.roleProofSha256 !== release.roleProofSha256) {
     throw new Error('role proof digest mismatch');
@@ -163,10 +148,7 @@ function assertAuthMatchesRelease(
   }
 }
 
-function makeFactory(
-  toolId: ReadToolId,
-  implementationSha256: string,
-): ReadHandlerFactory {
+function makeFactory(toolId: ReadToolId, implementationSha256: string): ReadHandlerFactory {
   return (release, authorization) => {
     if (release.toolId !== toolId) {
       throw new Error(`handler index tool mismatch: expected ${toolId}`);
@@ -193,19 +175,35 @@ function makeFactory(
 
 /** Closed static index — add versioned entries on behavior-changing releases. */
 const HANDLER_INDEX: ReadonlyMap<string, ReadHandlerFactory> = new Map([
-  [`hms_find_reservation:${FIND_RESERVATION_IMPL_V1}`, makeFactory('hms_find_reservation', FIND_RESERVATION_IMPL_V1)],
-  [`hms_find_reservation:${FIND_RESERVATION_IMPL_V2}`, makeFactory('hms_find_reservation', FIND_RESERVATION_IMPL_V2)],
-  [`mail_read_artifact:${MAIL_ARTIFACT_IMPL_V1}`, makeFactory('mail_read_artifact', MAIL_ARTIFACT_IMPL_V1)],
+  [
+    `hms_find_reservation:${FIND_RESERVATION_IMPL_V1}`,
+    makeFactory('hms_find_reservation', FIND_RESERVATION_IMPL_V1),
+  ],
+  [
+    `hms_find_reservation:${FIND_RESERVATION_IMPL_V2}`,
+    makeFactory('hms_find_reservation', FIND_RESERVATION_IMPL_V2),
+  ],
+  [
+    `mail_read_artifact:${MAIL_ARTIFACT_IMPL_V1}`,
+    makeFactory('mail_read_artifact', MAIL_ARTIFACT_IMPL_V1),
+  ],
   [`hms_quote_stay:${QUOTE_STAY_IMPL_V1}`, makeFactory('hms_quote_stay', QUOTE_STAY_IMPL_V1)],
-  [`hms_sent_email_audit:${SENT_EMAIL_AUDIT_IMPL_V1}`, makeFactory('hms_sent_email_audit', SENT_EMAIL_AUDIT_IMPL_V1)],
-  [`hms_list_documents:${LIST_DOCUMENTS_IMPL_V1}`, makeFactory('hms_list_documents', LIST_DOCUMENTS_IMPL_V1)],
+  [
+    `hms_sent_email_audit:${SENT_EMAIL_AUDIT_IMPL_V1}`,
+    makeFactory('hms_sent_email_audit', SENT_EMAIL_AUDIT_IMPL_V1),
+  ],
+  [
+    `hms_list_documents:${LIST_DOCUMENTS_IMPL_V1}`,
+    makeFactory('hms_list_documents', LIST_DOCUMENTS_IMPL_V1),
+  ],
   [`hms_read_folio:${FOLIO_READ_IMPL_V1}`, makeFactory('hms_read_folio', FOLIO_READ_IMPL_V1)],
+  [
+    `hms_group_block_read:${GROUP_BLOCK_READ_IMPL_V1}`,
+    makeFactory('hms_group_block_read', GROUP_BLOCK_READ_IMPL_V1),
+  ],
 ]);
 
-export function handlerIndexKey(
-  toolId: ReadToolId,
-  implementationSha256: string,
-): string {
+export function handlerIndexKey(toolId: ReadToolId, implementationSha256: string): string {
   return `${toolId}:${implementationSha256}`;
 }
 
@@ -219,10 +217,7 @@ export function listHandlerIndexEntries(): ReadonlyArray<{
   });
 }
 
-export function hasHandlerFor(
-  toolId: ReadToolId,
-  implementationSha256: string,
-): boolean {
+export function hasHandlerFor(toolId: ReadToolId, implementationSha256: string): boolean {
   return HANDLER_INDEX.has(handlerIndexKey(toolId, implementationSha256));
 }
 
@@ -230,13 +225,9 @@ export function createReadToolHandler(
   release: HmsPortfolioToolReleaseV2,
   authorization: HmsSessionAuthorization | MailArtifactAuthorization,
 ): CandidateReadHandler {
-  const factory = HANDLER_INDEX.get(
-    handlerIndexKey(release.toolId, release.implementationSha256),
-  );
+  const factory = HANDLER_INDEX.get(handlerIndexKey(release.toolId, release.implementationSha256));
   if (!factory) {
-    throw new Error(
-      `no handler for ${release.toolId}@${release.implementationSha256}`,
-    );
+    throw new Error(`no handler for ${release.toolId}@${release.implementationSha256}`);
   }
   return factory(release, authorization);
 }
@@ -247,10 +238,7 @@ export function createReadToolHandler(
  */
 export function assertHandlerIndexCovers(input: {
   active: ReadonlyMap<ReadToolId, { implementationSha256: string }>;
-  immediatePredecessor: ReadonlyMap<
-    ReadToolId,
-    { implementationSha256: string }
-  >;
+  immediatePredecessor: ReadonlyMap<ReadToolId, { implementationSha256: string }>;
 }): void {
   for (const [toolId, release] of input.active) {
     if (!hasHandlerFor(toolId, release.implementationSha256)) {
@@ -262,13 +250,8 @@ export function assertHandlerIndexCovers(input: {
       throw new Error(`handler missing for predecessor ${toolId}`);
     }
     const active = input.active.get(toolId);
-    if (
-      active &&
-      active.implementationSha256 === release.implementationSha256
-    ) {
-      throw new Error(
-        `immediate predecessor for ${toolId} must differ from active implementation`,
-      );
+    if (active && active.implementationSha256 === release.implementationSha256) {
+      throw new Error(`immediate predecessor for ${toolId} must differ from active implementation`);
     }
   }
 }

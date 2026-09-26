@@ -1,0 +1,9 @@
+{
+  "propertyCode": "HRCEN",
+  "arrivalDate": "2026-09-29",
+  "departureDate": "2026-09-30",
+  "roomCode": "STQN",
+  "rateCode": "BAR",
+  "rooms": [{"quantity": 2, "adults": 1, "children": 0, "childAges": []}],
+  "preferences": {"room": "Standard", "board": "Breakfast"}
+}

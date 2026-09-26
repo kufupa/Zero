@@ -1,0 +1,266 @@
+{
+  "schemaVersion": "reservation-tools-pilot.v1",
+  "fixtureKind": "synthetic",
+  "publicFixture": true,
+  "source": {
+    "name": "synthetic-reservation-dashboard-and-tools",
+    "version": "reservation-tools-pilot.v1",
+    "contentHash": "sha256:449982f47b0bd79f1320b0cdd498aa3566d72fc3baf8d0de4a10b9d27da636c2",
+    "mappingHash": "sha256:d1614d700051a1ad974d91fc8cbe66fba18b534267dbd15cfa0d8bd8be00722e"
+  },
+  "counts": {
+    "selectedRecords": 420,
+    "externalOrMixedCandidates": 253,
+    "strictExternalOutboundCandidates": 251,
+    "eligibleGoldCases": 0
+  },
+  "privacy": {
+    "rawCorpusIncluded": false,
+    "privatePaths": [],
+    "targetReplyInToolInput": false,
+    "targetReplyInFixture": false
+  },
+  "phase2B": {
+    "selectionHash": "sha256:7b3d6c9b52c4d8a7f98477d2bf681640df7dc53986d0040507dde08da55e86cd",
+    "mappingHash": "sha256:d1614d700051a1ad974d91fc8cbe66fba18b534267dbd15cfa0d8bd8be00722e",
+    "membershipFrozenBeforeResults": true,
+    "caseIdentifiersFrozenBeforeResults": true,
+    "evaluationModeFrozenBeforeResults": true,
+    "selectionReasonsFrozenBeforeResults": true,
+    "conversationSplitFrozen": true,
+    "splitUnit": "conversation",
+    "goldTargetExposure": "evaluator-only",
+    "modeSpecificAggregation": true,
+    "allowedOutcomes": [
+      "match",
+      "mismatch",
+      "changed_state",
+      "ambiguous",
+      "unscorable",
+      "denied",
+      "missing_capability"
+    ],
+    "blockedPassOutcomes": [
+      "changed_state",
+      "unscorable",
+      "ambiguous",
+      "denied",
+      "missing_capability"
+    ]
+  },
+  "cases": [
+    {
+      "id": "traffic-cohort-t0",
+      "conversationId": "synthetic-conversation-a",
+      "evaluationMode": "current-state",
+      "split": "development",
+      "selectionStatus": "runnable",
+      "toolInput": {
+        "cohort": "centurion-synthetic",
+        "observationCutoff": "2026-09-07T00:00:00.000Z",
+        "measurementStartAt": "2026-09-01T00:00:00.000Z",
+        "requestFacts": ["new-arrival", "external-sender"]
+      },
+      "expectedFacts": {
+        "inboundCount": 3,
+        "knownZeroPostT0Day": "2026-09-04",
+        "t0": "2026-09-01T00:00:00.000Z",
+        "authorization": "aggregate-only"
+      },
+      "fieldOutcomes": {
+        "traffic": "match",
+        "cohort": "match",
+        "responseClock": "unscorable"
+      },
+      "rejectedOperations": ["send", "create", "amend", "cancel", "payment"]
+    },
+    {
+      "id": "ambiguous-reservation",
+      "conversationId": "synthetic-conversation-b",
+      "evaluationMode": "historical-replay",
+      "split": "development",
+      "selectionStatus": "unscorable",
+      "skipReason": "missing pre-reply reservation identifier; two current candidates remain ambiguous",
+      "toolInput": {
+        "inboundFacts": ["arrival-date", "surname-token"],
+        "candidateLimit": 5
+      },
+      "expectedFacts": {
+        "resolution": "ambiguous",
+        "historicalStateAvailable": false
+      },
+      "fieldOutcomes": {
+        "reservation": "ambiguous",
+        "historicalComparison": "unscorable"
+      },
+      "rejectedOperations": ["create", "amend", "cancel", "send"]
+    },
+    {
+      "id": "partial-read",
+      "conversationId": "synthetic-conversation-c",
+      "evaluationMode": "current-state",
+      "split": "development",
+      "selectionStatus": "not-runnable",
+      "skipReason": "authorized source returned only a partial reservation section",
+      "toolInput": {
+        "opaqueReservationRef": "fixture-ref-partial",
+        "requestedSections": ["reservation", "guest"]
+      },
+      "expectedFacts": {
+        "reservation": "partial",
+        "guest": "missing-capability"
+      },
+      "fieldOutcomes": {
+        "reservation": "match",
+        "guest": "missing_capability",
+        "overall": "unscorable"
+      },
+      "rejectedOperations": ["send", "payment", "create"]
+    },
+    {
+      "id": "wrong-document",
+      "conversationId": "synthetic-conversation-d",
+      "evaluationMode": "current-state",
+      "split": "development",
+      "selectionStatus": "runnable",
+      "toolInput": {
+        "opaqueDocumentRef": "fixture-document-wrong-type",
+        "requestedType": "invoice"
+      },
+      "expectedFacts": {
+        "documentType": "receipt",
+        "bytesAvailable": false,
+        "generationAllowed": false
+      },
+      "fieldOutcomes": {
+        "documentType": "mismatch",
+        "bytes": "missing_capability",
+        "generation": "denied"
+      },
+      "rejectedOperations": ["generate", "print", "send", "payment"]
+    },
+    {
+      "id": "folio-deposit-difference",
+      "conversationId": "synthetic-conversation-e",
+      "evaluationMode": "current-state",
+      "split": "development",
+      "selectionStatus": "runnable",
+      "toolInput": {
+        "opaqueReservationRef": "fixture-ref-finance",
+        "requestedSections": ["folio", "deposit-ledger"]
+      },
+      "expectedFacts": {
+        "folioTotal": "ZAR 1500.00",
+        "depositTotal": "ZAR 500.00",
+        "paymentStatus": "unknown"
+      },
+      "fieldOutcomes": {
+        "folio": "match",
+        "deposit": "match",
+        "clearedFunds": "missing_capability"
+      },
+      "rejectedOperations": ["refund", "payment", "send", "create"]
+    },
+    {
+      "id": "prohibited-browser-effects",
+      "conversationId": "synthetic-conversation-f",
+      "evaluationMode": "future-shadow",
+      "split": "holdout",
+      "selectionStatus": "runnable",
+      "toolInput": {
+        "fixtureOrigin": "http://127.0.0.1:4179",
+        "readOnlyJourney": "reservation-summary"
+      },
+      "expectedFacts": {
+        "transport": "fake",
+        "businessWrites": false,
+        "staffVisible": false
+      },
+      "fieldOutcomes": {
+        "read": "match",
+        "sideEffects": "denied",
+        "writeAttempt": "changed_state"
+      },
+      "rejectedOperations": ["create", "amend", "cancel", "payment", "send", "folder-mutation"],
+      "exposure": {
+        "sealedBeforeOutcome": true,
+        "outcomeMayInformTuning": false,
+        "outcomeMayInformRepair": false,
+        "outcomeMayChooseFixtures": false,
+        "outcomeMayTriggerRetry": false,
+        "state": "sealed"
+      }
+    },
+    {
+      "id": "future-shadow-negation",
+      "conversationId": "synthetic-conversation-f",
+      "evaluationMode": "future-shadow",
+      "split": "holdout",
+      "selectionStatus": "runnable",
+      "toolInput": {
+        "requestFacts": ["guest-denies-payment-confirmation"],
+        "replyExists": false
+      },
+      "expectedFacts": {
+        "negationIsMaterial": true,
+        "staffDisplay": false
+      },
+      "fieldOutcomes": {
+        "negation": "mismatch",
+        "replyLink": "missing_capability"
+      },
+      "rejectedOperations": ["send", "draft-mutation", "folder-mutation"],
+      "exposure": {
+        "sealedBeforeOutcome": true,
+        "outcomeMayInformTuning": false,
+        "outcomeMayInformRepair": false,
+        "outcomeMayChooseFixtures": false,
+        "outcomeMayTriggerRetry": false,
+        "state": "sealed"
+      }
+    },
+    {
+      "id": "zero-label-unscorable",
+      "conversationId": "synthetic-conversation-g",
+      "evaluationMode": "historical-replay",
+      "split": "development",
+      "selectionStatus": "unscorable",
+      "skipReason": "no evaluator labels available; quality is unavailable rather than zero",
+      "toolInput": {
+        "inboundFacts": ["reservation-question"],
+        "historicalSnapshot": null
+      },
+      "expectedFacts": {
+        "quality": "unavailable",
+        "zeroIsPass": false
+      },
+      "fieldOutcomes": {
+        "quality": "unscorable",
+        "historicalSnapshot": "missing_capability"
+      },
+      "rejectedOperations": ["tune", "repair", "retry", "send"],
+      "exposure": {
+        "sealedBeforeOutcome": true,
+        "outcomeMayInformTuning": false,
+        "outcomeMayInformRepair": false,
+        "outcomeMayChooseFixtures": false,
+        "outcomeMayTriggerRetry": false,
+        "state": "unsealed-retired",
+        "originalScorePreserved": true,
+        "originalExposurePreserved": true
+      }
+    }
+  ],
+  "laterInboundFirstHoldout": {
+    "targetEpisodes": 200,
+    "independentOfReplyExistence": true,
+    "excludesTargetAndFutureContext": true,
+    "includesNoReplyEpisode": true
+  },
+  "browserSafety": {
+    "allowedOrigins": ["http://127.0.0.1:4179"],
+    "externalSocketsAllowed": false,
+    "transport": "fake",
+    "prohibitedEffects": ["create", "amend", "cancel", "payment", "send", "folder-mutation"]
+  }
+}

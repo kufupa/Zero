@@ -1,15 +1,15 @@
 import {
-  AUTO_TRIAGE_NEVER_SPAM_DOMAINS,
-  AUTO_TRIAGE_NEVER_SPAM_EMAILS,
-  isAutoTriageNeverSpam,
-  normalizeEmailAddress,
-} from './never-spam.js';
-import {
   AI_DURABLE_PRIMARY_CATEGORY_SLUGS,
   AI_MANAGED_CATEGORY_SLUGS,
   AI_PRIMARY_CATEGORY_SLUGS,
   AI_WORKFLOW_PRIMARY_SLUGS,
 } from './categories.js';
+import {
+  AUTO_TRIAGE_NEVER_SPAM_DOMAINS,
+  AUTO_TRIAGE_NEVER_SPAM_EMAILS,
+  isAutoTriageNeverSpam,
+  normalizeEmailAddress,
+} from './never-spam.js';
 import { getLatestInboundFromAddress, getSenderPreference } from '../mail/sender-preference.js';
 import { mailCategory, mailLabel, mailThread, mailThreadCategory } from '../db/schema/mail.js';
 import { READ_TOOL_IDS } from '../hms/read-tools.js';
@@ -18,6 +18,10 @@ import type { DB } from '../db/client.js';
 import { z } from 'zod';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
+
+/** Versioned lineage labels carried into the mail request projection. */
+export const TRIAGE_CLASSIFIER_VERSION = 'triage-v6';
+export const TRIAGE_REVIEWER_VERSION = 'none';
 
 export type TriageCategory = (typeof TRIAGE_CATEGORIES)[number];
 
@@ -101,6 +105,27 @@ export const workflowTriageOutputSchema = z
 
 export type WorkflowTriageOutput = z.infer<typeof workflowTriageOutputSchema>;
 export type WorkflowTriageOutputInput = z.input<typeof workflowTriageOutputSchema>;
+
+export type TriageSemanticHints = {
+  classifierVersion: typeof TRIAGE_CLASSIFIER_VERSION;
+  primaryFolder: WorkflowTriageOutput['primaryFolder'];
+  sourceScope: WorkflowTriageOutput['sourceScope'];
+  automationState: WorkflowTriageOutput['automationState'];
+  humanAction: WorkflowTriageOutput['humanAction'];
+  isSpam: boolean;
+};
+
+/** Keep triage lineage available to analytics without making folders stateful. */
+export function triageOutputSemanticHints(output: WorkflowTriageOutput): TriageSemanticHints {
+  return {
+    classifierVersion: TRIAGE_CLASSIFIER_VERSION,
+    primaryFolder: output.primaryFolder,
+    sourceScope: output.sourceScope,
+    automationState: output.automationState,
+    humanAction: output.humanAction,
+    isSpam: output.isSpam,
+  };
+}
 
 /**
  * Legacy v5 shape retained for the pre-v6 workflow/refine/apply callers.
@@ -557,7 +582,10 @@ const NEVER_SPAM_WEAK_FOLDERS = new Set<WorkflowTriageOutput['primaryFolder']>([
   'automated-channel',
 ]);
 
-function isRoutineSystemMail(input: TriageRefineInput, haystack = buildTriageHaystack(input)): boolean {
+function isRoutineSystemMail(
+  input: TriageRefineInput,
+  haystack = buildTriageHaystack(input),
+): boolean {
   const subject = (input.subject ?? '').trim();
 
   // Direct guest inquiries routed via OTA extranets (Hotels.com, Expedia, Booking.com)
@@ -1309,7 +1337,8 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
 
   if (next.category === 'spam') {
     const haystackForSpam = haystack;
-    const emptyBodyPreferWork = !salesSignal(haystackForSpam) && body.length === 0 && subject.length <= 80;
+    const emptyBodyPreferWork =
+      !salesSignal(haystackForSpam) && body.length === 0 && subject.length <= 80;
     if (emptyBodyPreferWork) {
       next = {
         ...next,
@@ -1368,7 +1397,11 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
     };
   }
 
-  if (output.category === 'ops' && next.category === 'ops' && isFortiMailQuarantineDigest(haystack)) {
+  if (
+    output.category === 'ops' &&
+    next.category === 'ops' &&
+    isFortiMailQuarantineDigest(haystack)
+  ) {
     next = {
       ...next,
       category: 'spam',
@@ -1711,7 +1744,8 @@ export async function applyDurableTriageResult(
   const effectiveIsSpam = blocked || (requestedIsSpam && !exceptionNotSpam);
 
   const settled =
-    !input.forceUnsettle && (primaryRows.length > 0 || (thread?.spamAt != null && !rewriteForNotSpam));
+    !input.forceUnsettle &&
+    (primaryRows.length > 0 || (thread?.spamAt != null && !rewriteForNotSpam));
 
   if (settled) {
     // KTD2: settled threads never flip primary/spamAt — urgency overlay only.
@@ -1754,15 +1788,16 @@ export async function applyDurableTriageResult(
   // Do not require a legacy `spam` category when workflow output is spam and
   // the workflow/nav capability is disabled.
   if (!effectiveIsSpam) {
-    const targetPrimary = workflowOutput && workflowTriageEnabled
-      ? exceptionNotSpam
-        ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
-        : workflowOutput.primaryFolder
-      : exceptionNotSpam && legacyOutput.category === 'spam'
-        ? isPilotNeverSpamAddress(latestFrom ?? '')
-          ? 'new-bookings'
-          : 'ops'
-        : legacyOutput.category;
+    const targetPrimary =
+      workflowOutput && workflowTriageEnabled
+        ? exceptionNotSpam
+          ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
+          : workflowOutput.primaryFolder
+        : exceptionNotSpam && legacyOutput.category === 'spam'
+          ? isPilotNeverSpamAddress(latestFrom ?? '')
+            ? 'new-bookings'
+            : 'ops'
+          : legacyOutput.category;
     if (!bySlug.get(targetPrimary)) {
       throw new Error(`AI category missing for transport ${transportId}: ${targetPrimary}`);
     }
