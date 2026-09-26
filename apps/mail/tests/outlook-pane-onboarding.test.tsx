@@ -71,6 +71,12 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: pingMutateMock },
+      quoteProposalPdf: {
+        mutate: vi.fn().mockResolvedValue({
+          fileName: 'Quote - CIDB 15-17 Sep.pdf',
+          pdfBase64: 'JVBERw==',
+        }),
+      },
     },
   },
 }));
@@ -106,7 +112,7 @@ describe('OutlookPane Onboarding Flow', () => {
     const confirmBtn = screen.getByRole('button', { name: /Confirm Account & Connect/i });
     fireEvent.click(confirmBtn);
 
-    expect(screen.getByText(/Connecting to Infor HMS/i)).toBeDefined();
+    expect(screen.getByText(/Connecting to Nava AI Services/i)).toBeDefined();
 
     await waitFor(() => {
       expect(pingMutateMock).toHaveBeenCalledWith(
@@ -120,7 +126,7 @@ describe('OutlookPane Onboarding Flow', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Server pinged at 2026-09-25 09:30:00 UTC/i)).toBeDefined();
-      expect(screen.getByText(/Connected to Centurion Hotel/i)).toBeDefined();
+      expect(screen.getByText(/Nava AI server connected/i)).toBeDefined();
     });
 
     expect(screen.getByRole('button', { name: /Next: 60-Second Feature Tour/i })).toBeDefined();

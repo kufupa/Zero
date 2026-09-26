@@ -1,4 +1,7 @@
 import { createOperationId, type MailLocation } from '@/lib/workstation/bridge-protocol';
+import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
+import { occupancyRoomCode } from '@/lib/quote-proposal/description';
+import { emailsMatch } from '@/lib/quote-proposal/identity';
 import {
   CheckCircle2,
   AlertCircle,
@@ -111,6 +114,12 @@ type RatePlan = {
   restrictionReason?: string;
 };
 
+const HOTEL_PROPERTIES: Record<string, { name: string; shortName: string }> = {
+  HRCEN: { name: 'The Centurion Hotel', shortName: 'Centurion Reservations Team' },
+  HRBAK: { name: 'The Bakubung Bush Lodge', shortName: 'Bakubung Reservations Team' },
+  HRKWA: { name: 'Kwa Maritane Bush Lodge', shortName: 'Kwa Maritane Reservations Team' },
+};
+
 const RATE_TABLE: Record<string, RatePlan> = {
   NCOR: {
     code: 'NCOR1B',
@@ -158,13 +167,10 @@ const fmtZAR = (val: number) =>
     .toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     .replace(/\s/g, ',');
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'room_only' {
+  if (mealPlan === 'room_only' || planCode === 'BARRO') return 'room_only';
+  if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
+  return 'bb';
 }
 
 export default function OutlookPanePage() {
@@ -207,6 +213,10 @@ export default function OutlookPanePage() {
     senderEmail: string;
     agreementText: string;
     mealText: string;
+    hotelName: string;
+    hotelTeam: string;
+    singleNightly: number;
+    twinNightly: number;
     singleCount: number;
     twinCount: number;
     planName: string;
@@ -221,6 +231,16 @@ export default function OutlookPanePage() {
   const showDraftPreview = Boolean(
     draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
   );
+
+  // Automatically sync detected corporate account or room parameters when active email changes
+  useEffect(() => {
+    if (!activeEmail) return;
+    const text = `${activeEmail.subject || ''} ${activeEmail.bodyText || ''}`;
+    const orgMatch = text.match(/\b(CIDB|SARS|Gauteng|Eskom|Standard Bank|Nedbank)\b/i);
+    if (orgMatch) {
+      setOrgAccount(orgMatch[1].toUpperCase());
+    }
+  }, [activeEmail?.entryId, activeEmail?.subject, activeEmail?.bodyText]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);
@@ -239,8 +259,12 @@ export default function OutlookPanePage() {
   // Onboarding & Screen State
   const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('nava_onboarding_completed');
-      if (saved === 'true') return 'tool';
+      try {
+        const saved = localStorage.getItem('nava_onboarding_completed');
+        if (saved === 'true') return 'tool';
+      } catch {
+        // Fall back gracefully if browser storage is restricted or throws
+      }
     }
     return 'welcome';
   });
@@ -464,70 +488,76 @@ export default function OutlookPanePage() {
       return;
     }
 
+    if (!emailsMatch(session?.user?.email, workstationInfo?.outlookEmail)) {
+      toast.error('Nava login must match this Outlook mailbox before attaching a quotation.');
+      return;
+    }
+
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
     const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
     replyRetries.current.set(key, attempt);
 
-    const safeSenderName = escapeHtml((currentSender.split(' ')[0] || 'Guest').trim());
-    const safePlanName = escapeHtml(activePlan.name);
-    const safeArrival = escapeHtml(String(arrivalDay));
-    const safeDeparture = escapeHtml(String(departureDay));
-    const safeNights = escapeHtml(String(nightsCount));
-    const safeSingleCount = escapeHtml(String(singleRoomsCount));
-    const safeTwinCount = escapeHtml(String(twinRoomsCount));
-
+    const guestFirstName = (currentSender.split(' ')[0] || 'Guest').trim();
+    const selectedHotelMeta = HOTEL_PROPERTIES[propertyCode] ?? HOTEL_PROPERTIES.HRCEN;
     const agreementDescription =
-      activePlan.code.startsWith('NCOR') && orgAccount.trim()
-        ? `under the ${escapeHtml(orgAccount.trim())} corporate agreement`
+      activePlan.code.startsWith('NCOR')
+        ? orgAccount.trim()
+          ? `under the ${orgAccount.trim()} corporate agreement`
+          : 'under your corporate agreement'
         : 'at our standard rates';
-
     const mealDescription =
       mealPlan === 'room_only' || activePlan.code === 'BARRO'
         ? 'room only (no meals included)'
         : mealPlan === 'dinner_bed_breakfast'
           ? 'dinner, bed & breakfast'
           : 'breakfast included';
-
-    const quotationHtml = `
-      <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
-        <p>Dear ${safeSenderName},</p>
-        <p>Thank you for contacting The Centurion Hotel. We are pleased to confirm availability for the dates of <strong>${safeArrival}–${safeDeparture} September 2026 (${safeNights} nights)</strong> ${agreementDescription}:</p>
-        <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 10.5pt;">
-          <thead>
-            <tr style="background-color: #f8fafc; text-align: left;">
-              <th style="border: 1px solid #cbd5e1; padding: 6px 8px;">Room Type</th>
-              <th style="border: 1px solid #cbd5e1; padding: 6px 8px;">Qty</th>
-              <th style="border: 1px solid #cbd5e1; padding: 6px 8px;">Rate Plan</th>
-              <th style="border: 1px solid #cbd5e1; padding: 6px 8px;">Rate / Night</th>
-              <th style="border: 1px solid #cbd5e1; padding: 6px 8px;">Total (ZAR)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">Executive King (Single)</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safeSingleCount}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safePlanName}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(activePlan.singleNightly)}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(singleSubtotal)}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">Standard Twin (Twin Beds)</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safeTwinCount}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${safePlanName}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(activePlan.twinNightly)}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${fmtZAR(twinSubtotal)}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p style="font-weight: bold; margin-top: 6px;">Quotation Total: ${fmtZAR(grandTotal)}</p>
-        <p style="font-size: 10pt; color: #64748b; margin-top: 6px;">Rate includes ${escapeHtml(mealDescription)}, secure parking and 15% VAT. Valid for 7 days subject to room availability.</p>
-        <p style="margin-top: 12px;">Warm regards,<br><strong>Centurion Reservations Team</strong><br>The Centurion Hotel</p>
-      </div>
-    `;
+    const dateLabel = `${arrivalDay}-${departureDay} Sep`;
+    const lineDateLabel = `${arrivalDay}-${departureDay} September 2026`;
+    const meal = paneMeal(mealPlan, activePlan.code);
+    const lines = [
+      ...(singleRoomsCount > 0
+        ? [
+            {
+              dateLabel: lineDateLabel,
+              qty: singleRoomsCount,
+              roomCode: occupancyRoomCode('single'),
+              meal,
+              nights: nightsCount,
+              rate: activePlan.singleNightly,
+            },
+          ]
+        : []),
+      ...(twinRoomsCount > 0
+        ? [
+            {
+              dateLabel: lineDateLabel,
+              qty: twinRoomsCount,
+              roomCode: occupancyRoomCode('twin'),
+              meal,
+              nights: nightsCount,
+              rate: activePlan.twinNightly,
+            },
+          ]
+        : []),
+    ];
+    const quotationHtml = quoteWrapperHtml(guestFirstName);
 
     try {
+      if (lines.length === 0) {
+        throw new Error('Add at least one room before attaching a quotation.');
+      }
+      const pdf = await trpcClient.workstation.quoteProposalPdf.mutate({
+        outlookEmail: workstationInfo?.outlookEmail ?? '',
+        attention: currentSender,
+        company: orgAccount.trim(),
+        clientEmail: currentSenderEmail,
+        clientTelephone: '',
+        agency: orgAccount.trim() || 'Quote',
+        dateLabel,
+        lines,
+      });
       const result = await sendCommand<Record<string, unknown>, MailLocation | boolean>(
         'CREATE_REPLY_DRAFT',
         {
@@ -540,6 +570,24 @@ export default function OutlookPanePage() {
         },
       );
       if (result === false) throw new Error('Outlook could not create the reply draft.');
+      const legacyReplyOpened = result === true;
+      const replyResult = typeof result === 'object' && result !== null ? result : null;
+      if (
+        !legacyReplyOpened &&
+        replyResult?.entryId &&
+        supportsAction('ADD_ATTACHMENT_TO_DRAFT')
+      ) {
+        await sendCommand('ADD_ATTACHMENT_TO_DRAFT', {
+          entryId: replyResult.entryId,
+          ...(replyResult.storeId
+            ? { storeId: replyResult.storeId }
+            : activeEmail.storeId
+              ? { storeId: activeEmail.storeId }
+              : {}),
+          fileName: pdf.fileName,
+          base64Data: pdf.pdfBase64,
+        });
+      }
       replyRetries.current.delete(key);
       setDraftedDetails({
         entryId: activeEmail.entryId,
@@ -548,6 +596,10 @@ export default function OutlookPanePage() {
         senderEmail: currentSenderEmail,
         agreementText: agreementDescription,
         mealText: mealDescription,
+        hotelName: selectedHotelMeta.name,
+        hotelTeam: selectedHotelMeta.shortName,
+        singleNightly: activePlan.singleNightly,
+        twinNightly: activePlan.twinNightly,
         singleCount: singleRoomsCount,
         twinCount: twinRoomsCount,
         planName: activePlan.name,
@@ -558,8 +610,6 @@ export default function OutlookPanePage() {
         departureDay,
         nightsCount,
       });
-      const legacyReplyOpened = result === true;
-      const replyResult = typeof result === 'object' && result !== null ? result : null;
       const opened = legacyReplyOpened || replyResult?.displayed === true;
       const details = legacyReplyOpened
         ? []
@@ -640,7 +690,7 @@ export default function OutlookPanePage() {
         {isConnected && !capabilities && (
           <div
             role="alert"
-            className="m-3 mb-0 rounded border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800"
+            className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800"
           >
             Protocol v3 not confirmed on this workstation. Update the Outlook add-in to use v3
             actions.
@@ -670,7 +720,7 @@ export default function OutlookPanePage() {
                     void executeServerPing();
                   }
                 }}
-                className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                className={`rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
                   currentScreen === item.id
                     ? 'bg-[#1a4332] text-white font-semibold'
                     : 'text-[#64748b] hover:bg-[#e2e8f0]'
@@ -694,7 +744,7 @@ export default function OutlookPanePage() {
                 Your intelligent assistant for Infor HMS quoting and reservations, built directly into Outlook.
               </p>
 
-              <div className="my-5 w-full rounded border border-[#e2e8f0] bg-[#f8fafc] p-3 text-left">
+              <div className="my-5 w-full rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-left">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[#64748b]">
                   Detected Outlook Account
                 </span>
@@ -720,21 +770,21 @@ export default function OutlookPanePage() {
           </div>
         )}
 
-        {/* SCREEN 2: SYSTEM & INFOR HMS BRIDGE CHECK */}
+        {/* SCREEN 2: SYSTEM & NAVA AI SERVICES CHECK */}
         {currentScreen === 'diagnostics' && (
           <div className="flex flex-1 flex-col p-4 animate-in fade-in duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
                 <Network className="h-6 w-6" />
               </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Infor HMS</h1>
+              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava AI Services</h1>
               <p className="mt-1 text-xs text-[#64748b]">
-                Verifying Nava AI bridge and workstation API connection.
+                Verifying connection to Nava AI server and workstation environment.
               </p>
 
               <div className="my-5 w-full space-y-3 text-left">
                 <div
-                  className={`flex items-start gap-2.5 rounded border p-3 ${
+                  className={`flex items-start gap-2.5 rounded-sm border p-3 ${
                     pingState === 'success'
                       ? 'border-emerald-200 bg-emerald-50/50'
                       : pingState === 'error'
@@ -757,7 +807,7 @@ export default function OutlookPanePage() {
 
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-[#1e293b]">Nava AI Cloud Bridge</span>
+                      <span className="text-xs font-semibold text-[#1e293b]">Nava AI Server Connection</span>
                       {pingState === 'success' && (
                         <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
                       )}
@@ -779,9 +829,9 @@ export default function OutlookPanePage() {
                 </div>
 
                 {pingState === 'success' && (
-                  <div className="flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
+                  <div className="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                    <span>Connected to Centurion Hotel workstation bridge · API ping verified.</span>
+                    <span>Nava AI server connected · Workstation API ping verified.</span>
                   </div>
                 )}
 
@@ -815,7 +865,7 @@ export default function OutlookPanePage() {
         {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
         {currentScreen === 'tour' && (
           <div className="flex flex-1 flex-col p-3 animate-in fade-in duration-150">
-            <div className="my-auto flex flex-col items-center rounded border border-[#e2e8f0] bg-white p-4 text-center">
+            <div className="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center">
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
                 {tourSlideIndex === 0 && <Mail className="h-5 w-5" />}
                 {tourSlideIndex === 1 && <Building2 className="h-5 w-5" />}
@@ -830,7 +880,7 @@ export default function OutlookPanePage() {
 
               <div className="mt-4 w-full space-y-2 text-left">
                 {TOUR_SLIDES[tourSlideIndex]?.bullets.map((b) => (
-                  <div key={b.title} className="flex items-start gap-2 rounded bg-[#f8fafc] p-2 text-xs">
+                  <div key={b.title} className="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs">
                     <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
                     <div>
                       <strong className="text-[#1e293b]">{b.title}</strong>{' '}
@@ -873,7 +923,11 @@ export default function OutlookPanePage() {
                       setTourSlideIndex((i) => i + 1);
                     } else {
                       if (typeof window !== 'undefined') {
-                        localStorage.setItem('nava_onboarding_completed', 'true');
+                        try {
+                          localStorage.setItem('nava_onboarding_completed', 'true');
+                        } catch {
+                          // Non-fatal if storage write fails
+                        }
                       }
                       setCurrentScreen('tool');
                       toast.success('Onboarding complete! Opened Infor HMS Quoting Tool');
@@ -901,7 +955,7 @@ export default function OutlookPanePage() {
         <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
           
           {/* Email Context Bar */}
-          <div className="flex items-center justify-between rounded border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
+          <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
               <div className="flex min-w-0 flex-col">
@@ -914,18 +968,18 @@ export default function OutlookPanePage() {
               </div>
             </div>
             {activeEmail ? (
-              <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                 <Check className="h-3 w-3" /> Synced
               </span>
             ) : (
-              <span className="flex shrink-0 items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+              <span className="flex shrink-0 items-center gap-1 rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
                 Sample
               </span>
             )}
           </div>
 
           {/* Search Criteria Card */}
-          <div className="overflow-hidden rounded border border-[#e2e8f0] bg-white shadow-xs">
+          <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white shadow-xs">
             <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-2">
               <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
                 <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
@@ -943,11 +997,11 @@ export default function OutlookPanePage() {
                   id="propertySelect"
                   value={propertyCode}
                   onChange={(e) => setPropertyCode(e.target.value)}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
+                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
-                  <option value="HRCEN">Centurion Hotel (ZAR)</option>
-                  <option value="HRBAK">HRBAK — The Bakubung Bush Lodge</option>
-                  <option value="HRKWA">HRKWA — Kwa Maritane Bush Lodge</option>
+                  <option value="HRCEN">The Centurion Hotel (HRCEN)</option>
+                  <option value="HRBAK" disabled>The Bakubung Bush Lodge (HRBAK — Centurion pilot only)</option>
+                  <option value="HRKWA" disabled>Kwa Maritane Bush Lodge (HRKWA — Centurion pilot only)</option>
                 </select>
               </div>
 
@@ -956,7 +1010,7 @@ export default function OutlookPanePage() {
                 <label className="text-[11.5px] font-semibold text-[#475569]">
                   Dates of Stay<span className="ml-0.5 text-rose-600">*</span>
                 </label>
-                <div className="overflow-hidden rounded border border-[#cbd5e1]">
+                <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
                   <div className="grid grid-cols-2 border-b border-[#e2e8f0] bg-white">
                     <button
                       type="button"
@@ -1018,14 +1072,14 @@ export default function OutlookPanePage() {
                       <div className="mb-2 flex items-center justify-between">
                         <button
                           type="button"
-                          className="flex h-6 w-6 items-center justify-center rounded border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
+                          className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
                         >
                           <ChevronLeft className="h-3 w-3" />
                         </button>
                         <span className="text-xs font-bold text-[#1e293b]">September 2026</span>
                         <button
                           type="button"
-                          className="flex h-6 w-6 items-center justify-center rounded border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
+                          className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
                         >
                           <ChevronRight className="h-3 w-3" />
                         </button>
@@ -1067,7 +1121,7 @@ export default function OutlookPanePage() {
                             key={n}
                             type="button"
                             onClick={() => handleQuickNights(n)}
-                            className={`flex-1 rounded border py-1 text-center text-[10.5px] transition-colors ${
+                            className={`flex-1 rounded-sm border py-1 text-center text-[10.5px] transition-colors ${
                               nightsCount === n
                                 ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
                                 : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-slate-100'
@@ -1096,7 +1150,7 @@ export default function OutlookPanePage() {
                     if (next === 'room_only') setSelectedRateCode('BARRO');
                     else setSelectedRateCode('NCOR');
                   }}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
+                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
                   <option value="breakfast">Bed & Breakfast (BAR)</option>
                   <option value="room_only">Room Only (BARRO)</option>
@@ -1113,7 +1167,7 @@ export default function OutlookPanePage() {
                   </span>
                 </div>
 
-                <div className="overflow-hidden rounded border border-[#cbd5e1]">
+                <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
                   <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11px] font-semibold text-[#64748b]">
                     <span>Room Type & Guest Count</span>
                     <span>Rooms</span>
@@ -1124,7 +1178,7 @@ export default function OutlookPanePage() {
                       <strong className="text-xs text-[#1e293b]">EXKNG — Executive King</strong>
                       <span className="text-[11px] text-[#64748b]">1 Adult per room</span>
                     </div>
-                    <div className="flex items-center rounded border border-[#cbd5e1]">
+                    <div className="flex items-center rounded-sm border border-[#cbd5e1]">
                       <button
                         type="button"
                         onClick={() => setSingleRoomsCount(Math.max(1, singleRoomsCount - 1))}
@@ -1150,7 +1204,7 @@ export default function OutlookPanePage() {
                       <strong className="text-xs text-[#1e293b]">STWN — Standard Twin</strong>
                       <span className="text-[11px] text-[#64748b]">2 Adults per room</span>
                     </div>
-                    <div className="flex items-center rounded border border-[#cbd5e1]">
+                    <div className="flex items-center rounded-sm border border-[#cbd5e1]">
                       <button
                         type="button"
                         onClick={() => setTwinRoomsCount(Math.max(1, twinRoomsCount - 1))}
@@ -1187,7 +1241,7 @@ export default function OutlookPanePage() {
                     if (next === 'BAR') setSelectedRateCode('BAR');
                     else setSelectedRateCode('NCOR');
                   }}
-                  className="h-8 w-full rounded border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
+                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                 >
                   <option value="Negotiated Contracted">Negotiated Contracted (Corporate NCOR1B)</option>
                   <option value="BAR">BAR — Best Available Rate</option>
@@ -1196,7 +1250,7 @@ export default function OutlookPanePage() {
               </div>
 
               {/* Organization & Advanced Details */}
-              <details className="rounded border border-[#e2e8f0]">
+              <details className="rounded-sm border border-[#e2e8f0]">
                 <summary className="flex cursor-pointer items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] font-semibold text-[#475569] select-none">
                   <span>Organization & Advanced Search</span>
                   <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
@@ -1212,7 +1266,7 @@ export default function OutlookPanePage() {
                       value={orgAccount}
                       onChange={(e) => setOrgAccount(e.target.value)}
                       placeholder="e.g. CIDB"
-                      className="h-7 w-full rounded border border-[#cbd5e1] px-2 text-xs text-[#1e293b] outline-hidden focus:border-[#0066cc]"
+                      className="h-7 w-full rounded-sm border border-[#cbd5e1] px-2 text-xs text-[#1e293b] outline-hidden focus:border-[#0066cc]"
                     />
                   </div>
                   <div className="flex items-center gap-2 pt-1">
@@ -1221,7 +1275,7 @@ export default function OutlookPanePage() {
                       id="chkIncludeRestricted"
                       checked={showUnavailable}
                       onChange={(e) => setShowUnavailable(e.target.checked)}
-                      className="h-3.5 w-3.5 rounded border-slate-300 text-[#0066cc] focus:ring-0"
+                      className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#0066cc] focus:ring-0"
                     />
                     <label
                       htmlFor="chkIncludeRestricted"
@@ -1235,7 +1289,7 @@ export default function OutlookPanePage() {
 
               {/* Search Availability Button */}
               {isSearching ? (
-                <div className="flex h-9 w-full items-center justify-center gap-2 rounded border border-blue-200 bg-[#eff6ff] text-xs font-semibold text-[#0066cc]">
+                <div className="flex h-9 w-full items-center justify-center gap-2 rounded-sm border border-blue-200 bg-[#eff6ff] text-xs font-semibold text-[#0066cc]">
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                   <span>Querying Infor HMS availability grid...</span>
                 </div>
@@ -1243,7 +1297,7 @@ export default function OutlookPanePage() {
                 <button
                   type="button"
                   onClick={handleExecuteSearch}
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded bg-[#0066cc] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#0052a3]"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-[#0066cc] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#0052a3]"
                 >
                   <Search className="h-3.5 w-3.5" />
                   <span>Search Availability</span>
@@ -1257,7 +1311,7 @@ export default function OutlookPanePage() {
             <div className="flex flex-col gap-2.5 animate-in fade-in duration-200">
               
               {/* Header Bar */}
-              <div className="flex items-center justify-between rounded border border-[#e2e8f0] bg-white px-3 py-2 shadow-xs">
+              <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-white px-3 py-2 shadow-xs">
                 <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
                   <Utensils className="h-3.5 w-3.5 text-slate-500" />
                   Room Rates
@@ -1277,7 +1331,7 @@ export default function OutlookPanePage() {
                 {/* 1. NCOR1B */}
                 <div
                   onClick={() => setSelectedRateCode('NCOR')}
-                  className={`flex cursor-pointer items-center justify-between rounded border p-2.5 transition-all ${
+                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'NCOR'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
                       : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
@@ -1289,7 +1343,7 @@ export default function OutlookPanePage() {
                       <Check className="h-3 w-3 text-emerald-600" />
                     </div>
                     <span className="text-[11px] text-[#64748b]">
-                      CIDB Corporate Agreement · 2x EXKNG, 7x STWN
+                      {orgAccount.trim() ? `${orgAccount.trim()} Corporate Agreement` : 'Corporate Agreement'} · {singleRoomsCount}x EXKNG, {twinRoomsCount}x STWN
                     </span>
                   </div>
                   <div className="flex shrink-0 flex-col items-end">
@@ -1301,7 +1355,7 @@ export default function OutlookPanePage() {
                 {/* 2. BAR */}
                 <div
                   onClick={() => setSelectedRateCode('BAR')}
-                  className={`flex cursor-pointer items-center justify-between rounded border p-2.5 transition-all ${
+                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'BAR'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
                       : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
@@ -1325,7 +1379,7 @@ export default function OutlookPanePage() {
                 {/* 3. BARRO */}
                 <div
                   onClick={() => setSelectedRateCode('BARRO')}
-                  className={`flex cursor-pointer items-center justify-between rounded border p-2.5 transition-all ${
+                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
                     selectedRateCode === 'BARRO'
                       ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
                       : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
@@ -1344,13 +1398,13 @@ export default function OutlookPanePage() {
                 </div>
 
                 {/* 4. BWKPB (Restricted) */}
-                <div className="flex items-center justify-between rounded border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80 cursor-not-allowed">
+                <div className="flex items-center justify-between rounded-sm border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80 cursor-not-allowed">
                   <div className="flex flex-col gap-0.5">
                     <div className="text-[12.5px] font-bold text-[#1e293b]">
                       BWKPB: Weekend Promo Rate
                     </div>
                     <span className="text-[11px] text-[#64748b]">Weekend promo rate only</span>
-                    <span className="flex items-center gap-1 rounded bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 w-fit">
+                    <span className="flex items-center gap-1 rounded-sm bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 w-fit">
                       <Ban className="h-2.5 w-2.5" /> Closed to Arrival (Weekday)
                     </span>
                   </div>
@@ -1364,7 +1418,7 @@ export default function OutlookPanePage() {
               </div>
 
               {/* Grand Total Breakdown Card */}
-              <div className="flex flex-col gap-1.5 rounded border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
+              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
                 <div className="flex justify-between">
                   <span>
                     {singleRoomsCount}x Executive King (Single · {nightsCount} nights):
@@ -1389,13 +1443,13 @@ export default function OutlookPanePage() {
               </div>
 
               {/* Infor HMS Audit Proof Tabs */}
-              <div className="overflow-hidden rounded border border-[#e2e8f0] bg-white">
+              <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
                 <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
                   <div className="flex gap-1">
                     <button
                       type="button"
                       onClick={() => setProofTab('results')}
-                      className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                      className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
                         proofTab === 'results'
                           ? 'bg-white text-[#1e293b] shadow-xs'
                           : 'text-[#64748b] hover:text-[#1e293b]'
@@ -1406,7 +1460,7 @@ export default function OutlookPanePage() {
                     <button
                       type="button"
                       onClick={() => setProofTab('criteria')}
-                      className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                      className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
                         proofTab === 'criteria'
                           ? 'bg-white text-[#1e293b] shadow-xs'
                           : 'text-[#64748b] hover:text-[#1e293b]'
@@ -1429,7 +1483,7 @@ export default function OutlookPanePage() {
                     alt="Infor HMS Availability Screen Proof"
                     className="h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:scale-102 group-hover:opacity-100"
                   />
-                  <div className="absolute right-2 bottom-2 flex items-center gap-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-xs">
+                  <div className="absolute right-2 bottom-2 flex items-center gap-1 rounded-sm bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-xs">
                     <Search className="h-2.5 w-2.5" /> Inspect Full 1000×800
                   </div>
                 </div>
@@ -1451,7 +1505,7 @@ export default function OutlookPanePage() {
                 disabled={
                   !activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending
                 }
-                className="h-10 w-full rounded bg-[#1a4332] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#123023] disabled:opacity-50"
+                className="h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#123023] disabled:opacity-50"
               >
                 <Send className="mr-1.5 h-3.5 w-3.5" />
                 {isDraftPending
@@ -1468,7 +1522,7 @@ export default function OutlookPanePage() {
 
               {/* Outlook Email Draft Preview Box */}
               {showDraftPreview && draftedDetails && (
-                <div className="rounded border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] animate-in fade-in duration-200">
+                <div className="rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] animate-in fade-in duration-200">
                   <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
                     <div>
                       <strong>To:</strong> {draftedDetails.sender} &lt;{draftedDetails.senderEmail}&gt;<br />
@@ -1482,55 +1536,16 @@ export default function OutlookPanePage() {
                       Dismiss
                     </button>
                   </div>
-                  <p>Dear {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
+                  <p>Good day {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
+                  <p className="mt-1">Thank you for Choosing The Centurion Hotel.</p>
+                  <p className="mt-1">Please see attached quotation.</p>
                   <p className="mt-1">
-                    Thank you for contacting The Centurion Hotel. We are pleased to confirm availability
-                    for your delegation for the dates of{' '}
-                    <strong>
-                      {draftedDetails.arrivalDay}–{draftedDetails.departureDay} September 2026 ({draftedDetails.nightsCount} nights)
-                    </strong>{' '}
-                    {draftedDetails.agreementText}:
+                    Should you wish to proceed, please sign and return the attached quotation so that we can
+                    confirm and secure your reservation. Please note that no rooms are currently being held,
+                    and bookings will only be confirmed once we have received the signed quotation.
                   </p>
-
-                  <table className="my-2 w-full border-collapse text-[10.5px]">
-                    <thead>
-                      <tr className="bg-[#f8fafc] text-left text-[#475569]">
-                        <th className="border border-[#cbd5e1] p-1">Room Type</th>
-                        <th className="border border-[#cbd5e1] p-1">Qty</th>
-                        <th className="border border-[#cbd5e1] p-1">Rate Plan</th>
-                        <th className="border border-[#cbd5e1] p-1">Rate / Night</th>
-                        <th className="border border-[#cbd5e1] p-1">Total (ZAR)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td className="border border-[#cbd5e1] p-1">Executive King (Single)</td>
-                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.singleCount}</td>
-                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.planName}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(activePlan.singleNightly)}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(draftedDetails.singleSubtotal)}</td>
-                      </tr>
-                      <tr>
-                        <td className="border border-[#cbd5e1] p-1">Standard Twin (Twin Beds)</td>
-                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.twinCount}</td>
-                        <td className="border border-[#cbd5e1] p-1">{draftedDetails.planName}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(activePlan.twinNightly)}</td>
-                        <td className="border border-[#cbd5e1] p-1">{fmtZAR(draftedDetails.twinSubtotal)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-
-                  <p className="mt-1 font-bold">
-                    Quotation Total: <span>{fmtZAR(draftedDetails.grandTotal)}</span>
-                  </p>
-                  <p className="mt-1 text-[10px] text-[#64748b]">
-                    Rate includes {draftedDetails.mealText}, secure parking and 15% VAT. Valid for 7 days subject to room availability.
-                  </p>
-                  <p className="mt-2 text-[#475569]">
-                    Kind regards,<br />
-                    <strong>Reservations Team</strong><br />
-                    The Centurion Hotel
-                  </p>
+                  <p className="mt-1">Please feel free to contact me should you require any further information</p>
+                  <p className="mt-2 text-[#475569]">Kind regards,</p>
                 </div>
               )}
 
@@ -1552,7 +1567,7 @@ export default function OutlookPanePage() {
           </div>
 
           {(testResults.bridge !== null || testResults.serverPing !== null) && (
-            <div className="flex flex-col gap-1.5 rounded border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
+            <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
               <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
                 Diagnostic Verification
               </p>
@@ -1630,7 +1645,7 @@ export default function OutlookPanePage() {
           }}
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-xs animate-in fade-in duration-150"
         >
-          <div className="flex h-[800px] max-h-[92vh] w-[1000px] max-w-[95vw] flex-col overflow-hidden rounded bg-white shadow-2xl">
+          <div className="flex h-[800px] max-h-[92vh] w-[1000px] max-w-[95vw] flex-col overflow-hidden rounded-md bg-white shadow-2xl">
             <div className="flex h-9 shrink-0 items-center justify-between bg-slate-900 px-3 text-xs font-semibold text-white">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
@@ -1643,7 +1658,7 @@ export default function OutlookPanePage() {
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  className="rounded-sm p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -1654,7 +1669,7 @@ export default function OutlookPanePage() {
               <img
                 src="/quote-rate-proof.png"
                 alt="Infor HMS Full Resolution Availability Grid"
-                className="max-w-full rounded shadow-md"
+                className="max-w-full rounded-sm shadow-md"
               />
             </div>
 

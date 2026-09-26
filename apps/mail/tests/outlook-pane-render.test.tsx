@@ -83,6 +83,12 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
+      quoteProposalPdf: {
+        mutate: vi.fn().mockResolvedValue({
+          fileName: 'Quote - CIDB 15-17 Sep.pdf',
+          pdfBase64: 'JVBERw==',
+        }),
+      },
     },
   },
 }));
@@ -315,7 +321,7 @@ describe('OutlookPanePage', () => {
       fireEvent.click(button);
       fireEvent.click(button);
     });
-    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
     expect(button.hasAttribute('disabled')).toBe(true);
     expect(button.textContent).toMatch(/saving/i);
 
@@ -404,6 +410,7 @@ describe('OutlookPanePage', () => {
     );
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
     await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
@@ -416,6 +423,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
@@ -435,6 +443,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
@@ -460,6 +469,7 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledTimes(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
