@@ -302,7 +302,9 @@ export function enrichHitlProposed(row: LabRow): ProposedAction[] {
   const quotes: ProposedAction[] = [];
   for (const action of existing) {
     const next =
-      action.status === 'superseded' || action.status === 'needs_human'
+      action.status === 'superseded' ||
+      action.status === 'needs_human' ||
+      action.status === 'done'
         ? action
         : { ...action, status: 'live' as const };
     if (next.tool === 'hms_quote_stay') quotes.push(next);

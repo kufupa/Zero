@@ -139,8 +139,13 @@ function ProposedPane({
   const actions = resolveProposedActions(row);
   const live = actions.filter((item) => item.status === 'live' || item.status === 'needs_human');
   const folded = actions.filter((item) => item.status === 'done' || item.status === 'superseded');
-  const toolMatch = selectedTool ? live.findIndex((item) => item.tool === selectedTool) : -1;
-  const current = live[toolMatch >= 0 ? toolMatch : actionIndex] || live[0] || null;
+  // Clicked stack index always wins; tool route only seeds when index empty/out of range.
+  const indexed = live[actionIndex] || null;
+  const current =
+    indexed ||
+    (selectedTool ? live.find((item) => item.tool === selectedTool) : null) ||
+    live[0] ||
+    null;
   const tool = current?.tool || selectedTool || row.tools[0] || 'hms_find_reservation';
   const schema = labReviewSchemaFor(tool);
   const fills = projectLabFills(row, tool, actionIndex, current);
@@ -262,7 +267,7 @@ function LabIndexLoadingShell() {
 function LabIndexErrorShell({ error }: { error: LabIndexLoadError }) {
   return (
     <div className="flex h-full items-center justify-center p-8" data-testid="centurion-eval-lab">
-      <div className="border-border bg-panelLight dark:bg-panelDark max-w-lg rounded-2xl border p-6 shadow-sm" data-testid="lab-index-error">
+      <div className="border-border bg-panelLight dark:bg-panelDark max-w-lg rounded-2xl border p-6 shadow-xs" data-testid="lab-index-error">
         <h1 className="text-base font-semibold">Live lab index failed</h1>
         <p className="text-muted-foreground mt-2 text-sm">
           HTTP {error.status}. {error.message}. rows: 0. Synthetic fixture is not shown.
@@ -447,7 +452,7 @@ function CenturionEvalLabReady({
             defaultSize={32}
             minSize={22}
             maxSize={48}
-            className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm"
+            className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-xs md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-xs"
           >
             <div className="flex w-full min-h-0 flex-col md:h-[calc(100dvh-10px)]">
               <div className="z-15 sticky top-0 shrink-0 p-4 pb-0">
@@ -609,7 +614,7 @@ function CenturionEvalLabReady({
           <ResizablePanel
             defaultSize={43}
             minSize={30}
-            className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+            className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-xs lg:h-[calc(100dvh-8px)]"
           >
             {selected ? (
               <div className="relative flex min-h-0 h-[calc(100dvh-10px)] flex-col" data-testid="lab-reading-pane">
@@ -691,7 +696,7 @@ function CenturionEvalLabReady({
           <ResizablePanel
             defaultSize={25}
             minSize={18}
-            className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+            className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 rounded-2xl shadow-xs lg:h-[calc(100dvh-8px)]"
           >
             {selected ? (
               <ProposedPane

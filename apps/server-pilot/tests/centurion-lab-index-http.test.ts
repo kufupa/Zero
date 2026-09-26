@@ -8,6 +8,7 @@ describe('centurion lab index route', () => {
   it('returns 401 without session', async () => {
     const handler = createCenturionLabIndexHandler({
       getSession: async () => null,
+      userHasMailboxAccess: async () => true,
       readIndex: async () => Buffer.from('{"rows":[]}'),
     });
     const res = await handler(new Request('http://x/api/lab/centurion-index'));
@@ -15,19 +16,32 @@ describe('centurion lab index route', () => {
     expect(await res.text()).toBe('');
   });
 
+  it('returns 403 when the session has no mailbox access', async () => {
+    const handler = createCenturionLabIndexHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      userHasMailboxAccess: async () => false,
+      readIndex: async () => Buffer.from('{"rows":[]}'),
+    });
+    const res = await handler(new Request('http://x/api/lab/centurion-index'));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('');
+  });
+
   it('returns 404 when the private index is missing', async () => {
     const handler = createCenturionLabIndexHandler({
       getSession: async () => ({ user: { id: 'u1' } }),
+      userHasMailboxAccess: async () => true,
       readIndex: async () => null,
     });
     const res = await handler(new Request('http://x/api/lab/centurion-index'));
     expect(res.status).toBe(404);
   });
 
-  it('returns private JSON for a cookie session', async () => {
+  it('returns private JSON for a cookie session with mailbox access', async () => {
     const payload = Buffer.from('{"generated":"test","rows":[{"inboundId":"x"}]}');
     const handler = createCenturionLabIndexHandler({
       getSession: async () => ({ user: { id: 'u1' } }),
+      userHasMailboxAccess: async () => true,
       readIndex: async () => payload,
     });
     const res = await handler(new Request('http://x/api/lab/centurion-index'));

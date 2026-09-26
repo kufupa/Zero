@@ -432,7 +432,15 @@ export function rehydrateMailText(
 
 export function normalizeGoldQuote(raw: RawGoldQuote | GoldFieldQuote | null | undefined): GoldFieldQuote | QuoteMiss {
   const side: SpanHit['side'] = raw?.side === 'gold' ? 'gold' : 'inbound';
-  const quote = String(raw?.quote || raw?.text || '');
+  const quoteSource =
+    raw == null
+      ? ''
+      : 'quote' in raw && raw.quote
+        ? raw.quote
+        : 'text' in raw
+          ? (raw.text ?? '')
+          : '';
+  const quote = String(quoteSource || '');
   const rawField = typeof raw?.field === 'string' ? raw.field : null;
     if (!quote || quote.length < GOLD_QUOTE_MIN_CHARS) return { field: rawField, reason: 'empty_quote' };
   if (!rawField || !GOLD_FIELD_SET.has(rawField)) return { field: rawField, reason: 'bad_field' };

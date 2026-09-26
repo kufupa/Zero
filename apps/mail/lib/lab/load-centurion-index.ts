@@ -6,11 +6,13 @@ export type LabIndexLoadResult =
   | { index: LabIndex; source: 'live' }
   | { source: 'error'; error: LabIndexLoadError };
 
-let liveCache: { origin: string; result: Extract<LabIndexLoadResult, { source: 'live' }> } | null =
-  null;
+/** Kept for test/API compat; index is never retained across loads. */
+export function resetLabIndexCache(): void {}
 
-export function resetLabIndexCache(): void {
-  liveCache = null;
+function labIndexBackendOrigin(requestUrl: URL): string {
+  // Match trpc/auth-client: empty VITE_PUBLIC_BACKEND_URL → same-origin /api/*.
+  const configured = String(import.meta.env.VITE_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
+  return configured || requestUrl.origin;
 }
 
 export async function loadCenturionLabIndex(request: Request): Promise<LabIndexLoadResult> {
@@ -18,13 +20,14 @@ export async function loadCenturionLabIndex(request: Request): Promise<LabIndexL
   if (url.pathname.startsWith('/mail/')) {
     throw new Error('centurion eval lab must not mount under /mail folders');
   }
-  if (liveCache && liveCache.origin === url.origin) return liveCache.result;
-
+  const backendOrigin = labIndexBackendOrigin(url);
   const cookie = request.headers.get('cookie') ?? '';
   try {
-    const live = await fetch(new URL('/api/lab/centurion-index', url.origin), {
+    // Always re-fetch so revoked mailbox_access cannot reuse a prior 200 body.
+    const live = await fetch(new URL('/api/lab/centurion-index', backendOrigin), {
       headers: cookie ? { cookie } : undefined,
       credentials: 'include',
+      cache: 'no-store',
     });
     if (!live.ok) {
       return {
@@ -36,9 +39,7 @@ export async function loadCenturionLabIndex(request: Request): Promise<LabIndexL
     if (!Array.isArray(index?.rows) || index.rows.length === 0) {
       return { source: 'error', error: { status: 200, message: 'lab index empty' } };
     }
-    const result = { index, source: 'live' as const };
-    liveCache = { origin: url.origin, result };
-    return result;
+    return { index, source: 'live' };
   } catch (err) {
     return {
       source: 'error',

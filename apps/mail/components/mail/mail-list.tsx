@@ -75,6 +75,7 @@ import {
   isUnsupportedSearchOperatorError,
   mergeSearchQuery,
 } from '@/lib/mail/search-list';
+import { resolveThreadListErrorView } from '@/lib/mail/thread-list-error';
 import { toast } from 'sonner';
 
 function mailListSectionLabel(bucket: MailDateBucket): string {
@@ -1093,6 +1094,9 @@ export const MailList = memo(function MailList() {
 
     const activeSearch = mergeSearchQuery(searchValue.value, searchValue.filters ?? []);
     const isFiltering = activeSearch.length > 0;
+    const threadListErrorView = threadsQuery.isError
+      ? resolveThreadListErrorView(threadsQuery.error, isFiltering)
+      : null;
 
     const lastUnsupportedSearchErrorRef = useRef<string | null>(null);
     useEffect(() => {
@@ -1249,17 +1253,20 @@ export const MailList = memo(function MailList() {
               <div className="flex h-32 w-full items-center justify-center">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-900 border-t-transparent dark:border-white dark:border-t-transparent" />
               </div>
-            ) : threadsQuery.isError ? (
+            ) : threadsQuery.isError && threadListErrorView ? (
               <div className="flex w-full items-center justify-center">
                 <div className="flex flex-col items-center justify-center gap-2 text-center" role="alert">
-                  <p className="text-lg">
-                    {isUnsupportedSearchOperatorError(threadsQuery.error)
-                      ? threadsQuery.error.message
-                      : 'Unable to load search results. Please retry.'}
-                  </p>
-                  <Button type="button" size="sm" variant="secondary" onClick={() => void refetch()}>
-                    Retry search
-                  </Button>
+                  <p className="text-lg">{threadListErrorView.message}</p>
+                  {!threadListErrorView.isSessionError ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void refetch()}
+                    >
+                      {threadListErrorView.retryLabel}
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             ) : !items || items.length === 0 ? (

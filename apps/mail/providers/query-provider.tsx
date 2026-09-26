@@ -17,6 +17,7 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { createAuthBoundaryRecovery, isUnauthorizedTrpcError } from '@/lib/mail/auth-boundary';
+import { publicBackendTrpcUrl } from '@/lib/public-backend-url';
 import { resolveQueryHashPrefix, runLogoutCleanup } from '@/lib/mail/query-cache-policy';
 import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
 import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
@@ -261,7 +262,7 @@ const getQueryClient = () => {
   return browserQueryClient;
 };
 
-const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
+const getUrl = () => publicBackendTrpcUrl();
 
 const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
   const controller = new AbortController();

@@ -1,12 +1,17 @@
 /** Cookie-session GET for the Centurion lab index. File stays off public nginx. */
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
+import { mailboxAccess } from '../db/schema/mail.js';
+import { getDb, type DB } from '../db/client.js';
 import type { Auth } from '../lib/auth.js';
+import { promises as fs } from 'node:fs';
+import { eq } from 'drizzle-orm';
+import path from 'node:path';
 
 export const DEFAULT_CENTURION_LAB_INDEX_PATH = '/var/lib/nava-pilot/lab-centurion-index.json';
 
 export type CenturionLabIndexDeps = {
   getSession: (req: Request) => Promise<{ user: { id: string } } | null>;
+  /** Pilot mailbox principal gate — any mailbox_access row. */
+  userHasMailboxAccess: (userId: string) => Promise<boolean>;
   readIndex: () => Promise<Buffer | null>;
 };
 
@@ -31,10 +36,22 @@ export async function readCenturionLabIndexFile(indexPath: string): Promise<Buff
   }
 }
 
+export async function userHasAnyMailboxAccess(db: DB, userId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: mailboxAccess.id })
+    .from(mailboxAccess)
+    .where(eq(mailboxAccess.userId, userId))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export function createCenturionLabIndexHandler(deps: CenturionLabIndexDeps) {
   return async (req: Request): Promise<Response> => {
     const session = await deps.getSession(req);
     if (!session?.user?.id) return new Response(null, { status: 401 });
+    if (!(await deps.userHasMailboxAccess(session.user.id))) {
+      return new Response(null, { status: 403 });
+    }
     const body = await deps.readIndex();
     if (!body) return new Response(null, { status: 404 });
     return new Response(body, {
@@ -57,6 +74,7 @@ export function createWiredCenturionLabIndexHandler(auth: Auth) {
       if (!user?.id) return null;
       return { user: { id: user.id } };
     },
+    userHasMailboxAccess: (userId) => userHasAnyMailboxAccess(getDb(), userId),
     readIndex: () => readCenturionLabIndexFile(indexPath),
   });
 }
