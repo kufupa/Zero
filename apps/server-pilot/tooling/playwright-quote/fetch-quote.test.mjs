@@ -207,6 +207,26 @@ test('a hidden or malformed option is isolated while valid source options surviv
     assert.ok(result.issues.length);
   }
 });
+test('on-screen rate label may differ from native desc; binding uses room and rate code',()=>{
+  // Live 2026-09-26: NCOR2B native desc "Negotiated Contracted  Rate 2", grid "Negiotiated rate".
+  const f=multipleSource();
+  f.calendar.options[1].rate='BAR: Grid-only label';
+  const result=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
+  assert.equal(result.completeness.search,'complete');
+  const twin=result.options.find(o=>o.room.code==='STWN');
+  assert.equal(twin.nightly.length,3);
+  assert.deepEqual(twin.rate,{code:'BAR',label:'Grid-only label',nativeLabel:'Best Available Rate'});
+  assert.deepEqual(result.options.find(o=>o.room.code==='STQN').rate,{code:'BAR',label:'Best Available Rate'});
+  f.calendar.options.push(structuredClone(f.calendar.options[1]));
+  const ambiguous=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
+  assert.ok(ambiguous.issues.some(i=>i.code==='RATE_NOT_BOUND_TO_VISIBLE_GRID'&&i.path.endsWith(':STWN:BAR')));
+});
+test('return limit hides only non-matching rows without claiming unseen matches',()=>{
+  const rows=['match','match','unresolved','alternative'].map((matchStatus,i)=>({id:i,matchStatus}));
+  assert.deepEqual(quote.limitOptions(rows,2),{options:rows.slice(0,2),truncated:true,matchingRowsUnseen:false});
+  assert.equal(quote.limitOptions(rows,1).matchingRowsUnseen,true);
+  assert.deepEqual(quote.limitOptions(rows,4),{options:rows,truncated:false,matchingRowsUnseen:false});
+});
 test('null calendars and changed headers are partial, never sold out',()=>{
   const f=multipleSource();f.calendar.headers[1]='26-SEP-2026Saturday';
   for(const window of [{data:null,calendar:null},{data:f.data,calendar:f.calendar}]) {

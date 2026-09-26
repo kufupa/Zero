@@ -481,9 +481,13 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       const identityKeys=['desc','currency','isNegotiatedRate','restricted','minLOS','maxLOS','minLeadTime','maxLeadTime','ismealplan','ispkg','maxNights','availableLimitNightCount'];
       if(JSON.stringify(pick(option._rate,identityKeys))!==JSON.stringify(pick(rate,identityKeys))||option._nativeRoom.buildingCode!==nativeRoom.buildingCode)
         option.issues.push(issue('RATE_IDENTITY_CHANGED',id,'Rate eligibility, terms or pool identity changed across observations.'));
-      const dom=calendar.options.filter(o=>o.room.code===nativeRoom.code&&o.rate===`${rate.code}: ${rate.desc}`);
+      // The grid label can differ from native desc for the same code; nightly
+      // price/inventory agreement below is the binding proof.
+      const dom=calendar.options.filter(o=>o.room.code===nativeRoom.code&&o.rate.startsWith(`${rate.code}: `));
       if (dom.length!==1) {option.issues.push(issue('RATE_NOT_BOUND_TO_VISIBLE_GRID',id,'Native row is hidden, missing or ambiguous.'));continue;}
       option.board=dom[0].board;
+      const shown=dom[0].rate.slice(rate.code.length+2).trim();
+      option.rate=shown&&shown!==rate.desc?{code:rate.code,label:shown,nativeLabel:rate.desc}:{code:rate.code,label:rate.desc};
       for (const date of wanted) {
         const idx=dates.indexOf(date);
         if (idx<0||idx>=headers.length) continue;
@@ -544,6 +548,11 @@ export function selectOption(request, room, data, calendar) {
   return {nativeRoom:option._nativeRoom,rate:option._rate,nightly:option.nightly,
     indexes:stayDates(request).map(d=>option.observations.get(d).index),available:option.availability==='available',
     dom:calendar.options.find(o=>o.room.code===option.room.code&&o.rate===`${option.rate.code}: ${option.rate.label}`)};
+}
+
+export function limitOptions(ordered,max) {
+  const options=ordered.slice(0,max),hidden=ordered.slice(max);
+  return {options,truncated:hidden.length>0,matchingRowsUnseen:hidden.some(o=>o.matchStatus==='match')};
 }
 
 export function detailCandidates(mode,options) {
@@ -687,14 +696,13 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         parsed.options.length&&parsed.options.every(o=>o.availability==='unavailable')?'unavailable':'partial';
       const visible=orderOptions(parsed.options).filter(o=>(request.search.includeAlternatives||o.matchStatus!=='alternative')&&
         (request.search.includeRestricted||o.availability!=='restricted'));
-      const truncated=visible.length>request.maxOptionsPerGroup;
-      const options=visible.slice(0,request.maxOptionsPerGroup);
+      const {options,truncated,matchingRowsUnseen}=limitOptions(visible,request.maxOptionsPerGroup);
       const groupIssues=[...parsed.issues,...detailIssues,...parsed.options.flatMap(o=>o.issues.filter(i=>i.code==='DETAIL_COVERAGE_PARTIAL'))];
       if(truncated)groupIssues.push(issue('OPTION_LIMIT',room.id,'Returned options truncated.','Narrow native room/rate codes or increase maxOptionsPerGroup.'));
       const requiredPartial=request.details==='full'&&parsed.options.some(o=>o.details.status!=='complete')||
         parsed.options.some(o=>o.matchStatus==='unresolved')&&!eligible.length;
       const completeness={...parsed.completeness,returnedOptions:options.length,detailOptions:[...details.keys()].length,
-        search:truncated?'truncated':parsed.completeness.search,requiredFacts:requiredPartial?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen:truncated};
+        search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:requiredPartial?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen};
       if(completeness.search!=='complete'||completeness.requiredFacts!=='complete')outcome='partial';
       groups.push({id:room.id,request:room,requestedOccupancy:room,outcome,options,applied:source.windows.map(w=>w.criteria),
         resolvedContext:source.resolvedContext,sourceReused:reusedSource,productFilterMode:source.productFilterMode,completeness,issues:groupIssues});
