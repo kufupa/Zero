@@ -51,11 +51,14 @@
     "contextRef": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Exactly one of native code, exact name, or party-lookup nativeId. Multiple picker matches are an input gap.",
+      "description": "Exactly one of native code, exact name, or party-lookup nativeId (optionally with its name). Multiple picker matches are an input gap.",
       "oneOf": [
         { "required": ["code"], "properties": { "code": { "$ref": "#/$defs/nativeCode" } } },
-        { "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
-        { "required": ["nativeId"], "properties": { "nativeId": { "type": "string", "minLength": 1, "description": "party-lookup candidate.nativeId for organization or bookingAgency." } } }
+        { "required": ["name"], "not": { "required": ["nativeId"] }, "properties": { "name": { "type": "string", "minLength": 1 } } },
+        { "required": ["nativeId"], "properties": {
+          "nativeId": { "type": "string", "minLength": 1, "description": "party-lookup candidate.nativeId for organization or bookingAgency. Not valid for group." },
+          "name": { "type": "string", "minLength": 1, "description": "party-lookup candidate.displayName. Required for agency: the HMS agency picker has no ID filter, so it searches by name and matches travelagencyid." }
+        } }
       ]
     },
     "issue": {

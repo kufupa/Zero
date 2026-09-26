@@ -231,7 +231,7 @@ export function matchReference(reference,rows) {
 
 const contextControls={
   organization:{field:'organization',nameFilter:'ff_companyname',codeFilter:'ff_companyid',idFilter:'ff_companyid',id:'companyid',code:'companyid',name:'companyname'},
-  agency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',idFilter:'ff_travelagencyid',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
+  agency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
   group:{field:'groupname',nameFilter:'ff_groupsname',codeFilter:'ff_confirmationnumber',id:'propgroupbookingid',code:'confirmationnumber',name:'groupsname'},
 };
 
@@ -243,17 +243,26 @@ export function searchSignature(request,room) {
     rateCodes:[...(room.required?.rateCodes??(request.rateCode?[request.rateCode]:[]))].sort()});
 }
 
+// Agency has no ID filter in HMS: a nativeId is searched by its name, then matched on travelagencyid.
+export function pickerFilter(kind,reference) {
+  const config=contextControls[kind];
+  const filter=reference.nativeId!==undefined&&config.idFilter?{name:config.idFilter,value:reference.nativeId}
+    :reference.code!==undefined?{name:config.codeFilter,value:reference.code}
+    :{name:config.nameFilter,value:reference.name};
+  if (typeof filter.value!=='string'||!filter.value) throw new Error(`REFERENCE_FILTER_MISSING_${kind}`);
+  return filter;
+}
+
 export async function resolveReference(page,kind,reference) {
   const config=contextControls[kind];
+  const {name:filterName,value:filterValue}=pickerFilter(kind,reference);
   await expandCriteria(page);
   const input=page.locator(`input[name="${config.field}"]:visible`);
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger').click();
-  const filterName=reference.nativeId!==undefined?(config.idFilter??config.codeFilter):reference.code!==undefined?config.codeFilter:config.nameFilter;
-  const filterValue=reference.nativeId??reference.code??reference.name;
   const filter=page.locator(`input[name="${filterName}"]:visible`);
-  await filter.waitFor();
   const popup=page.locator('.x-window:visible').filter({has:filter});
   try {
+    await filter.waitFor();
     await filter.fill(filterValue);
     await filter.press('Enter');
     await page.waitForFunction(name=>{

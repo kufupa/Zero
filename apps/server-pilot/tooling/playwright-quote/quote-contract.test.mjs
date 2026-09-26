@@ -337,11 +337,25 @@ test('v2 rooms require ids; rate context accepts exactly one of code, name or na
 
   const lookedUp = normalizeQuoteRequest(v2(
     [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
-    { rateContext: { organization: { nativeId: '1842' }, agency: { nativeId: '91' } } },
+    { rateContext: { organization: { nativeId: '1842' }, agency: { nativeId: '91', name: ' CWT JNB ' } } },
   ));
   assert.equal(lookedUp.ok, true, lookedUp.ok ? '' : JSON.stringify(lookedUp.issues));
   assert.deepEqual(lookedUp.request.rateContext.organization, { nativeId: '1842' });
-  assert.deepEqual(lookedUp.request.rateContext.agency, { nativeId: '91' });
+  assert.deepEqual(lookedUp.request.rateContext.agency, { nativeId: '91', name: 'CWT JNB' });
+
+  const agencyIdOnly = normalizeQuoteRequest(v2(
+    [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
+    { rateContext: { agency: { nativeId: '91' } } },
+  ));
+  assert.equal(agencyIdOnly.ok, false);
+  assert.ok(issuePaths(agencyIdOnly).includes('rateContext.agency.name'));
+
+  const groupNativeId = normalizeQuoteRequest(v2(
+    [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
+    { rateContext: { group: { nativeId: '5' } } },
+  ));
+  assert.equal(groupNativeId.ok, false);
+  assert.ok(issuePaths(groupNativeId).includes('rateContext.group.nativeId'));
 });
 
 test('published schema documents request and result contracts without selectors or authority digests', async () => {

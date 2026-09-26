@@ -282,6 +282,13 @@ test('picker references require unique exact normalized names or native codes',(
   assert.throws(()=>quote.matchReference({name:'Example Company'},[...rows,{...rows[0],id:'19'}]),/AMBIGUOUS_REFERENCE/);
   assert.throws(()=>quote.matchReference({nativeId:'17'},[...rows,{...rows[0],code:'99999'}]),/AMBIGUOUS_REFERENCE/);
 });
+test('picker filters only use fields the live HMS pickers expose',()=>{
+  assert.deepEqual(quote.pickerFilter('organization',{nativeId:'49'}),{name:'ff_companyid',value:'49'});
+  assert.deepEqual(quote.pickerFilter('agency',{nativeId:'290',name:'CWT JNB'}),{name:'ff_travelagencyname',value:'CWT JNB'});
+  assert.deepEqual(quote.pickerFilter('agency',{code:'77218175'}),{name:'ff_iatanumber',value:'77218175'});
+  assert.deepEqual(quote.pickerFilter('group',{name:'Conference'}),{name:'ff_groupsname',value:'Conference'});
+  assert.throws(()=>quote.pickerFilter('agency',{nativeId:'290'}),/REFERENCE_FILTER_MISSING/);
+});
 test('search signatures share quantity/preferences only, never occupancy/context/currency/filter changes',()=>{
   const a=quote.searchSignature?.(request,request.rooms[0]);
   assert.equal(typeof a,'string');

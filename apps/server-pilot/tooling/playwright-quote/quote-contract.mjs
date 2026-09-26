@@ -194,7 +194,7 @@ function parseConstraints(raw, path, issues) {
   return Object.keys(parsed).length ? parsed : undefined;
 }
 
-function parseReference(raw, path, issues) {
+function parseReference(raw, path, issues, kind) {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
     issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each context reference must be an object.', 'Supply exactly one of code, name or nativeId.'));
@@ -209,11 +209,12 @@ function parseReference(raw, path, issues) {
   const hasCode = Object.hasOwn(raw, 'code');
   const hasName = Object.hasOwn(raw, 'name');
   const hasNativeId = Object.hasOwn(raw, 'nativeId');
-  const supplied = [hasCode, hasName, hasNativeId].filter(Boolean).length;
+  const supplied = [hasCode, hasName && !hasNativeId, hasNativeId].filter(Boolean).length;
   if (supplied !== 1) {
-    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each reference supplies exactly one of native code, exact name or party-lookup nativeId.', 'Provide code, name or nativeId, not a combination.'));
+    issues.push(issue('INVALID_RATE_CONTEXT', path, 'Each reference supplies exactly one of native code, exact name or party-lookup nativeId.', 'Provide code, name or nativeId (optionally with its name), not a combination.'));
     return undefined;
   }
+  if (hasNativeId) return parseNativeReference(raw, path, issues, kind);
   if (hasCode) {
     if (typeof raw.code !== 'string' || !raw.code.trim() || !NATIVE_CODE.test(raw.code)) {
       issues.push(issue('INVALID_RATE_CONTEXT', `${path}.code`, 'Native codes use A-Z, digits, underscore or hyphen.', 'Use the exact picker code.'));
@@ -221,18 +222,33 @@ function parseReference(raw, path, issues) {
     }
     return { code: raw.code };
   }
-  if (hasNativeId) {
-    if (typeof raw.nativeId !== 'string' || !raw.nativeId.trim()) {
-      issues.push(issue('INVALID_RATE_CONTEXT', `${path}.nativeId`, 'nativeId must be a non-empty party-lookup candidate id.', 'Pass candidates[].nativeId from party-lookup.'));
-      return undefined;
-    }
-    return { nativeId: raw.nativeId.trim() };
-  }
   if (typeof raw.name !== 'string' || !raw.name.trim()) {
     issues.push(issue('INVALID_RATE_CONTEXT', `${path}.name`, 'Name must be an exact non-empty string.', 'Use the exact picker label.'));
     return undefined;
   }
   return { name: raw.name.trim() };
+}
+
+function parseNativeReference(raw, path, issues, kind) {
+  if (kind === 'group') {
+    issues.push(issue('INVALID_RATE_CONTEXT', `${path}.nativeId`, 'party-lookup nativeId applies to organization or agency only.', 'Use the group code or exact name.'));
+    return undefined;
+  }
+  if (typeof raw.nativeId !== 'string' || !raw.nativeId.trim()) {
+    issues.push(issue('INVALID_RATE_CONTEXT', `${path}.nativeId`, 'nativeId must be a non-empty party-lookup candidate id.', 'Pass candidates[].nativeId from party-lookup.'));
+    return undefined;
+  }
+  const hasName = Object.hasOwn(raw, 'name');
+  if (hasName && (typeof raw.name !== 'string' || !raw.name.trim())) {
+    issues.push(issue('INVALID_RATE_CONTEXT', `${path}.name`, 'Name must be an exact non-empty string.', 'Pass candidates[].displayName from party-lookup.'));
+    return undefined;
+  }
+  // The HMS agency picker has no internal-ID filter; it is searched by name, then matched on travelagencyid.
+  if (kind === 'agency' && !hasName) {
+    issues.push(issue('INVALID_RATE_CONTEXT', `${path}.name`, 'Agency nativeId needs the candidate name to search the picker.', 'Pass candidates[].displayName from party-lookup as name.'));
+    return undefined;
+  }
+  return hasName ? { nativeId: raw.nativeId.trim(), name: raw.name.trim() } : { nativeId: raw.nativeId.trim() };
 }
 
 function parseRateContext(raw, issues) {
@@ -249,7 +265,7 @@ function parseRateContext(raw, issues) {
   const parsed = {};
   for (const key of ['organization', 'agency', 'group']) {
     if (raw[key] !== undefined) {
-      const value = parseReference(raw[key], `rateContext.${key}`, issues);
+      const value = parseReference(raw[key], `rateContext.${key}`, issues, key);
       if (value) parsed[key] = value;
     }
   }
