@@ -197,16 +197,19 @@ test('optional agency, organization, arAccount, billingReference, profileId acce
   }
 });
 
-test('create request accepts party-lookup nativeId objects on identity fields', () => {
-  const lookedUp = requestResult(requiredRequest({
-    agency: { nativeId: '91', kind: 'bookingAgency' },
-    organization: { nativeId: '1842', kind: 'organization' },
-    arAccount: { nativeId: '7', kind: 'arAccount' },
-    profileId: { nativeId: '55', kind: 'guest' },
-  }));
+test('create request accepts party-lookup nativeId only where the form takes an id', () => {
+  const lookedUp = requestResult(requiredRequest({ profileId: { nativeId: '55', kind: 'guest' } }));
   assert.equal(lookedUp.ok, true, lookedUp.errors.join('; '));
-  const emptyNative = requestResult(requiredRequest({ agency: { nativeId: '' } }));
+  for (const field of ['agency', 'organization', 'arAccount']) {
+    const nameLookup = requestResult(requiredRequest({ [field]: { nativeId: '91' } }));
+    assert.equal(nameLookup.ok, false, `${field} lookup field takes a name, not a nativeId`);
+  }
+  const emptyNative = requestResult(requiredRequest({ profileId: { nativeId: '' } }));
   assert.equal(emptyNative.ok, false);
+  const nonNumeric = requestResult(requiredRequest({ profileId: { nativeId: 'Lee, Pat' } }));
+  assert.equal(nonNumeric.ok, false, 'guestid takes a numeric profile id');
+  const wrongKind = requestResult(requiredRequest({ profileId: { nativeId: '49', kind: 'organization' } }));
+  assert.equal(wrongKind.ok, false, 'profileId takes guest candidates only');
 });
 
 test('missing guaranteeType fails', () => {

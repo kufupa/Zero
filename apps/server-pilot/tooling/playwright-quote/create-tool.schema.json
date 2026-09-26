@@ -75,12 +75,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["nativeId"],
-      "description": "party-lookup candidate.nativeId. kind is optional and must match the field (bookingAgency, organization, arAccount, guest).",
+      "description": "party-lookup guest candidate.nativeId for profileId.",
       "properties": {
-        "nativeId": { "type": "string", "minLength": 1 },
+        "nativeId": { "type": "string", "minLength": 1, "pattern": "^\\d+$" },
         "kind": {
           "type": "string",
-          "enum": ["organization", "bookingAgency", "guest", "arAccount"]
+          "enum": ["guest"]
         }
       }
     },
@@ -228,25 +228,19 @@
           "description": "Opened Guarantee Type labels."
         },
         "agency": {
-          "description": "Optional Primary Booking Agency text or party-lookup bookingAgency nativeId. Not required.",
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            { "$ref": "#/$defs/partyNativeRef" }
-          ]
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Primary Booking Agency exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
         },
         "organization": {
-          "description": "Optional Organization text or party-lookup organization nativeId. Not required.",
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            { "$ref": "#/$defs/partyNativeRef" }
-          ]
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Organization exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
         },
         "arAccount": {
-          "description": "Optional A/R Account text or party-lookup arAccount nativeId. Live A/R is an independent lookup, not auto-filled from org/agency. Not required.",
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            { "$ref": "#/$defs/partyNativeRef" }
-          ]
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional A/R Account exact name (party-lookup candidate.displayName). Live A/R is an independent lookup, not auto-filled from org/agency. nativeId is not accepted until picker-by-id selection exists. Not required."
         },
         "billingReference": {
           "type": "string",

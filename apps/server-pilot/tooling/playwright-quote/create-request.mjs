@@ -143,24 +143,17 @@ const TRACK_LABELS = {
   'STO Rate': 'STO',
 };
 
-const NATIVE_ID_FIELDS = new Set(['agency', 'organization', 'arAccount', 'profileId']);
-
-function normalizeNativeIdValue(field, value) {
+function normalizeProfileId(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  if (typeof value.nativeId === 'string' && value.nativeId.trim()) {
-    const nativeId = value.nativeId.trim();
-    if (field === 'profileId' && /^\d+$/.test(nativeId)) return Number(nativeId);
-    return nativeId;
-  }
-  return value;
+  const nativeId = typeof value.nativeId === 'string' ? value.nativeId.trim() : '';
+  const guest = value.kind === undefined || value.kind === 'guest';
+  return guest && /^\d+$/.test(nativeId) ? Number(nativeId) : value;
 }
 
 export function normalizeCreateLabels(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
   const next = { ...data };
-  for (const field of NATIVE_ID_FIELDS) {
-    if (Object.hasOwn(next, field)) next[field] = normalizeNativeIdValue(field, next[field]);
-  }
+  if (Object.hasOwn(next, 'profileId')) next.profileId = normalizeProfileId(next.profileId);
   if (typeof next.roomType === 'string' && ROOM_LABELS[next.roomType]) next.roomType = ROOM_LABELS[next.roomType];
   if (typeof next.track === 'string' && TRACK_LABELS[next.track]) next.track = TRACK_LABELS[next.track];
   return next;
