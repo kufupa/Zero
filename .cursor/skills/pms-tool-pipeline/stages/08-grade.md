@@ -13,7 +13,7 @@ Write `08-grade.json`:
 { "codeHash": "<from pipeline.mjs codeHash(toolFiles)>", "items": [ { "id": "g1", "pass": true, "claim": "...", "evidence": "png/g1.png" } ] }
 ```
 
-`grade.pass` = every **non-Sol** item `pass === true` with evidence (live Astra grade).
+`grade.pass` = every **non-Sol** item `pass === true` with evidence (live Astra grade), and every cited `.png` exists under the tool dir.
 `grade.sol` = at least one `"by":"sol"` item, and every Sol item whose evidence path equals an Astra evidence path must pass. Sol FAILs on stale diagnostic / uncited pngs do **not** fail the gate.
 
 Get hash: `node apps/server-pilot/tooling/pms-pipeline/pipeline.mjs hash <tool>`

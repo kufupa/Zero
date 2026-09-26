@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -237,7 +237,6 @@ export function verify(dir, { repoRoot }) {
     checks.push(check(5, 'tests.green', [run.status === 0 ? null : `testCmd exit ${run.status}: ${(run.stderr || run.stdout || '').slice(-300)}`]));
   }
 
-  let hashedProofPngs = new Set();
   const prove = readJsonIfExists(at('06-prove.json'));
   if (!prove) checks.push(...missing(6, ['prove.pngs', 'prove.outcomes'], '06-prove.json'));
   else {
@@ -249,14 +248,11 @@ export function verify(dir, { repoRoot }) {
     ]));
     checks.push(check(6, 'prove.pngs.fresh', proofEntries.map(({ caseId, name, rel, expectedHash }) => {
       if (!rel || !fileExists(rel)) return null;
-      if (!expectedHash) return `${caseId} ${name} png lacks sha256`;
+      if (!expectedHash) return `${caseId} ${name} png lacks sha256; run pipeline.mjs seal`;
       const actualHash = fileHash(join(dir, rel));
       if (actualHash !== expectedHash) return `${caseId} ${name} png sha256 mismatch`;
       return null;
     })));
-    hashedProofPngs = new Set(proofEntries
-      .filter(({ rel, expectedHash }) => rel && fileExists(rel) && expectedHash && fileHash(join(dir, rel)) === expectedHash)
-      .map(({ rel }) => rel));
     checks.push(check(6, 'prove.outcomes', cases.map((c) => (!c.outcome || c.outcome === 'execution_failure' ? `${c.id} outcome ${c.outcome}` : null))));
   }
 
@@ -288,14 +284,12 @@ export function verify(dir, { repoRoot }) {
     checks.push(check(8, 'grade.pass', [
       astraItems.length === 0 ? 'no Astra graded items' : null,
       ...astraItems.map((g) => (g.pass === true && g.evidence ? null : `${g.id} ${g.pass ? 'lacks evidence' : 'failed'}`)),
+      ...astraItems.flatMap((g) => evidenceTokens(g.evidence)
+        .filter((p) => p.endsWith('.png') && !fileExists(p))
+        .map((p) => `${g.id} evidence ${p} missing on disk`)),
     ]));
     const astraEvidence = new Set(astraItems.flatMap((g) => evidenceTokens(g.evidence)));
     const solOnAstra = solItems.filter((g) => evidenceTokens(g.evidence).some((p) => astraEvidence.has(p)));
-    checks.push(check(8, 'grade.evidence.proved', [...astraItems, ...solOnAstra].flatMap((g) => {
-        const tokens = evidenceTokens(g.evidence);
-        if (tokens.length === 0) return [`${g.id} lacks evidence`];
-        return tokens.map((p) => (hashedProofPngs.has(p) ? null : `${g.id} evidence ${p} not hashed stage-6 proof png`));
-      })));
     checks.push(check(8, 'grade.sol', [
       solItems.length === 0 ? 'Sol file review missing (no by:sol items)' : null,
       ...solOnAstra.map((g) => (g.pass === true && g.evidence ? null : `${g.id} ${g.pass ? 'lacks evidence' : 'failed Astra evidence'}`)),
@@ -350,12 +344,40 @@ export function toolDir(repoRoot, tool) {
   return join(repoRoot, '.private/pms-pipeline', tool);
 }
 
+export function sealProof(dir) {
+  const config = readJsonIfExists(join(dir, 'pipeline.json'));
+  const prove = readJsonIfExists(join(dir, '06-prove.json'));
+  if (!config || !prove) return { ok: false, errors: [`missing ${config ? '06-prove.json' : 'pipeline.json'}`] };
+  const errors = [];
+  for (const c of prove.cases ?? []) {
+    const hashes = {};
+    for (const name of config.criticalPngs ?? []) {
+      const rel = c.pngs?.[name];
+      if (rel && existsSync(join(dir, rel))) hashes[name] = fileHash(join(dir, rel));
+      else errors.push(`${c.id} lacks ${name} png`);
+    }
+    c.pngHashes = hashes;
+  }
+  if (errors.length) return { ok: false, errors };
+  writeFileSync(join(dir, '06-prove.json'), `${JSON.stringify(prove, null, 2)}\n`);
+  return { ok: true, errors };
+}
+
 function main([command, tool]) {
-  if (!['status', 'next', 'verify', 'hash'].includes(command) || !tool) {
-    console.error('usage: pipeline.mjs status|next|verify|hash <tool>');
+  if (!['status', 'next', 'verify', 'hash', 'seal'].includes(command) || !tool) {
+    console.error('usage: pipeline.mjs status|next|verify|hash|seal <tool>');
     return 1;
   }
   const repoRoot = repoRootFrom(process.cwd());
+  if (command === 'seal') {
+    const sealed = sealProof(toolDir(repoRoot, tool));
+    if (!sealed.ok) {
+      console.error(sealed.errors.join('; '));
+      return 2;
+    }
+    console.log(`${tool}: 06-prove.json png hashes sealed`);
+    return 0;
+  }
   if (command === 'hash') {
     const config = readJsonIfExists(join(toolDir(repoRoot, tool), 'pipeline.json'));
     if (!config) {

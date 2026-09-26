@@ -36,6 +36,6 @@ Hit = answer-key native id in `candidates`. Report hit@1 and hit@k. `ambiguous` 
 
 ## Consumers (stage 9)
 
-- `tooling/playwright-quote/quote-tool.schema.json` `rateContext.agency` / `rateContext.organization`
-- `tooling/playwright-quote/create-tool.schema.json` `agency` / `organization` / `arAccount` / `profileId`
+- `tooling/playwright-quote/quote-tool.schema.json` `rateContext.organization` `{ nativeId }` (picker filters `ff_companyid`); `rateContext.agency` `{ nativeId, name: displayName }` (agency picker has no ID filter: search by name, match `travelagencyid`)
+- `tooling/playwright-quote/create-tool.schema.json` `profileId` `{ nativeId }` (guest only). `agency` / `organization` / `arAccount` take exact `displayName` text; nativeId refused until picker-by-id selection exists.
 - Link on unsaved New Record → record auto-fills (A/R, contract, IATA, commission, market fields) → create fill order.

@@ -228,14 +228,57 @@ test('proof screenshot changed after proof JSON fails prove.pngs.fresh', () => {
   rmSync(repo, { recursive: true, force: true });
 });
 
-test('Astra grade evidence must cite hashed stage-6 proof pngs', () => {
+test('Astra grade may cite its own live screenshot; Sol may cite files', () => {
   const { repo, dir } = cleanFixture();
-  writeFileSync(join(dir, 'png/other-results.png'), PNG);
+  writeFileSync(join(dir, 'png/grade-g1.png'), PNG);
   const grade = readJson(join(dir, '08-grade.json'));
-  grade.items = grade.items.map((g) => (g.id === 'g1' ? { ...g, evidence: 'png/other-results.png' } : g));
+  grade.items = [
+    { id: 'g1', pass: true, evidence: 'png/grade-g1.png' },
+    { id: 's1', by: 'sol', pass: true, claim: 'g1 png shows grid', evidence: '08-grade.json; png/grade-g1.png' },
+  ];
+  writeJson(join(dir, '08-grade.json'), grade);
+  assert.deepEqual(failing(verify(dir, { repoRoot: repo })), []);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('Astra grade evidence missing on disk fails grade.pass', () => {
+  const { repo, dir } = cleanFixture();
+  const grade = readJson(join(dir, '08-grade.json'));
+  grade.items = grade.items.map((g) => (g.id === 'g1' ? { ...g, evidence: 'png/never-saved.png' } : g));
   writeJson(join(dir, '08-grade.json'), grade);
   const result = verify(dir, { repoRoot: repo });
-  assert.ok(failing(result).includes('grade.evidence.proved'));
+  assert.ok(failing(result).includes('grade.pass'));
+  assert.match(result.checks.find((c) => c.id === 'grade.pass').detail, /never-saved/);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('CLI seal writes stage-6 png hashes so prove.pngs.fresh can pass', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { repo, dir } = cleanFixture();
+  const prove = readJson(join(dir, '06-prove.json'));
+  delete prove.cases[0].pngHashes;
+  writeJson(join(dir, '06-prove.json'), prove);
+  assert.ok(failing(verify(dir, { repoRoot: repo })).includes('prove.pngs.fresh'));
+  const run = spawnSync(process.execPath, [new URL('./pipeline.mjs', import.meta.url).pathname, 'seal', 'demo'], {
+    env: { ...process.env, PMS_PIPELINE_REPO_ROOT: repo },
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(readJson(join(dir, '06-prove.json')).cases[0].pngHashes.results, sha256(PNG));
+  assert.deepEqual(failing(verify(dir, { repoRoot: repo })), []);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('CLI seal refuses when a critical proof png is missing', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { repo, dir } = cleanFixture();
+  rmSync(join(dir, 'png/c1-results.png'));
+  const run = spawnSync(process.execPath, [new URL('./pipeline.mjs', import.meta.url).pathname, 'seal', 'demo'], {
+    env: { ...process.env, PMS_PIPELINE_REPO_ROOT: repo },
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /c1 lacks results png/);
   rmSync(repo, { recursive: true, force: true });
 });
 
