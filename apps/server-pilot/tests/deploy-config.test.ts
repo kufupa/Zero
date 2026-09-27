@@ -2316,6 +2316,50 @@ describe('deploy config', () => {
     expect(script).toMatch(/UNDO_SEND_SECONDS:=20/);
   });
 
+  it('write-ec2-env.sh persists GOTENBERG_URL for quote PDF convert', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    expect(script).toContain('append_env GOTENBERG_URL');
+    expect(script).toContain('GOTENBERG_URL:-http://127.0.0.1:3000');
+  });
+
+  it('gotenberg sidecar binds loopback, pins libreoffice image, and never uses get.docker.com', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = join(here, '..', 'deploy');
+    const compose = readFileSync(join(deploy, 'gotenberg.compose.yaml'), 'utf8');
+    const install = readFileSync(join(deploy, 'install-gotenberg.sh'), 'utf8');
+    const ops = readFileSync(join(deploy, 'ops-gotenberg.sh'), 'utf8');
+
+    expect(compose).toContain('gotenberg/gotenberg:8.36.0-libreoffice');
+    expect(compose).toContain('127.0.0.1:3000:3000');
+    expect(compose).toContain('--api-timeout=60s');
+    expect(compose).toContain('--libreoffice-auto-start=true');
+    expect(compose).toContain('--libreoffice-start-timeout=60s');
+    expect(compose).toContain('--api-download-from-deny-private-ips=true');
+    expect(compose).toContain('--api-download-from-deny-public-ips=true');
+    expect(compose).not.toMatch(/0\.0\.0\.0:3000/);
+
+    expect(install).toContain('docker.io');
+    expect(install).toContain('docker-compose-v2');
+    expect(install).toContain('127.0.0.1:3000');
+    expect(install).toContain('GOTENBERG_URL');
+    expect(install).toMatch(/4G|4096/);
+    expect(install).not.toContain('get.docker.com');
+    expect(install).not.toMatch(/usermod.*docker.*ubuntu/);
+    expect(install).not.toMatch(/0\.0\.0\.0:3000/);
+    expect(install).not.toMatch(/(?:^|[^-])-p ["']?3000:3000/);
+
+    expect(ops).toContain('ssm-run-command.sh');
+    expect(ops).toContain('install-gotenberg.sh');
+    expect(ops).not.toContain('get.docker.com');
+  });
+
   it('FakeSmtpTransport ring buffer caps at 100', async () => {
     const { FakeSmtpTransport, FAKE_SMTP_RING_MAX } = await import(
       '../src/mail/send/smtp.js'
