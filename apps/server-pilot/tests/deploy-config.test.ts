@@ -2347,6 +2347,7 @@ describe('deploy config', () => {
 
     expect(install).toContain('docker.io');
     expect(install).toContain('docker-compose-v2');
+    expect(install).toContain('docker compose version');
     expect(install).toContain('127.0.0.1:3000');
     expect(install).toContain('GOTENBERG_URL');
     expect(install).toMatch(/4G|4096/);
@@ -2357,6 +2358,8 @@ describe('deploy config', () => {
 
     expect(ops).toContain('ssm-run-command.sh');
     expect(ops).toContain('install-gotenberg.sh');
+    expect(ops).toContain('[ ! -f');
+    expect(ops).toContain('deploy this commit first');
     expect(ops).not.toContain('get.docker.com');
   });
 

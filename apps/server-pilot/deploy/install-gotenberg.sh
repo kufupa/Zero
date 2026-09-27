@@ -21,7 +21,7 @@ if [ -z "$avail_kb" ] || [ "$avail_kb" -lt "$MIN_FREE_KB" ]; then
   exit 1
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
+if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y docker.io docker-compose-v2

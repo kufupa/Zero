@@ -13,7 +13,8 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help)
       echo "usage: $0"
-      echo "  SSM: sudo install-gotenberg.sh (docker.io + 127.0.0.1:3000 sidecar)"
+      echo "  SSM: fail if install-gotenberg.sh missing (deploy this commit first),"
+      echo "       else sudo install-gotenberg.sh (docker.io + 127.0.0.1:3000 sidecar)"
       echo "  Then: bash apps/server-pilot/deploy/ops-restart.sh"
       exit 0
       ;;
@@ -25,7 +26,16 @@ for arg in "$@"; do
 done
 
 echo "== ops-gotenberg: install sidecar ${INSTANCE_ID} =="
-bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-  'sudo bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/install-gotenberg.sh'
+REMOTE_COMMAND="$(cat <<'REMOTE'
+set -euo pipefail
+INSTALL=/home/ubuntu/repos/zero/apps/server-pilot/deploy/install-gotenberg.sh
+if [ ! -f "$INSTALL" ]; then
+  echo "missing $INSTALL — deploy this commit first" >&2
+  exit 1
+fi
+sudo bash "$INSTALL"
+REMOTE
+)"
+bash "${SCRIPT_DIR}/ssm-run-command.sh" "$REMOTE_COMMAND"
 
 echo "ops-gotenberg ok"
