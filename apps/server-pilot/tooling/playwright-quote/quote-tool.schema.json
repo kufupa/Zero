@@ -234,7 +234,7 @@
         "searchCompleteness": { "type": "object" },
         "issues": { "type": "array", "items": { "$ref": "#/$defs/issue" } },
         "evidence": { "type": "array", "description": "References into the private audit bundle. Do not embed entire DOM or network payloads." },
-        "publicReset": { "type": "object", "description": "Verified public search after a contextual or currency call. Absence of leakage is required; public alternatives never silently fulfil a contextual request." },
+        "publicReset": { "type": "object", "description": "Verified public search after a contextual or currency call. Absence of leakage is required. If the bound party has no negotiated rates, public BAR may be returned with issue NO_SPECIAL_RATES; that is not silent fulfilment of a contracted rate." },
         "limitations": { "type": "array", "items": { "type": "string" } },
         "gaps": { "type": "array", "items": { "type": "string" }, "description": "Legacy path aliases for input-gap field paths." },
         "error": { "type": "object" },

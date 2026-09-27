@@ -37,7 +37,7 @@ Live Woolworths (organization `49`) and CWT JNB (agency `290`) quotes on HRCEN b
 
 - Offline replay of saved `group-1-source.json` through `extractOptions` reproduced the live issue counts exactly before the fix; after it, Woolworths has 18 verified contextual matches.
 - Live Woolworths quote after fix: outcome `quote`, 18 `contextual|match|verified|available` rows, total run 3m40s, trace finalize 14s (was ~13 min). Redaction markers 544 (was 16,603); `bookingSessionID` and `JSESSIONID` still redacted.
-- CWT JNB stays `partial` by design: HMS marks no rate as negotiated for that agency at HRCEN, and public BAR must not silently satisfy a contextual request.
+- CWT JNB with no negotiated rates now returns public BAR as `quote` plus `NO_SPECIAL_RATES` (not a contracted rate). Silent BAR fulfilment only when the bound party has zero contextual rows.
 
 ## Prevention
 
