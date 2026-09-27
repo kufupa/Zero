@@ -221,8 +221,13 @@ test('on-screen rate label may differ from native desc; binding uses room and ra
   const ambiguous=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
   assert.ok(ambiguous.issues.some(i=>i.code==='RATE_NOT_BOUND_TO_VISIBLE_GRID'&&i.path.endsWith(':STWN:BAR')));
 });
-test('return limit hides only non-matching rows without claiming unseen matches',()=>{
-  const rows=['match','match','unresolved','alternative'].map((matchStatus,i)=>({id:i,matchStatus}));
+test('return limit hides only quote-eligible matches without claiming unseen matches',()=>{
+  const rows=[
+    {id:0,matchStatus:'match',eligibility:'verified',availability:'available'},
+    {id:1,matchStatus:'match',eligibility:'verified',availability:'available'},
+    {id:2,matchStatus:'match',eligibility:'conditional',availability:'restricted'},
+    {id:3,matchStatus:'unresolved'},
+  ];
   assert.deepEqual(quote.limitOptions(rows,2),{options:rows.slice(0,2),truncated:true,matchingRowsUnseen:false});
   assert.equal(quote.limitOptions(rows,1).matchingRowsUnseen,true);
   assert.deepEqual(quote.limitOptions(rows,4),{options:rows,truncated:false,matchingRowsUnseen:false});
@@ -418,8 +423,7 @@ test('filtered rate or room search cannot claim the party has no special rates',
 test('summary states BAR is not a contracted rate when no special rates',()=>{
   const text=quote.summarize({
     outcome:'quote',
-    groups:[{options:[]}],
-    issues:[{code:'NO_SPECIAL_RATES',path:'rateContext',reason:'No special/negotiated rates for this party. Public BAR is returned.',action:'Tell the guest this is BAR, not a contracted rate.'}],
+    groups:[{id:'group-1',options:[],issues:[{code:'NO_SPECIAL_RATES',path:'rateContext',reason:'No special/negotiated rates for this party. Public BAR is returned.',action:'Tell the guest this is BAR, not a contracted rate.'}]}],
   });
   assert.match(text,/Hotel Availability: quote/);
   assert.match(text,/no special rates/i);

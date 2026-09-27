@@ -277,9 +277,9 @@ describe('bounded native trace privacy', () => {
     const secret = 'Pilot/Session=Value';
     const encoded = encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
     const keywordId = 'session-1234-panel';
-    const snapshot = ['DIV', { id: extIds[0], class: `x-grid-cell ${extIds[2]}` }, ['TR', { id: extIds[1] }], ['SPAN', { id: extIds[3] }],
-      ['DIV', { id: keywordId }], ['LABEL', { for: extIds[2] }], ['COL', { class: extIds[2] }]];
     const apiShapedCredential = 'grant-739201-rotation';
+    const snapshot = ['DIV', { id: extIds[0], class: `x-grid-cell ${extIds[2]}` }, ['TR', { id: extIds[1] }], ['SPAN', { id: extIds[3] }],
+      ['DIV', { id: keywordId }], ['DIV', { id: apiShapedCredential }], ['LABEL', { for: extIds[2] }], ['COL', { class: extIds[2] }]];
     const { root, rawPath, reviewPath } = await fixture({
       'trace.trace': [
         JSON.stringify({ type: 'frame-snapshot', snapshot: { html: snapshot }, note: opaque, grant: extShapedCredential }),
@@ -299,6 +299,7 @@ describe('bounded native trace privacy', () => {
       expect(text).not.toContain(opaque);
       expect(text).not.toContain(extShapedCredential);
       expect(text).not.toContain(keywordId);
+      expect(text).not.toContain(apiShapedCredential);
       expect(text).not.toContain(encoded);
     } finally {
       await rm(root, { recursive: true, force: true });
