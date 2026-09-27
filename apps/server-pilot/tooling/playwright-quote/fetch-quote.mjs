@@ -514,7 +514,9 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
   const strategy=String(request.search?.salesStrategy??'').toUpperCase();
   const unfiltered=!rateFilter.length&&!roomFilter.length&&(strategy===''||strategy==='PRESET')
     &&windows.every(w=>!w.criteria?.ratePlanCodes&&!w.criteria?.roomTypeCodes);
-  const noSpecialRates=unfiltered&&contextRequested.length>0&&contextVerified&&[...candidates.values()].every(o=>o.rateScope!=='contextual');
+  const noSpecialRates=unfiltered&&contextRequested.length>0&&contextVerified&&candidates.size>0
+    &&[...candidates.values()].some(o=>o.rateScope==='public')
+    &&[...candidates.values()].every(o=>o.rateScope!=='contextual');
   if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));
   for (const option of candidates.values()) {
     const missing=wanted.filter(date=>!option.observations.has(date));
@@ -904,13 +906,19 @@ export function executionFailure(error,phase,secret) {
 
 export function summarize(result) {
   const lines=[`Hotel Availability: ${result.outcome}`];
-  const special=[...(result.issues??[]),...(result.groups??[]).flatMap(g=>g.issues??[])].find(i=>i.code==='NO_SPECIAL_RATES');
-  if(special)lines.push('No special rates for this party. Returned public BAR is not a contracted rate.');
-  for(const group of result.groups??[]) for(const option of group.options??[]) {
-    lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.board??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
-    for(const night of option.nightly) lines.push(`${night.date}: ${night.price.currency} ${night.price.amount} per room/night; inventory ${night.inventory}`);
-    if(option.calculated?.ok)lines.push(`Displayed-nightly sum: ${option.calculated.perRoom.currency} ${option.calculated.perRoom.amount} per room; ${option.calculated.forQuantity.amount} for this group's quantity. Not an official payable total.`);
-    if(option.details)lines.push(`Details: ${option.details.status}.`);
+  const groups=result.groups??[];
+  const hasSpecial=g=>(g.issues??[]).some(i=>i.code==='NO_SPECIAL_RATES');
+  const resultHas=(result.issues??[]).some(i=>i.code==='NO_SPECIAL_RATES');
+  const allGroups=groups.length>0&&groups.every(hasSpecial);
+  if(resultHas||allGroups)lines.push('No special rates for this party. Returned public BAR is not a contracted rate.');
+  for(const group of groups) {
+    if(hasSpecial(group)&&!allGroups&&!resultHas)lines.push(`${group.id}: no special rates; returned public BAR is not a contracted rate.`);
+    for(const option of group.options??[]) {
+      lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.board??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
+      for(const night of option.nightly??[]) lines.push(`${night.date}: ${night.price.currency} ${night.price.amount} per room/night; inventory ${night.inventory}`);
+      if(option.calculated?.ok)lines.push(`Displayed-nightly sum: ${option.calculated.perRoom.currency} ${option.calculated.perRoom.amount} per room; ${option.calculated.forQuantity.amount} for this group's quantity. Not an official payable total.`);
+      if(option.details)lines.push(`Details: ${option.details.status}.`);
+    }
   }
   lines.push('Observation only, not a booking or hold. PMS payable totals and tax inclusion not established; alternatives are not added together.');
   if(result.allocation)lines.push(`Allocation: ${result.allocation.status}.`);
