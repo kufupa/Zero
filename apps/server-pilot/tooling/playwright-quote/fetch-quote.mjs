@@ -514,7 +514,8 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
   const strategy=String(request.search?.salesStrategy??'').toUpperCase();
   const unfiltered=!rateFilter.length&&!roomFilter.length&&(strategy===''||strategy==='PRESET')
     &&windows.every(w=>!w.criteria?.ratePlanCodes&&!w.criteria?.roomTypeCodes);
-  const noSpecialRates=unfiltered&&contextRequested.length>0&&contextVerified&&candidates.size>0
+  const coverageIncomplete=issues.some(i=>['NULL_OR_INVALID_CALENDAR','CHANGED_CALENDAR_HEADERS','STALE_CALENDAR_PAGE','PROPERTY_RESULT_MISSING'].includes(i.code));
+  const noSpecialRates=!coverageIncomplete&&unfiltered&&contextRequested.length>0&&contextVerified&&candidates.size>0
     &&[...candidates.values()].some(o=>o.rateScope==='public')
     &&[...candidates.values()].every(o=>o.rateScope!=='contextual');
   if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));

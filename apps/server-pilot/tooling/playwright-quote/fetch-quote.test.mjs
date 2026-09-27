@@ -444,6 +444,16 @@ test('summary does not treat one group no-special as party-wide',()=>{
   assert.equal(/No special rates for this party/.test(text),false);
   assert.match(text,/group-1: no special rates/);
 });
+test('incomplete later page cannot claim no special rates',()=>{
+  const f=multipleSource();
+  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
+  const result=quote.extractOptions(scoped,request.rooms[0],[
+    {data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'290'}},
+    {data:null,calendar:null,criteria:{travelAgencyID:'290'}},
+  ],{agency:{id:'290'}});
+  assert.equal(result.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
+  assert.equal(result.completeness.search,'partial');
+});
 test('LOS restrictions and unexplained limited-night settings cannot become eligible availability',()=>{
   const f=multipleSource();f.rate.minLOS=4;
   assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'restricted');
