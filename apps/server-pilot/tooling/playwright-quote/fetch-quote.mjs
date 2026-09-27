@@ -509,7 +509,12 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
   const contextRequested=Object.keys(request.rateContext??{});
   const contextVerified=contextRequested.length>0&&contextRequested.every(k=>resolvedContext[k]?.id!==undefined&&
     windows.every(w=>w.criteria?.[({organization:'organizationID',agency:'travelAgencyID',group:'groupID'})[k]]===resolvedContext[k].id));
-  const noSpecialRates=contextRequested.length>0&&contextVerified&&[...candidates.values()].every(o=>o.rateScope!=='contextual');
+  const rateFilter=[...(room.required?.rateCodes??[]),...(request.rateCode?[request.rateCode]:[])];
+  const roomFilter=[...(room.required?.roomCodes??[]),...(request.roomCode?[request.roomCode]:[])];
+  const strategy=String(request.search?.salesStrategy??'').toUpperCase();
+  const unfiltered=!rateFilter.length&&!roomFilter.length&&(strategy===''||strategy==='PRESET')
+    &&windows.every(w=>!w.criteria?.ratePlanCodes&&!w.criteria?.roomTypeCodes);
+  const noSpecialRates=unfiltered&&contextRequested.length>0&&contextVerified&&[...candidates.values()].every(o=>o.rateScope!=='contextual');
   if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));
   for (const option of candidates.values()) {
     const missing=wanted.filter(date=>!option.observations.has(date));
@@ -899,6 +904,8 @@ export function executionFailure(error,phase,secret) {
 
 export function summarize(result) {
   const lines=[`Hotel Availability: ${result.outcome}`];
+  const special=[...(result.issues??[]),...(result.groups??[]).flatMap(g=>g.issues??[])].find(i=>i.code==='NO_SPECIAL_RATES');
+  if(special)lines.push('No special rates for this party. Returned public BAR is not a contracted rate.');
   for(const group of result.groups??[]) for(const option of group.options??[]) {
     lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.board??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
     for(const night of option.nightly) lines.push(`${night.date}: ${night.price.currency} ${night.price.amount} per room/night; inventory ${night.inventory}`);

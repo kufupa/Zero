@@ -406,6 +406,25 @@ test('bound party with no negotiated rates returns public BAR and flags no speci
   const bar=mixed.options.find(o=>o.rate.code==='BAR');
   assert.equal(quote.reapplyBedAssessment(bar,{matchStatus:'match',conditions:[]}).matchStatus,'unresolved');
 });
+test('filtered rate or room search cannot claim the party has no special rates',()=>{
+  const f=multipleSource();
+  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}},rateCode:'BAR'};
+  const resolved={agency:{id:'290'}};
+  const criteria={travelAgencyID:'290'};
+  const filtered=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
+  assert.equal(filtered.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
+  assert.equal(filtered.options.every(o=>o.matchStatus==='unresolved'),true);
+});
+test('summary states BAR is not a contracted rate when no special rates',()=>{
+  const text=quote.summarize({
+    outcome:'quote',
+    groups:[{options:[]}],
+    issues:[{code:'NO_SPECIAL_RATES',path:'rateContext',reason:'No special/negotiated rates for this party. Public BAR is returned.',action:'Tell the guest this is BAR, not a contracted rate.'}],
+  });
+  assert.match(text,/Hotel Availability: quote/);
+  assert.match(text,/no special rates/i);
+  assert.match(text,/not a contracted rate/i);
+});
 test('LOS restrictions and unexplained limited-night settings cannot become eligible availability',()=>{
   const f=multipleSource();f.rate.minLOS=4;
   assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'restricted');
