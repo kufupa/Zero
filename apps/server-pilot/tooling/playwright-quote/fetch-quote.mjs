@@ -567,7 +567,8 @@ export function selectOption(request, room, data, calendar) {
 
 export function limitOptions(ordered,max) {
   const options=ordered.slice(0,max),hidden=ordered.slice(max);
-  return {options,truncated:hidden.length>0,matchingRowsUnseen:hidden.some(o=>o.matchStatus==='match')};
+  const quoteEligible=o=>o.matchStatus==='match'&&o.eligibility==='verified'&&o.availability==='available';
+  return {options,truncated:hidden.length>0,matchingRowsUnseen:hidden.some(quoteEligible)};
 }
 
 export function reapplyBedAssessment(option,assessment) {

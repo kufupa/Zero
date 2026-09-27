@@ -733,7 +733,7 @@ type DynamicScope = 'data' | 'trace' | 'snapshot' | 'dom';
 function isExtJsDomId(key: string, value: string): boolean {
   return (
     /^(?:id|class|for|data-(?:componentid|boundview)|aria-(?:labelledby|describedby|controls|owns|activedescendant))$/.test(key) &&
-    /^[a-z]+(?:-[a-zA-Z]+)*-\d+(?:-(?:[a-zA-Z]+|\d+))*$/.test(value) &&
+    /^(?:ext-element|container|treeview|gridview|toolbar|button|panel|fieldset|tabbar|combo|textfield|numberfield|datefield|checkbox|tableview|gridcolumn|headercontainer|component|dataview|x-grid-cell(?:-[a-z0-9]+)*)-\d+(?:-[A-Za-z0-9]+)*$/.test(value) &&
     !looksLikeDynamicSecretName(value)
   );
 }
