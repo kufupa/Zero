@@ -506,6 +506,11 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     }
   }
   const options=[];
+  const contextRequested=Object.keys(request.rateContext??{});
+  const contextVerified=contextRequested.length>0&&contextRequested.every(k=>resolvedContext[k]?.id!==undefined&&
+    windows.every(w=>w.criteria?.[({organization:'organizationID',agency:'travelAgencyID',group:'groupID'})[k]]===resolvedContext[k].id));
+  const noSpecialRates=contextRequested.length>0&&contextVerified&&[...candidates.values()].every(o=>o.rateScope!=='contextual');
+  if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));
   for (const option of candidates.values()) {
     const missing=wanted.filter(date=>!option.observations.has(date));
     if (missing.length) option.issues.push(issue('INCOMPLETE_DATES',option.id,`Missing nights/departure: ${missing.join(', ')}`));
@@ -514,15 +519,16 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     option.nightly=invalid?[]:wanted.slice(0,-1).map(d=>option.observations.get(d).fact);
     option.departure=option.observations.get(request.departureDate)?.fact.restrictions??null;
     option.availability=invalid?'unknown':rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
-    const contextRequested=Object.keys(request.rateContext??{});
-    const contextVerified=contextRequested.length>0&&contextRequested.every(k=>resolvedContext[k]?.id!==undefined&&
-      windows.every(w=>w.criteria?.[({organization:'organizationID',agency:'travelAgencyID',group:'groupID'})[k]]===resolvedContext[k].id));
     option.eligibility=invalid?'unknown':option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {
-      option.conditions.push({kind:'required',field:'rateContext',status:'unknown',requested:request.rateContext,evidence:null,reason:'Public/conditional row does not prove requested contextual entitlement.'});
-      if(option.matchStatus==='match') option.matchStatus='unresolved';
+      if(noSpecialRates&&option.rateScope==='public') {
+        option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:'No special rates for this party; public BAR is returned.'});
+      } else {
+        option.conditions.push({kind:'required',field:'rateContext',status:'unknown',requested:request.rateContext,evidence:null,reason:'Public/conditional row does not prove requested contextual entitlement.'});
+        if(option.matchStatus==='match') option.matchStatus='unresolved';
+      }
     }
     option.calculated=invalid?{ok:false,reason:'incomplete_dates'}:sumDisplayedRates(option.nightly.map(n=>({date:n.date,...n.price})),room.quantity);
     option.displayedSum=option.calculated.ok?option.calculated.perRoom.amount:null;
@@ -532,7 +538,8 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     options.push(option);
   }
   if (!options.length&&!issues.length) issues.push(issue('NO_INTERPRETABLE_ROWS','search','No native/visible candidates; inventory absence is not established.'));
-  return {options,issues,completeness:{search:issues.length?'partial':'complete',requiredFacts:issues.length?'partial':'complete',
+  const blocking=issues.filter(i=>i.code!=='NO_SPECIAL_RATES');
+  return {options,issues,completeness:{search:blocking.length?'partial':'complete',requiredFacts:blocking.length?'partial':'complete',
     sourceOptions:candidates.size,examinedOptions:options.length,windowCount:windows.length}};
 }
 
@@ -553,6 +560,14 @@ export function selectOption(request, room, data, calendar) {
 export function limitOptions(ordered,max) {
   const options=ordered.slice(0,max),hidden=ordered.slice(max);
   return {options,truncated:hidden.length>0,matchingRowsUnseen:hidden.some(o=>o.matchStatus==='match')};
+}
+
+export function reapplyBedAssessment(option,assessment) {
+  const contextConditions=option.conditions.filter(c=>c.field==='rateContext');
+  Object.assign(option,assessment);
+  option.conditions.push(...contextConditions);
+  if(contextConditions.some(c=>c.kind==='required')&&option.matchStatus==='match')option.matchStatus='unresolved';
+  return option;
 }
 
 export function detailCandidates(mode,options) {
@@ -661,11 +676,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       if(source.issues.length){parsed.issues.push(...source.issues);parsed.completeness.search='partial';}
       for(const option of parsed.options) {
         const detail=details.get(option.id),bed=roomFacts.find(r=>r.code===option.room.code)?.bed;
-        const assessment=assessConstraints(room,sourceFacts(option,detail?.roomInformation??bed??''));
-        const contextConditions=option.conditions.filter(c=>c.field==='rateContext');
-        Object.assign(option,assessment);
-        option.conditions.push(...contextConditions);
-        if(contextConditions.length&&option.matchStatus==='match')option.matchStatus='unresolved';
+        reapplyBedAssessment(option,assessConstraints(room,sourceFacts(option,detail?.roomInformation??bed??'')));
         option.room.bedType=sourceFacts(option,detail?.roomInformation??bed??'').bedType??null;
         option.room.bedSource=bed??detail?.roomInformation??null;
         option.appliedContext=source.resolvedContext;

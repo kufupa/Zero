@@ -381,6 +381,31 @@ test('negotiated eligibility requires every applied context ID, not merely a ret
   assert.equal(mismatch.options[0].eligibility,'conditional');
   assert.equal(mismatch.options[0].matchStatus,'unresolved');
 });
+test('bound party with no negotiated rates returns public BAR and flags no special rates',()=>{
+  const f=multipleSource();
+  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
+  const resolved={agency:{id:'290'}};
+  const criteria={travelAgencyID:'290'};
+  const result=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
+  assert.equal(result.completeness.search,'complete');
+  assert.equal(result.completeness.requiredFacts,'complete');
+  assert.ok(result.issues.some(i=>i.code==='NO_SPECIAL_RATES'));
+  for(const option of result.options) {
+    assert.equal(option.rateScope,'public');
+    assert.equal(option.matchStatus,'match');
+    assert.equal(option.eligibility,'verified');
+    assert.equal(option.conditions.find(c=>c.field==='rateContext')?.status,'unsatisfied');
+  }
+  f.data.children[0].children[0].children[0].isNegotiatedRate=true;
+  f.data.children[0].children[0].children[0].code='BCO1B';
+  f.calendar.options[0].rate='BCO1B: Negotiated Contracted  Best Available Rate';
+  const mixed=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
+  assert.equal(mixed.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
+  assert.equal(mixed.options.find(o=>o.rate.code==='BAR').matchStatus,'unresolved');
+  assert.equal(mixed.options.find(o=>o.rate.code==='BCO1B').matchStatus,'match');
+  const bar=mixed.options.find(o=>o.rate.code==='BAR');
+  assert.equal(quote.reapplyBedAssessment(bar,{matchStatus:'match',conditions:[]}).matchStatus,'unresolved');
+});
 test('LOS restrictions and unexplained limited-night settings cannot become eligible availability',()=>{
   const f=multipleSource();f.rate.minLOS=4;
   assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'restricted');
