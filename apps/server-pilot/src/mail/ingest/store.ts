@@ -1704,10 +1704,20 @@ async function quarantineUnrouted(args: {
   const { db, parsed, meta, rawMimeS3Key, reason } = args;
   const existing = await findExistingQuarantine(db, meta);
   if (existing) {
+    if (existing.reason !== reason) {
+      await db
+        .update(mailIngestQuarantine)
+        .set({
+          reason,
+          ownerHeaderValue: parsed.ownerHeaderValue,
+          parsedHeaders: headerSummary(parsed),
+        })
+        .where(eq(mailIngestQuarantine.id, existing.id));
+    }
     return {
       kind: 'quarantined',
       quarantineId: existing.id,
-      reason: existing.reason as QuarantineReason,
+      reason,
       rawMimeS3Key: existing.rawMimeS3Key,
       candidateAttachmentCleanupFailureCount: 0,
     };
