@@ -130,6 +130,8 @@ append_env NAVA_BUILD_COMMIT "${NAVA_BUILD_COMMIT:-}"
 append_env HMS_SHADOW_SERVICE_USER_ID "${HMS_SHADOW_SERVICE_USER_ID:-}"
 append_env HMS_BROWSER_ARTIFACT_ROOT "${HMS_BROWSER_ARTIFACT_ROOT:-/opt/nava/shared/hms-browser-artifacts}"
 append_env GOTENBERG_URL "${GOTENBERG_URL:-http://127.0.0.1:3000}"
+# Triage model: unset keeps nova_lite; gpt6_luna_max flips the durable triage adapter.
+append_env AI_TRIAGE_MODEL_PROFILE "${AI_TRIAGE_MODEL_PROFILE:-}"
 # Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
 # HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.
 

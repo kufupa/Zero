@@ -33,7 +33,7 @@ function stripMarkdownFences(text: string): string {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
-function parseModelJson(text: string): Record<string, unknown> {
+export function parseModelJson(text: string): Record<string, unknown> {
   const cleaned = stripMarkdownFences(text);
   let parsed: unknown;
   try {
