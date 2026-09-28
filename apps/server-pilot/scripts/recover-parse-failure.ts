@@ -53,6 +53,7 @@ async function main(): Promise<void> {
         duplicate: result.duplicate,
         quarantined: result.quarantined,
         errors: result.errors,
+        errorIds: result.errorIds,
         skipped: result.skipped ?? 0,
         dryRunCount: result.dryRunIds.length,
         skipAiEnqueue: cli.skipAiEnqueue,

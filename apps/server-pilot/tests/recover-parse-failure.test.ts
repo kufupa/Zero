@@ -173,4 +173,51 @@ describe('recover-parse-failure', () => {
       persistSpy.mockRestore();
     }
   });
+
+  it('falls back to quarantine-archive when raw-mime has expired', async () => {
+    const storage = withFakeS3();
+    const raw = guestCreateAskEml();
+    const row = {
+      id: 'q-parse-failure-archive',
+      ingestMailboxId: 'ingest-nava-legacy',
+      pop3Uidl: 'uidl-parse-failure-archive',
+      rawMimeS3Key: rawMimeKey({
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-parse-failure-archive',
+      }),
+    };
+    await storage.putObject({
+      key: `quarantine-archive/${row.ingestMailboxId}/${row.pop3Uidl}.eml`,
+      body: raw,
+      contentType: 'message/rfc822',
+    });
+    const db = {
+      select: () => {
+        const query = {
+          from: () => query,
+          where: () => query,
+          orderBy: () => Promise.resolve([row]),
+          limit: () => Promise.resolve([]),
+        };
+        return query;
+      },
+    } as unknown as DB;
+    const persistSpy = vi
+      .spyOn(ingestStore, 'persistInboundMessage')
+      .mockImplementation(async (_parsed, _raw, meta) => ({
+        kind: 'stored',
+        transportId: 'transport-centurion',
+        messageId: meta.messageId,
+        threadId: 'thread-parse-failure-archive',
+        rawMimeS3Key: row.rawMimeS3Key,
+        attachmentCount: 0,
+      }));
+    try {
+      const result = await recoverParseFailureQuarantine({ db, storage });
+      expect(result.stored).toBe(1);
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      persistSpy.mockRestore();
+    }
+  });
 });
