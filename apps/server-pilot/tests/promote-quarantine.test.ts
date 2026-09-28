@@ -391,7 +391,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(outcome.messages).toHaveLength(1);
           expect(outcome.messages[0]!.transportId).toBe('transport-centurion');
           expect(outcome.messages[0]!.direction).toBe('outbound');
-          expect(outcome.triageRuns).toHaveLength(0);
+          expect(outcome.triageRuns).toHaveLength(1);
+          expect(outcome.triageRuns[0]!.idempotencyKey).toBe(
+            `external-sent-baseline:${outcome.messages[0]!.id}`,
+          );
         });
       } finally {
         if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;

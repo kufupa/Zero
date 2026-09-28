@@ -273,14 +273,11 @@ function DataTable({
                 </td>
               </tr>
             ) : (
-              rows.map((row, rowIndex) => (
-                <tr key={`${caption}-${rowIndex}`}>
-                  {row.map((cell, cellIndex) => (
-                    <td
-                      key={`${caption}-${rowIndex}-${cellIndex}`}
-                      className="border-b px-2 py-1 tabular-nums"
-                    >
-                      {cell}
+              rows.map((row) => (
+                <tr key={`${caption}-${row.map(String).join('\u001f')}`}>
+                  {headers.map((header, column) => (
+                    <td key={header} className="border-b px-2 py-1 tabular-nums">
+                      {row[column]}
                     </td>
                   ))}
                 </tr>

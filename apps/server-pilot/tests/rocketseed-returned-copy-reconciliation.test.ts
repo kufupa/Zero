@@ -517,6 +517,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
                 rejected: [],
               },
             },
+            smtpOutcomePersistedAt: new Date('2026-08-24T12:00:03.000Z'),
           })
           .where(eq(outboundSendQueue.id, canonical.queueId));
         const candidateMessageId = randomUUID();
@@ -623,6 +624,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
                   rejected: [],
                 },
               },
+              smtpOutcomePersistedAt: new Date('2026-08-24T12:00:03.000Z'),
             })
             .where(eq(outboundSendQueue.id, canonical.queueId));
 
@@ -1047,6 +1049,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
                 rejected: [],
               },
             },
+            smtpOutcomePersistedAt: new Date('2026-08-24T12:00:03.000Z'),
           })
           .where(eq(outboundSendQueue.id, canonical.queueId));
 
@@ -1528,7 +1531,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.attachmentRows).toHaveLength(1);
   }, 30000);
 
-  it('uses inbound UIDL replay lookup without shadowing an outbound canonical row', async () => {
+  it('treats inbound UIDL replay as duplicate of an outbound row with the same ingest identity', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
       const canonical = await seedCanonicalOutbound(db);
@@ -1588,18 +1591,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       return { candidateMessageId, canonical, first, replay, rows };
     });
 
-    expect(result.first.kind).toBe('stored');
+    expect(result.first).toMatchObject({
+      kind: 'duplicate',
+      messageId: result.canonical.canonicalMessageId,
+    });
     expect(result.replay).toMatchObject({
       kind: 'duplicate',
-      messageId: result.candidateMessageId,
+      messageId: result.canonical.canonicalMessageId,
     });
-    expect(result.rows).toEqual(
-      expect.arrayContaining([
-        { direction: 'outbound', id: result.canonical.canonicalMessageId },
-        { direction: 'inbound', id: result.candidateMessageId },
-      ]),
-    );
-    expect(result.rows).toHaveLength(2);
+    expect(result.rows).toEqual([
+      { direction: 'outbound', id: result.canonical.canonicalMessageId },
+    ]);
   }, 30000);
 
   it('removes candidate attachment objects for a later physical copy', async () => {

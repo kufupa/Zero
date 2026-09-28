@@ -178,7 +178,7 @@ function ProposedPane({
             const facts = proposedActionFacts(action.request);
             return (
               <div
-                key={`${action.tool}-${index}`}
+                key={`${action.status}:${action.tool}:${action.title}:${JSON.stringify(action.request)}`}
                 data-testid={`lab-action-live-${index}`}
                 className={cn(
                   'w-full min-h-11 rounded-xl border px-3 py-2 text-left transition-colors',
@@ -232,8 +232,8 @@ function ProposedPane({
         <details className="border-border/60 rounded-lg border px-3 py-2" data-testid="lab-action-already">
           <summary className="text-muted-foreground cursor-pointer text-[12px]">Already done {folded.length}</summary>
           <ul className="mt-2 space-y-1 text-[12px]">
-            {folded.map((action, index) => (
-              <li key={`${action.tool}-done-${index}`}>
+            {folded.map((action) => (
+              <li key={`${action.status}:${action.tool}:${action.title}:${JSON.stringify(action.request)}`}>
                 {action.title}
                 {proposedActionFacts(action.request) ? ` · ${proposedActionFacts(action.request)}` : ''}
               </li>
