@@ -12,7 +12,7 @@ import {
   uploadedAttachmentsFromParseFailure,
   type ParsedInboundMessage,
 } from './parse-message.js';
-import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import { cleanupPartialParseFailureAttachments, persistInboundMessage, claimIngestUidl, releaseIngestUidlClaim } from './store.js';
 import {
   CENTURION_INGEST_MAILBOX_IDS,
   isCenturionIngestMailboxId,
@@ -152,71 +152,85 @@ async function recoverOneParseFailureRow(
       return { kind: 'duplicate' };
     }
 
-    parsed = await parseRawMessage(loaded.object.body, {
-      messageId,
-      storage,
-    });
+    const claimToken = await claimIngestUidl(db, meta);
+    if (!claimToken) {
+      return { kind: 'error', message: 'ingest uidl claim pending' };
+    }
 
-    const persistResult = await persistInboundMessage(
-      parsed,
-      loaded.object.body,
-      {
-        ...meta,
+    try {
+      parsed = await parseRawMessage(loaded.object.body, {
         messageId,
-        ...(loaded.source === 'primary' ? { rawMimeS3Key: row.rawMimeS3Key } : {}),
-      },
-      {
-        db,
         storage,
-        promoteQuarantineId: row.id,
-        skipAiEnqueue: opts.skipAiEnqueue,
-      },
-    );
+      });
 
-    if (persistResult.kind === 'stored') {
-      return { kind: 'stored' };
-    }
-    if (persistResult.kind === 'duplicate') {
-      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
-      return { kind: 'duplicate' };
-    }
-    if (persistResult.kind === 'quarantined' && persistResult.reason !== PARSE_FAILURE_REASON) {
-      await db
-        .update(mailIngestQuarantine)
-        .set({ reason: persistResult.reason })
-        .where(eq(mailIngestQuarantine.id, row.id));
-    }
-    return { kind: 'quarantined' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const uploadedAttachments = [
-      ...new Map(
-        [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
-          (attachment) => [attachment.s3Key, attachment],
-        ),
-      ).values(),
-    ];
-    if (uploadedAttachments.length > 0) {
-      try {
-        await cleanupPartialParseFailureAttachments({
+      const persistResult = await persistInboundMessage(
+        parsed,
+        loaded.object.body,
+        {
+          ...meta,
+          messageId,
+          ...(loaded.source === 'primary' ? { rawMimeS3Key: row.rawMimeS3Key } : {}),
+        },
+        {
           db,
           storage,
-          attachments: uploadedAttachments,
-          meta: {
-            ...meta,
-            messageId,
-            rawMimeS3Key: row.rawMimeS3Key,
-          },
-        });
-      } catch (cleanupError) {
-        const cleanupMessage =
-          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-        return {
-          kind: 'error',
-          message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
-        };
+          promoteQuarantineId: row.id,
+          skipAiEnqueue: opts.skipAiEnqueue,
+          activeIngestUidlClaimToken: claimToken,
+        },
+      );
+
+      if (persistResult.kind === 'stored') {
+        return { kind: 'stored' };
       }
+      if (persistResult.kind === 'duplicate') {
+        await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+        return { kind: 'duplicate' };
+      }
+      if (persistResult.kind === 'quarantined' && persistResult.reason !== PARSE_FAILURE_REASON) {
+        await db
+          .update(mailIngestQuarantine)
+          .set({ reason: persistResult.reason })
+          .where(eq(mailIngestQuarantine.id, row.id));
+      }
+      return { kind: 'quarantined' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const uploadedAttachments = [
+        ...new Map(
+          [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
+            (attachment) => [attachment.s3Key, attachment],
+          ),
+        ).values(),
+      ];
+      if (uploadedAttachments.length > 0) {
+        try {
+          await cleanupPartialParseFailureAttachments({
+            db,
+            storage,
+            attachments: uploadedAttachments,
+            meta: {
+              ...meta,
+              messageId,
+              rawMimeS3Key: row.rawMimeS3Key,
+            },
+            activeIngestUidlClaimToken: claimToken,
+          });
+        } catch (cleanupError) {
+          const cleanupMessage =
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+          return {
+            kind: 'error',
+            message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+          };
+        }
+      }
+      return { kind: 'error', message };
+    } finally {
+      await releaseIngestUidlClaim(db, meta, claimToken);
     }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     return { kind: 'error', message };
   }
 }

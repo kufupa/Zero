@@ -5,6 +5,15 @@ import * as ingestStore from '../src/mail/ingest/store';
 import type { DB } from '../src/db/client';
 import { describe, expect, it, vi } from 'vitest';
 
+function stubUidlClaim() {
+  const claim = vi.spyOn(ingestStore, 'claimIngestUidl').mockResolvedValue('recover-claim');
+  const release = vi.spyOn(ingestStore, 'releaseIngestUidlClaim').mockResolvedValue();
+  return () => {
+    claim.mockRestore();
+    release.mockRestore();
+  };
+}
+
 function withFakeS3(): FakeS3Storage {
   const fake = new FakeS3Storage('test-mail-bucket');
   resetS3Storage();
@@ -68,6 +77,7 @@ describe('recover-parse-failure', () => {
         rawMimeS3Key: row.rawMimeS3Key,
         attachmentCount: 0,
       }));
+    const restoreClaim = stubUidlClaim();
 
     try {
       const result = await recoverParseFailureQuarantine({ db, storage });
@@ -79,8 +89,10 @@ describe('recover-parse-failure', () => {
       expect(options.directionOverride).toBeUndefined();
       expect(options.transportOverride).toBeUndefined();
       expect(options.skipAiEnqueue).toBe(true);
+      expect(options.activeIngestUidlClaimToken).toBe('recover-claim');
     } finally {
       persistSpy.mockRestore();
+      restoreClaim();
     }
   });
 
@@ -165,12 +177,14 @@ describe('recover-parse-failure', () => {
       rawMimeS3Key: row.rawMimeS3Key,
       candidateAttachmentCleanupFailureCount: 0,
     });
+    const restoreClaim = stubUidlClaim();
     try {
       const result = await recoverParseFailureQuarantine({ db, storage });
       expect(result.quarantined).toBe(1);
       expect(updates).toEqual([{ reason: 'missing_owner_header' }]);
     } finally {
       persistSpy.mockRestore();
+      restoreClaim();
     }
   });
 
@@ -212,6 +226,7 @@ describe('recover-parse-failure', () => {
         rawMimeS3Key: row.rawMimeS3Key,
         attachmentCount: 0,
       }));
+    const restoreClaim = stubUidlClaim();
     try {
       const result = await recoverParseFailureQuarantine({ db, storage });
       expect(result.stored).toBe(1);
@@ -220,6 +235,7 @@ describe('recover-parse-failure', () => {
       expect(meta.rawMimeS3Key).toBeUndefined();
     } finally {
       persistSpy.mockRestore();
+      restoreClaim();
     }
   });
 });
