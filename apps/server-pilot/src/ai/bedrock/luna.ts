@@ -20,7 +20,7 @@ export const LUNA_PROVIDER_OPTIONS = {
     forceReasoning: true,
     reasoningEffort: LUNA_REASONING_EFFORT,
     store: false,
-    include: ['reasoning.encrypted_content'],
+    include: ['reasoning.encrypted_content' as const],
   },
 };
 

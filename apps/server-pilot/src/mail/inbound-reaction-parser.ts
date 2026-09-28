@@ -39,7 +39,7 @@ const TRAILING_EMOJI_REGEX = new RegExp(
 /**
  * Strip HTML tags and entities for plaintext regex inspection.
  */
-function htmlToPlainText(html: string): string {
+export function htmlToPlainText(html: string): string {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')

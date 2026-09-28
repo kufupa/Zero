@@ -1,5 +1,6 @@
 import {
   CENTURION_TRANSPORT_ID,
+  CENTURION_BACKTEST_WINDOW,
   CENTURION_WINDOW_END_UTC,
   CENTURION_WINDOW_START_UTC,
   createThreadCorpusPostgresReader,
@@ -251,6 +252,26 @@ describe('Centurion nine-day corpus reader', () => {
     expect(fake.beginOptions).toEqual([]);
     expect(fake.queries).toEqual([]);
     await reader.close();
+  });
+
+  it('accepts the approved reservationist backtest window', async () => {
+    const fake = createFakePostgres({
+      messages: [messageRow({ id: 'in-3day', receivedAt: '2026-09-27T08:00:00.000Z' })],
+    });
+    const reader = createThreadCorpusPostgresReader({
+      databaseUrl: 'fixture://non-production',
+      clientFactory: () => fake.client,
+    });
+    const snapshot = await reader.readCenturionSnapshot(CENTURION_BACKTEST_WINDOW);
+    await reader.close();
+    expect(snapshot.window).toEqual({
+      startInclusive: '2026-09-25T22:00:00.000Z',
+      endExclusive: '2026-09-28T22:00:00.000Z',
+      timezone: 'Africa/Johannesburg',
+    });
+    const messageQuery = fake.queries.find((query) => /FROM message AS m/i.test(query.text));
+    expect(messageQuery?.values).toContain('2026-09-25T22:00:00.000');
+    expect(messageQuery?.values).toContain('2026-09-28T22:00:00.000');
   });
 
   it('records event timestamp fallback provenance, including missing timestamps', async () => {

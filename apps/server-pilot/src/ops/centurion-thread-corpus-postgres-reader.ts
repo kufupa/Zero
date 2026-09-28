@@ -53,6 +53,12 @@ export const CENTURION_TRANSPORT_ID = 'transport-centurion' as const;
 export const CENTURION_WINDOW_TIMEZONE = 'Africa/Johannesburg' as const;
 export const CENTURION_WINDOW_START_UTC = '2026-09-07T22:00:00.000Z' as const;
 export const CENTURION_WINDOW_END_UTC = '2026-09-16T22:00:00.000Z' as const;
+/** 26-28 Sep 2026 Johannesburg, the reservationist backtest window. */
+export const CENTURION_BACKTEST_WINDOW = {
+  transportId: CENTURION_TRANSPORT_ID,
+  startInclusive: '2026-09-25T22:00:00.000Z',
+  endExclusive: '2026-09-28T22:00:00.000Z',
+} as const;
 
 export type CenturionCorpusWindow = {
   startInclusive: string;
@@ -582,6 +588,16 @@ function centurionWindowFrom(
 ): CenturionCorpusWindow {
   if (request.transportId !== undefined && request.transportId !== CENTURION_TRANSPORT_ID) {
     throw new Error('Centurion transport scope is fixed');
+  }
+  if (
+    request.startInclusive === CENTURION_BACKTEST_WINDOW.startInclusive &&
+    request.endExclusive === CENTURION_BACKTEST_WINDOW.endExclusive
+  ) {
+    return {
+      startInclusive: CENTURION_BACKTEST_WINDOW.startInclusive,
+      endExclusive: CENTURION_BACKTEST_WINDOW.endExclusive,
+      timezone: CENTURION_WINDOW_TIMEZONE,
+    };
   }
   if (
     (request.startInclusive !== undefined &&
