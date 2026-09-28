@@ -30,12 +30,13 @@ function msg(p: Partial<CenturionCorpusMessageRow>): CenturionCorpusMessageRow {
 
 function thread(id: string, day: string, ask: string, gold: string, extra: Partial<CenturionCorpusMessageRow> = {}) {
   return [
-    msg({ threadId: id, eventAt: `${day}T08:00:00.000Z`, textBody: ask, ...extra }),
+    msg({ threadId: id, messageId: `<ask-${id}>`, eventAt: `${day}T08:00:00.000Z`, textBody: ask, ...extra }),
     msg({
       threadId: id,
       eventAt: `${day}T09:00:00.000Z`,
       businessDirection: 'outbound',
-      confirmedOutbound: true,
+      inReplyTo: `<ask-${id}>`,
+      queueState: null,
       textBody: gold,
       from: ['reservations@centurion.test'],
     }),
@@ -48,16 +49,20 @@ const CREATE = 'Please book a room for Mr Smith, arriving 2 October 2026';
 const THANKS = 'Thank you, noted.';
 
 describe('buildCases', () => {
-  it('keeps only threads with a confirmed in-window outbound after an inbound', () => {
+  it('keeps sent in-window replies paired to the inbound they answer', () => {
     const rows = [
       ...thread('gold', '2026-09-28', QUOTE, 'Rate is R1 850 per night'),
       msg({ threadId: 'no-gold', textBody: QUOTE }),
-      ...thread('unconfirmed', '2026-09-28', QUOTE, 'x').map((m) =>
-        m.businessDirection === 'outbound' ? { ...m, confirmedOutbound: false } : m,
+      ...thread('queued', '2026-09-28', QUOTE, 'x').map((m) =>
+        m.businessDirection === 'outbound' ? { ...m, queueState: 'pending' } : m,
       ),
+      ...thread('missing-trigger', '2026-09-28', QUOTE, 'x').map((m) =>
+        m.businessDirection === 'outbound' ? { ...m, inReplyTo: '<never-ingested>' } : m,
+      ),
+      ...thread('no-header', '2026-09-27', QUOTE, 'R1 000').map((m) => ({ ...m, inReplyTo: null })),
     ];
     const cases = buildCases(rows);
-    expect(cases.map((c) => c.threadId)).toEqual(['gold']);
+    expect(cases.map((c) => c.threadId)).toEqual(['gold', 'no-header']);
     expect(cases[0]).toMatchObject({ stratum: 'quote_fit', oracle: { quote: true }, goldText: 'Rate is R1 850 per night' });
   });
 

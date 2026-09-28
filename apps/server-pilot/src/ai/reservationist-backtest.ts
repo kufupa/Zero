@@ -33,6 +33,7 @@ export type BacktestCase = {
 export type ToolCall = { toolName: string; args: unknown; result: unknown };
 
 const QUOTE_SECONDS = 220;
+const UNSENT_QUEUE_STATES = new Set(['pending', 'sending', 'cancelled']);
 
 function textOf(row: CenturionCorpusMessageRow): string {
   return row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? '');
@@ -102,20 +103,24 @@ export function buildCases(rows: readonly CenturionCorpusMessageRow[]): Backtest
     const goldIndex = list.findIndex(
       (row, i) =>
         row.businessDirection === 'outbound' &&
-        row.confirmedOutbound &&
         row.scope === 'in_window' &&
+        !UNSENT_QUEUE_STATES.has(row.queueState ?? '') &&
         list.slice(0, i).some((prior) => prior.businessDirection === 'inbound'),
     );
     if (goldIndex < 0) continue;
+    const gold = list[goldIndex]!;
     const before = list.slice(0, goldIndex);
-    const triggerIndex = before.map((row) => row.businessDirection).lastIndexOf('inbound');
+    const triggerIndex = gold.inReplyTo
+      ? before.findIndex((row) => row.businessDirection === 'inbound' && row.messageId === gold.inReplyTo)
+      : before.map((row) => row.businessDirection).lastIndexOf('inbound');
+    if (triggerIndex < 0) continue;
     const trigger = toCaseMessage(before[triggerIndex]!);
-    const goldText = textOf(list[goldIndex]!);
+    const goldText = textOf(gold);
     cases.push({
       threadId,
       trigger,
       context: before.slice(0, triggerIndex).map(toCaseMessage),
-      goldId: list[goldIndex]!.id,
+      goldId: gold.id,
       goldText,
       ...classify(`${trigger.subject}\n${trigger.text}`, goldText),
     });
