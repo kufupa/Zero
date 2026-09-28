@@ -216,6 +216,8 @@ describe('recover-parse-failure', () => {
       const result = await recoverParseFailureQuarantine({ db, storage });
       expect(result.stored).toBe(1);
       expect(persistSpy).toHaveBeenCalledTimes(1);
+      const meta = persistSpy.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(meta.rawMimeS3Key).toBeUndefined();
     } finally {
       persistSpy.mockRestore();
     }
