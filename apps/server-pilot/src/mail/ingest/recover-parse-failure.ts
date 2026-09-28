@@ -134,8 +134,8 @@ async function recoverOneParseFailureRow(
   let parsed: ParsedInboundMessage | undefined;
 
   try {
-    const object = await loadRecoverRawMime(storage, row);
-    if (!object) {
+    const loaded = await loadRecoverRawMime(storage, row);
+    if (!loaded) {
       return {
         kind: 'error',
         message: `missing s3 object ${row.rawMimeS3Key} and archive ${quarantineArchiveKey(row)}`,
@@ -152,18 +152,18 @@ async function recoverOneParseFailureRow(
       return { kind: 'duplicate' };
     }
 
-    parsed = await parseRawMessage(object.body, {
+    parsed = await parseRawMessage(loaded.object.body, {
       messageId,
       storage,
     });
 
     const persistResult = await persistInboundMessage(
       parsed,
-      object.body,
+      loaded.object.body,
       {
         ...meta,
         messageId,
-        rawMimeS3Key: row.rawMimeS3Key,
+        ...(loaded.source === 'primary' ? { rawMimeS3Key: row.rawMimeS3Key } : {}),
       },
       {
         db,
@@ -224,15 +224,17 @@ async function recoverOneParseFailureRow(
 async function loadRecoverRawMime(
   storage: S3Storage,
   row: PromoteQuarantineRow,
-): Promise<{ body: Buffer; contentType: string } | null> {
+): Promise<{ object: { body: Buffer; contentType: string }; source: 'primary' | 'archive' } | null> {
   const primary = await storage.getObject(row.rawMimeS3Key);
-  if (primary) return primary;
-  return storage.getObject(
+  if (primary) return { object: primary, source: 'primary' };
+  const archived = await storage.getObject(
     quarantineArchiveKey({
       ingestMailboxId: row.ingestMailboxId,
       pop3Uidl: row.pop3Uidl,
     }),
   );
+  if (!archived) return null;
+  return { object: archived, source: 'archive' };
 }
 
 async function findExistingMessageAnyDirection(
