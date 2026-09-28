@@ -1,13 +1,9 @@
 import { privateProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { proposalDescription, QUOTE_MEALS } from '../../quote-proposal/description.js';
-import { HOTEL_TELEPHONE, quotePdfFileName } from '../../quote-proposal/filename.js';
-import { convertXlsxWithGotenberg } from '../../quote-proposal/gotenberg.js';
+import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
-import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
+import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
@@ -35,10 +31,6 @@ export const quoteProposalPdfInput = z.object({
   lines: z.array(quoteProposalLineInput).min(1).max(7),
 });
 
-const TEMPLATE_PATH = fileURLToPath(
-  new URL('../../../fixtures/centurion-quotation-template.xlsx', import.meta.url),
-);
-
 export const workstationRouter = router({
   ping: privateProcedure.input(workstationPingInput).mutation(async ({ input }) => {
     return {
@@ -64,44 +56,18 @@ export const workstationRouter = router({
           message: 'GOTENBERG_URL missing',
         });
       }
-      let descriptions: string[];
       try {
-        descriptions = input.lines.map((line) => proposalDescription(line.roomCode, line.meal));
+        const { fileName, pdf } = await buildQuoteProposalPdf(
+          input,
+          { name: ctx.sessionUser.name?.trim() || '', email: ctx.sessionUser.email },
+          gotenbergUrl,
+        );
+        return { fileName, pdfBase64: Buffer.from(pdf).toString('base64') };
       } catch (err) {
         throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: err instanceof Error ? err.message : 'unknown room code',
-        });
-      }
-      const template = readFileSync(TEMPLATE_PATH);
-      const xlsx = patchProposalWorkbook(template, {
-        attention: input.attention,
-        company: input.company,
-        clientEmail: input.clientEmail,
-        clientTelephone: input.clientTelephone,
-        signerName: ctx.sessionUser.name?.trim() || '',
-        signerEmail: ctx.sessionUser.email,
-        signerTelephone: HOTEL_TELEPHONE,
-        lines: input.lines.map((line, index) => ({
-          dateLabel: line.dateLabel,
-          qty: line.qty,
-          description: descriptions[index]!,
-          nights: line.nights,
-          rate: line.rate,
-        })),
-      });
-      let pdf: Uint8Array;
-      try {
-        pdf = await convertXlsxWithGotenberg(xlsx, { url: gotenbergUrl });
-      } catch (err) {
-        throw new TRPCError({
-          code: 'BAD_GATEWAY',
+          code: err instanceof ProposalInputError ? 'BAD_REQUEST' : 'BAD_GATEWAY',
           message: err instanceof Error ? err.message : 'gotenberg convert failed',
         });
       }
-      return {
-        fileName: quotePdfFileName(input.agency, input.dateLabel),
-        pdfBase64: Buffer.from(pdf).toString('base64'),
-      };
     }),
 });
