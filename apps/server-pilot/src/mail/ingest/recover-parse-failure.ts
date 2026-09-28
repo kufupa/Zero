@@ -6,31 +6,30 @@
  * Do not reuse missing-owner promotion: that path stamps ReserveCloud staff
  * copies outbound and skips everyone else.
  */
-import { and, asc, eq, inArray } from 'drizzle-orm';
-import type { DB } from '../../db/client.js';
+import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
+import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import {
+  CENTURION_INGEST_MAILBOX_IDS,
+  isCenturionIngestMailboxId,
+  type PromoteQuarantineOptions,
+  type PromoteQuarantineResult,
+  type PromoteQuarantineRow,
+} from './promote-quarantine.js';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
-import { generateMessageId, parseRawMessage } from './parse-message.js';
-import {
-  persistInboundMessage,
-  type PersistOptions,
-} from './store.js';
-import type {
-  PromoteQuarantineOptions,
-  PromoteQuarantineResult,
-  PromoteQuarantineRow,
-} from './promote-quarantine.js';
+import type { DB } from '../../db/client.js';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 const PARSE_FAILURE_REASON = 'parse_failure';
-export const CENTURION_INGEST_MAILBOX_IDS = ['ingest-nava-legacy'] as const;
 
 export interface RecoverParseFailureOptions extends PromoteQuarantineOptions {
   /** Default true: bulk recover must not enqueue triage/shadow on a drifted schema. */
   skipAiEnqueue?: boolean;
-}
-
-export function isCenturionIngestMailboxId(ingestMailboxId: string): boolean {
-  return (CENTURION_INGEST_MAILBOX_IDS as readonly string[]).includes(ingestMailboxId);
 }
 
 export async function listParseFailureQuarantine(
@@ -72,6 +71,7 @@ export async function recoverParseFailureQuarantine(
     duplicate: 0,
     quarantined: 0,
     errors: 0,
+    skipped: 0,
     errorIds: [],
     dryRunIds: [],
   };
@@ -89,6 +89,7 @@ export async function recoverParseFailureQuarantine(
         result.dryRunIds.push(row.id);
         break;
       case 'skipped':
+        result.skipped = (result.skipped ?? 0) + 1;
         break;
       case 'stored':
         result.stored += 1;
@@ -129,6 +130,8 @@ async function recoverOneParseFailureRow(
     ingestMailboxId: row.ingestMailboxId,
     pop3Uidl: row.pop3Uidl,
   };
+  const messageId = candidateMessageIdForPop3Uidl(row.ingestMailboxId, row.pop3Uidl);
+  let parsed: ParsedInboundMessage | undefined;
 
   try {
     const object = await storage.getObject(row.rawMimeS3Key);
@@ -146,18 +149,10 @@ async function recoverOneParseFailureRow(
       return { kind: 'duplicate' };
     }
 
-    const messageId = generateMessageId();
-    const parsed = await parseRawMessage(object.body, {
+    parsed = await parseRawMessage(object.body, {
       messageId,
       storage,
     });
-
-    const persistOpts: PersistOptions = {
-      db,
-      storage,
-      promoteQuarantineId: row.id,
-      skipAiEnqueue: opts.skipAiEnqueue,
-    };
 
     const persistResult = await persistInboundMessage(
       parsed,
@@ -167,7 +162,12 @@ async function recoverOneParseFailureRow(
         messageId,
         rawMimeS3Key: row.rawMimeS3Key,
       },
-      persistOpts,
+      {
+        db,
+        storage,
+        promoteQuarantineId: row.id,
+        skipAiEnqueue: opts.skipAiEnqueue,
+      },
     );
 
     if (persistResult.kind === 'stored') {
@@ -177,9 +177,43 @@ async function recoverOneParseFailureRow(
       await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
       return { kind: 'duplicate' };
     }
+    if (persistResult.kind === 'quarantined' && persistResult.reason !== PARSE_FAILURE_REASON) {
+      await db
+        .update(mailIngestQuarantine)
+        .set({ reason: persistResult.reason })
+        .where(eq(mailIngestQuarantine.id, row.id));
+    }
     return { kind: 'quarantined' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const uploadedAttachments = [
+      ...new Map(
+        [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
+          (attachment) => [attachment.s3Key, attachment],
+        ),
+      ).values(),
+    ];
+    if (uploadedAttachments.length > 0) {
+      try {
+        await cleanupPartialParseFailureAttachments({
+          db,
+          storage,
+          attachments: uploadedAttachments,
+          meta: {
+            ...meta,
+            messageId,
+            rawMimeS3Key: row.rawMimeS3Key,
+          },
+        });
+      } catch (cleanupError) {
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        return {
+          kind: 'error',
+          message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+        };
+      }
+    }
     return { kind: 'error', message };
   }
 }

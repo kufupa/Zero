@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
 import { recoverParseFailureQuarantine } from '../src/mail/ingest/recover-parse-failure';
 import { rawMimeKey } from '../src/storage/s3';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import * as ingestStore from '../src/mail/ingest/store';
 import type { DB } from '../src/db/client';
+import { describe, expect, it, vi } from 'vitest';
 
 function withFakeS3(): FakeS3Storage {
   const fake = new FakeS3Storage('test-mail-bucket');
@@ -72,6 +72,7 @@ describe('recover-parse-failure', () => {
     try {
       const result = await recoverParseFailureQuarantine({ db, storage });
       expect(result.stored).toBe(1);
+      expect(result.skipped).toBe(0);
       expect(persistSpy).toHaveBeenCalledTimes(1);
       const options = persistSpy.mock.calls[0]?.[3] as Record<string, unknown>;
       expect(options.promoteQuarantineId).toBe(row.id);
@@ -116,6 +117,58 @@ describe('recover-parse-failure', () => {
       const result = await recoverParseFailureQuarantine({ db, storage, dryRun: true });
       expect(result.dryRunIds).toEqual([row.id]);
       expect(persistSpy).not.toHaveBeenCalled();
+    } finally {
+      persistSpy.mockRestore();
+    }
+  });
+
+  it('stamps a new quarantine reason when persist cannot store the recovered row', async () => {
+    const storage = withFakeS3();
+    const raw = guestCreateAskEml();
+    const row = {
+      id: 'q-parse-failure-reroute',
+      ingestMailboxId: 'ingest-nava-legacy',
+      pop3Uidl: 'uidl-parse-failure-reroute',
+      rawMimeS3Key: rawMimeKey({
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-parse-failure-reroute',
+      }),
+    };
+    await storage.putObject({
+      key: row.rawMimeS3Key,
+      body: raw,
+      contentType: 'message/rfc822',
+    });
+    const updates: Array<Record<string, unknown>> = [];
+    const db = {
+      select: () => {
+        const query = {
+          from: () => query,
+          where: () => query,
+          orderBy: () => Promise.resolve([row]),
+          limit: () => Promise.resolve([]),
+        };
+        return query;
+      },
+      update: () => ({
+        set: (values: Record<string, unknown>) => ({
+          where: async () => {
+            updates.push(values);
+          },
+        }),
+      }),
+    } as unknown as DB;
+    const persistSpy = vi.spyOn(ingestStore, 'persistInboundMessage').mockResolvedValue({
+      kind: 'quarantined',
+      quarantineId: row.id,
+      reason: 'missing_owner_header',
+      rawMimeS3Key: row.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
+    });
+    try {
+      const result = await recoverParseFailureQuarantine({ db, storage });
+      expect(result.quarantined).toBe(1);
+      expect(updates).toEqual([{ reason: 'missing_owner_header' }]);
     } finally {
       persistSpy.mockRestore();
     }
