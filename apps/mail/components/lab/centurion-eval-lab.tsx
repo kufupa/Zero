@@ -72,6 +72,16 @@ function snippetOf(text: string): string {
   return compact.length > 140 ? `${compact.slice(0, 137)}…` : compact;
 }
 
+function uniqueProposedActionKey(
+  action: { status: string; tool: string; title: string; request: Record<string, unknown> },
+  seen: Map<string, number>,
+): string {
+  const base = `${action.status}:${action.tool}:${action.title}:${JSON.stringify(action.request)}`;
+  const count = (seen.get(base) ?? 0) + 1;
+  seen.set(base, count);
+  return count === 1 ? base : `${base}#${count}`;
+}
+
 function SchemaFieldList({
   testId,
   heading,
@@ -150,6 +160,8 @@ function ProposedPane({
   const schema = labReviewSchemaFor(tool);
   const fills = projectLabFills(row, tool, actionIndex, current);
   const interesting = interestingFacts(row.staffFilledAbsentFromInbound);
+  const liveKeys = new Map<string, number>();
+  const foldedKeys = new Map<string, number>();
   const skipReason =
     row.otherDesk
       ? `Other desk: ${row.otherDesk}`
@@ -178,7 +190,7 @@ function ProposedPane({
             const facts = proposedActionFacts(action.request);
             return (
               <div
-                key={`${action.status}:${action.tool}:${action.title}:${JSON.stringify(action.request)}`}
+                key={uniqueProposedActionKey(action, liveKeys)}
                 data-testid={`lab-action-live-${index}`}
                 className={cn(
                   'w-full min-h-11 rounded-xl border px-3 py-2 text-left transition-colors',
@@ -233,7 +245,7 @@ function ProposedPane({
           <summary className="text-muted-foreground cursor-pointer text-[12px]">Already done {folded.length}</summary>
           <ul className="mt-2 space-y-1 text-[12px]">
             {folded.map((action) => (
-              <li key={`${action.status}:${action.tool}:${action.title}:${JSON.stringify(action.request)}`}>
+              <li key={uniqueProposedActionKey(action, foldedKeys)}>
                 {action.title}
                 {proposedActionFacts(action.request) ? ` · ${proposedActionFacts(action.request)}` : ''}
               </li>
