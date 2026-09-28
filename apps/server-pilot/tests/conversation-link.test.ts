@@ -754,7 +754,7 @@ describe('deterministic link discovery', () => {
       parent.set(right, left);
       size.set(left, (size.get(left) ?? 1) + (size.get(right) ?? 1));
     }
-    expect(Math.max(...[...size.values()])).toBeLessThanOrEqual(7);
+    expect(Math.max(...size.values())).toBeLessThanOrEqual(7);
   });
 });
 

@@ -14,7 +14,7 @@ export interface MoveThreadOptions {
 export function isActionAvailable(
   folder: FolderLocation,
   action: ThreadDestination,
-  reservedSpamLabelIds?: Set<string> | readonly string[],
+  _reservedSpamLabelIds?: Set<string> | readonly string[],
 ): boolean {
   if (!action) return false;
 
