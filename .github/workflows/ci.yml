@@ -37,7 +37,7 @@ jobs:
           fi
 
       - name: Lint JS
-        run: pnpm dlx oxlint@latest --deny-warnings --ignore-pattern 'external/**'
+        run: pnpm dlx oxlint@1.6.0 --deny-warnings --ignore-pattern 'external/**'
 
       - name: Test Rocketseed mail flow
         shell: bash

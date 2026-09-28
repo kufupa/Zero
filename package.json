@@ -8,7 +8,7 @@
     "prepare": "husky",
     "nizzy": "tsx ./packages/cli/src/cli.ts",
     "postinstall": "pnpm nizzy sync",
-    "precommit": "pnpm dlx oxlint@latest --deny-warnings --ignore-pattern 'external/**'",
+    "precommit": "pnpm dlx oxlint@1.6.0 --deny-warnings --ignore-pattern 'external/**'",
     "dev": "turbo run dev",
     "dev:frontend": "dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only",
     "dev:demo:frontend": "dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only --demo-frontend-only",
