@@ -1051,7 +1051,7 @@ function refineWorkflowTriageOutput(
         ...next,
         primaryFolder: 'documents-delivery',
         humanAction: 'document_or_delivery',
-        suggestedTools: ['hms_list_documents', 'mail_read_artifact'],
+        suggestedTools: ['hms_list_documents'],
         isSpam: false,
         policyFlags: addPolicyFlag(next.policyFlags, 'refine:agency-voucher-delivery'),
         rationale: `${next.rationale} Agency travel voucher delivery is documents-delivery.`,

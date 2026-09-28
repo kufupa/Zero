@@ -956,8 +956,7 @@ describe('workflow source and automation refinement', () => {
       );
 
       expect(refined.primaryFolder).toBe('documents-delivery');
-      expect(refined.suggestedTools).toContain('hms_list_documents');
-      expect(refined.suggestedTools).toContain('mail_read_artifact');
+      expect(refined.suggestedTools).toEqual(['hms_list_documents']);
       expect(refined.policyFlags).toContain('refine:agency-voucher-delivery');
     });
 
