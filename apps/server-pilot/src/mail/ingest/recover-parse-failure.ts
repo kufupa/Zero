@@ -21,7 +21,7 @@ import {
   type PromoteQuarantineRow,
 } from './promote-quarantine.js';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
-import { getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { getS3Storage, quarantineArchiveKey, type S3Storage } from '../../storage/s3.js';
 import type { DB } from '../../db/client.js';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 
@@ -134,9 +134,12 @@ async function recoverOneParseFailureRow(
   let parsed: ParsedInboundMessage | undefined;
 
   try {
-    const object = await storage.getObject(row.rawMimeS3Key);
+    const object = await loadRecoverRawMime(storage, row);
     if (!object) {
-      return { kind: 'error', message: `missing s3 object ${row.rawMimeS3Key}` };
+      return {
+        kind: 'error',
+        message: `missing s3 object ${row.rawMimeS3Key} and archive ${quarantineArchiveKey(row)}`,
+      };
     }
 
     if (opts.dryRun) {
@@ -216,6 +219,20 @@ async function recoverOneParseFailureRow(
     }
     return { kind: 'error', message };
   }
+}
+
+async function loadRecoverRawMime(
+  storage: S3Storage,
+  row: PromoteQuarantineRow,
+): Promise<{ body: Buffer; contentType: string } | null> {
+  const primary = await storage.getObject(row.rawMimeS3Key);
+  if (primary) return primary;
+  return storage.getObject(
+    quarantineArchiveKey({
+      ingestMailboxId: row.ingestMailboxId,
+      pop3Uidl: row.pop3Uidl,
+    }),
+  );
 }
 
 async function findExistingMessageAnyDirection(
