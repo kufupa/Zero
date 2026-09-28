@@ -1,6 +1,6 @@
 {
   "plugins": ["react", "unicorn", "typescript", "oxc"],
-  "ignorePatterns": ["external/**"],
+  "ignorePatterns": ["external/**", "archive/**"],
   "rules": {
     "no-alert": "error",
     "oxc/approx-constant": "warn",
