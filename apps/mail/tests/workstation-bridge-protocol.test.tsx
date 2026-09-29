@@ -25,20 +25,52 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useOutlookBridge } from '../lib/workstation/use-outlook-bridge';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { useState } from 'react';
 
+const { security, ticketMutate } = vi.hoisted(() => ({
+  security: {
+    userId: null as string | null,
+    createdAt: new Date().toISOString(),
+    transportId: null as string | null,
+    email: 'shared@example.com',
+    isLoading: false,
+  },
+  ticketMutate: vi.fn(),
+}));
+
+vi.mock('../lib/auth-client', () => ({
+  useSession: () => ({
+    data: security.userId
+      ? { user: { id: security.userId }, session: { createdAt: security.createdAt } }
+      : null,
+    isLoading: security.isLoading,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock('../hooks/use-connections', () => ({
+  useActiveConnection: () => ({
+    data: security.transportId ? { id: security.transportId, email: security.email } : null,
+    isLoading: security.isLoading,
+  }),
+}));
+
+vi.mock('../providers/query-provider', () => ({
+  trpcClient: { workstation: { bridgeTicket: { mutate: ticketMutate } } },
+}));
+
 describe('Workstation Bridge Protocol', () => {
-  it('uses protocol v3 and exposes the reusable mail action set', () => {
-    expect(BRIDGE_PROTOCOL_VERSION).toBe(3);
+  it('requires protocol v4 and retains only authorized native mail actions', () => {
+    expect(BRIDGE_PROTOCOL_VERSION).toBe(4);
     const actions = [
       'GET_CAPABILITIES',
       'LIST_STORES',
       'LIST_FOLDERS',
       'UPDATE_DRAFT',
       'LIST_ACCOUNTS',
-      'SEND_DRAFT',
-      'DELETE_EMAIL',
-      'DELETE_EMAIL_PERMANENTLY',
+      'REGISTER_NAVIGATION',
+      'CLEAR_SESSION',
     ] as const;
 
     for (const action of actions) {
@@ -78,7 +110,7 @@ describe('Workstation Bridge Protocol', () => {
     ).toBe('store-1');
   });
 
-  it('parses legacy and explicit-truncation folder collection results', () => {
+  it('requires explicit truncation metadata for folder collections', () => {
     const folder = {
       storeId: 'store-1',
       entryId: 'folder-1',
@@ -88,7 +120,7 @@ describe('Workstation Bridge Protocol', () => {
       depth: 1,
     };
 
-    expect(FolderCollectionResultSchema.parse([folder])).toEqual([folder]);
+    expect(() => FolderCollectionResultSchema.parse([folder])).toThrow();
     expect(FolderCollectionResultSchema.parse({ items: [folder], truncated: true })).toEqual({
       items: [folder],
       truncated: true,
@@ -213,11 +245,11 @@ describe('Workstation Bridge Protocol', () => {
     expect(page.storeId).toBe('store-1');
   });
 
-  it('parses bounded store/account pages and backwards-compatible legacy arrays', () => {
+  it('accepts bounded store/account pages but rejects legacy unscoped array responses', () => {
     const store = { storeId: 'store-1', displayName: 'Reservations', isDefault: true };
     const account = { smtpAddress: 'help@example.com', displayName: 'Help' };
-    expect(StoreCollectionResultSchema.parse([store])).toEqual([store]);
-    expect(AccountCollectionResultSchema.parse([account])).toEqual([account]);
+    expect(() => StoreCollectionResultSchema.parse([store])).toThrow();
+    expect(() => AccountCollectionResultSchema.parse([account])).toThrow();
     expect(
       StorePageSchema.parse({
         items: [store],
@@ -290,20 +322,63 @@ describe('Workstation Bridge Protocol', () => {
   });
 });
 
+const renderedSubjects: string[] = [];
+const renderedReplyAvailability: boolean[] = [];
 function BridgeProbe() {
-  const { isConnected, activeEmail, workstationInfo, supportsAction, sendCommand } =
-    useOutlookBridge();
+  const {
+    isConnected,
+    activeEmail,
+    workstationInfo,
+    requiresRelogin,
+    supportsAction,
+    sendCommand,
+    pairDevice,
+  } = useOutlookBridge();
   const [errorCode, setErrorCode] = useState('');
+  renderedSubjects.push(activeEmail?.subject ?? '');
+  renderedReplyAvailability.push(supportsAction('CREATE_REPLY_DRAFT'));
   return (
     <div>
       <span data-testid="connected">{isConnected ? 'yes' : 'no'}</span>
       <span data-testid="subject">{activeEmail?.subject ?? ''}</span>
       <span data-testid="protocol">{workstationInfo?.bridgeProtocolVersion ?? ''}</span>
-      <span data-testid="send-supported">{supportsAction('SEND_DRAFT') ? 'yes' : 'no'}</span>
+      <span data-testid="relogin">{requiresRelogin ? 'required' : 'ready'}</span>
+      <span data-testid="send-supported">{supportsAction('LIST_FOLDERS') ? 'yes' : 'no'}</span>
       <span data-testid="reply-supported">
         {supportsAction('CREATE_REPLY_DRAFT') ? 'yes' : 'no'}
       </span>
       <span data-testid="bridge-error-code">{errorCode}</span>
+      <button
+        type="button"
+        onClick={() => {
+          void pairDevice().catch(() => undefined);
+        }}
+      >
+        Pair native
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void sendCommand('LIST_STORES', {}).catch(() => undefined);
+        }}
+      >
+        List approved stores
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void sendCommand('MOVE_EMAIL', {
+            entryIds: Array.from({ length: 10 }, (_, index) => `mail-${index + 1}`),
+            storeId: 'store-approved',
+            folderEntryId: 'folder-inbox',
+            targetStoreId: 'store-approved',
+            targetFolderEntryId: 'folder-archive',
+            operationId: createOperationId(),
+          }).catch(() => undefined);
+        }}
+      >
+        Move approved batch
+      </button>
       <button
         type="button"
         onClick={() => {
@@ -325,22 +400,93 @@ function BridgeProbe() {
 
 const listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
 
-describe('useOutlookBridge selection events', () => {
+type TestBridgeRequest = { requestId: string; action: string };
+
+async function waitForBridgeRequest(
+  action: string,
+  afterCallIndex = 0,
+): Promise<TestBridgeRequest> {
+  let request: TestBridgeRequest | undefined;
+  await waitFor(
+    () => {
+      const postMessage = window.chrome?.webview?.postMessage as unknown as {
+        mock: { calls: Array<[unknown]> };
+      };
+      request = postMessage.mock.calls
+        .slice(afterCallIndex)
+        .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest)
+        .find((candidate) => candidate.action === action);
+      expect(request).toBeDefined();
+    },
+    { timeout: 5_000 },
+  );
+  return request!;
+}
+
+const paneChallenge = 'a'.repeat(43);
+const nativeMessages = () => {
+  if (!window.chrome?.webview) throw new Error('Outlook bridge unavailable in test');
+  const calls = (window.chrome.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls as Array<
+    [string]
+  >;
+  return calls.map(
+    ([message]) => JSON.parse(message) as TestBridgeRequest & Record<string, unknown>,
+  );
+};
+
+function respondV4(request: TestBridgeRequest, data: unknown, success = true) {
+  act(() => {
+    for (const listener of listeners.get('message') ?? []) {
+      listener({
+        data: JSON.stringify({
+          version: 4,
+          requestId: request.requestId,
+          action: request.action,
+          success,
+          data,
+          error: success ? null : 'Ticket denied',
+        }),
+      });
+    }
+  });
+}
+
+describe('v4 staff-authorized Outlook navigation', () => {
   beforeEach(() => {
     listeners.clear();
+    security.userId = null;
+    security.transportId = null;
+    setMailCacheScope({ userId: null, activeTransportId: null });
+    security.createdAt = new Date().toISOString();
+    security.isLoading = false;
+    ticketMutate.mockReset();
+    ticketMutate.mockResolvedValue({
+      ticket: 'one-use',
+      storeId: 'store-approved',
+      expiresInSeconds: 60,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          protocol: 'nava-outlook-v4',
+          status: 'ready',
+          paneChallenge,
+          expiresInSeconds: 60,
+        }),
+      }),
+    );
     window.chrome = {
       webview: {
         postMessage: vi.fn(),
         addEventListener: (type, listener) => {
-          const bucket = listeners.get(type) ?? [];
-          bucket.push(listener);
-          listeners.set(type, bucket);
+          listeners.set(type, [...(listeners.get(type) ?? []), listener]);
         },
         removeEventListener: (type, listener) => {
-          const bucket = listeners.get(type) ?? [];
           listeners.set(
             type,
-            bucket.filter((item) => item !== listener),
+            (listeners.get(type) ?? []).filter((item) => item !== listener),
           );
         },
       },
@@ -350,388 +496,496 @@ describe('useOutlookBridge selection events', () => {
   afterEach(() => {
     cleanup();
     delete window.chrome;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    setMailCacheScope({ userId: null, activeTransportId: null });
   });
 
-  it('discovers protocol v3 capabilities before exposing active Outlook data', async () => {
-    render(<BridgeProbe />);
-
+  async function registerPane() {
     const ping = await waitForBridgeRequest('PING');
-    respondToBridgeRequest(ping, {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-      version: '1.0.11',
-      bridgeProtocolVersion: 3,
+    respondV4(ping, {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
     });
-
-    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
-    respondToBridgeRequest(capabilitiesRequest, {
-      bridgeProtocolVersion: 3,
-      addinVersion: '1.0.11',
-      outlookVersion: '16.0',
-      runtime: 'Classic Outlook for Windows',
-      newOutlookSupported: false,
-      interactiveProfileRequired: true,
-      maxPageSize: 200,
-      maxFolderDepth: 64,
-      maxFolderCount: 5000,
-      maxFolderSnapshotItems: 5000,
-      supportedActions: ['PING', 'GET_CAPABILITIES', 'SEND_DRAFT', 'CREATE_REPLY_DRAFT'],
-    });
-
-    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
-    respondToBridgeRequest(activeEmailRequest, {
-      entryId: 'mail-1',
-      subject: 'Availability',
-      senderEmail: 'guest@example.com',
-      senderName: 'Guest',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'Can you host us?',
-      bodyHtml: '<p>Can you host us?</p>',
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('connected').textContent).toBe('yes');
-      expect(screen.getByTestId('protocol').textContent).toBe('3');
-      expect(screen.getByTestId('send-supported').textContent).toBe('yes');
-      expect(screen.getByTestId('reply-supported').textContent).toBe('yes');
-    });
-  });
-
-  it('keeps protocol v2 connected but reports that v3 actions are unsupported', async () => {
-    render(<BridgeProbe />);
-
-    const ping = await waitForBridgeRequest('PING');
-    respondToBridgeRequest(ping, {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-      version: '1.0.8',
-      bridgeProtocolVersion: 2,
-    });
-
-    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
-    respondToBridgeRequest(capabilitiesRequest, null, false);
-
-    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
-    respondToBridgeRequest(activeEmailRequest, {
-      entryId: 'mail-1',
-      subject: 'Availability',
-      senderEmail: 'guest@example.com',
-      senderName: 'Guest',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'Can you host us?',
-      bodyHtml: '<p>Can you host us?</p>',
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('connected').textContent).toBe('yes');
-      expect(screen.getByTestId('protocol').textContent).toBe('2');
-      expect(screen.getByTestId('send-supported').textContent).toBe('no');
-      expect(screen.getByTestId('reply-supported').textContent).toBe('no');
-    });
-  });
-
-  it('recovers v3 capabilities after repeated transient failures without exposing mutations early', async () => {
-    render(<BridgeProbe />);
-
-    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-      version: '1.0.11',
-      bridgeProtocolVersion: 3,
-    });
-
-    const firstCapabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
-    const postMessage = window.chrome?.webview?.postMessage as unknown as {
-      mock: { calls: Array<[unknown]> };
-    };
-    const nextRequestIndex = postMessage.mock.calls.length;
-    respondToBridgeRequest(firstCapabilitiesRequest, null, false);
-
-    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
-    respondToBridgeRequest(activeEmailRequest, {
-      entryId: 'mail-1',
-      subject: 'Availability',
-      senderEmail: 'guest@example.com',
-      senderName: 'Guest',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'Can you host us?',
-      bodyHtml: '<p>Can you host us?</p>',
-    });
-
     await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('yes'));
-    expect(screen.getByTestId('reply-supported').textContent).toBe('no');
+    const registration = await waitForBridgeRequest('REGISTER_NAVIGATION');
+    expect((registration as { payload?: unknown }).payload).toEqual({ paneChallenge });
+    respondV4(registration, { registered: true });
+  }
 
-    const retryRequest = await waitForBridgeRequest('GET_CAPABILITIES', nextRequestIndex);
-    const recoveryRequestIndex = postMessage.mock.calls.length;
-    respondToBridgeRequest(retryRequest, null, false);
-
-    expect(screen.getByTestId('reply-supported').textContent).toBe('no');
-
-    const recoveryRequest = await waitForBridgeRequest('GET_CAPABILITIES', recoveryRequestIndex);
-    respondToBridgeRequest(recoveryRequest, {
-      bridgeProtocolVersion: 3,
-      addinVersion: '1.0.11',
-      outlookVersion: '16.0',
-      runtime: 'Classic Outlook for Windows',
-      newOutlookSupported: false,
-      interactiveProfileRequired: true,
-      maxPageSize: 200,
-      maxFolderDepth: 64,
-      maxFolderCount: 5000,
-      maxFolderSnapshotItems: 5000,
-      supportedActions: ['PING', 'GET_CAPABILITIES', 'CREATE_REPLY_DRAFT'],
+  it('never requests mail or a ticket until real session and selected transport are ready', async () => {
+    const pane = render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
     });
-
-    await waitFor(() => expect(screen.getByTestId('reply-supported').textContent).toBe('yes'));
+    expect(ticketMutate).not.toHaveBeenCalled();
+    expect(nativeMessages().some((message) => message.action === 'GET_ACTIVE_EMAIL')).toBe(false);
+    security.userId = 'staff-1';
+    pane.rerender(<BridgeProbe />);
+    expect(ticketMutate).not.toHaveBeenCalled();
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    pane.rerender(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
+    await waitFor(() =>
+      expect(ticketMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deviceId: 'device-1',
+          paneChallenge,
+          action: 'GET_CAPABILITIES',
+        }),
+      ),
+    );
   });
 
-  it('retries a transient initial email read without marking the bridge disconnected', async () => {
+  it('rejects old add-ins without a legacy read or ticket', async () => {
     render(<BridgeProbe />);
-    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-      version: '1.0.11',
-      bridgeProtocolVersion: 3,
-    });
-
-    const capabilitiesRequest = await waitForBridgeRequest('GET_CAPABILITIES');
-    respondToBridgeRequest(capabilitiesRequest, {
-      bridgeProtocolVersion: 3,
-      addinVersion: '1.0.11',
-      outlookVersion: '16.0',
-      runtime: 'Classic Outlook for Windows',
-      newOutlookSupported: false,
-      interactiveProfileRequired: true,
-      maxPageSize: 200,
-      maxFolderDepth: 64,
-      maxFolderCount: 5000,
-      maxFolderSnapshotItems: 5000,
-      supportedActions: ['PING', 'GET_CAPABILITIES'],
-    });
-
-    const firstEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
-    const postMessage = window.chrome?.webview?.postMessage as unknown as {
-      mock: { calls: Array<[unknown]> };
-    };
-    const nextRequestIndex = postMessage.mock.calls.length;
-    respondToBridgeRequest(firstEmailRequest, null, false);
-
-    expect(screen.getByTestId('connected').textContent).toBe('yes');
-    const retryRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL', nextRequestIndex);
-    respondToBridgeRequest(retryRequest, {
-      entryId: 'mail-1',
-      subject: 'Availability',
-      senderEmail: 'guest@example.com',
-      senderName: 'Guest',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'Can you host us?',
-      bodyHtml: '<p>Can you host us?</p>',
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('connected').textContent).toBe('yes');
-      expect(screen.getByTestId('subject').textContent).toBe('Availability');
-    });
-  });
-
-  it('does not overwrite a newer selection with a delayed initial email read', async () => {
-    render(<BridgeProbe />);
-    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-      version: '1.0.11',
-      bridgeProtocolVersion: 3,
-    });
-    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), {
-      bridgeProtocolVersion: 3,
-      addinVersion: '1.0.11',
-      outlookVersion: '16.0',
-      runtime: 'Classic Outlook for Windows',
-      newOutlookSupported: false,
-      interactiveProfileRequired: true,
-      maxPageSize: 200,
-      maxFolderDepth: 64,
-      maxFolderCount: 5000,
-      maxFolderSnapshotItems: 5000,
-      supportedActions: ['PING', 'GET_CAPABILITIES'],
-    });
-
-    const activeEmailRequest = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    const request = await waitForBridgeRequest('PING');
     act(() => {
       for (const listener of listeners.get('message') ?? []) {
         listener({
           data: JSON.stringify({
-            requestId: 'evt_selection_newer',
-            version: 1,
-            action: 'ON_SELECTION_CHANGED',
+            requestId: request.requestId,
+            action: 'PING',
+            version: 3,
             success: true,
             data: {
-              entryId: 'message-b',
-              storeId: 'store-b',
-              subject: 'Message B',
-              senderEmail: 'guest-b@example.com',
-              senderName: 'Guest B',
-              receivedTime: '2026-09-24T12:00:00Z',
-              bodyText: 'Selected message B',
-              bodyHtml: '<p>Selected message B</p>',
-            } satisfies WorkstationEmailPayload,
+              bridgeProtocolVersion: 3,
+              version: '1.0.11',
+              workstationUser: 'must-not-display',
+            },
           }),
         });
       }
     });
+    await waitFor(() => expect(screen.getByTestId('protocol').textContent).toBe('3'));
+    expect(screen.getByTestId('connected').textContent).toBe('yes');
+    expect(ticketMutate).not.toHaveBeenCalled();
+    expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
+  });
 
-    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Message B'));
-
-    respondToBridgeRequest(activeEmailRequest, {
-      entryId: 'message-a',
-      storeId: 'store-a',
-      subject: 'Message A',
-      senderEmail: 'guest-a@example.com',
-      senderName: 'Guest A',
-      receivedTime: '2026-09-24T11:00:00Z',
-      bodyText: 'Stale initial read for A',
-      bodyHtml: '<p>Stale initial read for A</p>',
+  it('keeps a mailbox-neutral PING alive when staff and transport resolve while PING is pending', async () => {
+    const pane = render(<BridgeProbe />);
+    const ping = await waitForBridgeRequest('PING');
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    pane.rerender(<BridgeProbe />);
+    respondV4(ping, {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
     });
+    expect((await waitForBridgeRequest('REGISTER_NAVIGATION')).action).toBe('REGISTER_NAVIGATION');
+  });
 
+  it('waits for QueryProvider to install the exact active transport header before the first ticket', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: null });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('yes'));
     await act(async () => {
       await Promise.resolve();
     });
-
-    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Message B'));
+    expect(ticketMutate).not.toHaveBeenCalled();
+    expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' }));
+    respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
+    await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(1));
+    expect(ticketMutate.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ action: 'GET_CAPABILITIES' }),
+    );
   });
 
-  it('propagates native operation error codes through sendCommand rejections', async () => {
+  it('retries a transient bootstrap failure while signed in without needing a pane reload', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('Network temporarily unavailable'));
     render(<BridgeProbe />);
-    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
+    const ping = await waitForBridgeRequest('PING');
+    vi.useFakeTimers();
+    respondV4(ping, {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(ticketMutate).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    vi.useRealTimers();
+    respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
+    await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(1));
+  });
+
+  it('rechecks session and stops after a repeated denied ticket instead of looping navigation registrations', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    ticketMutate.mockRejectedValue(new Error('Bridge ticket denied'));
+    render(<BridgeProbe />);
+    await registerPane();
+    await waitFor(() =>
+      expect(
+        nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION'),
+      ).toHaveLength(2),
+    );
+    const second = nativeMessages().filter(
+      (message) => message.action === 'REGISTER_NAVIGATION',
+    )[1];
+    respondV4(second!, { registered: true });
+    await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION'),
+    ).toHaveLength(2);
+    expect(screen.getByTestId('subject').textContent).toBe('');
+  });
+
+  it('opens native-only pairing and rechecks PING before registering the staff navigation', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: false,
+      deviceId: null,
+    });
+    expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
+    fireEvent.click(screen.getByRole('button', { name: 'Pair native' }));
+    respondV4(await waitForBridgeRequest('PAIR_DEVICE'), { paired: true });
+    const ping = await waitForBridgeRequest('PING', 2);
+    respondV4(ping, {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    expect((await waitForBridgeRequest('REGISTER_NAVIGATION')).action).toBe('REGISTER_NAVIGATION');
+  });
+
+  it('requires re-login after 24 hours and refuses to mint COM tickets even if the cached session still has a user', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    security.createdAt = new Date(Date.now() - 24 * 60 * 60 * 1000 - 1).toISOString();
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    await waitFor(() => expect(screen.getByTestId('relogin').textContent).toBe('required'));
+    expect(ticketMutate).not.toHaveBeenCalled();
+    expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
+  });
+
+  it('revokes the current native navigation and drops pending email when the session expires', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    const pane = render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
       outlookVersion: '16.0',
-      version: '1.0.11',
-      bridgeProtocolVersion: 3,
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
     });
-    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), null, false);
-    respondToBridgeRequest(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Trigger bridge error' }));
-    const mutationRequest = await waitForBridgeRequest('CREATE_REPLY_DRAFT');
-    respondToBridgeRequest(mutationRequest, null, false, 'OPERATION_OUTCOME_UNKNOWN');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('bridge-error-code').textContent).toBe('OPERATION_OUTCOME_UNKNOWN');
-    });
-  });
-
-  it('retains connected legacy reads when PING omits protocol and capabilities fail', async () => {
-    render(<BridgeProbe />);
-    respondToBridgeRequest(await waitForBridgeRequest('PING'), {
-      workstationUser: 'test-user',
-      outlookEmail: 'test@example.com',
-      outlookVersion: '16.0',
-    });
-    respondToBridgeRequest(await waitForBridgeRequest('GET_CAPABILITIES'), null, false);
-    respondToBridgeRequest(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
-    await waitFor(() => {
-      expect(screen.getByTestId('connected').textContent).toBe('yes');
-      expect(screen.getByTestId('send-supported').textContent).toBe('no');
-      expect(screen.getByTestId('reply-supported').textContent).toBe('no');
-    });
-  });
-
-  it('updates active email on ON_SELECTION_CHANGED events with evt_ ids', async () => {
-    render(<BridgeProbe />);
-
-    const payload: WorkstationEmailPayload = {
-      entryId: '001',
-      subject: 'Suite Availability Request',
+    const read = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date(security.createdAt).getTime() + 24 * 60 * 60 * 1000 + 1,
+    );
+    pane.rerender(<BridgeProbe />);
+    await waitFor(() => expect(screen.getByTestId('relogin').textContent).toBe('required'));
+    respondV4(read, {
+      entryId: 'late',
+      subject: 'Sensitive',
       senderEmail: 'guest@example.com',
-      senderName: 'David Miller',
-      receivedTime: '2026-09-17T12:00:00Z',
-      bodyText: 'We need 3 rooms for 4 nights.',
-      bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
-      internetMessageId: '<msg@guest.com>',
-    };
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Private',
+      bodyHtml: '',
+    });
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    expect(nativeMessages().map((message) => message.action)).toContain('CLEAR_SESSION');
+  });
 
+  it('binds tickets and every COM command to the returned store and active transport', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    await waitForBridgeRequest('GET_CAPABILITIES');
+    const firstTicket = ticketMutate.mock.calls[0]?.[0];
+    expect(firstTicket).not.toHaveProperty('storeId');
+    const capability = nativeMessages().find((message) => message.action === 'GET_CAPABILITIES');
+    expect(capability).toMatchObject({
+      version: 4,
+      ticket: 'one-use',
+      transportId: 'transport-1',
+      payload: { storeId: 'store-approved' },
+    });
+    respondV4(capability!, {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT'],
+    });
+    await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    expect(ticketMutate.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ action: 'GET_ACTIVE_EMAIL', storeId: 'store-approved' }),
+    );
+    expect(nativeMessages().find((message) => message.action === 'GET_ACTIVE_EMAIL')).toMatchObject(
+      { version: 4, payload: { storeId: 'store-approved' } },
+    );
+  });
+
+  it('declares exact ordered batch resources and folder IDs without browser-supplied native consent', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'MOVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    fireEvent.click(screen.getByRole('button', { name: 'Move approved batch' }));
+    await waitFor(() =>
+      expect(ticketMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'MOVE_EMAIL',
+          storeId: 'store-approved',
+          resources: Array.from({ length: 10 }, (_, index) => `mail-${index + 1}`),
+          sourceFolderId: 'folder-inbox',
+          destinationFolderId: 'folder-archive',
+          operationId: expect.stringMatching(/^op_\d+_[0-9a-f]{32}$/),
+        }),
+      ),
+    );
+    const move = (await waitForBridgeRequest('MOVE_EMAIL')) as TestBridgeRequest &
+      Record<string, unknown>;
+    expect(move).toMatchObject({
+      ticket: 'one-use',
+      transportId: 'transport-1',
+      payload: {
+        storeId: 'store-approved',
+        folderEntryId: 'folder-inbox',
+        targetFolderEntryId: 'folder-archive',
+      },
+    });
+    expect(move).not.toHaveProperty('nativeBatchConsent');
+  });
+
+  it('requests bounded native store pages so v4 never receives the old unscoped array format', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_STORES'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
+    const stores = (await waitForBridgeRequest('LIST_STORES')) as TestBridgeRequest &
+      Record<string, unknown>;
+    expect(stores).toMatchObject({
+      version: 4,
+      payload: { storeId: 'store-approved', pageSize: 200 },
+    });
+  });
+
+  it('clears outstanding mail and does not accept metadata-free stale selections on logout', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    const pane = render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    const read = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    security.userId = null;
+    pane.rerender(<BridgeProbe />);
+    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe(''));
+    respondV4(read, {
+      entryId: 'late-mail',
+      subject: 'Sensitive',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Private',
+      bodyHtml: '',
+    });
+    respondV4({ action: 'ON_SELECTION_CHANGED', requestId: 'evt_selection_old' }, null);
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    expect(nativeMessages().some((message) => message.action === 'CLEAR_SESSION')).toBe(true);
+  });
+
+  it('does not render the previous account email even for the first render after switching accounts', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    const pane = render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), {
+      entryId: 'mail-1',
+      storeId: 'store-approved',
+      folderEntryId: 'inbox',
+      subject: 'Private account 1',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Private',
+      bodyHtml: '',
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('subject').textContent).toBe('Private account 1'),
+    );
+    const renderedBeforeSwitch = renderedSubjects.length;
+    security.userId = 'staff-2';
+    pane.rerender(<BridgeProbe />);
+    expect(renderedSubjects.slice(renderedBeforeSwitch)).not.toContain('Private account 1');
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    expect(screen.getByTestId('reply-supported').textContent).toBe('no');
+    expect(ticketMutate.mock.calls.every(([input]) => input.action !== 'CREATE_REPLY_DRAFT')).toBe(
+      true,
+    );
+  });
+
+  it('treats selection events as metadata-free hints and reads the new item only with a fresh ticket', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    const before = nativeMessages().length;
     act(() => {
-      for (const listener of listeners.get('message') ?? []) {
+      for (const listener of listeners.get('message') ?? [])
         listener({
           data: JSON.stringify({
-            requestId: 'evt_selection_1',
-            version: 1,
+            version: 4,
+            requestId: 'evt_selection_changed',
             action: 'ON_SELECTION_CHANGED',
             success: true,
-            data: payload,
+            data: { subject: 'Spoofed from event', bodyText: 'Untrusted content' },
           }),
         });
-      }
     });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('subject').textContent).toBe('Suite Availability Request');
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    const freshRead = await waitForBridgeRequest('GET_ACTIVE_EMAIL', before);
+    await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(3));
+    respondV4(freshRead, {
+      entryId: 'new-mail',
+      storeId: 'store-approved',
+      folderEntryId: 'folder-inbox',
+      subject: 'Authorized selection',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Approved',
+      bodyHtml: '',
     });
-
-    act(() => {
-      for (const listener of listeners.get('message') ?? []) {
-        listener({
-          data: JSON.stringify({
-            requestId: 'evt_selection_cleared',
-            version: 1,
-            action: 'ON_SELECTION_CHANGED',
-            success: true,
-            data: null,
-          }),
-        });
-      }
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('subject').textContent).toBe('');
-    });
+    await waitFor(() =>
+      expect(screen.getByTestId('subject').textContent).toBe('Authorized selection'),
+    );
   });
 });
-
-type TestBridgeRequest = { requestId: string; action: string };
-
-async function waitForBridgeRequest(
-  action: string,
-  afterCallIndex = 0,
-): Promise<TestBridgeRequest> {
-  let request: TestBridgeRequest | undefined;
-  await waitFor(() => {
-    const postMessage = window.chrome?.webview?.postMessage as unknown as {
-      mock: { calls: Array<[unknown]> };
-    };
-    request = postMessage.mock.calls
-      .slice(afterCallIndex)
-      .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest)
-      .find((candidate) => candidate.action === action);
-    expect(request).toBeDefined();
-  });
-  return request!;
-}
-
-function respondToBridgeRequest(
-  request: TestBridgeRequest,
-  data: unknown,
-  success = true,
-  errorCode?: string,
-): void {
-  const response = JSON.stringify({
-    requestId: request.requestId,
-    version: 1,
-    action: request.action,
-    success,
-    data,
-    ...(success ? {} : { error: 'Unknown action: ' + request.action }),
-    ...(errorCode ? { errorCode } : {}),
-  });
-  act(() => {
-    for (const listener of listeners.get('message') ?? []) {
-      listener({ data: response });
-    }
-  });
-}

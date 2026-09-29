@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const BRIDGE_PROTOCOL_VERSION = 3;
+export const BRIDGE_PROTOCOL_VERSION = 4;
 
 export const WorkstationEmailPayloadSchema = z.object({
   entryId: z.string(),
@@ -61,12 +61,7 @@ export const StorePageSchema = z.object({
 });
 
 export type StorePage = z.infer<typeof StorePageSchema>;
-// Requests with pageSize/continuationToken opt in to a bounded live collection page.
-// Existing callers still receive an array if it fits; oversized arrays fail explicitly.
-export const StoreCollectionResultSchema = z.union([
-  z.array(StoreSummarySchema).max(200),
-  StorePageSchema,
-]);
+export const StoreCollectionResultSchema = StorePageSchema;
 export type StoreCollectionResult = z.infer<typeof StoreCollectionResultSchema>;
 
 export const FolderSummarySchema = z.object({
@@ -86,12 +81,7 @@ export const FolderCollectionEnvelopeSchema = z.object({
   truncated: z.boolean(),
 });
 
-// Unnegotiated callers keep the legacy array when complete. Protocol v3
-// callers receive an explicit completeness flag for bounded folder scans.
-export const FolderCollectionResultSchema = z.union([
-  z.array(FolderSummarySchema).max(5000),
-  FolderCollectionEnvelopeSchema,
-]);
+export const FolderCollectionResultSchema = FolderCollectionEnvelopeSchema;
 export type FolderCollectionResult = z.infer<typeof FolderCollectionResultSchema>;
 
 export const AccountSummarySchema = z.object({
@@ -109,12 +99,7 @@ export const AccountPageSchema = z.object({
 });
 
 export type AccountPage = z.infer<typeof AccountPageSchema>;
-// totalItems and continuation count usable SMTP accounts, excluding provider
-// slots without addresses. Pages are drawn from the same selectable set.
-export const AccountCollectionResultSchema = z.union([
-  z.array(AccountSummarySchema).max(200),
-  AccountPageSchema,
-]);
+export const AccountCollectionResultSchema = AccountPageSchema;
 export type AccountCollectionResult = z.infer<typeof AccountCollectionResultSchema>;
 
 export const MailLocationSchema = z.object({
@@ -227,6 +212,9 @@ export type AttachmentContent = z.infer<typeof AttachmentContentSchema>;
 
 export type BridgeAction =
   | 'PING'
+  | 'PAIR_DEVICE'
+  | 'REGISTER_NAVIGATION'
+  | 'CLEAR_SESSION'
   | 'GET_CAPABILITIES'
   | 'LIST_STORES'
   | 'LIST_FOLDERS'
@@ -237,11 +225,8 @@ export type BridgeAction =
   | 'UPDATE_DRAFT'
   | 'CREATE_REPLY_DRAFT'
   | 'LIST_ACCOUNTS'
-  | 'SEND_DRAFT'
   | 'MOVE_EMAIL'
   | 'MOVE_TO_SPAM'
-  | 'DELETE_EMAIL'
-  | 'DELETE_EMAIL_PERMANENTLY'
   | 'CREATE_FOLDER'
   | 'LIST_TEMPLATES'
   | 'GET_TEMPLATE_CONTENT'
@@ -260,6 +245,8 @@ export interface BridgeRequest<T = unknown> {
   version: number;
   action: BridgeAction;
   payload: T;
+  ticket?: string;
+  transportId?: string;
 }
 
 export interface BridgeResponse<T = unknown> {
@@ -272,12 +259,17 @@ export interface BridgeResponse<T = unknown> {
   errorCode?: string;
 }
 
-export function createBridgeRequest<T>(action: BridgeAction, payload: T): BridgeRequest<T> {
+export function createBridgeRequest<T>(
+  action: BridgeAction,
+  payload: T,
+  grant?: { ticket: string; transportId: string },
+): BridgeRequest<T> {
   return {
     requestId: `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     version: BRIDGE_PROTOCOL_VERSION,
     action,
     payload,
+    ...grant,
   };
 }
 

@@ -1,15 +1,21 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
 
 const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
-  sessionState: { email: 'ropperman@legacyhotels.co.za', outlookEmail: 'ropperman@legacyhotels.co.za' },
+  sessionState: {
+    userId: 'staff-1',
+    email: 'ropperman@legacyhotels.co.za',
+    outlookEmail: 'ropperman@legacyhotels.co.za',
+    transportId: 'transport-shared',
+    transportEmail: 'centurion@legacyhotels.co.za',
+  },
 }));
 
 vi.mock('sonner', () => ({
@@ -24,10 +30,10 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       outlookEmail: sessionState.outlookEmail,
       outlookVersion: '16.0',
       addinVersion: '1.0.11',
-      bridgeProtocolVersion: 3,
+      bridgeProtocolVersion: 4,
     },
     capabilities: {
-      bridgeProtocolVersion: 3,
+      bridgeProtocolVersion: 4,
       addinVersion: '1.0.11',
       outlookVersion: '16.0',
       runtime: 'Classic Outlook for Windows',
@@ -44,6 +50,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     activeEmail: {
       entryId: '001',
       storeId: 'store-1',
+      folderEntryId: 'folder-inbox',
       subject: 'Suite Availability Request',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
@@ -55,9 +62,23 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
   }),
 }));
 
+vi.mock('../hooks/use-connections', () => ({
+  useActiveConnection: () => ({
+    data: sessionState.transportId
+      ? { id: sessionState.transportId, email: sessionState.transportEmail }
+      : null,
+    isLoading: false,
+  }),
+}));
+
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
-    data: { user: { email: sessionState.email, name: 'R Opperman' } },
+    data: sessionState.userId
+      ? {
+          user: { id: sessionState.userId, email: sessionState.email, name: 'R Opperman' },
+          session: { id: 'session-1' },
+        }
+      : null,
     isLoading: false,
   }),
   signIn: { email: vi.fn() },
@@ -75,8 +96,11 @@ vi.mock('../providers/query-provider', () => ({
 describe('Outlook pane quote proposal PDF', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    sessionState.userId = 'staff-1';
     sessionState.email = 'ropperman@legacyhotels.co.za';
     sessionState.outlookEmail = 'ropperman@legacyhotels.co.za';
+    sessionState.transportId = 'transport-shared';
+    sessionState.transportEmail = 'centurion@legacyhotels.co.za';
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
@@ -99,18 +123,55 @@ describe('Outlook pane quote proposal PDF', () => {
     vi.mocked(toast.success).mockClear();
   });
 
-  it('refuses convert and draft when Nava email does not match Outlook', async () => {
+  it('refuses convert and draft until a server-selected mailbox exists', async () => {
     sessionState.email = 'kdouglas@legacyhotels.co.za';
     sessionState.outlookEmail = 'centurion@legacyhotels.co.za';
+    sessionState.transportId = '';
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        expect.stringMatching(/Nava login must match this Outlook mailbox/i),
-      );
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/select.*mailbox/i));
     });
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
     expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the server-selected shared mailbox even when staff login and native PING email differ', async () => {
+    sessionState.email = 'kdouglas@legacyhotels.co.za';
+    sessionState.outlookEmail = 'not-the-mailbox@legacyhotels.co.za';
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() =>
+      expect(quotePdfMutateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ outlookEmail: 'centurion@legacyhotels.co.za' }),
+      ),
+    );
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({
+          entryId: '001',
+          folderEntryId: 'folder-inbox',
+          operationId: expect.any(String),
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'ADD_ATTACHMENT_TO_DRAFT',
+        expect.objectContaining({
+          entryId: 'draft-99',
+          folderEntryId: 'folder-drafts',
+          operationId: expect.any(String),
+        }),
+      ),
+    );
+    const replyId = sendCommandMock.mock.calls.find((call) => call[0] === 'CREATE_REPLY_DRAFT')?.[1]
+      .operationId;
+    const attachmentId = sendCommandMock.mock.calls.find(
+      (call) => call[0] === 'ADD_ATTACHMENT_TO_DRAFT',
+    )?.[1].operationId;
+    expect(replyId).not.toEqual(attachmentId);
   });
 
   it('attaches the Proposal PDF after a gold wrapper reply draft', async () => {
@@ -120,7 +181,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => {
       expect(quotePdfMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          outlookEmail: 'ropperman@legacyhotels.co.za',
+          outlookEmail: 'centurion@legacyhotels.co.za',
           agency: 'CIDB',
           lines: expect.arrayContaining([
             expect.objectContaining({ roomCode: 'STQN', meal: 'bb' }),
@@ -159,7 +220,7 @@ describe('Outlook pane quote proposal PDF', () => {
     });
   });
 
-  it('keeps the reply operation when attaching the PDF fails', async () => {
+  it('retries only the attachment with its same operation and exact PDF after an attachment failure', async () => {
     sendCommandMock.mockImplementation(async (action: string) => {
       if (action === 'ADD_ATTACHMENT_TO_DRAFT') {
         throw new Error('Outlook rejected the attachment');
@@ -176,18 +237,85 @@ describe('Outlook pane quote proposal PDF', () => {
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Outlook rejected the attachment'));
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining('Outlook rejected the attachment'),
+      );
     });
     fireEvent.click(button);
     await waitFor(() => {
-      const createCalls = sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
-      expect(createCalls).toHaveLength(2);
-      const firstCreate = createCalls[0];
-      const retryCreate = createCalls[1];
-      if (!firstCreate || !retryCreate) throw new Error('missing CREATE_REPLY_DRAFT retry');
-      expect((firstCreate[1] as { operationId: string }).operationId).toBe(
-        (retryCreate[1] as { operationId: string }).operationId,
+      const createCalls = sendCommandMock.mock.calls.filter(
+        (call) => call[0] === 'CREATE_REPLY_DRAFT',
       );
+      const attachCalls = sendCommandMock.mock.calls.filter(
+        (call) => call[0] === 'ADD_ATTACHMENT_TO_DRAFT',
+      );
+      expect(createCalls).toHaveLength(1);
+      expect(attachCalls).toHaveLength(2);
+      expect(attachCalls[1]?.[1]).toEqual(attachCalls[0]?.[1]);
+      expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('keeps the exact PDF bytes and attachment operation after an ambiguous native timeout', async () => {
+    let attachmentCount = 0;
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT' && attachmentCount++ === 0) {
+        throw new Error('Bridge command ADD_ATTACHMENT_TO_DRAFT timed out');
+      }
+      return {
+        entryId: 'draft-99',
+        storeId: 'store-1',
+        folderEntryId: 'folder-drafts',
+        folderName: 'Drafts',
+        displayed: true,
+      };
+    });
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/Check Outlook Drafts/i),
+    );
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(
+        sendCommandMock.mock.calls.filter(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT'),
+      ).toHaveLength(2),
+    );
+    const attachments = sendCommandMock.mock.calls.filter(
+      ([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT',
+    );
+    expect(attachments[1]?.[1]).toEqual(attachments[0]?.[1]);
+    expect(attachments[0]?.[1]).toEqual(
+      expect.objectContaining({
+        operationId: expect.stringMatching(/^op_\d+_[0-9a-f]{32}$/),
+        base64Data: 'JVBERw0KGgo=',
+        folderEntryId: 'folder-drafts',
+      }),
+    );
+    expect(
+      sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT'),
+    ).toHaveLength(1);
+    expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a reply or attach cached PDF after staff logs out during PDF generation', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutateMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPdf = resolve;
+        }),
+    );
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
+    sessionState.userId = '';
+    sessionState.transportId = '';
+    pane.rerender(<OutlookPanePage />);
+    await act(async () => finishPdf({ fileName: 'private.pdf', pdfBase64: 'JVBERw==' }));
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
