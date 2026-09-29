@@ -764,7 +764,13 @@ export function useOutlookBridge() {
   }, [cancelMoveConsent, clearPending, refreshPairing, sendCommand]);
 
   useEffect(() => {
-    const setup = `${scopeKey ?? ''}:${workstationInfo?.deviceId ?? ''}:${workstationInfo?.bridgeProtocolVersion ?? ''}`;
+    // Learning the protocol version from an unpaired PING does not establish
+    // a new native identity. Do not cancel an in-flight native-only pairing
+    // dialog merely because its initial PING completed after staff clicked.
+    const nativeIdentity = workstationInfo?.paired && workstationInfo.deviceId
+      ? `${workstationInfo.deviceId}:${workstationInfo.bridgeProtocolVersion ?? ''}`
+      : 'unpaired';
+    const setup = `${scopeKey ?? ''}:${nativeIdentity}`;
     if (previousSetup.current === setup) return;
     const hadSetup = previousSetup.current !== null;
     previousSetup.current = setup;

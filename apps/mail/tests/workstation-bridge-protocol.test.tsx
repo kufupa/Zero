@@ -989,7 +989,11 @@ describe('v4 staff-authorized Outlook navigation', () => {
     });
     expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
     fireEvent.click(screen.getByRole('button', { name: 'Pair native' }));
-    respondV4(await waitForBridgeRequest('PAIR_DEVICE'), { paired: true });
+    const pairing = await waitForBridgeRequest('PAIR_DEVICE');
+    // Let the initial unpaired PING's state update land while PAIR_DEVICE is
+    // still pending. Merely discovering v4 must not cancel the pairing dialog.
+    await act(async () => { await Promise.resolve(); });
+    respondV4(pairing, { paired: true });
     const ping = await waitForBridgeRequest('PING', 2, 10_000);
     expect(nativeMessages().some((message) => message.action === 'REGISTER_NAVIGATION')).toBe(false);
     respondV4(ping, {
@@ -1002,6 +1006,29 @@ describe('v4 staff-authorized Outlook navigation', () => {
       'REGISTER_NAVIGATION',
     );
   }, 15_000);
+
+  it('still cancels a pending pairing when the signed-in staff scope changes', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    const pane = render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: false,
+      deviceId: null,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Pair native' }));
+    const pairing = await waitForBridgeRequest('PAIR_DEVICE');
+
+    security.userId = 'staff-2';
+    setMailCacheScope({ userId: 'staff-2', activeTransportId: 'transport-1' });
+    pane.rerender(<BridgeProbe />);
+    respondV4(pairing, { paired: true });
+    await act(async () => { await Promise.resolve(); });
+    expect(nativeMessages().filter((message) => message.action === 'PING')).toHaveLength(1);
+    expect(nativeMessages().some((message) => message.action === 'REGISTER_NAVIGATION')).toBe(false);
+  });
 
   it('requires re-login after 24 hours and refuses to mint COM tickets even if the cached session still has a user', async () => {
     security.userId = 'staff-1';
