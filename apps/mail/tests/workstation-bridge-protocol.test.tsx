@@ -662,7 +662,20 @@ describe('v4 staff-authorized Outlook navigation', () => {
     setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
     render(<BridgeProbe />);
     await registerPane();
-    await waitForBridgeRequest('GET_CAPABILITIES');
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
     expect(fetch).toHaveBeenCalledTimes(1);
     let completeBootstrap!: (response: Response) => void;
     vi.mocked(fetch).mockImplementationOnce(() => new Promise((resolve) => {
@@ -680,6 +693,132 @@ describe('v4 staff-authorized Outlook navigation', () => {
     respondV4(registrations[1]!, { registered: true });
     await act(async () => { await Promise.resolve(); });
     expect(nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION')).toHaveLength(2);
+  });
+
+  it('does not interrupt a pending Outlook move when the navigation renews', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    const firstRegistration = await waitForBridgeRequest('REGISTER_NAVIGATION');
+    vi.useFakeTimers();
+    respondV4(firstRegistration, { registered: true });
+    await act(async () => { await Promise.resolve(); });
+    respondV4(nativeMessages().find((message) => message.action === 'GET_CAPABILITIES')!, {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'MOVE_EMAIL'],
+    });
+    await act(async () => { await Promise.resolve(); });
+    respondV4(nativeMessages().find((message) => message.action === 'GET_ACTIVE_EMAIL')!, null);
+    await act(async () => { await Promise.resolve(); });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paneChallenge: 'b'.repeat(43) }),
+    } as Response).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paneChallenge: 'c'.repeat(43) }),
+    } as Response);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(44_999); });
+    fireEvent.click(screen.getByRole('button', { name: 'Move approved batch' }));
+    await act(async () => { await Promise.resolve(); });
+    const move = nativeMessages().find((message) => message.action === 'MOVE_EMAIL');
+    expect(move).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(1);
+    expect(screen.getByTestId('bridge-error-code').textContent).toBe('');
+
+    respondV4(move!, {
+      entryId: 'mail-1',
+      storeId: 'store-approved',
+      folderEntryId: 'folder-archive',
+      folderName: 'Archive',
+      moved: true,
+      moveStatus: 'confirmed',
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('bridge-error-code').textContent).toBe('move-succeeded');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const renewal = nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION');
+    expect(renewal).toHaveLength(2);
+    expect(renewal[1]?.payload).toEqual({ paneChallenge: 'c'.repeat(43) });
+    respondV4(renewal[1]!, { registered: true });
+  });
+
+  it('does not replace navigation while a mail ticket is still being issued', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    const firstRegistration = await waitForBridgeRequest('REGISTER_NAVIGATION');
+    vi.useFakeTimers();
+    respondV4(firstRegistration, { registered: true });
+    await act(async () => { await Promise.resolve(); });
+    respondV4(nativeMessages().find((message) => message.action === 'GET_CAPABILITIES')!, {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_STORES'],
+    });
+    await act(async () => { await Promise.resolve(); });
+    respondV4(nativeMessages().find((message) => message.action === 'GET_ACTIVE_EMAIL')!, null);
+    await act(async () => { await Promise.resolve(); });
+    let issueTicket!: (ticket: { ticket: string; storeId: string }) => void;
+    ticketMutate.mockImplementationOnce(() => new Promise((resolve) => { issueTicket = resolve; }));
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paneChallenge: 'b'.repeat(43) }),
+    } as Response).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paneChallenge: 'c'.repeat(43) }),
+    } as Response);
+    await act(async () => { await vi.advanceTimersByTimeAsync(44_999); });
+    fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(nativeMessages().filter((message) => message.action === 'LIST_STORES')).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(1);
+
+    await act(async () => issueTicket({ ticket: 'one-use', storeId: 'store-approved' }));
+    const stores = nativeMessages().find((message) => message.action === 'LIST_STORES');
+    expect(stores).toBeDefined();
+    respondV4(stores!, { items: [], totalItems: 0, continuationToken: null, truncated: false });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByTestId('bridge-error-code').textContent).toBe('list-succeeded');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const renewal = nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION');
+    expect(renewal).toHaveLength(2);
+    expect(renewal[1]?.payload).toEqual({ paneChallenge: 'c'.repeat(43) });
+    respondV4(renewal[1]!, { registered: true });
   });
 
   it('revokes native COM immediately on renewal 401 and discards a late non-selection success', async () => {
