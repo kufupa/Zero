@@ -6,3 +6,4 @@ export * from './mail-catchup-upload.js';
 export * from './mail-baseline-projection.js';
 export * from './ai-shadow-evaluation.js';
 export * from './outlook-device.js';
+export * from './outlook-authorization.js';

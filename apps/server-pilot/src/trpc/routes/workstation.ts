@@ -1,4 +1,4 @@
-import { privateProcedure, router } from '../trpc.js';
+import { privateProcedure, publicProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import { mailboxAccess, mailboxTransport } from '../../db/schema/mail.js';
+import { issueBridgeTicket } from '../../outlook-security/authorization.js';
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
@@ -43,6 +44,22 @@ const TEMPLATE_PATH = fileURLToPath(
 );
 
 export const workstationRouter = router({
+  bridgeTicket: publicProcedure.input(z.object({
+    deviceId: z.string().uuid(), paneChallenge: z.string().length(43), action: z.string().min(1).max(64),
+    storeId: z.string().min(1).max(512).optional(), operationId: z.string().min(1).max(128).optional(),
+    resources: z.array(z.string().min(1).max(512)).max(25).optional(),
+    sourceFolderId: z.string().min(1).max(512).optional(), destinationFolderId: z.string().min(1).max(512).optional(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    // Public procedure deliberately skips the test-only injected sessionUser shortcut.
+    // A real Better Auth cookie and original live DB session are mandatory.
+    const transportId = ctx.reqHeaders.get('x-zero-active-transport');
+    if (!transportId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+    try {
+      return await issueBridgeTicket(getDb(), ctx.auth, ctx.reqHeaders, { ...input, transportId });
+    } catch {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+    }
+  }),
   ping: privateProcedure.input(workstationPingInput).mutation(async ({ input }) => {
     return {
       status: 'ok' as const,

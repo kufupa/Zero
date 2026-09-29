@@ -40,6 +40,15 @@ app.post('/api/outlook/native/enroll', (c) => createOutlookNativeHandler(
 app.post('/api/outlook/native/challenge', (c) => createOutlookNativeHandler(
   getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
 )(c.req.raw));
+app.post('/api/outlook/native/bootstrap', (c) => createOutlookNativeHandler(
+  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+)(c.req.raw));
+app.post('/api/outlook/native/register-navigation', (c) => createOutlookNativeHandler(
+  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+)(c.req.raw));
+app.post('/api/outlook/native/authorize', (c) => createOutlookNativeHandler(
+  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+)(c.req.raw));
 
 // CID inline images: cookie session + mailbox_access join (no active-transport
 // header — <img> tags cannot set custom headers). Must mount before /api/trpc/*.

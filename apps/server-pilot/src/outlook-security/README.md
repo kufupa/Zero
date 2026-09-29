@@ -75,3 +75,64 @@ read/mutation leases are separate Task 3/4 concerns: registration of a fresh
 pane-navigation challenge must itself be a signed native request, expire within
 60 seconds and be invalidated on revocation/navigation/logout. The web pane
 gets only one-use browser tickets, never HMAC key material.
+
+## Task 3 integration: native Task 5 / pane Task 6
+
+Pane calls unauthenticated `POST /api/outlook/native/bootstrap` with `{}`;
+response is solely `{protocol:"nava-outlook-v4",status:"ready",paneChallenge,
+expiresInSeconds:60}` with `Cache-Control: no-store`. Send that challenge to
+installed native; native requests `/challenge` and HMAC-signs
+`POST /api/outlook/native/register-navigation` with `{paneChallenge}`.
+Registration replaces the previous navigation, expires in 60 seconds, and
+refuses reusing the same challenge. Before expiry (or when a ticket fails),
+obtain a NEW bootstrap challenge and register it via native without reopening
+the pane. The previous challenge and its tickets cease to authorize.
+On logout or account switch, Task 5/6 MUST clear the native navigation epoch,
+discard the pane challenge and all tickets, then register a new challenge
+before any new ticket. Once a ticket was issued, the server additionally
+rejects using that navigation from any different Better Auth session, even
+when the same staff user signs back in immediately.
+
+Pane calls `workstation.bridgeTicket` with `{deviceId,paneChallenge,action,
+storeId,operationId?,resources?,sourceFolderId?,destinationFolderId?}` and the
+existing `x-zero-active-transport` header selecting the mailbox transport.
+Actual legacy Better Auth cookie/session ID, verified named user, fresh
+createdAt (<24 hours), mailbox access, store mapping and device authorization
+are checked. Remote-admin sessions or injected test `sessionUser` cannot mint
+tickets. For moves the pane MUST declare exact resource EntryIDs and
+source/destination folder EntryIDs. Supplied resource/folder declarations for
+other actions are ticket-bound. Mutation operation IDs use the existing
+`op_<unix-ms>_<32-hex-GUID>` format (<=15 minutes old, <=5 seconds future).
+
+Native separately HMAC-signs exact raw body bytes for
+`POST /api/outlook/native/authorize` containing `{ticket,action,storeId,
+transportId,operationId?,resources?,sourceFolderId?,destinationFolderId?,
+destinationKind?,nativeBatchConsent?}`. The native caller MUST independently
+obtain store, resources, folder identities/kinds and actual consent from
+Outlook COM; never trust the pane for these values. No response, non-200
+response, elapsed scope, or changed operation authorizes COM. Native re-checks
+store/navigation epoch on its STA thread before execution. Only native gets
+the scope response (read <=60s, mutation <=15s): exact action, mailbox/store,
+resource IDs, folder IDs, approved folder IDs and `retry`. Never relay this
+response to the hosted pane. Native SEND/DELETE are denied; independent
+web-mail Send/Delete are unaffected.
+
+Operator provisions and revokes exact folder EntryIDs server-side (no PC
+reinstall). This CLI requires restricted operator terminal, DB and wrapping
+key, like device enrollment:
+
+```
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind inbox
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind triage
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts revoke-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --confirm-revoke
+```
+
+Native must identify Deleted Items/Outbox and descendants from actual Outlook
+folder ancestry; the server additionally denies those reported destination
+kinds and requires operator-approved source/destination IDs, with destination
+kind `triage` or `spam` for native moves. >=10 moves in one request or >25
+moves per mailbox/device within a rolling minute requires exact native batch
+consent before signing. Per-operation receipts persist across restarts;
+identical retries do not increment counts, changed work with the same
+operation ID is rejected. Native must still use its local operation cache to
+avoid repeating already completed COM work on an approved retry.
