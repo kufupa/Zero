@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { withTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
+import { openTestDbSession, withTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
@@ -371,6 +371,75 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect((await f.signed(path, { ...payload, nativeBatchConsent: true })).status).toBe(403);
     expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(1);
   }));
+
+  it.each(['ticket', 'original 24-hour session'])('never requests consent after a %s expires while waiting for the mailbox lock', async (expiry) => {
+    const seeded = openTestDbSession(), locker = openTestDbSession(), observer = openTestDbSession();
+    let releaseLock = () => undefined;
+    let heldLock: Promise<void> | undefined;
+    let pending: Promise<Response> | undefined;
+    let cleanup: { userId: string; transportId: string } | undefined;
+    try {
+      const f = await fixture(seeded.db);
+      cleanup = f;
+      await provisionApprovedFolder(seeded.db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+      await provisionApprovedFolder(seeded.db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+      const operationId = op(), scope = { resources: Array.from({ length: 10 }, (_, index) => `mail-${index}`),
+        sourceFolderId: 'inbox', destinationFolderId: 'triage' };
+      const issued = await f.ticket('MOVE_EMAIL', operationId, scope);
+      const cutoff = Date.now() + 2000;
+      if (expiry === 'ticket') {
+        await seeded.db.update(outlookBridgeTicket).set({ expiresAt: new Date(cutoff) })
+          .where(eq(outlookBridgeTicket.ticketHash, createHash('sha256').update(issued.ticket).digest('hex')));
+      } else {
+        await seeded.db.update(session).set({ createdAt: new Date(cutoff - 86_400_000),
+          expiresAt: new Date(Date.now() + 86_400_000) }).where(eq(session.id, f.sessionId));
+      }
+      let locked!: (pid: number) => void;
+      const acquired = new Promise<number>((resolve) => { locked = resolve; });
+      const unlock = new Promise<void>((resolve) => { releaseLock = resolve; });
+      heldLock = locker.db.transaction(async (tx) => {
+        const [connection] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+        await tx.select({ id: mailboxTransport.id }).from(mailboxTransport)
+          .where(eq(mailboxTransport.id, f.transportId)).for('update');
+        locked(connection.pid);
+        await unlock;
+      });
+      const holderPid = await acquired;
+      const payload = { ticket: issued.ticket, action: 'MOVE_EMAIL', operationId, storeId,
+        transportId: f.transportId, ...scope, destinationKind: 'triage' };
+      pending = f.signed(path, payload);
+      let blocked = false;
+      for (let attempt = 0; attempt < 65; attempt++) {
+        const [state] = await observer.db.execute(sql<{ blocked: boolean }>`select exists (
+          select 1 from pg_stat_activity a where a.datname = current_database()
+            and a.wait_event_type = 'Lock' and ${holderPid} = any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if (state.blocked) { blocked = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, cutoff + 75 - Date.now())));
+      releaseLock();
+      await heldLock;
+      const denied = await pending;
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).toBe('');
+      const [ticketRow] = await seeded.db.select({ consumedAt: outlookBridgeTicket.consumedAt }).from(outlookBridgeTicket)
+        .where(eq(outlookBridgeTicket.ticketHash, createHash('sha256').update(issued.ticket).digest('hex')));
+      expect(ticketRow?.consumedAt).toBeNull();
+      expect(await seeded.db.select().from(outlookMoveReceipt)
+        .where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
+    } finally {
+      releaseLock();
+      if (heldLock) await heldLock;
+      if (pending) await pending.catch(() => undefined);
+      if (cleanup) {
+        await seeded.db.delete(user).where(eq(user.id, cleanup.userId));
+        await seeded.db.delete(mailboxTransport).where(eq(mailboxTransport.id, cleanup.transportId));
+      }
+      await Promise.all([seeded.close(), locker.close(), observer.close()]);
+    }
+  }, 12_000);
 
   it('never reveals a consent prompt for invalid or revoked tickets', async () => withTestDb(async (db) => {
     const f = await fixture(db);

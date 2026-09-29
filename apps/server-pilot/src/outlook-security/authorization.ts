@@ -207,7 +207,29 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
             gt(outlookMoveReceipt.approvedAt, sql`clock_timestamp() - interval '1 minute'`)));
         if (input.nativeBatchConsent !== true && (Number(budget?.total ?? 0) + input.resources!.length > 25
           || Number(deviceBudget?.total ?? 0) + input.resources!.length > 25
-          || input.resources!.length >= 10)) throw new NativeBatchConsentRequiredError();
+          || input.resources!.length >= 10)) {
+          // The mailbox lock can outlive the initial ticket/session/navigation
+          // checks. Never hint for native consent after any authority expires.
+          const [fresh] = await tx.select({ ticketHash: outlookBridgeTicket.ticketHash }).from(outlookBridgeTicket)
+            .innerJoin(session, and(eq(session.id, outlookBridgeTicket.sessionId),
+              eq(session.userId, outlookBridgeTicket.userId)))
+            .where(and(eq(outlookBridgeTicket.ticketHash, ticket.ticketHash),
+              isNull(outlookBridgeTicket.consumedAt), gt(outlookBridgeTicket.expiresAt, sql`clock_timestamp()`),
+              gt(session.expiresAt, sql`clock_timestamp()`),
+              gt(sql`${session.createdAt} + interval '24 hours'`, sql`clock_timestamp()`),
+              sql`${session.createdAt} <= clock_timestamp()`)).limit(1);
+          const [freshNavigation] = await tx.select({ deviceId: outlookNavigation.deviceId }).from(outlookNavigation)
+            .where(and(eq(outlookNavigation.deviceId, deviceId), eq(outlookNavigation.challengeHash, ticket.challengeHash),
+              gt(outlookNavigation.expiresAt, sql`clock_timestamp()`))).limit(1);
+          if (!fresh || !freshNavigation
+            || !await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId, input.storeId)) return null;
+          const currentFolders = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
+            .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
+              eq(outlookApprovedFolder.transportId, input.transportId)));
+          if (!currentFolders.some((row) => row.folderId === input.sourceFolderId)
+            || !currentFolders.some((row) => row.folderId === input.destinationFolderId && row.kind === input.destinationKind)) return null;
+          throw new NativeBatchConsentRequiredError();
+        }
         await tx.insert(outlookMoveReceipt).values({ deviceId, transportId: input.transportId,
           operationId: input.operationId!, scopeHash, count: input.resources!.length,
           approvedAt: sql`clock_timestamp()` });
