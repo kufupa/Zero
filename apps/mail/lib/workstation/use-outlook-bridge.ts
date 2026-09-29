@@ -555,7 +555,7 @@ export function useOutlookBridge() {
           operationId?: unknown } | null;
         if (offered && offered.consentRequired === true) {
           if (consentRequestId || !/^[0-9a-f]{32}$/.test(String(offered.consentRequestId)) ||
-            offered.operationId !== fullPayload.operationId || moveConsent.current)
+            offered.operationId !== payload.operationId || moveConsent.current)
             throw new Error('Invalid or repeated native Outlook move confirmation');
           // The native add-in has already checked the staff, device, and exact
           // COM scope with a signed server preflight. No COM move occurs yet.
@@ -569,7 +569,7 @@ export function useOutlookBridge() {
           });
           const consent: PendingMoveConsent = {
             consentRequestId: offered.consentRequestId as string,
-            operationId: fullPayload.operationId as string,
+            operationId: payload.operationId as string,
             navigation: registered,
             phase: 'dialog',
             resolve: resolveOutcome,

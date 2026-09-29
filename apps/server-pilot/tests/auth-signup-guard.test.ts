@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { APIError } from 'better-auth/api';
+import { getSocialProviders } from '../src/lib/auth-providers.js';
 import {
   assertPilotSignupAllowed,
   isPilotSignupEmailAllowed,
@@ -80,5 +81,27 @@ describe('assertPilotSignupAllowed', () => {
       expect(error).toBeInstanceOf(APIError);
       expect((error as APIError).message).toBe('signup disabled for pilot');
     }
+  });
+});
+
+describe('pilot social signup gate', () => {
+  const googleEnv = {
+    GOOGLE_CLIENT_ID: 'test-client',
+    GOOGLE_CLIENT_SECRET: 'test-secret',
+  };
+
+  it('allows existing Google sign-in but disables new Google registrations when signup is closed', () => {
+    const providers = getSocialProviders({ ...googleEnv, PILOT_OPEN_SIGNUP: '0' }, 'legacy');
+    expect(providers.google).toMatchObject({
+      clientId: 'test-client',
+      disableSignUp: true,
+    });
+  });
+
+  it('preserves explicitly open Google signup and disables it for the remote admin profile', () => {
+    expect(getSocialProviders({ ...googleEnv, PILOT_OPEN_SIGNUP: '1' }, 'legacy').google)
+      .not.toMatchObject({ disableSignUp: true });
+    expect(getSocialProviders({ ...googleEnv, PILOT_OPEN_SIGNUP: '0' }, 'remote'))
+      .toEqual({});
   });
 });

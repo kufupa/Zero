@@ -98,6 +98,22 @@ import { toast } from 'sonner';
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
 const MAX_EXPIRED_REPLY_OUTCOMES = 256;
 const REPLY_OPERATION_CACHE_TTL_MS = 15 * 60 * 1000;
+const UNRESOLVED_REPLY_MARKER = 'nava_outlook_unresolved_reply_v1';
+
+// A generic marker survives re-login/reload without storing mail IDs or PDF bytes.
+// A fresh pane cannot replay the old native operation ID, so ask staff to check
+// Drafts before intentionally starting another operation.
+function hasUnresolvedReplyMarker(): boolean {
+  try { return sessionStorage.getItem(UNRESOLVED_REPLY_MARKER) === '1'; }
+  catch { return false; }
+}
+
+function setUnresolvedReplyMarker(unresolved: boolean): void {
+  try {
+    if (unresolved) sessionStorage.setItem(UNRESOLVED_REPLY_MARKER, '1');
+    else sessionStorage.removeItem(UNRESOLVED_REPLY_MARKER);
+  } catch { /* Restricted WebView storage: in-memory retries still work. */ }
+}
 
 type PendingReplyOperation = {
   operationId: string;
@@ -212,6 +228,8 @@ export default function OutlookPanePage() {
   const expiredReplyOutcomes = useRef(new Set<string>());
   const hasUntrackedExpiredReplyOutcomes = useRef(false);
   const expiredOutcomeConfirmationKey = useRef<string | null>(null);
+  const unresolvedReplyConfirmationKey = useRef<string | null>(null);
+  const replyMarkerBelongsToCurrentScope = useRef(false);
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
@@ -244,6 +262,8 @@ export default function OutlookPanePage() {
     expiredReplyOutcomes.current.clear();
     hasUntrackedExpiredReplyOutcomes.current = false;
     expiredOutcomeConfirmationKey.current = null;
+    unresolvedReplyConfirmationKey.current = null;
+    replyMarkerBelongsToCurrentScope.current = false;
     replyInFlight.current = false;
     setIsDraftPending(false);
     setDraftedDetails(null);
@@ -551,6 +571,20 @@ export default function OutlookPanePage() {
     if (hasUntrackedExpiredReplyOutcomes.current) {
       expiredOutcomeConfirmationKey.current = null;
     }
+    // In a live pane another message may have an unresolved, safely retryable
+    // operation. The generic reload marker only gates a fresh pane with no IDs.
+    if (!previousAttempt && replyRetries.current.size === 0 &&
+      !replyMarkerBelongsToCurrentScope.current && hasUnresolvedReplyMarker()) {
+      if (unresolvedReplyConfirmationKey.current !== key) {
+        unresolvedReplyConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}An earlier Outlook draft may have completed before the pane changed. Check Outlook Drafts; click again after checking to start a new draft.`,
+        );
+        return;
+      }
+      unresolvedReplyConfirmationKey.current = null;
+      setUnresolvedReplyMarker(false);
+    }
     if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
       toast.error(
         `${replyLabel}Too many replies have unresolved outcomes. Check Outlook Drafts before refreshing the pane or starting another reply.`,
@@ -666,6 +700,10 @@ export default function OutlookPanePage() {
         openInComposer: false,
       };
       attempt.replyPayload = replyPayload;
+      if (!attempt.draftLocation) {
+        replyMarkerBelongsToCurrentScope.current = true;
+        setUnresolvedReplyMarker(true);
+      }
       const result =
         attempt.draftLocation ??
         (await sendCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
@@ -692,6 +730,9 @@ export default function OutlookPanePage() {
       await sendCommand('ADD_ATTACHMENT_TO_DRAFT', attachmentPayload);
       if (!sameStaffScope()) return;
       replyRetries.current.delete(key);
+      if (![...replyRetries.current.values()].some((pending) => pending.replyPayload)) {
+        setUnresolvedReplyMarker(false);
+      }
       setDraftedDetails({
         entryId: activeEmail.entryId,
         subject: currentSubject,

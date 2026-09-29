@@ -147,6 +147,7 @@ describe('OutlookPanePage', () => {
 
   afterEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     cleanup();
     sendCommandMock.mockReset();
     vi.mocked(toast.success).mockClear();

@@ -9,16 +9,19 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 ## Artifacts and independent gates
 
 - Expected root gitlink: `apps/server-pilot/vsto` at
-  `709f048955015d9426eecf47a1567cc614831b6a`; private Windows CI run
-  `36522261065` succeeded at this exact SHA. The locally downloaded, uninstalled
-  `NavaOutlookSetup.exe` artifact is **4,251,089 bytes**, SHA-256
-  `d43e2f046de06fe633acc940b515a4af8674c55b995d2ee2ef269ae81420286e`.
+  `6cfc87bd4af94e8575333ab4f8feebb86d1ad25f`; private Windows CI run
+  `36552441541` succeeded at this exact SHA. The locally downloaded, uninstalled
+  `NavaOutlookSetup.exe` artifact is **4,251,952 bytes**, SHA-256
+  `853daf0313400e0b656cc72f9cdddffc37b4efd30a98b93d73683ce6de8dd704`.
   Re-fetch from the exact run, verify local hash/size, x86/x64 builds, manifest
   signatures and chain under supervised IT policy before distributing. Do not
   equate a CI self-signed VSTO manifest with a publisher-trusted setup EXE or
   the separate HTTPS site certificate. Do not claim this artifact was published.
 - Before production: complete a disposable staging Nginx syntax, alias,
   regex, headers and `script-src` hash test on the *built* `/outlook-pane`;
+  verify `/outlook-pane/` redirects to that canonical URL and unknown
+  `/outlook-pane/...` paths and case variants (`/OUTLOOK-PANE`) return 404 rather
+  than the permissive SPA fallback;
   no Nginx binary is installed on the development host. Test both page and
   asset versions, blocked injection, staff sign-in, buttons, PDF drafting and
   bridge-free screenshot popouts. The earlier built Chromium test used fake
@@ -78,8 +81,10 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    change. Writer fails closed before replacing the previous env on missing,
    malformed or inaccessible wrapping key. Never print the key or run `bash -x`.
    `PILOT_OPEN_SIGNUP='0'` now overrides even a stale
-   `PILOT_SIGNUP_ALLOWLIST`; explicitly verify blocked self-signup and
-   existing named sign-in. Keep remote-admin's separate 12-hour session.
+   `PILOT_SIGNUP_ALLOWLIST` and disables new Google registrations if OAuth is
+   configured, without blocking existing linked-account sign-in. Explicitly
+   verify blocked self-signup and existing named sign-in. Keep remote-admin's
+   separate 12-hour session.
    In the legacy HTTP process, a capped hourly pass removes tickets expired
    more than one day ago, move receipts older than one day and 256-bit random
    navigation replay markers older than 30 days. Migration `0032` supplies

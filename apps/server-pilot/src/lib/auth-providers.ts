@@ -53,6 +53,9 @@ export const authProviders = (env: AuthEnv): ProviderConfig[] => [
     ],
     config: {
       prompt: env.FORCE_GOOGLE_AUTH ? 'consent' : undefined,
+      // Better Auth's /sign-up hook does not run for OAuth callbacks. This
+      // stops new Google users while preserving sign-in for linked accounts.
+      disableSignUp: env.PILOT_OPEN_SIGNUP === '0',
       accessType: 'offline',
       scope: [
         'https://mail.google.com/',

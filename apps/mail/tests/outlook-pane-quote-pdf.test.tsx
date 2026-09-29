@@ -121,6 +121,7 @@ describe('Outlook pane quote proposal PDF', () => {
 
   afterEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     cleanup();
     vi.mocked(toast.error).mockClear();
     vi.mocked(toast.success).mockClear();
@@ -354,6 +355,34 @@ describe('Outlook pane quote proposal PDF', () => {
     );
   });
 
+  it('requires checking Drafts when a native reply completes after the staff scope changes', async () => {
+    let finishNative!: (value: { entryId: string; storeId: string; folderEntryId: string }) => void;
+    sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith(
+      'CREATE_REPLY_DRAFT', expect.anything(),
+    ));
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+    expect(JSON.stringify(Object.entries(sessionStorage))).not.toContain('JVBER');
+
+    sessionState.requiresRelogin = true;
+    pane.rerender(<OutlookPanePage />);
+    pane.unmount();
+    await act(async () => finishNative({ entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' }));
+    sessionState.requiresRelogin = false;
+    render(<OutlookPanePage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(sendCommandMock.mock.calls.filter(
+      ([action]) => action === 'CREATE_REPLY_DRAFT',
+    )).toHaveLength(2));
+  });
+
   it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
     const pane = render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
@@ -382,6 +411,8 @@ describe('Outlook pane quote proposal PDF', () => {
     pane.rerender(<OutlookPanePage />);
     expect(screen.queryByText('Please see attached quotation.')).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(3));
   });

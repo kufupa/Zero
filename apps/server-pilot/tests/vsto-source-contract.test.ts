@@ -34,6 +34,9 @@ describe('VSTO source availability in root CI', () => {
     expect(ci).not.toContain('::warning::Private VSTO submodule unavailable');
     expect(ci).toContain('tests/vsto-source-contract.test.ts');
     expect(ci).toContain('tests/outlook-addin-installer-nginx.test.ts');
+    expect(ci).toContain('tests/pane-csp-release.test.ts tests/outlook-pane-nginx-route.test.ts');
+    expect(ci).toContain('tests/outlook-pane-quote-pdf.test.tsx');
+    expect(ci).toContain('tests/auth-signup-guard.test.ts');
   });
 });
 
