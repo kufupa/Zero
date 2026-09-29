@@ -438,11 +438,15 @@ export function useOutlookBridge() {
   const sendCommand = useCallback(
     async <TReq, TResp>(action: BridgeAction, rawPayload: TReq): Promise<TResp> => {
       const execute = async (consentRequestId?: string): Promise<TResp> => {
-      if (moveConsent.current && (moveConsent.current.phase !== 'finalizing' ||
-        consentRequestId !== moveConsent.current.consentRequestId ||
-        action !== 'MOVE_EMAIL' && action !== 'MOVE_TO_SPAM' ||
-        (rawPayload as Record<string, unknown>)?.operationId !== moveConsent.current.operationId))
-        throw new Error('Finish the Outlook move confirmation before making another request');
+      const checkMoveConsent = () => {
+        const consent = moveConsent.current;
+        if (consent && (consent.phase !== 'finalizing' ||
+          consentRequestId !== consent.consentRequestId ||
+          action !== 'MOVE_EMAIL' && action !== 'MOVE_TO_SPAM' ||
+          (rawPayload as Record<string, unknown>)?.operationId !== consent.operationId))
+          throw new Error('Finish the Outlook move confirmation before making another request');
+      };
+      checkMoveConsent();
       if (action === 'PING' || action === 'PAIR_DEVICE') {
         // Never forward a browser-supplied code or secret into the native pairing dialog.
         return nativeRequest<TResp>(action, {});
@@ -465,6 +469,7 @@ export function useOutlookBridge() {
           currentScope.current !== operationScope || renderedScope.current !== operationScope)
           throw new Error('Outlook staff or mailbox changed during authorization renewal');
       }
+      checkMoveConsent();
       const registered = navigation.current;
       if (
         !registered ||
@@ -500,6 +505,7 @@ export function useOutlookBridge() {
       const declaredScope = ticketScope(action, fullPayload);
       // Only one initial store-less ticket may exist for a fresh native navigation.
       if (firstTicket.current) await firstTicket.current;
+      checkMoveConsent();
       const header = getMailCacheScope();
       if (
         header.userId !== registered.userId ||
@@ -548,6 +554,10 @@ export function useOutlookBridge() {
       }
       if (navigation.current !== registered || epoch.current !== registered.generation)
         throw new Error('Outlook navigation changed');
+      // A move can enter its native confirmation dialog while another command
+      // awaits a server ticket. Refuse that command without treating the local
+      // consent gate as a failed native authorization or revoking the dialog.
+      checkMoveConsent();
       let result: TResp;
       try {
         result = await nativeRequest<TResp>(

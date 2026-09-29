@@ -761,6 +761,43 @@ describe('v4 staff-authorized Outlook navigation', () => {
     respondV4(renewal[1]!, { registered: true });
   });
 
+  it('does not run a queued read when a move starts its native confirmation during renewal', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4, addinVersion: '1.0.12', outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows', newOutlookSupported: false,
+      interactiveProfileRequired: true, maxPageSize: 200, maxFolderDepth: 64,
+      maxFolderCount: 5000, maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_STORES', 'MOVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move approved batch' }));
+    const move = await waitForBridgeRequest('MOVE_EMAIL');
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true, json: async () => ({ paneChallenge: 'b'.repeat(43) }),
+    } as Response);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh approval' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(ticketMutate.mock.calls.filter(([request]) => request.action === 'LIST_STORES')).toHaveLength(0);
+
+    respondV4(move, {
+      consentRequired: true, consentRequestId: 'a'.repeat(32),
+      operationId: (move.payload as { operationId: string }).operationId,
+    });
+    await waitFor(() => expect(nativeMessages().some((request) =>
+      request.action === 'PREPARE_MOVE_CONSENT')).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('bridge-error-code').textContent).toBe('list-canceled'));
+    expect(ticketMutate.mock.calls.filter(([request]) => request.action === 'LIST_STORES')).toHaveLength(0);
+    expect(nativeMessages().filter((request) => request.action === 'LIST_STORES')).toHaveLength(0);
+  });
+
   it('does not replace navigation while a mail ticket is still being issued', async () => {
     security.userId = 'staff-1';
     security.transportId = 'transport-1';

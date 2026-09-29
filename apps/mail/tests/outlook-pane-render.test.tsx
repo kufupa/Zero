@@ -269,6 +269,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
+      .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1' });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
@@ -292,6 +293,7 @@ describe('OutlookPanePage', () => {
       .mockRejectedValueOnce(
         new Error('Outlook navigation changed; inspect Outlook before retrying'),
       )
+      .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
@@ -310,6 +312,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(indeterminateError)
+      .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-001', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });

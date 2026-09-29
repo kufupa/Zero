@@ -542,7 +542,7 @@ export default function OutlookPanePage() {
     const subject =
       activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
     const replyLabel = `Reply to “${subject}”: `;
-    const previousAttempt = replyRetries.current.get(key);
+    let previousAttempt = replyRetries.current.get(key);
     const now = Date.now();
     const rememberExpiredOutcome = (expiredKey: string) => {
       if (expiredReplyOutcomes.current.has(expiredKey)) return;
@@ -556,6 +556,9 @@ export default function OutlookPanePage() {
     if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
       replyRetries.current.delete(key);
       rememberExpiredOutcome(key);
+      // Even after staff acknowledges an expired outcome, its old operation
+      // ID must never be retried against a server window that has closed.
+      previousAttempt = undefined;
     }
     for (const [retryKey, attempt] of replyRetries.current) {
       if (now - attempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
@@ -702,27 +705,27 @@ export default function OutlookPanePage() {
           lines,
         }));
       if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
-        // No Outlook command has started for this attempt. A delayed quotation
-        // cannot create a reply for a selection that has since changed away
+        // No new Outlook command has started for this click. A delayed quotation
+        // cannot create or retry a reply for a selection that changed away
         // and back, even when its current EntryID and session string match.
         if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
         return;
       }
       attempt.pdf = pdf;
-      if (!attempt.replyPayload && !attempt.draftLocation) {
+      if (!attempt.draftLocation) {
         // Renewal may suppress selection events while Outlook is busy. A PDF
         // generated for A must not turn into a reply to A after staff select B.
         const selected = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
           'GET_ACTIVE_EMAIL', {},
         );
         if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
-          if (sameStaffScope()) replyRetries.current.delete(key);
+          if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
           return;
         }
         if (!selected || selected.entryId !== activeEmail.entryId ||
           selected.storeId !== activeEmail.storeId ||
           selected.folderEntryId !== activeEmail.folderEntryId) {
-          replyRetries.current.delete(key);
+          if (!attempt.replyPayload) replyRetries.current.delete(key);
           toast.error('Selected Outlook email changed while preparing the quotation. Select it again.');
           return;
         }
