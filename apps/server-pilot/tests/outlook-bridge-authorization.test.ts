@@ -5,12 +5,12 @@ import { openTestDbSession, withTestDb, TEST_DB_AVAILABLE } from './helpers/test
 import { __setDbForTests } from '../src/db/client.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
-import { outlookBridgeTicket, outlookMoveReceipt, outlookNavigation } from '../src/db/schema/outlook-authorization.js';
+import { outlookApprovedFolder, outlookBridgeTicket, outlookMoveReceipt, outlookNavigation } from '../src/db/schema/outlook-authorization.js';
 import { outlookDevice } from '../src/db/schema/outlook-device.js';
 import { issueEnrollment, enrollDevice, issueChallenge, revokeDevice } from '../src/outlook-security/device.js';
 import { createOutlookNativeHandler } from '../src/http/outlook-native.js';
 import { workstationRouter } from '../src/trpc/routes/workstation.js';
-import { issueBridgeTicket, provisionApprovedFolder } from '../src/outlook-security/authorization.js';
+import { issueBridgeTicket, provisionApprovedFolder, registerNavigation } from '../src/outlook-security/authorization.js';
 
 const key = randomBytes(32).toString('base64');
 const secret = randomBytes(32).toString('base64');
@@ -136,6 +136,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     await expect(f.ticket('DELETE_EMAIL', op())).rejects.toThrow();
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage-folder', kind: 'triage' });
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox-folder', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'drafts-folder', kind: 'drafts' });
     const operationId = op();
     const declared = { resources: ['message-1'], sourceFolderId: 'inbox-folder', destinationFolderId: 'triage-folder' };
     const { ticket } = await f.ticket('MOVE_EMAIL', operationId, declared);
@@ -148,7 +149,8 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     const draftOperation = op();
     const draft = await f.ticket('CREATE_DRAFT', draftOperation);
     expect((await f.signed(path, { ticket: draft.ticket, action: 'CREATE_DRAFT', storeId,
-      transportId: f.transportId, operationId: draftOperation })).status).toBe(200);
+      transportId: f.transportId, operationId: draftOperation,
+      destinationFolderId: 'drafts-folder', destinationKind: 'drafts' })).status).toBe(200);
     const mismatchOperation = op();
     const mismatch = await f.ticket('MOVE_EMAIL', mismatchOperation, declared);
     expect((await f.signed(path, { ticket: mismatch.ticket, action: 'MOVE_EMAIL', storeId, transportId: f.transportId,
@@ -298,8 +300,10 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
         expect((await f.signed(path, { ticket, action, operationId, storeId,
           transportId: f.transportId, resources: declared.resources, sourceFolderId: 'inbox-folder' })).status).toBe(403);
       }
+      const observedDestination = action === 'CREATE_REPLY_DRAFT'
+        ? { destinationFolderId: 'drafts-folder', destinationKind: 'drafts' } : {};
       expect((await f.signed(path, { ticket, action, operationId, storeId,
-        transportId: f.transportId, ...declared })).status).toBe(200);
+        transportId: f.transportId, ...declared, ...observedDestination })).status).toBe(200);
     }
     const selected = await f.ticket('GET_ACTIVE_EMAIL', undefined, { resources: ['selected-item'] });
     expect((await f.signed(path, { ticket: selected.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
@@ -322,6 +326,32 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       transportId: f.transportId, sourceFolderId: 'parent-id' });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ kind: 'mutation', sourceFolderId: 'parent-id' });
+  }));
+  it('authorizes new and reply drafts only into the exact operator-approved Drafts folder', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    const newOp = op();
+    const create = await f.ticket('CREATE_DRAFT', newOp);
+    const newPayload = { ticket: create.ticket, action: 'CREATE_DRAFT', operationId: newOp,
+      storeId, transportId: f.transportId };
+    expect((await f.signed(path, newPayload)).status).toBe(403);
+    expect((await f.signed(path, { ...newPayload, destinationFolderId: 'triage', destinationKind: 'triage' })).status).toBe(403);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'drafts', kind: 'drafts' });
+    expect((await f.signed(path, { ...newPayload, destinationFolderId: 'drafts', destinationKind: 'drafts' })).status).toBe(200);
+
+    const replyOp = op(), declared = { resources: ['source-message'], sourceFolderId: 'inbox' };
+    const reply = await f.ticket('CREATE_REPLY_DRAFT', replyOp, declared);
+    const replyPayload = { ticket: reply.ticket, action: 'CREATE_REPLY_DRAFT', operationId: replyOp,
+      storeId, transportId: f.transportId, ...declared };
+    expect((await f.signed(path, replyPayload)).status).toBe(403);
+    expect((await f.signed(path, { ...replyPayload, destinationFolderId: 'triage', destinationKind: 'triage' })).status).toBe(403);
+    expect((await f.signed(path, { ...replyPayload, destinationFolderId: 'drafts', destinationKind: 'triage' })).status).toBe(403);
+    const accepted = await f.signed(path, { ...replyPayload,
+      destinationFolderId: 'drafts', destinationKind: 'drafts' });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ kind: 'mutation', action: 'CREATE_REPLY_DRAFT',
+      sourceFolderId: 'inbox', destinationFolderId: 'drafts' });
   }));
   it('allows exact approved Inbox recovery moves without permitting Deleted Items or Outbox', async () => withTestDb(async (db) => {
     const f = await fixture(db);
@@ -420,6 +450,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
   }));
   it('never returns a native scope extending beyond the actual session absolute 24-hour cutoff', async () => withTestDb(async (db) => {
     const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'drafts-folder', kind: 'drafts' });
     const cutoff = new Date(Date.now() + 5000);
     await db.update(session).set({ createdAt: new Date(cutoff.getTime() - 24 * 60 * 60_000),
       expiresAt: new Date(Date.now() + 60_000) }).where(eq(session.id, f.sessionId));
@@ -431,7 +462,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     const mutationOp = op();
     const draft = await f.ticket('CREATE_DRAFT', mutationOp);
     const mutation = await f.signed(path, { ticket: draft.ticket, action: 'CREATE_DRAFT', operationId: mutationOp,
-      storeId, transportId: f.transportId });
+      storeId, transportId: f.transportId, destinationFolderId: 'drafts-folder', destinationKind: 'drafts' });
     expect(mutation.status).toBe(200);
     expect(new Date((await mutation.json()).expiresAt).getTime()).toBeLessThanOrEqual(cutoff.getTime());
     const sessionCutoff = new Date(Date.now() + 5000);
@@ -472,24 +503,31 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: secondChallenge }, secondSecret, secondDevice)).status).toBe(200);
     const declared = { resources: Array.from({ length: 9 }, (_, index) => `message-${index}`), sourceFolderId: 'inbox', destinationFolderId: 'triage' };
     const authorizeMove = async (deviceId: string, challenge: string, signingSecret: string, operationId: string,
-      resources: string[], consent = false) => {
+      resources: string[], consentChallenge?: string) => {
       const scope = { ...declared, resources };
       const issued = await f.ticket('MOVE_EMAIL', operationId, scope, deviceId, challenge);
       const response = await f.signed(path, { ticket: issued.ticket, action: 'MOVE_EMAIL', storeId,
-        transportId: f.transportId, operationId, ...scope, destinationKind: 'triage', nativeBatchConsent: consent }, signingSecret, deviceId);
-      return { response, body: response.status === 200 ? await response.json() : null };
+        transportId: f.transportId, operationId, ...scope, destinationKind: 'triage',
+        ...(consentChallenge ? { nativeBatchConsent: true, nativeBatchConsentChallenge: consentChallenge } : {}) }, signingSecret, deviceId);
+      return { response, body: response.status === 200 || response.status === 409 ? await response.json() : null };
     };
     const firstOp = op();
     expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, firstOp, declared.resources)).body?.retry).toBe(false);
     expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, firstOp, declared.resources)).body?.retry).toBe(true);
     expect((await authorizeMove(secondDevice, secondChallenge, secondSecret, op(), declared.resources)).response.status).toBe(200);
-    expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, op(), declared.resources)).response.status).toBe(409);
-    expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, op(), declared.resources, true)).response.status).toBe(200);
+    const secondOp = op();
+    const consent = await authorizeMove(f.deviceId, f.paneChallenge, secret, secondOp, declared.resources);
+    expect(consent.response.status).toBe(409);
+    expect(consent.body?.consentChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const renewedChallenge = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: renewedChallenge })).status).toBe(200);
+    expect((await authorizeMove(f.deviceId, renewedChallenge, secret, secondOp, declared.resources,
+      consent.body!.consentChallenge as string)).response.status).toBe(200);
     const rows = await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId));
     expect(rows).toHaveLength(3);
     expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(27);
   }));
-  it('returns 409 only for a fully valid signed 10-item move and retains the exact ticket for consent retry', async () => withTestDb(async (db) => {
+  it('requires one-use native consent tied to the original signed staff, device, and exact move scope', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
@@ -503,19 +541,77 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect(unsigned.status).toBe(403);
     expect((await f.signed(path, { ...payload, resources: ['wrong-mail'], nativeBatchConsent: false })).status).toBe(403);
     expect((await f.signed(path, { ...payload, destinationFolderId: 'other' })).status).toBe(403);
+    expect((await f.signed(path, { ...payload, nativeBatchConsent: true })).status).toBe(403);
     const denied = await f.signed(path, payload);
     expect(denied.status).toBe(409);
     expect(denied.headers.get('cache-control')).toBe('no-store');
-    expect(await denied.json()).toEqual({ code: 'NATIVE_BATCH_CONSENT_REQUIRED' });
+    const consent = await denied.json() as { code: string; consentChallenge: string };
+    expect(consent).toEqual({ code: 'NATIVE_BATCH_CONSENT_REQUIRED',
+      consentChallenge: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
     expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
     const [ticketRow] = await db.select().from(outlookBridgeTicket)
       .where(eq(outlookBridgeTicket.ticketHash, createHash('sha256').update(issued.ticket).digest('hex')));
-    expect(ticketRow?.consumedAt).toBeNull();
-    const permitted = await f.signed(path, { ...payload, nativeBatchConsent: true });
+    expect(ticketRow?.consumedAt).not.toBeNull();
+    expect((await f.signed(path, { ...payload, nativeBatchConsent: true })).status).toBe(403);
+    expect((await f.signed(path, payload)).status).toBe(403);
+    const renewedChallenge = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: renewedChallenge })).status).toBe(200);
+    const fresh = await f.ticket('MOVE_EMAIL', operationId, scope, f.deviceId, renewedChallenge);
+    const final = { ...payload, ticket: fresh.ticket, nativeBatchConsent: true,
+      nativeBatchConsentChallenge: consent.consentChallenge };
+    expect((await f.signed(path, { ...final, resources: [...scope.resources].reverse() })).status).toBe(403);
+    expect((await f.signed(path, { ...final, nativeBatchConsentChallenge: randomBytes(32).toString('base64url') })).status).toBe(403);
+    const permitted = await f.signed(path, final);
     expect(permitted.status).toBe(200);
     expect(await permitted.json()).toMatchObject({ kind: 'mutation', resources: scope.resources });
-    expect((await f.signed(path, { ...payload, nativeBatchConsent: true })).status).toBe(403);
+    expect((await f.signed(path, final)).status).toBe(403);
+    const retry = await f.ticket('MOVE_EMAIL', operationId, scope, f.deviceId, renewedChallenge);
+    expect((await f.signed(path, { ...final, ticket: retry.ticket })).status).toBe(403);
     expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(1);
+  }));
+
+  it('will not transfer native human consent to another login or authorize it after five minutes', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    const scope = { resources: Array.from({ length: 10 }, (_, index) => `mail-${index}`),
+      sourceFolderId: 'inbox', destinationFolderId: 'triage' };
+    const action = 'MOVE_EMAIL', operationId = op();
+    const initial = await f.ticket(action, operationId, scope);
+    const payload = { ticket: initial.ticket, action, operationId, storeId, transportId: f.transportId,
+      ...scope, destinationKind: 'triage' };
+    const offered = await f.signed(path, payload);
+    expect(offered.status).toBe(409);
+    const { consentChallenge } = await offered.json() as { consentChallenge: string };
+
+    const alternateSessionId = randomUUID();
+    await db.insert(session).values({ id: alternateSessionId, token: randomUUID(),
+      userId: f.userId, expiresAt: new Date(Date.now() + 86_400_000) });
+    const alternateNav = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: alternateNav })).status).toBe(200);
+    const secondLogin = { api: { getSession: async () => ({ user: { id: f.userId },
+      session: { id: alternateSessionId } }) } };
+    const otherTicket = await issueBridgeTicket(db, secondLogin, new Headers(), {
+      deviceId: f.deviceId, paneChallenge: alternateNav, action, operationId,
+      storeId, transportId: f.transportId, ...scope });
+    expect((await f.signed(path, { ...payload, ticket: otherTicket.ticket,
+      nativeBatchConsent: true, nativeBatchConsentChallenge: consentChallenge })).status).toBe(403);
+
+    const originalNav = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: originalNav })).status).toBe(200);
+    const newOp = op();
+    const fresh = await f.ticket(action, newOp, scope, f.deviceId, originalNav);
+    const expiredOffer = await f.signed(path, { ...payload, ticket: fresh.ticket, operationId: newOp });
+    expect(expiredOffer.status).toBe(409);
+    const { consentChallenge: expiredChallenge } = await expiredOffer.json() as { consentChallenge: string };
+    await db.update(outlookBridgeTicket).set({ consentExpiresAt: new Date(Date.now() - 1000) })
+      .where(eq(outlookBridgeTicket.consentChallengeHash, createHash('sha256').update(expiredChallenge).digest('hex')));
+    const finalNav = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: finalNav })).status).toBe(200);
+    const finalTicket = await f.ticket(action, newOp, scope, f.deviceId, finalNav);
+    expect((await f.signed(path, { ...payload, ticket: finalTicket.ticket, operationId: newOp,
+      nativeBatchConsent: true, nativeBatchConsentChallenge: expiredChallenge })).status).toBe(403);
+    expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
   }));
 
   it.each(['ticket', 'original 24-hour session'])('never requests consent after a %s expires while waiting for the mailbox lock', async (expiry) => {
@@ -587,6 +683,74 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     }
   }, 12_000);
 
+  it.each(['device revocation', 'folder revocation', 'navigation replacement'])(
+    'does not mint a fresh move grant after %s while waiting for the mailbox lock', async (change) => {
+      const seeded = openTestDbSession(), locker = openTestDbSession(), observer = openTestDbSession();
+      let releaseLock = () => undefined;
+      let heldLock: Promise<void> | undefined;
+      let pending: Promise<Response> | undefined;
+      let cleanup: { userId: string; transportId: string } | undefined;
+      try {
+        const f = await fixture(seeded.db);
+        cleanup = f;
+        await provisionApprovedFolder(seeded.db, { storeId, transportId: f.transportId,
+          folderId: 'inbox', kind: 'inbox' });
+        await provisionApprovedFolder(seeded.db, { storeId, transportId: f.transportId,
+          folderId: 'triage', kind: 'triage' });
+        const operationId = op(), scope = { resources: ['mail-1'],
+          sourceFolderId: 'inbox', destinationFolderId: 'triage' };
+        const issued = await f.ticket('MOVE_EMAIL', operationId, scope);
+        let locked!: (pid: number) => void;
+        const acquired = new Promise<number>((resolve) => { locked = resolve; });
+        const unlock = new Promise<void>((resolve) => { releaseLock = resolve; });
+        heldLock = locker.db.transaction(async (tx) => {
+          const [connection] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+          await tx.select({ id: mailboxTransport.id }).from(mailboxTransport)
+            .where(eq(mailboxTransport.id, f.transportId)).for('update');
+          locked(connection.pid);
+          await unlock;
+        });
+        const holderPid = await acquired;
+        pending = f.signed(path, { ticket: issued.ticket, action: 'MOVE_EMAIL', operationId, storeId,
+          transportId: f.transportId, ...scope, destinationKind: 'triage' });
+        let blocked = false;
+        for (let attempt = 0; attempt < 65; attempt++) {
+          const [state] = await observer.db.execute(sql<{ blocked: boolean }>`select exists (
+            select 1 from pg_stat_activity a where a.datname = current_database()
+              and a.wait_event_type = 'Lock' and ${holderPid} = any(pg_blocking_pids(a.pid))
+          ) as blocked`);
+          if (state.blocked) { blocked = true; break; }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked).toBe(true);
+        if (change === 'device revocation') await revokeDevice(observer.db, f.deviceId);
+        else if (change === 'folder revocation') {
+          await observer.db.delete(outlookApprovedFolder)
+            .where(eq(outlookApprovedFolder.folderId, 'triage'));
+        } else await registerNavigation(observer.db, f.deviceId, randomBytes(32).toString('base64url'));
+        releaseLock();
+        await heldLock;
+        const denied = await pending;
+        expect(denied.status).toBe(403);
+        const [ticketRow] = await seeded.db.select({ consumedAt: outlookBridgeTicket.consumedAt })
+          .from(outlookBridgeTicket).where(eq(outlookBridgeTicket.ticketHash,
+            createHash('sha256').update(issued.ticket).digest('hex')));
+        expect(ticketRow?.consumedAt).toBeNull();
+        expect(await seeded.db.select().from(outlookMoveReceipt)
+          .where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
+      } finally {
+        releaseLock();
+        if (heldLock) await heldLock;
+        if (pending) await pending.catch(() => undefined);
+        if (cleanup) {
+          await seeded.db.delete(user).where(eq(user.id, cleanup.userId));
+          await seeded.db.delete(mailboxTransport).where(eq(mailboxTransport.id, cleanup.transportId));
+        }
+        await Promise.all([seeded.close(), locker.close(), observer.close()]);
+      }
+    }, 12_000,
+  );
+
   it('never reveals a consent prompt for invalid or revoked tickets', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
@@ -611,7 +775,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     await db.update(outlookDevice).set({ revokedAt: new Date() }).where(eq(outlookDevice.deviceId, f.deviceId));
     await assertGenericDenial({ ...payload, ticket: fresh, operationId: freshOperationId });
   }));
-  it('permits signed exact-consent 25-item Outlook EntryID batches larger than public enrollment limit', async () => withTestDb(async (db) => {
+  it('permits newly ticketed exact-consent 25-item Outlook EntryID batches larger than public enrollment limit', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
@@ -619,8 +783,16 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     const operationId = op();
     const declared = { resources, sourceFolderId: 'inbox', destinationFolderId: 'triage' };
     const { ticket } = await f.ticket('MOVE_EMAIL', operationId, declared);
-    const response = await f.signed(path, { ticket, action: 'MOVE_EMAIL', operationId, storeId,
-      transportId: f.transportId, ...declared, destinationKind: 'triage', nativeBatchConsent: true });
+    const initial = { ticket, action: 'MOVE_EMAIL', operationId, storeId,
+      transportId: f.transportId, ...declared, destinationKind: 'triage' };
+    const preflight = await f.signed(path, initial);
+    expect(preflight.status).toBe(409);
+    const { consentChallenge } = await preflight.json() as { consentChallenge: string };
+    const renewedChallenge = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: renewedChallenge })).status).toBe(200);
+    const fresh = await f.ticket('MOVE_EMAIL', operationId, declared, f.deviceId, renewedChallenge);
+    const response = await f.signed(path, { ...initial, ticket: fresh.ticket,
+      nativeBatchConsent: true, nativeBatchConsentChallenge: consentChallenge });
     expect(response.status).toBe(200);
   }));
   it('rolls back a move receipt if the ticket expires during the authorization transaction', async () => withTestDb(async (db) => {

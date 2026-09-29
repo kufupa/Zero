@@ -197,14 +197,20 @@ fi
 
 echo "== stage immutable mail release =="
 PANE_RELEASE_HELPER="${SERVER_PILOT}/deploy/pane-csp-release.mjs"
+WEB_OWNERSHIP_HELPER="${SERVER_PILOT}/deploy/check-web-release-ownership.mjs"
 RELEASE_ID="$(node "$PANE_RELEASE_HELPER" id "${MAIL_APP}/build/client")"
 RELEASE_DIR="${WEB_ROOT}/releases/${RELEASE_ID}"
+node "$WEB_OWNERSHIP_HELPER" ancestors "$WEB_ROOT" || {
+  echo "unsafe parent of web release; refusing publication" >&2
+  exit 1
+}
 for path in "$WEB_ROOT" "${WEB_ROOT}/releases" "$RELEASE_DIR" "${WEB_ROOT}/assets" "${WEB_ROOT}/downloads"; do
   if sudo test -L "$path"; then
     echo "unsafe web release symlink: ${path}" >&2
     exit 1
   fi
 done
+sudo install -d -o root -g root -m 0755 "$WEB_ROOT" "${WEB_ROOT}/releases" "${WEB_ROOT}/assets"
 if [ -n "$(find "${MAIL_APP}/build/client" -type l -print -quit)" ]; then
   echo "web build contains a symlink; refusing release" >&2
   exit 1
@@ -257,6 +263,15 @@ if [ -n "$ASSET_MISMATCH" ]; then
   exit 1
 fi
 sudo install -d -o www-data -g www-data -m 0755 "${WEB_ROOT}/downloads"
+# The previous flat SPA deployment can leave app-owned files under WEB_ROOT.
+# They, and shared hashed asset fallbacks for old tabs, are same-origin JS
+# under `script-src 'self'`. Refuse publication until a supervised operator
+# inventories and rehomes those legacy files; normal later releases stay root
+# owned without a staff installer/update.
+node "$WEB_OWNERSHIP_HELPER" release "$WEB_ROOT" || {
+  echo "untrusted legacy web file or directory; supervise one-time ownership repair before publication" >&2
+  exit 1
+}
 
 echo "== hosts: nava.legacyhotels.co.za =="
 # EC2 uses split-tunnel routing and does not consume hotel DNS; on-box browser gates need this.
@@ -495,6 +510,23 @@ if command -v nginx >/dev/null 2>&1; then
     fi
   }
 
+  finalize_nginx_release() {
+    if [ "$NGINX_TRANSACTION_ACTIVE" -ne 1 ]; then
+      echo "nginx release transaction is no longer active" >&2
+      return 1
+    fi
+    # The matching web index/CSP must stay rollback-capable until both backend
+    # processes and private+TLS health probes pass. A PM2 failure is not a
+    # successful web publication.
+    NGINX_TRANSACTION_ACTIVE=0
+    if cleanup_nginx_backup; then
+      trap - EXIT INT TERM
+    else
+      echo "nginx activated but temporary backup cleanup failed" >&2
+      return 1
+    fi
+  }
+
   # All handlers exist before backup creation or candidate mutation.
   trap 'nginx_on_exit $?' EXIT
   trap 'nginx_on_signal 130' INT
@@ -542,14 +574,10 @@ if command -v nginx >/dev/null 2>&1; then
     exit 1
   fi
 
-  # Candidate is live. Disarm rollback before deleting its backup.
-  NGINX_TRANSACTION_ACTIVE=0
-  if cleanup_nginx_backup; then
-    trap - EXIT INT TERM
-  else
-    echo "nginx activated but temporary backup cleanup failed" >&2
-    exit 1
-  fi
+  # Keep the prior immutable index and its matching CSP available for rollback
+  # until the PM2 + both-vhost health checks below pass. Quiesced web-only
+  # releases commit at their explicit early-exit boundary instead.
+  NGINX_FAILURE_CONTEXT="backend startup or health check failed"
 else
   echo "nginx not installed; install nginx and the validated TLS files before deploy" >&2
   rm -f "$NGINX_SRC"
@@ -560,6 +588,7 @@ fi
 if [ "$QUIESCED" = "1" ]; then
   # Web release only — leave running pm2 http/worker/ai-worker alone (online OK).
   # HMS worker still sole-started by ops-hms-shadow.sh; we do not touch it here either.
+  finalize_nginx_release
   echo "== quiesced: skip PM2 mutation and HTTP health (online http OK) =="
   echo "quiesced deploy ok (web release activated; no PM2 mutation; no HTTP health)"
   exit 0
@@ -635,5 +664,6 @@ assert_http_loopback_only || {
   echo "raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 1
 }
+finalize_nginx_release
 echo
 echo "deploy ok"

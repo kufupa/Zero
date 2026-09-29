@@ -333,6 +333,7 @@ function BridgeProbe() {
     supportsAction,
     sendCommand,
     pairDevice,
+    refreshAuthorization,
   } = useOutlookBridge();
   const [errorCode, setErrorCode] = useState('');
   renderedSubjects.push(activeEmail?.subject ?? '');
@@ -356,6 +357,7 @@ function BridgeProbe() {
       >
         Pair native
       </button>
+      <button type="button" onClick={refreshAuthorization}>Refresh approval</button>
       <button
         type="button"
         onClick={() => {
@@ -377,7 +379,10 @@ function BridgeProbe() {
             targetStoreId: 'store-approved',
             targetFolderEntryId: 'folder-archive',
             operationId: createOperationId(),
-          }).catch(() => undefined);
+          }).then(
+            () => setErrorCode('move-succeeded'),
+            () => setErrorCode('move-denied'),
+          );
         }}
       >
         Move approved batch
@@ -452,6 +457,11 @@ function respondV4(request: TestBridgeRequest, data: unknown, success = true) {
       });
     }
   });
+}
+
+function resolveNativeMoveConsent(consentRequestId: string, operationId: string, approved: boolean) {
+  respondV4({ action: 'NATIVE_MOVE_CONSENT_RESOLVED', requestId: 'event' },
+    { consentRequestId, operationId, approved });
 }
 
 describe('v4 staff-authorized Outlook navigation', () => {
@@ -639,6 +649,32 @@ describe('v4 staff-authorized Outlook navigation', () => {
     vi.useRealTimers();
     respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
     await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(1));
+  });
+
+  it('coalesces simultaneous navigation renewals into one native registration', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    await waitForBridgeRequest('GET_CAPABILITIES');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    let completeBootstrap!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((resolve) => {
+      completeBootstrap = resolve;
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh approval' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await act(async () => completeBootstrap({ ok: true,
+      json: async () => ({ paneChallenge: 'b'.repeat(43) }) } as Response));
+    const registrations = nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION');
+    expect(registrations).toHaveLength(2);
+    expect(registrations[1]?.payload).toEqual({ paneChallenge: 'b'.repeat(43) });
+    respondV4(registrations[1]!, { registered: true });
+    await act(async () => { await Promise.resolve(); });
+    expect(nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION')).toHaveLength(2);
   });
 
   it('revokes native COM immediately on renewal 401 and discards a late non-selection success', async () => {
@@ -871,6 +907,70 @@ describe('v4 staff-authorized Outlook navigation', () => {
     },
   );
 
+  it('recovers after selecting an approved folder without repeating a denied Outlook read in a tight loop', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    const capabilities = {
+      bridgeProtocolVersion: 4, addinVersion: '1.0.12', outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows', newOutlookSupported: false,
+      interactiveProfileRequired: true, maxPageSize: 200, maxFolderDepth: 64,
+      maxFolderCount: 5000, maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_FOLDERS'],
+    };
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities);
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null, false);
+    const secondRegistration = await waitForBridgeRequest('REGISTER_NAVIGATION', 3);
+    const secondIndex = nativeMessages().length;
+    respondV4(secondRegistration, { registered: true });
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES', secondIndex), capabilities);
+    const secondRead = await waitForBridgeRequest('GET_ACTIVE_EMAIL', secondIndex);
+    vi.useFakeTimers();
+    respondV4(secondRead, null, false);
+    await act(async () => { await Promise.resolve(); });
+    expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(2);
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    vi.useRealTimers();
+    const recoveryIndex = nativeMessages().length;
+    const recovery = nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')[2];
+    expect(recovery).toBeDefined();
+    respondV4(recovery!, { registered: true });
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES', recoveryIndex), capabilities);
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL', recoveryIndex), {
+      entryId: 'approved-mail', storeId: 'store-approved', folderEntryId: 'approved-inbox',
+      subject: 'Approved Inbox', senderEmail: 'guest@example.com', senderName: 'Guest',
+      receivedTime: '2026-09-17', bodyText: 'Safe', bodyHtml: '',
+    });
+    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Approved Inbox'));
+  });
+
+  it('allows more than ten seconds for native-only supervised device pairing', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4, version: '1.0.12', paired: false, deviceId: null,
+    });
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('yes'));
+    await act(async () => { await Promise.resolve(); });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Pair native' }));
+    const pair = nativeMessages().find((message) => message.action === 'PAIR_DEVICE');
+    expect(pair).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+    respondV4(pair!, { paired: true, deviceId: 'device-1' });
+    vi.useRealTimers();
+    await act(async () => { await Promise.resolve(); });
+    const refreshedPing = await waitForBridgeRequest('PING', 2);
+    respondV4(refreshedPing, { bridgeProtocolVersion: 4, version: '1.0.12',
+      paired: true, deviceId: 'device-1' });
+    await waitFor(() => expect(screen.getByTestId('protocol').textContent).toBe('4'));
+  });
+
   it('opens native-only pairing and rechecks PING before registering the staff navigation', async () => {
     security.userId = 'staff-1';
     security.transportId = 'transport-1';
@@ -1073,6 +1173,60 @@ describe('v4 staff-authorized Outlook navigation', () => {
       },
     });
     expect(move).not.toHaveProperty('nativeBatchConsent');
+  });
+
+  it('waits for native move consent without expiring its first ticket and uses a fresh exact-scope ticket afterward', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4, addinVersion: '1.0.12', outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows', newOutlookSupported: false,
+      interactiveProfileRequired: true, maxPageSize: 200, maxFolderDepth: 64,
+      maxFolderCount: 5000, maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'MOVE_EMAIL'],
+    });
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    fireEvent.click(screen.getByRole('button', { name: 'Move approved batch' }));
+    const move = (await waitForBridgeRequest('MOVE_EMAIL')) as TestBridgeRequest &
+      Record<string, unknown>;
+    const originalPayload = move.payload as Record<string, unknown>;
+    const callsBeforeConsent = nativeMessages().length;
+    respondV4(move, { consentRequired: true, consentRequestId: 'a'.repeat(32),
+      operationId: originalPayload.operationId });
+    const prepare = (await waitForBridgeRequest('PREPARE_MOVE_CONSENT', callsBeforeConsent)) as
+      TestBridgeRequest & Record<string, unknown>;
+    expect(prepare).toMatchObject({ payload: { consentRequestId: 'a'.repeat(32),
+      operationId: originalPayload.operationId } });
+    expect(prepare).not.toHaveProperty('ticket');
+    respondV4(prepare, { status: 'pending', consentRequestId: 'a'.repeat(32),
+      operationId: originalPayload.operationId });
+
+    const registrationCount = nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION').length;
+    vi.useFakeTimers();
+    await act(async () => { await vi.advanceTimersByTimeAsync(70_000); });
+    expect(nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION')).toHaveLength(registrationCount);
+    expect(nativeMessages().filter((request) => request.action === 'MOVE_EMAIL')).toHaveLength(1);
+    vi.useRealTimers();
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ paneChallenge: 'b'.repeat(43) }) } as Response);
+    ticketMutate.mockResolvedValueOnce({ ticket: 'fresh-after-dialog', storeId: 'store-approved', expiresInSeconds: 60 });
+    act(() => resolveNativeMoveConsent('a'.repeat(32), originalPayload.operationId as string, true));
+    const renewed = (await waitForBridgeRequest('REGISTER_NAVIGATION', nativeMessages().length - 1)) as
+      TestBridgeRequest & Record<string, unknown>;
+    expect(renewed.payload).toEqual({ paneChallenge: 'b'.repeat(43) });
+    respondV4(renewed, { registered: true });
+    await waitFor(() => expect(ticketMutate).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'MOVE_EMAIL', paneChallenge: 'b'.repeat(43), operationId: originalPayload.operationId,
+      resources: originalPayload.entryIds,
+    })));
+    const movedAgain = nativeMessages().reverse().find((request) => request.action === 'MOVE_EMAIL')!;
+    expect(movedAgain).toMatchObject({ ticket: 'fresh-after-dialog',
+      consentRequestId: 'a'.repeat(32), payload: originalPayload });
+    expect(movedAgain).not.toHaveProperty('nativeBatchConsent');
+    respondV4(movedAgain, { moved: true });
+    await waitFor(() => expect(screen.getByTestId('bridge-error-code').textContent).toBe('move-succeeded'));
   });
 
   it('requests bounded native store pages so v4 never receives the old unscoped array format', async () => {

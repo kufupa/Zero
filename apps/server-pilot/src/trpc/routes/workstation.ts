@@ -1,4 +1,4 @@
-import { privateProcedure, publicProcedure, router } from '../trpc.js';
+import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -8,9 +8,7 @@ import { HOTEL_TELEPHONE, quotePdfFileName } from '../../quote-proposal/filename
 import { convertXlsxWithGotenberg } from '../../quote-proposal/gotenberg.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
-import { eq } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
-import { mailboxAccess, mailboxTransport } from '../../db/schema/mail.js';
 import { BridgeTicketDeniedError, issueBridgeTicket } from '../../outlook-security/authorization.js';
 
 export const workstationPingInput = z.object({
@@ -73,15 +71,13 @@ export const workstationRouter = router({
       serverTime: new Date().toISOString(),
     };
   }),
-  quoteProposalPdf: privateProcedure
+  quoteProposalPdf: mailboxProcedure
     .input(quoteProposalPdfInput)
     .mutation(async ({ input, ctx }) => {
-      const authorizedMailboxes = await getDb()
-        .select({ email: mailboxTransport.email })
-        .from(mailboxAccess)
-        .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
-        .where(eq(mailboxAccess.userId, ctx.sessionUser.id));
-      if (!authorizedMailboxes.some((mailbox) => emailsMatch(mailbox.email, input.outlookEmail))) {
+      // Resolve the selected transport through the same mailbox-access guard
+      // as other mail routes. Access to a *different* shared mailbox must not
+      // let a pane mix that address into the current quotation workflow.
+      if (!emailsMatch(ctx.transportEmail, input.outlookEmail)) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'OUTLOOK_EMAIL_MISMATCH',

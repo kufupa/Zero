@@ -50,6 +50,14 @@ type Pending = {
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 };
+type PendingMoveConsent = {
+  consentRequestId: string;
+  operationId: string;
+  navigation: Navigation;
+  phase: 'dialog' | 'finalizing';
+  resolve: (result: 'approved' | 'declined' | 'expired' | 'navigation-changed') => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
 const MUTATIONS = new Set<BridgeAction>([
   'CREATE_DRAFT',
   'UPDATE_DRAFT',
@@ -155,9 +163,18 @@ export function useOutlookBridge() {
   const [capabilitiesOwner, setCapabilitiesOwner] = useState<string | null>(null);
   const [updateRequired, setUpdateRequired] = useState(false);
   const [requiresRelogin, setRequiresRelogin] = useState(false);
+  const [authorizationUnavailable, setAuthorizationUnavailable] = useState(false);
+  const [consentInProgress, setConsentInProgress] = useState(false);
   const pending = useRef(new Map<string, Pending>());
+  const moveConsent = useRef<PendingMoveConsent | null>(null);
   const navigation = useRef<Navigation | null>(null);
   const epoch = useRef(0);
+  const navigationRevision = useRef(0);
+  const registrationFlight = useRef<{
+    generation: number;
+    revision: number;
+    promise: Promise<void>;
+  } | null>(null);
   const selection = useRef(0);
   const renewalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -192,7 +209,18 @@ export function useOutlookBridge() {
       }
   }, []);
 
+  const cancelMoveConsent = useCallback(() => {
+    const consent = moveConsent.current;
+    moveConsent.current = null;
+    setConsentInProgress(false);
+    if (consent) {
+      clearTimeout(consent.timeout);
+      consent.resolve('navigation-changed');
+    }
+  }, []);
+
   const invalidateNavigation = useCallback(() => {
+    navigationRevision.current++;
     const wasRegistered = navigation.current !== null;
     navigation.current = null;
     firstTicket.current = null;
@@ -204,25 +232,34 @@ export function useOutlookBridge() {
     if (wasRegistered) {
       window.chrome?.webview?.postMessage(JSON.stringify(createBridgeRequest('CLEAR_SESSION', {})));
     }
+    cancelMoveConsent();
     clearPending(false);
     setActiveEmail(null);
     setCapabilities(null);
-  }, [clearPending]);
+  }, [cancelMoveConsent, clearPending]);
 
   const nativeRequest = useCallback(
     <T>(
       action: BridgeAction,
       payload: Record<string, unknown>,
-      grant?: { ticket: string; transportId: string },
+      grant?: { ticket: string; transportId: string; consentRequestId?: string },
     ): Promise<T> =>
       new Promise<T>((resolve, reject) => {
         const webview = window.chrome?.webview;
         if (!webview) return reject(new Error('Outlook WebView2 bridge not detected'));
         const request = createBridgeRequest(action, payload, grant);
+        // Native signs a separate one-use challenge before the Outlook scope
+        // authorization, so a 10s browser timeout would declare a legitimate
+        // request failed while native may still be working. Never auto-retry a
+        // mutation on timeout; callers must inspect Outlook's actual result.
+        const deadline = action === 'PAIR_DEVICE' ? 12 * 60_000
+          : action === 'REGISTER_NAVIGATION' ? 30_000
+          : MUTATIONS.has(action) ? 45_000
+          : action === 'PREPARE_MOVE_CONSENT' || action === 'PING' ? 10_000 : 30_000;
         const timeout = setTimeout(() => {
           pending.current.delete(request.requestId);
           reject(new Error(`Bridge command ${action} timed out`));
-        }, 10_000);
+        }, deadline);
         pending.current.set(request.requestId, {
           action,
           timeout,
@@ -276,15 +313,23 @@ export function useOutlookBridge() {
   }, [nativeRequest]);
 
   const registerNavigation = useCallback(
-    async (generation: number, deviceId: string, transportId: string) => {
-      if (epoch.current !== generation) return;
+    (generation: number, deviceId: string, transportId: string, allowDuringConsent = false): Promise<void> => {
+      const revision = navigationRevision.current;
+      const isCurrent = () => epoch.current === generation && navigationRevision.current === revision &&
+        currentScope.current === renderedScope.current && Boolean(currentScope.current) &&
+        (!moveConsent.current || allowDuringConsent);
+      if (!isCurrent()) return Promise.resolve();
+      const activeFlight = registrationFlight.current;
+      if (activeFlight?.generation === generation && activeFlight.revision === revision)
+        return activeFlight.promise;
+      const promise = (async () => {
       const response = await fetch(publicBackendPath('/api/outlook/native/bootstrap'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       });
-      if (epoch.current !== generation) return;
+      if (!isCurrent()) return;
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           invalidateNavigation();
@@ -303,7 +348,7 @@ export function useOutlookBridge() {
           : undefined;
       if (typeof challenge !== 'string' || challenge.length !== 43)
         throw new Error('Invalid Outlook navigation challenge');
-      if (epoch.current !== generation) return;
+      if (!isCurrent()) return;
       clearPending();
       navigation.current = null;
       firstTicket.current = null;
@@ -311,7 +356,7 @@ export function useOutlookBridge() {
       setActiveEmail(null);
       setCapabilities(null);
       await nativeRequest('REGISTER_NAVIGATION', { paneChallenge: challenge });
-      if (epoch.current !== generation) return;
+      if (!isCurrent()) return;
       navigation.current = {
         generation,
         scopeKey: currentScope.current!,
@@ -321,40 +366,68 @@ export function useOutlookBridge() {
         transportId,
       };
       if (renewalTimer.current) clearTimeout(renewalTimer.current);
-      renewalTimer.current = setTimeout(() => {
+      const renew = () => {
+        if (!isCurrent()) return;
+        if (moveConsent.current) {
+          renewalTimer.current = setTimeout(renew, 5_000);
+          return;
+        }
+        renewalTimer.current = null;
         startRegistration.current(generation, deviceId, transportId);
-      }, 45_000);
+      };
+      renewalTimer.current = setTimeout(renew, 45_000);
+      })();
+      const flight = { generation, revision, promise };
+      registrationFlight.current = flight;
+      void promise.then(
+        () => { if (registrationFlight.current === flight) registrationFlight.current = null; },
+        () => { if (registrationFlight.current === flight) registrationFlight.current = null; },
+      );
+      return promise;
     },
     [clearPending, invalidateNavigation, nativeRequest],
   );
 
   startRegistration.current = (generation, deviceId, transportId, attempt = 0) => {
+    if (epoch.current !== generation || moveConsent.current ||
+      registrationFlight.current?.generation === generation &&
+      registrationFlight.current.revision === navigationRevision.current) return;
     void registerNavigation(generation, deviceId, transportId)
-      .then(() => loadMailRef.current(generation))
+      .then(() => { if (!moveConsent.current) return loadMailRef.current(generation); })
       .catch((error: unknown) => {
         if (
           epoch.current !== generation ||
           !currentScope.current ||
+          moveConsent.current ||
           updateRequiredRef.current ||
           Date.now() >= sessionExpiresAt.current
         )
           return;
         if (error instanceof Error && 'code' in error && error.code === 'NAVIGATION_DENIED') return;
-        if (attempt >= 3) return;
+        // A longer transient outage must not strand a signed-in, paired pane
+        // permanently; keep only one slow retry and never retry mutations.
+        if (retryTimer.current) clearTimeout(retryTimer.current);
         retryTimer.current = setTimeout(
           () => startRegistration.current(generation, deviceId, transportId, attempt + 1),
-          5_000 * 2 ** attempt,
+          attempt >= 3 ? 45_000 : 5_000 * 2 ** attempt,
         );
       });
   };
 
   const sendCommand = useCallback(
     async <TReq, TResp>(action: BridgeAction, rawPayload: TReq): Promise<TResp> => {
+      const execute = async (consentRequestId?: string): Promise<TResp> => {
+      if (moveConsent.current && (moveConsent.current.phase !== 'finalizing' ||
+        consentRequestId !== moveConsent.current.consentRequestId ||
+        action !== 'MOVE_EMAIL' && action !== 'MOVE_TO_SPAM' ||
+        (rawPayload as Record<string, unknown>)?.operationId !== moveConsent.current.operationId))
+        throw new Error('Finish the Outlook move confirmation before making another request');
       if (action === 'PING' || action === 'PAIR_DEVICE') {
         // Never forward a browser-supplied code or secret into the native pairing dialog.
         return nativeRequest<TResp>(action, {});
       }
-      if (action === 'REGISTER_NAVIGATION' || action === 'CLEAR_SESSION')
+      if (action === 'REGISTER_NAVIGATION' || action === 'CLEAR_SESSION' ||
+        action === 'PREPARE_MOVE_CONSENT' || action === 'NATIVE_MOVE_CONSENT_RESOLVED')
         throw new Error('Native session controls are internal');
       const registered = navigation.current;
       if (
@@ -436,16 +509,17 @@ export function useOutlookBridge() {
       }
       if (navigation.current !== registered || epoch.current !== registered.generation)
         throw new Error('Outlook navigation changed');
+      let result: TResp;
       try {
-        const result = await nativeRequest<TResp>(
+        result = await nativeRequest<TResp>(
           action,
           { ...fullPayload, storeId: ticket.storeId },
           {
             ticket: ticket.ticket,
             transportId: registered.transportId,
+            ...(consentRequestId ? { consentRequestId } : {}),
           },
         );
-        return result;
       } catch (error) {
         if (navigation.current === registered) {
           invalidateNavigation();
@@ -455,10 +529,115 @@ export function useOutlookBridge() {
               registered.deviceId,
               registered.transportId,
             );
+          } else if (
+            epoch.current === registered.generation &&
+            currentScope.current === registered.scopeKey &&
+            !updateRequiredRef.current &&
+            Date.now() < sessionExpiresAt.current
+          ) {
+            setAuthorizationUnavailable(true);
+            // A denied folder clears the native selection-event lease. Without
+            // a slow re-read, returning to Inbox cannot wake the pane. Retry
+            // fresh navigation/read tickets only while this staff scope lives.
+            retryTimer.current = setTimeout(() => {
+              if (
+                epoch.current === registered.generation &&
+                currentScope.current === registered.scopeKey &&
+                Date.now() < sessionExpiresAt.current
+              ) startRegistration.current(registered.generation, registered.deviceId, registered.transportId);
+            }, 45_000);
           }
         }
         throw error;
       }
+      if (action === 'MOVE_EMAIL' || action === 'MOVE_TO_SPAM') {
+        const offered = result as { consentRequired?: unknown; consentRequestId?: unknown;
+          operationId?: unknown } | null;
+        if (offered && offered.consentRequired === true) {
+          if (consentRequestId || !/^[0-9a-f]{32}$/.test(String(offered.consentRequestId)) ||
+            offered.operationId !== fullPayload.operationId || moveConsent.current)
+            throw new Error('Invalid or repeated native Outlook move confirmation');
+          // The native add-in has already checked the staff, device, and exact
+          // COM scope with a signed server preflight. No COM move occurs yet.
+          if (renewalTimer.current) clearTimeout(renewalTimer.current);
+          if (retryTimer.current) clearTimeout(retryTimer.current);
+          renewalTimer.current = null;
+          retryTimer.current = null;
+          let resolveOutcome!: PendingMoveConsent['resolve'];
+          const outcome = new Promise<Parameters<PendingMoveConsent['resolve']>[0]>((resolve) => {
+            resolveOutcome = resolve;
+          });
+          const consent: PendingMoveConsent = {
+            consentRequestId: offered.consentRequestId as string,
+            operationId: fullPayload.operationId as string,
+            navigation: registered,
+            phase: 'dialog',
+            resolve: resolveOutcome,
+            timeout: setTimeout(() => {
+              if (moveConsent.current !== consent) return;
+              // A person may take longer than the first 60s browser ticket.
+              // Four minutes leaves time for a new ticket before the native
+              // server-side five-minute one-use consent expires.
+              invalidateNavigation();
+              if (epoch.current === registered.generation &&
+                currentScope.current === registered.scopeKey &&
+                Date.now() < sessionExpiresAt.current)
+                startRegistration.current(registered.generation, registered.deviceId, registered.transportId);
+            }, 4 * 60_000),
+          };
+          moveConsent.current = consent;
+          setConsentInProgress(true);
+          let completed = false;
+          try {
+            const prepared = await nativeRequest<{ status: string; consentRequestId: string;
+              operationId: string }>('PREPARE_MOVE_CONSENT', {
+              consentRequestId: consent.consentRequestId, operationId: consent.operationId,
+            });
+            if (prepared.status !== 'pending' || prepared.consentRequestId !== consent.consentRequestId ||
+              prepared.operationId !== consent.operationId)
+              throw new Error('Native Outlook move confirmation did not start');
+            if (await outcome !== 'approved')
+              throw new Error('Outlook move confirmation was declined, expired, or interrupted; no move was requested');
+            if (moveConsent.current !== consent ||
+              epoch.current !== registered.generation ||
+              currentScope.current !== registered.scopeKey ||
+              getMailCacheScope().activeTransportId !== registered.transportId ||
+              Date.now() >= sessionExpiresAt.current)
+              throw new Error('Outlook staff or mailbox changed during move confirmation');
+            // A renewal that began just before the dialog must settle before
+            // we register a new challenge for this confirmed exact-scope move.
+            const previousFlight = registrationFlight.current;
+            if (previousFlight?.generation === registered.generation) {
+              try { await previousFlight.promise; } catch { /* Fresh registration is still required. */ }
+            }
+            await registerNavigation(registered.generation, registered.deviceId, registered.transportId, true);
+            if (!navigation.current || navigation.current === registered)
+              throw new Error('A fresh Outlook navigation was not registered after confirmation');
+            const finalMove = await execute(consent.consentRequestId);
+            completed = true;
+            return finalMove;
+          } catch (error) {
+            if (navigation.current === registered && epoch.current === registered.generation) {
+              invalidateNavigation();
+              if (currentScope.current === registered.scopeKey &&
+                Date.now() < sessionExpiresAt.current)
+                startRegistration.current(registered.generation, registered.deviceId, registered.transportId);
+            }
+            throw error;
+          } finally {
+            if (moveConsent.current === consent) {
+              clearTimeout(consent.timeout);
+              moveConsent.current = null;
+              setConsentInProgress(false);
+            }
+            if (completed && epoch.current === registered.generation)
+              void loadMailRef.current(registered.generation);
+          }
+        }
+      }
+      return result;
+      };
+      return execute();
     },
     [invalidateNavigation, nativeRequest, registerNavigation],
   );
@@ -492,6 +671,7 @@ export function useOutlookBridge() {
         const parsedEmail = WorkstationEmailPayloadSchema.safeParse(data);
         setActiveEmail(parsedEmail.success ? parsedEmail.data : null);
         setActiveEmailOwner(currentScope.current);
+        setAuthorizationUnavailable(false);
         deniedTickets.current = 0;
         failedNativeAuthorizations.current = 0;
       }
@@ -507,8 +687,23 @@ export function useOutlookBridge() {
       const result = parseBridgeMessage(
         typeof event.data === 'string' ? event.data : JSON.stringify(event.data),
       );
+      if (result.version === BRIDGE_PROTOCOL_VERSION &&
+        result.action === 'NATIVE_MOVE_CONSENT_RESOLVED' && result.requestId === 'event') {
+        const consent = moveConsent.current;
+        const data = result.data as { consentRequestId?: unknown; operationId?: unknown;
+          approved?: unknown } | null;
+        if (consent?.phase === 'dialog' && consent.navigation === navigation.current &&
+          result.success && data?.consentRequestId === consent.consentRequestId &&
+          data.operationId === consent.operationId && typeof data.approved === 'boolean') {
+          consent.phase = 'finalizing';
+          clearTimeout(consent.timeout);
+          consent.resolve(data.approved ? 'approved' : 'declined');
+        }
+        return;
+      }
       if (isSelectionChangedEvent(result)) {
         if (
+          moveConsent.current ||
           !currentScope.current ||
           currentScope.current !== renderedScope.current ||
           !navigation.current ||
@@ -562,16 +757,19 @@ export function useOutlookBridge() {
           JSON.stringify(createBridgeRequest('CLEAR_SESSION', {})),
         );
       navigation.current = null;
+      cancelMoveConsent();
       clearPending();
       window.chrome?.webview?.removeEventListener('message', onMessage);
     };
-  }, [clearPending, refreshPairing, sendCommand]);
+  }, [cancelMoveConsent, clearPending, refreshPairing, sendCommand]);
 
   useEffect(() => {
     const setup = `${scopeKey ?? ''}:${workstationInfo?.deviceId ?? ''}:${workstationInfo?.bridgeProtocolVersion ?? ''}`;
     if (previousSetup.current === setup) return;
     const hadSetup = previousSetup.current !== null;
     previousSetup.current = setup;
+    cancelMoveConsent();
+    navigationRevision.current++;
     currentScope.current = scopeKey;
     const generation = ++epoch.current;
     selection.current++;
@@ -583,6 +781,7 @@ export function useOutlookBridge() {
     firstTicket.current = null;
     deniedTickets.current = 0;
     failedNativeAuthorizations.current = 0;
+    setAuthorizationUnavailable(false);
     if (hadSetup) clearPending(false);
     setActiveEmail(null);
     setCapabilities(null);
@@ -595,7 +794,7 @@ export function useOutlookBridge() {
     ) {
       startRegistration.current(generation, workstationInfo.deviceId, connection.id);
     }
-  }, [scopeKey, workstationInfo, connection?.id, registerNavigation, clearPending]);
+  }, [scopeKey, workstationInfo, connection?.id, registerNavigation, cancelMoveConsent, clearPending]);
 
   useEffect(() => {
     if (!session?.user || !Number.isFinite(createdAt)) return;
@@ -617,6 +816,7 @@ export function useOutlookBridge() {
     (action: BridgeAction) =>
       Boolean(
         currentScope.current &&
+          !consentInProgress &&
           currentScope.current === scopeKey &&
           navigation.current?.scopeKey === scopeKey &&
           capabilitiesOwner === scopeKey &&
@@ -624,11 +824,13 @@ export function useOutlookBridge() {
           capabilities.supportedActions.includes(action) &&
           action !== 'PING',
       ),
-    [capabilities, capabilitiesOwner, scopeKey],
+    [capabilities, capabilitiesOwner, consentInProgress, scopeKey],
   );
 
   return {
     isConnected,
+    authorizationUnavailable,
+    consentInProgress,
     activeEmail: activeEmailOwner === scopeKey ? activeEmail : null,
     workstationInfo,
     capabilities: capabilitiesOwner === scopeKey ? capabilities : null,
@@ -637,6 +839,16 @@ export function useOutlookBridge() {
       requiresRelogin || Boolean(session?.user && Number.isFinite(createdAt) && !sessionValid),
     supportsAction,
     sendCommand,
+    refreshAuthorization: () => {
+      if (moveConsent.current) return;
+      if (!currentScope.current || !scopeKey || currentScope.current !== scopeKey ||
+        !workstationInfo?.paired || !workstationInfo.deviceId || !connection?.id ||
+        updateRequired || Date.now() >= sessionExpiresAt.current) return;
+      deniedTickets.current = 0;
+      failedNativeAuthorizations.current = 0;
+      setAuthorizationUnavailable(false);
+      startRegistration.current(epoch.current, workstationInfo.deviceId, connection.id);
+    },
     pairDevice: async () => {
       await nativeRequest('PAIR_DEVICE', {});
       await refreshPairing();

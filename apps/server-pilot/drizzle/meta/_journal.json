@@ -225,6 +225,13 @@
       "when": 1790640002000,
       "tag": "0031_outlook_navigation_history",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790640003000,
+      "tag": "0032_outlook_native_move_consent",
+      "breakpoints": true
     }
   ]
 }

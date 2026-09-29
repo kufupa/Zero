@@ -202,9 +202,11 @@ export default function OutlookPanePage() {
     capabilities,
     updateRequired,
     requiresRelogin,
+    authorizationUnavailable,
     supportsAction,
     sendCommand,
     pairDevice,
+    refreshAuthorization,
   } = useOutlookBridge();
   const replyRetries = useRef(new Map<string, PendingReplyOperation>());
   const expiredReplyOutcomes = useRef(new Set<string>());
@@ -222,6 +224,16 @@ export default function OutlookPanePage() {
     !requiresRelogin && session?.user?.id && activeConnection?.id
       ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
       : null;
+  const selectedIdentity = activeEmail?.entryId
+    ? `${activeEmail.storeId ?? ''}:${activeEmail.folderEntryId ?? ''}:${activeEmail.entryId}` : null;
+  const contextRevision = useRef({ scope: currentScope, selection: selectedIdentity, scopeEpoch: 0, selectionEpoch: 0 });
+  if (contextRevision.current.scope !== currentScope) {
+    contextRevision.current = { scope: currentScope, selection: selectedIdentity,
+      scopeEpoch: contextRevision.current.scopeEpoch + 1, selectionEpoch: contextRevision.current.selectionEpoch + 1 };
+  } else if (contextRevision.current.selection !== selectedIdentity) {
+    contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
+      selectionEpoch: contextRevision.current.selectionEpoch + 1 };
+  }
   const scopeRef = useRef(currentScope);
   const previousScope = useRef(currentScope);
   scopeRef.current = currentScope;
@@ -491,6 +503,10 @@ export default function OutlookPanePage() {
   const handleInsertAiDraft = async () => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
     const startedScope = currentScope;
+    const startedScopeEpoch = contextRevision.current.scopeEpoch;
+    const startedSelectionEpoch = contextRevision.current.selectionEpoch;
+    const sameStaffScope = () => scopeRef.current === startedScope &&
+      contextRevision.current.scopeEpoch === startedScopeEpoch;
     const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
     const subject =
       activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
@@ -632,7 +648,13 @@ export default function OutlookPanePage() {
           dateLabel,
           lines,
         }));
-      if (scopeRef.current !== startedScope) return;
+      if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
+        // No Outlook command has started for this attempt. A delayed quotation
+        // cannot create a reply for a selection that has since changed away
+        // and back, even when its current EntryID and session string match.
+        if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
+        return;
+      }
       attempt.pdf = pdf;
       const replyPayload = attempt.replyPayload ?? {
         operationId: attempt.operationId,
@@ -647,7 +669,7 @@ export default function OutlookPanePage() {
       const result =
         attempt.draftLocation ??
         (await sendCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
-      if (scopeRef.current !== startedScope) return;
+      if (!sameStaffScope()) return;
       if (!result || typeof result !== 'object')
         throw new Error('Outlook did not confirm the reply draft.');
       draftCreated = true;
@@ -668,7 +690,7 @@ export default function OutlookPanePage() {
       };
       attempt.attachmentPayload = attachmentPayload;
       await sendCommand('ADD_ATTACHMENT_TO_DRAFT', attachmentPayload);
-      if (scopeRef.current !== startedScope) return;
+      if (!sameStaffScope()) return;
       replyRetries.current.delete(key);
       setDraftedDetails({
         entryId: activeEmail.entryId,
@@ -708,7 +730,11 @@ export default function OutlookPanePage() {
       if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
       else toast.success(`${replyLabel}${message}`);
     } catch (err) {
-      if (scopeRef.current !== startedScope) return;
+      if (!sameStaffScope()) return;
+      if (contextRevision.current.selectionEpoch !== startedSelectionEpoch && !attempt.replyPayload) {
+        replyRetries.current.delete(key);
+        return;
+      }
       const errorCode =
         err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : null;
       const hasUnknownOutcome = errorCode === 'OPERATION_OUTCOME_UNKNOWN';
@@ -734,7 +760,7 @@ export default function OutlookPanePage() {
         );
       }
     } finally {
-      if (scopeRef.current === startedScope) {
+      if (sameStaffScope()) {
         replyInFlight.current = false;
         setIsDraftPending(false);
       }
@@ -797,6 +823,14 @@ export default function OutlookPanePage() {
               }}
             >
               Pair Outlook Device
+            </Button>
+          </div>
+        )}
+        {isConnected && workstationInfo?.paired && authorizationUnavailable && !requiresRelogin && (
+          <div role="status" className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+            <p>Select an approved Outlook folder to continue. Nava will retry automatically.</p>
+            <Button type="button" size="sm" onClick={refreshAuthorization}>
+              Refresh Outlook authorization
             </Button>
           </div>
         )}

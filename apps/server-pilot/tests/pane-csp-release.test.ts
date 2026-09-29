@@ -75,8 +75,14 @@ function localStageScript() {
   const end = deploy.indexOf('echo "== hosts: nava.legacyhotels.co.za =="', start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
-  return deploy
-    .slice(start, end)
+  const stage = deploy.slice(start, end);
+  // These fixtures intentionally run without sudo in per-user temporary
+  // directories. The CLI's root-only ownership gate is exercised separately
+  // in web-release-ownership.test.ts with a controlled test UID and ancestor.
+  const ownershipGate = /node "\$WEB_OWNERSHIP_HELPER" (?:ancestors|release) "\$WEB_ROOT" \|\| \{[^}]*\}/g;
+  expect(stage.match(ownershipGate)).toHaveLength(2);
+  return stage
+    .replace(ownershipGate, ':')
     .replaceAll('sudo ', '')
     .replaceAll('--chown=root:root ', '')
     .replaceAll('-o root -g root ', '')

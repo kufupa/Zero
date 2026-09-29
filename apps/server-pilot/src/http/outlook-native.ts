@@ -76,7 +76,7 @@ export function createOutlookNativeHandler(db: DB, key: string) {
         authorized = await authorizeNative(db, verified.deviceId, values as NativeScopeInput);
       } catch (error) {
         if (error instanceof NativeBatchConsentRequiredError) {
-          return Response.json({ code: 'NATIVE_BATCH_CONSENT_REQUIRED' },
+          return Response.json({ code: 'NATIVE_BATCH_CONSENT_REQUIRED', consentChallenge: error.consentChallenge },
             { status: 409, headers: { 'cache-control': 'no-store' } });
         }
         throw error;

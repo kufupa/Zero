@@ -9,9 +9,14 @@ import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 
-const { sendCommandMock, pairDeviceMock, bridgeMockState } = vi.hoisted(() => ({
+const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
+  quotePdfMutate: vi.fn().mockResolvedValue({
+    fileName: 'Quote - CIDB 15-17 Sep.pdf',
+    pdfBase64: 'JVBERw==',
+  }),
   sendCommandMock: vi.fn(async (action: string, _payload?: unknown): Promise<unknown> => {
+    void _payload;
     if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
     return {
       entryId: 'draft-default',
@@ -25,6 +30,9 @@ const { sendCommandMock, pairDeviceMock, bridgeMockState } = vi.hoisted(() => ({
     protocolVersion: 4 as number | undefined,
     paired: true,
     selectedEntryId: '001',
+    userId: 'staff-1',
+    sessionId: 'session-1',
+    transportId: 'transport-1',
     legacyReplySupported: undefined as boolean | undefined,
   },
 }));
@@ -89,8 +97,8 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
     data: {
-      user: { id: 'staff-1', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
-      session: { id: 'session-1' },
+      user: { id: bridgeMockState.userId, email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
+      session: { id: bridgeMockState.sessionId },
     },
     isLoading: false,
   }),
@@ -99,7 +107,7 @@ vi.mock('../lib/auth-client', () => ({
 
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
-    data: { id: 'transport-1', email: 'ropperman@legacyhotels.co.za' },
+    data: { id: bridgeMockState.transportId, email: 'ropperman@legacyhotels.co.za' },
     isLoading: false,
   }),
 }));
@@ -108,12 +116,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteProposalPdf: {
-        mutate: vi.fn().mockResolvedValue({
-          fileName: 'Quote - CIDB 15-17 Sep.pdf',
-          pdfBase64: 'JVBERw==',
-        }),
-      },
+      quoteProposalPdf: { mutate: quotePdfMutate },
     },
   },
 }));
@@ -124,9 +127,12 @@ describe('OutlookPanePage', () => {
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    quotePdfMutate.mockReset();
+    quotePdfMutate.mockResolvedValue({ fileName: 'Quote - CIDB 15-17 Sep.pdf', pdfBase64: 'JVBERw==' });
     sendCommandMock.mockReset();
     sendCommandMock.mockImplementation(
       async (action: string, _payload?: unknown): Promise<unknown> => {
+        void _payload;
         if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
         return {
           entryId: 'draft-default',
@@ -149,6 +155,9 @@ describe('OutlookPanePage', () => {
     bridgeMockState.protocolVersion = 4;
     bridgeMockState.paired = true;
     bridgeMockState.selectedEntryId = '001';
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
+    bridgeMockState.transportId = 'transport-1';
     bridgeMockState.legacyReplySupported = undefined;
   });
 
@@ -205,6 +214,44 @@ describe('OutlookPanePage', () => {
         }),
       );
     });
+  });
+
+  it('does not create an Outlook reply after switching A to B and back to A while PDF is pending', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+
+    bridgeMockState.userId = 'staff-2';
+    bridgeMockState.sessionId = 'session-2';
+    bridgeMockState.transportId = 'transport-2';
+    pane.rerender(<OutlookPanePage />);
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
+    bridgeMockState.transportId = 'transport-1';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => finishPdf({ fileName: 'A-quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT'))
+      .toHaveLength(0);
+  });
+
+  it('does not create a reply if the selected message switches away and back during PDF generation', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    bridgeMockState.selectedEntryId = '001';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => finishPdf({ fileName: 'stale-quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
   });
 
   it('reuses the reply operation ID after a client timeout so retry cannot duplicate the draft', async () => {

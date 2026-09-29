@@ -15,7 +15,7 @@ export class BridgeTicketDeniedError extends Error {
 }
 /** Escapes the rolled-back transaction; only the signed HTTP handler exposes its response code. */
 export class NativeBatchConsentRequiredError extends Error {
-  constructor() { super('Native batch consent required'); }
+  constructor(readonly consentChallenge: string) { super('Native batch consent required'); }
 }
 const readActions = new Set(['PING', 'GET_CAPABILITIES', 'LIST_STORES', 'LIST_FOLDERS', 'LIST_ACCOUNTS',
   'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'GET_EMAIL_BY_ENTRY_ID', 'LIST_TEMPLATES', 'GET_TEMPLATE_CONTENT',
@@ -23,6 +23,7 @@ const readActions = new Set(['PING', 'GET_CAPABILITIES', 'LIST_STORES', 'LIST_FO
 const mutationActions = new Set(['CREATE_DRAFT', 'UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ', 'CREATE_FOLDER', 'MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const moveActions = new Set(['MOVE_EMAIL', 'MOVE_TO_SPAM']);
+const createdDraftActions = new Set(['CREATE_DRAFT', 'CREATE_REPLY_DRAFT']);
 const itemReadActions = new Set(['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64',
   'GET_CONVERSATION_THREAD']);
 const itemMutationActions = new Set(['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
@@ -41,7 +42,8 @@ export type TicketInput = { deviceId: string; paneChallenge: string; action: str
   transportId: string; resources?: string[]; sourceFolderId?: string; destinationFolderId?: string };
 export type NativeScopeInput = { ticket: string; action: string; storeId: string; transportId: string;
   operationId?: string; resources?: string[]; sourceFolderId?: string; destinationFolderId?: string;
-  sourceKind?: string; destinationKind?: string; nativeBatchConsent?: boolean };
+  sourceKind?: string; destinationKind?: string; nativeBatchConsent?: boolean;
+  nativeBatchConsentChallenge?: string };
 
 /** Server-only operator provisioning. Never expose this mutation to tRPC or public HTTP. */
 export async function provisionApprovedFolder(db: DB, input: { storeId: string; transportId: string; folderId: string; kind: 'triage' | 'inbox' | 'spam' | 'drafts' }) {
@@ -148,6 +150,11 @@ function validResourceScope(input: NativeScopeInput): boolean {
     || input.action !== 'CREATE_DRAFT' && input.action !== 'CREATE_FOLDER' && !input.resources?.length)) return false;
   if (moveActions.has(input.action) && (!isToken(input.sourceFolderId) || !isToken(input.destinationFolderId))) return false;
   if (input.action === 'CREATE_FOLDER' && !isToken(input.sourceFolderId)) return false;
+  // A draft write must stay inside this operator-approved store's real Drafts
+  // folder. Native resolves the actual destination from Outlook COM; the pane
+  // does not get to invent or override it.
+  if (createdDraftActions.has(input.action) && (!isToken(input.destinationFolderId)
+    || input.destinationKind !== 'drafts')) return false;
   // Native must explicitly report actual Outlook folder identities. No denylist-only shortcuts.
   if ((itemReadActions.has(input.action) || input.action === 'GET_TEMPLATE_CONTENT') && !input.resources?.length) return false;
   if (targetedItemActions.has(input.action) && !isToken(input.sourceFolderId)) return false;
@@ -162,8 +169,11 @@ function validResourceScope(input: NativeScopeInput): boolean {
 
 /** Called only after successful independent signed-device verification. One ticket -> one scoped native response. */
 export async function authorizeNative(db: DB, deviceId: string, input: NativeScopeInput): Promise<Record<string, unknown> | null> {
-  if (resolveAuthSessionProfile() !== 'legacy' || !/^[A-Za-z0-9_-]{43}$/.test(input.ticket) || !validResourceScope(input)) return null;
-  return db.transaction(async (tx) => {
+  if (resolveAuthSessionProfile() !== 'legacy' || !/^[A-Za-z0-9_-]{43}$/.test(input.ticket) || !validResourceScope(input)
+    || input.nativeBatchConsent === true && (!moveActions.has(input.action)
+      || !/^[A-Za-z0-9_-]{43}$/.test(input.nativeBatchConsentChallenge ?? ''))
+    || input.nativeBatchConsent !== true && input.nativeBatchConsentChallenge !== undefined) return null;
+  const result = await db.transaction(async (tx) => {
     const [ticket] = await tx.select().from(outlookBridgeTicket)
       .where(and(eq(outlookBridgeTicket.ticketHash, hash(input.ticket)), eq(outlookBridgeTicket.deviceId, deviceId),
         isNull(outlookBridgeTicket.consumedAt), gt(outlookBridgeTicket.expiresAt, sql`clock_timestamp()`)))
@@ -174,9 +184,16 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     if (declaredResources !== null && JSON.stringify(declaredResources) !== JSON.stringify(input.resources ?? null)
       || declaredSource !== null && declaredSource !== input.sourceFolderId
       || declaredDestination !== null && declaredDestination !== input.destinationFolderId) return null;
+    if (moveActions.has(input.action)) {
+      // Serialize all devices sharing this transport *before* validating
+      // revocable authority. Otherwise a move waiting on this lock can mint a
+      // new grant using navigation/device/folder rows read before revocation.
+      await tx.select({ id: mailboxTransport.id }).from(mailboxTransport)
+        .where(eq(mailboxTransport.id, input.transportId)).for('update');
+    }
     const [navigation] = await tx.select({ challengeHash: outlookNavigation.challengeHash }).from(outlookNavigation)
       .where(and(eq(outlookNavigation.deviceId, deviceId), eq(outlookNavigation.challengeHash, ticket.challengeHash),
-        gt(outlookNavigation.expiresAt, sql`clock_timestamp()`))).limit(1);
+        gt(outlookNavigation.expiresAt, sql`clock_timestamp()`))).for('share').limit(1);
     const table = session;
     const [staff] = await tx.select({ id: table.id, createdAt: table.createdAt, expiresAt: table.expiresAt })
       .from(table).innerJoin(user, eq(user.id, table.userId))
@@ -184,10 +201,11 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         gt(table.expiresAt, sql`clock_timestamp()`),
         gt(sql`${table.createdAt} + interval '24 hours'`, sql`clock_timestamp()`),
         sql`${table.createdAt} <= clock_timestamp()`)).for('share').limit(1);
-    if (!navigation || !staff || !await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId, input.storeId)) return null;
+    if (!navigation || !staff || !await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId,
+      input.storeId, true)) return null;
     const folderRows = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
       .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
-        eq(outlookApprovedFolder.transportId, input.transportId)));
+        eq(outlookApprovedFolder.transportId, input.transportId))).for('share');
     const approved = (id: string | undefined, kind?: string) => folderRows.some((row) => row.folderId === id && (!kind || row.kind === kind));
     if (input.sourceFolderId && !approved(input.sourceFolderId)) return null;
     // DB kind must match native's observed kind; a Drafts source approval is never a move destination.
@@ -195,15 +213,33 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     if (moveActions.has(input.action) && (!approved(input.sourceFolderId) || !approved(input.destinationFolderId, input.destinationKind))) return null;
     const scopeHash = hash(JSON.stringify([input.action, input.storeId, input.transportId, input.operationId,
       input.resources ?? [], input.sourceFolderId ?? null, input.destinationFolderId ?? null]));
+    // A batch approval cannot silently change native-observed folder kinds,
+    // even if an operator changes an approved folder's kind during the dialog.
+    const consentScopeHash = hash(JSON.stringify([scopeHash, input.sourceKind ?? null, input.destinationKind ?? null]));
+    let preflightTicketHash: string | null = null;
+    if (input.nativeBatchConsent === true) {
+      const [preflight] = await tx.select().from(outlookBridgeTicket)
+        .where(and(eq(outlookBridgeTicket.consentChallengeHash, hash(input.nativeBatchConsentChallenge!)),
+          isNull(outlookBridgeTicket.consentConsumedAt),
+          gt(outlookBridgeTicket.consentExpiresAt, sql`clock_timestamp()`)))
+        .for('update').limit(1);
+      if (!preflight || !preflight.consumedAt || preflight.consentScopeHash !== consentScopeHash
+        || preflight.deviceId !== deviceId || preflight.sessionId !== ticket.sessionId
+        || preflight.userId !== ticket.userId || preflight.storeId !== input.storeId
+        || preflight.transportId !== input.transportId || preflight.action !== input.action
+        || preflight.operationId !== input.operationId) return null;
+      preflightTicketHash = preflight.ticketHash;
+    }
     let retry = false;
     if (moveActions.has(input.action)) {
-      // Lock the shared mailbox row; all devices serialize budget accounting across panes/restarts.
-      await tx.select({ id: mailboxTransport.id }).from(mailboxTransport)
-        .where(eq(mailboxTransport.id, input.transportId)).for('update');
+      // The mailbox lock above serializes budget accounting across devices.
       const [prior] = await tx.select().from(outlookMoveReceipt).where(and(eq(outlookMoveReceipt.transportId, input.transportId),
         eq(outlookMoveReceipt.deviceId, deviceId), eq(outlookMoveReceipt.operationId, input.operationId!))).limit(1);
       if (prior) {
         if (prior.scopeHash !== scopeHash || prior.count !== input.resources!.length) return null;
+        // A completed operation can use the existing idempotent retry path,
+        // not an unspent consent for a second authorization of that operation.
+        if (preflightTicketHash) return null;
         retry = true;
       } else {
         const [budget] = await tx.select({ total: sql<number>`coalesce(sum(${outlookMoveReceipt.count}), 0)` })
@@ -212,7 +248,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         const [deviceBudget] = await tx.select({ total: sql<number>`coalesce(sum(${outlookMoveReceipt.count}), 0)` })
           .from(outlookMoveReceipt).where(and(eq(outlookMoveReceipt.deviceId, deviceId),
             gt(outlookMoveReceipt.approvedAt, sql`clock_timestamp() - interval '1 minute'`)));
-        if (input.nativeBatchConsent !== true && (Number(budget?.total ?? 0) + input.resources!.length > 25
+        if (!preflightTicketHash && (Number(budget?.total ?? 0) + input.resources!.length > 25
           || Number(deviceBudget?.total ?? 0) + input.resources!.length > 25
           || input.resources!.length >= 10)) {
           // The mailbox lock can outlive the initial ticket/session/navigation
@@ -235,7 +271,21 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
               eq(outlookApprovedFolder.transportId, input.transportId)));
           if (!currentFolders.some((row) => row.folderId === input.sourceFolderId)
             || !currentFolders.some((row) => row.folderId === input.destinationFolderId && row.kind === input.destinationKind)) return null;
-          throw new NativeBatchConsentRequiredError();
+          const consentChallenge = randomBytes(32).toString('base64url');
+          const claimed = await tx.update(outlookBridgeTicket).set({ consumedAt: sql`clock_timestamp()`,
+            consentChallengeHash: hash(consentChallenge), consentScopeHash,
+            consentExpiresAt: sql`clock_timestamp() + interval '5 minutes'` })
+            .where(and(eq(outlookBridgeTicket.ticketHash, ticket.ticketHash), isNull(outlookBridgeTicket.consumedAt),
+              gt(outlookBridgeTicket.expiresAt, sql`clock_timestamp()`),
+              sql`exists (select 1 from "session" s where s.id = ${ticket.sessionId} and s.user_id = ${ticket.userId}
+                and s.expires_at > clock_timestamp() and s.created_at + interval '24 hours' > clock_timestamp())`,
+              sql`exists (select 1 from "outlook_navigation" n where n.device_id = ${deviceId}
+                and n.challenge_hash = ${ticket.challengeHash} and n.expires_at > clock_timestamp())`))
+            .returning({ ticketHash: outlookBridgeTicket.ticketHash });
+          if (claimed.length !== 1) throw ticketExpiredDuringTransaction;
+          // Commit this preflight before the signed HTTP handler returns 409.
+          // Neither the original browser ticket nor its challenge can mint a COM grant.
+          return new NativeBatchConsentRequiredError(consentChallenge);
         }
         await tx.insert(outlookMoveReceipt).values({ deviceId, transportId: input.transportId,
           operationId: input.operationId!, scopeHash, count: input.resources!.length,
@@ -250,6 +300,14 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
       .returning({ ticketHash: outlookBridgeTicket.ticketHash });
     // Returning null here would COMMIT a provisional move receipt. Roll back instead.
     if (claimed.length !== 1) throw ticketExpiredDuringTransaction;
+    if (preflightTicketHash) {
+      const used = await tx.update(outlookBridgeTicket).set({ consentConsumedAt: sql`clock_timestamp()` })
+        .where(and(eq(outlookBridgeTicket.ticketHash, preflightTicketHash),
+          isNull(outlookBridgeTicket.consentConsumedAt),
+          gt(outlookBridgeTicket.consentExpiresAt, sql`clock_timestamp()`)))
+        .returning({ ticketHash: outlookBridgeTicket.ticketHash });
+      if (used.length !== 1) throw ticketExpiredDuringTransaction;
+    }
     const mutation = mutationActions.has(input.action);
     const expiresAt = new Date(Math.min(Date.now() + (mutation ? 15_000 : 60_000),
       staff.expiresAt.getTime(), staff.createdAt.getTime() + 24 * 60 * 60_000));
@@ -263,4 +321,6 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     if (error === ticketExpiredDuringTransaction) return null;
     throw error;
   });
+  if (result instanceof NativeBatchConsentRequiredError) throw result;
+  return result;
 }

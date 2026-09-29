@@ -431,7 +431,9 @@ type NginxActivationScenario =
   | 'remote-only'
   | 'pane-mismatch'
   | 'index-mismatch'
-  | 'asset-mismatch';
+  | 'asset-mismatch'
+  | 'pm2-health'
+  | 'healthy';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
 
 async function runNginxActivation({
@@ -723,7 +725,13 @@ ip() {
       `${probe}\nif command -v nginx >/dev/null 2>&1; then`,
     );
     const result = await runBash({
-      input: `${harness}\n${activation}`,
+      input: `${harness}\n${activation}\nif [ "$NGINX_TEST_SCENARIO" = 'pm2-health' ]; then
+  NGINX_FAILURE_CONTEXT='backend startup or health check failed'
+  exit 91
+fi
+if [ "$NGINX_TEST_SCENARIO" = 'cleanup-exit' ] || [ "$NGINX_TEST_SCENARIO" = 'healthy' ]; then
+  finalize_nginx_release
+fi`,
       env: {
         ...process.env,
         SERVER_PILOT: toBashPath(serverPilot),
@@ -2265,6 +2273,29 @@ describe('deploy config', () => {
     expect(result.enabledTarget).toBe('../sites-available/previous-nava');
     expect(result.nginxCalls).toBe(0);
     expect(result.reloadCalls).toBe(0);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('keeps the previous web release when PM2 startup or health fails after Nginx activation', async () => {
+    const result = await runNginxActivation({
+      scenario: 'pm2-health', priorState: 'present', priorRelease: true,
+    });
+    expect(result.status, result.stderr).toBe(91);
+    expect(result.stderr).toContain('backend startup or health check failed; restored previous config');
+    expect(result.site).toBe(result.priorCandidate);
+    expect(result.site).not.toBe(result.candidate);
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('commits the matching new web release only after backend health succeeds', async () => {
+    const result = await runNginxActivation({
+      scenario: 'healthy', priorState: 'present', priorRelease: true,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.site).toBe(result.candidate);
+    expect(result.enabledState).toBe('valid');
     expect(result.backupEntries).toEqual([]);
   });
 

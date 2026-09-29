@@ -215,6 +215,8 @@ export type BridgeAction =
   | 'PAIR_DEVICE'
   | 'REGISTER_NAVIGATION'
   | 'CLEAR_SESSION'
+  | 'PREPARE_MOVE_CONSENT'
+  | 'NATIVE_MOVE_CONSENT_RESOLVED'
   | 'GET_CAPABILITIES'
   | 'LIST_STORES'
   | 'LIST_FOLDERS'
@@ -247,6 +249,7 @@ export interface BridgeRequest<T = unknown> {
   payload: T;
   ticket?: string;
   transportId?: string;
+  consentRequestId?: string;
 }
 
 export interface BridgeResponse<T = unknown> {
@@ -262,7 +265,7 @@ export interface BridgeResponse<T = unknown> {
 export function createBridgeRequest<T>(
   action: BridgeAction,
   payload: T,
-  grant?: { ticket: string; transportId: string },
+  grant?: { ticket: string; transportId: string; consentRequestId?: string },
 ): BridgeRequest<T> {
   return {
     requestId: `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,

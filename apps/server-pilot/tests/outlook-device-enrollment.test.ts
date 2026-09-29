@@ -50,6 +50,20 @@ describe.skipIf(!TEST_DB_AVAILABLE)('Outlook device enrollment (disposable Postg
     });
   });
 
+  it('never issues a custom operator approval lasting even one second beyond ten minutes', async () => {
+    await withTestDb(async (db) => {
+      const ids = await fixtures(db);
+      const now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        await expect(issueEnrollment(db, { ...ids, storeId,
+          expiresAt: new Date(now + 10 * 60_000 + 1) })).rejects.toThrow(/10 minutes/);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
   it('only one simultaneous independent connection can consume a code', async () => {
     const first = openTestDbSession();
     const second = openTestDbSession();

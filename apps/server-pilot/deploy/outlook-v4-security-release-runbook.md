@@ -9,10 +9,10 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 ## Artifacts and independent gates
 
 - Expected root gitlink: `apps/server-pilot/vsto` at
-  `0125d13ff5d06e094b834e5a0f31fc660324e7bd`; private Windows CI run
-  `36508701341` succeeded. Its private `NavaOutlookSetup.exe` artifact was
-  reported as **4,247,892 bytes**, SHA-256
-  `5a2c01e02dacbd8d94d5a809e3ffeb1018558c862939ca87bc7f360016ab52b5`.
+  `709f048955015d9426eecf47a1567cc614831b6a`; private Windows CI run
+  `36522261065` succeeded at this exact SHA. The locally downloaded, uninstalled
+  `NavaOutlookSetup.exe` artifact is **4,251,089 bytes**, SHA-256
+  `d43e2f046de06fe633acc940b515a4af8674c55b995d2ee2ef269ae81420286e`.
   Re-fetch from the exact run, verify local hash/size, x86/x64 builds, manifest
   signatures and chain under supervised IT policy before distributing. Do not
   equate a CI self-signed VSTO manifest with a publisher-trusted setup EXE or
@@ -23,9 +23,24 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
   asset versions, blocked injection, staff sign-in, buttons, PDF drafting and
   bridge-free screenshot popouts. The earlier built Chromium test used fake
   sign-in and did not exercise Outlook, real PDF or screenshot popouts.
+- The new deploy preflights every web-root ancestor, root-owns the release
+  parents, then refuses to publish if *any* non-download legacy file or
+  directory is a symlink, app-owned or group/world writable. Prior flat
+  web builds and shared hashed assets may need a **one-time supervised**
+  ownership/legacy-file inventory and repair on EC2, with backup and
+  checksums. Do not remove unknown files or blindly chown the separately
+  managed installer download. Later UI-only releases remain centralized.
+  Root ownership cannot isolate a compromised `ubuntu` PM2 process if that
+  runtime user has unrestricted passwordless `sudo`; inspect EC2 sudoers and
+  keep deploy privilege separate before claiming OS-level isolation.
 - Record real TLS/Outlook/IT results for every enrolled Windows user and
   workstation separately; Linux source contracts and the native CI cannot
   prove this. Keep guest mail and credentials out of the release record.
+- Root PR CI now requires `NAVA_OUTLOOK_READ_TOKEN` with read-only access to
+  the private `kufupa/nava-outlook-addin` repo for security-changing PRs,
+  checks out this exact gitlink and fails if source is missing or mismatched.
+  A repo administrator must configure that secret before merging; do not
+  downgrade CI to its old source-contract warning/skip behavior.
 
 ## Order of operations — all production steps require a separate approval
 
@@ -64,6 +79,11 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    `PILOT_OPEN_SIGNUP='0'` now overrides even a stale
    `PILOT_SIGNUP_ALLOWLIST`; explicitly verify blocked self-signup and
    existing named sign-in. Keep remote-admin's separate 12-hour session.
+   In the legacy HTTP process, a capped hourly pass removes tickets expired
+   more than one day ago, move receipts older than one day and 256-bit random
+   navigation replay markers older than 30 days. Migration `0032` supplies
+   the cleanup indexes; cleanup does not touch active device enrollments,
+   current grants or guest-mail content. Monitor its generic failure log.
 4. Controlled legacy-session invalidation: after verifying the new 24-hour
    absolute (not sliding) hotel profile, identify previously issued long-lived
    rows in the legacy `session` table by creation/expiry, get change-manager
@@ -77,7 +97,10 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    release. `deploy/deploy-ec2.sh` computes an ID from the complete client
    tree; immutable `/releases/<id>` and matching Nginx script hashes switch
    together; prior hashed chunks stay available to open tabs. Check actual
-   Nginx syntax and the exact `/outlook-pane` URL, final response headers,
+   EC2 web-root ancestry, all retained legacy files and old `/assets` for
+   trusted ownership and non-writable modes, and supervise any one-time repair
+   before Nginx activation. Never bypass the new fail-closed ownership check.
+   Check Nginx syntax and the exact `/outlook-pane` URL, final response headers,
    cache/asset behavior, blocked inline injection and non-pane web-mail route
    policy. Never publish an index with mismatched script hashes or a stale
    fallback. Use a staged staff sign-in and purpose-built read-only health/API
@@ -85,7 +108,9 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 6. Each supervised staff Windows install: verify the *exact* artifact hash,
    Classic Outlook version/bitness and runtime; have staff save drafts and
    close Outlook voluntarily before setup. Installer never `taskkill`s
-   Outlook. IT must approve VSTO TrustedPublisher/Inclusion List in HKCU,
+   Outlook; if it cannot positively check that Outlook has closed (tasklist
+   fails or has unreadable/empty output), it refuses to replace add-in files.
+   IT must approve VSTO TrustedPublisher/Inclusion List in HKCU,
    evaluate publisher warnings and verify manifest chain; never silently trust
    the self-signed certificate as a Root CA or bypass endpoint protection.
    Native 1.0.12/v4 requires a one-use code within 10 minutes per Windows
@@ -114,9 +139,17 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    category/flag/read and one approved same-store triage move. Observe native
    exact-item/destination confirmation for batches of 10+ or >25/min; deny
    wrong store/folder, revoked device, expired ticket and old v2/v3 client.
-   Today's native consent dialog lists exact Outlook EntryIDs and destination
-   EntryID, not readable message subjects or folder names: IT/staff must judge
-   its usability in a real Windows pilot before treating it as informed approval.
+   The native-only consent dialog shows the actual Outlook destination folder,
+   message subjects, senders and exact EntryIDs. IT/staff must still verify it
+   with a real Windows profile before treating it as informed approval.
+   **Shared-store reply blocker:** Outlook `Reply().Save()` can write first to
+   the profile-default Drafts. This version refuses reply creation *before*
+   any side effect unless the exact approved store Drafts is also the
+   profile-default Drafts. On a nondefault Centurion/DaVinci shared mailbox,
+   reply+PDF draft automation is intentionally unavailable: staff must use
+   manual Outlook Reply pending a supervised, separately validated native COM
+   solution. Check every target profile/store before promising that workflow;
+   do not silently weaken this guard or publish the installer as feature-complete.
    Native `SEND_DRAFT`, `DELETE_EMAIL` and permanent delete must stay denied;
    staff Send/Delete is *manual in Outlook*. Separately verify legitimate
    server web-mail `mail.send`, `mail.delete`, `mail.bulkDelete` still work
@@ -152,6 +185,7 @@ Native Send/Delete removal does **not** eliminate Send/Delete via same-origin
 server web-mail `mail.send`, `mail.delete` and `mail.bulkDelete`. An attacker
 executing script under an authenticated staff session (e.g. a web-mail raw-HTML
 pane XSS) could invoke those routes. This release keeps legitimate web-mail
-functionality intact; assign an urgent separately approved web-mail HTML
-sanitization/CSP/session-boundary review with owner and due date. Pane-only CSP
-does not fix other web routes. Do not claim this risk closed at v4 rollout.
+functionality intact; track the separately scoped
+[`outlook-web-mail-html-xss-follow-up.md`](../../../docs/production-readiness/outlook-web-mail-html-xss-follow-up.md)
+with an owner and date before pilot sign-off. Pane-only CSP does not fix other
+web routes. Do not claim this risk closed at v4 rollout.

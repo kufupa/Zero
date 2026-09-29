@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { unzipSync } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,7 @@ import { patchSheetXml } from '../src/quote-proposal/patch-sheet.js';
 import { patchProposalWorkbook } from '../src/quote-proposal/patch-template.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { mailboxAccess } from '../src/db/schema/mail.js';
 
 const reachable = await probeTestDb();
 
@@ -117,6 +119,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation.quoteProposalPdf 
           lines: sampleLines,
         }),
       ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' } satisfies Partial<TRPCError>);
+    });
+  });
+
+  it('does not use another granted mailbox when the signed-in staff selected Centurion', async () => {
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      await db.insert(mailboxAccess).values({ id: randomUUID(), userId: 'user-ropperman',
+        transportId: 'transport-nava', role: 'member' });
+      await expect(sessionCaller().workstation.quoteProposalPdf({
+        outlookEmail: 'navaai@legacyhotels.co.za',
+        agency: 'CIDB', dateLabel: '15-17 Sep', lines: sampleLines,
+      })).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' } satisfies Partial<TRPCError>);
     });
   });
 

@@ -38,8 +38,10 @@ export async function issueEnrollment(db: DB, input: { storeId: string; expiresA
   const grants = input.grants ?? [{ userId: input.userId, transportId: input.transportId }];
   if (!input.storeId || input.storeId.length > 512 || grants.length < 1 || grants.length > 25) throw new Error('Invalid operator approval');
   const code = randomBytes(32).toString('base64url');
-  const expiry = input.expiresAt ?? new Date(Date.now() + 10 * 60_000);
-  if (expiry.getTime() > Date.now() + 10 * 60_000 + 1000) throw new Error('Approval exceeds 10 minutes');
+  const issuedAt = Date.now();
+  const expiry = input.expiresAt ?? new Date(issuedAt + 10 * 60_000);
+  if (!Number.isFinite(expiry.getTime()) || expiry.getTime() > issuedAt + 10 * 60_000)
+    throw new Error('Approval exceeds 10 minutes or has an invalid expiry');
   await db.transaction(async (tx) => {
     for (const grant of grants) {
       const approved = await tx.select({ userId: user.id }).from(user)
@@ -142,14 +144,19 @@ export async function verifyDeviceRequest(db: DB, request: SignedDeviceRequest, 
 }
 
 /** Always check live session and mailboxAccess separately for each staff ticket/COM authorization. */
-export async function isDeviceAuthorized(db: DB, deviceId: string, userId: string, transportId: string, observedStoreId: string): Promise<boolean> {
-  const grant = await db.select({ deviceId: outlookDevice.deviceId }).from(outlookDevice)
+export async function isDeviceAuthorized(db: DB, deviceId: string, userId: string, transportId: string,
+  observedStoreId: string, holdThroughGrant = false): Promise<boolean> {
+  const query = db.select({ deviceId: outlookDevice.deviceId }).from(outlookDevice)
     .innerJoin(outlookDeviceGrant, eq(outlookDeviceGrant.deviceId, outlookDevice.deviceId))
     .innerJoin(mailboxAccess, and(eq(mailboxAccess.userId, outlookDeviceGrant.userId), eq(mailboxAccess.transportId, outlookDeviceGrant.transportId)))
     .innerJoin(mailboxTransport, eq(mailboxTransport.id, outlookDeviceGrant.transportId))
     .where(and(eq(outlookDevice.deviceId, deviceId), eq(outlookDevice.storeId, observedStoreId),
       isNull(outlookDevice.revokedAt), eq(outlookDeviceGrant.userId, userId),
       eq(outlookDeviceGrant.transportId, transportId), eq(mailboxTransport.isActive, true))).limit(1);
+  // When minting a scope, hold the exact device, named staff/mailbox grant and
+  // transport rows until commit. A simultaneous revocation then linearizes
+  // either before this check (deny) or after the already-issued short lease.
+  const grant = await (holdThroughGrant ? query.for('share') : query);
   return grant.length === 1;
 }
 

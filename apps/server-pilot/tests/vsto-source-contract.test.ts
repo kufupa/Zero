@@ -10,11 +10,26 @@ const read = (file: string) => readFileSync(path.join(vstoRoot, file), 'utf8');
 const hasVstoSource = existsSync(path.join(vstoRoot, 'ThisAddIn.cs'));
 
 describe('VSTO source availability in root CI', () => {
-  it('warns explicitly when private source is missing, without claiming Windows validation', () => {
+  it('fails closed for Outlook changes unless private source matches the exact gitlink', () => {
     const ci = readFileSync(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
-    expect(ci).toContain('::warning::Private VSTO submodule unavailable');
-    expect(ci).toContain('native source and installer contracts NOT verified');
-    expect(ci).toContain('workflow in kufupa/nava-outlook-addin for the exact gitlink SHA');
+    expect(ci).toContain('NAVA_OUTLOOK_READ_TOKEN');
+    // rev-parse reads the gitlink *object*, not the path printed after ls-tree's tab.
+    expect(ci).toContain('git rev-parse HEAD:apps/server-pilot/vsto');
+    expect(ci).toContain('git -C apps/server-pilot/vsto rev-parse HEAD');
+    for (const criticalPath of [
+      'apps/server-pilot/src/trpc/routes/workstation.ts',
+      'apps/server-pilot/src/db/schema/outlook-device.ts',
+      'apps/server-pilot/src/lib/auth-profile.ts',
+      'apps/server-pilot/src/lib/auth.ts',
+      'apps/server-pilot/src/main.ts',
+      'apps/server-pilot/deploy/nginx.conf',
+      'apps/server-pilot/deploy/deploy-ec2.sh',
+      'apps/server-pilot/deploy/check-web-release-ownership.mjs',
+      'apps/server-pilot/deploy/pane-csp-release.mjs',
+      'apps/server-pilot/deploy/write-ec2-env.sh',
+      'apps/mail/app/root.tsx',
+    ]) expect(ci).toContain(criticalPath);
+    expect(ci).not.toContain('::warning::Private VSTO submodule unavailable');
     expect(ci).toContain('tests/vsto-source-contract.test.ts');
     expect(ci).toContain('tests/outlook-addin-installer-nginx.test.ts');
   });
@@ -107,7 +122,7 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     const dispatcher = read('OutlookBridgeDispatcher.cs');
     expect(pane).toContain('Native staff ticket and mailbox transport are required.');
     expect(pane).toContain('_dispatcher.ObserveScope(action, payload, _authorization.StoreId, (string)transport)');
-    expect(pane).toContain('await _authorization.AuthorizeAsync(observed, (string)ticket, epoch)');
+    expect(pane).toContain('await _authorization.AuthorizeAsync(observed, (string)ticket, epoch, consentChallenge)');
     expect(pane).toContain('RecheckNativeScope(action, payload, observed, recovered, (string)transport)');
     expect(pane).toContain('_authorization.EnsureCurrent(grant)');
     expect(dispatcher).toContain('EnsureMailInRequestedStore(enrolledStoreId, location["storeId"] as string)');
@@ -119,9 +134,11 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     const pane = read('TaskPaneControl.cs');
     const dispatcher = read('OutlookBridgeDispatcher.cs');
     const operations = read('OutlookMailOperations.cs');
-    expect(pane).toContain('OutlookBridgeScopePolicy.NeedsBatchConsent');
-    expect(pane).toContain('ShowMoveConsent(observed)');
-    expect(pane).toContain('catch (NativeBatchConsentRequiredException)');
+    expect(pane).toContain('PREPARE_MOVE_CONSENT');
+    expect(pane).toContain('ShowMoveConsent(details, consent.DeadlineUtc)');
+    expect(pane).toContain('catch (NativeBatchConsentRequiredException consent)');
+    expect(pane).toContain('NATIVE_MOVE_CONSENT_RESOLVED');
+    expect(pane).toContain('consentRequestId');
     expect(dispatcher).toContain('_operationCache.TryBegin');
     expect(dispatcher).toContain('_operationCache.StoreCompleted');
     expect(dispatcher).toContain('_operationCache.MarkIndeterminate');
@@ -153,28 +170,32 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
 
   it('resolves the approved store Drafts folder before creating or replying to a draft', () => {
     const operations = read('OutlookMailOperations.cs');
-    const newDraft = operations.slice(operations.indexOf('public Dictionary<string, object> CreateDraft('),
+    const newDraft = operations.slice(operations.indexOf('internal Dictionary<string, object> CreateDraft('),
       operations.indexOf('private Outlook.MAPIFolder ResolveDraftsFolder('));
-    const reply = operations.slice(operations.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+    const reply = operations.slice(operations.indexOf('internal Dictionary<string, object> CreateReplyDraft('),
       operations.indexOf('private static void SafeReleaseMailComObject('));
     expect(newDraft.indexOf('ResolveDraftsFolder(')).toBeGreaterThan(-1);
+    expect(newDraft.indexOf('EnsureApprovedDraftsFolder(')).toBeLessThan(newDraft.indexOf('CreateDraftInFolder('));
     expect(newDraft.indexOf('ResolveDraftsFolder(')).toBeLessThan(newDraft.indexOf('CreateDraftInFolder('));
     expect(reply.indexOf('ResolveDraftsFolder(originalStoreId)')).toBeGreaterThan(-1);
     expect(reply.indexOf('ResolveDraftsFolder(originalStoreId)')).toBeLessThan(reply.indexOf('original.Reply'));
-    expect(reply).toContain('MoveDraftToStore(reply, originalStoreId, out draftPlacementWarning)');
+    expect(reply.indexOf('EnsureApprovedDraftsFolder(')).toBeLessThan(reply.indexOf('original.Reply'));
+    expect(reply.indexOf('EnsureProfileDefaultDraftsMatch(')).toBeLessThan(reply.indexOf('original.Reply'));
+    expect(reply).toContain('approvedDraftsFolderId');
     expect(reply).toContain('draftPlacementWarning');
   });
 
   it('validates reply composer options before COM side effects and treats post-save display errors as warnings', () => {
     const operations = read('OutlookMailOperations.cs');
-    const reply = operations.slice(operations.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+    const reply = operations.slice(operations.indexOf('internal Dictionary<string, object> CreateReplyDraft('),
       operations.indexOf('private static void SafeReleaseMailComObject('));
     expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeGreaterThan(-1);
     expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeLessThan(reply.indexOf('original = ResolveRequiredMailItem(payload)'));
     expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeLessThan(reply.indexOf('reply.Save();'));
     expect(reply).toMatch(/if \(openInComposer\)[\s\S]*?reply\.Display\(\);[\s\S]*?catch \(System\.Exception ex\)/);
     expect(reply).toContain('result["composerWarning"]');
-    expect(reply).toContain('result["locationUnverified"] = true;');
+    expect(reply).toContain('GetMailLocationAfterSave(reply, expectedLocation)');
+    expect(operations).toContain('result["locationUnverified"] = true;');
     expect(reply).toContain('SafeReleaseMailComObject(reply);');
     expect(reply).toContain('SafeReleaseMailComObject(original);');
     expect(reply).toContain('SafeReleaseMailComObject(draftsFolder);');
@@ -183,7 +204,7 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
   it('keeps location-read failure recoverable after saving new, updated or reply drafts', () => {
     const operations = read('OutlookMailOperations.cs');
     for (const name of ['CreateDraft', 'UpdateDraft']) {
-      const from = operations.indexOf(`public Dictionary<string, object> ${name}(`);
+      const from = operations.indexOf(`${name === 'CreateDraft' ? 'internal' : 'public'} Dictionary<string, object> ${name}(`);
       const to = operations.indexOf('\n        private ', from);
       const nextPublic = operations.indexOf('\n        public ', from + 1);
       const end = Math.min(...[to, nextPublic].filter((index) => index > from));

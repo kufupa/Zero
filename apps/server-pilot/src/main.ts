@@ -9,6 +9,7 @@ import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js'
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
 import { createEmlDownloadHandler } from './http/eml-download.js';
 import { createOutlookNativeHandler } from './http/outlook-native.js';
+import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -98,8 +99,20 @@ const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) =
   console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
 
+// Each hourly pass deletes at most 5,000 old records per table; no guest mail,
+// authentication keys or active approvals are touched. A maintenance failure
+// must never turn a denied native bridge request into an allowed one.
+const outlookRetentionTimer = setInterval(() => {
+  if (resolveAuthSessionProfile() !== 'legacy') return;
+  void pruneOutlookAuthorizationHistory(getDb()).catch(() => {
+    console.error('Outlook authorization retention maintenance failed');
+  });
+}, 60 * 60_000);
+outlookRetentionTimer.unref();
+
 function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);
+  clearInterval(outlookRetentionTimer);
   server.close(() => {
     void closeDb()
       .then(() => {
