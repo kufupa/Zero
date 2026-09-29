@@ -8,6 +8,9 @@ import { HOTEL_TELEPHONE, quotePdfFileName } from '../../quote-proposal/filename
 import { convertXlsxWithGotenberg } from '../../quote-proposal/gotenberg.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
+import { eq } from 'drizzle-orm';
+import { getDb } from '../../db/client.js';
+import { mailboxAccess, mailboxTransport } from '../../db/schema/mail.js';
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
@@ -51,7 +54,12 @@ export const workstationRouter = router({
   quoteProposalPdf: privateProcedure
     .input(quoteProposalPdfInput)
     .mutation(async ({ input, ctx }) => {
-      if (!emailsMatch(ctx.sessionUser.email, input.outlookEmail)) {
+      const authorizedMailboxes = await getDb()
+        .select({ email: mailboxTransport.email })
+        .from(mailboxAccess)
+        .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
+        .where(eq(mailboxAccess.userId, ctx.sessionUser.id));
+      if (!authorizedMailboxes.some((mailbox) => emailsMatch(mailbox.email, input.outlookEmail))) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'OUTLOOK_EMAIL_MISMATCH',
