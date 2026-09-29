@@ -49,12 +49,21 @@ connection simultaneous nonce consumption, expired/guessed/wrong-store code,
 replay/tampered bytes/revocation, authorization scope, key validation and
 leak-free HTTP responses. Latest run: 2026-09-29 00:21 UTC, 7/7, exit 0.
 
-Disposable DB migration: `DATABASE_URL=<local disposable URL>
-TEST_DATABASE_URL=<same local URL> CONFIRM_DISPOSABLE_TEST_DB=1
-pnpm --filter @zero/server db:migrate`: exit 0 (`migrations applied
-successfully`). This DB had already applied migration 0029 before the final
-additive nonce-expiry index was included in its SQL; a clean migration of the
-final migration file should be run on a new disposable DB during integration.
+Final committed migration verified on a **separate new empty disposable local
+PostgreSQL database**, `nava_outlook_v4_final_test`, created by connecting
+directly to `postgres://postgres@127.0.0.1:55579/postgres?sslmode=disable`
+after a read-only lookup confirmed this database did not yet exist. Docker
+socket inspection was denied, so the explicit loopback Postgres port was used
+instead; no pilot/prod host was contacted. Command:
+`env -u VITEST_ALLOW_PILOT_RDS DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server db:migrate`.
+Exit 0: `[✓] migrations applied successfully!`. Earlier additive migrations
+emitted benign notices for long PostgreSQL identifiers and missing trigger
+drop-if-exists; no error or migration failure occurred. A subsequent read-only
+`information_schema.tables` and `pg_indexes` query against this exact local
+database returned all five tables `outlook_device`, `outlook_device_grant`,
+`outlook_device_nonce`, `outlook_enrollment`, `outlook_enrollment_grant` and
+indexes `outlook_device_nonce_device_idx`, **`outlook_device_nonce_expiry_idx`**,
+plus the expected primary-key indexes. Both migration and inspection exited 0.
 
 `pnpm --filter @zero/server build`: exit 0 (TypeScript, rechecked after final code changes).
 
