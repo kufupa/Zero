@@ -466,6 +466,7 @@ async function runNginxActivation({
   nginxCalls: number;
   reloadCalls: number;
   backupEntries: string[];
+  backupContents: Record<string, string>;
 }> {
   const {
     existsSync,
@@ -792,6 +793,11 @@ fi`,
       nginxCalls: Number(readFileSync(nginxCallsPath, 'utf8')),
       reloadCalls: Number(readFileSync(reloadCallsPath, 'utf8')),
       backupEntries: readdirSync(backupDir),
+      backupContents: Object.fromEntries(
+        readdirSync(backupDir)
+          .filter((entry) => entry.startsWith('nava-nginx.'))
+          .map((entry) => [entry, readFileSync(join(backupDir, entry), 'utf8')]),
+      ),
     };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -2315,16 +2321,23 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
-  it('reports rollback failure and still removes temporary Nginx backups', async () => {
+  it('retains the recovery backup and reports its path when rollback fails', async () => {
     const result = await runNginxActivation({
       scenario: 'validate',
       priorState: 'present',
       rollbackCopyFails: true,
     });
+    const backups = result.backupEntries.filter((entry) => entry.startsWith('nava-nginx.'));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('nginx candidate failed; rollback failed');
-    expect(result.backupEntries).toEqual([]);
+    expect(backups).toHaveLength(1);
+    expect(result.backupContents[backups[0]]).toBe('previous nginx config\n');
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `nginx rollback failed; backup retained for manual recovery: .*/backups/${backups[0]}`,
+      ),
+    );
   });
 
   it('reports trap rollback failure and exits nonzero', async () => {
@@ -2333,10 +2346,17 @@ describe('deploy config', () => {
       priorState: 'present',
       rollbackCopyFails: true,
     });
+    const backups = result.backupEntries.filter((entry) => entry.startsWith('nava-nginx.'));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('nginx transaction aborted; rollback failed');
-    expect(result.backupEntries).toEqual([]);
+    expect(backups).toHaveLength(1);
+    expect(result.backupContents[backups[0]]).toBe('previous nginx config\n');
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `nginx rollback failed; backup retained for manual recovery: .*/backups/${backups[0]}`,
+      ),
+    );
   });
 
   it('preserves the Infor hostname mapping used by the split tunnel', async () => {

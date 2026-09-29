@@ -456,8 +456,12 @@ if command -v nginx >/dev/null 2>&1; then
     if [ "$was_active" -eq 1 ] && ! restore_nginx; then
       rollback_ok=0
     fi
-    if ! cleanup_nginx_backup; then
-      cleanup_ok=0
+    if [ "$rollback_ok" -eq 1 ]; then
+      if ! cleanup_nginx_backup; then
+        cleanup_ok=0
+      fi
+    elif [ -n "$NGINX_BACKUP" ]; then
+      echo "nginx rollback failed; backup retained for manual recovery: ${NGINX_BACKUP}" >&2
     fi
 
     if [ "$was_active" -eq 1 ]; then
