@@ -1,7 +1,7 @@
 import type { DB } from '../db/client.js';
 import { randomBytes } from 'node:crypto';
 import { enrollDevice, issueChallenge, verifyDeviceRequest, wrappingKey } from '../outlook-security/device.js';
-import { authorizeNative, registerNavigation, type NativeScopeInput } from '../outlook-security/authorization.js';
+import { authorizeNative, NativeBatchConsentRequiredError, registerNavigation, type NativeScopeInput } from '../outlook-security/authorization.js';
 
 async function readBoundedJsonBody(request: Request, maxBytes: number): Promise<Buffer | null> {
   if (!request.body) return Buffer.alloc(0);
@@ -71,7 +71,16 @@ export function createOutlookNativeHandler(db: DB, key: string) {
         && typeof values.storeId === 'string' && typeof values.transportId === 'string'
         && values.storeId === verified.storeId && typeof values.operationId !== 'number';
       if (!valid) return new Response(null, { status: 403, headers: { 'cache-control': 'no-store' } });
-      const authorized = await authorizeNative(db, verified.deviceId, values as NativeScopeInput);
+      let authorized: Record<string, unknown> | null;
+      try {
+        authorized = await authorizeNative(db, verified.deviceId, values as NativeScopeInput);
+      } catch (error) {
+        if (error instanceof NativeBatchConsentRequiredError) {
+          return Response.json({ code: 'NATIVE_BATCH_CONSENT_REQUIRED' },
+            { status: 409, headers: { 'cache-control': 'no-store' } });
+        }
+        throw error;
+      }
       return authorized ? Response.json(authorized, { headers: { 'cache-control': 'no-store' } })
         : new Response(null, { status: 403, headers: { 'cache-control': 'no-store' } });
     }

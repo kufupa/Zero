@@ -6,6 +6,7 @@ import { __setDbForTests } from '../src/db/client.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
 import { outlookBridgeTicket, outlookMoveReceipt, outlookNavigation } from '../src/db/schema/outlook-authorization.js';
+import { outlookDevice } from '../src/db/schema/outlook-device.js';
 import { issueEnrollment, enrollDevice, issueChallenge, revokeDevice } from '../src/outlook-security/device.js';
 import { createOutlookNativeHandler } from '../src/http/outlook-native.js';
 import { workstationRouter } from '../src/trpc/routes/workstation.js';
@@ -63,6 +64,8 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
         sessionUser: { id: f.userId, email: `${f.userId}@example.test`, name: 'Staff' } } as never);
       await expect(injected.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
         action: 'GET_ACTIVE_EMAIL', storeId })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(injected.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
     } finally { __setDbForTests(null); }
     await expect(issueBridgeTicket(db, { api: { getSession: async () => null } }, new Headers(),
       { deviceId: f.deviceId, paneChallenge: f.paneChallenge, action: 'GET_ACTIVE_EMAIL', storeId, transportId: f.transportId })).rejects.toThrow();
@@ -74,6 +77,44 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ kind: 'read', storeId, transportId: f.transportId });
     expect((await f.signed(path, { ticket, storeId, transportId: f.transportId, action: 'GET_ACTIVE_EMAIL' })).status).toBe(403);
+  }));
+
+  it('resolves the exact enrolled store without trusting the first pane request', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    __setDbForTests({ db, conn: null as never });
+    try {
+      const caller = workstationRouter.createCaller({ auth: f.auth as never,
+        reqHeaders: new Headers({ 'x-zero-active-transport': f.transportId }) } as never);
+      const issued = await caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL' });
+      expect(issued).toEqual({ ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), storeId, expiresInSeconds: 60 });
+      expect((await f.signed(path, { ticket: issued.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+        transportId: f.transportId })).status).toBe(200);
+      await expect(caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL', storeId })).resolves.toHaveProperty('storeId', storeId);
+      const renewedChallenge = randomBytes(32).toString('base64url');
+      expect((await f.signed('/api/outlook/native/register-navigation',
+        { paneChallenge: renewedChallenge })).status).toBe(200);
+      await expect(caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: renewedChallenge,
+        action: 'GET_ACTIVE_EMAIL' })).resolves.toHaveProperty('storeId', storeId);
+      await expect(caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL', storeId: 'injected-store' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    } finally { __setDbForTests(null); }
+  }));
+
+  it('denies untrusted, unapproved, expired-session, and revoked no-store ticket issuance', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    const input = { deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+      action: 'GET_ACTIVE_EMAIL', transportId: f.transportId };
+    await expect(issueBridgeTicket(db, { api: { getSession: async () => null } }, new Headers(), input)).rejects.toThrow();
+    await expect(issueBridgeTicket(db, f.auth, new Headers(), { ...input, transportId: randomUUID() })).rejects.toThrow();
+    await db.update(session).set({ createdAt: new Date(Date.now() - 86_400_001) }).where(eq(session.id, f.sessionId));
+    await expect(issueBridgeTicket(db, f.auth, new Headers(), input)).rejects.toThrow();
+    await db.update(session).set({ createdAt: new Date() }).where(eq(session.id, f.sessionId));
+    await db.update(outlookDevice).set({ revokedAt: new Date() }).where(eq(outlookDevice.deviceId, f.deviceId));
+    await expect(issueBridgeTicket(db, f.auth, new Headers(), input)).rejects.toThrow();
   }));
 
   it('denies revoked/old sessions, stale navigation, wrong store and invalid signatures', async () => withTestDb(async (db) => {
@@ -296,11 +337,64 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, firstOp, declared.resources)).body?.retry).toBe(false);
     expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, firstOp, declared.resources)).body?.retry).toBe(true);
     expect((await authorizeMove(secondDevice, secondChallenge, secondSecret, op(), declared.resources)).response.status).toBe(200);
-    expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, op(), declared.resources)).response.status).toBe(403);
+    expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, op(), declared.resources)).response.status).toBe(409);
     expect((await authorizeMove(f.deviceId, f.paneChallenge, secret, op(), declared.resources, true)).response.status).toBe(200);
     const rows = await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId));
     expect(rows).toHaveLength(3);
     expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(27);
+  }));
+  it('returns 409 only for a fully valid signed 10-item move and retains the exact ticket for consent retry', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    const operationId = op();
+    const scope = { resources: Array.from({ length: 10 }, (_, index) => `mail-${index}`),
+      sourceFolderId: 'inbox', destinationFolderId: 'triage' };
+    const issued = await f.ticket('MOVE_EMAIL', operationId, scope);
+    const payload = { ticket: issued.ticket, action: 'MOVE_EMAIL', operationId, storeId,
+      transportId: f.transportId, ...scope, destinationKind: 'triage' };
+    const unsigned = await f.signed(path, payload, randomBytes(32).toString('base64'));
+    expect(unsigned.status).toBe(403);
+    expect((await f.signed(path, { ...payload, resources: ['wrong-mail'], nativeBatchConsent: false })).status).toBe(403);
+    expect((await f.signed(path, { ...payload, destinationFolderId: 'other' })).status).toBe(403);
+    const denied = await f.signed(path, payload);
+    expect(denied.status).toBe(409);
+    expect(denied.headers.get('cache-control')).toBe('no-store');
+    expect(await denied.json()).toEqual({ code: 'NATIVE_BATCH_CONSENT_REQUIRED' });
+    expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
+    const [ticketRow] = await db.select().from(outlookBridgeTicket)
+      .where(eq(outlookBridgeTicket.ticketHash, createHash('sha256').update(issued.ticket).digest('hex')));
+    expect(ticketRow?.consumedAt).toBeNull();
+    const permitted = await f.signed(path, { ...payload, nativeBatchConsent: true });
+    expect(permitted.status).toBe(200);
+    expect(await permitted.json()).toMatchObject({ kind: 'mutation', resources: scope.resources });
+    expect((await f.signed(path, { ...payload, nativeBatchConsent: true })).status).toBe(403);
+    expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(1);
+  }));
+
+  it('never reveals a consent prompt for invalid or revoked tickets', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    const operationId = op();
+    const scope = { resources: Array.from({ length: 10 }, (_, index) => `mail-${index}`),
+      sourceFolderId: 'inbox', destinationFolderId: 'triage' };
+    const ticket = (await f.ticket('MOVE_EMAIL', operationId, scope)).ticket;
+    const payload = { ticket, action: 'MOVE_EMAIL', operationId, storeId,
+      transportId: f.transportId, ...scope, destinationKind: 'triage' };
+    const assertGenericDenial = async (body: object) => {
+      const denied = await f.signed(path, body);
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).toBe('');
+    };
+    await assertGenericDenial({ ...payload, ticket: randomBytes(32).toString('base64url') });
+    await db.update(outlookBridgeTicket).set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(outlookBridgeTicket.ticketHash, createHash('sha256').update(ticket).digest('hex')));
+    await assertGenericDenial(payload);
+    const freshOperationId = op();
+    const fresh = (await f.ticket('MOVE_EMAIL', freshOperationId, scope)).ticket;
+    await db.update(outlookDevice).set({ revokedAt: new Date() }).where(eq(outlookDevice.deviceId, f.deviceId));
+    await assertGenericDenial({ ...payload, ticket: fresh, operationId: freshOperationId });
   }));
   it('permits signed exact-consent 25-item Outlook EntryID batches larger than public enrollment limit', async () => withTestDb(async (db) => {
     const f = await fixture(db);

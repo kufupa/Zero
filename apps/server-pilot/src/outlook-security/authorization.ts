@@ -5,12 +5,17 @@ import { session, user } from '../db/schema/auth.js';
 import { resolveAuthSessionProfile } from '../lib/auth-profile.js';
 import { mailboxTransport } from '../db/schema/mail.js';
 import { outlookApprovedFolder, outlookBridgeTicket, outlookMoveReceipt, outlookNavigation, outlookNavigationHistory } from '../db/schema/outlook-authorization.js';
+import { outlookDevice } from '../db/schema/outlook-device.js';
 import { isDeviceAuthorized } from './device.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const ticketExpiredDuringTransaction = Symbol('ticket expired while issuing native scope');
 export class BridgeTicketDeniedError extends Error {
   constructor() { super('Bridge ticket denied'); }
+}
+/** Escapes the rolled-back transaction; only the signed HTTP handler exposes its response code. */
+export class NativeBatchConsentRequiredError extends Error {
+  constructor() { super('Native batch consent required'); }
 }
 const readActions = new Set(['PING', 'GET_CAPABILITIES', 'LIST_STORES', 'LIST_FOLDERS', 'LIST_ACCOUNTS',
   'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'GET_EMAIL_BY_ENTRY_ID', 'LIST_TEMPLATES', 'GET_TEMPLATE_CONTENT',
@@ -83,9 +88,9 @@ async function liveSession(db: DB, auth: AuthSession, headers: Headers) {
   return found ?? null;
 }
 
-export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Headers, input: TicketInput): Promise<{ ticket: string; expiresInSeconds: 60 }> {
+export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Headers, input: TicketInput): Promise<{ ticket: string; storeId: string; expiresInSeconds: 60 }> {
   const identity = await liveSession(db, auth, headers);
-  if (!identity || !isToken(input.transportId) || !isToken(input.storeId)
+  if (!identity || !isToken(input.transportId) || input.storeId !== undefined && !isToken(input.storeId)
     || !/^[0-9a-f-]{36}$/i.test(input.deviceId) || !/^[A-Za-z0-9_-]{43}$/.test(input.paneChallenge)
     || !(readActions.has(input.action) || mutationActions.has(input.action))
     || (mutationActions.has(input.action) && !isOp(input.operationId))
@@ -98,17 +103,29 @@ export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Head
     || input.action === 'GET_FOLDER_EMAILS' && !input.sourceFolderId
     || input.action === 'CREATE_FOLDER' && !input.sourceFolderId
     || moveActions.has(input.action) && (!input.resources?.length || !input.sourceFolderId || !input.destinationFolderId)) throw new BridgeTicketDeniedError();
-  const storeId = input.storeId;
   return db.transaction(async (tx) => {
     const [navigation] = await tx.select({ challengeHash: outlookNavigation.challengeHash }).from(outlookNavigation)
       .where(and(eq(outlookNavigation.deviceId, input.deviceId), eq(outlookNavigation.challengeHash, hash(input.paneChallenge)),
         gt(outlookNavigation.expiresAt, sql`clock_timestamp()`))).for('update').limit(1);
-    if (!navigation || !await isDeviceAuthorized(tx as DB, input.deviceId, identity.userId, input.transportId, storeId)) throw new BridgeTicketDeniedError();
+    if (!navigation) throw new BridgeTicketDeniedError();
+    const [device] = await tx.select({ storeId: outlookDevice.storeId }).from(outlookDevice)
+      .where(and(eq(outlookDevice.deviceId, input.deviceId), isNull(outlookDevice.revokedAt))).limit(1);
+    if (!device || input.storeId !== undefined && input.storeId !== device.storeId
+      || !await isDeviceAuthorized(tx as DB, input.deviceId, identity.userId, input.transportId, device.storeId)) throw new BridgeTicketDeniedError();
+    const storeId = device.storeId;
     // Previous session's navigation cannot be reused after logout/re-login; lock serializes races.
     const [previousSession] = await tx.select({ sessionId: outlookBridgeTicket.sessionId }).from(outlookBridgeTicket)
       .where(and(eq(outlookBridgeTicket.deviceId, input.deviceId), eq(outlookBridgeTicket.challengeHash, navigation.challengeHash),
         ne(outlookBridgeTicket.sessionId, identity.id))).limit(1);
     if (previousSession) throw new BridgeTicketDeniedError();
+    if (input.storeId === undefined) {
+      // The signed-in pane learns its enrolled store only on the first ticket
+      // for this registered navigation. Every later request must echo it.
+      const [previousTicket] = await tx.select({ ticketHash: outlookBridgeTicket.ticketHash }).from(outlookBridgeTicket)
+        .where(and(eq(outlookBridgeTicket.deviceId, input.deviceId),
+          eq(outlookBridgeTicket.challengeHash, navigation.challengeHash))).limit(1);
+      if (previousTicket) throw new BridgeTicketDeniedError();
+    }
     const ticket = randomBytes(32).toString('base64url');
     await tx.insert(outlookBridgeTicket).values({ ticketHash: hash(ticket), deviceId: input.deviceId,
       challengeHash: navigation.challengeHash, sessionId: identity.id, userId: identity.userId,
@@ -116,7 +133,7 @@ export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Head
       operationId: input.operationId ?? null, declaredScope: JSON.stringify([
         input.resources ?? null, input.sourceFolderId ?? null, input.destinationFolderId ?? null,
       ]), expiresAt: new Date(Date.now() + 60_000) });
-    return { ticket, expiresInSeconds: 60 };
+    return { ticket, storeId, expiresInSeconds: 60 };
   });
 }
 
@@ -188,9 +205,9 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         const [deviceBudget] = await tx.select({ total: sql<number>`coalesce(sum(${outlookMoveReceipt.count}), 0)` })
           .from(outlookMoveReceipt).where(and(eq(outlookMoveReceipt.deviceId, deviceId),
             gt(outlookMoveReceipt.approvedAt, sql`clock_timestamp() - interval '1 minute'`)));
-        if (Number(budget?.total ?? 0) + input.resources!.length > 25 && input.nativeBatchConsent !== true
-          || Number(deviceBudget?.total ?? 0) + input.resources!.length > 25 && input.nativeBatchConsent !== true
-          || input.resources!.length >= 10 && input.nativeBatchConsent !== true) return null;
+        if (input.nativeBatchConsent !== true && (Number(budget?.total ?? 0) + input.resources!.length > 25
+          || Number(deviceBudget?.total ?? 0) + input.resources!.length > 25
+          || input.resources!.length >= 10)) throw new NativeBatchConsentRequiredError();
         await tx.insert(outlookMoveReceipt).values({ deviceId, transportId: input.transportId,
           operationId: input.operationId!, scopeHash, count: input.resources!.length,
           approvedAt: sql`clock_timestamp()` });

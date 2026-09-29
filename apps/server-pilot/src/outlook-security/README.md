@@ -95,12 +95,19 @@ rejects using that navigation from any different Better Auth session, even
 when the same staff user signs back in immediately.
 
 Pane calls `workstation.bridgeTicket` with `{deviceId,paneChallenge,action,
-storeId,operationId?,resources?,sourceFolderId?,destinationFolderId?}` and the
+storeId?,operationId?,resources?,sourceFolderId?,destinationFolderId?}` and the
 existing `x-zero-active-transport` header selecting the mailbox transport.
 Actual legacy Better Auth cookie/session ID, verified named user, fresh
 createdAt (<24 hours), mailbox access, store mapping and device authorization
 are checked. Remote-admin sessions or injected test `sessionUser` cannot mint
-tickets. For moves the pane MUST declare exact resource EntryIDs and
+tickets. Only the first signed-in ticket for a freshly registered navigation
+may omit `storeId`: the server resolves the enrolled exact native StoreID after
+all those checks and returns `{ticket,storeId,expiresInSeconds:60}`. The pane
+must echo this exact `storeId` on every later ticket for that navigation;
+an explicit mismatch is denied. Never derive the initial StoreID from a
+pre-login native PING, browser-provided mailbox string, or a browser guess.
+If the first ticket response is lost, obtain and register a fresh navigation
+challenge before retrying without `storeId`. For moves the pane MUST declare exact resource EntryIDs and
 source/destination folder EntryIDs. Supplied resource/folder declarations for
 other actions are ticket-bound. Targeted item/attachment/template reads and
 existing-item mutations MUST declare exact resource EntryIDs; folder listing
@@ -123,6 +130,18 @@ the Better Auth session row expiry and its original createdAt + 24 hours): exact
 resource IDs, folder IDs, approved folder IDs and `retry`. Never relay this
 response to the hosted pane. Native SEND/DELETE are denied; independent
 web-mail Send/Delete are unaffected.
+
+A fully valid signed native `MOVE_EMAIL`/`MOVE_TO_SPAM` authorization returns
+HTTP 409 `{ "code": "NATIVE_BATCH_CONSENT_REQUIRED" }` with
+`Cache-Control: no-store` when 10+ explicit items or a rolling shared-mailbox
+or per-device total above 25 moves/minute requires native consent. This does
+not consume the browser ticket or insert a move receipt. Native must obtain
+consent for that exact set of Outlook EntryIDs and destination, then retry
+the same unexpired ticket and operation with `nativeBatchConsent:true` and a
+fresh signed HMAC challenge/nonce; altered scopes or replayed signatures are
+denied. Invalid, expired, revoked, consumed and mismatched tickets always
+receive generic HTTP 403, never a consent hint. Any non-200 response remains
+unauthorized to execute Outlook COM.
 
 Operator provisions and revokes exact folder EntryIDs server-side (no PC
 reinstall). This CLI requires restricted operator terminal, DB and wrapping
