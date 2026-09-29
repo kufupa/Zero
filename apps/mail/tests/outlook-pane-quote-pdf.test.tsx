@@ -16,6 +16,7 @@ const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => (
     transportId: 'transport-shared',
     transportEmail: 'centurion@legacyhotels.co.za',
     requiresRelogin: false,
+    nativeSelectedEntryId: '001',
   },
 }));
 
@@ -104,19 +105,18 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.transportId = 'transport-shared';
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
     sessionState.requiresRelogin = false;
+    sessionState.nativeSelectedEntryId = '001';
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
       pdfBase64: 'JVBERw0KGgo=',
     });
     sendCommandMock.mockReset();
-    sendCommandMock.mockResolvedValue({
-      entryId: 'draft-99',
-      storeId: 'store-1',
-      folderEntryId: 'folder-drafts',
-      folderName: 'Drafts',
-      displayed: true,
-    });
+    sendCommandMock.mockImplementation(async (action: string) =>
+      action === 'GET_ACTIVE_EMAIL'
+        ? { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' }
+        : { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts',
+          folderName: 'Drafts', displayed: true });
   });
 
   afterEach(() => {
@@ -179,6 +179,64 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(replyId).not.toEqual(attachmentId);
   });
 
+  it('does not create a reply if Outlook selection changed unnoticed during PDF generation', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutateMock.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return {
+        entryId: '002', storeId: 'store-1', folderEntryId: 'folder-inbox',
+      };
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+      return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' };
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
+    await act(async () => finishPdf({ fileName: 'Quote.pdf', pdfBase64: 'JVBERw==' }));
+
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('GET_ACTIVE_EMAIL', {}));
+    expect(sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT')).toHaveLength(0);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/selected.*Outlook.*changed/i));
+  });
+
+  it('checks the actual selection again before retrying an uncertain reply with its original operation ID', async () => {
+    let createCount = 0;
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return {
+        entryId: sessionState.nativeSelectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
+      };
+      if (action === 'CREATE_REPLY_DRAFT' && createCount++ === 0)
+        throw new Error('Bridge command CREATE_REPLY_DRAFT timed out');
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+      return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
+    });
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock.mock.calls.filter(([action]) =>
+      action === 'CREATE_REPLY_DRAFT')).toHaveLength(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    const firstPayload = sendCommandMock.mock.calls.find(([action]) =>
+      action === 'CREATE_REPLY_DRAFT')?.[1];
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+
+    sessionState.nativeSelectedEntryId = '002'; // The native selection event was missed during renewal.
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock.mock.calls.filter(([action]) =>
+      action === 'GET_ACTIVE_EMAIL')).toHaveLength(2));
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/selected.*Outlook.*changed/i));
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+
+    sessionState.nativeSelectedEntryId = '001';
+    fireEvent.click(button);
+    await waitFor(() => expect(sendCommandMock.mock.calls.filter(([action]) =>
+      action === 'CREATE_REPLY_DRAFT')).toHaveLength(2));
+    expect(sendCommandMock.mock.calls.filter(([action]) =>
+      action === 'CREATE_REPLY_DRAFT')[1]?.[1]).toEqual(firstPayload);
+    expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
+  });
+
   it('attaches the Proposal PDF after a gold wrapper reply draft', async () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -227,6 +285,7 @@ describe('Outlook pane quote proposal PDF', () => {
 
   it('retries only the attachment with its same operation and exact PDF after an attachment failure', async () => {
     sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
       if (action === 'ADD_ATTACHMENT_TO_DRAFT') {
         throw new Error('Outlook rejected the attachment');
       }
@@ -264,6 +323,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('keeps the exact PDF bytes and attachment operation after an ambiguous native timeout', async () => {
     let attachmentCount = 0;
     sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
       if (action === 'ADD_ATTACHMENT_TO_DRAFT' && attachmentCount++ === 0) {
         throw new Error('Bridge command ADD_ATTACHMENT_TO_DRAFT timed out');
       }
@@ -359,6 +419,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('requires checking Drafts when a native reply completes after the staff scope changes', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let finishNative!: (value: { entryId: string; storeId: string; folderEntryId: string }) => void;
+    sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -396,6 +457,7 @@ describe('Outlook pane quote proposal PDF', () => {
     fireEvent.click(button);
     await waitFor(() => expect(screen.getByText('Please see attached quotation.')).toBeDefined());
     let rejectMutation!: (error: Error) => void;
+    sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {
