@@ -4,10 +4,11 @@ import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { getPublicAuthProviders } from './lib/auth-providers.js';
 import { createAuth } from './lib/auth.js';
 import { resolveAuthSessionProfile } from './lib/auth-profile.js';
-import { closeDb } from './db/client.js';
+import { closeDb, getDb } from './db/client.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
 import { createEmlDownloadHandler } from './http/eml-download.js';
+import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -30,6 +31,15 @@ app.get('/api/public/providers', (c) => {
 // Better Auth handlers mount at /api/auth/* (better-auth default basePath).
 const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+
+// Native enrollment is a one-use, operator-approved pairing; no browser signup exists.
+app.post('/api/outlook/native/enroll', (c) => createOutlookNativeHandler(
+  // Lazily load DB but fail closed when the separate wrapping key is missing.
+  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+)(c.req.raw));
+app.post('/api/outlook/native/challenge', (c) => createOutlookNativeHandler(
+  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+)(c.req.raw));
 
 // CID inline images: cookie session + mailbox_access join (no active-transport
 // header — <img> tags cannot set custom headers). Must mount before /api/trpc/*.

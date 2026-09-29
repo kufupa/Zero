@@ -204,6 +204,13 @@
       "when": 1789123200000,
       "tag": "0028_ai_shadow_first_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790640000000,
+      "tag": "0029_outlook_device_enrollment",
+      "breakpoints": true
     }
   ]
 }
