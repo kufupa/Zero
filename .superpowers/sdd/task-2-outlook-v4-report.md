@@ -51,11 +51,11 @@ leak-free HTTP responses. Latest run: 2026-09-29 00:21 UTC, 7/7, exit 0.
 
 Final committed migration verified on a **separate new empty disposable local
 PostgreSQL database**, `nava_outlook_v4_final_test`, created by connecting
-directly to `postgres://postgres@127.0.0.1:55579/postgres?sslmode=disable`
+directly to the disposable PostgreSQL loopback service
 after a read-only lookup confirmed this database did not yet exist. Docker
 socket inspection was denied, so the explicit loopback Postgres port was used
 instead; no pilot/prod host was contacted. Command:
-`env -u VITEST_ALLOW_PILOT_RDS DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server db:migrate`.
+`env -u VITEST_ALLOW_PILOT_RDS DATABASE_URL=<disposable-loopback-URL> TEST_DATABASE_URL=<same-disposable-URL> CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server db:migrate`.
 Exit 0: `[✓] migrations applied successfully!`. Earlier additive migrations
 emitted benign notices for long PostgreSQL identifiers and missing trigger
 drop-if-exists; no error or migration failure occurred. A subsequent read-only
@@ -103,7 +103,7 @@ redemption; no public self-signup exists.
 RED: Against the fresh disposable loopback PostgreSQL DB
 `nava_outlook_v4_final_test`, with inherited `DATABASE_URL` and
 `VITEST_ALLOW_PILOT_RDS` explicitly unset, ran
-`env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server exec vitest run tests/outlook-device-enrollment.test.ts`.
+`env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL=<disposable-loopback-URL> CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server exec vitest run tests/outlook-device-enrollment.test.ts`.
 Result: 7 passed, **4 expected failures**: unverified staff issuance resolved
 instead of rejecting; forged local JS clock let an expired nonce pass against
 the actual DB clock; a non-v4 UUID paired successfully; a no-Content-Length
