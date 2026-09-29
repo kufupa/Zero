@@ -151,6 +151,93 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     expect(operations).toContain('TryReadSmtpAddress');
   });
 
+  it('resolves the approved store Drafts folder before creating or replying to a draft', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const newDraft = operations.slice(operations.indexOf('public Dictionary<string, object> CreateDraft('),
+      operations.indexOf('private Outlook.MAPIFolder ResolveDraftsFolder('));
+    const reply = operations.slice(operations.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+      operations.indexOf('private static void SafeReleaseMailComObject('));
+    expect(newDraft.indexOf('ResolveDraftsFolder(')).toBeGreaterThan(-1);
+    expect(newDraft.indexOf('ResolveDraftsFolder(')).toBeLessThan(newDraft.indexOf('CreateDraftInFolder('));
+    expect(reply.indexOf('ResolveDraftsFolder(originalStoreId)')).toBeGreaterThan(-1);
+    expect(reply.indexOf('ResolveDraftsFolder(originalStoreId)')).toBeLessThan(reply.indexOf('original.Reply'));
+    expect(reply).toContain('MoveDraftToStore(reply, originalStoreId, out draftPlacementWarning)');
+    expect(reply).toContain('draftPlacementWarning');
+  });
+
+  it('validates reply composer options before COM side effects and treats post-save display errors as warnings', () => {
+    const operations = read('OutlookMailOperations.cs');
+    const reply = operations.slice(operations.indexOf('public Dictionary<string, object> CreateReplyDraft('),
+      operations.indexOf('private static void SafeReleaseMailComObject('));
+    expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeGreaterThan(-1);
+    expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeLessThan(reply.indexOf('original = ResolveRequiredMailItem(payload)'));
+    expect(reply.indexOf('ShouldOpenReplyComposer(requestedComposer)')).toBeLessThan(reply.indexOf('reply.Save();'));
+    expect(reply).toMatch(/if \(openInComposer\)[\s\S]*?reply\.Display\(\);[\s\S]*?catch \(System\.Exception ex\)/);
+    expect(reply).toContain('result["composerWarning"]');
+    expect(reply).toContain('result["locationUnverified"] = true;');
+    expect(reply).toContain('SafeReleaseMailComObject(reply);');
+    expect(reply).toContain('SafeReleaseMailComObject(original);');
+    expect(reply).toContain('SafeReleaseMailComObject(draftsFolder);');
+  });
+
+  it('keeps location-read failure recoverable after saving new, updated or reply drafts', () => {
+    const operations = read('OutlookMailOperations.cs');
+    for (const name of ['CreateDraft', 'UpdateDraft']) {
+      const from = operations.indexOf(`public Dictionary<string, object> ${name}(`);
+      const to = operations.indexOf('\n        private ', from);
+      const nextPublic = operations.indexOf('\n        public ', from + 1);
+      const end = Math.min(...[to, nextPublic].filter((index) => index > from));
+      const method = operations.slice(from, end);
+      expect(method, name).toContain('GetMailLocationAfterSave(draft,');
+      expect(method, name).toContain('SafeReleaseMailComObject(draft);');
+    }
+    expect(operations).toContain('result["locationUnverified"] = true;');
+  });
+
+  it('uses best-effort COM cleanup for retained Outlook mutations', () => {
+    const operations = read('OutlookMailOperations.cs');
+    for (const name of ['MoveEmail', 'CreateFolder']) {
+      const from = operations.indexOf(`public Dictionary<string, object> ${name}(`);
+      const next = operations.indexOf('\n        public ', from + 1);
+      expect(operations.slice(from, next), name).toContain('SafeReleaseMailComObject(');
+    }
+    const dispatcher = read('OutlookBridgeDispatcher.cs');
+    for (const name of ['AddAttachmentToDraft', 'SetEmailCategory', 'SetFollowUpFlag', 'MarkEmailRead']) {
+      const from = dispatcher.indexOf(`public bool ${name}(`);
+      expect(from, name).toBeGreaterThan(-1);
+      const next = dispatcher.indexOf('\n        public ', from + 1);
+      expect(dispatcher.slice(from, next), name).toContain('SafeReleaseMailComObject(');
+    }
+  });
+
+  it('waits for the task-pane window handle and replaces stale process-bitness WebView2 loaders', () => {
+    const pane = read('TaskPaneControl.cs');
+    expect(pane).toMatch(/InitializeComponent\(\);\s*this\.Load \+= TaskPaneControl_Load;/);
+    expect(pane).toMatch(/void TaskPaneControl_Load\([\s\S]*?InitializeWebView\(\);/);
+    expect(pane).not.toMatch(/InitializeComponent\(\);\s*InitializeWebView\(\);/);
+    expect(pane).toContain('Environment.Is64BitProcess ? "win-x64" : "win-x86"');
+    expect(pane).toContain('Environment.SpecialFolder.LocalApplicationData');
+    expect(pane).toContain('Assembly.GetExecutingAssembly().Location');
+    expect(pane).toContain('File.Copy(src, dest, true);');
+    expect(pane).not.toContain('if (!File.Exists(dest))');
+    expect(pane).toMatch(/could not start the side pane/i);
+  });
+
+  it('wires the ribbon and VSTO shutdown without unloading the add-in or removing task panes', () => {
+    const addin = read('ThisAddIn.cs');
+    const ribbon = read('NavaRibbon.cs');
+    const designer = read('ThisAddIn.Designer.cs');
+    expect(ribbon).toContain('Globals.ThisAddIn');
+    expect(ribbon).toContain('ToggleTaskPane');
+    expect(addin).toContain('Pane/WebView2 failures must not unload');
+    expect(addin).toContain('SelectionChange -=');
+    expect(addin).toContain('EnsurePane(true)');
+    expect(addin).toContain('CustomTaskPanes.Add');
+    expect(addin.slice(addin.indexOf('ThisAddIn_Shutdown'))).not.toMatch(/CustomTaskPanes\.Remove|TaskPanes\.Remove/);
+    expect(designer).toContain('CustomTaskPaneCollection CustomTaskPanes');
+    expect(designer).toContain('this.CustomTaskPanes.Dispose');
+  });
+
   it('runs architecture builds, source and pure C# policy tests, and verifies signed manifests', () => {
     const workflow = readFileSync(path.join(nativeRoot, '.github/workflows/outlook-vsto.yml'), 'utf8');
     const policy = readFileSync(path.join(nativeRoot, 'tests/BridgePolicyTests.cs'), 'utf8');
