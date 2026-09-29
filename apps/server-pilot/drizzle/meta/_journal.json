@@ -218,6 +218,13 @@
       "when": 1790640001000,
       "tag": "0030_outlook_bridge_authorization",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790640002000,
+      "tag": "0031_outlook_navigation_history",
+      "breakpoints": true
     }
   ]
 }

@@ -84,7 +84,8 @@ expiresInSeconds:60}` with `Cache-Control: no-store`. Send that challenge to
 installed native; native requests `/challenge` and HMAC-signs
 `POST /api/outlook/native/register-navigation` with `{paneChallenge}`.
 Registration replaces the previous navigation, expires in 60 seconds, and
-refuses reusing the same challenge. Before expiry (or when a ticket fails),
+permanently refuses reusing any previously registered challenge for that
+device, including an older challenge after a newer navigation. Before expiry (or when a ticket fails),
 obtain a NEW bootstrap challenge and register it via native without reopening
 the pane. The previous challenge and its tickets cease to authorize.
 On logout or account switch, Task 5/6 MUST clear the native navigation epoch,
@@ -101,7 +102,12 @@ createdAt (<24 hours), mailbox access, store mapping and device authorization
 are checked. Remote-admin sessions or injected test `sessionUser` cannot mint
 tickets. For moves the pane MUST declare exact resource EntryIDs and
 source/destination folder EntryIDs. Supplied resource/folder declarations for
-other actions are ticket-bound. Mutation operation IDs use the existing
+other actions are ticket-bound. Targeted item/attachment/template reads and
+existing-item mutations MUST declare exact resource EntryIDs; folder listing
+declares the source folder EntryID; folder creation declares its approved
+parent source folder EntryID without inventing an as-yet-nonexistent message
+resource. `GET_ACTIVE_EMAIL` and `CREATE_DRAFT` can begin without a known
+existing message ID. Mutation operation IDs use the existing
 `op_<unix-ms>_<32-hex-GUID>` format (<=15 minutes old, <=5 seconds future).
 
 Native separately HMAC-signs exact raw body bytes for
@@ -112,7 +118,8 @@ obtain store, resources, folder identities/kinds and actual consent from
 Outlook COM; never trust the pane for these values. No response, non-200
 response, elapsed scope, or changed operation authorizes COM. Native re-checks
 store/navigation epoch on its STA thread before execution. Only native gets
-the scope response (read <=60s, mutation <=15s): exact action, mailbox/store,
+the scope response (read <=60s, mutation <=15s, each capped at the earlier of
+the Better Auth session row expiry and its original createdAt + 24 hours): exact action, mailbox/store,
 resource IDs, folder IDs, approved folder IDs and `retry`. Never relay this
 response to the hosted pane. Native SEND/DELETE are denied; independent
 web-mail Send/Delete are unaffected.
@@ -130,7 +137,8 @@ pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts revoke-
 Native must identify Deleted Items/Outbox and descendants from actual Outlook
 folder ancestry; the server additionally denies those reported destination
 kinds and requires operator-approved source/destination IDs, with destination
-kind `triage` or `spam` for native moves. >=10 moves in one request or >25
+kind `triage` or `inbox` (recovery) for `MOVE_EMAIL`, or `spam` for
+`MOVE_TO_SPAM`. >=10 moves in one request or >25
 moves per mailbox/device within a rolling minute requires exact native batch
 consent before signing. Per-operation receipts persist across restarts;
 identical retries do not increment counts, changed work with the same

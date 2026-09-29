@@ -10,6 +10,13 @@ export const outlookNavigation = pgTable('outlook_navigation', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
+/** A challenge may register once per device, even if a newer challenge replaced it. */
+export const outlookNavigationHistory = pgTable('outlook_navigation_history', {
+  deviceId: text('device_id').notNull().references(() => outlookDevice.deviceId, { onDelete: 'cascade' }),
+  challengeHash: text('challenge_hash').notNull(),
+  registeredAt: timestamp('registered_at').notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.deviceId, t.challengeHash] })]);
+
 export const outlookBridgeTicket = pgTable('outlook_bridge_ticket', {
   ticketHash: text('ticket_hash').primaryKey(),
   deviceId: text('device_id').notNull().references(() => outlookDevice.deviceId, { onDelete: 'cascade' }),

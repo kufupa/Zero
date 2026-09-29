@@ -11,7 +11,7 @@ import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import { mailboxAccess, mailboxTransport } from '../../db/schema/mail.js';
-import { issueBridgeTicket } from '../../outlook-security/authorization.js';
+import { BridgeTicketDeniedError, issueBridgeTicket } from '../../outlook-security/authorization.js';
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
@@ -56,8 +56,13 @@ export const workstationRouter = router({
     if (!transportId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
     try {
       return await issueBridgeTicket(getDb(), ctx.auth, ctx.reqHeaders, { ...input, transportId });
-    } catch {
-      throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+    } catch (error) {
+      if (error instanceof BridgeTicketDeniedError) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+      }
+      // Main's onError logger sees this category, not the underlying database
+      // error (which may contain a connection string or request parameters).
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Bridge ticket unavailable' });
     }
   }),
   ping: privateProcedure.input(workstationPingInput).mutation(async ({ input }) => {

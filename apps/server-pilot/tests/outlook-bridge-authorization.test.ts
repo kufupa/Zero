@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { withTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
+import { __setDbForTests } from '../src/db/client.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
 import { outlookBridgeTicket, outlookMoveReceipt, outlookNavigation } from '../src/db/schema/outlook-authorization.js';
@@ -55,11 +56,14 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
   }));
   it('requires a live actual session and approved device/mailbox, never an injected user', async () => withTestDb(async (db) => {
     const f = await fixture(db);
-    const injected = workstationRouter.createCaller({ auth: null as never,
-      reqHeaders: new Headers({ 'x-zero-active-transport': f.transportId }),
-      sessionUser: { id: f.userId, email: `${f.userId}@example.test`, name: 'Staff' } } as never);
-    await expect(injected.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
-      action: 'GET_ACTIVE_EMAIL', storeId })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    __setDbForTests({ db, conn: null as never });
+    try {
+      const injected = workstationRouter.createCaller({ auth: { api: { getSession: async () => null } } as never,
+        reqHeaders: new Headers({ 'x-zero-active-transport': f.transportId }),
+        sessionUser: { id: f.userId, email: `${f.userId}@example.test`, name: 'Staff' } } as never);
+      await expect(injected.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL', storeId })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    } finally { __setDbForTests(null); }
     await expect(issueBridgeTicket(db, { api: { getSession: async () => null } }, new Headers(),
       { deviceId: f.deviceId, paneChallenge: f.paneChallenge, action: 'GET_ACTIVE_EMAIL', storeId, transportId: f.transportId })).rejects.toThrow();
     await expect(issueBridgeTicket(db, f.auth, new Headers(),
@@ -142,6 +146,16 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect((await f.signed(path, { ticket: renewed.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
       transportId: f.transportId })).status).toBe(200);
   }));
+  it('rejects a previously registered navigation challenge after another navigation replaces it', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    const old = f.paneChallenge;
+    const next = randomBytes(32).toString('base64url');
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: next })).status).toBe(200);
+    expect((await f.signed('/api/outlook/native/register-navigation', { paneChallenge: old })).status).toBe(403);
+    await expect(f.ticket()).rejects.toThrow();
+    expect(await issueBridgeTicket(db, f.auth, new Headers(), { deviceId: f.deviceId, paneChallenge: next,
+      action: 'GET_ACTIVE_EMAIL', storeId, transportId: f.transportId })).toHaveProperty('ticket');
+  }));
   it('invalidates a registered navigation on logout even when staff signs in again immediately', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await f.ticket();
@@ -160,10 +174,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
 
   it('rejects unscoped message and folder reads and sessions from remote-admin auth profile', async () => withTestDb(async (db) => {
     const f = await fixture(db);
-    const { ticket } = await f.ticket('GET_EMAIL_BY_ENTRY_ID');
+    await expect(f.ticket('GET_EMAIL_BY_ENTRY_ID')).rejects.toThrow();
+    const { ticket } = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined, { resources: ['mail-1'] });
     expect((await f.signed(path, { ticket, action: 'GET_EMAIL_BY_ENTRY_ID', storeId,
       transportId: f.transportId })).status).toBe(403);
-    const folderTicket = await f.ticket('GET_FOLDER_EMAILS');
+    const folderTicket = await f.ticket('GET_FOLDER_EMAILS', undefined, { sourceFolderId: 'not-approved' });
     expect((await f.signed(path, { ticket: folderTicket.ticket, action: 'GET_FOLDER_EMAILS', storeId,
       transportId: f.transportId, sourceFolderId: 'not-approved' })).status).toBe(403);
     const original = process.env.NAVA_AUTH_SESSION_PROFILE;
@@ -171,6 +186,86 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     try { await expect(f.ticket()).rejects.toThrow(); }
     finally { if (original === undefined) delete process.env.NAVA_AUTH_SESSION_PROFILE;
       else process.env.NAVA_AUTH_SESSION_PROFILE = original; }
+  }));
+  it('requires exact browser-declared identities for targeted reads and mutations', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await expect(f.ticket('GET_EMAIL_BY_ENTRY_ID')).rejects.toThrow();
+    await expect(f.ticket('READ_ATTACHMENT_BASE64')).rejects.toThrow();
+    await expect(f.ticket('GET_ATTACHMENT_METADATA')).rejects.toThrow();
+    await expect(f.ticket('GET_FOLDER_EMAILS')).rejects.toThrow();
+    for (const action of ['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
+      'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ']) {
+      await expect(f.ticket(action, op())).rejects.toThrow();
+    }
+    const itemRead = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined, { resources: ['mail-1'] });
+    expect((await f.signed(path, { ticket: itemRead.ticket, action: 'GET_EMAIL_BY_ENTRY_ID',
+      storeId, transportId: f.transportId, resources: ['mail-2'] })).status).toBe(403);
+    const mutationOp = op();
+    const update = await f.ticket('UPDATE_DRAFT', mutationOp, { resources: ['draft-1'] });
+    expect((await f.signed(path, { ticket: update.ticket, action: 'UPDATE_DRAFT', operationId: mutationOp,
+      storeId, transportId: f.transportId, resources: ['draft-2'] })).status).toBe(403);
+  }));
+  it('allows creating a folder beneath an approved parent without an invented message resource', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'parent-id', kind: 'inbox' });
+    await expect(f.ticket('CREATE_FOLDER', op())).rejects.toThrow();
+    const operationId = op();
+    const { ticket } = await f.ticket('CREATE_FOLDER', operationId, { sourceFolderId: 'parent-id' });
+    const response = await f.signed(path, { ticket, action: 'CREATE_FOLDER', operationId, storeId,
+      transportId: f.transportId, sourceFolderId: 'parent-id' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ kind: 'mutation', sourceFolderId: 'parent-id' });
+  }));
+  it('allows exact approved Inbox recovery moves without permitting Deleted Items or Outbox', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    const operationId = op();
+    const declared = { resources: ['mail-1'], sourceFolderId: 'triage', destinationFolderId: 'inbox' };
+    const { ticket } = await f.ticket('MOVE_EMAIL', operationId, declared);
+    expect((await f.signed(path, { ticket, action: 'MOVE_EMAIL', operationId, storeId,
+      transportId: f.transportId, ...declared, destinationKind: 'inbox' })).status).toBe(200);
+    const forbiddenOperation = op();
+    const forbidden = await f.ticket('MOVE_EMAIL', forbiddenOperation, { ...declared, destinationFolderId: 'deleted' });
+    expect((await f.signed(path, { ticket: forbidden.ticket, action: 'MOVE_EMAIL',
+      operationId: forbiddenOperation, storeId, transportId: f.transportId, resources: ['mail-1'],
+      sourceFolderId: 'triage', destinationFolderId: 'deleted', destinationKind: 'deleted' })).status).toBe(403);
+  }));
+  it('never returns a native scope extending beyond the actual session absolute 24-hour cutoff', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    const cutoff = new Date(Date.now() + 5000);
+    await db.update(session).set({ createdAt: new Date(cutoff.getTime() - 24 * 60 * 60_000),
+      expiresAt: new Date(Date.now() + 60_000) }).where(eq(session.id, f.sessionId));
+    const read = await f.ticket();
+    const response = await f.signed(path, { ticket: read.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId });
+    expect(response.status).toBe(200);
+    expect(new Date((await response.json()).expiresAt).getTime()).toBeLessThanOrEqual(cutoff.getTime());
+    const mutationOp = op();
+    const draft = await f.ticket('CREATE_DRAFT', mutationOp);
+    const mutation = await f.signed(path, { ticket: draft.ticket, action: 'CREATE_DRAFT', operationId: mutationOp,
+      storeId, transportId: f.transportId });
+    expect(mutation.status).toBe(200);
+    expect(new Date((await mutation.json()).expiresAt).getTime()).toBeLessThanOrEqual(cutoff.getTime());
+    const sessionCutoff = new Date(Date.now() + 5000);
+    await db.update(session).set({ createdAt: new Date(), expiresAt: sessionCutoff }).where(eq(session.id, f.sessionId));
+    const finalRead = await f.ticket();
+    const finalResponse = await f.signed(path, { ticket: finalRead.ticket, action: 'GET_ACTIVE_EMAIL',
+      storeId, transportId: f.transportId });
+    expect(finalResponse.status).toBe(200);
+    expect(new Date((await finalResponse.json()).expiresAt).getTime()).toBeLessThanOrEqual(sessionCutoff.getTime());
+  }));
+  it('reports issuance infrastructure failures as server errors without exposing their detail to clients', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    __setDbForTests({ db, conn: null as never });
+    try {
+      const caller = workstationRouter.createCaller({ auth: { api: { getSession: async () => {
+        throw new Error('private database connection detail');
+      } } } as never, reqHeaders: new Headers({ 'x-zero-active-transport': f.transportId }) });
+      await expect(caller.bridgeTicket({ deviceId: f.deviceId, paneChallenge: f.paneChallenge,
+        action: 'GET_ACTIVE_EMAIL', storeId })).rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR',
+        message: 'Bridge ticket unavailable', cause: undefined });
+    } finally { __setDbForTests(null); }
   }));
   it('accepts existing pane operation IDs and rejects expired or future mutation IDs', async () => withTestDb(async (db) => {
     const f = await fixture(db);
