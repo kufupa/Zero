@@ -780,6 +780,45 @@ describe('v4 staff-authorized Outlook navigation', () => {
     );
   });
 
+  it('cannot restore a late selection after another ticket denial invalidates the same navigation', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    const pendingRead = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise(() => undefined));
+    ticketMutate.mockRejectedValueOnce(new Error('Staff grant denied'));
+    fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    respondV4(pendingRead, {
+      entryId: 'late-entry',
+      subject: 'Never display after ticket denial',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Private',
+      bodyHtml: '',
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('subject').textContent).toBe('');
+  });
+
   it('declares exact ordered batch resources and folder IDs without browser-supplied native consent', async () => {
     security.userId = 'staff-1';
     security.transportId = 'transport-1';

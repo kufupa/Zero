@@ -450,13 +450,14 @@ export function useOutlookBridge() {
   );
 
   loadMailRef.current = async (generation: number) => {
-    if (epoch.current !== generation || !navigation.current) return;
+    const registered = navigation.current;
+    if (epoch.current !== generation || !registered) return;
     try {
       const raw = await sendCommand<Record<string, never>, BridgeCapabilities>(
         'GET_CAPABILITIES',
         {},
       );
-      if (epoch.current !== generation) return;
+      if (epoch.current !== generation || navigation.current !== registered) return;
       const parsed = BridgeCapabilitiesSchema.safeParse(raw);
       if (!parsed.success || parsed.data.bridgeProtocolVersion !== BRIDGE_PROTOCOL_VERSION) {
         setUpdateRequired(true);
@@ -469,7 +470,11 @@ export function useOutlookBridge() {
         'GET_ACTIVE_EMAIL',
         {},
       );
-      if (epoch.current === generation && selection.current === requestSelection) {
+      if (
+        epoch.current === generation &&
+        navigation.current === registered &&
+        selection.current === requestSelection
+      ) {
         const parsedEmail = WorkstationEmailPayloadSchema.safeParse(data);
         setActiveEmail(parsedEmail.success ? parsedEmail.data : null);
         setActiveEmailOwner(currentScope.current);
