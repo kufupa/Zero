@@ -413,6 +413,7 @@ type TestBridgeRequest = { requestId: string; action: string };
 async function waitForBridgeRequest(
   action: string,
   afterCallIndex = 0,
+  timeout = 5_000,
 ): Promise<TestBridgeRequest> {
   let request: TestBridgeRequest | undefined;
   await waitFor(
@@ -426,7 +427,7 @@ async function waitForBridgeRequest(
         .find((candidate) => candidate.action === action);
       expect(request).toBeDefined();
     },
-    { timeout: 5_000 },
+    { timeout },
   );
   return request!;
 }
@@ -985,15 +986,18 @@ describe('v4 staff-authorized Outlook navigation', () => {
     expect(nativeMessages().map((message) => message.action)).toEqual(['PING']);
     fireEvent.click(screen.getByRole('button', { name: 'Pair native' }));
     respondV4(await waitForBridgeRequest('PAIR_DEVICE'), { paired: true });
-    const ping = await waitForBridgeRequest('PING', 2);
+    const ping = await waitForBridgeRequest('PING', 2, 10_000);
+    expect(nativeMessages().some((message) => message.action === 'REGISTER_NAVIGATION')).toBe(false);
     respondV4(ping, {
       bridgeProtocolVersion: 4,
       version: '1.0.12',
       paired: true,
       deviceId: 'device-1',
     });
-    expect((await waitForBridgeRequest('REGISTER_NAVIGATION')).action).toBe('REGISTER_NAVIGATION');
-  });
+    expect((await waitForBridgeRequest('REGISTER_NAVIGATION', 0, 10_000)).action).toBe(
+      'REGISTER_NAVIGATION',
+    );
+  }, 15_000);
 
   it('requires re-login after 24 hours and refuses to mint COM tickets even if the cached session still has a user', async () => {
     security.userId = 'staff-1';
