@@ -1,8 +1,7 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -11,8 +10,10 @@ import { tmpdir } from 'node:os';
 const serverPilot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const client = resolve(serverPilot, '../mail/build/client');
 const indexHtml = join(client, 'index.html');
-const chromiumBinary =
-  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell';
+const chromiumBinary = [
+  chromium.executablePath(),
+  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
+].find(existsSync);
 
 describe('built /outlook-pane script policy in a real browser', () => {
   it.skipIf(!existsSync(indexHtml) || !existsSync(chromiumBinary))(
@@ -20,22 +21,18 @@ describe('built /outlook-pane script policy in a real browser', () => {
     async () => {
       const scratch = mkdtempSync(join(tmpdir(), 'pane-csp-browser-'));
       const html = readFileSync(indexHtml);
-      const id = createHash('sha256').update(html).digest('hex');
+      const helper = join(serverPilot, 'deploy', 'pane-csp-release.mjs');
+      const identity = spawnSync(process.execPath, [helper, 'id', client], { encoding: 'utf8' });
+      expect(identity.status, identity.stderr).toBe(0);
+      const id = identity.stdout.trim();
       const staged = join(scratch, 'releases', id, 'index.html');
       const template = join(serverPilot, 'deploy', 'nginx.conf');
       const candidate = join(scratch, 'candidate.conf');
-      mkdirSync(dirname(staged), { recursive: true });
-      writeFileSync(staged, html);
+      mkdirSync(dirname(dirname(staged)), { recursive: true });
+      cpSync(client, dirname(staged), { recursive: true });
       const render = spawnSync(
         process.execPath,
-        [
-          join(serverPilot, 'deploy', 'pane-csp-release.mjs'),
-          'render',
-          staged,
-          template,
-          candidate,
-          scratch,
-        ],
+        [helper, 'render', staged, template, candidate, scratch],
         { encoding: 'utf8' },
       );
       expect(render.status, render.stderr).toBe(0);

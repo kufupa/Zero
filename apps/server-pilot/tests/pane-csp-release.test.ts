@@ -1,11 +1,14 @@
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -43,13 +46,26 @@ function inlineScriptHashes(html: string): string[] {
     .map(([, , body]) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
 }
 
-function fixture(html: string) {
+function fixture(html: string, additionalFiles: Record<string, string> = {}) {
   const webRoot = tempDir();
-  const id = createHash('sha256').update(html, 'utf8').digest('hex');
+  const source = join(webRoot, 'source');
+  mkdirSync(source);
+  writeFileSync(join(source, 'index.html'), html);
+  for (const [path, content] of Object.entries(additionalFiles)) {
+    mkdirSync(dirname(join(source, path)), { recursive: true });
+    writeFileSync(join(source, path), content);
+  }
+  const identity = runHelper('id', source);
+  expect(identity.status, identity.stderr).toBe(0);
+  const id = identity.stdout.trim();
   const index = join(webRoot, 'releases', id, 'index.html');
   const candidate = join(webRoot, 'candidate.conf');
   mkdirSync(dirname(index), { recursive: true });
-  writeFileSync(index, html);
+  renameSync(join(source, 'index.html'), index);
+  for (const path of Object.keys(additionalFiles)) {
+    mkdirSync(dirname(join(webRoot, 'releases', id, path)), { recursive: true });
+    renameSync(join(source, path), join(webRoot, 'releases', id, path));
+  }
   return { candidate, id, index, webRoot };
 }
 
@@ -68,6 +84,27 @@ function localStageScript() {
 }
 
 describe('the built pane CSP and immutable mail release', () => {
+  it('uses the active release for stable assets and shared fallback only for hashed chunks', () => {
+    const nginx = readFileSync(template, 'utf8');
+    expect(
+      nginx.match(/location \/assets\/ \{\s*try_files \/releases\/__NAVA_RELEASE_ID__\$uri =404;/g),
+    ).toHaveLength(2);
+    const hashedRoutes = [
+      ...nginx.matchAll(
+        /location ~ "([^"]+)" \{\s*try_files \/releases\/__NAVA_RELEASE_ID__\$uri \$uri =404;/g,
+      ),
+    ];
+    expect(hashedRoutes).toHaveLength(2);
+    const regex = new RegExp(hashedRoutes[0][1]);
+    expect(regex.test('/assets/entry-ABcd1234.js')).toBe(true);
+    expect(regex.test('/assets/icons/logo-ABcd1234.svg')).toBe(true);
+    expect(regex.test('/assets/m0 w lines rounded edges.svg')).toBe(false);
+    expect(regex.test('/assets/mail.svg')).toBe(false);
+    expect(
+      nginx.match(/try_files \/releases\/__NAVA_RELEASE_ID__\$uri \/index.html;/g),
+    ).toHaveLength(2);
+  });
+
   it('uses a file alias in the exact pane location, with every security header and no inline-script bypass', () => {
     const nginx = readFileSync(template, 'utf8');
     const pane = nginx.match(/location = \/outlook-pane\s*\{([^}]*)\}/)?.[1];
@@ -107,7 +144,7 @@ describe('the built pane CSP and immutable mail release', () => {
     expect(pane).toContain(`alias ${webRoot}/releases/${id}/index.html;`);
     expect(pane).not.toMatch(/script-src [^;]*unsafe-inline/);
     expect(pane.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toEqual(inlineScriptHashes(html));
-    expect(nginx).toContain(`try_files /releases/${id}$uri $uri /index.html;`);
+    expect(nginx).toContain(`try_files /releases/${id}$uri /index.html;`);
     expect(
       nginx.match(new RegExp(`alias ${webRoot}/releases/${id}/index.html;`, 'g')),
     ).toHaveLength(3);
@@ -148,6 +185,46 @@ describe('the built pane CSP and immutable mail release', () => {
     const stalePolicy = runHelper('verify', index, template, candidate, webRoot);
     expect(stalePolicy.status).not.toBe(0);
     expect(stalePolicy.stderr).toMatch(/candidate|mismatch/i);
+  });
+
+  it('refuses a modified stable asset or extra file after rendering, even if inline scripts are unchanged', () => {
+    const stable = 'assets/m0 w lines rounded edges.svg';
+    const { candidate, id, index, webRoot } = fixture('<script>window.safe=true</script>', {
+      [stable]: '<svg>original</svg>',
+    });
+    expect(runHelper('render', index, template, candidate, webRoot).status).toBe(0);
+    const stagedAsset = join(webRoot, 'releases', id, stable);
+    writeFileSync(stagedAsset, '<svg>tampered</svg>');
+    const changed = runHelper('verify', index, template, candidate, webRoot);
+    expect(changed.status).not.toBe(0);
+    expect(changed.stderr).toMatch(/release|mismatch/i);
+    writeFileSync(stagedAsset, '<svg>original</svg>');
+    writeFileSync(join(webRoot, 'releases', id, 'extra.txt'), 'unexpected');
+    expect(runHelper('verify', index, template, candidate, webRoot).status).not.toBe(0);
+  });
+
+  it('rejects symlinks anywhere in the release and excludes non-hashed assets from old-tab fallback', () => {
+    const root = tempDir();
+    const source = join(root, 'source');
+    const publicAssets = join(root, 'public', 'assets');
+    mkdirSync(join(source, 'assets'), { recursive: true });
+    mkdirSync(publicAssets, { recursive: true });
+    writeFileSync(join(source, 'index.html'), '<script>window.safe=true</script>');
+    writeFileSync(join(source, 'assets', 'mail.svg'), '<svg>stable</svg>');
+    writeFileSync(join(source, 'assets', 'entry-ABcd1234.js'), 'immutable chunk');
+    writeFileSync(join(source, 'assets', 'logo-ABcd1234.svg'), '<svg>public</svg>');
+    writeFileSync(join(publicAssets, 'logo-ABcd1234.svg'), '<svg>public</svg>');
+    const hashed = runHelper('hashed-assets', join(source, 'assets'), publicAssets);
+    expect(hashed.status, hashed.stderr).toBe(0);
+    expect(hashed.stdout.split('\0').filter(Boolean)).toEqual(['entry-ABcd1234.js']);
+    writeFileSync(join(publicAssets, 'logo-ABcd1234.svg'), '<svg>stale source</svg>');
+    const mismatchedPublic = runHelper('hashed-assets', join(source, 'assets'), publicAssets);
+    expect(mismatchedPublic.status).not.toBe(0);
+    expect(mismatchedPublic.stderr).toMatch(/public asset/i);
+    symlinkSync(join(source, 'index.html'), join(source, 'assets', 'mutating-link'));
+    const identity = runHelper('id', source);
+    expect(identity.status).not.toBe(0);
+    expect(identity.stderr).toMatch(/symlink/i);
   });
 
   it('refuses to render an accidental script-src-elem inline bypass into the pane', () => {
@@ -210,18 +287,18 @@ describe('the built pane CSP and immutable mail release', () => {
     const web = join(root, 'web');
     const client = join(mail, 'build', 'client');
     mkdirSync(join(client, 'assets'), { recursive: true });
+    mkdirSync(join(mail, 'public', 'assets'), { recursive: true });
 
     function stageRelease(version: number) {
       writeFileSync(join(client, 'index.html'), `<script>window.version=${version}</script>`);
-      writeFileSync(join(client, 'assets', `entry-${version}.js`), `window.version=${version}`);
+      const chunk = version === 1 ? 'entry-ABcd1234.js' : 'entry-EFgh5678.js';
+      writeFileSync(join(client, 'assets', chunk), `window.version=${version}`);
       const run = spawnSync('bash', ['-c', `set -euo pipefail\n${stage}`], {
         env: { ...process.env, WEB_ROOT: web, MAIL_APP: mail, SERVER_PILOT: pilot },
         encoding: 'utf8',
       });
       expect(run.status, run.stderr).toBe(0);
-      return createHash('sha256')
-        .update(readFileSync(join(client, 'index.html')))
-        .digest('hex');
+      return runHelper('id', client).stdout.trim();
     }
 
     const first = stageRelease(1);
@@ -231,19 +308,99 @@ describe('the built pane CSP and immutable mail release', () => {
     expect(readFileSync(join(web, 'releases', second, 'index.html'), 'utf8')).toContain(
       'version=2',
     );
-    expect(readFileSync(join(web, 'assets', 'entry-1.js'), 'utf8')).toContain('version=1');
-    expect(readFileSync(join(web, 'assets', 'entry-2.js'), 'utf8')).toContain('version=2');
+    expect(readFileSync(join(web, 'assets', 'entry-ABcd1234.js'), 'utf8')).toContain('version=1');
+    expect(readFileSync(join(web, 'assets', 'entry-EFgh5678.js'), 'utf8')).toContain('version=2');
     expect(existsSync(join(web, 'index.html'))).toBe(false);
 
     // A content collision must fail closed rather than replace what an open tab is loading.
-    writeFileSync(join(client, 'assets', 'entry-1.js'), 'tampered shared filename');
+    writeFileSync(join(client, 'assets', 'entry-ABcd1234.js'), 'tampered shared filename');
     const collision = spawnSync('bash', ['-c', `set -euo pipefail\n${stage}`], {
       env: { ...process.env, WEB_ROOT: web, MAIL_APP: mail, SERVER_PILOT: pilot },
       encoding: 'utf8',
     });
     expect(collision.status).not.toBe(0);
     expect(collision.stderr).toMatch(/collision|mismatch/i);
-    expect(readFileSync(join(web, 'assets', 'entry-1.js'), 'utf8')).toContain('version=1');
+    expect(readFileSync(join(web, 'assets', 'entry-ABcd1234.js'), 'utf8')).toContain('version=1');
+  });
+
+  it('versions the complete client tree while preserving only hashed chunks for older tabs', () => {
+    const stage = localStageScript();
+    const root = tempDir();
+    const mail = join(root, 'mail');
+    const web = join(root, 'web');
+    const client = join(mail, 'build', 'client');
+    const assets = join(client, 'assets');
+    const publicAssets = join(mail, 'public', 'assets');
+    const stable = 'm0 w lines rounded edges.svg';
+    const hashShapedPublic = 'logo-ABcd1234.svg';
+    const oldChunk = 'entry-ABcd1234.js';
+    const newChunk = 'entry-EFgh5678.js';
+    mkdirSync(assets, { recursive: true });
+    mkdirSync(publicAssets, { recursive: true });
+    writeFileSync(join(client, 'index.html'), '<script>window.release = "same"</script>');
+    writeFileSync(join(client, 'favicon.ico'), 'favicon version 1');
+    writeFileSync(join(assets, stable), '<svg>version 1</svg>');
+    writeFileSync(join(assets, hashShapedPublic), '<svg>public version 1</svg>');
+    writeFileSync(join(publicAssets, hashShapedPublic), '<svg>public version 1</svg>');
+    writeFileSync(join(assets, oldChunk), 'old tab keeps this chunk');
+    chmodSync(join(assets, oldChunk), 0o666);
+    chmodSync(assets, 0o777);
+
+    const publish = () =>
+      spawnSync('bash', ['-c', `set -euo pipefail\n${stage}`], {
+        env: { ...process.env, WEB_ROOT: web, MAIL_APP: mail, SERVER_PILOT: pilot },
+        encoding: 'utf8',
+      });
+    const releaseIds = () => readdirSync(join(web, 'releases'));
+    const first = publish();
+    expect(first.status, first.stderr).toBe(0);
+    const [originalId] = releaseIds();
+    expect(existsSync(join(web, 'assets', hashShapedPublic))).toBe(false);
+    expect(statSync(join(web, 'releases', originalId, 'assets')).mode & 0o022).toBe(0);
+    expect(statSync(join(web, 'releases', originalId, 'assets', oldChunk)).mode & 0o022).toBe(0);
+    expect(statSync(join(web, 'assets', oldChunk)).mode & 0o022).toBe(0);
+
+    // The script hashes remain equal, but immutable release identity must change.
+    writeFileSync(join(client, 'favicon.ico'), 'favicon version 2');
+    const faviconOnly = publish();
+    expect(faviconOnly.status, faviconOnly.stderr).toBe(0);
+    const faviconIds = releaseIds();
+    expect(faviconIds).toHaveLength(2);
+    const faviconId = faviconIds.find((id) => id !== originalId)!;
+    expect(readFileSync(join(web, 'releases', originalId, 'favicon.ico'), 'utf8')).toBe(
+      'favicon version 1',
+    );
+    expect(readFileSync(join(web, 'releases', faviconId, 'favicon.ico'), 'utf8')).toBe(
+      'favicon version 2',
+    );
+
+    writeFileSync(join(assets, stable), '<svg>version 2</svg>');
+    writeFileSync(join(assets, hashShapedPublic), '<svg>public version 2</svg>');
+    writeFileSync(join(publicAssets, hashShapedPublic), '<svg>public version 2</svg>');
+    writeFileSync(join(assets, newChunk), 'new tab loads this chunk');
+    const updatedStable = publish();
+    expect(updatedStable.status, updatedStable.stderr).toBe(0);
+    const stableIds = releaseIds();
+    expect(stableIds).toHaveLength(3);
+    const newId = stableIds.find((id) => id !== originalId && id !== faviconId)!;
+    expect(readFileSync(join(web, 'releases', originalId, 'assets', stable), 'utf8')).toBe(
+      '<svg>version 1</svg>',
+    );
+    expect(readFileSync(join(web, 'releases', newId, 'assets', stable), 'utf8')).toBe(
+      '<svg>version 2</svg>',
+    );
+    expect(existsSync(join(web, 'assets', stable))).toBe(false);
+    expect(existsSync(join(web, 'assets', hashShapedPublic))).toBe(false);
+    expect(readFileSync(join(web, 'assets', oldChunk), 'utf8')).toBe('old tab keeps this chunk');
+    expect(readFileSync(join(web, 'assets', newChunk), 'utf8')).toBe('new tab loads this chunk');
+    expect(readFileSync(join(web, 'releases', originalId, 'index.html'), 'utf8')).toBe(
+      readFileSync(join(web, 'releases', newId, 'index.html'), 'utf8'),
+    );
+    const nginx = readFileSync(template, 'utf8');
+    expect(
+      nginx.match(/try_files \/releases\/__NAVA_RELEASE_ID__\$uri \/index.html;/g),
+    ).toHaveLength(2);
+    expect(existsSync(join(web, 'index.html'))).toBe(false);
   });
 
   it('refuses a symlinked release directory before rsync can write outside the web root', () => {

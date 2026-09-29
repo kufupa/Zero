@@ -197,7 +197,7 @@ fi
 
 echo "== stage immutable mail release =="
 PANE_RELEASE_HELPER="${SERVER_PILOT}/deploy/pane-csp-release.mjs"
-RELEASE_ID="$(node "$PANE_RELEASE_HELPER" id "${MAIL_APP}/build/client/index.html")"
+RELEASE_ID="$(node "$PANE_RELEASE_HELPER" id "${MAIL_APP}/build/client")"
 RELEASE_DIR="${WEB_ROOT}/releases/${RELEASE_ID}"
 for path in "$WEB_ROOT" "${WEB_ROOT}/releases" "$RELEASE_DIR" "${WEB_ROOT}/assets" "${WEB_ROOT}/downloads"; do
   if sudo test -L "$path"; then
@@ -209,11 +209,15 @@ if [ -n "$(find "${MAIL_APP}/build/client" -type l -print -quit)" ]; then
   echo "web build contains a symlink; refusing release" >&2
   exit 1
 fi
+if [ -d "$RELEASE_DIR" ] && [ -n "$(sudo find "$RELEASE_DIR" -type l -print -quit)" ]; then
+  echo "immutable web release contains a symlink; refusing publication" >&2
+  exit 1
+fi
 sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
 # Existing releases and /assets are append-only: an open tab's hashed chunks
 # must remain byte-for-byte identical. Refuse filename collisions, including a
 # partially staged release from an interrupted prior attempt.
-sudo rsync -a --ignore-existing --chown=root:root --exclude '/downloads/' \
+sudo rsync -a --ignore-existing --chown=root:root --exclude '/downloads/' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
   "${MAIL_APP}/build/client/" "$RELEASE_DIR/"
 RELEASE_MISMATCH="$(sudo rsync -rc --dry-run --out-format='%n' --exclude '/downloads/' \
   "${MAIL_APP}/build/client/" "$RELEASE_DIR/")"
@@ -221,10 +225,33 @@ if [ -n "$RELEASE_MISMATCH" ]; then
   echo "immutable web release collision or mismatch; refusing publication" >&2
   exit 1
 fi
+if [ "$(node "$PANE_RELEASE_HELPER" id "$RELEASE_DIR")" != "$RELEASE_ID" ]; then
+  echo "staged web release tree mismatch; refusing publication" >&2
+  exit 1
+fi
 sudo install -d -o root -g root -m 0755 "${WEB_ROOT}/assets"
-sudo rsync -a --ignore-existing --chown=root:root "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/"
-ASSET_MISMATCH="$(sudo rsync -rc --dry-run --out-format='%n' \
-  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/")"
+if [ -n "$(sudo find "${WEB_ROOT}/assets" -type l -print -quit)" ]; then
+  echo "shared hashed assets contain a symlink; refusing publication" >&2
+  exit 1
+fi
+# Stable names (SVGs, favicons, etc.) belong only to each immutable release.
+# Shared /assets is a fallback for old tabs loading old Vite-hashed chunks.
+ASSET_MANIFEST="$(mktemp)"
+if ! node "$PANE_RELEASE_HELPER" hashed-assets "${RELEASE_DIR}/assets" "${MAIL_APP}/public/assets" > "$ASSET_MANIFEST"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+if ! sudo rsync -a --from0 --files-from="$ASSET_MANIFEST" --ignore-existing --chown=root:root --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+if ! ASSET_MISMATCH="$(sudo rsync -rc --dry-run --from0 --files-from="$ASSET_MANIFEST" --out-format='%n' \
+  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/")"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+rm -f "$ASSET_MANIFEST"
 if [ -n "$ASSET_MISMATCH" ]; then
   echo "shared hashed asset collision or mismatch; refusing publication" >&2
   exit 1

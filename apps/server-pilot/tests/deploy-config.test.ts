@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -430,7 +430,8 @@ type NginxActivationScenario =
   | 'legacy-only'
   | 'remote-only'
   | 'pane-mismatch'
-  | 'index-mismatch';
+  | 'index-mismatch'
+  | 'asset-mismatch';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
 
 async function runNginxActivation({
@@ -439,12 +440,14 @@ async function runNginxActivation({
   rollbackCopyFails = false,
   ens5PrimaryIp = REMOTE_ALB_TARGET_PRIVATE_IP,
   priorRelease = false,
+  stableOnlyChange = false,
 }: {
   scenario: NginxActivationScenario;
   priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
   ens5PrimaryIp?: string;
   priorRelease?: boolean;
+  stableOnlyChange?: boolean;
 }): Promise<{
   status: number | null;
   stdout: string;
@@ -452,6 +455,10 @@ async function runNginxActivation({
   site: string | null;
   candidate: string;
   priorCandidate: string | null;
+  currentStable: string;
+  priorStable: string | null;
+  currentId: string;
+  priorId: string;
   enabledState: 'absent' | 'valid' | 'dangling';
   enabledTarget: string | null;
   nginxCalls: number;
@@ -464,6 +471,7 @@ async function runNginxActivation({
     mkdirSync,
     readFileSync,
     readdirSync,
+    renameSync,
     rmSync,
     writeFileSync,
   } = await import('node:fs');
@@ -492,26 +500,41 @@ async function runNginxActivation({
   const previousTargetPath = join(dirname(sitePath), 'previous-nava');
   const webRoot = join(tempDir, 'web');
   const index = '<!doctype html><script>window.paneTest = 1</script>';
-  const releaseId = createHash('sha256').update(index).digest('hex');
-  const releaseDir = join(webRoot, 'releases', releaseId);
+  const stableAsset = 'm0 w lines rounded edges.svg';
   const previousSite = 'previous nginx config\n';
   const previousTarget = '../sites-available/previous-nava';
 
   try {
     for (const directory of [
       deployDir,
-      releaseDir,
       backupDir,
       dirname(sitePath),
       dirname(enabledPath),
     ]) {
       mkdirSync(directory, { recursive: true });
     }
-    writeFileSync(join(releaseDir, 'index.html'), index, 'utf8');
     writeFileSync(
       join(deployDir, 'pane-csp-release.mjs'),
       readFileSync(join(here, '..', 'deploy', 'pane-csp-release.mjs'), 'utf8'),
     );
+    function stageFixtureRelease(html: string, stable: string, label: string) {
+      const seed = join(tempDir, `${label}-client`);
+      mkdirSync(join(seed, 'assets'), { recursive: true });
+      writeFileSync(join(seed, 'index.html'), html);
+      writeFileSync(join(seed, 'assets', stableAsset), stable);
+      const identity = spawnSync(process.execPath, [join(deployDir, 'pane-csp-release.mjs'), 'id', seed], {
+        encoding: 'utf8',
+      });
+      if (identity.status !== 0) throw new Error(`fixture release identity failed: ${identity.stderr}`);
+      const id = identity.stdout.trim();
+      const directory = join(webRoot, 'releases', id);
+      mkdirSync(dirname(directory), { recursive: true });
+      renameSync(seed, directory);
+      return { id, directory, stable };
+    }
+    const current = stageFixtureRelease(index, '<svg>new stable asset</svg>', 'new');
+    const releaseId = current.id;
+    const releaseDir = current.directory;
     const template = readFileSync(
       join(here, '..', 'deploy', 'nginx.conf'),
       'utf8',
@@ -536,22 +559,20 @@ async function runNginxActivation({
         '__NAVA_PANE_SCRIPT_HASHES__',
         `'sha256-${createHash('sha256').update('window.paneTest = 1').digest('base64')}'`,
       );
-    const oldIndex = '<!doctype html><script>window.paneTest = 0</script>';
-    const oldId = createHash('sha256').update(oldIndex).digest('hex');
-    const oldReleaseDir = join(webRoot, 'releases', oldId);
+    const oldIndex = stableOnlyChange ? index : '<!doctype html><script>window.paneTest = 0</script>';
+    const previous = priorRelease
+      ? stageFixtureRelease(oldIndex, '<svg>old stable asset</svg>', 'old')
+      : null;
+    const oldId = previous?.id ?? '';
     const priorCandidate = priorRelease
       ? fixtureTemplate
           .replaceAll('__NAVA_RELEASE_ID__', oldId)
           .replaceAll('__NAVA_WEB_ROOT__', webRoot)
           .replace(
             '__NAVA_PANE_SCRIPT_HASHES__',
-            `'sha256-${createHash('sha256').update('window.paneTest = 0').digest('base64')}'`,
+            `'sha256-${createHash('sha256').update(stableOnlyChange ? 'window.paneTest = 1' : 'window.paneTest = 0').digest('base64')}'`,
           )
       : null;
-    if (priorRelease) {
-      mkdirSync(oldReleaseDir, { recursive: true });
-      writeFileSync(join(oldReleaseDir, 'index.html'), oldIndex);
-    }
     writeFileSync(nginxCallsPath, '0', 'utf8');
     writeFileSync(reloadCallsPath, '0', 'utf8');
     if (priorState !== 'absent') {
@@ -694,6 +715,8 @@ ip() {
         ? `sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" "$NGINX_SRC"`
         : scenario === 'index-mismatch'
           ? 'printf %s "changed" >> "$RELEASE_DIR/index.html"'
+          : scenario === 'asset-mismatch'
+            ? `printf %s "tampered" >> "$RELEASE_DIR/assets/m0 w lines rounded edges.svg"`
           : '';
     const activation = nginxBlock.replace(
       'if command -v nginx >/dev/null 2>&1; then',
@@ -745,6 +768,12 @@ ip() {
       site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
       candidate,
       priorCandidate,
+      currentStable: readFileSync(join(releaseDir, 'assets', stableAsset), 'utf8'),
+      priorStable: previous
+        ? readFileSync(join(previous.directory, 'assets', stableAsset), 'utf8')
+        : null,
+      currentId: releaseId,
+      priorId: oldId,
       enabledState:
         enabledTarget == null
           ? 'absent'
@@ -1816,7 +1845,7 @@ describe('deploy config', () => {
     const nginx = readNginxConfig();
     expect(nginx).toContain('listen 443 ssl');
     expect(nginx).toContain('proxy_pass http://127.0.0.1:8788/api/');
-    expect(nginx).toContain('try_files /releases/__NAVA_RELEASE_ID__$uri $uri /index.html');
+    expect(nginx).toContain('try_files /releases/__NAVA_RELEASE_ID__$uri /index.html');
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
@@ -2023,7 +2052,7 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
-  it.each(['pane-mismatch', 'index-mismatch'] as const)(
+  it.each(['pane-mismatch', 'index-mismatch', 'asset-mismatch'] as const)(
     'rejects %s before candidate publication and keeps the prior SPA/CSP pairing',
     async (scenario) => {
       const result = await runNginxActivation({
@@ -2055,6 +2084,27 @@ describe('deploy config', () => {
       expect(result.enabledState).toBe('valid');
       expect(result.enabledTarget).toBe('../sites-available/previous-nava');
       expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it.each(['validate', 'reload'] as const)(
+    'retains the prior stable SVG on %s rollback despite the new release having the same index',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+        priorRelease: true,
+        stableOnlyChange: true,
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.currentId).not.toBe(result.priorId);
+      expect(result.site).toBe(result.priorCandidate);
+      expect(result.site).toContain(`releases/${result.priorId}/index.html`);
+      expect(result.site).toContain(`try_files /releases/${result.priorId}$uri /index.html;`);
+      expect(result.site).not.toContain(`releases/${result.currentId}/index.html`);
+      expect(result.priorStable).toBe('<svg>old stable asset</svg>');
+      expect(result.currentStable).toBe('<svg>new stable asset</svg>');
+      expect(result.enabledState).toBe('valid');
     },
   );
 

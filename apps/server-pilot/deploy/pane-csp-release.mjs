@@ -1,11 +1,71 @@
 #!/usr/bin/env node
 // Render and verify one Nginx candidate against the exact staged SPA bytes.
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-function indexId(html) {
-  return createHash('sha256').update(html).digest('hex');
+// Hash the entire publishable client tree, including directory names; downloads
+// are reserved for the separately managed Windows installer.
+function clientTree(root) {
+  if (!lstatSync(root).isDirectory())
+    throw new Error('client tree must be a directory, not a symlink');
+  const records = [];
+  function visit(directory) {
+    for (const name of readdirSync(directory).sort()) {
+      const file = join(directory, name);
+      const path = relative(root, file);
+      const stat = lstatSync(file);
+      if (stat.isSymbolicLink()) throw new Error(`client tree contains a symlink: ${path}`);
+      if (stat.isDirectory()) {
+        if (path === 'downloads') throw new Error('client tree cannot contain managed downloads');
+        records.push([`${path}/`, null]);
+        visit(file);
+      } else if (stat.isFile()) {
+        records.push([path, createHash('sha256').update(readFileSync(file)).digest('hex')]);
+      } else {
+        throw new Error(`client tree contains a non-regular file: ${path}`);
+      }
+    }
+  }
+  visit(root);
+  const indexHash = records.find(([path]) => path === 'index.html')?.[1];
+  if (!indexHash) throw new Error('client tree is missing a regular index.html');
+  // JSON-encoded records make filenames unambiguous even with whitespace/newlines.
+  const digest = createHash('sha256');
+  for (const record of records.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    digest.update(JSON.stringify(record)).update('\n');
+  }
+  return { id: digest.digest('hex'), indexHash };
+}
+
+function hashedAssets(root, publicRoot) {
+  if (!lstatSync(root).isDirectory()) throw new Error('assets must be a directory, not a symlink');
+  if (!lstatSync(publicRoot).isDirectory())
+    throw new Error('public assets must be a directory, not a symlink');
+  const paths = [];
+  function visit(directory) {
+    for (const name of readdirSync(directory).sort()) {
+      const file = join(directory, name);
+      const path = relative(root, file);
+      const stat = lstatSync(file);
+      if (stat.isSymbolicLink()) throw new Error(`assets contain a symlink: ${path}`);
+      if (stat.isDirectory()) visit(file);
+      else if (!stat.isFile()) throw new Error(`assets contain a non-regular file: ${path}`);
+      else if (/-[\w-]{8}\.(?:js|css|woff2?|svg|png|jpe?g|webp|avif|wasm)$/.test(name)) {
+        const publicFile = join(publicRoot, path);
+        const publicStat = lstatSync(publicFile, { throwIfNoEntry: false });
+        if (publicStat) {
+          if (!publicStat.isFile() || !readFileSync(publicFile).equals(readFileSync(file))) {
+            throw new Error(`public asset is not the exact staged regular file: ${path}`);
+          }
+          continue;
+        }
+        paths.push(path);
+      }
+    }
+  }
+  visit(root);
+  process.stdout.write(`${paths.join('\0')}${paths.length ? '\0' : ''}`);
 }
 
 function scriptHashes(html) {
@@ -24,8 +84,8 @@ function releaseIdentity(indexPath, webRoot) {
   if (!isAbsolute(webRoot) || !/^\/[A-Za-z0-9_./-]+$/.test(webRoot)) {
     throw new Error('web root must be a safe absolute Nginx path');
   }
-  const html = readFileSync(indexPath);
-  const id = indexId(html);
+  const tree = clientTree(dirname(indexPath));
+  const { id } = tree;
   if (resolve(indexPath) !== resolve(join(webRoot, 'releases', id, 'index.html'))) {
     throw new Error('staged index does not match its content-addressed release path');
   }
@@ -34,6 +94,10 @@ function releaseIdentity(indexPath, webRoot) {
     realpathSync(dirname(indexPath)) !== resolve(join(webRoot, 'releases', id))
   ) {
     throw new Error('staged index must be a regular file, not a symlink or redirected release');
+  }
+  const html = readFileSync(indexPath);
+  if (createHash('sha256').update(html).digest('hex') !== tree.indexHash) {
+    throw new Error('staged index changed while hashing the complete release');
   }
   const hashes = scriptHashes(html);
   if (hashes.length === 0) throw new Error('staged index contains no inline scripts');
@@ -63,7 +127,11 @@ function candidateFor(indexPath, templatePath, webRoot) {
 
 function main([command, indexPath, templatePath, candidatePath, webRoot]) {
   if (command === 'id' && indexPath && !templatePath) {
-    process.stdout.write(`${indexId(readFileSync(indexPath))}\n`);
+    process.stdout.write(`${clientTree(indexPath).id}\n`);
+    return;
+  }
+  if (command === 'hashed-assets' && indexPath && templatePath && !candidatePath) {
+    hashedAssets(indexPath, templatePath);
     return;
   }
   if (
@@ -74,7 +142,7 @@ function main([command, indexPath, templatePath, candidatePath, webRoot]) {
     !webRoot
   ) {
     throw new Error(
-      'usage: pane-csp-release.mjs id INDEX | render|verify INDEX TEMPLATE CANDIDATE WEB_ROOT',
+      'usage: pane-csp-release.mjs id CLIENT_DIR | hashed-assets ASSETS_DIR PUBLIC_ASSETS_DIR | render|verify INDEX TEMPLATE CANDIDATE WEB_ROOT',
     );
   }
   const expected = candidateFor(indexPath, templatePath, webRoot);
