@@ -1,39 +1,34 @@
-# Urgent separate follow-up: web-mail HTML boundary
+# Web-mail HTML security follow-up
 
-Status: OPEN — owner and date must be assigned before a pilot security sign-off.
-This is **not** part of the one-time Outlook add-in v4 upgrade and must not
-remove legitimate server-side web-mail Send/Delete functionality.
+Status: Rendering mitigation implemented; real-browser verification remains open.
+This does **not** remove legitimate server-side web-mail Send/Delete
+functionality and is separate from the one-time Outlook add-in installer.
 
-## Why this needs a separate decision
+## What changed
 
-- `apps/mail/components/mail/mail-content.tsx` currently disables the server
-  `processEmailContent` gate for reliability and writes fallback HTML into a
-  ShadowRoot using `innerHTML`. `apps/mail/lib/mail/resolve-mail-html.ts`
-  removes `<script>` tags with a regex, but does not independently sanitize
-  arbitrary HTML attributes or URLs on that fallback path.
-- Incoming mail is normally sanitized when stored by the server. The fallback
-  can still receive other, older, test, or differently sourced HTML; the
-  renderer should be safe **independently** of where content came from.
-  The generic web-mail Nginx policy still allows `script-src 'unsafe-inline'`.
-- A same-origin script running under an authenticated web-mail staff session
-  could call the existing web-mail `mail.send`/`mail.delete` APIs. The new
-  pane-only CSP and native command restrictions do not protect those routes.
-  This is a **conditional exposure**, not a claim that an exploit has occurred.
+- `MailContent` still uses the client fallback while server `processEmailContent`
+  remains disabled for reliability. That fallback now uses a mail-specific
+  allowlist sanitizer with the same external-image policy as the server, then
+  DOMPurify sanitizes again immediately before Shadow DOM insertion.
+- The allowlist drops scripts, event-handler attributes, unsafe URL schemes,
+  SVG/embedded content and sender CSS. Remote images are blocked unless staff
+  enabled them or trusted the sender; the explicit image opt-in still works.
+- The `MailContent` tests cover event handlers, `javascript:` links, blocked
+  tracking images and the explicit image opt-in. Other message-body renderers
+  (`mail-display`, `thread-display`, quoted history) already use `cleanHtml`.
+- The client fallback sanitizer mirrors
+  `apps/server-pilot/src/mail/sanitize-email-html.ts`; keep their allowlists and
+  image rules in sync when either changes.
 
-## Acceptance criteria for the separately scoped fix
+## Remaining before pilot sign-off
 
-1. Define and enforce one defensible HTML sanitization boundary on **every**
-   web-mail rendering path, including fallback/quoted history and historical
-   records, without dropping CID images, safe links or required Outlook-like
-   email formatting. Treat sanitizer failure as plain text or a safe placeholder.
-2. Test real browser behavior against event-handler, SVG, protocol and malformed
-   markup vectors; demonstrate that mail content cannot execute JS or call a
-   session-authenticated Send/Delete API. Also cover message import and editor
-   history paths, not just a simple `<script>` tag.
-3. Evaluate a build-compatible, route-scoped script CSP for web mail without
-   breaking sign-in/hydration/buttons. Keep staff Send/Delete APIs and the
-   installed `/outlook-pane` bridge contract unchanged. Run release smoke tests
-   under a named operator and rollback owner before shipping.
-
-Assign an owner and target date during the v4 release review. Do not present
-the native v4 rollout as remediation of this independent same-origin risk.
+1. Run event-handler, SVG, protocol and malformed-markup payloads in real
+   Chromium and Outlook WebView2. Verify they cannot execute script or invoke
+   session-authenticated Send/Delete, including through editor/history views.
+2. Review a build-compatible CSP for the full web-mail app separately. Its
+   current policy allows inline scripts for the app; do not apply the pane-only
+   CSP to the Next.js app without validating sign-in, hydration and controls.
+3. Keep the web-mail Send/Delete APIs and `/outlook-pane` bridge contract
+   unchanged. The mitigation is not a claim that all same-origin XSS paths or
+   historical data have been browser-tested, and no exploit is known to have
+   occurred.

@@ -181,11 +181,13 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 
 ## Urgent separate security decision
 
-Native Send/Delete removal does **not** eliminate Send/Delete via same-origin
-server web-mail `mail.send`, `mail.delete` and `mail.bulkDelete`. An attacker
-executing script under an authenticated staff session (e.g. a web-mail raw-HTML
-pane XSS) could invoke those routes. This release keeps legitimate web-mail
-functionality intact; track the separately scoped
+Native Send/Delete removal does **not** disable legitimate server web-mail
+`mail.send`, `mail.delete` and `mail.bulkDelete`. The previously identified
+raw-email fallback XSS path now has a client-side allowlist sanitizer plus a
+final DOMPurify boundary, while retaining normal web-mail functionality. This
+mitigation still requires real-browser/WebView2 payload and editor/history
+smoke tests; the generic web-mail CSP review is separate. Track that remaining
+verification in the
 [`outlook-web-mail-html-xss-follow-up.md`](../../../docs/production-readiness/outlook-web-mail-html-xss-follow-up.md)
-with an owner and date before pilot sign-off. Pane-only CSP does not fix other
-web routes. Do not claim this risk closed at v4 rollout.
+before pilot sign-off. Pane-only CSP does not govern other web routes. Do not
+claim generic web-mail CSP review or browser verification is complete.
