@@ -104,4 +104,12 @@ describe('pilot social signup gate', () => {
     expect(getSocialProviders({ ...googleEnv, PILOT_OPEN_SIGNUP: '0' }, 'remote'))
       .toEqual({});
   });
+
+  it('does not bypass a pilot allowlist through Google when open signup was not enabled', () => {
+    const providers = getSocialProviders({
+      ...googleEnv,
+      PILOT_SIGNUP_ALLOWLIST: 'allowed@example.com',
+    }, 'legacy');
+    expect(providers.google).toMatchObject({ disableSignUp: true });
+  });
 });

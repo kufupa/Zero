@@ -148,6 +148,7 @@ describe('OutlookPanePage', () => {
   afterEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    vi.restoreAllMocks();
     cleanup();
     sendCommandMock.mockReset();
     vi.mocked(toast.success).mockClear();
@@ -346,6 +347,7 @@ describe('OutlookPanePage', () => {
   });
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const startedAt = Date.now();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
@@ -366,6 +368,10 @@ describe('OutlookPanePage', () => {
     );
 
     fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(1);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
@@ -374,7 +380,31 @@ describe('OutlookPanePage', () => {
     vi.spyOn(Date, 'now').mockRestore();
   });
 
+  it('keeps the prior uncertain draft warning if selection changes before the new reply reaches Outlook', async () => {
+    sessionStorage.setItem('nava_outlook_unresolved_reply_v1', '1');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    fireEvent.click(button); // warn about the prior uncertain outcome
+    fireEvent.click(button); // explicitly confirm, then wait for the new PDF
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    await act(async () => finishPdf({ fileName: 'Quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
+
+    bridgeMockState.selectedEntryId = '001';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    expect(quotePdfMutate).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+  });
+
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     sendCommandMock.mockRejectedValue(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
@@ -408,6 +438,9 @@ describe('OutlookPanePage', () => {
     );
 
     fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(257);
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(258));
 
     const freshPayload = createReplyCalls()[257]?.[1] as { operationId: string };
@@ -422,6 +455,8 @@ describe('OutlookPanePage', () => {
       expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
     );
 
+    fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(258);
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
     vi.spyOn(Date, 'now').mockRestore();

@@ -115,6 +115,17 @@ function setUnresolvedReplyMarker(unresolved: boolean): void {
   } catch { /* Restricted WebView storage: in-memory retries still work. */ }
 }
 
+function confirmNewReplyAfterUncertainOutcome(): boolean {
+  try {
+    // Intentional blocking acknowledgment: unlike a toast, another click
+    // cannot silently create a second Outlook draft after an unknown outcome.
+    // oxlint-disable-next-line no-alert
+    return window.confirm(
+      'Check Outlook Drafts for the earlier reply. Have you checked Drafts and do you want to start a new draft?',
+    );
+  } catch { return false; }
+}
+
 type PendingReplyOperation = {
   operationId: string;
   startedAt: number;
@@ -552,23 +563,29 @@ export default function OutlookPanePage() {
         rememberExpiredOutcome(retryKey);
       }
     }
-    if (expiredReplyOutcomes.current.delete(key)) {
-      if (hasUntrackedExpiredReplyOutcomes.current) {
+    let acknowledgedExpiredOutcome = false;
+    if (expiredReplyOutcomes.current.has(key)) {
+      if (expiredOutcomeConfirmationKey.current !== key) {
         expiredOutcomeConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
+        );
+        return;
       }
-      toast.error(
-        `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
-      );
-      return;
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
+      expiredReplyOutcomes.current.delete(key);
+      expiredOutcomeConfirmationKey.current = null;
+      acknowledgedExpiredOutcome = true;
     }
-    if (hasUntrackedExpiredReplyOutcomes.current && expiredOutcomeConfirmationKey.current !== key) {
-      expiredOutcomeConfirmationKey.current = key;
-      toast.error(
-        `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
-      );
-      return;
-    }
-    if (hasUntrackedExpiredReplyOutcomes.current) {
+    if (hasUntrackedExpiredReplyOutcomes.current && !acknowledgedExpiredOutcome) {
+      if (expiredOutcomeConfirmationKey.current !== key) {
+        expiredOutcomeConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
+        );
+        return;
+      }
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
       expiredOutcomeConfirmationKey.current = null;
     }
     // In a live pane another message may have an unresolved, safely retryable
@@ -582,8 +599,10 @@ export default function OutlookPanePage() {
         );
         return;
       }
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
       unresolvedReplyConfirmationKey.current = null;
-      setUnresolvedReplyMarker(false);
+      // Keep the prior unknown outcome recorded until this attempt actually
+      // reaches native Outlook and succeeds. PDF generation may still abort.
     }
     if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
       toast.error(

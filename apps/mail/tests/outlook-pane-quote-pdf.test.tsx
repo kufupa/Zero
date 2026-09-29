@@ -122,6 +122,7 @@ describe('Outlook pane quote proposal PDF', () => {
   afterEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    vi.restoreAllMocks();
     cleanup();
     vi.mocked(toast.error).mockClear();
     vi.mocked(toast.success).mockClear();
@@ -356,6 +357,7 @@ describe('Outlook pane quote proposal PDF', () => {
   });
 
   it('requires checking Drafts when a native reply completes after the staff scope changes', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let finishNative!: (value: { entryId: string; storeId: string; folderEntryId: string }) => void;
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
     const pane = render(<OutlookPanePage />);
@@ -378,12 +380,17 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
     expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(sendCommandMock.mock.calls.filter(
       ([action]) => action === 'CREATE_REPLY_DRAFT',
     )).toHaveLength(2));
   });
 
   it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const pane = render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
@@ -413,6 +420,9 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(screen.queryByRole('status')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(quotePdfMutateMock).toHaveBeenCalledTimes(2);
+    confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(3));
   });

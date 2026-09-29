@@ -81,8 +81,8 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    change. Writer fails closed before replacing the previous env on missing,
    malformed or inaccessible wrapping key. Never print the key or run `bash -x`.
    `PILOT_OPEN_SIGNUP='0'` now overrides even a stale
-   `PILOT_SIGNUP_ALLOWLIST` and disables new Google registrations if OAuth is
-   configured, without blocking existing linked-account sign-in. Explicitly
+   `PILOT_SIGNUP_ALLOWLIST`; Google OAuth also disables new registrations
+   unless `PILOT_OPEN_SIGNUP='1'`, without blocking existing linked-account sign-in. Explicitly
    verify blocked self-signup and existing named sign-in. Keep remote-admin's
    separate 12-hour session.
    In the legacy HTTP process, a capped hourly pass removes tickets expired
@@ -156,6 +156,15 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    manual Outlook Reply pending a supervised, separately validated native COM
    solution. Check every target profile/store before promising that workflow;
    do not silently weaken this guard or publish the installer as feature-complete.
+   **Multiple-pane draft verification:** an uncertain reply's retry ID and
+   Drafts warning live in the initiating pane's WebView context. A second
+   inspector/pane may not see that warning and may initiate a new reply to
+   the same message. Before declaring automated drafting ready, exercise two
+   simultaneous panes on the real staff profile, including a native timeout
+   and pane close/reopen. If duplicate creation remains possible, keep
+   automated reply drafting disabled for those profiles until a separately
+   verified cross-pane idempotency boundary or supervised user workflow is in
+   place; do not claim that the single-pane confirmation solves this case.
    Native `SEND_DRAFT`, `DELETE_EMAIL` and permanent delete must stay denied;
    staff Send/Delete is *manual in Outlook*. Separately verify legitimate
    server web-mail `mail.send`, `mail.delete`, `mail.bulkDelete` still work
