@@ -100,6 +100,9 @@ if (process.env.HMS_DB_TEST_REQUIRED === '1' && !resolvedUrl) {
 if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !resolvedUrl) {
   throw new Error('Rocketseed transactional tests require a reachable disposable DB');
 }
+if (process.env.OUTLOOK_V4_SECURITY_TEST_REQUIRED === '1' && !resolvedUrl) {
+  throw new Error('Outlook v4 security tests require TEST_DATABASE_URL + CONFIRM_DISPOSABLE_TEST_DB=1');
+}
 
 let probePromise: Promise<boolean> | undefined;
 
@@ -130,6 +133,9 @@ export function probeTestDb(): Promise<boolean> {
 
 if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !(await probeTestDb())) {
   throw new Error('Rocketseed transactional tests require a reachable disposable DB');
+}
+if (process.env.OUTLOOK_V4_SECURITY_TEST_REQUIRED === '1' && !(await probeTestDb())) {
+  throw new Error('Outlook v4 security tests require a reachable disposable PostgreSQL database');
 }
 
 const ROLLBACK = '___test_rollback___';

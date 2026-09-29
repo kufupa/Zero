@@ -12,9 +12,8 @@ export type AuthProfilePolicy = {
   cookieCache: { enabled: boolean; maxAge?: number };
 };
 
-const LEGACY_SESSION_TTL_SEC = 60 * 60 * 24 * 400;
-const LEGACY_SESSION_UPDATE_AGE_SEC = 60 * 60 * 24 * 7;
-const LEGACY_SESSION_COOKIE_CACHE_MAX_AGE_SEC = 60 * 60;
+const LEGACY_SESSION_TTL_SEC = 86_400;
+const LEGACY_SESSION_UPDATE_AGE_SEC = 0;
 const REMOTE_SESSION_TTL_SEC = 43_200;
 
 export function resolveAuthSessionProfile(
@@ -53,11 +52,8 @@ export function resolveAuthProfilePolicy(
     sessionModelName: 'session',
     expiresIn: LEGACY_SESSION_TTL_SEC,
     updateAge: LEGACY_SESSION_UPDATE_AGE_SEC,
-    disableSessionRefresh: false,
-    cookieCache: {
-      enabled: true,
-      maxAge: LEGACY_SESSION_COOKIE_CACHE_MAX_AGE_SEC,
-    },
+    disableSessionRefresh: true,
+    cookieCache: { enabled: false },
   };
 }
 
@@ -66,5 +62,5 @@ export function resolveDatabasePoolMax(profile: AuthSessionProfile): 3 | 10 {
 }
 
 export const SESSION_TTL_SEC = LEGACY_SESSION_TTL_SEC;
-export const SESSION_COOKIE_CACHE_MAX_AGE_SEC = LEGACY_SESSION_COOKIE_CACHE_MAX_AGE_SEC;
+export const SESSION_COOKIE_CACHE_MAX_AGE_SEC = 0;
 export const SESSION_UPDATE_AGE_SEC = LEGACY_SESSION_UPDATE_AGE_SEC;

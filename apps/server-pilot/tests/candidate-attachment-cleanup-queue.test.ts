@@ -152,9 +152,12 @@ async function makeCleanupTasksDue(
   ingestMailboxId: string,
   pop3Uidl: string,
 ): Promise<void> {
+  // The sweeper compares a JS millisecond timestamp against PostgreSQL's
+  // microsecond timestamp. now() can still be in the future within the same
+  // millisecond on a fast CI runner, so make test tasks unambiguously due.
   await db.execute(sql`
     UPDATE ${cleanupTaskTable}
-    SET "next_attempt_at" = now()
+    SET "next_attempt_at" = now() - interval '1 second'
     WHERE "ingest_mailbox_id" = ${ingestMailboxId}
       AND "pop3_uidl" = ${pop3Uidl}
   `);

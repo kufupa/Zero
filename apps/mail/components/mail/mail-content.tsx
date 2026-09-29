@@ -8,7 +8,8 @@ import { useSettings } from '@/hooks/use-settings';
 import { m } from '@/paraglide/messages';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
+import { cleanHtml } from '@/lib/email-utils';
+import { resolveMailDisplayContent } from '@/lib/mail/resolve-mail-display-html';
 import { MAIL_PAPER_NEUTRALIZE_STYLE } from '@/lib/mail/mail-paper-neutralize';
 import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { demoSetSettings } from '@/lib/demo/local-actions';
@@ -64,10 +65,9 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const { data, refetch } = useSettings();
   const queryClient = useQueryClient();
   const frontendOnlyDemo = isFrontendOnlyDemo();
-  // HOTFIX: skip server processEmailContent gate — failures were blocking
-  // almost all message bodies with "Unable to load message content safely".
-  // Client resolveMailHtml (script strip) still runs. Re-enable after the
-  // processor path is reliable.
+  // HOTFIX: skip the server processEmailContent gate while it can block
+  // ordinary message bodies. The client fallback stays visible, and DOMPurify
+  // sanitizes every resolved body immediately before shadow-DOM insertion.
   const shouldProcessContent = false;
   const [contentDigestRetry, setContentDigestRetry] = useState(0);
   const [contentDigestState, setContentDigestState] = useState<ContentDigestState>({
@@ -267,15 +267,17 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     refetchProcessedContent,
   ]);
 
-  const resolvedHtml = useMemo(
+  const resolvedDisplay = useMemo(
     () =>
-      resolveMailDisplayHtml({
+      resolveMailDisplayContent({
         frontendOnlyDemo,
         processedHtml: processedData?.html,
         rawHtml: html,
+        shouldLoadImages,
       }),
-    [frontendOnlyDemo, html, processedData?.html],
+    [frontendOnlyDemo, html, processedData?.html, shouldLoadImages],
   );
+  const resolvedHtml = resolvedDisplay.html;
 
   const shadowHtml = useMemo(() => {
     if (!resolvedHtml) return resolvedHtml;
@@ -285,10 +287,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   }, [processingTheme, resolvedHtml]);
 
   useEffect(() => {
-    if (isProcessingSuccess && processedData) {
-      setCspViolation(processedData.hasBlockedImages);
-    }
-  }, [isProcessingSuccess, processedData]);
+    setCspViolation(isProcessingSuccess && processedData
+      ? processedData.hasBlockedImages
+      : resolvedDisplay.hasBlockedImages);
+  }, [isProcessingSuccess, processedData?.hasBlockedImages, resolvedDisplay.hasBlockedImages]);
 
   useEffect(() => {
     if (focusContentQueryIdentityRef.current !== contentQueryIdentity) {
@@ -317,7 +319,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   useEffect(() => {
     if (!shouldRenderContent || !shadowRootRef.current || !shadowHtml) return;
 
-    shadowRootRef.current.innerHTML = shadowHtml;
+    shadowRootRef.current.innerHTML = cleanHtml(shadowHtml);
   }, [shadowHtml, shouldRenderContent]);
 
   useEffect(() => {

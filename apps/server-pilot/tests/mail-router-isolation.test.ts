@@ -17,6 +17,7 @@
  * code that calls `getDb()` sees the same transaction.
  */
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import {
   mailboxTransport,
   mailboxAccess,
@@ -247,9 +248,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             html: '<p>hello</p>',
             text: 'hello',
           });
-          expect(result.fromEmail).toBe('frontdesk@legacyhotel.com');
+          // Undo-send queues by default. Check the persisted outbound row;
+          // never set undo=0 here (which would contact an SMTP adapter).
+          expect(result).toMatchObject({ queued: true });
           expect(result.messageId).toBeTruthy();
-          expect(result.threadId).toBeTruthy();
+          const [outbound] = await db.select({ transportId: message.transportId,
+            fromAddress: message.fromAddress, threadId: message.threadId })
+            .from(message).where(eq(message.id, result.messageId)).limit(1);
+          expect(outbound).toMatchObject({ transportId: 'transport-frontdesk',
+            fromAddress: 'frontdesk@legacyhotel.com', threadId: expect.any(String) });
         });
       },
       30000,
@@ -404,4 +411,3 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 );
 
 // Suppress unused-import lint (kept for ad-hoc assertions if extended).
-

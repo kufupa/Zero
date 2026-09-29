@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { unzipSync } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +7,11 @@ import { TRPCError } from '@trpc/server';
 import { appRouter } from '../src/trpc/router.js';
 import { patchSheetXml } from '../src/quote-proposal/patch-sheet.js';
 import { patchProposalWorkbook } from '../src/quote-proposal/patch-template.js';
+import { __setDbForTests } from '../src/db/client.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { mailboxAccess } from '../src/db/schema/mail.js';
+
+const reachable = await probeTestDb();
 
 const TEMPLATE = readFileSync(
   fileURLToPath(new URL('../fixtures/centurion-quotation-template.xlsx', import.meta.url)),
@@ -94,50 +100,69 @@ describe('quote proposal xlsx patch', () => {
   });
 });
 
-describe('workstation.quoteProposalPdf', () => {
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation.quoteProposalPdf (disposable DB)', () => {
   afterEach(() => {
+    __setDbForTests(null);
     vi.unstubAllGlobals();
     delete process.env.GOTENBERG_URL;
   });
 
-  it('refuses PDF when Outlook mailbox does not match the Nava session', async () => {
-    process.env.GOTENBERG_URL = 'http://gotenberg.test';
-    await expect(
-      sessionCaller().workstation.quoteProposalPdf({
-        outlookEmail: 'centurion@legacyhotels.co.za',
-        agency: 'CIDB',
-        dateLabel: '15-17 Sep',
-        lines: sampleLines,
-      }),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' } satisfies Partial<TRPCError>);
+  it('refuses PDF for a mailbox not provisioned to the signed-in user', async () => {
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      process.env.GOTENBERG_URL = 'http://gotenberg.test';
+      await expect(
+        sessionCaller().workstation.quoteProposalPdf({
+          outlookEmail: 'navaai@legacyhotels.co.za',
+          agency: 'CIDB',
+          dateLabel: '15-17 Sep',
+          lines: sampleLines,
+        }),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' } satisfies Partial<TRPCError>);
+    });
+  });
+
+  it('does not use another granted mailbox when the signed-in staff selected Centurion', async () => {
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      await db.insert(mailboxAccess).values({ id: randomUUID(), userId: 'user-ropperman',
+        transportId: 'transport-nava', role: 'member' });
+      await expect(sessionCaller().workstation.quoteProposalPdf({
+        outlookEmail: 'navaai@legacyhotels.co.za',
+        agency: 'CIDB', dateLabel: '15-17 Sep', lines: sampleLines,
+      })).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' } satisfies Partial<TRPCError>);
+    });
   });
 
   it('converts the patched workbook through Gotenberg and stamps the session user', async () => {
-    process.env.GOTENBERG_URL = 'http://gotenberg.test';
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('http://gotenberg.test/forms/libreoffice/convert');
-      expect(init?.method).toBe('POST');
-      return new Response(Buffer.from('%PDF-1.4 test'), {
-        status: 200,
-        headers: { 'content-type': 'application/pdf' },
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      process.env.GOTENBERG_URL = 'http://gotenberg.test';
+      const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe('http://gotenberg.test/forms/libreoffice/convert');
+        expect(init?.method).toBe('POST');
+        return new Response(Buffer.from('%PDF-1.4 test'), {
+          status: 200,
+          headers: { 'content-type': 'application/pdf' },
+        });
       });
-    });
-    vi.stubGlobal('fetch', fetchMock);
+      vi.stubGlobal('fetch', fetchMock);
 
-    const res = await sessionCaller().workstation.quoteProposalPdf({
-      outlookEmail: 'ropperman@legacyhotels.co.za',
-      attention: 'David Miller',
-      company: 'CIDB',
-      clientEmail: 'guest@example.com',
-      agency: 'CIDB',
-      dateLabel: '15-17 Sep',
-      lines: sampleLines,
-    });
+      const res = await sessionCaller().workstation.quoteProposalPdf({
+        outlookEmail: 'centurion@legacyhotels.co.za',
+        attention: 'David Miller',
+        company: 'CIDB',
+        clientEmail: 'guest@example.com',
+        agency: 'CIDB',
+        dateLabel: '15-17 Sep',
+        lines: sampleLines,
+      });
 
-    expect(res.fileName).toBe('Quote - CIDB 15-17 Sep.pdf');
-    expect(Buffer.from(res.pdfBase64, 'base64').toString()).toContain('%PDF-1.4');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = fetchMock.mock.calls[0]?.[1]?.body;
-    expect(body).toBeInstanceOf(FormData);
+      expect(res.fileName).toBe('Quote - CIDB 15-17 Sep.pdf');
+      expect(Buffer.from(res.pdfBase64, 'base64').toString()).toContain('%PDF-1.4');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const body = fetchMock.mock.calls[0]?.[1]?.body;
+      expect(body).toBeInstanceOf(FormData);
+    });
   });
 });

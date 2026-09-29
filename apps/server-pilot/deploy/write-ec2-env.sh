@@ -7,6 +7,7 @@ set -euo pipefail
 
 : "${AWS_REGION:=af-south-1}"
 : "${DB_SECRET_NAME:=nava-zero/server-pilot/database-url}"
+: "${OUTLOOK_DEVICE_WRAPPING_KEY_SECRET_NAME:=nava-zero/server-pilot/outlook-device-wrapping-key}"
 : "${S3_BUCKET:?S3_BUCKET required}"
 : "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"
 : "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET required}"
@@ -26,6 +27,19 @@ if [[ -z "$DATABASE_URL" ]]; then
   echo "database secret did not contain DATABASE_URL" >&2
   exit 1
 fi
+
+# Operator provisions this dedicated, stable Secrets Manager SecretString once.
+# Fetch on every env refresh; never rotate/recreate it during deployment or use
+# the DB/Auth credentials as substitutes. A missing/invalid value leaves the
+# existing production env untouched and never prints the candidate key.
+NAVA_OUTLOOK_DEVICE_WRAPPING_KEY="$(
+  aws secretsmanager get-secret-value \
+    --region "$AWS_REGION" \
+    --secret-id "$OUTLOOK_DEVICE_WRAPPING_KEY_SECRET_NAME" \
+    --query SecretString \
+    --output text 2>/dev/null \
+    | node -e 'let raw=""; process.stdin.on("data", chunk => raw += chunk); process.stdin.on("end", () => { raw=raw.trim(); const bytes=Buffer.from(raw, "base64"); if (!/^[A-Za-z0-9+/]{43}=$/.test(raw) || bytes.length !== 32 || bytes.toString("base64") !== raw) { process.stderr.write("Outlook device wrapping key missing or invalid\n"); process.exitCode=1; return; } process.stdout.write(raw); });'
+)"
 
 # Real SMTP is Rocketseed-only (IP-trust). Validate before touching live env.
 if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
@@ -55,6 +69,7 @@ PORT='8788'
 DATABASE_URL=$(quote_val "$DATABASE_URL")
 BETTER_AUTH_URL=$(quote_val "$BETTER_AUTH_URL")
 BETTER_AUTH_SECRET=$(quote_val "$BETTER_AUTH_SECRET")
+NAVA_OUTLOOK_DEVICE_WRAPPING_KEY=$(quote_val "$NAVA_OUTLOOK_DEVICE_WRAPPING_KEY")
 AWS_REGION=$(quote_val "$AWS_REGION")
 S3_BUCKET=$(quote_val "$S3_BUCKET")
 POP3_POLL_INTERVAL_MS=$(quote_val "$POP3_POLL_INTERVAL_MS")

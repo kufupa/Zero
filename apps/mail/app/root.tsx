@@ -5,6 +5,7 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLocation,
   useNavigate,
   type MetaFunction,
 } from 'react-router';
@@ -24,9 +25,11 @@ import './globals.css';
 const DeferredDubAnalytics = lazy(() => import('@/components/analytics/deferred-dub-analytics'));
 
 function AnalyticsProvider() {
+  const isOutlookPane = useLocation().pathname === '/outlook-pane';
   const [shouldRenderAnalytics, setShouldRenderAnalytics] = useState(false);
 
   useEffect(() => {
+    if (isOutlookPane) return;
     const startTimer = () => {
       setShouldRenderAnalytics(true);
     };
@@ -40,9 +43,9 @@ function AnalyticsProvider() {
 
     const timeout = window.setTimeout(startTimer, 200);
     return () => window.clearTimeout(timeout);
-  }, []);
+  }, [isOutlookPane]);
 
-  if (!shouldRenderAnalytics) return null;
+  if (isOutlookPane || !shouldRenderAnalytics) return null;
 
   return (
     <Suspense fallback={null}>

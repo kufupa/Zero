@@ -2,15 +2,21 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 
-const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
-  sendCommandMock: vi.fn(async (action: string) => {
+const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
+  pairDeviceMock: vi.fn(async () => {}),
+  quotePdfMutate: vi.fn().mockResolvedValue({
+    fileName: 'Quote - CIDB 15-17 Sep.pdf',
+    pdfBase64: 'JVBERw==',
+  }),
+  sendCommandMock: vi.fn(async (action: string, _payload?: unknown): Promise<unknown> => {
+    void _payload;
     if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
     return {
       entryId: 'draft-default',
@@ -21,8 +27,12 @@ const { sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
     };
   }),
   bridgeMockState: {
-    protocolVersion: 3 as number | undefined,
+    protocolVersion: 4 as number | undefined,
+    paired: true,
     selectedEntryId: '001',
+    userId: 'staff-1',
+    sessionId: 'session-1',
+    transportId: 'transport-1',
     legacyReplySupported: undefined as boolean | undefined,
   },
 }));
@@ -31,9 +41,11 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
-const v3Capabilities = {
-  bridgeProtocolVersion: 3,
-  addinVersion: '1.0.11',
+const draftFolder = { storeId: 'store-1', folderEntryId: 'folder-drafts', folderName: 'Drafts' };
+
+const v4Capabilities = {
+  bridgeProtocolVersion: 4,
+  addinVersion: '1.0.12',
   outlookVersion: '16.0',
   runtime: 'Classic Outlook for Windows',
   newOutlookSupported: false,
@@ -47,7 +59,6 @@ const v3Capabilities = {
     'GET_ACTIVE_EMAIL',
     'CREATE_REPLY_DRAFT',
     'ADD_ATTACHMENT_TO_DRAFT',
-    'SEND_DRAFT',
   ],
 };
 
@@ -55,23 +66,19 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
   useOutlookBridge: () => ({
     isConnected: true,
     workstationInfo: {
-      workstationUser: 'ropperman',
-      outlookEmail: 'ropperman@legacyhotels.co.za',
-      outlookVersion: '16.0',
-      addinVersion: bridgeMockState.protocolVersion === 3 ? '1.0.11' : '1.0.8',
+      addinVersion: bridgeMockState.protocolVersion === 4 ? '1.0.12' : '1.0.8',
       bridgeProtocolVersion: bridgeMockState.protocolVersion,
+      paired: bridgeMockState.paired,
     },
-    capabilities: bridgeMockState.protocolVersion === 3 ? v3Capabilities : null,
+    capabilities: bridgeMockState.protocolVersion === 4 ? v4Capabilities : null,
     supportsAction: (action: string) =>
-      bridgeMockState.protocolVersion === 3
-        ? v3Capabilities.supportedActions.includes(action)
-        : (action === 'CREATE_REPLY_DRAFT' && bridgeMockState.legacyReplySupported === true) ||
-          ['PING', 'GET_ACTIVE_EMAIL', 'GET_FOLDER_EMAILS', 'GET_EMAIL_BY_ENTRY_ID'].includes(
-            action,
-          ),
+      bridgeMockState.protocolVersion === 4
+        ? v4Capabilities.supportedActions.includes(action)
+        : false,
     activeEmail: {
       entryId: bridgeMockState.selectedEntryId,
       storeId: 'store-1',
+      folderEntryId: 'folder-inbox',
       subject:
         bridgeMockState.selectedEntryId === '001'
           ? 'Suite Availability Request'
@@ -83,27 +90,33 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
     sendCommand: sendCommandMock,
+    pairDevice: pairDeviceMock,
   }),
 }));
 
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
-    data: { user: { email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' } },
+    data: {
+      user: { id: bridgeMockState.userId, email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
+      session: { id: bridgeMockState.sessionId },
+    },
     isLoading: false,
   }),
   signIn: { email: vi.fn() },
+}));
+
+vi.mock('../hooks/use-connections', () => ({
+  useActiveConnection: () => ({
+    data: { id: bridgeMockState.transportId, email: 'ropperman@legacyhotels.co.za' },
+    isLoading: false,
+  }),
 }));
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteProposalPdf: {
-        mutate: vi.fn().mockResolvedValue({
-          fileName: 'Quote - CIDB 15-17 Sep.pdf',
-          pdfBase64: 'JVBERw==',
-        }),
-      },
+      quoteProposalPdf: { mutate: quotePdfMutate },
     },
   },
 }));
@@ -114,28 +127,39 @@ describe('OutlookPanePage', () => {
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    quotePdfMutate.mockReset();
+    quotePdfMutate.mockResolvedValue({ fileName: 'Quote - CIDB 15-17 Sep.pdf', pdfBase64: 'JVBERw==' });
     sendCommandMock.mockReset();
-    sendCommandMock.mockImplementation(async (action: string) => {
-      if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
-      return {
-        entryId: 'draft-default',
-        storeId: 'store-1',
-        folderEntryId: 'folder-drafts',
-        folderName: 'Drafts',
-        displayed: true,
-      };
-    });
+    sendCommandMock.mockImplementation(
+      async (action: string, _payload?: unknown): Promise<unknown> => {
+        void _payload;
+        if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+        return {
+          entryId: 'draft-default',
+          storeId: 'store-1',
+          folderEntryId: 'folder-drafts',
+          folderName: 'Drafts',
+          displayed: true,
+        };
+      },
+    );
   });
 
   afterEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
+    vi.restoreAllMocks();
     cleanup();
     sendCommandMock.mockReset();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.error).mockClear();
-    bridgeMockState.protocolVersion = 3;
+    bridgeMockState.protocolVersion = 4;
+    bridgeMockState.paired = true;
     bridgeMockState.selectedEntryId = '001';
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
+    bridgeMockState.transportId = 'transport-1';
     bridgeMockState.legacyReplySupported = undefined;
   });
 
@@ -151,6 +175,20 @@ describe('OutlookPanePage', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Suite Availability Request/i)).toBeDefined();
     expect(screen.getByText(/David Miller/i)).toBeDefined();
+  });
+
+  it('keeps manual Outlook Send instructions and the screenshot inspection control', () => {
+    render(<OutlookPanePage />);
+    expect(screen.getByText(/Send manually in Outlook/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeDefined();
+  });
+
+  it('opens only the native pairing dialog when the installer is unpaired', () => {
+    bridgeMockState.paired = false;
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Pair Outlook Device/i }));
+    expect(pairDeviceMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('renders the Run System Test button', () => {
@@ -180,10 +218,48 @@ describe('OutlookPanePage', () => {
     });
   });
 
+  it('does not create an Outlook reply after switching A to B and back to A while PDF is pending', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+
+    bridgeMockState.userId = 'staff-2';
+    bridgeMockState.sessionId = 'session-2';
+    bridgeMockState.transportId = 'transport-2';
+    pane.rerender(<OutlookPanePage />);
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
+    bridgeMockState.transportId = 'transport-1';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => finishPdf({ fileName: 'A-quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT'))
+      .toHaveLength(0);
+  });
+
+  it('does not create a reply if the selected message switches away and back during PDF generation', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    bridgeMockState.selectedEntryId = '001';
+    pane.rerender(<OutlookPanePage />);
+
+    await act(async () => finishPdf({ fileName: 'stale-quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
+  });
+
   it('reuses the reply operation ID after a client timeout so retry cannot duplicate the draft', async () => {
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
-      .mockResolvedValueOnce({ entryId: 'draft-1' });
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1' });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
@@ -200,13 +276,29 @@ describe('OutlookPanePage', () => {
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
+  it('retains the reply operation ID when navigation renewal interrupts an in-flight COM mutation', async () => {
+    sendCommandMock
+      .mockRejectedValueOnce(
+        new Error('Outlook navigation changed; inspect Outlook before retrying'),
+      )
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1', displayed: true });
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
+    expect(createReplyCalls()[1]?.[1]).toEqual(createReplyCalls()[0]?.[1]);
+  });
+
   it('reuses the reply operation ID when Outlook reports an unknown outcome', async () => {
     const indeterminateError = Object.assign(new Error('Outlook outcome is unknown.'), {
       code: 'OPERATION_OUTCOME_UNKNOWN',
     });
     sendCommandMock
       .mockRejectedValueOnce(indeterminateError)
-      .mockResolvedValueOnce({ entryId: 'draft-001', displayed: true });
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-001', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
@@ -227,8 +319,8 @@ describe('OutlookPanePage', () => {
   it('keeps an unresolved reply ID when another message reply succeeds', async () => {
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
-      .mockResolvedValueOnce({ entryId: 'draft-for-002', displayed: true })
-      .mockResolvedValueOnce({ entryId: 'draft-for-001', displayed: true });
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-002', displayed: true })
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-001', displayed: true });
     const pane = render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
@@ -255,10 +347,11 @@ describe('OutlookPanePage', () => {
   });
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const startedAt = Date.now();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
-      .mockResolvedValueOnce({ entryId: 'draft-after-expiry', displayed: true });
+      .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-after-expiry', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
@@ -275,6 +368,10 @@ describe('OutlookPanePage', () => {
     );
 
     fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(1);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
@@ -283,7 +380,56 @@ describe('OutlookPanePage', () => {
     vi.spyOn(Date, 'now').mockRestore();
   });
 
+  it('keeps the prior uncertain draft warning if selection changes before the new reply reaches Outlook', async () => {
+    sessionStorage.setItem('nava_outlook_unresolved_reply_v1', '1');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+
+    fireEvent.click(button); // warn about the prior uncertain outcome
+    fireEvent.click(button); // explicitly confirm, then wait for the new PDF
+    await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    await act(async () => finishPdf({ fileName: 'Quote.pdf', pdfBase64: 'JVBERw==' }));
+    expect(createReplyCalls()).toHaveLength(0);
+
+    bridgeMockState.selectedEntryId = '001';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    expect(quotePdfMutate).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+  });
+
+  it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
+    const startedAt = Date.now();
+    sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+    pane.unmount();
+    bridgeMockState.selectedEntryId = '001';
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(createReplyCalls()).toHaveLength(2);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+  });
+
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     sendCommandMock.mockRejectedValue(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
@@ -317,6 +463,9 @@ describe('OutlookPanePage', () => {
     );
 
     fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(257);
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(258));
 
     const freshPayload = createReplyCalls()[257]?.[1] as { operationId: string };
@@ -331,6 +480,8 @@ describe('OutlookPanePage', () => {
       expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
     );
 
+    fireEvent.click(button);
+    expect(createReplyCalls()).toHaveLength(258);
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
     vi.spyOn(Date, 'now').mockRestore();
@@ -355,12 +506,13 @@ describe('OutlookPanePage', () => {
     expect(button.hasAttribute('disabled')).toBe(true);
     expect(button.textContent).toMatch(/saving/i);
 
-    await act(async () => finish({ entryId: 'draft-1', displayed: true }));
+    await act(async () => finish({ ...draftFolder, entryId: 'draft-1', displayed: true }));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
   });
 
   it('shows native composer and placement warnings without claiming the draft opened', async () => {
     sendCommandMock.mockResolvedValueOnce({
+      ...draftFolder,
       entryId: 'draft-1',
       displayed: false,
       composerWarning: 'Outlook blocked the composer',
@@ -379,36 +531,29 @@ describe('OutlookPanePage', () => {
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
   });
 
-  it('maps a legacy true reply result to an opened composer with unknown save status', async () => {
+  it('disables draft creation with a protocol v2 installer', () => {
     bridgeMockState.protocolVersion = 2;
     bridgeMockState.legacyReplySupported = true;
     render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        expect.stringMatching(/cannot attach a quotation PDF/i),
-      ),
-    );
+    expect(
+      screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled'),
+    ).toBe(true);
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
-  it('reports a legacy false reply result as a failure', async () => {
+  it('never uses a protocol v2 fallback to create a reply', () => {
     bridgeMockState.protocolVersion = 2;
     bridgeMockState.legacyReplySupported = true;
     render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        expect.stringMatching(/cannot attach a quotation PDF/i),
-      ),
-    );
+    expect(
+      screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled'),
+    ).toBe(true);
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('shows a folder placement warning in both the reply status and toast', async () => {
     sendCommandMock.mockResolvedValueOnce({
+      ...draftFolder,
       entryId: 'draft-1',
       displayed: true,
       folderPlacementWarning: 'Outlook placed the reply outside the requested folder',
@@ -439,7 +584,7 @@ describe('OutlookPanePage', () => {
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
-    await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
+    await act(async () => finish({ ...draftFolder, entryId: 'draft-for-001', displayed: true }));
 
     expect(screen.queryByRole('status')).toBeNull();
   });
@@ -453,7 +598,7 @@ describe('OutlookPanePage', () => {
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
 
-    await act(async () => finish({ entryId: 'draft-for-001', displayed: true }));
+    await act(async () => finish({ ...draftFolder, entryId: 'draft-for-001', displayed: true }));
 
     expect(toast.success).toHaveBeenCalledWith(
       expect.stringContaining('Suite Availability Request'),
@@ -475,6 +620,7 @@ describe('OutlookPanePage', () => {
 
     await act(async () =>
       finish({
+        ...draftFolder,
         entryId: 'draft-for-001',
         displayed: false,
         composerWarning: 'Outlook blocked the composer',
@@ -509,11 +655,11 @@ describe('OutlookPanePage', () => {
   it('warns when connected but bridge capabilities and protocol version are unknown', () => {
     bridgeMockState.protocolVersion = undefined;
     render(<OutlookPanePage />);
-    expect(screen.getByRole('alert').textContent).toMatch(/protocol v3 not confirmed/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/update the Outlook add-in/i);
     expect(screen.getByRole('alert').textContent).toMatch(/update the Outlook add-in/i);
   });
 
-  it('warns when an older installed bridge cannot provide protocol v3 actions', () => {
+  it('warns when an older installed bridge cannot provide protocol v4 actions', () => {
     bridgeMockState.protocolVersion = 2;
     render(<OutlookPanePage />);
 
