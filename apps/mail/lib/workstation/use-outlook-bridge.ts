@@ -357,7 +357,10 @@ export function useOutlookBridge() {
         if (typeof challenge !== 'string' || challenge.length !== 43)
           throw new Error('Invalid Outlook navigation challenge');
         if (!isCurrent()) return;
-        if (activeMailRequests.current === 0) break;
+        // Obsolete requests from a different staff/device/mailbox generation
+        // cannot delay registration of the replacement scope.
+        if (activeMailRequests.current === 0 || navigation.current?.generation !== generation)
+          break;
         // A successful renewal must not clear or supersede a ticket/native COM
         // request. A denied renewal above must still revoke immediately.
         await new Promise<void>((resolve) => idleWaiters.current.add(resolve));
@@ -368,7 +371,10 @@ export function useOutlookBridge() {
       navigation.current = null;
       firstTicket.current = null;
       selection.current++;
-      setActiveEmail(null);
+      // Keep the same staff's verified selection visible while re-registering.
+      // Clearing it here makes an in-progress quote PDF look like a different
+      // selection, causing the pane to abandon the draft before native Outlook.
+      // A rejected renewal or a real staff/mailbox switch still clears it.
       setCapabilities(null);
       await nativeRequest('REGISTER_NAVIGATION', { paneChallenge: challenge });
       if (!isCurrent()) return;
@@ -444,6 +450,21 @@ export function useOutlookBridge() {
       if (action === 'REGISTER_NAVIGATION' || action === 'CLEAR_SESSION' ||
         action === 'PREPARE_MOVE_CONSENT' || action === 'NATIVE_MOVE_CONSENT_RESOLVED')
         throw new Error('Native session controls are internal');
+      const renewing = registrationFlight.current;
+      const operationScope = currentScope.current;
+      if (renewing && operationScope &&
+        renewing.generation === epoch.current &&
+        renewing.revision === navigationRevision.current &&
+        (!navigation.current ||
+          navigation.current.generation === renewing.generation && activeMailRequests.current > 0)) {
+        // During renewal, wait for a fresh native lease when an earlier request
+        // is still active OR the old navigation has already been removed.
+        // Waiting before entering the active count avoids a renewal deadlock.
+        await renewing.promise;
+        if (epoch.current !== renewing.generation ||
+          currentScope.current !== operationScope || renderedScope.current !== operationScope)
+          throw new Error('Outlook staff or mailbox changed during authorization renewal');
+      }
       const registered = navigation.current;
       if (
         !registered ||

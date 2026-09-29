@@ -110,13 +110,11 @@ describe('Outlook pane quote proposal PDF', () => {
       pdfBase64: 'JVBERw0KGgo=',
     });
     sendCommandMock.mockReset();
-    sendCommandMock.mockResolvedValue({
-      entryId: 'draft-99',
-      storeId: 'store-1',
-      folderEntryId: 'folder-drafts',
-      folderName: 'Drafts',
-      displayed: true,
-    });
+    sendCommandMock.mockImplementation(async (action: string) =>
+      action === 'GET_ACTIVE_EMAIL'
+        ? { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' }
+        : { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts',
+          folderName: 'Drafts', displayed: true });
   });
 
   afterEach(() => {
@@ -179,6 +177,26 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(replyId).not.toEqual(attachmentId);
   });
 
+  it('does not create a reply if Outlook selection changed unnoticed during PDF generation', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutateMock.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return {
+        entryId: '002', storeId: 'store-1', folderEntryId: 'folder-inbox',
+      };
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
+      return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' };
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
+    await act(async () => finishPdf({ fileName: 'Quote.pdf', pdfBase64: 'JVBERw==' }));
+
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('GET_ACTIVE_EMAIL', {}));
+    expect(sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT')).toHaveLength(0);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/selected.*Outlook.*changed/i));
+  });
+
   it('attaches the Proposal PDF after a gold wrapper reply draft', async () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -227,6 +245,7 @@ describe('Outlook pane quote proposal PDF', () => {
 
   it('retries only the attachment with its same operation and exact PDF after an attachment failure', async () => {
     sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
       if (action === 'ADD_ATTACHMENT_TO_DRAFT') {
         throw new Error('Outlook rejected the attachment');
       }
@@ -264,6 +283,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('keeps the exact PDF bytes and attachment operation after an ambiguous native timeout', async () => {
     let attachmentCount = 0;
     sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
       if (action === 'ADD_ATTACHMENT_TO_DRAFT' && attachmentCount++ === 0) {
         throw new Error('Bridge command ADD_ATTACHMENT_TO_DRAFT timed out');
       }
@@ -359,6 +379,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('requires checking Drafts when a native reply completes after the staff scope changes', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let finishNative!: (value: { entryId: string; storeId: string; folderEntryId: string }) => void;
+    sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -396,6 +417,7 @@ describe('Outlook pane quote proposal PDF', () => {
     fireEvent.click(button);
     await waitFor(() => expect(screen.getByText('Please see attached quotation.')).toBeDefined());
     let rejectMutation!: (error: Error) => void;
+    sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {

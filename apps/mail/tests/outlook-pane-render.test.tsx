@@ -17,6 +17,9 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.
   }),
   sendCommandMock: vi.fn(async (action: string, _payload?: unknown): Promise<unknown> => {
     void _payload;
+    if (action === 'GET_ACTIVE_EMAIL') return {
+      entryId: bridgeMockState.selectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
+    };
     if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
     return {
       entryId: 'draft-default',
@@ -42,6 +45,9 @@ vi.mock('sonner', () => ({
 }));
 
 const draftFolder = { storeId: 'store-1', folderEntryId: 'folder-drafts', folderName: 'Drafts' };
+const queueSelectedEmail = () => sendCommandMock.mockResolvedValueOnce({
+  entryId: bridgeMockState.selectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
+});
 
 const v4Capabilities = {
   bridgeProtocolVersion: 4,
@@ -133,6 +139,9 @@ describe('OutlookPanePage', () => {
     sendCommandMock.mockImplementation(
       async (action: string, _payload?: unknown): Promise<unknown> => {
         void _payload;
+        if (action === 'GET_ACTIVE_EMAIL') return {
+          entryId: bridgeMockState.selectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
+        };
         if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
         return {
           entryId: 'draft-default',
@@ -257,6 +266,7 @@ describe('OutlookPanePage', () => {
   });
 
   it('reuses the reply operation ID after a client timeout so retry cannot duplicate the draft', async () => {
+    queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1' });
@@ -277,6 +287,7 @@ describe('OutlookPanePage', () => {
   });
 
   it('retains the reply operation ID when navigation renewal interrupts an in-flight COM mutation', async () => {
+    queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(
         new Error('Outlook navigation changed; inspect Outlook before retrying'),
@@ -296,6 +307,7 @@ describe('OutlookPanePage', () => {
     const indeterminateError = Object.assign(new Error('Outlook outcome is unknown.'), {
       code: 'OPERATION_OUTCOME_UNKNOWN',
     });
+    queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(indeterminateError)
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-001', displayed: true });
@@ -317,8 +329,10 @@ describe('OutlookPanePage', () => {
   });
 
   it('keeps an unresolved reply ID when another message reply succeeds', async () => {
+    queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
+      .mockResolvedValueOnce({ entryId: '002', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-002', displayed: true })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-001', displayed: true });
     const pane = render(<OutlookPanePage />);
@@ -349,8 +363,10 @@ describe('OutlookPanePage', () => {
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const startedAt = Date.now();
+    queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
+      .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-after-expiry', displayed: true });
     render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
@@ -405,6 +421,7 @@ describe('OutlookPanePage', () => {
 
   it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
     const startedAt = Date.now();
+    queueSelectedEmail();
     sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
     const pane = render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
@@ -432,7 +449,12 @@ describe('OutlookPanePage', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
-    sendCommandMock.mockRejectedValue(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return {
+        entryId: bridgeMockState.selectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
+      };
+      throw new Error('Bridge command CREATE_REPLY_DRAFT timed out');
+    });
     const pane = render(<OutlookPanePage />);
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     const operationIds = new Map<string, string>();
@@ -489,6 +511,7 @@ describe('OutlookPanePage', () => {
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
+    queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -511,6 +534,7 @@ describe('OutlookPanePage', () => {
   });
 
   it('shows native composer and placement warnings without claiming the draft opened', async () => {
+    queueSelectedEmail();
     sendCommandMock.mockResolvedValueOnce({
       ...draftFolder,
       entryId: 'draft-1',
@@ -552,6 +576,7 @@ describe('OutlookPanePage', () => {
   });
 
   it('shows a folder placement warning in both the reply status and toast', async () => {
+    queueSelectedEmail();
     sendCommandMock.mockResolvedValueOnce({
       ...draftFolder,
       entryId: 'draft-1',
@@ -573,6 +598,7 @@ describe('OutlookPanePage', () => {
 
   it('does not show the reply result from a previous selected message', async () => {
     let finish!: (value: unknown) => void;
+    queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -591,6 +617,7 @@ describe('OutlookPanePage', () => {
 
   it('identifies the original message in a late reply success toast', async () => {
     let finish!: (value: unknown) => void;
+    queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -611,6 +638,7 @@ describe('OutlookPanePage', () => {
 
   it('preserves warnings and identifies the original message in a late reply warning toast', async () => {
     let finish!: (value: unknown) => void;
+    queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -638,6 +666,7 @@ describe('OutlookPanePage', () => {
 
   it('identifies the original message in a late reply error toast', async () => {
     let fail!: (reason: Error) => void;
+    queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
     const pane = render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));

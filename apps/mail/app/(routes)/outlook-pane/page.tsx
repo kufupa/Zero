@@ -24,7 +24,7 @@ import {
   ArrowRight,
   Clock,
 } from 'lucide-react';
-import { createOperationId, type MailLocation } from '@/lib/workstation/bridge-protocol';
+import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { occupancyRoomCode } from '@/lib/quote-proposal/description';
 import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 
@@ -709,6 +709,24 @@ export default function OutlookPanePage() {
         return;
       }
       attempt.pdf = pdf;
+      if (!attempt.replyPayload && !attempt.draftLocation) {
+        // Renewal may suppress selection events while Outlook is busy. A PDF
+        // generated for A must not turn into a reply to A after staff select B.
+        const selected = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
+          'GET_ACTIVE_EMAIL', {},
+        );
+        if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
+          if (sameStaffScope()) replyRetries.current.delete(key);
+          return;
+        }
+        if (!selected || selected.entryId !== activeEmail.entryId ||
+          selected.storeId !== activeEmail.storeId ||
+          selected.folderEntryId !== activeEmail.folderEntryId) {
+          replyRetries.current.delete(key);
+          toast.error('Selected Outlook email changed while preparing the quotation. Select it again.');
+          return;
+        }
+      }
       const replyPayload = attempt.replyPayload ?? {
         operationId: attempt.operationId,
         entryId: activeEmail.entryId,
