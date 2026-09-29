@@ -272,6 +272,86 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       operationId: forbiddenOperation, storeId, transportId: f.transportId, resources: ['mail-1'],
       sourceFolderId: 'triage', destinationFolderId: 'deleted', destinationKind: 'deleted' })).status).toBe(403);
   }));
+  it('authorizes exact approved Drafts reads, updates, and attachments only for the enrolled store and mailbox', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId: 'different-store', transportId: f.transportId,
+      folderId: 'other-drafts', kind: 'drafts' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId,
+      folderId: 'actual-drafts', kind: 'drafts' });
+    for (const action of ['GET_EMAIL_BY_ENTRY_ID', 'UPDATE_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT']) {
+      const operationId = action === 'GET_EMAIL_BY_ENTRY_ID' ? undefined : op();
+      const declared = { resources: ['actual-draft-item'], sourceFolderId: 'actual-drafts' };
+      const wrongResource = await f.ticket(action, operationId, declared);
+      expect((await f.signed(path, { ticket: wrongResource.ticket, action, operationId, storeId,
+        transportId: f.transportId, resources: ['different-item'], sourceFolderId: 'actual-drafts' })).status).toBe(403);
+      const wrongStore = await f.ticket(action, operationId, declared);
+      expect((await f.signed(path, { ticket: wrongStore.ticket, action, operationId, storeId: 'different-store',
+        transportId: f.transportId, ...declared })).status).toBe(403);
+      const wrongFolder = await f.ticket(action, operationId, { resources: ['actual-draft-item'], sourceFolderId: 'other-drafts' });
+      expect((await f.signed(path, { ticket: wrongFolder.ticket, action, operationId, storeId,
+        transportId: f.transportId, resources: ['actual-draft-item'], sourceFolderId: 'other-drafts' })).status).toBe(403);
+      const { ticket } = await f.ticket(action, operationId, declared);
+      const response = await f.signed(path, { ticket, action, operationId, storeId,
+        transportId: f.transportId, ...declared });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ action, storeId, transportId: f.transportId,
+        resources: ['actual-draft-item'], sourceFolderId: 'actual-drafts',
+        approvedFolderIds: expect.arrayContaining([{ folderId: 'actual-drafts', kind: 'drafts' }]) });
+    }
+    const anotherUserId = randomUUID(), anotherSessionId = randomUUID();
+    await db.insert(user).values({ id: anotherUserId, name: 'Different Staff',
+      email: `${anotherUserId}@example.test`, emailVerified: true });
+    await db.insert(mailboxAccess).values({ id: randomUUID(), userId: anotherUserId,
+      transportId: f.transportId, role: 'member' });
+    await db.insert(session).values({ id: anotherSessionId, token: randomUUID(), userId: anotherUserId,
+      expiresAt: new Date(Date.now() + 86_400_000) });
+    const anotherAuth = { api: { getSession: async () => ({ user: { id: anotherUserId },
+      session: { id: anotherSessionId } }) } };
+    await expect(issueBridgeTicket(db, anotherAuth, new Headers(),
+      { deviceId: f.deviceId, paneChallenge: f.paneChallenge, action: 'GET_EMAIL_BY_ENTRY_ID',
+        storeId, transportId: f.transportId, resources: ['actual-draft-item'], sourceFolderId: 'actual-drafts' })).rejects.toThrow();
+    await expect(f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined,
+      { resources: ['actual-draft-item'], sourceFolderId: 'actual-drafts' }, randomUUID())).rejects.toThrow();
+  }));
+  it('never approves moving into Drafts even when native reports triage, inbox, spam, or drafts', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'actual-drafts', kind: 'drafts' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'triage', kind: 'triage' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'junk', kind: 'spam' });
+    for (const action of ['MOVE_EMAIL', 'MOVE_TO_SPAM']) {
+      for (const destinationKind of ['triage', 'inbox', 'spam', 'drafts']) {
+        const operationId = op();
+        const declared = { resources: ['mail-1'], sourceFolderId: 'inbox', destinationFolderId: 'actual-drafts' };
+        const { ticket } = await f.ticket(action, operationId, declared);
+        expect((await f.signed(path, { ticket, action, operationId, storeId,
+          transportId: f.transportId, ...declared, destinationKind })).status).toBe(403);
+      }
+    }
+    for (const [action, sourceFolderId, destinationFolderId, destinationKind] of [
+      ['MOVE_EMAIL', 'inbox', 'triage', 'triage'], ['MOVE_EMAIL', 'triage', 'inbox', 'inbox'],
+      ['MOVE_TO_SPAM', 'inbox', 'junk', 'spam'],
+    ]) {
+      const operationId = op();
+      const declared = { resources: ['mail-1'], sourceFolderId, destinationFolderId };
+      const { ticket } = await f.ticket(action, operationId, declared);
+      expect((await f.signed(path, { ticket, action, operationId, storeId,
+        transportId: f.transportId, ...declared, destinationKind })).status).toBe(200);
+    }
+  }));
+  it('rejects unsupported folder kinds at the provisioning boundary before persisting them', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    for (const kind of ['deleted', 'outbox', 'other']) {
+      await expect(provisionApprovedFolder(db, { storeId, transportId: f.transportId,
+        folderId: 'not-approved', kind: kind as 'drafts' })).rejects.toThrow('Invalid folder kind');
+    }
+    const operationId = op();
+    const { ticket } = await f.ticket('MOVE_EMAIL', operationId,
+      { resources: ['mail-1'], sourceFolderId: 'not-approved', destinationFolderId: 'not-approved' });
+    expect((await f.signed(path, { ticket, action: 'MOVE_EMAIL', operationId, storeId,
+      transportId: f.transportId, resources: ['mail-1'], sourceFolderId: 'not-approved',
+      destinationFolderId: 'not-approved', destinationKind: 'triage' })).status).toBe(403);
+  }));
   it('never returns a native scope extending beyond the actual session absolute 24-hour cutoff', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     const cutoff = new Date(Date.now() + 5000);

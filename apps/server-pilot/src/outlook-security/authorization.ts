@@ -43,8 +43,9 @@ export type NativeScopeInput = { ticket: string; action: string; storeId: string
   sourceKind?: string; destinationKind?: string; nativeBatchConsent?: boolean };
 
 /** Server-only operator provisioning. Never expose this mutation to tRPC or public HTTP. */
-export async function provisionApprovedFolder(db: DB, input: { storeId: string; transportId: string; folderId: string; kind: 'triage' | 'inbox' | 'spam' }) {
+export async function provisionApprovedFolder(db: DB, input: { storeId: string; transportId: string; folderId: string; kind: 'triage' | 'inbox' | 'spam' | 'drafts' }) {
   if (![input.storeId, input.transportId, input.folderId].every(isToken)) throw new Error('Invalid folder approval');
+  if (!['triage', 'inbox', 'spam', 'drafts'].includes(input.kind)) throw new Error('Invalid folder kind');
   const [transport] = await db.select({ id: mailboxTransport.id }).from(mailboxTransport)
     .where(and(eq(mailboxTransport.id, input.transportId), eq(mailboxTransport.isActive, true))).limit(1);
   if (!transport) throw new Error('Inactive mailbox transport');
@@ -184,6 +185,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         eq(outlookApprovedFolder.transportId, input.transportId)));
     const approved = (id: string | undefined, kind?: string) => folderRows.some((row) => row.folderId === id && (!kind || row.kind === kind));
     if (input.sourceFolderId && !approved(input.sourceFolderId)) return null;
+    // DB kind must match native's observed kind; a Drafts source approval is never a move destination.
     if (input.destinationFolderId && !approved(input.destinationFolderId, input.destinationKind)) return null;
     if (moveActions.has(input.action) && (!approved(input.sourceFolderId) || !approved(input.destinationFolderId, input.destinationKind))) return null;
     const scopeHash = hash(JSON.stringify([input.action, input.storeId, input.transportId, input.operationId,

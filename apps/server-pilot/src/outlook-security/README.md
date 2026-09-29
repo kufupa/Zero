@@ -149,9 +149,51 @@ key, like device enrollment:
 
 ```
 pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind inbox
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind drafts
 pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind triage
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts approve-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --kind spam
 pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts revoke-folder --store-id '<StoreID>' --transport-email shared@example.test --folder-id '<Folder EntryID>' --confirm-revoke
 ```
+
+During supervised pairing on the staff Windows PC, open Classic Outlook in the
+enrolled Windows user profile. In a local PowerShell terminal, this **read-only**
+COM inspection identifies the enrolled store's exact default folders and an
+existing triage folder beneath its Inbox (adjust the triage path if necessary;
+for a top-level triage folder start from `$store.GetRootFolder()` instead):
+
+```powershell
+$mapi = (New-Object -ComObject Outlook.Application).GetNamespace('MAPI')
+1..$mapi.Stores.Count | ForEach-Object {
+    $candidate = $mapi.Stores.Item($_)
+    '{0}: {1}' -f $_, $candidate.DisplayName
+}
+$number = [int](Read-Host 'Select the enrolled Outlook store number')
+if ($number -lt 1 -or $number -gt $mapi.Stores.Count) { throw 'Invalid store number' }
+$store = $mapi.Stores.Item($number)
+'StoreID: {0}' -f $store.StoreID
+$inbox = $store.GetDefaultFolder(6)   # olFolderInbox
+$drafts = $store.GetDefaultFolder(16) # olFolderDrafts
+$junk = $store.GetDefaultFolder(23)   # olFolderJunk
+$triage = $inbox
+foreach ($segment in @('Triage')) { $triage = $triage.Folders.Item($segment) }
+$folders = @{ inbox = $inbox; drafts = $drafts; spam = $junk; triage = $triage }
+foreach ($kind in @('inbox', 'drafts', 'spam', 'triage')) {
+    $folder = $folders[$kind]
+    if (-not $folder -or $folder.StoreID -ne $store.StoreID) { throw 'Missing or wrong-store folder' }
+    '{0} | {1} | {2}' -f $kind, $folder.StoreID, $folder.EntryID
+}
+```
+
+Confirm the printed `StoreID` equals the enrolled device store and each folder
+belongs to that store; use only the corresponding exact `EntryID` for the
+approved mailbox transport. Do not approve Drafts as `triage`, even though
+native reports non-Inbox/Junk move destinations as triage: `drafts` is
+source-only, permitting scoped draft reads/updates/attachments but never moves
+into Drafts. The script does not enumerate mail items or read bodies; keep the
+store/folder identifiers on the restricted operator terminal and do not paste
+device secrets, enrollment codes, mailbox contents or identifiers into tickets
+or public logs. If a default folder or the triage path does not exist, stop and
+resolve that with the operator; the script does not create any folders.
 
 Native must identify Deleted Items/Outbox and descendants from actual Outlook
 folder ancestry; the server additionally denies those reported destination

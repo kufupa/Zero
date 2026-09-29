@@ -27,7 +27,7 @@ async function main(args: string[]) {
   } else if (args[0] === 'approve-folder' && args.length === 9 && args[1] === '--store-id'
     && args[3] === '--transport-email' && args[5] === '--folder-id' && args[7] === '--kind') {
     const kind = args[8];
-    if (kind !== 'triage' && kind !== 'inbox' && kind !== 'spam') throw new Error('Invalid folder kind');
+    if (kind !== 'triage' && kind !== 'inbox' && kind !== 'spam' && kind !== 'drafts') throw new Error('Invalid folder kind');
     const [transport] = await db.select({ id: mailboxTransport.id }).from(mailboxTransport)
       .where(and(eq(mailboxTransport.email, args[4]), eq(mailboxTransport.isActive, true))).limit(1);
     if (!transport) throw new Error('Active transport not found');
@@ -47,7 +47,7 @@ async function main(args: string[]) {
     const revoked = await revokeDevice(db, args[2]);
     process.stdout.write(revoked ? 'device revoked\n' : 'device not active\n');
   } else {
-    throw new Error('usage: issue --store-id <StoreID> [--staff-email <account> --transport-email <mailbox>]+ | approve-folder --store-id <StoreID> --transport-email <mailbox> --folder-id <exact Folder EntryID> --kind inbox|triage|spam | revoke-folder --store-id <StoreID> --transport-email <mailbox> --folder-id <Folder EntryID> --confirm-revoke | revoke --device-id <uuid> --confirm-revoke');
+    throw new Error('usage: issue --store-id <StoreID> [--staff-email <account> --transport-email <mailbox>]+ | approve-folder --store-id <StoreID> --transport-email <mailbox> --folder-id <exact Folder EntryID> --kind inbox|triage|spam|drafts | revoke-folder --store-id <StoreID> --transport-email <mailbox> --folder-id <Folder EntryID> --confirm-revoke | revoke --device-id <uuid> --confirm-revoke');
   }
 }
 
