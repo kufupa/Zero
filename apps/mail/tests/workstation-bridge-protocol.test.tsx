@@ -343,6 +343,8 @@ function BridgeProbe() {
       <span data-testid="connected">{isConnected ? 'yes' : 'no'}</span>
       <span data-testid="subject">{activeEmail?.subject ?? ''}</span>
       <span data-testid="protocol">{workstationInfo?.bridgeProtocolVersion ?? ''}</span>
+      <span data-testid="paired">{workstationInfo?.paired ? 'yes' : 'no'}</span>
+      <span data-testid="device-id">{workstationInfo?.deviceId ?? ''}</span>
       <span data-testid="relogin">{requiresRelogin ? 'required' : 'ready'}</span>
       <span data-testid="send-supported">{supportsAction('LIST_FOLDERS') ? 'yes' : 'no'}</span>
       <span data-testid="reply-supported">
@@ -421,11 +423,13 @@ async function waitForBridgeRequest(
       const postMessage = window.chrome?.webview?.postMessage as unknown as {
         mock: { calls: Array<[unknown]> };
       };
-      request = postMessage.mock.calls
+      const requests = postMessage.mock.calls
         .slice(afterCallIndex)
-        .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest)
-        .find((candidate) => candidate.action === action);
-      expect(request).toBeDefined();
+        .map(([raw]) => JSON.parse(String(raw)) as TestBridgeRequest);
+      request = requests.find((candidate) => candidate.action === action);
+      expect(request, `Expected ${action} after call ${afterCallIndex}; saw ${requests.map(
+        (candidate) => candidate.action,
+      ).join(', ') || 'no native messages'}`).toBeDefined();
     },
     { timeout },
   );
