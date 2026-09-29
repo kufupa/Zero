@@ -216,9 +216,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
   it('rejects unscoped message and folder reads and sessions from remote-admin auth profile', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await expect(f.ticket('GET_EMAIL_BY_ENTRY_ID')).rejects.toThrow();
-    const { ticket } = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined, { resources: ['mail-1'] });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'approved-folder', kind: 'inbox' });
+    const { ticket } = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined,
+      { resources: ['mail-1'], sourceFolderId: 'approved-folder' });
     expect((await f.signed(path, { ticket, action: 'GET_EMAIL_BY_ENTRY_ID', storeId,
-      transportId: f.transportId })).status).toBe(403);
+      transportId: f.transportId, sourceFolderId: 'approved-folder' })).status).toBe(403);
     const folderTicket = await f.ticket('GET_FOLDER_EMAILS', undefined, { sourceFolderId: 'not-approved' });
     expect((await f.signed(path, { ticket: folderTicket.ticket, action: 'GET_FOLDER_EMAILS', storeId,
       transportId: f.transportId, sourceFolderId: 'not-approved' })).status).toBe(403);
@@ -238,13 +240,77 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ']) {
       await expect(f.ticket(action, op())).rejects.toThrow();
     }
-    const itemRead = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined, { resources: ['mail-1'] });
+    const itemRead = await f.ticket('GET_EMAIL_BY_ENTRY_ID', undefined,
+      { resources: ['mail-1'], sourceFolderId: 'actual-folder' });
     expect((await f.signed(path, { ticket: itemRead.ticket, action: 'GET_EMAIL_BY_ENTRY_ID',
-      storeId, transportId: f.transportId, resources: ['mail-2'] })).status).toBe(403);
+      storeId, transportId: f.transportId, resources: ['mail-2'], sourceFolderId: 'actual-folder' })).status).toBe(403);
     const mutationOp = op();
-    const update = await f.ticket('UPDATE_DRAFT', mutationOp, { resources: ['draft-1'] });
+    const update = await f.ticket('UPDATE_DRAFT', mutationOp,
+      { resources: ['draft-1'], sourceFolderId: 'actual-folder' });
     expect((await f.signed(path, { ticket: update.ticket, action: 'UPDATE_DRAFT', operationId: mutationOp,
-      storeId, transportId: f.transportId, resources: ['draft-2'] })).status).toBe(403);
+      storeId, transportId: f.transportId, resources: ['draft-2'], sourceFolderId: 'actual-folder' })).status).toBe(403);
+  }));
+  it('requires a browser-declared source for every targeted Outlook item read or mutation', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    const reads = ['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64', 'GET_CONVERSATION_THREAD'];
+    const mutations = ['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
+      'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ'];
+    for (const action of reads) {
+      await expect(f.ticket(action, undefined, { resources: ['outlook-item'] })).rejects.toThrow();
+    }
+    for (const action of mutations) {
+      await expect(f.ticket(action, op(), { resources: ['outlook-item'] })).rejects.toThrow();
+    }
+    await expect(f.ticket('GET_TEMPLATE_CONTENT', undefined, { resources: ['enumerated-local-template'] }))
+      .resolves.toHaveProperty('ticket');
+    const template = await f.ticket('GET_TEMPLATE_CONTENT', undefined,
+      { resources: ['enumerated-local-template'] });
+    expect((await f.signed(path, { ticket: template.ticket, action: 'GET_TEMPLATE_CONTENT',
+      storeId, transportId: f.transportId, resources: ['enumerated-local-template'] })).status).toBe(200);
+    await expect(f.ticket('GET_ACTIVE_EMAIL', undefined, { resources: ['selected-item'] }))
+      .resolves.toHaveProperty('ticket');
+    await expect(f.ticket('CREATE_DRAFT', op())).resolves.toHaveProperty('ticket');
+  }));
+  it('denies source-free native item scopes even for previously issued tickets, without consuming them', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'drafts-folder', kind: 'drafts' });
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox-folder', kind: 'inbox' });
+    const reads = ['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64', 'GET_CONVERSATION_THREAD'];
+    const mutations = ['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
+      'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ'];
+    for (const action of [...reads, ...mutations]) {
+      const operationId = mutations.includes(action) ? op() : undefined;
+      const declared = { resources: ['draft-item'], sourceFolderId: 'drafts-folder' };
+      const { ticket } = await f.ticket(action, operationId, declared);
+      const ticketHash = createHash('sha256').update(ticket).digest('hex');
+      // Simulate an unexpired legacy ticket whose pane omitted the source; the signed endpoint
+      // must still enforce the actual COM-observed folder independently of ticket issuance.
+      await db.update(outlookBridgeTicket).set({ declaredScope: JSON.stringify([declared.resources, null, null]) })
+        .where(eq(outlookBridgeTicket.ticketHash, ticketHash));
+      expect((await f.signed(path, { ticket, action, operationId, storeId,
+        transportId: f.transportId, resources: declared.resources })).status).toBe(403);
+      const [afterDenial] = await db.select({ consumedAt: outlookBridgeTicket.consumedAt }).from(outlookBridgeTicket)
+        .where(eq(outlookBridgeTicket.ticketHash, ticketHash));
+      expect(afterDenial.consumedAt).toBeNull();
+      await db.update(outlookBridgeTicket).set({ declaredScope: JSON.stringify([declared.resources, declared.sourceFolderId, null]) })
+        .where(eq(outlookBridgeTicket.ticketHash, ticketHash));
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') {
+        expect((await f.signed(path, { ticket, action, operationId, storeId,
+          transportId: f.transportId, resources: declared.resources, sourceFolderId: 'inbox-folder' })).status).toBe(403);
+      }
+      expect((await f.signed(path, { ticket, action, operationId, storeId,
+        transportId: f.transportId, ...declared })).status).toBe(200);
+    }
+    const selected = await f.ticket('GET_ACTIVE_EMAIL', undefined, { resources: ['selected-item'] });
+    expect((await f.signed(path, { ticket: selected.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId, resources: ['selected-item'] })).status).toBe(403);
+    expect((await f.signed(path, { ticket: selected.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId, resources: ['selected-item'], sourceFolderId: 'unapproved-folder' })).status).toBe(403);
+    expect((await f.signed(path, { ticket: selected.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId, resources: ['selected-item'], sourceFolderId: 'drafts-folder' })).status).toBe(200);
+    const emptySelection = await f.ticket('GET_ACTIVE_EMAIL');
+    expect((await f.signed(path, { ticket: emptySelection.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId })).status).toBe(200);
   }));
   it('allows creating a folder beneath an approved parent without an invented message resource', async () => withTestDb(async (db) => {
     const f = await fixture(db);

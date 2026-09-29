@@ -113,8 +113,21 @@ other actions are ticket-bound. Targeted item/attachment/template reads and
 existing-item mutations MUST declare exact resource EntryIDs; folder listing
 declares the source folder EntryID; folder creation declares its approved
 parent source folder EntryID without inventing an as-yet-nonexistent message
-resource. `GET_ACTIVE_EMAIL` and `CREATE_DRAFT` can begin without a known
-existing message ID. Mutation operation IDs use the existing
+resource. For existing Outlook items, the pane also MUST declare the exact
+source folder EntryID from the selected mail or returned draft location for
+`GET_EMAIL_BY_ENTRY_ID`, `GET_ATTACHMENT_METADATA`, `READ_ATTACHMENT_BASE64`,
+`GET_CONVERSATION_THREAD`, `UPDATE_DRAFT`, `CREATE_REPLY_DRAFT`,
+`ADD_ATTACHMENT_TO_DRAFT`, `SET_EMAIL_CATEGORY`, `SET_FOLLOW_UP_FLAG`, and
+`MARK_EMAIL_READ`. Native independently pins the actual item folder and must
+report the same approved source; omitted/forged sources fail closed. The local
+`GET_TEMPLATE_CONTENT` path has no Outlook folder. For `GET_ACTIVE_EMAIL`, the
+pane may omit source, since native observes the selection after the
+ticket; native must report an approved actual source whenever a selected item
+is present. Empty selection may have no source. For quotation PDFs, use the
+selected mail's folder for `CREATE_REPLY_DRAFT`, then the returned draft's
+`folderEntryId` for `ADD_ATTACHMENT_TO_DRAFT`. No Inbox/Drafts inference or
+default-folder fallback is valid. `GET_ACTIVE_EMAIL` and `CREATE_DRAFT` can
+begin without a known existing message ID. Mutation operation IDs use the existing
 `op_<unix-ms>_<32-hex-GUID>` format (<=15 minutes old, <=5 seconds future).
 
 Native separately HMAC-signs exact raw body bytes for

@@ -24,9 +24,10 @@ const mutationActions = new Set(['CREATE_DRAFT', 'UPDATE_DRAFT', 'CREATE_REPLY_D
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ', 'CREATE_FOLDER', 'MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const moveActions = new Set(['MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const itemReadActions = new Set(['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64',
-  'GET_CONVERSATION_THREAD', 'GET_TEMPLATE_CONTENT']);
+  'GET_CONVERSATION_THREAD']);
 const itemMutationActions = new Set(['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ']);
+const targetedItemActions = new Set([...itemReadActions, ...itemMutationActions]);
 const isToken = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
 const isOp = (value: unknown): value is string => {
   if (typeof value !== 'string') return false;
@@ -100,7 +101,8 @@ export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Head
     || input.resources.some((resource) => !isToken(resource)) || new Set(input.resources).size !== input.resources.length)) throw new BridgeTicketDeniedError();
   if (input.sourceFolderId !== undefined && !isToken(input.sourceFolderId)
     || input.destinationFolderId !== undefined && !isToken(input.destinationFolderId)
-    || (itemReadActions.has(input.action) || itemMutationActions.has(input.action)) && !input.resources?.length
+    || (targetedItemActions.has(input.action) || input.action === 'GET_TEMPLATE_CONTENT') && !input.resources?.length
+    || targetedItemActions.has(input.action) && !input.sourceFolderId
     || input.action === 'GET_FOLDER_EMAILS' && !input.sourceFolderId
     || input.action === 'CREATE_FOLDER' && !input.sourceFolderId
     || moveActions.has(input.action) && (!input.resources?.length || !input.sourceFolderId || !input.destinationFolderId)) throw new BridgeTicketDeniedError();
@@ -147,7 +149,10 @@ function validResourceScope(input: NativeScopeInput): boolean {
   if (moveActions.has(input.action) && (!isToken(input.sourceFolderId) || !isToken(input.destinationFolderId))) return false;
   if (input.action === 'CREATE_FOLDER' && !isToken(input.sourceFolderId)) return false;
   // Native must explicitly report actual Outlook folder identities. No denylist-only shortcuts.
-  if (itemReadActions.has(input.action) && !input.resources?.length) return false;
+  if ((itemReadActions.has(input.action) || input.action === 'GET_TEMPLATE_CONTENT') && !input.resources?.length) return false;
+  if (targetedItemActions.has(input.action) && !isToken(input.sourceFolderId)) return false;
+  // A selected item is observed only after GET_ACTIVE_EMAIL reaches native; the pane may not know its source yet.
+  if (input.action === 'GET_ACTIVE_EMAIL' && input.resources?.length && !isToken(input.sourceFolderId)) return false;
   if (input.action === 'GET_FOLDER_EMAILS' && !isToken(input.sourceFolderId)) return false;
   if (['deleted', 'outbox', 'deleted-child', 'outbox-child'].includes(input.destinationKind ?? '')) return false;
   if (input.action === 'MOVE_EMAIL' && input.destinationKind !== 'triage' && input.destinationKind !== 'inbox') return false;
