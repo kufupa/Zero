@@ -85,10 +85,10 @@ jobs:
         if: steps.outlook.outputs.required == 'true'
         shell: bash
         env:
-          NAVA_OUTLOOK_READ_TOKEN: ${{ secrets.NAVA_OUTLOOK_READ_TOKEN }}
+          NAVA_OUTLOOK_READ_SSH_KEY: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
         run: |
-          if test -z "$NAVA_OUTLOOK_READ_TOKEN"; then
-            echo '::error::Set NAVA_OUTLOOK_READ_TOKEN (read-only access to kufupa/nava-outlook-addin) before merging Outlook security changes.'
+          if test -z "$NAVA_OUTLOOK_READ_SSH_KEY"; then
+            echo '::error::Set NAVA_OUTLOOK_READ_SSH_KEY to a read-only deploy key for kufupa/nava-outlook-addin before merging Outlook security changes.'
             exit 1
           fi
 
@@ -99,7 +99,7 @@ jobs:
           repository: kufupa/nava-outlook-addin
           ref: ${{ steps.outlook.outputs.gitlink_sha }}
           path: apps/server-pilot/vsto
-          token: ${{ secrets.NAVA_OUTLOOK_READ_TOKEN }}
+          ssh-key: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
           persist-credentials: false
 
       - name: Verify the native checkout matches the gitlink

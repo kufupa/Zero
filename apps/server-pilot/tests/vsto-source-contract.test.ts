@@ -12,7 +12,9 @@ const hasVstoSource = existsSync(path.join(vstoRoot, 'ThisAddIn.cs'));
 describe('VSTO source availability in root CI', () => {
   it('fails closed for Outlook changes unless private source matches the exact gitlink', () => {
     const ci = readFileSync(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
-    expect(ci).toContain('NAVA_OUTLOOK_READ_TOKEN');
+    expect(ci).toContain('NAVA_OUTLOOK_READ_SSH_KEY');
+    expect(ci).toContain('ssh-key: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}');
+    expect(ci).not.toContain('NAVA_OUTLOOK_READ_TOKEN');
     // rev-parse reads the gitlink *object*, not the path printed after ls-tree's tab.
     expect(ci).toContain('git rev-parse HEAD:apps/server-pilot/vsto');
     expect(ci).toContain('git -C apps/server-pilot/vsto rev-parse HEAD');

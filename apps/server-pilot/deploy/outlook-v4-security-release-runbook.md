@@ -36,11 +36,12 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 - Record real TLS/Outlook/IT results for every enrolled Windows user and
   workstation separately; Linux source contracts and the native CI cannot
   prove this. Keep guest mail and credentials out of the release record.
-- Root PR CI now requires `NAVA_OUTLOOK_READ_TOKEN` with read-only access to
-  the private `kufupa/nava-outlook-addin` repo for security-changing PRs,
-  checks out this exact gitlink and fails if source is missing or mismatched.
-  A repo administrator must configure that secret before merging; do not
-  downgrade CI to its old source-contract warning/skip behavior.
+- Root PR CI requires `NAVA_OUTLOOK_READ_SSH_KEY`: a dedicated read-only deploy
+  key installed on the private `kufupa/nava-outlook-addin` repo, with its
+  private half stored as a Zero Actions secret. It checks out this exact
+  gitlink and fails if source is missing or mismatched. Do not use a broad
+  personal token or downgrade CI to its old source-contract warning/skip
+  behavior.
 
 ## Order of operations — all production steps require a separate approval
 
