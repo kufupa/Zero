@@ -109,9 +109,14 @@ function candidateFor(indexPath, templatePath, webRoot) {
   const template = readFileSync(templatePath, 'utf8');
   const pane = template.match(/location = \/outlook-pane\s*\{([^}]*)\}/)?.[1] ?? '';
   const panePolicy = pane.match(/add_header Content-Security-Policy "([^"]+)" always;/)?.[1] ?? '';
+  const scriptSrcAttr = panePolicy
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter((directive) => /^script-src-attr(?:\s|$)/i.test(directive));
   if (
     !panePolicy.includes("script-src 'self' __NAVA_PANE_SCRIPT_HASHES__;") ||
-    !panePolicy.includes("script-src-attr 'none';") ||
+    scriptSrcAttr.length !== 1 ||
+    !/^script-src-attr\s+'none'$/i.test(scriptSrcAttr[0]) ||
     /\bscript-src-elem\b|script-src [^;]*'unsafe-inline'/.test(panePolicy) ||
     (template.match(/__NAVA_RELEASE_ID__/g) ?? []).length < 4 ||
     (template.match(/__NAVA_WEB_ROOT__/g) ?? []).length < 4 ||

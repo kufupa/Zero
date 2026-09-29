@@ -259,6 +259,22 @@ describe('the built pane CSP and immutable mail release', () => {
     expect(existsSync(candidate)).toBe(false);
   });
 
+  it('refuses a permissive script-src-attr directive before the required none directive', () => {
+    const { candidate, index, webRoot } = fixture('<script>window.safe=true</script>');
+    const templatePath = join(webRoot, 'weakened.conf');
+    writeFileSync(
+      templatePath,
+      readFileSync(template, 'utf8').replace(
+        "script-src-attr 'none';",
+        "script-src-attr 'unsafe-inline'; SCRIPT-SRC-ATTR 'none';",
+      ),
+    );
+    const result = runHelper('render', index, templatePath, candidate, webRoot);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/unsafe|script-src-attr/);
+    expect(existsSync(candidate)).toBe(false);
+  });
+
   it('refuses a staged index symlink whose target could change after CSP validation', () => {
     const { candidate, index, webRoot } = fixture('<script>window.safe=true</script>');
     const mutable = join(webRoot, 'mutable-index.html');
