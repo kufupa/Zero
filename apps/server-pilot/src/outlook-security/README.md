@@ -147,12 +147,17 @@ web-mail Send/Delete are unaffected.
 A fully valid signed native `MOVE_EMAIL`/`MOVE_TO_SPAM` authorization returns
 HTTP 409 `{ "code": "NATIVE_BATCH_CONSENT_REQUIRED" }` with
 `Cache-Control: no-store` when 10+ explicit items or a rolling shared-mailbox
-or per-device total above 25 moves/minute requires native consent. This does
-not consume the browser ticket or insert a move receipt. Native must obtain
-consent for that exact set of Outlook EntryIDs and destination, then retry
-the same unexpired ticket and operation with `nativeBatchConsent:true` and a
-fresh signed HMAC challenge/nonce; altered scopes or replayed signatures are
-denied. Invalid, expired, revoked, consumed and mismatched tickets always
+or per-device total above 25 moves/minute requires native consent. This
+consumes the preflight browser ticket without inserting a move receipt and
+returns a separate five-minute native-only consent challenge. Native must
+obtain consent for the exact Outlook EntryIDs and destination; the pane then
+registers a **fresh navigation** and requests a **new** browser ticket for the
+identical move scope and operation ID. Native signs a new request with
+`nativeBatchConsent:true`, the saved `nativeBatchConsentChallenge` and a fresh
+HMAC nonce. The server atomically consumes the new ticket and consent challenge
+before approving COM; altered scopes, stale sessions, reused tickets and
+replayed signatures are denied. Invalid, expired, revoked, consumed or mismatched
+tickets always
 receive generic HTTP 403, never a consent hint. Any non-200 response remains
 unauthorized to execute Outlook COM.
 

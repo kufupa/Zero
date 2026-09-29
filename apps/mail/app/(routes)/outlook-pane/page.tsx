@@ -749,7 +749,11 @@ export default function OutlookPanePage() {
       await sendCommand('ADD_ATTACHMENT_TO_DRAFT', attachmentPayload);
       if (!sameStaffScope()) return;
       replyRetries.current.delete(key);
-      if (![...replyRetries.current.values()].some((pending) => pending.replyPayload)) {
+      // A successful draft for B does not resolve an expired or unknown
+      // outcome for A. Those per-message sets are in memory only; preserve
+      // the generic warning across reloads until every outcome is resolved.
+      if (!expiredReplyOutcomes.current.size && !hasUntrackedExpiredReplyOutcomes.current &&
+        ![...replyRetries.current.values()].some((pending) => pending.replyPayload)) {
         setUnresolvedReplyMarker(false);
       }
       setDraftedDetails({

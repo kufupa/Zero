@@ -403,6 +403,31 @@ describe('OutlookPanePage', () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
   });
 
+  it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
+    const startedAt = Date.now();
+    sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
+    bridgeMockState.selectedEntryId = '002';
+    pane.rerender(<OutlookPanePage />);
+    fireEvent.click(button);
+    await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+    pane.unmount();
+    bridgeMockState.selectedEntryId = '001';
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    expect(createReplyCalls()).toHaveLength(2);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
+  });
+
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     let now = Date.now();
