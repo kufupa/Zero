@@ -201,7 +201,17 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         gt(table.expiresAt, sql`clock_timestamp()`),
         gt(sql`${table.createdAt} + interval '24 hours'`, sql`clock_timestamp()`),
         sql`${table.createdAt} <= clock_timestamp()`)).for('share').limit(1);
-    if (!navigation || !staff || !await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId,
+    if (!navigation || !staff) return null;
+    if (moveActions.has(input.action)) {
+      // The transport lock above only serializes one mailbox. Lock this enrolled
+      // device too so parallel moves through different mailboxes cannot each
+      // observe and exceed its rolling one-minute budget.
+      const [device] = await tx.select({ deviceId: outlookDevice.deviceId }).from(outlookDevice)
+        .where(and(eq(outlookDevice.deviceId, deviceId), isNull(outlookDevice.revokedAt)))
+        .for('update').limit(1);
+      if (!device) return null;
+    }
+    if (!await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId,
       input.storeId, true)) return null;
     const folderRows = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
       .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),

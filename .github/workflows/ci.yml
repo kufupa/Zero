@@ -173,7 +173,7 @@ jobs:
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate
 
-      - name: Test transactional Outlook security and Rocketseed mail flows
+      - name: Test transactional Rocketseed mail flow and Outlook security
         shell: bash
         env:
           DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
