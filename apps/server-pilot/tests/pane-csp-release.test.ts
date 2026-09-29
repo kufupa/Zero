@@ -84,6 +84,16 @@ function localStageScript() {
 }
 
 describe('the built pane CSP and immutable mail release', () => {
+  it('disables heuristic caching of stable assets on both public and remote-admin hosts', () => {
+    const nginx = readFileSync(template, 'utf8');
+    const stableAssetLocations = [...nginx.matchAll(/location \/assets\/ \{([^}]*)\}/g)];
+    expect(stableAssetLocations).toHaveLength(2);
+    for (const [, location] of stableAssetLocations) {
+      expect(location).toContain('try_files /releases/__NAVA_RELEASE_ID__$uri =404;');
+      expect(location).toMatch(/\bexpires -1;/);
+    }
+  });
+
   it('uses the active release for stable assets and shared fallback only for hashed chunks', () => {
     const nginx = readFileSync(template, 'utf8');
     expect(
