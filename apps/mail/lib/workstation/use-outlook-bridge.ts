@@ -192,6 +192,23 @@ export function useOutlookBridge() {
       }
   }, []);
 
+  const invalidateNavigation = useCallback(() => {
+    const wasRegistered = navigation.current !== null;
+    navigation.current = null;
+    firstTicket.current = null;
+    selection.current++;
+    if (renewalTimer.current) clearTimeout(renewalTimer.current);
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    renewalTimer.current = null;
+    retryTimer.current = null;
+    if (wasRegistered) {
+      window.chrome?.webview?.postMessage(JSON.stringify(createBridgeRequest('CLEAR_SESSION', {})));
+    }
+    clearPending(false);
+    setActiveEmail(null);
+    setCapabilities(null);
+  }, [clearPending]);
+
   const nativeRequest = useCallback(
     <T>(
       action: BridgeAction,
@@ -269,6 +286,8 @@ export function useOutlookBridge() {
       });
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
+          invalidateNavigation();
+          setRequiresRelogin(true);
           void refetchRef.current?.();
           const denied = new Error('Outlook navigation denied') as Error & { code?: string };
           denied.code = 'NAVIGATION_DENIED';
@@ -305,7 +324,7 @@ export function useOutlookBridge() {
         startRegistration.current(generation, deviceId, transportId);
       }, 45_000);
     },
-    [clearPending, nativeRequest],
+    [clearPending, invalidateNavigation, nativeRequest],
   );
 
   startRegistration.current = (generation, deviceId, transportId, attempt = 0) => {
@@ -400,12 +419,9 @@ export function useOutlookBridge() {
         if (registered.storeId && registered.storeId !== ticket.storeId)
           throw new Error('Approved Outlook store changed');
         registered.storeId = ticket.storeId;
-        deniedTickets.current = 0;
       } catch (error) {
         if (navigation.current === registered) {
-          navigation.current = null;
-          setActiveEmail(null);
-          setCapabilities(null);
+          invalidateNavigation();
           void refetchRef.current?.();
           if (++deniedTickets.current <= 1) {
             startRegistration.current(
@@ -428,13 +444,10 @@ export function useOutlookBridge() {
             transportId: registered.transportId,
           },
         );
-        failedNativeAuthorizations.current = 0;
         return result;
       } catch (error) {
         if (navigation.current === registered) {
-          navigation.current = null;
-          setActiveEmail(null);
-          setCapabilities(null);
+          invalidateNavigation();
           if (++failedNativeAuthorizations.current <= 1) {
             startRegistration.current(
               registered.generation,
@@ -446,7 +459,7 @@ export function useOutlookBridge() {
         throw error;
       }
     },
-    [nativeRequest, registerNavigation],
+    [invalidateNavigation, nativeRequest, registerNavigation],
   );
 
   loadMailRef.current = async (generation: number) => {
@@ -478,6 +491,8 @@ export function useOutlookBridge() {
         const parsedEmail = WorkstationEmailPayloadSchema.safeParse(data);
         setActiveEmail(parsedEmail.success ? parsedEmail.data : null);
         setActiveEmailOwner(currentScope.current);
+        deniedTickets.current = 0;
+        failedNativeAuthorizations.current = 0;
       }
     } catch {
       /* Denied grants fail closed; the navigation renewal will recover if still signed in. */

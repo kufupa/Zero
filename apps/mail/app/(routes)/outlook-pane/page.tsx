@@ -87,10 +87,10 @@ const TOUR_SLIDES: TourSlide[] = [
   },
 ];
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
-import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { toast } from 'sonner';
@@ -219,13 +219,13 @@ export default function OutlookPanePage() {
   const { data: session, isLoading } = useSession();
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   const currentScope =
-    session?.user?.id && activeConnection?.id
+    !requiresRelogin && session?.user?.id && activeConnection?.id
       ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
       : null;
   const scopeRef = useRef(currentScope);
   const previousScope = useRef(currentScope);
   scopeRef.current = currentScope;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previousScope.current === currentScope) return;
     previousScope.current = currentScope;
     replyRetries.current.clear();

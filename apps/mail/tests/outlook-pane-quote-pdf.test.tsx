@@ -15,6 +15,7 @@ const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => (
     outlookEmail: 'ropperman@legacyhotels.co.za',
     transportId: 'transport-shared',
     transportEmail: 'centurion@legacyhotels.co.za',
+    requiresRelogin: false,
   },
 }));
 
@@ -47,6 +48,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
     },
     supportsAction: (action: string) =>
       action === 'CREATE_REPLY_DRAFT' || action === 'ADD_ATTACHMENT_TO_DRAFT',
+    requiresRelogin: sessionState.requiresRelogin,
     activeEmail: {
       entryId: '001',
       storeId: 'store-1',
@@ -101,6 +103,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.outlookEmail = 'ropperman@legacyhotels.co.za';
     sessionState.transportId = 'transport-shared';
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
+    sessionState.requiresRelogin = false;
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
@@ -317,5 +320,69 @@ describe('Outlook pane quote proposal PDF', () => {
     await act(async () => finishPdf({ fileName: 'private.pdf', pdfBase64: 'JVBERw==' }));
     expect(sendCommandMock).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('drops pending PDF bytes on 24-hour re-login even when Better Auth still caches the same session', async () => {
+    let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
+    quotePdfMutateMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPdf = resolve;
+        }),
+    );
+    const pane = render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
+    sessionState.requiresRelogin = true;
+    pane.rerender(<OutlookPanePage />);
+    expect(screen.queryByRole('button', { name: /Insert Draft in Outlook/i })).toBeNull();
+    await act(async () => finishPdf({ fileName: 'old-private.pdf', pdfBase64: 'PRIVATE-BYTES' }));
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.error).mock.calls.flat().join(' ')).not.toContain(
+      'Suite Availability Request',
+    );
+    sessionState.requiresRelogin = false;
+    pane.rerender(<OutlookPanePage />);
+    expect(screen.queryByRole('status')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'ADD_ATTACHMENT_TO_DRAFT',
+        expect.objectContaining({ base64Data: 'JVBERw0KGgo=' }),
+      ),
+    );
+  });
+
+  it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
+    const pane = render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByText('Please see attached quotation.')).toBeDefined());
+    let rejectMutation!: (error: Error) => void;
+    sendCommandMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectMutation = reject;
+        }),
+    );
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(
+        sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT'),
+      ).toHaveLength(2),
+    );
+    sessionState.requiresRelogin = true;
+    pane.rerender(<OutlookPanePage />);
+    await act(async () => rejectMutation(new Error('Bridge unavailable')));
+    expect(vi.mocked(toast.error).mock.calls.flat().join(' ')).not.toContain(
+      'Suite Availability Request',
+    );
+    sessionState.requiresRelogin = false;
+    pane.rerender(<OutlookPanePage />);
+    expect(screen.queryByText('Please see attached quotation.')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(3));
   });
 });

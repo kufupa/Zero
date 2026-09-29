@@ -359,7 +359,10 @@ function BridgeProbe() {
       <button
         type="button"
         onClick={() => {
-          void sendCommand('LIST_STORES', {}).catch(() => undefined);
+          void sendCommand('LIST_STORES', {}).then(
+            () => setErrorCode('list-succeeded'),
+            () => setErrorCode('list-canceled'),
+          );
         }}
       >
         List approved stores
@@ -494,6 +497,7 @@ describe('v4 staff-authorized Outlook navigation', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     delete window.chrome;
     vi.unstubAllGlobals();
@@ -637,6 +641,81 @@ describe('v4 staff-authorized Outlook navigation', () => {
     await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(1));
   });
 
+  it('revokes native COM immediately on renewal 401 and discards a late non-selection success', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    respondV4(await waitForBridgeRequest('PING'), {
+      bridgeProtocolVersion: 4,
+      version: '1.0.12',
+      paired: true,
+      deviceId: 'device-1',
+    });
+    const firstRegistration = await waitForBridgeRequest('REGISTER_NAVIGATION');
+    vi.useFakeTimers();
+    respondV4(firstRegistration, { registered: true });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const cap = nativeMessages().find((request) => request.action === 'GET_CAPABILITIES');
+    expect(cap).toBeDefined();
+    respondV4(cap!, {
+      bridgeProtocolVersion: 4,
+      addinVersion: '1.0.12',
+      outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows',
+      newOutlookSupported: false,
+      interactiveProfileRequired: true,
+      maxPageSize: 200,
+      maxFolderDepth: 64,
+      maxFolderCount: 5000,
+      maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_STORES'],
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const selection = nativeMessages().find((request) => request.action === 'GET_ACTIVE_EMAIL');
+    expect(selection).toBeDefined();
+    respondV4(selection!, {
+      entryId: 'selected',
+      subject: 'Confidential selection',
+      senderEmail: 'guest@example.com',
+      senderName: 'Guest',
+      receivedTime: '2026-09-17',
+      bodyText: 'Private',
+      bodyHtml: '',
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('subject').textContent).toBe('Confidential selection');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(44_999);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const inFlight = nativeMessages().find((request) => request.action === 'LIST_STORES');
+    expect(inFlight).toBeDefined();
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 401 } as Response);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(nativeMessages().map((request) => request.action)).toContain('CLEAR_SESSION');
+    expect(screen.getByTestId('subject').textContent).toBe('');
+    expect(screen.getByTestId('send-supported').textContent).toBe('no');
+    expect(screen.getByTestId('bridge-error-code').textContent).toBe('list-canceled');
+    respondV4(inFlight!, { items: [{ storeId: 'store-approved', displayName: 'Secret' }] });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('bridge-error-code').textContent).toBe('list-canceled');
+    vi.useRealTimers();
+  });
+
   it('rechecks session and stops after a repeated denied ticket instead of looping navigation registrations', async () => {
     security.userId = 'staff-1';
     security.transportId = 'transport-1';
@@ -662,6 +741,69 @@ describe('v4 staff-authorized Outlook navigation', () => {
     ).toHaveLength(2);
     expect(screen.getByTestId('subject').textContent).toBe('');
   });
+
+  it.each(['native', 'ticket'] as const)(
+    'stops %s selection denials even when every registration can read capabilities',
+    async (denial) => {
+      security.userId = 'staff-1';
+      security.transportId = 'transport-1';
+      setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+      if (denial === 'ticket') {
+        ticketMutate.mockImplementation(async ({ action }: { action: string }) => {
+          if (action === 'GET_ACTIVE_EMAIL') throw new Error('Active mail ticket denied');
+          return { ticket: 'one-use', storeId: 'store-approved', expiresInSeconds: 60 };
+        });
+      }
+      render(<BridgeProbe />);
+      await registerPane();
+      let afterRegistration = 0;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const cap = await waitForBridgeRequest('GET_CAPABILITIES', afterRegistration);
+        respondV4(cap, {
+          bridgeProtocolVersion: 4,
+          addinVersion: '1.0.12',
+          outlookVersion: '16.0',
+          runtime: 'Classic Outlook for Windows',
+          newOutlookSupported: false,
+          interactiveProfileRequired: true,
+          maxPageSize: 200,
+          maxFolderDepth: 64,
+          maxFolderCount: 5000,
+          maxFolderSnapshotItems: 5000,
+          supportedActions: ['GET_ACTIVE_EMAIL'],
+        });
+        if (denial === 'native') {
+          const read = await waitForBridgeRequest('GET_ACTIVE_EMAIL', afterRegistration);
+          respondV4(read, null, false);
+        } else {
+          await waitFor(() =>
+            expect(
+              ticketMutate.mock.calls.filter(([grant]) => grant.action === 'GET_ACTIVE_EMAIL'),
+            ).toHaveLength(attempt + 1),
+          );
+        }
+        await act(async () => {
+          await Promise.resolve();
+        });
+        if (attempt === 0) {
+          await waitFor(() =>
+            expect(
+              nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION'),
+            ).toHaveLength(2),
+          );
+          afterRegistration = nativeMessages().length;
+          respondV4(
+            nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION')[1]!,
+            { registered: true },
+          );
+        }
+      }
+      expect(
+        nativeMessages().filter((request) => request.action === 'REGISTER_NAVIGATION'),
+      ).toHaveLength(2);
+      expect(screen.getByTestId('subject').textContent).toBe('');
+    },
+  );
 
   it('opens native-only pairing and rechecks PING before registering the staff navigation', async () => {
     security.userId = 'staff-1';
@@ -804,6 +946,7 @@ describe('v4 staff-authorized Outlook navigation', () => {
     ticketMutate.mockRejectedValueOnce(new Error('Staff grant denied'));
     fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(nativeMessages().map((message) => message.action)).toContain('CLEAR_SESSION');
     respondV4(pendingRead, {
       entryId: 'late-entry',
       subject: 'Never display after ticket denial',
