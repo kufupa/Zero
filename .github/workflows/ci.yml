@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   autofix:
-    timeout-minutes: 10
+    timeout-minutes: 15
     runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout Code 🛎
@@ -47,6 +47,40 @@ jobs:
             echo "gitlink_sha=$gitlink_sha" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Setup pnpm 🌟
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 📦
+        uses: actions/setup-node@v4
+
+      - name: Install dependencies 📦
+        run: pnpm install
+
+      - name: Test web-pane bridge, email HTML rendering, and CSP
+        shell: bash
+        run: |
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
+            tests/mail-content-rendering.test.tsx tests/resolve-mail-html.test.ts tests/mail-content-fallback.test.ts
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --dir apps/server-pilot exec vitest run \
+            tests/pane-csp-release.test.ts
+
+      - name: Lint JS
+        run: pnpm dlx oxlint@1.6.0 --deny-warnings --ignore-pattern 'external/**' --ignore-pattern 'archive/**'
+
+      - name: Test Rocketseed mail flow
+        shell: bash
+        run: |
+          unset DATABASE_URL TEST_DATABASE_URL CONFIRM_DISPOSABLE_TEST_DB VITEST_ALLOW_PILOT_RDS
+          export MAIL_TRANSPORT_MODE=fixture
+          pnpm --dir apps/server-pilot run test:rocketseed
+
+      - name: Build mail applications
+        run: |
+          pnpm --dir apps/server-pilot build
+          pnpm --dir apps/mail build
+
       - name: Require read-only private Outlook source access
         if: steps.outlook.outputs.required == 'true'
         shell: bash
@@ -82,47 +116,18 @@ jobs:
             exit 1
           fi
 
-      - name: Setup pnpm 🌟
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node 📦
-        uses: actions/setup-node@v4
-
-      - name: Install dependencies 📦
-        run: pnpm install
-
-      - name: Check Outlook bridge source and installer contracts
-        shell: bash
-        env:
-          OUTLOOK_SOURCE_REQUIRED: ${{ steps.outlook.outputs.required }}
-        run: |
-          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
-            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx
-          if test "$OUTLOOK_SOURCE_REQUIRED" = true; then
-            test -f apps/server-pilot/vsto/NavaOutlookAddin/ThisAddIn.cs || exit 1
-            env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
-              tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
-          else
-            echo '::notice::No Outlook security paths changed in this PR; private source contracts are not required here.'
-          fi
-
-      - name: Lint JS
-        run: pnpm dlx oxlint@1.6.0 --deny-warnings --ignore-pattern 'external/**' --ignore-pattern 'archive/**'
-
-      - name: Test Rocketseed mail flow
+      - name: Check private Outlook source and installer contracts
+        if: steps.outlook.outputs.required == 'true'
         shell: bash
         run: |
-          unset DATABASE_URL TEST_DATABASE_URL CONFIRM_DISPOSABLE_TEST_DB VITEST_ALLOW_PILOT_RDS
-          export MAIL_TRANSPORT_MODE=fixture
-          pnpm --dir apps/server-pilot run test:rocketseed
-
-      - name: Build mail applications
-        run: |
-          pnpm --dir apps/server-pilot build
-          pnpm --dir apps/mail build
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
+            tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
+      - name: Note when private source verification is not required
+        if: steps.outlook.outputs.required != 'true'
+        run: echo 'No Outlook security paths changed in this PR; private source contracts are not required here.'
 
   rocketseed-transactional:
-    timeout-minutes: 10
+    timeout-minutes: 15
     runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
     env:
       DISPOSABLE_POSTGRES_DB: zero_transactional
@@ -168,7 +173,7 @@ jobs:
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate
 
-      - name: Test transactional Rocketseed mail flow
+      - name: Test transactional Outlook security and Rocketseed mail flows
         shell: bash
         env:
           DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
@@ -180,6 +185,11 @@ jobs:
             "$DISPOSABLE_POSTGRES_HOST" ':' "$DISPOSABLE_POSTGRES_PORT" '/' \
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           export TEST_DATABASE_URL
+          MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 OUTLOOK_V4_SECURITY_TEST_REQUIRED=1 \
+            pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
+              tests/outlook-device-enrollment.test.ts \
+              tests/outlook-bridge-authorization.test.ts \
+              tests/outlook-security-retention.test.ts
           MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED=1 pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
             tests/rocketseed-returned-copy-reconciliation.test.ts \
             tests/outbound-delivery-outcome.test.ts \

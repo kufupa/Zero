@@ -1,16 +1,17 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { openTestDbSession, withTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
 import { outlookApprovedFolder, outlookBridgeTicket, outlookMoveReceipt, outlookNavigation } from '../src/db/schema/outlook-authorization.js';
-import { outlookDevice } from '../src/db/schema/outlook-device.js';
+import { outlookDevice, outlookDeviceGrant } from '../src/db/schema/outlook-device.js';
 import { issueEnrollment, enrollDevice, issueChallenge, revokeDevice } from '../src/outlook-security/device.js';
 import { createOutlookNativeHandler } from '../src/http/outlook-native.js';
 import { workstationRouter } from '../src/trpc/routes/workstation.js';
-import { issueBridgeTicket, provisionApprovedFolder, registerNavigation } from '../src/outlook-security/authorization.js';
+import { authorizeNative, issueBridgeTicket, NativeBatchConsentRequiredError,
+  provisionApprovedFolder, registerNavigation } from '../src/outlook-security/authorization.js';
 
 const key = randomBytes(32).toString('base64');
 const secret = randomBytes(32).toString('base64');
@@ -527,6 +528,92 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect(rows).toHaveLength(3);
     expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(27);
   }));
+
+  it('shares the move-consent budget across simultaneous mailbox requests from one device', async () => {
+    const setup = openTestDbSession();
+    const requests = Array.from({ length: 3 }, () => openTestDbSession());
+    let fixtureData: Awaited<ReturnType<typeof fixture>> | undefined;
+    let triggerName: string | undefined;
+    let triggerFunction: string | undefined;
+    const transportIds: string[] = [];
+
+    try {
+      fixtureData = await fixture(setup.db);
+      const f = fixtureData;
+      transportIds.push(f.transportId);
+      expect((await f.signed('/api/outlook/native/register-navigation',
+        { paneChallenge: f.paneChallenge })).status).toBe(200);
+
+      for (let index = 1; index < 3; index++) {
+        const transportId = randomUUID();
+        transportIds.push(transportId);
+        await setup.db.insert(mailboxTransport).values({ id: transportId,
+          email: `${transportId}@example.test`, ownerHeaderValue: transportId });
+        await setup.db.insert(mailboxAccess).values({ id: randomUUID(), userId: f.userId,
+          transportId, role: 'member' });
+        await setup.db.insert(outlookDeviceGrant).values({ deviceId: f.deviceId,
+          userId: f.userId, transportId });
+      }
+
+      for (const [index, transportId] of transportIds.entries()) {
+        await provisionApprovedFolder(setup.db, { storeId, transportId,
+          folderId: `inbox-${index}`, kind: 'inbox' });
+        await provisionApprovedFolder(setup.db, { storeId, transportId,
+          folderId: `triage-${index}`, kind: 'triage' });
+      }
+
+      // Keep each request at nine items (below the single-batch prompt threshold)
+      // and overlap the budget read with all three transactions. Without a device
+      // serialization lock they can each observe zero receipts and approve 27.
+      const suffix = randomBytes(8).toString('hex');
+      triggerName = `outlook_move_delay_${suffix}`;
+      triggerFunction = `outlook_move_delay_fn_${suffix}`;
+      await setup.db.execute(sql.raw(`CREATE FUNCTION ${triggerFunction}() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.25); RETURN NEW; END $$`));
+      await setup.db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON outlook_move_receipt
+        FOR EACH ROW EXECUTE FUNCTION ${triggerFunction}()`));
+
+      const requestsToAuthorize = await Promise.all(transportIds.map(async (transportId, index) => {
+        const operationId = op();
+        const scope = { resources: Array.from({ length: 9 }, (_, item) => `mail-${index}-${item}`),
+          sourceFolderId: `inbox-${index}`, destinationFolderId: `triage-${index}` };
+        const issued = await issueBridgeTicket(setup.db, f.auth, new Headers(), {
+          deviceId: f.deviceId, paneChallenge: f.paneChallenge, action: 'MOVE_EMAIL',
+          storeId, transportId, operationId, ...scope,
+        });
+        return {
+          operationId,
+          payload: { ticket: issued.ticket, action: 'MOVE_EMAIL', operationId, storeId,
+            transportId, ...scope, destinationKind: 'triage' },
+        };
+      }));
+
+      const outcomes = await Promise.all(requestsToAuthorize.map(async ({ payload }, index) => {
+        try {
+          await authorizeNative(requests[index].db, f.deviceId, payload);
+          return 'approved';
+        } catch (error) {
+          if (error instanceof NativeBatchConsentRequiredError) return 'consent';
+          throw error;
+        }
+      }));
+      expect(outcomes.sort()).toEqual(['approved', 'approved', 'consent']);
+      const receipts = await setup.db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.deviceId, f.deviceId));
+      expect(receipts.reduce((sum, receipt) => sum + receipt.count, 0)).toBe(18);
+    } finally {
+      if (triggerName) await setup.db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON outlook_move_receipt`));
+      if (triggerFunction) await setup.db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${triggerFunction}()`));
+      if (fixtureData) {
+        await setup.db.delete(outlookDevice).where(eq(outlookDevice.deviceId, fixtureData.deviceId));
+        await setup.db.delete(user).where(eq(user.id, fixtureData.userId));
+      }
+      if (transportIds.length) {
+        await setup.db.delete(mailboxTransport).where(inArray(mailboxTransport.id, transportIds));
+      }
+      await Promise.all([...requests.map((request) => request.close()), setup.close()]);
+    }
+  }, 15_000);
+
   it('requires one-use native consent tied to the original signed staff, device, and exact move scope', async () => withTestDb(async (db) => {
     const f = await fixture(db);
     await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'inbox', kind: 'inbox' });
