@@ -97,3 +97,35 @@ observability of repeated failures belong to Task 6 deployment hardening;
 32-byte unpredictable codes make guessing infeasible, and no guessed code
 creates a row. The only unauthenticated persistent write is a valid code
 redemption; no public self-signup exists.
+
+## Reviewer fixes — 2026-09-29
+
+RED: Against the fresh disposable loopback PostgreSQL DB
+`nava_outlook_v4_final_test`, with inherited `DATABASE_URL` and
+`VITEST_ALLOW_PILOT_RDS` explicitly unset, ran
+`env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55579/nava_outlook_v4_final_test?sslmode=disable' CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --filter @zero/server exec vitest run tests/outlook-device-enrollment.test.ts`.
+Result: 7 passed, **4 expected failures**: unverified staff issuance resolved
+instead of rejecting; forged local JS clock let an expired nonce pass against
+the actual DB clock; a non-v4 UUID paired successfully; a no-Content-Length
+stream delivered all 100 2KiB chunks before the 413 response instead of
+stopping after the first three. Each failure demonstrated the reviewed gap.
+
+GREEN: Streaming JSON now stops reading and cancels on crossing 4096 bytes,
+even for chunked/no-Content-Length requests. Both the operator email lookup
+and the transactional service require `user.emailVerified=true`; a real CLI
+subprocess regression test verifies an unverified staff account cannot issue a
+code. The native device ID must be canonical UUIDv4 with RFC 4122 variant.
+Signed nonce consumption now uses a conditional `INSERT ... SELECT ...
+ON CONFLICT DO NOTHING RETURNING` whose **database wall clock** checks nonce
+issuance/expiry and signed timestamp in the same statement as the unique
+nonce receipt. Test fakes an earlier JavaScript clock while PostgreSQL keeps
+actual time and verifies no receipt is persisted. The code and CLI onboarding
+documentation note Better Auth has `requireEmailVerification:false`: operators
+must provision and verify staff accounts before pairing; this grants no public
+signup. No migration changes were needed.
+
+The same exact focused disposable-DB command above now reports **12 tests
+passed / 0 failed**, exit 0 (including original independent-connection replay
+and code races plus new CLI/stream/expiry tests). Fresh
+`pnpm --filter @zero/server build` exits 0. Existing broad-suite environment
+limitations from the earlier run remain unchanged; no pilot/prod DB contacted.

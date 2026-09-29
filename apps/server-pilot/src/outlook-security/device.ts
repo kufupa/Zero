@@ -6,6 +6,7 @@ import { user } from '../db/schema/auth.js';
 import { outlookEnrollment, outlookEnrollmentGrant, outlookDevice, outlookDeviceGrant, outlookDeviceNonce } from '../db/schema/outlook-device.js';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Configure NAVA_OUTLOOK_DEVICE_WRAPPING_KEY as exactly 32 random base64 bytes, separate from auth/DB keys. */
 export function wrappingKey(raw: string | undefined): Buffer {
@@ -44,9 +45,10 @@ export async function issueEnrollment(db: DB, input: { storeId: string; expiresA
       const approved = await tx.select({ userId: user.id }).from(user)
         .innerJoin(mailboxAccess, eq(mailboxAccess.userId, user.id))
         .innerJoin(mailboxTransport, eq(mailboxTransport.id, mailboxAccess.transportId))
-        .where(and(eq(user.id, grant.userId), eq(mailboxTransport.id, grant.transportId), eq(mailboxTransport.isActive, true)))
+        .where(and(eq(user.id, grant.userId), eq(user.emailVerified, true),
+          eq(mailboxTransport.id, grant.transportId), eq(mailboxTransport.isActive, true)))
         .limit(1);
-      if (approved.length !== 1) throw new Error('Staff must have active mailbox access');
+      if (approved.length !== 1) throw new Error('Named staff must have verified email and active mailbox access');
     }
     await tx.insert(outlookEnrollment).values({ codeHash: digest(code), storeId: input.storeId, expiresAt: expiry });
     await tx.insert(outlookEnrollmentGrant).values(grants.map((g) => ({ ...g, codeHash: digest(code) })));
@@ -56,7 +58,7 @@ export async function issueEnrollment(db: DB, input: { storeId: string; expiresA
 
 export async function enrollDevice(db: DB, input: { code: string; storeId: string; deviceId: string; version: string; secret: string }, rawKey: string): Promise<{ deviceId: string } | null> {
   const key = wrappingKey(rawKey);
-  if (!/^[A-Za-z0-9_-]{43}$/.test(input.code) || !/^[0-9a-fA-F-]{36}$/.test(input.deviceId)
+  if (!/^[A-Za-z0-9_-]{43}$/.test(input.code) || !UUID_V4.test(input.deviceId)
     || !input.storeId || input.storeId.length > 512 || input.version !== '4'
     || !/^[A-Za-z0-9+/]{43}=$/.test(input.secret)) return null;
   const secret = Buffer.from(input.secret, 'base64');
@@ -97,7 +99,7 @@ export type VerifiedDevice = { deviceId: string; storeId: string; version: strin
 /** Caller must pass the exact request bytes and pathname; null means deny. This does not authorize a staff operation. */
 export async function verifyDeviceRequest(db: DB, request: SignedDeviceRequest, rawKey: string): Promise<VerifiedDevice | null> {
   const key = wrappingKey(rawKey);
-  if (!/^[0-9a-fA-F-]{36}$/.test(request.deviceId) || !/^[A-Za-z0-9_-]{96}$/.test(request.nonce)
+  if (!UUID_V4.test(request.deviceId) || !/^[A-Za-z0-9_-]{96}$/.test(request.nonce)
     || !/^\d{10}$/.test(request.timestamp) || !/^[0-9a-f]{64}$/.test(request.signature)
     || Math.abs(Date.now() / 1000 - Number(request.timestamp)) > 60
     || !/^[A-Z]+$/.test(request.method) || !request.path.startsWith('/api/outlook/native/')) return null;
@@ -116,10 +118,19 @@ export async function verifyDeviceRequest(db: DB, request: SignedDeviceRequest, 
     const expected = createHmac('sha256', secret).update(message).digest();
     const submitted = Buffer.from(request.signature, 'hex');
     if (!timingSafeEqual(expected, submitted)) return null;
-    const claimed = await tx.insert(outlookDeviceNonce).values({ nonceHash: digest(request.nonce), deviceId: request.deviceId,
-      expiresAt: new Date(Number(nonce.readBigUInt64BE(32)) + 60_000), consumedAt: new Date() })
-      .onConflictDoNothing()
-      .returning({ nonceHash: outlookDeviceNonce.nonceHash });
+    // DB wall-clock freshness and unique consumption occur in one SQL statement;
+    // a queued transaction cannot authenticate a nonce after it expires.
+    const issuedSeconds = Number(nonce.readBigUInt64BE(32)) / 1000;
+    const signedSeconds = Number(request.timestamp);
+    const claimed = await tx.execute(sql`INSERT INTO outlook_device_nonce
+      (nonce_hash, device_id, expires_at, consumed_at)
+      SELECT ${digest(request.nonce)}, ${request.deviceId},
+        (to_timestamp(${issuedSeconds + 60}) AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC'
+      WHERE clock_timestamp() >= to_timestamp(${issuedSeconds})
+        AND clock_timestamp() < to_timestamp(${issuedSeconds + 60})
+        AND clock_timestamp() >= to_timestamp(${signedSeconds - 60})
+        AND clock_timestamp() <= to_timestamp(${signedSeconds + 60})
+      ON CONFLICT (nonce_hash) DO NOTHING RETURNING nonce_hash`);
     if (claimed.length !== 1) return null;
     const touched = await tx.update(outlookDevice).set({ lastHandshakeAt: new Date() })
       .where(and(eq(outlookDevice.deviceId, request.deviceId), isNull(outlookDevice.revokedAt)))
@@ -143,6 +154,7 @@ export async function isDeviceAuthorized(db: DB, deviceId: string, userId: strin
 }
 
 export async function revokeDevice(db: DB, deviceId: string): Promise<boolean> {
+  if (!UUID_V4.test(deviceId)) return false;
   const rows = await db.update(outlookDevice).set({ revokedAt: new Date() })
     .where(and(eq(outlookDevice.deviceId, deviceId), isNull(outlookDevice.revokedAt))).returning({ deviceId: outlookDevice.deviceId });
   return rows.length === 1;

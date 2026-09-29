@@ -1,6 +1,29 @@
 import type { DB } from '../db/client.js';
 import { enrollDevice, issueChallenge, wrappingKey } from '../outlook-security/device.js';
 
+async function readBoundedJsonBody(request: Request): Promise<string | null> {
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 4096) {
+        // Do not wait for an attacker-controlled stream to acknowledge cancel.
+        void reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /** Public native bootstrap only. Task 3 adds signed native routes after verifying HMAC. */
 export function createOutlookNativeHandler(db: DB, key: string) {
   // Validate at handler construction so a missing/weak deployment key fails closed.
@@ -10,11 +33,14 @@ export function createOutlookNativeHandler(db: DB, key: string) {
     const path = new URL(request.url).pathname;
     if (path !== '/api/outlook/native/enroll' && path !== '/api/outlook/native/challenge') return new Response(null, { status: 404 });
     const length = Number(request.headers.get('content-length') ?? 0);
-    if (length > 4096) return new Response(null, { status: 413 });
+    if (length > 4096) {
+      void request.body?.cancel().catch(() => undefined);
+      return new Response(null, { status: 413 });
+    }
     let input: unknown;
     try {
-      const body = await request.text();
-      if (Buffer.byteLength(body) > 4096) return new Response(null, { status: 413 });
+      const body = await readBoundedJsonBody(request);
+      if (body === null) return new Response(null, { status: 413 });
       input = JSON.parse(body);
     } catch { return new Response(null, { status: 400 }); }
     if (!input || typeof input !== 'object' || Array.isArray(input)) return new Response(null, { status: 400 });

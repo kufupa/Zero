@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHmac, createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { withTestDb, openTestDbSession, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 import { user } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
@@ -92,6 +93,85 @@ describe.skipIf(!TEST_DB_AVAILABLE)('Outlook device enrollment (disposable Postg
     expect(wrappingKey(key).length).toBe(32);
   });
 
+  it('refuses to issue an approval for a staff account with unverified email', async () => {
+    await withTestDb(async (db) => {
+      const ids = await fixtures(db, false);
+      await expect(issueEnrollment(db, { ...ids, storeId })).rejects.toThrow(/verified/i);
+    });
+  });
+
+  it('operator CLI also refuses unverified named staff before creating an enrollment', async () => {
+    const session = openTestDbSession();
+    try {
+      const ids = await fixtures(session.db, false);
+      const [staff] = await session.db.select({ email: user.email }).from(user).where(eq(user.id, ids.userId));
+      const [transport] = await session.db.select({ email: mailboxTransport.email }).from(mailboxTransport).where(eq(mailboxTransport.id, ids.transportId));
+      const attempt = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/outlook-device-operator.ts',
+        'issue', '--store-id', storeId, '--staff-email', staff.email, '--transport-email', transport.email], {
+        cwd: process.cwd(), encoding: 'utf8',
+        env: { ...process.env, DATABASE_URL: process.env.TEST_DATABASE_URL,
+          NAVA_OUTLOOK_DEVICE_WRAPPING_KEY: key, NODE_ENV: 'test', PORT: '8788',
+          BETTER_AUTH_URL: 'https://localhost.test', BETTER_AUTH_SECRET: 'test-secret-of-at-least-32-characters',
+          AWS_REGION: 'us-east-1', S3_BUCKET: 'outlook-disposable-test-bucket' },
+      });
+      expect(attempt.status).toBe(1);
+      expect(attempt.stderr).toMatch(/verified named staff/i);
+      expect(attempt.stdout).toBe('');
+    } finally { await session.close(); }
+  });
+
+  it('uses database wall clock when a nonce expires after the JavaScript pre-check', async () => {
+    await withTestDb(async (db) => {
+      const ids = await fixtures(db);
+      const deviceId = randomUUID();
+      const code = await issueEnrollment(db, { ...ids, storeId });
+      await enrollDevice(db, { code, deviceId, storeId, version: '4', secret }, key);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 120_000);
+      try {
+        const nonce = await issueChallenge(db, deviceId, key);
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const body = Buffer.from('{}');
+        const signature = createHmac('sha256', Buffer.from(secret, 'base64'))
+          .update(['nava-outlook-v4', method, path, createHash('sha256').update(body).digest('hex'), deviceId, timestamp, nonce].join('\n')).digest('hex');
+        expect(await verifyDeviceRequest(db, { deviceId, nonce, timestamp, signature, method, path, body }, key)).toBeNull();
+        expect(await db.select().from(outlookDeviceNonce).where(eq(outlookDeviceNonce.deviceId, deviceId))).toHaveLength(0);
+      } finally { clock.mockRestore(); }
+    });
+  });
+
+  it('rejects identifiers that are not random UUID v4', async () => {
+    await withTestDb(async (db) => {
+      const ids = await fixtures(db);
+      const code = await issueEnrollment(db, { ...ids, storeId });
+      const nonV4 = '00000000-0000-1000-8000-000000000001';
+      expect(await enrollDevice(db, { code, deviceId: nonV4, storeId, version: '4', secret }, key)).toBeNull();
+      expect(await enrollDevice(db, { code, deviceId: randomUUID(), storeId, version: '4', secret }, key)).toMatchObject({ deviceId: expect.any(String) });
+    });
+  });
+
+  it('bounds unread chunked uploads before buffering the whole unauthenticated body', async () => {
+    await withTestDb(async (db) => {
+      let chunksRead = 0;
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunksRead++;
+          controller.enqueue(new Uint8Array(2048));
+          if (chunksRead === 100) controller.close();
+        },
+        cancel() { cancelled = true; },
+      });
+      const request = new Request('https://nava.legacyhotels.co.za/api/outlook/native/enroll', {
+        method: 'POST', body, duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+      expect(request.headers.get('content-length')).toBeNull();
+      const response = await createOutlookNativeHandler(db, key)(request);
+      expect(response.status).toBe(413);
+      expect(chunksRead).toBeLessThan(10);
+      expect(cancelled).toBe(true);
+    });
+  });
+
   it('authenticates exact bytes once; rejects tamper, replay, revocation and wrong key', async () => {
     await withTestDb(async (db) => {
       const ids = await fixtures(db);
@@ -146,10 +226,10 @@ describe.skipIf(!TEST_DB_AVAILABLE)('Outlook device enrollment (disposable Postg
   });
 });
 
-async function fixtures(db: Parameters<typeof issueEnrollment>[0]) {
+async function fixtures(db: Parameters<typeof issueEnrollment>[0], emailVerified = true) {
   const userId = randomUUID();
   const transportId = randomUUID();
-  await db.insert(user).values({ id: userId, name: 'Named Staff', email: `${userId}@example.test`, emailVerified: true });
+  await db.insert(user).values({ id: userId, name: 'Named Staff', email: `${userId}@example.test`, emailVerified });
   await db.insert(mailboxTransport).values({ id: transportId, email: `${transportId}@example.test`, ownerHeaderValue: transportId });
   await db.insert(mailboxAccess).values({ id: randomUUID(), userId, transportId, role: 'member' });
   return { userId, transportId };

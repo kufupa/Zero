@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { closeDb, getDb } from '../src/db/client.js';
 import { user } from '../src/db/schema/auth.js';
 import { mailboxTransport } from '../src/db/schema/mail.js';
@@ -13,16 +13,17 @@ async function main(args: string[]) {
     const grants: { userId: string; transportId: string }[] = [];
     for (let offset = 3; offset < args.length; offset += 4) {
       if (args[offset] !== '--staff-email' || args[offset + 2] !== '--transport-email') throw new Error('Invalid operator grant arguments');
-      const staff = await db.select({ id: user.id }).from(user).where(eq(user.email, args[offset + 1])).limit(2);
+      const staff = await db.select({ id: user.id }).from(user)
+        .where(and(eq(user.email, args[offset + 1]), eq(user.emailVerified, true))).limit(2);
       const transport = await db.select({ id: mailboxTransport.id }).from(mailboxTransport).where(eq(mailboxTransport.email, args[offset + 3])).limit(2);
-      if (staff.length !== 1 || transport.length !== 1) throw new Error('Named staff or mailbox transport not found');
+      if (staff.length !== 1 || transport.length !== 1) throw new Error('Verified named staff or mailbox transport not found');
       grants.push({ userId: staff[0].id, transportId: transport[0].id });
     }
     const code = await issueEnrollment(db, { ...grants[0], grants, storeId });
     // Enrollment code is displayed ONLY to the local operator, never persisted in plaintext or returned over an open endpoint.
     process.stdout.write(`one-use enrollment code (valid 10 minutes): ${code}\n`);
   } else if (args[0] === 'revoke' && args.length === 4 && args[1] === '--device-id' && args[3] === '--confirm-revoke') {
-    if (!/^[0-9a-fA-F-]{36}$/.test(args[2])) throw new Error('Invalid device ID');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args[2])) throw new Error('Invalid device ID');
     const revoked = await revokeDevice(db, args[2]);
     process.stdout.write(revoked ? 'device revoked\n' : 'device not active\n');
   } else {
