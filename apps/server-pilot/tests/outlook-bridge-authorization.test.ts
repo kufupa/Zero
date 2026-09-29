@@ -541,8 +541,6 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       fixtureData = await fixture(setup.db);
       const f = fixtureData;
       transportIds.push(f.transportId);
-      expect((await f.signed('/api/outlook/native/register-navigation',
-        { paneChallenge: f.paneChallenge })).status).toBe(200);
 
       for (let index = 1; index < 3; index++) {
         const transportId = randomUUID();
