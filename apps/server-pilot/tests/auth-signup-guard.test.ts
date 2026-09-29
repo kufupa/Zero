@@ -37,14 +37,24 @@ describe('isPilotSignupEmailAllowed', () => {
     ).toBe(false);
   });
 
-  it('allows allowlisted emails when signup closed', () => {
+  it('blocks leftover allowlisted emails when PILOT_OPEN_SIGNUP=0', () => {
     const env = {
       PILOT_OPEN_SIGNUP: '0',
       PILOT_SIGNUP_ALLOWLIST: 'Manager@Hotel.com, guest@hotel.com',
     };
-    expect(isPilotSignupEmailAllowed('manager@hotel.com', env)).toBe(true);
-    expect(isPilotSignupEmailAllowed('guest@hotel.com', env)).toBe(true);
+    expect(isPilotSignupEmailAllowed('manager@hotel.com', env)).toBe(false);
+    expect(isPilotSignupEmailAllowed('guest@hotel.com', env)).toBe(false);
     expect(isPilotSignupEmailAllowed('other@hotel.com', env)).toBe(false);
+    expect(() => assertPilotSignupAllowed('manager@hotel.com', env)).toThrow(APIError);
+  });
+
+  it('retains deliberate allowlist opt-in when open-signup flag is unset', () => {
+    expect(isPilotSignupEmailAllowed('MANAGER@hotel.com', {
+      PILOT_SIGNUP_ALLOWLIST: 'manager@hotel.com',
+    })).toBe(true);
+    expect(isPilotSignupEmailAllowed('other@hotel.com', {
+      PILOT_SIGNUP_ALLOWLIST: 'manager@hotel.com',
+    })).toBe(false);
   });
 
   it('rejects missing email when signup closed', () => {

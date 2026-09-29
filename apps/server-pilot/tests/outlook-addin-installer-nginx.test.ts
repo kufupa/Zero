@@ -8,14 +8,16 @@ const hasVstoInstaller = existsSync(path.join(root, 'vsto/installer/setup.iss'))
 
 describe('Outlook add-in installer and nginx download route', () => {
   describe.skipIf(!hasVstoInstaller)('Outlook add-in installer source contract', () => {
-    it('ships a zero-admin installer that kills Outlook, trusts the cert, and does not wipe other add-ins', () => {
+    it('ships a zero-admin installer that refuses open Outlook, trusts the cert, and does not wipe other add-ins', () => {
       const issPath = path.join(root, 'vsto/installer/setup.iss');
       expect(existsSync(issPath)).toBe(true);
       const iss = readFileSync(issPath, 'utf8');
-      expect(iss).toContain('AppVersion=1.0.11');
+      expect(iss).toContain('AppVersion=1.0.12');
       expect(iss).toContain('PrivilegesRequired=lowest');
       expect(iss).toContain('RegisterTrust.exe');
-      expect(iss).toContain('taskkill');
+      expect(iss).not.toMatch(/taskkill/i);
+      expect(iss).toContain('CloseApplications=no');
+      expect(iss).toContain('RestartApplications=no');
       expect(iss).toContain('OUTLOOK.EXE');
       expect(iss).toContain('VSTO Runtime Setup');
       expect(iss).toContain('MicrosoftEdgeWebview2Setup.exe');
@@ -61,9 +63,10 @@ describe('Outlook add-in installer and nginx download route', () => {
       );
 
       const prepare = iss.slice(iss.indexOf('PrepareToInstall'));
-      expect(prepare).toContain('OUTLOOK.EXE');
+      expect(prepare).toContain('if OutlookStillRunning then');
       expect(prepare).toMatch(/Result := '/);
-      expect(prepare).toMatch(/Outlook is still running|still running/i);
+      expect(prepare).toContain('Save unsaved Outlook drafts and close Outlook completely');
+      expect(prepare).toContain('Setup will not force-close Outlook');
     });
 
     it('ships a fallback HKCU install.cmd that copies Release output then runs RegisterTrust', () => {
