@@ -284,6 +284,7 @@ export function useOutlookBridge() {
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       });
+      if (epoch.current !== generation) return;
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           invalidateNavigation();

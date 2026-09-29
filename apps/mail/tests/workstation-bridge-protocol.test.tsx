@@ -716,6 +716,72 @@ describe('v4 staff-authorized Outlook navigation', () => {
     vi.useRealTimers();
   });
 
+  it.each([401, 403])(
+    'ignores delayed bootstrap %s from former staff without revoking the replacement session',
+    async (status) => {
+      let finishOldBootstrap!: (response: Response) => void;
+      vi.mocked(fetch).mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finishOldBootstrap = resolve;
+          }),
+      );
+      security.userId = 'staff-A';
+      security.transportId = 'transport-A';
+      setMailCacheScope({ userId: 'staff-A', activeTransportId: 'transport-A' });
+      const pane = render(<BridgeProbe />);
+      respondV4(await waitForBridgeRequest('PING'), {
+        bridgeProtocolVersion: 4,
+        version: '1.0.12',
+        paired: true,
+        deviceId: 'device-1',
+      });
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+
+      security.userId = 'staff-B';
+      security.transportId = 'transport-B';
+      act(() => setMailCacheScope({ userId: 'staff-B', activeTransportId: 'transport-B' }));
+      pane.rerender(<BridgeProbe />);
+      respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
+      respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+        bridgeProtocolVersion: 4,
+        addinVersion: '1.0.12',
+        outlookVersion: '16.0',
+        runtime: 'Classic Outlook for Windows',
+        newOutlookSupported: false,
+        interactiveProfileRequired: true,
+        maxPageSize: 200,
+        maxFolderDepth: 64,
+        maxFolderCount: 5000,
+        maxFolderSnapshotItems: 5000,
+        supportedActions: ['GET_ACTIVE_EMAIL', 'LIST_FOLDERS'],
+      });
+      respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), {
+        entryId: 'entry-B',
+        subject: 'Staff B current mail',
+        senderEmail: 'guest@example.com',
+        senderName: 'Guest',
+        receivedTime: '2026-09-17',
+        bodyText: 'Current',
+        bodyHtml: '',
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('subject').textContent).toBe('Staff B current mail'),
+      );
+      expect(screen.getByTestId('send-supported').textContent).toBe('yes');
+      const clearBefore = nativeMessages().filter(
+        (request) => request.action === 'CLEAR_SESSION',
+      ).length;
+      await act(async () => finishOldBootstrap({ ok: false, status } as Response));
+      expect(screen.getByTestId('subject').textContent).toBe('Staff B current mail');
+      expect(screen.getByTestId('send-supported').textContent).toBe('yes');
+      expect(screen.getByTestId('relogin').textContent).toBe('ready');
+      expect(nativeMessages().filter((request) => request.action === 'CLEAR_SESSION')).toHaveLength(
+        clearBefore,
+      );
+    },
+  );
+
   it('rechecks session and stops after a repeated denied ticket instead of looping navigation registrations', async () => {
     security.userId = 'staff-1';
     security.transportId = 'transport-1';
