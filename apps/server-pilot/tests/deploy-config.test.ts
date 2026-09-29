@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
@@ -427,86 +428,30 @@ type NginxActivationScenario =
   | 'cleanup-exit'
   | 'target-ip'
   | 'legacy-only'
-  | 'remote-only';
+  | 'remote-only'
+  | 'pane-mismatch'
+  | 'index-mismatch';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
-
-const DUAL_PLANE_NGINX_CANDIDATE = `server {
-  listen 80 default_server;
-  server_name nava.legacyhotels.co.za;
-}
-server {
-  listen 443 ssl default_server;
-  server_name nava.legacyhotels.co.za;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8788/api/;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
-  server_name _;
-  return 444;
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
-  location = /health {
-    proxy_pass http://127.0.0.1:8789/health;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name nava-admin.trynava.io;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8789/api/;
-  }
-}
-`;
-
-const LEGACY_ONLY_NGINX_CANDIDATE = `server {
-  listen 443 ssl default_server;
-  server_name nava.legacyhotels.co.za;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8788/api/;
-  }
-}
-`;
-
-const REMOTE_ONLY_NGINX_CANDIDATE = `server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
-  server_name _;
-  return 444;
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
-  location = /health {
-    proxy_pass http://127.0.0.1:8789/health;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name nava-admin.trynava.io;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8789/api/;
-  }
-}
-`;
 
 async function runNginxActivation({
   scenario,
   priorState,
   rollbackCopyFails = false,
   ens5PrimaryIp = REMOTE_ALB_TARGET_PRIVATE_IP,
+  priorRelease = false,
 }: {
   scenario: NginxActivationScenario;
   priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
   ens5PrimaryIp?: string;
+  priorRelease?: boolean;
 }): Promise<{
   status: number | null;
   stdout: string;
   stderr: string;
   site: string | null;
+  candidate: string;
+  priorCandidate: string | null;
   enabledState: 'absent' | 'valid' | 'dangling';
   enabledTarget: string | null;
   nginxCalls: number;
@@ -545,35 +490,80 @@ async function runNginxActivation({
   const nginxCallsPath = join(tempDir, 'nginx-calls');
   const reloadCallsPath = join(tempDir, 'reload-calls');
   const previousTargetPath = join(dirname(sitePath), 'previous-nava');
+  const webRoot = join(tempDir, 'web');
+  const index = '<!doctype html><script>window.paneTest = 1</script>';
+  const releaseId = createHash('sha256').update(index).digest('hex');
+  const releaseDir = join(webRoot, 'releases', releaseId);
   const previousSite = 'previous nginx config\n';
   const previousTarget = '../sites-available/previous-nava';
 
   try {
     for (const directory of [
       deployDir,
+      releaseDir,
       backupDir,
       dirname(sitePath),
       dirname(enabledPath),
     ]) {
       mkdirSync(directory, { recursive: true });
     }
+    writeFileSync(join(releaseDir, 'index.html'), index, 'utf8');
     writeFileSync(
-      join(deployDir, 'nginx.conf'),
-      scenario === 'legacy-only'
-        ? LEGACY_ONLY_NGINX_CANDIDATE
-        : scenario === 'remote-only'
-          ? REMOTE_ONLY_NGINX_CANDIDATE
-          : DUAL_PLANE_NGINX_CANDIDATE,
+      join(deployDir, 'pane-csp-release.mjs'),
+      readFileSync(join(here, '..', 'deploy', 'pane-csp-release.mjs'), 'utf8'),
+    );
+    const template = readFileSync(
+      join(here, '..', 'deploy', 'nginx.conf'),
       'utf8',
     );
+    const fixtureTemplate =
+      scenario === 'legacy-only'
+        ? template.replaceAll(
+            'server_name nava-admin.trynava.io;',
+            'server_name absent-admin.example;',
+          )
+        : scenario === 'remote-only'
+          ? template.replaceAll(
+              'server_name nava.legacyhotels.co.za;',
+              'server_name absent-mail.example;',
+            )
+          : template;
+    writeFileSync(join(deployDir, 'nginx.conf'), fixtureTemplate);
+    const candidate = fixtureTemplate
+      .replaceAll('__NAVA_RELEASE_ID__', releaseId)
+      .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+      .replace(
+        '__NAVA_PANE_SCRIPT_HASHES__',
+        `'sha256-${createHash('sha256').update('window.paneTest = 1').digest('base64')}'`,
+      );
+    const oldIndex = '<!doctype html><script>window.paneTest = 0</script>';
+    const oldId = createHash('sha256').update(oldIndex).digest('hex');
+    const oldReleaseDir = join(webRoot, 'releases', oldId);
+    const priorCandidate = priorRelease
+      ? fixtureTemplate
+          .replaceAll('__NAVA_RELEASE_ID__', oldId)
+          .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+          .replace(
+            '__NAVA_PANE_SCRIPT_HASHES__',
+            `'sha256-${createHash('sha256').update('window.paneTest = 0').digest('base64')}'`,
+          )
+      : null;
+    if (priorRelease) {
+      mkdirSync(oldReleaseDir, { recursive: true });
+      writeFileSync(join(oldReleaseDir, 'index.html'), oldIndex);
+    }
     writeFileSync(nginxCallsPath, '0', 'utf8');
     writeFileSync(reloadCallsPath, '0', 'utf8');
     if (priorState !== 'absent') {
-      writeFileSync(sitePath, previousSite, 'utf8');
+      writeFileSync(sitePath, priorCandidate ?? previousSite, 'utf8');
       writeFileSync(enabledModelPath, previousTarget, 'utf8');
     }
     if (priorState === 'present') {
-      writeFileSync(previousTargetPath, 'previous enabled config\n', 'utf8');
+      writeFileSync(
+        previousTargetPath,
+        priorCandidate ?? 'previous enabled config\n',
+        'utf8',
+      );
     }
 
     const harness = `set -euo pipefail
@@ -699,11 +689,26 @@ ip() {
 }
 `;
 
+    const probe =
+      scenario === 'pane-mismatch'
+        ? `sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" "$NGINX_SRC"`
+        : scenario === 'index-mismatch'
+          ? 'printf %s "changed" >> "$RELEASE_DIR/index.html"'
+          : '';
+    const activation = nginxBlock.replace(
+      'if command -v nginx >/dev/null 2>&1; then',
+      `${probe}\nif command -v nginx >/dev/null 2>&1; then`,
+    );
     const result = await runBash({
-      input: `${harness}\n${nginxBlock}`,
+      input: `${harness}\n${activation}`,
       env: {
         ...process.env,
         SERVER_PILOT: toBashPath(serverPilot),
+        WEB_ROOT: toBashPath(webRoot),
+        RELEASE_DIR: toBashPath(releaseDir),
+        PANE_RELEASE_HELPER: toBashPath(
+          join(deployDir, 'pane-csp-release.mjs'),
+        ),
         NGINX_SITE: toBashPath(sitePath),
         NGINX_ENABLED: toBashPath(enabledPath),
         TMPDIR: toBashPath(backupDir),
@@ -738,6 +743,8 @@ ip() {
       stdout: result.stdout,
       stderr: result.stderr,
       site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
+      candidate,
+      priorCandidate,
       enabledState:
         enabledTarget == null
           ? 'absent'
@@ -1809,7 +1816,7 @@ describe('deploy config', () => {
     const nginx = readNginxConfig();
     expect(nginx).toContain('listen 443 ssl');
     expect(nginx).toContain('proxy_pass http://127.0.0.1:8788/api/');
-    expect(nginx).toContain('try_files $uri /index.html');
+    expect(nginx).toContain('try_files /releases/__NAVA_RELEASE_ID__$uri $uri /index.html');
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
@@ -1878,7 +1885,7 @@ describe('deploy config', () => {
     expect(remoteAppVhost).toContain(`${remoteListen};`);
     expect(remoteAppVhost).toContain(`server_name ${REMOTE_ADMIN_HOST};`);
     expect(remoteAppVhost).toContain(`if ($host != ${REMOTE_ADMIN_HOST}) {`);
-    expect(remoteAppVhost).toContain('root /var/www/nava-mail;');
+    expect(remoteAppVhost).toContain('root __NAVA_WEB_ROOT__;');
     expect(remoteAppVhost).toContain('location = /health {');
     expect(remoteAppVhost).toContain('return 404;');
     expect(remoteAppVhost).toContain('proxy_pass http://127.0.0.1:8789/api/');
@@ -2015,6 +2022,41 @@ describe('deploy config', () => {
     expect(result.reloadCalls).toBe(0);
     expect(result.backupEntries).toEqual([]);
   });
+
+  it.each(['pane-mismatch', 'index-mismatch'] as const)(
+    'rejects %s before candidate publication and keeps the prior SPA/CSP pairing',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toMatch(/mismatch|release path/i);
+      expect(result.site).toBe('previous nginx config\n');
+      expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it.each(['validate', 'reload'] as const)(
+    'keeps the old immutable index and its old hash policy paired after %s fails',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+        priorRelease: true,
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.priorCandidate).toBeTruthy();
+      expect(result.site).toBe(result.priorCandidate);
+      expect(result.site).not.toBe(result.candidate);
+      expect(result.site).toContain("script-src 'self' 'sha256-");
+      expect(result.site).toContain('releases/');
+      expect(result.enabledState).toBe('valid');
+      expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
 
   it('deploy-ec2.sh asserts dual-plane Nginx contracts before activating the candidate', async () => {
     const { readFileSync } = await import('node:fs');
@@ -2184,7 +2226,7 @@ describe('deploy config', () => {
 
     expect(result.status).toBe(74);
     expect(result.stderr).not.toContain('restored previous config');
-    expect(result.site).toBe(DUAL_PLANE_NGINX_CANDIDATE);
+    expect(result.site).toBe(result.candidate);
     expect(result.enabledState).toBe('valid');
     expect(result.enabledTarget).toMatch(/\/sites-available\/nava-zero$/);
     expect(result.nginxCalls).toBe(1);
@@ -2247,9 +2289,8 @@ describe('deploy config', () => {
     expect(deploy).toContain('undefined/api/trpc');
     expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
     expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
-    expect(deploy).toContain(
-      `rsync -a --delete --exclude '/downloads/' "\${MAIL_APP}/build/client/" "\${WEB_ROOT}/"`,
-    );
+    expect(deploy).toContain('rsync -a --ignore-existing --chown=root:root');
+    expect(deploy).not.toContain('rsync -a --delete');
     expect(deploy).toContain('WEB_ROOT}/downloads');
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');

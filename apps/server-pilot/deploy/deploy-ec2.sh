@@ -24,8 +24,8 @@ for arg in "$@"; do
     -h|--help)
       echo "usage: $0 [--quiesced]"
       echo "  default: install/build/sync + PM2 start + HTTP health"
-      echo "  --quiesced: install/build/sync only; no PM2 mutation; no HTTP health"
-      echo "             (safe while pm2 http/ai-worker stay online — assets only)"
+      echo "  --quiesced: install/build/web release only; no PM2 mutation; no HTTP health"
+      echo "             (safe while pm2 http/ai-worker stay online — web only)"
       exit 0
       ;;
     *)
@@ -195,9 +195,40 @@ if [ "$GREP_STATUS" -ge 2 ]; then
   exit 1
 fi
 
-echo "== sync SPA to ${WEB_ROOT} =="
-sudo mkdir -p "$WEB_ROOT"
-sudo rsync -a --delete --exclude '/downloads/' "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
+echo "== stage immutable mail release =="
+PANE_RELEASE_HELPER="${SERVER_PILOT}/deploy/pane-csp-release.mjs"
+RELEASE_ID="$(node "$PANE_RELEASE_HELPER" id "${MAIL_APP}/build/client/index.html")"
+RELEASE_DIR="${WEB_ROOT}/releases/${RELEASE_ID}"
+for path in "$WEB_ROOT" "${WEB_ROOT}/releases" "$RELEASE_DIR" "${WEB_ROOT}/assets" "${WEB_ROOT}/downloads"; do
+  if sudo test -L "$path"; then
+    echo "unsafe web release symlink: ${path}" >&2
+    exit 1
+  fi
+done
+if [ -n "$(find "${MAIL_APP}/build/client" -type l -print -quit)" ]; then
+  echo "web build contains a symlink; refusing release" >&2
+  exit 1
+fi
+sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
+# Existing releases and /assets are append-only: an open tab's hashed chunks
+# must remain byte-for-byte identical. Refuse filename collisions, including a
+# partially staged release from an interrupted prior attempt.
+sudo rsync -a --ignore-existing --chown=root:root --exclude '/downloads/' \
+  "${MAIL_APP}/build/client/" "$RELEASE_DIR/"
+RELEASE_MISMATCH="$(sudo rsync -rc --dry-run --out-format='%n' --exclude '/downloads/' \
+  "${MAIL_APP}/build/client/" "$RELEASE_DIR/")"
+if [ -n "$RELEASE_MISMATCH" ]; then
+  echo "immutable web release collision or mismatch; refusing publication" >&2
+  exit 1
+fi
+sudo install -d -o root -g root -m 0755 "${WEB_ROOT}/assets"
+sudo rsync -a --ignore-existing --chown=root:root "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/"
+ASSET_MISMATCH="$(sudo rsync -rc --dry-run --out-format='%n' \
+  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/")"
+if [ -n "$ASSET_MISMATCH" ]; then
+  echo "shared hashed asset collision or mismatch; refusing publication" >&2
+  exit 1
+fi
 sudo install -d -o www-data -g www-data -m 0755 "${WEB_ROOT}/downloads"
 
 echo "== hosts: nava.legacyhotels.co.za =="
@@ -298,7 +329,16 @@ assert_dual_plane_nginx_candidate() {
 
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
-NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
+NGINX_TEMPLATE="${SERVER_PILOT}/deploy/nginx.conf"
+NGINX_CANDIDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nava-web-release.XXXXXX")"
+NGINX_SRC="${NGINX_CANDIDATE_DIR}/nginx.conf"
+# Render against the *staged* index, never against a build output that might
+# have changed between upload and publication.
+if ! node "$PANE_RELEASE_HELPER" render \
+  "${RELEASE_DIR}/index.html" "$NGINX_TEMPLATE" "$NGINX_SRC" "$WEB_ROOT"; then
+  rmdir "$NGINX_CANDIDATE_DIR" || true
+  exit 1
+fi
 if command -v nginx >/dev/null 2>&1; then
   NGINX_BACKUP=""
   NGINX_EXISTED=0
@@ -308,14 +348,17 @@ if command -v nginx >/dev/null 2>&1; then
   NGINX_FAILURE_CONTEXT="nginx transaction aborted"
 
   cleanup_nginx_backup() {
-    if [ -z "$NGINX_BACKUP" ]; then
-      return 0
+    if [ -n "$NGINX_BACKUP" ]; then
+      if ! sudo rm -f "$NGINX_BACKUP"; then
+        echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
+        return 1
+      fi
+      NGINX_BACKUP=""
     fi
-    if ! sudo rm -f "$NGINX_BACKUP"; then
-      echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
+    if ! rm -f "$NGINX_SRC" || ! rmdir "$NGINX_CANDIDATE_DIR"; then
+      echo "nginx candidate cleanup failed: ${NGINX_CANDIDATE_DIR}" >&2
       return 1
     fi
-    NGINX_BACKUP=""
   }
 
   restore_nginx() {
@@ -403,6 +446,11 @@ if command -v nginx >/dev/null 2>&1; then
   }
 
   activate_nginx() {
+    if ! node "$PANE_RELEASE_HELPER" verify \
+      "${RELEASE_DIR}/index.html" "$NGINX_TEMPLATE" "$NGINX_SRC" "$WEB_ROOT"; then
+      echo "staged index and Nginx candidate do not match" >&2
+      return 1
+    fi
     if ! sudo install -o root -g root -m 644 "$NGINX_SRC" "$NGINX_SITE"; then
       return 1
     fi
@@ -477,14 +525,16 @@ if command -v nginx >/dev/null 2>&1; then
   fi
 else
   echo "nginx not installed; install nginx and the validated TLS files before deploy" >&2
+  rm -f "$NGINX_SRC"
+  rmdir "$NGINX_CANDIDATE_DIR"
   exit 1
 fi
 
 if [ "$QUIESCED" = "1" ]; then
-  # Assets only — leave running pm2 http/worker/ai-worker alone (online OK).
+  # Web release only — leave running pm2 http/worker/ai-worker alone (online OK).
   # HMS worker still sole-started by ops-hms-shadow.sh; we do not touch it here either.
   echo "== quiesced: skip PM2 mutation and HTTP health (online http OK) =="
-  echo "quiesced deploy ok (assets synced; no PM2 mutation; no HTTP health)"
+  echo "quiesced deploy ok (web release activated; no PM2 mutation; no HTTP health)"
   exit 0
 fi
 
