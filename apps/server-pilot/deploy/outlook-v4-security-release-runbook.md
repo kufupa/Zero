@@ -1,5 +1,15 @@
 # Outlook v4 security release — supervised operator handoff
 
+**Live status, 2 October 2026:** Ansh authorized production rollout. Server,
+additive migrations, device wrapping key and the exact 1.0.12 staff download
+below are now published and verified. See the
+[deployment record](../../../docs/production-readiness/2026-10-02-outlook-security-deployment.md)
+for evidence, resolved environment issues and the remaining real-Windows
+onboarding checks. The prerequisites below describe the original pre-release
+procedure; they are not a claim that this rollout is still unauthorized or
+unpublished. No paid publisher certificate was purchased or required by this
+rollout; staff must still respect Windows/IT trust prompts.
+
 Status: code/Windows CI evidence **is not a deployment**. This runbook authorizes no
 production action by itself. Obtain named operator, change window, backup, IT
 signing/trust approval and staff-PC owners before proceeding. Do not run
@@ -23,7 +33,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
   equate a CI self-signed VSTO manifest with a publisher-trusted setup EXE or
   the separate HTTPS site certificate. Do not claim this artifact was published.
 - Before production: complete a disposable staging Nginx syntax, alias,
-  regex, headers and `script-src` hash test on the *built* `/outlook-pane`;
+  regex, headers and `script-src` hash test on the _built_ `/outlook-pane`;
   verify `/outlook-pane/` redirects to that canonical URL and unknown
   `/outlook-pane/...` paths and case variants (`/OUTLOOK-PANE`) return 404 rather
   than the permissive SPA fallback;
@@ -32,7 +42,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
   bridge-free screenshot popouts. The earlier built Chromium test used fake
   sign-in and did not exercise Outlook, real PDF or screenshot popouts.
 - The new deploy preflights every web-root ancestor, root-owns the release
-  parents, then refuses to publish if *any* non-download legacy file or
+  parents, then refuses to publish if _any_ non-download legacy file or
   directory is a symlink, app-owned or group/world writable. Prior flat
   web builds and shared hashed assets may need a **one-time supervised**
   ownership/legacy-file inventory and repair on EC2, with backup and
@@ -66,7 +76,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    staff account or mailbox grant is absent, stop and arrange a reviewed,
    non-destructive, per-user/per-mailbox provisioning operation first.
 2. Provision once, via a separately authorized operator action, a dedicated
-   AWS Secrets Manager *plain SecretString* whose contents are canonical
+   AWS Secrets Manager _plain SecretString_ whose contents are canonical
    base64 of exactly 32 cryptographically random bytes, at
    `nava-zero/server-pilot/outlook-device-wrapping-key` (or set
    `OUTLOOK_DEVICE_WRAPPING_KEY_SECRET_NAME` to the operator-approved dedicated
@@ -77,7 +87,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    regenerate/rotate it on deploy: an unplanned rotation or missing key
    irrecoverably breaks existing device credentials and requires re-enrollment.
 3. During approved cutover, apply additive Outlook DB migrations to the live
-   DB *only after* verified backup and preflight, using the operator-managed
+   DB _only after_ verified backup and preflight, using the operator-managed
    migration procedure (no test runner). Then refresh the server env separately:
    `ops-deploy.sh` does **not** call `write-ec2-env.sh`. With approved EC2 IAM
    and the existing writer prerequisites, run the env writer in its intended
@@ -116,7 +126,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    policy. Never publish an index with mismatched script hashes or a stale
    fallback. Use a staged staff sign-in and purpose-built read-only health/API
    checks (not real guest emails or pilot-RDS tests).
-6. Each supervised staff Windows install: verify the *exact* artifact hash,
+6. Each supervised staff Windows install: verify the _exact_ artifact hash,
    Classic Outlook version/bitness and runtime; have staff save drafts and
    close Outlook voluntarily before setup. Installer never `taskkill`s
    Outlook; if it cannot positively check that Outlook has closed (tasklist
@@ -129,17 +139,17 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    UUID and exact COM-observed Outlook `StoreID`, not the secret or code.
 7. Restricted operator shell only, with approved DB access and wrapping key
    in its environment, uses `pnpm --dir apps/server-pilot exec tsx
-   scripts/outlook-device-operator.ts issue --store-id '<COM StoreID>'
-   --staff-email '<verified staff account>' --transport-email '<shared mailbox>'`.
+scripts/outlook-device-operator.ts issue --store-id '<COM StoreID>'
+--staff-email '<verified staff account>' --transport-email '<shared mailbox>'`.
    Repeat the staff/transport pair for additional approved grants; confirm
    existing `mailbox_access` first. Transfer the one-use code to that user's
    native pairing dialog privately; never enter it in page JavaScript or a
    ticket. For each active transport and exact observed store, separately
    approve its real Inbox and Drafts folder EntryIDs using `approve-folder
-   --store-id '<COM StoreID>' --transport-email '<shared mailbox>'
-   --folder-id '<COM Folder EntryID>' --kind inbox|drafts`; approve only
+--store-id '<COM StoreID>' --transport-email '<shared mailbox>'
+--folder-id '<COM Folder EntryID>' --kind inbox|drafts`; approve only
    reviewed triage destinations with `--kind triage` (and `spam` only when
-   explicitly approved). Inventory folder EntryIDs from *that* Outlook store;
+   explicitly approved). Inventory folder EntryIDs from _that_ Outlook store;
    never infer them from display names, another store or test data. Drafts
    approval permits read/reply/update/PDF attachment, **not** move into Drafts;
    Deleted Items, Outbox and descendants are forbidden move destinations.
@@ -154,7 +164,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    message subjects, senders and exact EntryIDs. IT/staff must still verify it
    with a real Windows profile before treating it as informed approval.
    **Shared-store reply blocker:** Outlook `Reply().Save()` can write first to
-   the profile-default Drafts. This version refuses reply creation *before*
+   the profile-default Drafts. This version refuses reply creation _before_
    any side effect unless the exact approved store Drafts is also the
    profile-default Drafts. On a nondefault Centurion/DaVinci shared mailbox,
    reply+PDF draft automation is intentionally unavailable: staff must use
@@ -171,7 +181,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
    verified cross-pane idempotency boundary or supervised user workflow is in
    place; do not claim that the single-pane confirmation solves this case.
    Native `SEND_DRAFT`, `DELETE_EMAIL` and permanent delete must stay denied;
-   staff Send/Delete is *manual in Outlook*. Separately verify legitimate
+   staff Send/Delete is _manual in Outlook_. Separately verify legitimate
    server web-mail `mail.send`, `mail.delete`, `mail.bulkDelete` still work
    under approved users, without sending real guest traffic. Record that **all**
    old 1.0.11 clients are upgraded or disabled before declaring fleet cutover.
@@ -184,7 +194,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 - On any store mismatch, key absence, Windows trust warning, unsaved drafts,
   session-policy discrepancy or nginx CSP mismatch: stop enrollment and
   distribution. Restore the last validated server+immutable web release and
-  *its matching* Nginx pane policy from the recorded snapshot; do not restore
+  _its matching_ Nginx pane policy from the recorded snapshot; do not restore
   v3/native unauthenticated COM fallback or reactivate old 1.0.11 devices.
   Keep the v4 deny policy while investigating and disable native pane access
   if a matching v4 server cannot run. DB migrations are additive; do not
@@ -193,7 +203,7 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 - Revoke a compromised/retired device from the restricted shell using
   `revoke --device-id '<device UUID>' --confirm-revoke`; for a folder use
   `revoke-folder --store-id '<COM StoreID>' --transport-email '<mailbox>'
-  --folder-id '<COM Folder EntryID>' --confirm-revoke`. Inspect the approved
+--folder-id '<COM Folder EntryID>' --confirm-revoke`. Inspect the approved
   exact scope first and record affected staff. Native revoked read leases may
   last up to 60 seconds; mutations are max 15 seconds and bound to an
   operation. After server revocation IT may remove the user's DPAPI credential

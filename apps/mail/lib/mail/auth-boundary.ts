@@ -4,6 +4,10 @@ import { runLogoutCleanup } from './query-cache-policy';
 const SESSION_EXPIRED_REDIRECT = '/zero/login?error=session_expired';
 const CONNECTION_EXPIRED_MESSAGE = 'Connection expired. Please reconnect.';
 
+export function sessionExpiredRedirect(pathname: string): string {
+  return pathname === '/outlook-pane' ? '/outlook-pane' : SESSION_EXPIRED_REDIRECT;
+}
+
 type TrpcErrorLike = {
   message?: unknown;
   data?: { code?: unknown } | null;

@@ -10,19 +10,23 @@ import {
   type Persister,
 } from '@tanstack/react-query-persist-client';
 import {
+  createAuthBoundaryRecovery,
+  isUnauthorizedTrpcError,
+  sessionExpiredRedirect,
+} from '@/lib/mail/auth-boundary';
+import {
   MutationCache,
   QueryCache,
   QueryClient,
   hashKey,
   type InfiniteData,
 } from '@tanstack/react-query';
-import { createAuthBoundaryRecovery, isUnauthorizedTrpcError } from '@/lib/mail/auth-boundary';
-import { publicBackendTrpcUrl } from '@/lib/public-backend-url';
 import { resolveQueryHashPrefix, runLogoutCleanup } from '@/lib/mail/query-cache-policy';
 import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
 import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
 import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
+import { publicBackendTrpcUrl } from '@/lib/public-backend-url';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -137,9 +141,9 @@ async function handleUnauthorizedSignOut(queryClient: QueryClient): Promise<void
       await del(idbCacheKeyForScope(getMailCacheScope()));
     },
     signOut: () => signOut(),
-    redirect: (path) => {
+    redirect: () => {
       if (typeof window === 'undefined' || window.location.pathname.includes('/login')) return;
-      window.location.href = path;
+      window.location.href = sessionExpiredRedirect(window.location.pathname);
     },
     onError: (error) => {
       console.error(
