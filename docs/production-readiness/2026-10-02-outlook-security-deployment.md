@@ -70,7 +70,7 @@ the existing workflow/AI flags when refreshing the environment.
 
 A real production browser exposed a mailbox query before login that redirected
 the exact pane to `/zero/login`, blocked by native navigation policy. The hosted
-fix gates connection queries on a staff session and keeps expired-session
+fix gates pane connection queries on a staff session and keeps expired-session
 re-login on `/outlook-pane`; normal web-mail redirects remain unchanged. The
 browser regression now uses an actual tRPC UNAUTHORIZED envelope and checks no
 mailbox requests happen before sign-in. This fix does not change native binaries.
