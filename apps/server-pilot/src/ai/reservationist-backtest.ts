@@ -34,6 +34,7 @@ export type ToolCall = { toolName: string; args: unknown; result: unknown };
 
 const QUOTE_SECONDS = 220;
 const UNSENT_QUEUE_STATES = new Set(['pending', 'sending', 'cancelled']);
+const EMPTY_REPLY_RE = /^\s*(?:From:\s|-----Original Message-----)/i;
 
 function textOf(row: CenturionCorpusMessageRow): string {
   return row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? '');
@@ -114,8 +115,9 @@ export function buildCases(rows: readonly CenturionCorpusMessageRow[]): Backtest
       ? before.findIndex((row) => row.businessDirection === 'inbound' && row.messageId === gold.inReplyTo)
       : before.map((row) => row.businessDirection).lastIndexOf('inbound');
     if (triggerIndex < 0) continue;
-    const trigger = toCaseMessage(before[triggerIndex]!);
     const goldText = textOf(gold);
+    if (EMPTY_REPLY_RE.test(goldText)) continue;
+    const trigger = toCaseMessage(before[triggerIndex]!);
     cases.push({
       threadId,
       trigger,

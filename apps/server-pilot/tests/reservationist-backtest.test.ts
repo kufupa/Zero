@@ -60,6 +60,7 @@ describe('buildCases', () => {
         m.businessDirection === 'outbound' ? { ...m, inReplyTo: '<never-ingested>' } : m,
       ),
       ...thread('no-header', '2026-09-27', QUOTE, 'R1 000').map((m) => ({ ...m, inReplyTo: null })),
+      ...thread('empty-forward', '2026-09-28', 'Thank you', ' From: Guest\nSent: Monday\nRate R2 000'),
     ];
     const cases = buildCases(rows);
     expect(cases.map((c) => c.threadId)).toEqual(['gold', 'no-header']);
