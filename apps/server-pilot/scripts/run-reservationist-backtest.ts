@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { RequestContext } from '@mastra/core/request-context';
 import postgres from 'postgres';
-import { LUNA_PROVIDER_OPTIONS, LunaModelAdapter, LUNA_MODEL_ID } from '../src/ai/bedrock/luna.js';
+import { createAzureLunaModel, LUNA_PROVIDER_OPTIONS, LunaModelAdapter, LUNA_MODEL_ID } from '../src/ai/bedrock/luna.js';
 import {
   CENTURION_HOTEL_RULES,
   createDefaultRunners,
@@ -38,6 +38,7 @@ const RDS_HOST = 'nava-zero-mail-pilot.cpuaauo4kfyd.af-south-1.rds.amazonaws.com
 const TUNNEL_PORT = 15432;
 const MAX_STEPS = 10;
 const MAX_MESSAGE_CHARS = 20_000;
+const MODEL_LABEL = 'azure-foundry:gpt-6-luna/effort-max';
 
 const readJsonl = <T>(path: string): T[] =>
   existsSync(path)
@@ -125,7 +126,7 @@ async function runPhase(phase: 'a' | 'b', runId: string, dryTools: boolean) {
   writePrivate(
     join(dir, 'manifest.json'),
     JSON.stringify(
-      { runId, phase, modelId: LUNA_MODEL_ID, dryTools, cases: picked.map((c) => ({ threadId: c.threadId, stratum: c.stratum, oracle: c.oracle })) },
+      { runId, phase, model: MODEL_LABEL, dryTools, cases: picked.map((c) => ({ threadId: c.threadId, stratum: c.stratum, oracle: c.oracle })) },
       null,
       2,
     ),
@@ -133,6 +134,7 @@ async function runPhase(phase: 'a' | 'b', runId: string, dryTools: boolean) {
   const tracesPath = join(dir, 'traces.jsonl');
   const done = new Set(readJsonl<Trace>(tracesPath).map((t) => t.threadId));
   const agent = createReservationistAgent({
+    model: createAzureLunaModel(),
     runners: dryTools
       ? DRY_RUNNERS
       : createDefaultRunners({
@@ -236,7 +238,7 @@ async function review(runId: string) {
   const l1 = new Map(readJsonl<{ threadId: string }>(join(dir, 'l1.jsonl')).map((r) => [r.threadId, r]));
   const reviewPath = join(dir, 'review.jsonl');
   const done = new Set(readJsonl<{ threadId: string }>(reviewPath).map((r) => r.threadId));
-  const adapter = new LunaModelAdapter();
+  const adapter = new LunaModelAdapter({ model: createAzureLunaModel() });
   const traces = readJsonl<Trace>(join(dir, 'traces.jsonl'));
   for (const [i, t] of traces.entries()) {
     const c = cases.get(t.threadId);

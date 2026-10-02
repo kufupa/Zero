@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { BedrockModelAdapter } from '../src/ai/bedrock/bedrock.js';
 import { resolveModelAdapter } from '../src/ai/bedrock/factory.js';
-import { LUNA_MODEL_ID, LunaModelAdapter, createLunaModel } from '../src/ai/bedrock/luna.js';
+import { LUNA_MODEL_ID, LunaModelAdapter, createAzureLunaModel, createLunaModel } from '../src/ai/bedrock/luna.js';
 import { parseEnv } from '../src/env.js';
 
 const BASE_ENV = {
@@ -98,6 +98,32 @@ describe('LunaModelAdapter', () => {
     expect(result.usage).toMatchObject({ inputTokens: 1000, outputTokens: 200, totalTokens: 1200 });
     expect(result.usage.estimatedCostUsd).toBeCloseTo(0.0002, 10);
     expect(result.provenance).toMatchObject({ routeId: 'gpt6_luna_max', modelId: LUNA_MODEL_ID });
+  });
+
+  it('targets an Azure Foundry deployment with the api-key header', async () => {
+    const captured: { url?: string; body?: Record<string, unknown> } = {};
+    let apiKey: string | null = null;
+    const fake = responsesFetch('{"ok":true}', captured);
+    const adapter = new LunaModelAdapter({
+      model: createAzureLunaModel({
+        baseURL: 'https://example.openai.azure.com/openai/v1',
+        apiKey: 'k',
+        fetch: (async (input, init) => {
+          apiKey = new Headers(init?.headers).get('api-key');
+          return fake(input, init);
+        }) as typeof fetch,
+      }),
+    });
+
+    await adapter.invoke({ modelId: 'x', systemPrompt: 's', userPrompt: 'u' });
+
+    expect(captured.url).toBe('https://example.openai.azure.com/openai/v1/responses');
+    expect(captured.body).toMatchObject({ model: 'gpt-6-luna', reasoning: { effort: 'max' } });
+    expect(apiKey).toBe('k');
+  });
+
+  it('fails closed without Azure settings', () => {
+    expect(() => createAzureLunaModel({ baseURL: '', apiKey: '' })).toThrow(/AZURE_OPENAI_BASE_URL/);
   });
 });
 

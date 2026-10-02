@@ -86,6 +86,18 @@ export function createLunaModel(
   return provider.responses(options.modelId ?? LUNA_MODEL_ID);
 }
 
+/** Same Luna model through an Azure Foundry OpenAI v1 deployment (ZDR resource). */
+export function createAzureLunaModel(
+  options: { baseURL?: string; apiKey?: string; deployment?: string; fetch?: typeof fetch } = {},
+): LunaLanguageModel {
+  const baseURL = options.baseURL ?? process.env.AZURE_OPENAI_BASE_URL;
+  const apiKey = options.apiKey ?? process.env.AZURE_FOUNDRY_API_KEY;
+  if (!baseURL || !apiKey) throw new Error('AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY required');
+  return createOpenAI({ baseURL, apiKey, headers: { 'api-key': apiKey }, fetch: options.fetch }).responses(
+    options.deployment ?? 'gpt-6-luna',
+  );
+}
+
 const LUNA_INPUT_USD_PER_MTOK = 0.1;
 const LUNA_OUTPUT_USD_PER_MTOK = 0.5;
 export const LUNA_RATE_TABLE_VERSION = 'gpt-6-luna-global-cris-2026-09';
