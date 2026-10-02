@@ -24,8 +24,8 @@ for arg in "$@"; do
     -h|--help)
       echo "usage: $0 [--quiesced]"
       echo "  default: install/build/sync + PM2 start + HTTP health"
-      echo "  --quiesced: install/build/sync only; no PM2 mutation; no HTTP health"
-      echo "             (safe while pm2 http/ai-worker stay online — assets only)"
+      echo "  --quiesced: install/build/web release only; no PM2 mutation; no HTTP health"
+      echo "             (safe while pm2 http/ai-worker stay online — web only)"
       exit 0
       ;;
     *)
@@ -37,20 +37,6 @@ done
 
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
-
-# Root owns trust-boundary parents; app owns only mutable runtime/artifact leaves.
-echo "== ensure protected HMS runtime hierarchy =="
-for path in /opt/nava /opt/nava/shared \
-  /opt/nava/shared/hms-browser-artifacts /opt/nava/shared/hms-runtime; do
-  [ ! -L "$path" ] || {
-    echo "unsafe HMS runtime symlink: $path" >&2
-    exit 20
-  }
-done
-sudo install -d -o root -g root -m 0755 /opt/nava /opt/nava/shared
-sudo install -d -o ubuntu -g ubuntu -m 0700 \
-  /opt/nava/shared/hms-browser-artifacts \
-  /opt/nava/shared/hms-runtime
 
 ensure_hms_absent() {
   local state present
@@ -162,6 +148,25 @@ echo "== pnpm install =="
 pnpm install --frozen-lockfile
 
 if [ "$QUIESCED" != "1" ]; then
+  echo "== verify database compatibility before activation =="
+  bash "$SERVER_PILOT/deploy/check-migration-compatibility.sh"
+fi
+
+# Root owns trust-boundary parents; app owns only mutable runtime/artifact leaves.
+echo "== ensure protected HMS runtime hierarchy =="
+for path in /opt/nava /opt/nava/shared \
+  /opt/nava/shared/hms-browser-artifacts /opt/nava/shared/hms-runtime; do
+  [ ! -L "$path" ] || {
+    echo "unsafe HMS runtime symlink: $path" >&2
+    exit 20
+  }
+done
+sudo install -d -o root -g root -m 0755 /opt/nava /opt/nava/shared
+sudo install -d -o ubuntu -g ubuntu -m 0700 \
+  /opt/nava/shared/hms-browser-artifacts \
+  /opt/nava/shared/hms-runtime
+
+if [ "$QUIESCED" != "1" ]; then
   echo "== build server-pilot =="
   pnpm --filter @zero/server build
 fi
@@ -195,10 +200,83 @@ if [ "$GREP_STATUS" -ge 2 ]; then
   exit 1
 fi
 
-echo "== sync SPA to ${WEB_ROOT} =="
-sudo mkdir -p "$WEB_ROOT"
-sudo rsync -a --delete --exclude '/downloads/' "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
+echo "== stage immutable mail release =="
+PANE_RELEASE_HELPER="${SERVER_PILOT}/deploy/pane-csp-release.mjs"
+WEB_OWNERSHIP_HELPER="${SERVER_PILOT}/deploy/check-web-release-ownership.mjs"
+RELEASE_ID="$(node "$PANE_RELEASE_HELPER" id "${MAIL_APP}/build/client")"
+RELEASE_DIR="${WEB_ROOT}/releases/${RELEASE_ID}"
+node "$WEB_OWNERSHIP_HELPER" ancestors "$WEB_ROOT" || {
+  echo "unsafe parent of web release; refusing publication" >&2
+  exit 1
+}
+for path in "$WEB_ROOT" "${WEB_ROOT}/releases" "$RELEASE_DIR" "${WEB_ROOT}/assets" "${WEB_ROOT}/downloads"; do
+  if sudo test -L "$path"; then
+    echo "unsafe web release symlink: ${path}" >&2
+    exit 1
+  fi
+done
+sudo install -d -o root -g root -m 0755 "$WEB_ROOT" "${WEB_ROOT}/releases" "${WEB_ROOT}/assets"
+if [ -n "$(find "${MAIL_APP}/build/client" -type l -print -quit)" ]; then
+  echo "web build contains a symlink; refusing release" >&2
+  exit 1
+fi
+if [ -d "$RELEASE_DIR" ] && [ -n "$(sudo find "$RELEASE_DIR" -type l -print -quit)" ]; then
+  echo "immutable web release contains a symlink; refusing publication" >&2
+  exit 1
+fi
+sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
+# Existing releases and /assets are append-only: an open tab's hashed chunks
+# must remain byte-for-byte identical. Refuse filename collisions, including a
+# partially staged release from an interrupted prior attempt.
+sudo rsync -a --ignore-existing --chown=root:root --exclude '/downloads/' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+  "${MAIL_APP}/build/client/" "$RELEASE_DIR/"
+RELEASE_MISMATCH="$(sudo rsync -rc --dry-run --out-format='%n' --exclude '/downloads/' \
+  "${MAIL_APP}/build/client/" "$RELEASE_DIR/")"
+if [ -n "$RELEASE_MISMATCH" ]; then
+  echo "immutable web release collision or mismatch; refusing publication" >&2
+  exit 1
+fi
+if [ "$(node "$PANE_RELEASE_HELPER" id "$RELEASE_DIR")" != "$RELEASE_ID" ]; then
+  echo "staged web release tree mismatch; refusing publication" >&2
+  exit 1
+fi
+sudo install -d -o root -g root -m 0755 "${WEB_ROOT}/assets"
+if [ -n "$(sudo find "${WEB_ROOT}/assets" -type l -print -quit)" ]; then
+  echo "shared hashed assets contain a symlink; refusing publication" >&2
+  exit 1
+fi
+# Stable names (SVGs, favicons, etc.) belong only to each immutable release.
+# Shared /assets is a fallback for old tabs loading old Vite-hashed chunks.
+ASSET_MANIFEST="$(mktemp)"
+if ! node "$PANE_RELEASE_HELPER" hashed-assets "${RELEASE_DIR}/assets" "${MAIL_APP}/public/assets" > "$ASSET_MANIFEST"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+if ! sudo rsync -a --from0 --files-from="$ASSET_MANIFEST" --ignore-existing --chown=root:root --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+if ! ASSET_MISMATCH="$(sudo rsync -rc --dry-run --from0 --files-from="$ASSET_MANIFEST" --out-format='%n' \
+  "${RELEASE_DIR}/assets/" "${WEB_ROOT}/assets/")"; then
+  rm -f "$ASSET_MANIFEST"
+  exit 1
+fi
+rm -f "$ASSET_MANIFEST"
+if [ -n "$ASSET_MISMATCH" ]; then
+  echo "shared hashed asset collision or mismatch; refusing publication" >&2
+  exit 1
+fi
 sudo install -d -o www-data -g www-data -m 0755 "${WEB_ROOT}/downloads"
+# The previous flat SPA deployment can leave app-owned files under WEB_ROOT.
+# They, and shared hashed asset fallbacks for old tabs, are same-origin JS
+# under `script-src 'self'`. Refuse publication until a supervised operator
+# inventories and rehomes those legacy files; normal later releases stay root
+# owned without a staff installer/update.
+node "$WEB_OWNERSHIP_HELPER" release "$WEB_ROOT" || {
+  echo "untrusted legacy web file or directory; supervise one-time ownership repair before publication" >&2
+  exit 1
+}
 
 echo "== hosts: nava.legacyhotels.co.za =="
 # EC2 uses split-tunnel routing and does not consume hotel DNS; on-box browser gates need this.
@@ -298,7 +376,16 @@ assert_dual_plane_nginx_candidate() {
 
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
-NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
+NGINX_TEMPLATE="${SERVER_PILOT}/deploy/nginx.conf"
+NGINX_CANDIDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nava-web-release.XXXXXX")"
+NGINX_SRC="${NGINX_CANDIDATE_DIR}/nginx.conf"
+# Render against the *staged* index, never against a build output that might
+# have changed between upload and publication.
+if ! node "$PANE_RELEASE_HELPER" render \
+  "${RELEASE_DIR}/index.html" "$NGINX_TEMPLATE" "$NGINX_SRC" "$WEB_ROOT"; then
+  rmdir "$NGINX_CANDIDATE_DIR" || true
+  exit 1
+fi
 if command -v nginx >/dev/null 2>&1; then
   NGINX_BACKUP=""
   NGINX_EXISTED=0
@@ -308,14 +395,17 @@ if command -v nginx >/dev/null 2>&1; then
   NGINX_FAILURE_CONTEXT="nginx transaction aborted"
 
   cleanup_nginx_backup() {
-    if [ -z "$NGINX_BACKUP" ]; then
-      return 0
+    if [ -n "$NGINX_BACKUP" ]; then
+      if ! sudo rm -f "$NGINX_BACKUP"; then
+        echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
+        return 1
+      fi
+      NGINX_BACKUP=""
     fi
-    if ! sudo rm -f "$NGINX_BACKUP"; then
-      echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
+    if ! rm -f "$NGINX_SRC" || ! rmdir "$NGINX_CANDIDATE_DIR"; then
+      echo "nginx candidate cleanup failed: ${NGINX_CANDIDATE_DIR}" >&2
       return 1
     fi
-    NGINX_BACKUP=""
   }
 
   restore_nginx() {
@@ -371,8 +461,12 @@ if command -v nginx >/dev/null 2>&1; then
     if [ "$was_active" -eq 1 ] && ! restore_nginx; then
       rollback_ok=0
     fi
-    if ! cleanup_nginx_backup; then
-      cleanup_ok=0
+    if [ "$rollback_ok" -eq 1 ]; then
+      if ! cleanup_nginx_backup; then
+        cleanup_ok=0
+      fi
+    elif [ -n "$NGINX_BACKUP" ]; then
+      echo "nginx rollback failed; backup retained for manual recovery: ${NGINX_BACKUP}" >&2
     fi
 
     if [ "$was_active" -eq 1 ]; then
@@ -403,6 +497,11 @@ if command -v nginx >/dev/null 2>&1; then
   }
 
   activate_nginx() {
+    if ! node "$PANE_RELEASE_HELPER" verify \
+      "${RELEASE_DIR}/index.html" "$NGINX_TEMPLATE" "$NGINX_SRC" "$WEB_ROOT"; then
+      echo "staged index and Nginx candidate do not match" >&2
+      return 1
+    fi
     if ! sudo install -o root -g root -m 644 "$NGINX_SRC" "$NGINX_SITE"; then
       return 1
     fi
@@ -416,6 +515,23 @@ if command -v nginx >/dev/null 2>&1; then
       return 1
     fi
     if ! sudo systemctl reload nginx; then
+      return 1
+    fi
+  }
+
+  finalize_nginx_release() {
+    if [ "$NGINX_TRANSACTION_ACTIVE" -ne 1 ]; then
+      echo "nginx release transaction is no longer active" >&2
+      return 1
+    fi
+    # The matching web index/CSP must stay rollback-capable until both backend
+    # processes and private+TLS health probes pass. A PM2 failure is not a
+    # successful web publication.
+    NGINX_TRANSACTION_ACTIVE=0
+    if cleanup_nginx_backup; then
+      trap - EXIT INT TERM
+    else
+      echo "nginx activated but temporary backup cleanup failed" >&2
       return 1
     fi
   }
@@ -467,24 +583,23 @@ if command -v nginx >/dev/null 2>&1; then
     exit 1
   fi
 
-  # Candidate is live. Disarm rollback before deleting its backup.
-  NGINX_TRANSACTION_ACTIVE=0
-  if cleanup_nginx_backup; then
-    trap - EXIT INT TERM
-  else
-    echo "nginx activated but temporary backup cleanup failed" >&2
-    exit 1
-  fi
+  # Keep the prior immutable index and its matching CSP available for rollback
+  # until the PM2 + both-vhost health checks below pass. Quiesced web-only
+  # releases commit at their explicit early-exit boundary instead.
+  NGINX_FAILURE_CONTEXT="backend startup or health check failed"
 else
   echo "nginx not installed; install nginx and the validated TLS files before deploy" >&2
+  rm -f "$NGINX_SRC"
+  rmdir "$NGINX_CANDIDATE_DIR"
   exit 1
 fi
 
 if [ "$QUIESCED" = "1" ]; then
-  # Assets only — leave running pm2 http/worker/ai-worker alone (online OK).
+  # Web release only — leave running pm2 http/worker/ai-worker alone (online OK).
   # HMS worker still sole-started by ops-hms-shadow.sh; we do not touch it here either.
+  finalize_nginx_release
   echo "== quiesced: skip PM2 mutation and HTTP health (online http OK) =="
-  echo "quiesced deploy ok (assets synced; no PM2 mutation; no HTTP health)"
+  echo "quiesced deploy ok (web release activated; no PM2 mutation; no HTTP health)"
   exit 0
 fi
 
@@ -558,5 +673,6 @@ assert_http_loopback_only || {
   echo "raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 1
 }
+finalize_nginx_release
 echo
 echo "deploy ok"

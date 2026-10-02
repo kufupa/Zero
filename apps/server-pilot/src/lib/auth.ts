@@ -40,6 +40,7 @@ export function isPilotSignupEmailAllowed(
   email: string | undefined,
   env: PilotSignupEnv,
 ): boolean {
+  if (env.PILOT_OPEN_SIGNUP === '0') return false;
   if (env.PILOT_OPEN_SIGNUP === '1') return true;
   if (!email) return false;
   const allow = parsePilotSignupAllowlist(env.PILOT_SIGNUP_ALLOWLIST);

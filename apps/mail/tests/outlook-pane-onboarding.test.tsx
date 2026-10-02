@@ -2,8 +2,8 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 
 const defaultMockEmail = {
   entryId: '001',
@@ -46,11 +46,8 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
   useOutlookBridge: () => ({
     isConnected: true,
     workstationInfo: {
-      workstationUser: 'ropperman',
-      outlookEmail: 'ropperman@legacyhotels.co.za',
-      outlookVersion: '16.0',
       addinVersion: '1.0.11',
-      bridgeProtocolVersion: 3,
+      bridgeProtocolVersion: 4,
     },
     capabilities: null,
     supportsAction: () => true,
@@ -61,10 +58,20 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
 
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
-    data: { user: { email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' } },
+    data: {
+      user: { id: 'staff-1', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
+      session: { id: 'session-1' },
+    },
     isLoading: false,
   }),
   signIn: { email: vi.fn() },
+}));
+
+vi.mock('../hooks/use-connections', () => ({
+  useActiveConnection: () => ({
+    data: { id: 'transport-1', email: 'ropperman@legacyhotels.co.za' },
+    isLoading: false,
+  }),
 }));
 
 vi.mock('../providers/query-provider', () => ({
@@ -107,6 +114,52 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.getByRole('button', { name: /Confirm Account & Connect/i })).toBeDefined();
   });
 
+  it('keeps diagnostics server ping available when no approved Inbox folder is listed', async () => {
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'PING')
+        return { version: '1.0.12', bridgeProtocolVersion: 4, paired: true, deviceId: 'device-1' };
+      if (action === 'GET_ACTIVE_EMAIL') return { subject: 'Availability' };
+      if (action === 'LIST_FOLDERS') return { items: [], truncated: false };
+      throw new Error('GET_FOLDER_EMAILS must not guess the Inbox folder');
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Run System Verification/i }));
+    await waitFor(() =>
+      expect(pingMutateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outlookEmail: 'ropperman@legacyhotels.co.za',
+        }),
+      ),
+    );
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'GET_FOLDER_EMAILS')).toBe(
+      false,
+    );
+  });
+
+  it('marks the folder diagnostic unavailable yet still checks the server when folder enumeration fails', async () => {
+    sendCommandMock.mockImplementation(async (action: string) => {
+      if (action === 'PING')
+        return { version: '1.0.12', bridgeProtocolVersion: 4, paired: true, deviceId: 'device-1' };
+      if (action === 'GET_ACTIVE_EMAIL') return { subject: 'Availability' };
+      if (action === 'LIST_FOLDERS') throw new Error('No approved folder scope');
+      throw new Error('GET_FOLDER_EMAILS must not infer the Inbox');
+    });
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Run System Verification/i }));
+    await waitFor(() =>
+      expect(pingMutateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outlookEmail: 'ropperman@legacyhotels.co.za',
+        }),
+      ),
+    );
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'GET_FOLDER_EMAILS')).toBe(
+      false,
+    );
+  });
+
   it('progresses to Screen 2 Diagnostics, pings server, and displays returned server UTC timestamp', async () => {
     render(<OutlookPanePage />);
     const confirmBtn = screen.getByRole('button', { name: /Confirm Account & Connect/i });
@@ -117,9 +170,9 @@ describe('OutlookPane Onboarding Flow', () => {
     await waitFor(() => {
       expect(pingMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          workstationUser: 'ropperman',
+          workstationUser: 'unknown',
           outlookEmail: 'ropperman@legacyhotels.co.za',
-          outlookVersion: '16.0',
+          outlookVersion: 'unknown',
         }),
       );
     });
@@ -204,5 +257,3 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.queryByText('Synced')).toBeNull();
   });
 });
-
-

@@ -68,6 +68,16 @@ Treat any remote readiness failure as a stop. Both remote modes retain `vpn-heal
 - Never run Vitest with production `DATABASE_URL`. Never set `VITEST_ALLOW_PILOT_RDS=1` during day-one operations.
 - Never use Force Sync, compose, reply, draft, or send as part of health proof. Use read-only gate.
 
+## Database compatibility and mail recovery
+
+Deploy, restart and boot verify the committed migration ledger and required ORM schema before activating workers. Deploy refuses pending migrations; use `ops-deploy.sh --migrate` only after reviewing the additive SQL. An unknown newer ledger also refuses activation: use a reviewed compatible release rather than bypassing the gate.
+
+A database/schema failure retains POP3 mail without spending malformed-MIME retries. A genuine malformed message still reaches bounded quarantine. An empty POP3 inbox alone does not prove intake health; compare recent persisted messages, quarantine reasons and worker failures.
+
+Recover `parse_failure` raw mail using `scripts/recover-parse-failure.ts --dry-run`, then a small `--limit 10` batch and reconciliation before larger batches. Recovery defaults to no AI enqueue, preserves source dates/direction/attachments, and reports opaque row IDs with safe residual codes. Historical recovered mail requires a separate bounded AI catch-up decision. Never run the test suite against production.
+
+The required `pnpm --dir apps/server-pilot test:ingestion` gate needs explicit `TEST_DATABASE_URL` and `CONFIRM_DISPOSABLE_TEST_DB=1` against disposable PostgreSQL 16. It creates owned temporary databases, applies the committed migrations, and fails if the DB is missing or unreachable.
+
 ## Mandatory watch cadence
 
 Run readiness:

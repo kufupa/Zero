@@ -1,7 +1,3 @@
-import { createOperationId, type MailLocation } from '@/lib/workstation/bridge-protocol';
-import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
-import { occupancyRoomCode } from '@/lib/quote-proposal/description';
-import { emailsMatch } from '@/lib/quote-proposal/identity';
 import {
   CheckCircle2,
   AlertCircle,
@@ -28,6 +24,9 @@ import {
   ArrowRight,
   Clock,
 } from 'lucide-react';
+import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
+import { occupancyRoomCode } from '@/lib/quote-proposal/description';
+import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
 
@@ -40,7 +39,8 @@ type TourSlide = {
 const TOUR_SLIDES: TourSlide[] = [
   {
     title: '1. Automatic Email Sync',
-    subtitle: 'When an inquiry arrives, key parameters are detected directly from the email thread.',
+    subtitle:
+      'When an inquiry arrives, key parameters are detected directly from the email thread.',
     bullets: [
       {
         title: 'Direct HMS pre-fill:',
@@ -54,7 +54,8 @@ const TOUR_SLIDES: TourSlide[] = [
   },
   {
     title: '2. Live Infor HMS Actions & Proof',
-    subtitle: 'Execute live PMS tasks directly without switching windows or navigating Infor HMS manually.',
+    subtitle:
+      'Execute live PMS tasks directly without switching windows or navigating Infor HMS manually.',
     bullets: [
       {
         title: 'Automated execution:',
@@ -86,20 +87,67 @@ const TOUR_SLIDES: TourSlide[] = [
   },
 ];
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
-import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
 const MAX_EXPIRED_REPLY_OUTCOMES = 256;
 const REPLY_OPERATION_CACHE_TTL_MS = 15 * 60 * 1000;
+const UNRESOLVED_REPLY_MARKER = 'nava_outlook_unresolved_reply_v1';
+
+// A generic marker survives re-login/reload without storing mail IDs or PDF bytes.
+// A fresh pane cannot replay the old native operation ID, so ask staff to check
+// Drafts before intentionally starting another operation.
+function hasUnresolvedReplyMarker(): boolean {
+  try { return sessionStorage.getItem(UNRESOLVED_REPLY_MARKER) === '1'; }
+  catch { return false; }
+}
+
+function setUnresolvedReplyMarker(unresolved: boolean): void {
+  try {
+    if (unresolved) sessionStorage.setItem(UNRESOLVED_REPLY_MARKER, '1');
+    else sessionStorage.removeItem(UNRESOLVED_REPLY_MARKER);
+  } catch { /* Restricted WebView storage: in-memory retries still work. */ }
+}
+
+function confirmNewReplyAfterUncertainOutcome(): boolean {
+  try {
+    // Intentional blocking acknowledgment: unlike a toast, another click
+    // cannot silently create a second Outlook draft after an unknown outcome.
+    // oxlint-disable-next-line no-alert
+    return window.confirm(
+      'Check Outlook Drafts for the earlier reply. Have you checked Drafts and do you want to start a new draft?',
+    );
+  } catch { return false; }
+}
 
 type PendingReplyOperation = {
   operationId: string;
   startedAt: number;
+  pdf?: { fileName: string; pdfBase64: string };
+  replyPayload?: {
+    operationId: string;
+    entryId: string;
+    storeId: string;
+    folderEntryId: string;
+    htmlBody: string;
+    replyAll: boolean;
+    openInComposer: boolean;
+  };
+  draftLocation?: MailLocation;
+  attachmentPayload?: {
+    operationId: string;
+    entryId: string;
+    storeId: string;
+    folderEntryId: string;
+    fileName: string;
+    base64Data: string;
+  };
 };
 
 type RatePlan = {
@@ -174,12 +222,25 @@ function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'roo
 }
 
 export default function OutlookPanePage() {
-  const { isConnected, activeEmail, workstationInfo, capabilities, supportsAction, sendCommand } =
-    useOutlookBridge();
+  const {
+    isConnected,
+    activeEmail,
+    workstationInfo,
+    capabilities,
+    updateRequired,
+    requiresRelogin,
+    authorizationUnavailable,
+    supportsAction,
+    sendCommand,
+    pairDevice,
+    refreshAuthorization,
+  } = useOutlookBridge();
   const replyRetries = useRef(new Map<string, PendingReplyOperation>());
   const expiredReplyOutcomes = useRef(new Set<string>());
   const hasUntrackedExpiredReplyOutcomes = useRef(false);
   const expiredOutcomeConfirmationKey = useRef<string | null>(null);
+  const unresolvedReplyConfirmationKey = useRef<string | null>(null);
+  const replyMarkerBelongsToCurrentScope = useRef(false);
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
@@ -187,6 +248,39 @@ export default function OutlookPanePage() {
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
   const { data: session, isLoading } = useSession();
+  const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  const currentScope =
+    !requiresRelogin && session?.user?.id && activeConnection?.id
+      ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
+      : null;
+  const selectedIdentity = activeEmail?.entryId
+    ? `${activeEmail.storeId ?? ''}:${activeEmail.folderEntryId ?? ''}:${activeEmail.entryId}` : null;
+  const contextRevision = useRef({ scope: currentScope, selection: selectedIdentity, scopeEpoch: 0, selectionEpoch: 0 });
+  if (contextRevision.current.scope !== currentScope) {
+    contextRevision.current = { scope: currentScope, selection: selectedIdentity,
+      scopeEpoch: contextRevision.current.scopeEpoch + 1, selectionEpoch: contextRevision.current.selectionEpoch + 1 };
+  } else if (contextRevision.current.selection !== selectedIdentity) {
+    contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
+      selectionEpoch: contextRevision.current.selectionEpoch + 1 };
+  }
+  const scopeRef = useRef(currentScope);
+  const previousScope = useRef(currentScope);
+  scopeRef.current = currentScope;
+  useLayoutEffect(() => {
+    if (previousScope.current === currentScope) return;
+    previousScope.current = currentScope;
+    replyRetries.current.clear();
+    expiredReplyOutcomes.current.clear();
+    hasUntrackedExpiredReplyOutcomes.current = false;
+    expiredOutcomeConfirmationKey.current = null;
+    unresolvedReplyConfirmationKey.current = null;
+    replyMarkerBelongsToCurrentScope.current = false;
+    replyInFlight.current = false;
+    setIsDraftPending(false);
+    setDraftedDetails(null);
+    setDraftStatus(null);
+    setTestResults({ bridge: null, activeEmail: null, folderTable: null, serverPing: null });
+  }, [currentScope]);
 
   // Quote Tool State
   const [propertyCode, setPropertyCode] = useState('HRCEN');
@@ -271,20 +365,17 @@ export default function OutlookPanePage() {
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
   const [pingErrorMessage, setPingErrorMessage] = useState<string | null>(null);
 
-  const detectedEmail =
-    workstationInfo?.outlookEmail || session?.user?.email || 'reservations@centurion.co.za';
-  const detectedProperty = workstationInfo?.workstationUser
-    ? `${workstationInfo.workstationUser} · The Centurion Hotel`
-    : 'The Centurion Hotel';
+  const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
+  const detectedProperty = 'The Centurion Hotel';
 
   const executeServerPing = async () => {
     setPingState('loading');
     setPingErrorMessage(null);
     try {
       const resp = await trpcClient.workstation.ping.mutate({
-        workstationUser: workstationInfo?.workstationUser ?? 'unknown',
+        workstationUser: 'unknown',
         outlookEmail: detectedEmail,
-        outlookVersion: workstationInfo?.outlookVersion ?? '16.0',
+        outlookVersion: capabilities?.outlookVersion ?? 'unknown',
       });
       if (resp?.status === 'ok') {
         const d = resp.serverTime ? new Date(resp.serverTime) : new Date();
@@ -313,13 +404,13 @@ export default function OutlookPanePage() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] text-slate-700 font-sans">
+      <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
         <p className="text-xs text-slate-500">Loading session…</p>
       </div>
     );
   }
 
-  if (!session?.user) {
+  if (!session?.user || requiresRelogin) {
     return <OutlookPaneSignIn />;
   }
 
@@ -335,9 +426,9 @@ export default function OutlookPanePage() {
     try {
       const pingResp = await sendCommand<
         Record<string, never>,
-        { version?: string; workstationUser?: string }
+        { version?: string; bridgeProtocolVersion?: number }
       >('PING', {} as Record<string, never>);
-      results.bridge = Boolean(pingResp?.version || pingResp?.workstationUser);
+      results.bridge = pingResp?.bridgeProtocolVersion === 4;
 
       const activeResp = await sendCommand<Record<string, never>, { subject?: string }>(
         'GET_ACTIVE_EMAIL',
@@ -345,21 +436,31 @@ export default function OutlookPanePage() {
       );
       results.activeEmail = Boolean(activeResp?.subject || activeEmail?.subject);
 
-      const folderResp = await sendCommand<
-        { folder: string; count: number; offset: number },
-        unknown
-      >('GET_FOLDER_EMAILS', { folder: 'Inbox', count: 5, offset: 0 });
-      results.folderTable =
-        Array.isArray(folderResp) ||
-        (typeof folderResp === 'object' &&
-          folderResp !== null &&
-          'items' in folderResp &&
-          Array.isArray(folderResp.items));
+      try {
+        const folders = await sendCommand<
+          Record<string, never>,
+          {
+            items: Array<{ entryId: string; defaultFolderType?: number }>;
+            truncated: boolean;
+          }
+        >('LIST_FOLDERS', {});
+        const inbox = folders.items.find((folder) => folder.defaultFolderType === 6);
+        if (inbox) {
+          const folderResp = await sendCommand<
+            { folderEntryId: string; count: number; offset: number },
+            { items: unknown[] }
+          >('GET_FOLDER_EMAILS', { folderEntryId: inbox.entryId, count: 5, offset: 0 });
+          results.folderTable = Array.isArray(folderResp.items);
+        }
+      } catch {
+        // No approved Inbox ID: never fall back to a name-based or arbitrary folder read.
+        results.folderTable = false;
+      }
 
       const srv = await trpcClient.workstation.ping.mutate({
-        workstationUser: workstationInfo?.workstationUser ?? 'unknown',
-        outlookEmail: session.user.email,
-        outlookVersion: workstationInfo?.outlookVersion ?? 'unknown',
+        workstationUser: 'unknown',
+        outlookEmail: detectedEmail,
+        outlookVersion: capabilities?.outlookVersion ?? 'unknown',
       });
       results.serverPing = srv?.status === 'ok';
 
@@ -376,13 +477,15 @@ export default function OutlookPanePage() {
   const handleDayClick = (day: number) => {
     if (activeDateTab === 'arrival') {
       const newArrival = Math.max(1, Math.min(29, day));
-      const newDeparture = departureDay <= newArrival ? Math.min(30, newArrival + 1) : Math.min(30, departureDay);
+      const newDeparture =
+        departureDay <= newArrival ? Math.min(30, newArrival + 1) : Math.min(30, departureDay);
       setArrivalDay(newArrival);
       setDepartureDay(newDeparture);
       setNightsCount(newDeparture - newArrival);
     } else {
       const newDeparture = Math.max(2, Math.min(30, day));
-      const newArrival = arrivalDay >= newDeparture ? Math.max(1, newDeparture - 1) : Math.max(1, arrivalDay);
+      const newArrival =
+        arrivalDay >= newDeparture ? Math.max(1, newDeparture - 1) : Math.max(1, arrivalDay);
       setArrivalDay(newArrival);
       setDepartureDay(newDeparture);
       setNightsCount(newDeparture - newArrival);
@@ -430,11 +533,16 @@ export default function OutlookPanePage() {
 
   const handleInsertAiDraft = async () => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
+    const startedScope = currentScope;
+    const startedScopeEpoch = contextRevision.current.scopeEpoch;
+    const startedSelectionEpoch = contextRevision.current.selectionEpoch;
+    const sameStaffScope = () => scopeRef.current === startedScope &&
+      contextRevision.current.scopeEpoch === startedScopeEpoch;
     const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
     const subject =
       activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
     const replyLabel = `Reply to “${subject}”: `;
-    const previousAttempt = replyRetries.current.get(key);
+    let previousAttempt = replyRetries.current.get(key);
     const now = Date.now();
     const rememberExpiredOutcome = (expiredKey: string) => {
       if (expiredReplyOutcomes.current.has(expiredKey)) return;
@@ -448,6 +556,9 @@ export default function OutlookPanePage() {
     if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
       replyRetries.current.delete(key);
       rememberExpiredOutcome(key);
+      // Even after staff acknowledges an expired outcome, its old operation
+      // ID must never be retried against a server window that has closed.
+      previousAttempt = undefined;
     }
     for (const [retryKey, attempt] of replyRetries.current) {
       if (now - attempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
@@ -455,24 +566,46 @@ export default function OutlookPanePage() {
         rememberExpiredOutcome(retryKey);
       }
     }
-    if (expiredReplyOutcomes.current.delete(key)) {
-      if (hasUntrackedExpiredReplyOutcomes.current) {
+    let acknowledgedExpiredOutcome = false;
+    if (expiredReplyOutcomes.current.has(key)) {
+      if (expiredOutcomeConfirmationKey.current !== key) {
         expiredOutcomeConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
+        );
+        return;
       }
-      toast.error(
-        `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
-      );
-      return;
-    }
-    if (hasUntrackedExpiredReplyOutcomes.current && expiredOutcomeConfirmationKey.current !== key) {
-      expiredOutcomeConfirmationKey.current = key;
-      toast.error(
-        `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
-      );
-      return;
-    }
-    if (hasUntrackedExpiredReplyOutcomes.current) {
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
+      expiredReplyOutcomes.current.delete(key);
       expiredOutcomeConfirmationKey.current = null;
+      acknowledgedExpiredOutcome = true;
+    }
+    if (hasUntrackedExpiredReplyOutcomes.current && !acknowledgedExpiredOutcome) {
+      if (expiredOutcomeConfirmationKey.current !== key) {
+        expiredOutcomeConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
+        );
+        return;
+      }
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
+      expiredOutcomeConfirmationKey.current = null;
+    }
+    // In a live pane another message may have an unresolved, safely retryable
+    // operation. The generic reload marker only gates a fresh pane with no IDs.
+    if (!previousAttempt && replyRetries.current.size === 0 &&
+      !replyMarkerBelongsToCurrentScope.current && hasUnresolvedReplyMarker()) {
+      if (unresolvedReplyConfirmationKey.current !== key) {
+        unresolvedReplyConfirmationKey.current = key;
+        toast.error(
+          `${replyLabel}An earlier Outlook draft may have completed before the pane changed. Check Outlook Drafts; click again after checking to start a new draft.`,
+        );
+        return;
+      }
+      if (!confirmNewReplyAfterUncertainOutcome()) return;
+      unresolvedReplyConfirmationKey.current = null;
+      // Keep the prior unknown outcome recorded until this attempt actually
+      // reaches native Outlook and succeeds. PDF generation may still abort.
     }
     if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
       toast.error(
@@ -482,17 +615,25 @@ export default function OutlookPanePage() {
     }
 
     if (activePlan.restricted) {
-      toast.error(`Cannot insert draft: ${activePlan.name} is restricted (${activePlan.restrictionReason}).`);
+      toast.error(
+        `Cannot insert draft: ${activePlan.name} is restricted (${activePlan.restrictionReason}).`,
+      );
       return;
     }
 
-    if (!emailsMatch(session?.user?.email, workstationInfo?.outlookEmail)) {
-      toast.error('Nava login must match this Outlook mailbox before attaching a quotation.');
+    if (!startedScope || transportLoading || !activeConnection?.email) {
+      toast.error('Sign in and select an authorized mailbox before attaching a quotation.');
+      return;
+    }
+    if (!activeEmail.storeId || !activeEmail.folderEntryId) {
+      toast.error(
+        'Outlook did not provide the selected message and source folder. Select it again.',
+      );
       return;
     }
 
     if (!supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
-      toast.error('This Outlook add-in cannot attach a quotation PDF. Update to protocol v3.');
+      toast.error('This Outlook add-in cannot attach a quotation PDF. Update to protocol v4.');
       return;
     }
 
@@ -504,12 +645,11 @@ export default function OutlookPanePage() {
 
     const guestFirstName = (currentSender.split(' ')[0] || 'Guest').trim();
     const selectedHotelMeta = HOTEL_PROPERTIES[propertyCode] ?? HOTEL_PROPERTIES.HRCEN;
-    const agreementDescription =
-      activePlan.code.startsWith('NCOR')
-        ? orgAccount.trim()
-          ? `under the ${orgAccount.trim()} corporate agreement`
-          : 'under your corporate agreement'
-        : 'at our standard rates';
+    const agreementDescription = activePlan.code.startsWith('NCOR')
+      ? orgAccount.trim()
+        ? `under the ${orgAccount.trim()} corporate agreement`
+        : 'under your corporate agreement'
+      : 'at our standard rates';
     const mealDescription =
       mealPlan === 'room_only' || activePlan.code === 'BARRO'
         ? 'room only (no meals included)'
@@ -552,45 +692,91 @@ export default function OutlookPanePage() {
       if (lines.length === 0) {
         throw new Error('Add at least one room before attaching a quotation.');
       }
-      const pdf = await trpcClient.workstation.quoteProposalPdf.mutate({
-        outlookEmail: workstationInfo?.outlookEmail ?? '',
-        attention: currentSender,
-        company: orgAccount.trim(),
-        clientEmail: currentSenderEmail,
-        clientTelephone: '',
-        agency: orgAccount.trim() || 'Quote',
-        dateLabel,
-        lines,
-      });
-      const result = await sendCommand<Record<string, unknown>, MailLocation | boolean>(
-        'CREATE_REPLY_DRAFT',
-        {
-          operationId: attempt.operationId,
-          entryId: activeEmail.entryId,
-          ...(activeEmail.storeId ? { storeId: activeEmail.storeId } : {}),
-          htmlBody: quotationHtml,
-          replyAll: false,
-          openInComposer: false,
-        },
-      );
-      if (result === false) throw new Error('Outlook could not create the reply draft.');
-      draftCreated = true;
-      const legacyReplyOpened = result === true;
-      const replyResult = typeof result === 'object' && result !== null ? result : null;
-      if (!replyResult?.entryId) {
-        throw new Error('Outlook did not return a draft location, so the quotation PDF was not attached.');
+      const pdf =
+        attempt.pdf ??
+        (await trpcClient.workstation.quoteProposalPdf.mutate({
+          outlookEmail: activeConnection.email,
+          attention: currentSender,
+          company: orgAccount.trim(),
+          clientEmail: currentSenderEmail,
+          clientTelephone: '',
+          agency: orgAccount.trim() || 'Quote',
+          dateLabel,
+          lines,
+        }));
+      if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
+        // No new Outlook command has started for this click. A delayed quotation
+        // cannot create or retry a reply for a selection that changed away
+        // and back, even when its current EntryID and session string match.
+        if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
+        return;
       }
-      await sendCommand('ADD_ATTACHMENT_TO_DRAFT', {
+      attempt.pdf = pdf;
+      if (!attempt.draftLocation) {
+        // Renewal may suppress selection events while Outlook is busy. A PDF
+        // generated for A must not turn into a reply to A after staff select B.
+        const selected = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
+          'GET_ACTIVE_EMAIL', {},
+        );
+        if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
+          if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
+          return;
+        }
+        if (!selected || selected.entryId !== activeEmail.entryId ||
+          selected.storeId !== activeEmail.storeId ||
+          selected.folderEntryId !== activeEmail.folderEntryId) {
+          if (!attempt.replyPayload) replyRetries.current.delete(key);
+          toast.error('Selected Outlook email changed while preparing the quotation. Select it again.');
+          return;
+        }
+      }
+      const replyPayload = attempt.replyPayload ?? {
+        operationId: attempt.operationId,
+        entryId: activeEmail.entryId,
+        storeId: activeEmail.storeId,
+        folderEntryId: activeEmail.folderEntryId,
+        htmlBody: quotationHtml,
+        replyAll: false,
+        openInComposer: false,
+      };
+      attempt.replyPayload = replyPayload;
+      if (!attempt.draftLocation) {
+        replyMarkerBelongsToCurrentScope.current = true;
+        setUnresolvedReplyMarker(true);
+      }
+      const result =
+        attempt.draftLocation ??
+        (await sendCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
+      if (!sameStaffScope()) return;
+      if (!result || typeof result !== 'object')
+        throw new Error('Outlook did not confirm the reply draft.');
+      draftCreated = true;
+      const replyResult = result;
+      if (!replyResult.entryId || !replyResult.storeId || !replyResult.folderEntryId) {
+        throw new Error(
+          'Outlook did not confirm the draft and its source folder. Inspect Drafts before retrying.',
+        );
+      }
+      attempt.draftLocation = replyResult;
+      const attachmentPayload = attempt.attachmentPayload ?? {
+        operationId: createOperationId(),
         entryId: replyResult.entryId,
-        ...(replyResult.storeId
-          ? { storeId: replyResult.storeId }
-          : activeEmail.storeId
-            ? { storeId: activeEmail.storeId }
-            : {}),
+        storeId: replyResult.storeId,
+        folderEntryId: replyResult.folderEntryId,
         fileName: pdf.fileName,
         base64Data: pdf.pdfBase64,
-      });
+      };
+      attempt.attachmentPayload = attachmentPayload;
+      await sendCommand('ADD_ATTACHMENT_TO_DRAFT', attachmentPayload);
+      if (!sameStaffScope()) return;
       replyRetries.current.delete(key);
+      // A successful draft for B does not resolve an expired or unknown
+      // outcome for A. Those per-message sets are in memory only; preserve
+      // the generic warning across reloads until every outcome is resolved.
+      if (!expiredReplyOutcomes.current.size && !hasUntrackedExpiredReplyOutcomes.current &&
+        ![...replyRetries.current.values()].some((pending) => pending.replyPayload)) {
+        setUnresolvedReplyMarker(false);
+      }
       setDraftedDetails({
         entryId: activeEmail.entryId,
         subject: currentSubject,
@@ -612,37 +798,45 @@ export default function OutlookPanePage() {
         departureDay,
         nightsCount,
       });
-      const opened = legacyReplyOpened || replyResult?.displayed === true;
-      const details = legacyReplyOpened
-        ? []
-        : [
-            replyResult?.composerWarning,
-            replyResult?.draftPlacementWarning,
-            replyResult?.folderPlacementWarning,
-            replyResult?.locationUnverified ? 'Draft location is unverified.' : null,
-          ].filter(Boolean);
-      const summary = legacyReplyOpened
-        ? 'Outlook opened the reply composer; save status is unconfirmed.'
-        : opened
-          ? 'Outlook draft opened in composer.'
-          : replyResult?.entryId
-            ? 'Outlook draft saved but not opened in composer.'
-            : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
+      const opened = replyResult.displayed === true;
+      const details = [
+        replyResult?.composerWarning,
+        replyResult?.draftPlacementWarning,
+        replyResult?.folderPlacementWarning,
+        replyResult?.locationUnverified ? 'Draft location is unverified.' : null,
+      ].filter(Boolean);
+      const summary = opened
+        ? 'Outlook draft opened in composer.'
+        : replyResult?.entryId
+          ? 'Outlook draft saved but not opened in composer.'
+          : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
       const message = [summary, ...details].join(' ');
       setDraftStatus({ key, message });
-      if (details.length || !opened || legacyReplyOpened) toast.warning(`${replyLabel}${message}`);
+      if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
       else toast.success(`${replyLabel}${message}`);
     } catch (err) {
+      if (!sameStaffScope()) return;
+      if (contextRevision.current.selectionEpoch !== startedSelectionEpoch && !attempt.replyPayload) {
+        replyRetries.current.delete(key);
+        return;
+      }
       const errorCode =
         err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : null;
       const hasUnknownOutcome = errorCode === 'OPERATION_OUTCOME_UNKNOWN';
       const timedOut = err instanceof Error && err.message.includes('timed out');
-      if (!timedOut && !hasUnknownOutcome && !draftCreated) {
+      const navigationInterrupted =
+        err instanceof Error && err.message.includes('Outlook navigation changed');
+      const mayHaveReachedOutlook = Boolean(attempt.replyPayload);
+      if (!timedOut && !hasUnknownOutcome && !draftCreated && !mayHaveReachedOutlook) {
         replyRetries.current.delete(key);
       }
-      if (hasUnknownOutcome) {
+      if (
+        hasUnknownOutcome ||
+        (timedOut && draftCreated) ||
+        ((timedOut || navigationInterrupted) && mayHaveReachedOutlook)
+      ) {
         const message =
-          'Outlook may have completed the reply, but did not confirm it. Check Outlook Drafts before retrying; any retry will reuse the same operation ID.';
+          'Outlook may have completed the operation, but did not confirm it. Check Outlook Drafts before retrying; any retry will reuse the same operation ID and PDF.';
         setDraftStatus({ key, message });
         toast.error(`${replyLabel}${message}`);
       } else {
@@ -651,16 +845,17 @@ export default function OutlookPanePage() {
         );
       }
     } finally {
-      replyInFlight.current = false;
-      setIsDraftPending(false);
+      if (sameStaffScope()) {
+        replyInFlight.current = false;
+        setIsDraftPending(false);
+      }
     }
   };
 
   return (
     <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
       {/* Strict 380px pane container */}
-      <div className="relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b] shadow-xs">
-        
+      <div className="shadow-xs relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
         <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
           <div className="flex items-center gap-2">
@@ -668,34 +863,60 @@ export default function OutlookPanePage() {
               N
             </span>
             <div>
-              <h1 className="text-[13px] font-bold text-[#1e293b]">
-                Nava AI Reservationist
-              </h1>
+              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava AI Reservationist</h1>
             </div>
           </div>
           <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]">
             <span
               className={`h-2 w-2 rounded-full ${
-                isConnected ? 'bg-emerald-600 animate-pulse' : 'bg-rose-500'
+                isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
               }`}
             />
             <span>Centurion</span>
             <span className="sr-only">
               {isConnected
-                ? `Connected to Classic Outlook (${workstationInfo?.outlookVersion ?? '16.0'}; product/build unknown)`
+                ? `Connected to Classic Outlook (${capabilities?.outlookVersion ?? 'version unavailable'}; product/build unknown)`
                 : 'Disconnected'}
             </span>
           </div>
         </header>
 
-        {/* Warning if protocol v3 is not confirmed */}
-        {isConnected && !capabilities && (
+        {/* An old installer cannot perform even read-only COM actions. */}
+        {isConnected && (updateRequired || workstationInfo?.bridgeProtocolVersion !== 4) && (
           <div
             role="alert"
             className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800"
           >
-            Protocol v3 not confirmed on this workstation. Update the Outlook add-in to use v3
-            actions.
+            Update the Outlook add-in to protocol v4. This installer cannot access mail.
+          </div>
+        )}
+        {isConnected && !updateRequired && workstationInfo?.paired === false && (
+          <div className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+            <p>
+              Outlook device pairing requires a supervised operator code entered in a Windows-only
+              dialog.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                void pairDevice?.().catch((error: unknown) => {
+                  toast.error(
+                    error instanceof Error ? error.message : 'Could not pair Outlook device',
+                  );
+                });
+              }}
+            >
+              Pair Outlook Device
+            </Button>
+          </div>
+        )}
+        {isConnected && workstationInfo?.paired && authorizationUnavailable && !requiresRelogin && (
+          <div role="status" className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+            <p>Select an approved Outlook folder to continue. Nava will retry automatically.</p>
+            <Button type="button" size="sm" onClick={refreshAuthorization}>
+              Refresh Outlook authorization
+            </Button>
           </div>
         )}
 
@@ -724,7 +945,7 @@ export default function OutlookPanePage() {
                 }}
                 className={`rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
                   currentScreen === item.id
-                    ? 'bg-[#1a4332] text-white font-semibold'
+                    ? 'bg-[#1a4332] font-semibold text-white'
                     : 'text-[#64748b] hover:bg-[#e2e8f0]'
                 }`}
               >
@@ -736,14 +957,15 @@ export default function OutlookPanePage() {
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
         {currentScreen === 'welcome' && (
-          <div className="flex flex-1 flex-col p-4 animate-in fade-in duration-150">
+          <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
                 <Building2 className="h-6 w-6" />
               </div>
               <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava AI</h1>
-              <p className="mt-1 text-xs text-[#64748b] leading-relaxed">
-                Your intelligent assistant for Infor HMS quoting and reservations, built directly into Outlook.
+              <p className="mt-1 text-xs leading-relaxed text-[#64748b]">
+                Your intelligent assistant for Infor HMS quoting and reservations, built directly
+                into Outlook.
               </p>
 
               <div className="my-5 w-full rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-left">
@@ -774,7 +996,7 @@ export default function OutlookPanePage() {
 
         {/* SCREEN 2: SYSTEM & NAVA AI SERVICES CHECK */}
         {currentScreen === 'diagnostics' && (
-          <div className="flex flex-1 flex-col p-4 animate-in fade-in duration-150">
+          <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
                 <Network className="h-6 w-6" />
@@ -803,13 +1025,13 @@ export default function OutlookPanePage() {
                   {pingState === 'error' && (
                     <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
                   )}
-                  {pingState === 'idle' && (
-                    <Clock className="h-4 w-4 shrink-0 text-slate-400" />
-                  )}
+                  {pingState === 'idle' && <Clock className="h-4 w-4 shrink-0 text-slate-400" />}
 
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-[#1e293b]">Nava AI Server Connection</span>
+                      <span className="text-xs font-semibold text-[#1e293b]">
+                        Nava AI Server Connection
+                      </span>
                       {pingState === 'success' && (
                         <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
                       )}
@@ -832,7 +1054,7 @@ export default function OutlookPanePage() {
 
                 {pingState === 'success' && (
                   <div className="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
                     <span>Nava AI server connected · Workstation API ping verified.</span>
                   </div>
                 )}
@@ -866,7 +1088,7 @@ export default function OutlookPanePage() {
 
         {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
         {currentScreen === 'tour' && (
-          <div className="flex flex-1 flex-col p-3 animate-in fade-in duration-150">
+          <div className="animate-in fade-in flex flex-1 flex-col p-3 duration-150">
             <div className="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center">
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
                 {tourSlideIndex === 0 && <Mail className="h-5 w-5" />}
@@ -876,13 +1098,14 @@ export default function OutlookPanePage() {
               <h2 className="text-sm font-bold text-[#1e293b]">
                 {TOUR_SLIDES[tourSlideIndex]?.title}
               </h2>
-              <p className="mt-1 text-xs text-[#64748b]">
-                {TOUR_SLIDES[tourSlideIndex]?.subtitle}
-              </p>
+              <p className="mt-1 text-xs text-[#64748b]">{TOUR_SLIDES[tourSlideIndex]?.subtitle}</p>
 
               <div className="mt-4 w-full space-y-2 text-left">
                 {TOUR_SLIDES[tourSlideIndex]?.bullets.map((b) => (
-                  <div key={b.title} className="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs">
+                  <div
+                    key={b.title}
+                    className="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs"
+                  >
                     <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
                     <div>
                       <strong className="text-[#1e293b]">{b.title}</strong>{' '}
@@ -916,7 +1139,7 @@ export default function OutlookPanePage() {
                   onClick={() => setTourSlideIndex((i) => Math.max(0, i - 1))}
                   className="flex-1 text-xs"
                 >
-                  <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Previous
+                  <ChevronLeft className="mr-1 h-3.5 w-3.5" /> Previous
                 </Button>
                 <Button
                   type="button"
@@ -939,11 +1162,11 @@ export default function OutlookPanePage() {
                 >
                   {tourSlideIndex === TOUR_SLIDES.length - 1 ? (
                     <>
-                      <span>Open Nava AI</span> <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                      <span>Open Nava AI</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
                     </>
                   ) : (
                     <>
-                      <span>Next</span> <ChevronRight className="h-3.5 w-3.5 ml-1" />
+                      <span>Next</span> <ChevronRight className="ml-1 h-3.5 w-3.5" />
                     </>
                   )}
                 </Button>
@@ -954,670 +1177,696 @@ export default function OutlookPanePage() {
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
         {currentScreen === 'tool' && (
-        <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
-          
-          {/* Email Context Bar */}
-          <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate text-xs font-semibold text-[#1e293b]">
-                  {currentSubject}
-                </span>
-                <span className="truncate text-[11px] text-[#64748b]">
-                  {currentSender} &lt;{currentSenderEmail}&gt;
-                </span>
+          <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
+            {/* Email Context Bar */}
+            <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
+                <div className="flex min-w-0 flex-col">
+                  <span className="truncate text-xs font-semibold text-[#1e293b]">
+                    {currentSubject}
+                  </span>
+                  <span className="truncate text-[11px] text-[#64748b]">
+                    {currentSender} &lt;{currentSenderEmail}&gt;
+                  </span>
+                </div>
               </div>
-            </div>
-            {activeEmail ? (
-              <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
-                <Check className="h-3 w-3" /> Synced
-              </span>
-            ) : (
-              <span className="flex shrink-0 items-center gap-1 rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                Sample
-              </span>
-            )}
-          </div>
-
-          {/* Search Criteria Card */}
-          <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white shadow-xs">
-            <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-2">
-              <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
-                <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
-                Search Criteria
-              </span>
+              {activeEmail ? (
+                <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                  <Check className="h-3 w-3" /> Synced
+                </span>
+              ) : (
+                <span className="flex shrink-0 items-center gap-1 rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                  Sample
+                </span>
+              )}
             </div>
 
-            <div className="flex flex-col gap-3 p-3">
-              {/* 1. Property */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="propertySelect" className="text-[11.5px] font-semibold text-[#475569]">
-                  Property<span className="ml-0.5 text-rose-600">*</span>
-                </label>
-                <select
-                  id="propertySelect"
-                  value={propertyCode}
-                  onChange={(e) => setPropertyCode(e.target.value)}
-                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
-                >
-                  <option value="HRCEN">The Centurion Hotel (HRCEN)</option>
-                  <option value="HRBAK" disabled>The Bakubung Bush Lodge (HRBAK — Centurion pilot only)</option>
-                  <option value="HRKWA" disabled>Kwa Maritane Bush Lodge (HRKWA — Centurion pilot only)</option>
-                </select>
+            {/* Search Criteria Card */}
+            <div className="shadow-xs overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
+              <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-2">
+                <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
+                  Search Criteria
+                </span>
               </div>
 
-              {/* 2. Dates of Stay */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[11.5px] font-semibold text-[#475569]">
-                  Dates of Stay<span className="ml-0.5 text-rose-600">*</span>
-                </label>
-                <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
-                  <div className="grid grid-cols-2 border-b border-[#e2e8f0] bg-white">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveDateTab('arrival');
-                        setIsCalendarOpen(true);
-                      }}
-                      className={`flex flex-col gap-0.5 border-r border-[#e2e8f0] p-2 text-left transition-colors ${
-                        activeDateTab === 'arrival' && isCalendarOpen
-                          ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
-                          : 'hover:bg-[#f8fafc]'
-                      }`}
-                    >
-                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
-                        Arrival Date
-                      </span>
-                      <span className="text-[13px] font-bold text-[#1e293b]">
-                        2026-09-{String(arrivalDay).padStart(2, '0')}
-                      </span>
-                    </button>
+              <div className="flex flex-col gap-3 p-3">
+                {/* 1. Property */}
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor="propertySelect"
+                    className="text-[11.5px] font-semibold text-[#475569]"
+                  >
+                    Property<span className="ml-0.5 text-rose-600">*</span>
+                  </label>
+                  <select
+                    id="propertySelect"
+                    value={propertyCode}
+                    onChange={(e) => setPropertyCode(e.target.value)}
+                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
+                  >
+                    <option value="HRCEN">The Centurion Hotel (HRCEN)</option>
+                    <option value="HRBAK" disabled>
+                      The Bakubung Bush Lodge (HRBAK — Centurion pilot only)
+                    </option>
+                    <option value="HRKWA" disabled>
+                      Kwa Maritane Bush Lodge (HRKWA — Centurion pilot only)
+                    </option>
+                  </select>
+                </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveDateTab('departure');
-                        setIsCalendarOpen(true);
-                      }}
-                      className={`flex flex-col gap-0.5 p-2 text-left transition-colors ${
-                        activeDateTab === 'departure' && isCalendarOpen
-                          ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
-                          : 'hover:bg-[#f8fafc]'
-                      }`}
-                    >
-                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
-                        Departure Date
+                {/* 2. Dates of Stay */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11.5px] font-semibold text-[#475569]">
+                    Dates of Stay<span className="ml-0.5 text-rose-600">*</span>
+                  </label>
+                  <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
+                    <div className="grid grid-cols-2 border-b border-[#e2e8f0] bg-white">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveDateTab('arrival');
+                          setIsCalendarOpen(true);
+                        }}
+                        className={`flex flex-col gap-0.5 border-r border-[#e2e8f0] p-2 text-left transition-colors ${
+                          activeDateTab === 'arrival' && isCalendarOpen
+                            ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
+                            : 'hover:bg-[#f8fafc]'
+                        }`}
+                      >
+                        <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
+                          Arrival Date
+                        </span>
+                        <span className="text-[13px] font-bold text-[#1e293b]">
+                          2026-09-{String(arrivalDay).padStart(2, '0')}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveDateTab('departure');
+                          setIsCalendarOpen(true);
+                        }}
+                        className={`flex flex-col gap-0.5 p-2 text-left transition-colors ${
+                          activeDateTab === 'departure' && isCalendarOpen
+                            ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
+                            : 'hover:bg-[#f8fafc]'
+                        }`}
+                      >
+                        <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
+                          Departure Date
+                        </span>
+                        <span className="text-[13px] font-bold text-[#1e293b]">
+                          2026-09-{String(departureDay).padStart(2, '0')}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] text-[#475569]">
+                      <span className="flex items-center gap-1">
+                        <Moon className="h-3 w-3 text-slate-500" /> {nightsCount} Nights
                       </span>
-                      <span className="text-[13px] font-bold text-[#1e293b]">
-                        2026-09-{String(departureDay).padStart(2, '0')}
-                      </span>
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsCalendarOpen(!isCalendarOpen)}
+                        className="font-semibold text-[#0066cc] hover:underline"
+                      >
+                        {isCalendarOpen ? 'Hide Calendar ▲' : 'Change Dates ▼'}
+                      </button>
+                    </div>
 
-                  <div className="flex items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] text-[#475569]">
-                    <span className="flex items-center gap-1">
-                      <Moon className="h-3 w-3 text-slate-500" /> {nightsCount} Nights
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsCalendarOpen(!isCalendarOpen)}
-                      className="font-semibold text-[#0066cc] hover:underline"
-                    >
-                      {isCalendarOpen ? 'Hide Calendar ▲' : 'Change Dates ▼'}
-                    </button>
-                  </div>
+                    {/* In-Pane Calendar Widget */}
+                    {isCalendarOpen && (
+                      <div className="animate-in fade-in border-t border-[#e2e8f0] bg-white p-2.5 duration-150">
+                        <div className="mb-2 flex items-center justify-between">
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
+                          >
+                            <ChevronLeft className="h-3 w-3" />
+                          </button>
+                          <span className="text-xs font-bold text-[#1e293b]">September 2026</span>
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
+                          >
+                            <ChevronRight className="h-3 w-3" />
+                          </button>
+                        </div>
 
-                  {/* In-Pane Calendar Widget */}
-                  {isCalendarOpen && (
-                    <div className="border-t border-[#e2e8f0] bg-white p-2.5 animate-in fade-in duration-150">
-                      <div className="mb-2 flex items-center justify-between">
-                        <button
-                          type="button"
-                          className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
-                        >
-                          <ChevronLeft className="h-3 w-3" />
-                        </button>
-                        <span className="text-xs font-bold text-[#1e293b]">September 2026</span>
-                        <button
-                          type="button"
-                          className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
-                        >
-                          <ChevronRight className="h-3 w-3" />
-                        </button>
-                      </div>
+                        <div className="grid grid-cols-7 gap-0.5 text-center">
+                          {['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((dow) => (
+                            <div key={dow} className="pb-1 text-[10px] font-bold text-[#64748b]">
+                              {dow}
+                            </div>
+                          ))}
+                          <div className="h-6" /> {/* Blank */}
+                          {Array.from({ length: 30 }, (_, i) => i + 1).map((day) => {
+                            const isArr = day === arrivalDay;
+                            const isDep = day === departureDay;
+                            const inStay = day > arrivalDay && day < departureDay;
+                            return (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() => handleDayClick(day)}
+                                className={`flex h-6 items-center justify-center rounded-[2px] text-[11px] transition-colors ${
+                                  isArr || isDep
+                                    ? 'bg-[#1a4332] font-bold text-white'
+                                    : inStay
+                                      ? 'bg-[#eaf4ee] font-semibold text-[#1a4332]'
+                                      : 'text-[#1e293b] hover:bg-slate-100'
+                                }`}
+                              >
+                                {day}
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                      <div className="grid grid-cols-7 gap-0.5 text-center">
-                        {['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((dow) => (
-                          <div key={dow} className="pb-1 text-[10px] font-bold text-[#64748b]">
-                            {dow}
-                          </div>
-                        ))}
-                        <div className="h-6" /> {/* Blank */}
-                        {Array.from({ length: 30 }, (_, i) => i + 1).map((day) => {
-                          const isArr = day === arrivalDay;
-                          const isDep = day === departureDay;
-                          const inStay = day > arrivalDay && day < departureDay;
-                          return (
+                        <div className="mt-2 flex gap-1 border-t border-[#e2e8f0] pt-2">
+                          {[1, 2, 3, 7].map((n) => (
                             <button
-                              key={day}
+                              key={n}
                               type="button"
-                              onClick={() => handleDayClick(day)}
-                              className={`flex h-6 items-center justify-center rounded-[2px] text-[11px] transition-colors ${
-                                isArr || isDep
-                                  ? 'bg-[#1a4332] font-bold text-white'
-                                  : inStay
-                                    ? 'bg-[#eaf4ee] font-semibold text-[#1a4332]'
-                                    : 'text-[#1e293b] hover:bg-slate-100'
+                              onClick={() => handleQuickNights(n)}
+                              className={`flex-1 rounded-sm border py-1 text-center text-[10.5px] transition-colors ${
+                                nightsCount === n
+                                  ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
+                                  : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-slate-100'
                               }`}
                             >
-                              {day}
+                              {n} {n === 1 ? 'Night' : 'Nights'}
                             </button>
-                          );
-                        })}
+                          ))}
+                        </div>
                       </div>
+                    )}
+                  </div>
+                </div>
 
-                      <div className="mt-2 flex gap-1 border-t border-[#e2e8f0] pt-2">
-                        {[1, 2, 3, 7].map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            onClick={() => handleQuickNights(n)}
-                            className={`flex-1 rounded-sm border py-1 text-center text-[10.5px] transition-colors ${
-                              nightsCount === n
-                                ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
-                                : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-slate-100'
-                            }`}
-                          >
-                            {n} {n === 1 ? 'Night' : 'Nights'}
-                          </button>
-                        ))}
+                {/* 3. Meal Plan */}
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor="mealPlanSelect"
+                    className="text-[11.5px] font-semibold text-[#475569]"
+                  >
+                    Meal Plan<span className="ml-0.5 text-rose-600">*</span>
+                  </label>
+                  <select
+                    id="mealPlanSelect"
+                    value={mealPlan}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setMealPlan(next);
+                      if (next === 'room_only') setSelectedRateCode('BARRO');
+                      else setSelectedRateCode('NCOR');
+                    }}
+                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
+                  >
+                    <option value="breakfast">Bed & Breakfast (BAR)</option>
+                    <option value="room_only">Room Only (BARRO)</option>
+                    <option value="dinner_bed_breakfast">Dinner, Bed & Breakfast (DBB)</option>
+                  </select>
+                </div>
+
+                {/* 4. Room Types & Occupancy */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]">
+                    <span>
+                      Room Types & Occupancy<span className="ml-0.5 text-rose-600">*</span>
+                    </span>
+                    <span className="text-[11px] font-normal text-[#64748b]">
+                      {totalGuests} Guests Total
+                    </span>
+                  </div>
+
+                  <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
+                    <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11px] font-semibold text-[#64748b]">
+                      <span>Room Type & Guest Count</span>
+                      <span>Rooms</span>
+                    </div>
+
+                    <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-white px-2.5 py-2">
+                      <div className="flex flex-col">
+                        <strong className="text-xs text-[#1e293b]">EXKNG — Executive King</strong>
+                        <span className="text-[11px] text-[#64748b]">1 Adult per room</span>
+                      </div>
+                      <div className="flex items-center rounded-sm border border-[#cbd5e1]">
+                        <button
+                          type="button"
+                          onClick={() => setSingleRoomsCount(Math.max(1, singleRoomsCount - 1))}
+                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
+                        >
+                          <Minus className="h-3 w-3" />
+                        </button>
+                        <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
+                          {singleRoomsCount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSingleRoomsCount(singleRoomsCount + 1)}
+                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
                       </div>
                     </div>
+
+                    <div className="flex items-center justify-between bg-white px-2.5 py-2">
+                      <div className="flex flex-col">
+                        <strong className="text-xs text-[#1e293b]">STWN — Standard Twin</strong>
+                        <span className="text-[11px] text-[#64748b]">2 Adults per room</span>
+                      </div>
+                      <div className="flex items-center rounded-sm border border-[#cbd5e1]">
+                        <button
+                          type="button"
+                          onClick={() => setTwinRoomsCount(Math.max(1, twinRoomsCount - 1))}
+                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
+                        >
+                          <Minus className="h-3 w-3" />
+                        </button>
+                        <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
+                          {twinRoomsCount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setTwinRoomsCount(twinRoomsCount + 1)}
+                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. Sales Strategy */}
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor="salesStrategySelect"
+                    className="text-[11.5px] font-semibold text-[#475569]"
+                  >
+                    Sales Strategy<span className="ml-0.5 text-rose-600">*</span>
+                  </label>
+                  <select
+                    id="salesStrategySelect"
+                    value={salesStrategy}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setSalesStrategy(next);
+                      if (next === 'BAR') setSelectedRateCode('BAR');
+                      else setSelectedRateCode('NCOR');
+                    }}
+                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
+                  >
+                    <option value="Negotiated Contracted">
+                      Negotiated Contracted (Corporate NCOR1B)
+                    </option>
+                    <option value="BAR">BAR — Best Available Rate</option>
+                    <option value="Preset">Preset Corporate Rates</option>
+                  </select>
+                </div>
+
+                {/* Organization & Advanced Details */}
+                <details className="rounded-sm border border-[#e2e8f0]">
+                  <summary className="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] font-semibold text-[#475569]">
+                    <span>Organization & Advanced Search</span>
+                    <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+                  </summary>
+                  <div className="flex flex-col gap-2 border-t border-[#e2e8f0] bg-white p-2.5">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="orgAccountInput"
+                        className="text-[11px] font-medium text-[#475569]"
+                      >
+                        Organization / Account
+                      </label>
+                      <input
+                        id="orgAccountInput"
+                        type="text"
+                        value={orgAccount}
+                        onChange={(e) => setOrgAccount(e.target.value)}
+                        placeholder="e.g. CIDB"
+                        className="outline-hidden h-7 w-full rounded-sm border border-[#cbd5e1] px-2 text-xs text-[#1e293b] focus:border-[#0066cc]"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="checkbox"
+                        id="chkIncludeRestricted"
+                        checked={showUnavailable}
+                        onChange={(e) => setShowUnavailable(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#0066cc] focus:ring-0"
+                      />
+                      <label
+                        htmlFor="chkIncludeRestricted"
+                        className="cursor-pointer text-[11.5px] text-[#475569]"
+                      >
+                        Show Unavailable / Restricted Rates
+                      </label>
+                    </div>
+                  </div>
+                </details>
+
+                {/* Search Availability Button */}
+                {isSearching ? (
+                  <div className="flex h-9 w-full items-center justify-center gap-2 rounded-sm border border-blue-200 bg-[#eff6ff] text-xs font-semibold text-[#0066cc]">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Querying Infor HMS availability grid...</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleExecuteSearch}
+                    className="shadow-xs flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-[#0066cc] text-xs font-bold text-white transition-colors hover:bg-[#0052a3]"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    <span>Search Availability</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Results Section (Room Rates) */}
+            {hasSearched && (
+              <div className="animate-in fade-in flex flex-col gap-2.5 duration-200">
+                {/* Header Bar */}
+                <div className="shadow-xs flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-white px-3 py-2">
+                  <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
+                    <Utensils className="h-3.5 w-3.5 text-slate-500" />
+                    Room Rates
+                  </span>
+                  <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Available
+                  </span>
+                </div>
+
+                {/* Sample placeholder caption for test compatibility */}
+                <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+                  Sample placeholder — not live AI output
+                </p>
+
+                {/* Rate Cards */}
+                <div className="flex flex-col gap-1.5">
+                  {/* 1. NCOR1B */}
+                  <div
+                    onClick={() => {
+                      setSelectedRateCode('NCOR');
+                      if (mealPlan === 'room_only') setMealPlan('breakfast');
+                    }}
+                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
+                      selectedRateCode === 'NCOR'
+                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
+                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
+                    }`}
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
+                        <span>NCOR1B: Corporate Negotiated</span>
+                        <Check className="h-3 w-3 text-emerald-600" />
+                      </div>
+                      <span className="text-[11px] text-[#64748b]">
+                        {orgAccount.trim()
+                          ? `${orgAccount.trim()} Corporate Agreement`
+                          : 'Corporate Agreement'}{' '}
+                        · {singleRoomsCount}x EXKNG, {twinRoomsCount}x STWN
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,150.00</span>
+                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
+                    </div>
+                  </div>
+
+                  {/* 2. BAR */}
+                  <div
+                    onClick={() => {
+                      setSelectedRateCode('BAR');
+                      if (mealPlan === 'room_only') setMealPlan('breakfast');
+                    }}
+                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
+                      selectedRateCode === 'BAR'
+                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
+                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
+                    }`}
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
+                        <span>BAR: Best Available Rate</span>
+                        <Utensils className="h-3 w-3 text-slate-500" />
+                      </div>
+                      <span className="text-[11px] text-[#64748b]">
+                        Bed & Breakfast Included · Standard Rate
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,700.00</span>
+                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
+                    </div>
+                  </div>
+
+                  {/* 3. BARRO */}
+                  <div
+                    onClick={() => {
+                      setSelectedRateCode('BARRO');
+                      setMealPlan('room_only');
+                    }}
+                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
+                      selectedRateCode === 'BARRO'
+                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
+                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
+                    }`}
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <div className="text-[12.5px] font-bold text-[#1e293b]">
+                        BARRO: BAR Room Only
+                      </div>
+                      <span className="text-[11px] text-[#64748b]">
+                        Room Only · No Meals Included
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,430.00</span>
+                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
+                    </div>
+                  </div>
+
+                  {/* 4. BWKPB (Restricted) */}
+                  <div className="flex cursor-not-allowed items-center justify-between rounded-sm border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80">
+                    <div className="flex flex-col gap-0.5">
+                      <div className="text-[12.5px] font-bold text-[#1e293b]">
+                        BWKPB: Weekend Promo Rate
+                      </div>
+                      <span className="text-[11px] text-[#64748b]">Weekend promo rate only</span>
+                      <span className="flex w-fit items-center gap-1 rounded-sm bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
+                        <Ban className="h-2.5 w-2.5" /> Closed to Arrival (Weekday)
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="text-[13.5px] font-bold text-rose-600 line-through">
+                        R2,430.00
+                      </span>
+                      <span className="text-[10px] font-semibold text-rose-600">Restricted</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Grand Total Breakdown Card */}
+                <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
+                  <div className="flex justify-between">
+                    <span>
+                      {singleRoomsCount}x Executive King (Single · {nightsCount} nights):
+                    </span>
+                    <span className="font-semibold text-[#1e293b]">{fmtZAR(singleSubtotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>
+                      {twinRoomsCount}x Standard Twin (Twin Beds · {nightsCount} nights):
+                    </span>
+                    <span className="font-semibold text-[#1e293b]">{fmtZAR(twinSubtotal)}</span>
+                  </div>
+                  <div className="mt-1 flex items-baseline justify-between border-t border-[#cbd5e1] pt-2 text-[12.5px] font-bold text-[#1e293b]">
+                    <span>Quotation Total:</span>
+                    <span className="text-[15px] font-extrabold text-[#1a4332]">
+                      {fmtZAR(grandTotal)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10.5px] leading-tight text-[#64748b]">
+                    * Rates subject to Infor HMS taxes and fees upon reservation booking.
+                  </p>
+                </div>
+
+                {/* Infor HMS Audit Proof Tabs */}
+                <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
+                  <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setProofTab('results')}
+                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          proofTab === 'results'
+                            ? 'shadow-xs bg-white text-[#1e293b]'
+                            : 'text-[#64748b] hover:text-[#1e293b]'
+                        }`}
+                      >
+                        Availability Results
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProofTab('criteria')}
+                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          proofTab === 'criteria'
+                            ? 'shadow-xs bg-white text-[#1e293b]'
+                            : 'text-[#64748b] hover:text-[#1e293b]'
+                        }`}
+                      >
+                        Search Criteria
+                      </button>
+                    </div>
+                    <span className="flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
+                      <ShieldCheck className="h-3.5 w-3.5" /> Audit Saved
+                    </span>
+                  </div>
+
+                  <div
+                    onClick={() => setIsModalOpen(true)}
+                    className="group relative h-28 w-full cursor-pointer overflow-hidden bg-slate-900"
+                  >
+                    <img
+                      src="/quote-rate-proof.png"
+                      alt="Infor HMS Availability Screen Proof"
+                      className="group-hover:scale-102 h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:opacity-100"
+                    />
+                    <div className="backdrop-blur-xs absolute bottom-2 right-2 flex items-center gap-1 rounded-sm bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                      <Search className="h-2.5 w-2.5" /> Inspect Full 1000×800
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsModalOpen(true)}
+                    className="flex w-full items-center justify-center gap-1.5 border-t border-[#e2e8f0] bg-white py-1.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#f8fafc]"
+                  >
+                    <ExternalLink className="h-3 w-3" /> Open Full-Screen (1000×800)
+                  </button>
+                </div>
+
+                {/* Draft Quotation into Outlook Reply Button */}
+                <Button
+                  type="button"
+                  aria-label="Insert Draft in Outlook"
+                  onClick={handleInsertAiDraft}
+                  disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
+                  className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
+                >
+                  <Send className="mr-1.5 h-3.5 w-3.5" />
+                  {isDraftPending ? 'Saving Outlook draft…' : 'Draft Quotation into Email Reply'}
+                </Button>
+                <p className="text-center text-[11px] text-[#64748b]">
+                  Review the reply and PDF, then Send manually in Outlook. Nava never sends from
+                  this pane.
+                </p>
+
+                {/* Status Message */}
+                {draftStatus && draftStatus.key === selectedKey && (
+                  <p role="status" className="text-xs text-amber-700">
+                    {draftStatus.message}
+                  </p>
+                )}
+
+                {/* Outlook Email Draft Preview Box */}
+                {showDraftPreview && draftedDetails && (
+                  <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
+                    <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
+                      <div>
+                        <strong>To:</strong> {draftedDetails.sender} &lt;
+                        {draftedDetails.senderEmail}&gt;
+                        <br />
+                        <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDraftedDetails(null)}
+                        className="text-[10px] text-slate-400 hover:text-slate-600"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                    <p>Good day {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
+                    <p className="mt-1">Thank you for Choosing The Centurion Hotel.</p>
+                    <p className="mt-1">Please see attached quotation.</p>
+                    <p className="mt-1">
+                      Should you wish to proceed, please sign and return the attached quotation so
+                      that we can confirm and secure your reservation. Please note that no rooms are
+                      currently being held, and bookings will only be confirmed once we have
+                      received the signed quotation.
+                    </p>
+                    <p className="mt-1">
+                      Please feel free to contact me should you require any further information
+                    </p>
+                    <p className="mt-2 text-[#475569]">Kind regards,</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* System Diagnostics Drawer */}
+            <div className="pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={runComprehensiveTest}
+                disabled={testing}
+                className="h-8 w-full border-[#cbd5e1] text-xs font-medium text-[#475569] hover:bg-[#f8fafc]"
+              >
+                <RefreshCw className={`mr-2 h-3.5 w-3.5 ${testing ? 'animate-spin' : ''}`} />
+                Run System Verification
+              </Button>
+            </div>
+
+            {(testResults.bridge !== null || testResults.serverPing !== null) && (
+              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
+                  Diagnostic Verification
+                </p>
+                <div className="flex items-center justify-between text-[#1e293b]">
+                  <span>1. C# VSTO Bridge Handshake</span>
+                  {testResults.bridge ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-500" />
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[#1e293b]">
+                  <span>2. Active Email Inspection</span>
+                  {testResults.activeEmail ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-500" />
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[#1e293b]">
+                  <span>3. Folder Table Query</span>
+                  {testResults.folderTable ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-500" />
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[#1e293b]">
+                  <span>4. TRPC Server Ping</span>
+                  {testResults.serverPing ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-500" />
                   )}
                 </div>
               </div>
-
-              {/* 3. Meal Plan */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="mealPlanSelect" className="text-[11.5px] font-semibold text-[#475569]">
-                  Meal Plan<span className="ml-0.5 text-rose-600">*</span>
-                </label>
-                <select
-                  id="mealPlanSelect"
-                  value={mealPlan}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setMealPlan(next);
-                    if (next === 'room_only') setSelectedRateCode('BARRO');
-                    else setSelectedRateCode('NCOR');
-                  }}
-                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
-                >
-                  <option value="breakfast">Bed & Breakfast (BAR)</option>
-                  <option value="room_only">Room Only (BARRO)</option>
-                  <option value="dinner_bed_breakfast">Dinner, Bed & Breakfast (DBB)</option>
-                </select>
-              </div>
-
-              {/* 4. Room Types & Occupancy */}
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]">
-                  <span>Room Types & Occupancy<span className="ml-0.5 text-rose-600">*</span></span>
-                  <span className="text-[11px] font-normal text-[#64748b]">
-                    {totalGuests} Guests Total
-                  </span>
-                </div>
-
-                <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
-                  <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11px] font-semibold text-[#64748b]">
-                    <span>Room Type & Guest Count</span>
-                    <span>Rooms</span>
-                  </div>
-
-                  <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-white px-2.5 py-2">
-                    <div className="flex flex-col">
-                      <strong className="text-xs text-[#1e293b]">EXKNG — Executive King</strong>
-                      <span className="text-[11px] text-[#64748b]">1 Adult per room</span>
-                    </div>
-                    <div className="flex items-center rounded-sm border border-[#cbd5e1]">
-                      <button
-                        type="button"
-                        onClick={() => setSingleRoomsCount(Math.max(1, singleRoomsCount - 1))}
-                        className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                      >
-                        <Minus className="h-3 w-3" />
-                      </button>
-                      <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
-                        {singleRoomsCount}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setSingleRoomsCount(singleRoomsCount + 1)}
-                        className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                      >
-                        <Plus className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between bg-white px-2.5 py-2">
-                    <div className="flex flex-col">
-                      <strong className="text-xs text-[#1e293b]">STWN — Standard Twin</strong>
-                      <span className="text-[11px] text-[#64748b]">2 Adults per room</span>
-                    </div>
-                    <div className="flex items-center rounded-sm border border-[#cbd5e1]">
-                      <button
-                        type="button"
-                        onClick={() => setTwinRoomsCount(Math.max(1, twinRoomsCount - 1))}
-                        className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                      >
-                        <Minus className="h-3 w-3" />
-                      </button>
-                      <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
-                        {twinRoomsCount}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setTwinRoomsCount(twinRoomsCount + 1)}
-                        className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                      >
-                        <Plus className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 5. Sales Strategy */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="salesStrategySelect" className="text-[11.5px] font-semibold text-[#475569]">
-                  Sales Strategy<span className="ml-0.5 text-rose-600">*</span>
-                </label>
-                <select
-                  id="salesStrategySelect"
-                  value={salesStrategy}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setSalesStrategy(next);
-                    if (next === 'BAR') setSelectedRateCode('BAR');
-                    else setSelectedRateCode('NCOR');
-                  }}
-                  className="h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] outline-hidden focus:border-[#0066cc]"
-                >
-                  <option value="Negotiated Contracted">Negotiated Contracted (Corporate NCOR1B)</option>
-                  <option value="BAR">BAR — Best Available Rate</option>
-                  <option value="Preset">Preset Corporate Rates</option>
-                </select>
-              </div>
-
-              {/* Organization & Advanced Details */}
-              <details className="rounded-sm border border-[#e2e8f0]">
-                <summary className="flex cursor-pointer items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] font-semibold text-[#475569] select-none">
-                  <span>Organization & Advanced Search</span>
-                  <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
-                </summary>
-                <div className="flex flex-col gap-2 border-t border-[#e2e8f0] bg-white p-2.5">
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="orgAccountInput" className="text-[11px] font-medium text-[#475569]">
-                      Organization / Account
-                    </label>
-                    <input
-                      id="orgAccountInput"
-                      type="text"
-                      value={orgAccount}
-                      onChange={(e) => setOrgAccount(e.target.value)}
-                      placeholder="e.g. CIDB"
-                      className="h-7 w-full rounded-sm border border-[#cbd5e1] px-2 text-xs text-[#1e293b] outline-hidden focus:border-[#0066cc]"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 pt-1">
-                    <input
-                      type="checkbox"
-                      id="chkIncludeRestricted"
-                      checked={showUnavailable}
-                      onChange={(e) => setShowUnavailable(e.target.checked)}
-                      className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#0066cc] focus:ring-0"
-                    />
-                    <label
-                      htmlFor="chkIncludeRestricted"
-                      className="cursor-pointer text-[11.5px] text-[#475569]"
-                    >
-                      Show Unavailable / Restricted Rates
-                    </label>
-                  </div>
-                </div>
-              </details>
-
-              {/* Search Availability Button */}
-              {isSearching ? (
-                <div className="flex h-9 w-full items-center justify-center gap-2 rounded-sm border border-blue-200 bg-[#eff6ff] text-xs font-semibold text-[#0066cc]">
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  <span>Querying Infor HMS availability grid...</span>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleExecuteSearch}
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-[#0066cc] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#0052a3]"
-                >
-                  <Search className="h-3.5 w-3.5" />
-                  <span>Search Availability</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Results Section (Room Rates) */}
-          {hasSearched && (
-            <div className="flex flex-col gap-2.5 animate-in fade-in duration-200">
-              
-              {/* Header Bar */}
-              <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-white px-3 py-2 shadow-xs">
-                <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
-                  <Utensils className="h-3.5 w-3.5 text-slate-500" />
-                  Room Rates
-                </span>
-                <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Available
-                </span>
-              </div>
-
-              {/* Sample placeholder caption for test compatibility */}
-              <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-                Sample placeholder — not live AI output
-              </p>
-
-              {/* Rate Cards */}
-              <div className="flex flex-col gap-1.5">
-                {/* 1. NCOR1B */}
-                <div
-                  onClick={() => {
-                    setSelectedRateCode('NCOR');
-                    if (mealPlan === 'room_only') setMealPlan('breakfast');
-                  }}
-                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                    selectedRateCode === 'NCOR'
-                      ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
-                      : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                  }`}
-                >
-                  <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                      <span>NCOR1B: Corporate Negotiated</span>
-                      <Check className="h-3 w-3 text-emerald-600" />
-                    </div>
-                    <span className="text-[11px] text-[#64748b]">
-                      {orgAccount.trim() ? `${orgAccount.trim()} Corporate Agreement` : 'Corporate Agreement'} · {singleRoomsCount}x EXKNG, {twinRoomsCount}x STWN
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,150.00</span>
-                    <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                  </div>
-                </div>
-
-                {/* 2. BAR */}
-                <div
-                  onClick={() => {
-                    setSelectedRateCode('BAR');
-                    if (mealPlan === 'room_only') setMealPlan('breakfast');
-                  }}
-                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                    selectedRateCode === 'BAR'
-                      ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
-                      : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                  }`}
-                >
-                  <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                      <span>BAR: Best Available Rate</span>
-                      <Utensils className="h-3 w-3 text-slate-500" />
-                    </div>
-                    <span className="text-[11px] text-[#64748b]">
-                      Bed & Breakfast Included · Standard Rate
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,700.00</span>
-                    <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                  </div>
-                </div>
-
-                {/* 3. BARRO */}
-                <div
-                  onClick={() => {
-                    setSelectedRateCode('BARRO');
-                    setMealPlan('room_only');
-                  }}
-                  className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                    selectedRateCode === 'BARRO'
-                      ? 'border-[#1a4332] bg-[#eaf4ee] shadow-xs ring-1 ring-[#1a4332]'
-                      : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                  }`}
-                >
-                  <div className="flex flex-col gap-0.5">
-                    <div className="text-[12.5px] font-bold text-[#1e293b]">
-                      BARRO: BAR Room Only
-                    </div>
-                    <span className="text-[11px] text-[#64748b]">Room Only · No Meals Included</span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,430.00</span>
-                    <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                  </div>
-                </div>
-
-                {/* 4. BWKPB (Restricted) */}
-                <div className="flex items-center justify-between rounded-sm border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80 cursor-not-allowed">
-                  <div className="flex flex-col gap-0.5">
-                    <div className="text-[12.5px] font-bold text-[#1e293b]">
-                      BWKPB: Weekend Promo Rate
-                    </div>
-                    <span className="text-[11px] text-[#64748b]">Weekend promo rate only</span>
-                    <span className="flex items-center gap-1 rounded-sm bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 w-fit">
-                      <Ban className="h-2.5 w-2.5" /> Closed to Arrival (Weekday)
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="text-[13.5px] font-bold text-rose-600 line-through">
-                      R2,430.00
-                    </span>
-                    <span className="text-[10px] font-semibold text-rose-600">Restricted</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Grand Total Breakdown Card */}
-              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
-                <div className="flex justify-between">
-                  <span>
-                    {singleRoomsCount}x Executive King (Single · {nightsCount} nights):
-                  </span>
-                  <span className="font-semibold text-[#1e293b]">{fmtZAR(singleSubtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>
-                    {twinRoomsCount}x Standard Twin (Twin Beds · {nightsCount} nights):
-                  </span>
-                  <span className="font-semibold text-[#1e293b]">{fmtZAR(twinSubtotal)}</span>
-                </div>
-                <div className="mt-1 flex items-baseline justify-between border-t border-[#cbd5e1] pt-2 text-[12.5px] font-bold text-[#1e293b]">
-                  <span>Quotation Total:</span>
-                  <span className="text-[15px] font-extrabold text-[#1a4332]">
-                    {fmtZAR(grandTotal)}
-                  </span>
-                </div>
-                <p className="mt-1 text-[10.5px] text-[#64748b] leading-tight">
-                  * Rates subject to Infor HMS taxes and fees upon reservation booking.
-                </p>
-              </div>
-
-              {/* Infor HMS Audit Proof Tabs */}
-              <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
-                <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setProofTab('results')}
-                      className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                        proofTab === 'results'
-                          ? 'bg-white text-[#1e293b] shadow-xs'
-                          : 'text-[#64748b] hover:text-[#1e293b]'
-                      }`}
-                    >
-                      Availability Results
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProofTab('criteria')}
-                      className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                        proofTab === 'criteria'
-                          ? 'bg-white text-[#1e293b] shadow-xs'
-                          : 'text-[#64748b] hover:text-[#1e293b]'
-                      }`}
-                    >
-                      Search Criteria
-                    </button>
-                  </div>
-                  <span className="flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
-                    <ShieldCheck className="h-3.5 w-3.5" /> Audit Saved
-                  </span>
-                </div>
-
-                <div
-                  onClick={() => setIsModalOpen(true)}
-                  className="group relative h-28 w-full cursor-pointer overflow-hidden bg-slate-900"
-                >
-                  <img
-                    src="/quote-rate-proof.png"
-                    alt="Infor HMS Availability Screen Proof"
-                    className="h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:scale-102 group-hover:opacity-100"
-                  />
-                  <div className="absolute right-2 bottom-2 flex items-center gap-1 rounded-sm bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-xs">
-                    <Search className="h-2.5 w-2.5" /> Inspect Full 1000×800
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(true)}
-                  className="flex w-full items-center justify-center gap-1.5 border-t border-[#e2e8f0] bg-white py-1.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#f8fafc]"
-                >
-                  <ExternalLink className="h-3 w-3" /> Open Full-Screen (1000×800)
-                </button>
-              </div>
-
-              {/* Draft Quotation into Outlook Reply Button */}
-              <Button
-                type="button"
-                aria-label="Insert Draft in Outlook"
-                onClick={handleInsertAiDraft}
-                disabled={
-                  !activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending
-                }
-                className="h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white shadow-xs transition-colors hover:bg-[#123023] disabled:opacity-50"
-              >
-                <Send className="mr-1.5 h-3.5 w-3.5" />
-                {isDraftPending
-                  ? 'Saving Outlook draft…'
-                  : 'Draft Quotation into Email Reply'}
-              </Button>
-
-              {/* Status Message */}
-              {draftStatus && draftStatus.key === selectedKey && (
-                <p role="status" className="text-xs text-amber-700">
-                  {draftStatus.message}
-                </p>
-              )}
-
-              {/* Outlook Email Draft Preview Box */}
-              {showDraftPreview && draftedDetails && (
-                <div className="rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] animate-in fade-in duration-200">
-                  <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
-                    <div>
-                      <strong>To:</strong> {draftedDetails.sender} &lt;{draftedDetails.senderEmail}&gt;<br />
-                      <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDraftedDetails(null)}
-                      className="text-[10px] text-slate-400 hover:text-slate-600"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                  <p>Good day {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
-                  <p className="mt-1">Thank you for Choosing The Centurion Hotel.</p>
-                  <p className="mt-1">Please see attached quotation.</p>
-                  <p className="mt-1">
-                    Should you wish to proceed, please sign and return the attached quotation so that we can
-                    confirm and secure your reservation. Please note that no rooms are currently being held,
-                    and bookings will only be confirmed once we have received the signed quotation.
-                  </p>
-                  <p className="mt-1">Please feel free to contact me should you require any further information</p>
-                  <p className="mt-2 text-[#475569]">Kind regards,</p>
-                </div>
-              )}
-
-            </div>
-          )}
-
-          {/* System Diagnostics Drawer */}
-          <div className="pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={runComprehensiveTest}
-              disabled={testing}
-              className="h-8 w-full border-[#cbd5e1] text-xs font-medium text-[#475569] hover:bg-[#f8fafc]"
-            >
-              <RefreshCw className={`mr-2 h-3.5 w-3.5 ${testing ? 'animate-spin' : ''}`} />
-              Run System Verification
-            </Button>
-          </div>
-
-          {(testResults.bridge !== null || testResults.serverPing !== null) && (
-            <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
-                Diagnostic Verification
-              </p>
-              <div className="flex items-center justify-between text-[#1e293b]">
-                <span>1. C# VSTO Bridge Handshake</span>
-                {testResults.bridge ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-500" />
-                )}
-              </div>
-              <div className="flex items-center justify-between text-[#1e293b]">
-                <span>2. Active Email Inspection</span>
-                {testResults.activeEmail ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-500" />
-                )}
-              </div>
-              <div className="flex items-center justify-between text-[#1e293b]">
-                <span>3. Folder Table Query</span>
-                {testResults.folderTable ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-500" />
-                )}
-              </div>
-              <div className="flex items-center justify-between text-[#1e293b]">
-                <span>4. TRPC Server Ping</span>
-                {testResults.serverPing ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-500" />
-                )}
-              </div>
-            </div>
-          )}
-
-        </main>
+            )}
+          </main>
         )}
 
         {/* Minimal Pilot Footer */}
@@ -1643,7 +1892,6 @@ export default function OutlookPanePage() {
             </span>
           </div>
         </footer>
-
       </div>
 
       {/* 1000×800 Desktop Full-Screen Inspection Modal */}
@@ -1654,14 +1902,16 @@ export default function OutlookPanePage() {
           onClick={(e) => {
             if (e.target === e.currentTarget) setIsModalOpen(false);
           }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-xs animate-in fade-in duration-150"
+          className="backdrop-blur-xs animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 duration-150"
         >
           <div className="flex h-[800px] max-h-[92vh] w-[1000px] max-w-[95vw] flex-col overflow-hidden rounded-md bg-white shadow-2xl">
             <div className="flex h-9 shrink-0 items-center justify-between bg-slate-900 px-3 text-xs font-semibold text-white">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
                 <span>
-                  Infor HMS — {proofTab === 'criteria' ? 'Search Criteria' : 'Hotel Availability Grid'} [Centurion · Native 100% DPI]
+                  Infor HMS —{' '}
+                  {proofTab === 'criteria' ? 'Search Criteria' : 'Hotel Availability Grid'}{' '}
+                  [Centurion · Native 100% DPI]
                 </span>
               </div>
               <div className="flex items-center gap-3">
@@ -1686,7 +1936,8 @@ export default function OutlookPanePage() {
 
             <div className="flex h-8 shrink-0 items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-3 text-[11px] text-[#475569]">
               <span>
-                Green / White: Open Availability · ⊘ Red Circle: Stay Restriction / Closed to Arrival (BWKPB)
+                Green / White: Open Availability · ⊘ Red Circle: Stay Restriction / Closed to
+                Arrival (BWKPB)
               </span>
               <span>
                 Press <strong>Esc</strong> to close

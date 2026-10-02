@@ -30,6 +30,22 @@ bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
 
+echo "== ops-deploy: install dependencies before migration check =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && pnpm install --frozen-lockfile"
+
+if [ "$DO_MIGRATE" -eq 1 ]; then
+  echo "== ops-deploy: migrate =="
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && pnpm db:migrate"
+fi
+
+if [ "$QUIESCED" != "1" ]; then
+  echo "== ops-deploy: verify database before remote env bootstrap =="
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/check-migration-compatibility.sh"
+fi
+
 if [ "$QUIESCED" != "1" ]; then
   echo "== ops-deploy: bootstrap isolated remote env when absent =="
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
@@ -39,12 +55,6 @@ if [ "$QUIESCED" != "1" ]; then
       elif [ ! -f apps/server-pilot/.env.remote-common ] || [ ! -f apps/server-pilot/.env.remote-admin ]; then \
         echo 'remote HTTP env files must both exist or both be bootstrapped' >&2; exit 20; \
       fi"
-fi
-
-if [ "$DO_MIGRATE" -eq 1 ]; then
-  echo "== ops-deploy: migrate =="
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && pnpm db:migrate"
 fi
 
 if [ "$QUIESCED" = "1" ]; then

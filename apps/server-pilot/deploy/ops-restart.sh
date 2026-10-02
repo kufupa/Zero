@@ -92,6 +92,8 @@ if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1
 '
 }
 
+bash "$SERVER_PILOT/deploy/check-migration-compatibility.sh"
+
 validate_remote_env_files || {
   echo "remote HTTP environment validation failed before PM2 mutation" >&2
   exit 20

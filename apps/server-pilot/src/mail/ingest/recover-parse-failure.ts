@@ -7,29 +7,50 @@
  * copies outbound and skips everyone else.
  */
 import {
-  candidateMessageIdForPop3Uidl,
-  parseRawMessage,
-  uploadedAttachmentsFromParseFailure,
-  type ParsedInboundMessage,
-} from './parse-message.js';
-import { cleanupPartialParseFailureAttachments, persistInboundMessage, claimIngestUidl, releaseIngestUidlClaim } from './store.js';
-import {
   CENTURION_INGEST_MAILBOX_IDS,
   isCenturionIngestMailboxId,
   type PromoteQuarantineOptions,
   type PromoteQuarantineResult,
   type PromoteQuarantineRow,
 } from './promote-quarantine.js';
-import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
+import {
+  cleanupPartialParseFailureAttachments,
+  persistInboundMessage,
+  claimIngestUidl,
+  releaseIngestUidlClaim,
+  type QuarantineReason,
+} from './store.js';
+import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
 import { getS3Storage, quarantineArchiveKey, type S3Storage } from '../../storage/s3.js';
-import type { DB } from '../../db/client.js';
+import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { and, asc, eq, inArray } from 'drizzle-orm';
+import type { DB } from '../../db/client.js';
 
 const PARSE_FAILURE_REASON = 'parse_failure';
 
 export interface RecoverParseFailureOptions extends PromoteQuarantineOptions {
   /** Default true: bulk recover must not enqueue triage/shadow on a drifted schema. */
   skipAiEnqueue?: boolean;
+}
+
+type RecoverErrorReason =
+  | 'raw_mime_missing'
+  | 'ingest_uidl_claim_pending'
+  | 'recovery_failed'
+  | 'attachment_cleanup_failed';
+export type RecoverRowOutcome = {
+  id: string;
+  kind: RecoverOneOutcome['kind'];
+  reason?: RecoverErrorReason | QuarantineReason;
+};
+export interface RecoverParseFailureResult extends PromoteQuarantineResult {
+  /** Opaque row IDs and bounded reason codes; never SQL, MIME or error parameters. */
+  outcomes: RecoverRowOutcome[];
 }
 
 export async function listParseFailureQuarantine(
@@ -60,12 +81,12 @@ export async function listParseFailureQuarantine(
 
 export async function recoverParseFailureQuarantine(
   opts: RecoverParseFailureOptions,
-): Promise<PromoteQuarantineResult> {
+): Promise<RecoverParseFailureResult> {
   const storage = opts.storage ?? getS3Storage();
   const rows = await listParseFailureQuarantine(opts.db, opts.limit);
   const skipAiEnqueue = opts.skipAiEnqueue !== false;
 
-  const result: PromoteQuarantineResult = {
+  const result: RecoverParseFailureResult = {
     scanned: rows.length,
     stored: 0,
     duplicate: 0,
@@ -74,6 +95,7 @@ export async function recoverParseFailureQuarantine(
     skipped: 0,
     errorIds: [],
     dryRunIds: [],
+    outcomes: [],
   };
 
   for (const row of rows) {
@@ -82,6 +104,11 @@ export async function recoverParseFailureQuarantine(
       storage,
       dryRun: opts.dryRun ?? false,
       skipAiEnqueue,
+    });
+    result.outcomes.push({
+      id: row.id,
+      kind: outcome.kind,
+      ...('reason' in outcome ? { reason: outcome.reason } : {}),
     });
 
     switch (outcome.kind) {
@@ -115,8 +142,8 @@ type RecoverOneOutcome =
   | { kind: 'skipped' }
   | { kind: 'stored' }
   | { kind: 'duplicate' }
-  | { kind: 'quarantined' }
-  | { kind: 'error'; message: string };
+  | { kind: 'quarantined'; reason?: QuarantineReason }
+  | { kind: 'error'; reason: RecoverErrorReason };
 
 async function recoverOneParseFailureRow(
   row: PromoteQuarantineRow,
@@ -138,7 +165,7 @@ async function recoverOneParseFailureRow(
     if (!loaded) {
       return {
         kind: 'error',
-        message: `missing s3 object ${row.rawMimeS3Key} and archive ${quarantineArchiveKey(row)}`,
+        reason: 'raw_mime_missing',
       };
     }
 
@@ -154,7 +181,7 @@ async function recoverOneParseFailureRow(
 
     const claimToken = await claimIngestUidl(db, meta);
     if (!claimToken) {
-      return { kind: 'error', message: 'ingest uidl claim pending' };
+      return { kind: 'error', reason: 'ingest_uidl_claim_pending' };
     }
 
     try {
@@ -193,9 +220,11 @@ async function recoverOneParseFailureRow(
           .set({ reason: persistResult.reason })
           .where(eq(mailIngestQuarantine.id, row.id));
       }
-      return { kind: 'quarantined' };
+      return {
+        kind: 'quarantined',
+        ...(persistResult.kind === 'quarantined' ? { reason: persistResult.reason } : {}),
+      };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
       const uploadedAttachments = [
         ...new Map(
           [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
@@ -216,29 +245,29 @@ async function recoverOneParseFailureRow(
             },
             activeIngestUidlClaimToken: claimToken,
           });
-        } catch (cleanupError) {
-          const cleanupMessage =
-            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        } catch {
           return {
             kind: 'error',
-            message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+            reason: 'attachment_cleanup_failed',
           };
         }
       }
-      return { kind: 'error', message };
+      return { kind: 'error', reason: 'recovery_failed' };
     } finally {
       await releaseIngestUidlClaim(db, meta, claimToken);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { kind: 'error', message };
+  } catch {
+    return { kind: 'error', reason: 'recovery_failed' };
   }
 }
 
 async function loadRecoverRawMime(
   storage: S3Storage,
   row: PromoteQuarantineRow,
-): Promise<{ object: { body: Buffer; contentType: string }; source: 'primary' | 'archive' } | null> {
+): Promise<{
+  object: { body: Buffer; contentType: string };
+  source: 'primary' | 'archive';
+} | null> {
   const primary = await storage.getObject(row.rawMimeS3Key);
   if (primary) return { object: primary, source: 'primary' };
   const archived = await storage.getObject(
