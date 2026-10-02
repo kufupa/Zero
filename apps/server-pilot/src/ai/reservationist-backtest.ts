@@ -34,6 +34,8 @@ export type ToolCall = { toolName: string; args: unknown; result: unknown };
 
 const QUOTE_SECONDS = 220;
 const UNSENT_QUEUE_STATES = new Set(['pending', 'sending', 'cancelled']);
+const PARTY_RATE_RE =
+  /\b(?:corporate|negotiated|contract(?:ed)?|agent|agency|sto|net)\s+rates?\b|\bon account\b|\bcompany account\b/i;
 const REPLY_SUBJECT_RE = /^\s*re\s*:/i;
 const EMPTY_REPLY_RE = /^\s*(?:From:\s|-----Original Message-----)/i;
 
@@ -69,7 +71,7 @@ function classify(triggerText: string, goldText: string) {
   const { floor } = parseNeededTools(triggerText);
   const group = floor.hms_group_block_read;
   const quote = (floor.hms_quote_stay || amountsIn(stripQuotedHistory(goldText)).size > 0) && !group;
-  const party = quote && floor.hms_company_account_read;
+  const party = quote && (floor.hms_company_account_read || PARTY_RATE_RE.test(triggerText));
   const create = floor.hms_create_reservation && !quote;
   const anyTool = Object.values(floor).some(Boolean);
   const stratum: Stratum = party

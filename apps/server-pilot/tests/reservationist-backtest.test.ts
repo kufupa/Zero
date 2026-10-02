@@ -85,6 +85,8 @@ describe('buildCases', () => {
       c: 'create',
       n: 'no_tool',
     });
+    const [agent] = buildCases(thread('a', '2026-09-28', 'Please quote our agent rate for 2 nights', 'R900'));
+    expect(agent?.stratum).toBe('quote_party');
   });
 });
 
