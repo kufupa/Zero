@@ -62,6 +62,7 @@ export function amountsIn(text: string): Set<number> {
 
 function numbersIn(value: unknown, out = new Set<number>()): Set<number> {
   if (typeof value === 'number') out.add(Math.round(value));
+  else if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value)) out.add(Math.round(Number(value)));
   else if (Array.isArray(value)) for (const v of value) numbersIn(v, out);
   else if (value && typeof value === 'object') for (const v of Object.values(value)) numbersIn(v, out);
   return out;

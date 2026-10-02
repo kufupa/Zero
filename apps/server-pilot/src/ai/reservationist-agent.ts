@@ -34,7 +34,9 @@ export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property co
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
 - Cancellations, amendments, invoices, folios and anything else are other (no tools).
 - Groups of 10+ rooms/delegates or events are other (no tools).
-- Missing dates or occupancy: do not guess; decide the workflow and list what is missing.`;
+- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
+- A request to "assist with"/"book" rooms with dates and guest names is create.
+- Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
 export const reservationistDecisionSchema = z.object({
   workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other']),

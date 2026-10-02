@@ -144,6 +144,12 @@ describe('scoreCase', () => {
     expect(row).toMatchObject({ money: 'match', datesOk: true, paxOk: true, quoteLive: true, hmsElapsedMs: 220000, pass: true });
   });
 
+  it('grounds draft amounts in HMS decimal-string rates', () => {
+    const call: ToolCall = { ...live(0), result: { outcome: 'quote', groups: [{ options: [{ amount: '1850.00' }] }] } };
+    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1,850 (R7,400 for 4 nights)' }), [call]).money).toBe('extract_fail');
+    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1,850' }), [call]).money).toBe('match');
+  });
+
   it('separates rate_stale from extract_fail', () => {
     expect(scoreCase(quoteCase, decision({ replyDraft: 'R2 100' }), [live(2100)]).money).toBe('rate_stale');
     const bad = scoreCase(quoteCase, decision({ replyDraft: 'R1 234' }), [live(2100)]);
