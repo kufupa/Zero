@@ -36,14 +36,15 @@ vi.mock('@/providers/query-provider', () => ({
 
 afterEach(() => {
   cleanup();
-  window.history.replaceState({}, '', '/');
+  window.history.replaceState({}, '', 'http://localhost/');
   state.session = null;
   vi.clearAllMocks();
 });
 
 describe('mailbox queries require a staff session', () => {
   it('does not request either mailbox endpoint before sign-in, then loads after sign-in', async () => {
-    window.history.replaceState({}, '', '/outlook-pane');
+    window.history.replaceState({}, '', 'http://localhost/outlook-pane');
+    expect(window.location.pathname).toBe('/outlook-pane');
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: PropsWithChildren) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -62,7 +63,8 @@ describe('mailbox queries require a staff session', () => {
   });
 
   it('preserves normal web-mail loading even while its cached session is stale', async () => {
-    window.history.replaceState({}, '', '/mail/inbox');
+    window.history.replaceState({}, '', 'http://localhost/mail/inbox');
+    expect(window.location.pathname).toBe('/mail/inbox');
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: PropsWithChildren) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
