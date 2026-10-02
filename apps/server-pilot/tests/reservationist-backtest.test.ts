@@ -59,11 +59,18 @@ describe('buildCases', () => {
       ...thread('missing-trigger', '2026-09-28', QUOTE, 'x').map((m) =>
         m.businessDirection === 'outbound' ? { ...m, inReplyTo: '<never-ingested>' } : m,
       ),
-      ...thread('no-header', '2026-09-27', QUOTE, 'R1 000').map((m) => ({ ...m, inReplyTo: null })),
+      ...thread('no-header', '2026-09-27', QUOTE, 'R1 000').map((m) => ({ ...m, inReplyTo: null, subject: 'RE: stay' })),
+      ...thread('staff-initiated', '2026-09-27', QUOTE, 'Group report').map((m) => ({ ...m, inReplyTo: null })),
+      msg({ threadId: 'later-reply', messageId: '<a1>', eventAt: '2026-09-26T07:00:00.000Z', textBody: QUOTE }),
+      msg({ threadId: 'later-reply', eventAt: '2026-09-26T08:00:00.000Z', businessDirection: 'outbound', subject: 'Report', textBody: 'FYI' }),
+      msg({ threadId: 'later-reply', eventAt: '2026-09-26T09:00:00.000Z', businessDirection: 'outbound', inReplyTo: '<a1>', textBody: 'R1 500' }),
+      msg({ threadId: 'split-in', messageId: '<s1>', eventAt: '2026-09-26T05:00:00.000Z', textBody: QUOTE }),
+      msg({ threadId: 'split-out', eventAt: '2026-09-26T06:00:00.000Z', businessDirection: 'outbound', inReplyTo: '<s1>', textBody: 'R1 700' }),
       ...thread('empty-forward', '2026-09-28', 'Thank you', ' From: Guest\nSent: Monday\nRate R2 000'),
     ];
     const cases = buildCases(rows);
-    expect(cases.map((c) => c.threadId)).toEqual(['gold', 'no-header']);
+    expect(cases.map((c) => c.threadId)).toEqual(['gold', 'no-header', 'later-reply', 'split-in']);
+    expect(cases.find((c) => c.threadId === 'split-in')?.goldText).toBe('R1 700');
     expect(cases[0]).toMatchObject({ stratum: 'quote_fit', oracle: { quote: true }, goldText: 'Rate is R1 850 per night' });
   });
 

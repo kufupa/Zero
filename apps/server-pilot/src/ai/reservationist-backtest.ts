@@ -34,6 +34,7 @@ export type ToolCall = { toolName: string; args: unknown; result: unknown };
 
 const QUOTE_SECONDS = 220;
 const UNSENT_QUEUE_STATES = new Set(['pending', 'sending', 'cancelled']);
+const REPLY_SUBJECT_RE = /^\s*re\s*:/i;
 const EMPTY_REPLY_RE = /^\s*(?:From:\s|-----Original Message-----)/i;
 
 function textOf(row: CenturionCorpusMessageRow): string {
@@ -92,42 +93,65 @@ function latestFirst(cases: readonly BacktestCase[]) {
 const byEventAt = (a: CenturionCorpusMessageRow, b: CenturionCorpusMessageRow) =>
   (a.eventAt ?? '9999').localeCompare(b.eventAt ?? '9999') || a.id.localeCompare(b.id);
 
+function findGoldPair(
+  list: readonly CenturionCorpusMessageRow[],
+  inboundById: ReadonlyMap<string, CenturionCorpusMessageRow>,
+) {
+  for (const [goldIndex, gold] of list.entries()) {
+    if (
+      gold.businessDirection !== 'outbound' ||
+      gold.scope !== 'in_window' ||
+      UNSENT_QUEUE_STATES.has(gold.queueState ?? '')
+    ) {
+      continue;
+    }
+    const before = list.slice(0, goldIndex);
+    const trigger = gold.inReplyTo
+      ? inboundById.get(gold.inReplyTo)
+      : REPLY_SUBJECT_RE.test(gold.subject)
+        ? before.findLast((row) => row.businessDirection === 'inbound')
+        : undefined;
+    const goldText = textOf(gold);
+    if (trigger && byEventAt(trigger, gold) < 0 && !EMPTY_REPLY_RE.test(goldText)) {
+      return { trigger, gold, goldText };
+    }
+  }
+  return null;
+}
+
 export function buildCases(rows: readonly CenturionCorpusMessageRow[]): BacktestCase[] {
   const threads = new Map<string, CenturionCorpusMessageRow[]>();
   for (const row of rows) {
     if (!row.threadId || !row.eventAt) continue;
     threads.set(row.threadId, [...(threads.get(row.threadId) ?? []), row]);
   }
-  const cases: BacktestCase[] = [];
-  for (const [threadId, list] of threads) {
-    list.sort(byEventAt);
-    const goldIndex = list.findIndex(
-      (row, i) =>
-        row.businessDirection === 'outbound' &&
-        row.scope === 'in_window' &&
-        !UNSENT_QUEUE_STATES.has(row.queueState ?? '') &&
-        list.slice(0, i).some((prior) => prior.businessDirection === 'inbound'),
-    );
-    if (goldIndex < 0) continue;
-    const gold = list[goldIndex]!;
-    const before = list.slice(0, goldIndex);
-    const triggerIndex = gold.inReplyTo
-      ? before.findIndex((row) => row.businessDirection === 'inbound' && row.messageId === gold.inReplyTo)
-      : before.map((row) => row.businessDirection).lastIndexOf('inbound');
-    if (triggerIndex < 0) continue;
-    const goldText = textOf(gold);
-    if (EMPTY_REPLY_RE.test(goldText)) continue;
-    const trigger = toCaseMessage(before[triggerIndex]!);
-    cases.push({
+  for (const list of threads.values()) list.sort(byEventAt);
+  const inboundById = new Map(
+    rows
+      .filter((row) => row.businessDirection === 'inbound' && row.messageId && row.threadId && row.eventAt)
+      .map((row) => [row.messageId!, row]),
+  );
+  const cases = new Map<string, BacktestCase & { goldAt: string }>();
+  for (const list of threads.values()) {
+    const found = findGoldPair(list, inboundById);
+    if (!found) continue;
+    const { trigger, gold, goldText } = found;
+    const threadId = trigger.threadId!;
+    const prior = cases.get(threadId);
+    if (prior && prior.goldAt <= gold.eventAt!) continue;
+    const triggerThread = threads.get(threadId)!;
+    const message = toCaseMessage(trigger);
+    cases.set(threadId, {
       threadId,
-      trigger,
-      context: before.slice(0, triggerIndex).map(toCaseMessage),
+      trigger: message,
+      context: triggerThread.slice(0, triggerThread.indexOf(trigger)).map(toCaseMessage),
       goldId: gold.id,
       goldText,
-      ...classify(`${trigger.subject}\n${trigger.text}`, goldText),
+      goldAt: gold.eventAt!,
+      ...classify(`${message.subject}\n${message.text}`, goldText),
     });
   }
-  return latestFirst(cases);
+  return latestFirst([...cases.values()].map(({ goldAt: _goldAt, ...c }) => c));
 }
 
 const PHASE_A_QUOTAS: Record<Stratum, number> = {
