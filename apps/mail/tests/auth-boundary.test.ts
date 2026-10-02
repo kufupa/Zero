@@ -1,4 +1,8 @@
-import { createAuthBoundaryRecovery, isUnauthorizedTrpcError } from '../lib/mail/auth-boundary';
+import {
+  createAuthBoundaryRecovery,
+  isUnauthorizedTrpcError,
+  sessionExpiredRedirect,
+} from '../lib/mail/auth-boundary';
 import { describe, expect, it, vi } from 'vitest';
 
 const { signOutMock } = vi.hoisted(() => ({
@@ -22,6 +26,13 @@ vi.mock('idb-keyval', () => ({
 }));
 
 describe('tRPC auth-boundary errors', () => {
+  it('keeps Outlook re-login on its exact permitted pane route', () => {
+    expect(sessionExpiredRedirect('/outlook-pane')).toBe('/outlook-pane');
+    expect(sessionExpiredRedirect('/mail/inbox')).toBe('/zero/login?error=session_expired');
+    expect(sessionExpiredRedirect('/outlook-pane/unapproved')).toBe(
+      '/zero/login?error=session_expired',
+    );
+  });
   it.each([
     { data: { code: 'UNAUTHORIZED' } },
     { shape: { data: { code: 'UNAUTHORIZED' } } },
