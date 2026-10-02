@@ -97,6 +97,9 @@ if (process.env.HMS_DB_TEST_REQUIRED === '1' && !resolvedUrl) {
     'HMS_DB_TEST_REQUIRED=1 but disposable TEST_DATABASE_URL/CONFIRM unset — fail closed (no skip)',
   );
 }
+if (process.env.INGESTION_DB_TEST_REQUIRED === '1' && !resolvedUrl) {
+  throw new Error('Ingestion regressions require a reachable disposable DB (no skip)');
+}
 if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !resolvedUrl) {
   throw new Error('Rocketseed transactional tests require a reachable disposable DB');
 }
@@ -128,6 +131,9 @@ export function probeTestDb(): Promise<boolean> {
   return probePromise;
 }
 
+if (process.env.INGESTION_DB_TEST_REQUIRED === '1' && !(await probeTestDb())) {
+  throw new Error('Ingestion regressions require a reachable disposable DB (no skip)');
+}
 if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !(await probeTestDb())) {
   throw new Error('Rocketseed transactional tests require a reachable disposable DB');
 }

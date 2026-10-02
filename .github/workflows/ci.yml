@@ -119,3 +119,17 @@ jobs:
             tests/candidate-attachment-cleanup-queue.test.ts \
             tests/rehydrate-raw-mime.test.ts \
             tests/promote-quarantine.test.ts
+
+      - name: Test required ingestion and deployment schema regressions
+        shell: bash
+        env:
+          DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+        run: |
+          set -euo pipefail
+          unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS
+          printf -v TEST_DATABASE_URL '%s%s%s%s%s%s%s%s%s%s%s' \
+            'postgres' 'ql://' "$DISPOSABLE_POSTGRES_USER" '@' \
+            "$DISPOSABLE_POSTGRES_HOST" ':' "$DISPOSABLE_POSTGRES_PORT" '/' \
+            "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
+          export TEST_DATABASE_URL
+          CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot run test:ingestion

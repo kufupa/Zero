@@ -163,6 +163,8 @@ if(JSON.stringify(actual)!==JSON.stringify(expected)||
 NODE
 }
 
+bash "$SERVER_PILOT/deploy/check-migration-compatibility.sh"
+
 validate_remote_env_files || {
   echo "pm2-boot: remote HTTP environment validation failed before PM2 mutation" >&2
   exit 20

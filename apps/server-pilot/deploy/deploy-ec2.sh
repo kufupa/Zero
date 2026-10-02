@@ -38,20 +38,6 @@ done
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
-# Root owns trust-boundary parents; app owns only mutable runtime/artifact leaves.
-echo "== ensure protected HMS runtime hierarchy =="
-for path in /opt/nava /opt/nava/shared \
-  /opt/nava/shared/hms-browser-artifacts /opt/nava/shared/hms-runtime; do
-  [ ! -L "$path" ] || {
-    echo "unsafe HMS runtime symlink: $path" >&2
-    exit 20
-  }
-done
-sudo install -d -o root -g root -m 0755 /opt/nava /opt/nava/shared
-sudo install -d -o ubuntu -g ubuntu -m 0700 \
-  /opt/nava/shared/hms-browser-artifacts \
-  /opt/nava/shared/hms-runtime
-
 ensure_hms_absent() {
   local state present
   state="$(pm2 jlist)" || return 1
@@ -160,6 +146,25 @@ fi
 
 echo "== pnpm install =="
 pnpm install --frozen-lockfile
+
+if [ "$QUIESCED" != "1" ]; then
+  echo "== verify database compatibility before activation =="
+  bash "$SERVER_PILOT/deploy/check-migration-compatibility.sh"
+fi
+
+# Root owns trust-boundary parents; app owns only mutable runtime/artifact leaves.
+echo "== ensure protected HMS runtime hierarchy =="
+for path in /opt/nava /opt/nava/shared \
+  /opt/nava/shared/hms-browser-artifacts /opt/nava/shared/hms-runtime; do
+  [ ! -L "$path" ] || {
+    echo "unsafe HMS runtime symlink: $path" >&2
+    exit 20
+  }
+done
+sudo install -d -o root -g root -m 0755 /opt/nava /opt/nava/shared
+sudo install -d -o ubuntu -g ubuntu -m 0700 \
+  /opt/nava/shared/hms-browser-artifacts \
+  /opt/nava/shared/hms-runtime
 
 if [ "$QUIESCED" != "1" ]; then
   echo "== build server-pilot =="

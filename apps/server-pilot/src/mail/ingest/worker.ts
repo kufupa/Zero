@@ -65,6 +65,38 @@ import { parseEnv } from '../../env.js';
 /** After this many consecutive failures for one UIDL, quarantine + DELE. */
 export const POISON_MAX_RETRIES = 3;
 
+/** ORM query errors wrap PostgreSQL/driver failures in one or more causes. */
+function databaseInfrastructureCode(error: unknown): string | undefined {
+  const seen = new Set<object>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === 'string') {
+      // Connection, authorization, transaction rollback, schema/permission,
+      // resource, operator intervention, system and internal PostgreSQL errors.
+      if (/^(08|28|40|42|53|54|55|57|58|XX)[0-9A-Z]{3}$/.test(code)) return code;
+      if (
+        [
+          'ECONNRESET',
+          'ECONNREFUSED',
+          'ETIMEDOUT',
+          'EPIPE',
+          'ENOTFOUND',
+          'EAI_AGAIN',
+          'CONNECTION_CLOSED',
+          'CONNECTION_DESTROYED',
+          'CONNECTION_ENDED',
+          'CONNECT_TIMEOUT',
+        ].includes(code)
+      )
+        return code;
+    }
+    current = cause;
+  }
+  return undefined;
+}
+
 class IngestUidlClaimLostError extends Error {
   constructor() {
     super('ingest UIDL claim was lost before POP3 processing completed');
@@ -379,6 +411,8 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         items.push({ uidl, result, status: 'ok' });
         processed += 1;
       } catch (err) {
+        const infrastructureCode = databaseInfrastructureCode(err);
+        if (infrastructureCode) failureCounts.delete(uidl);
         let claimWasLost = err instanceof IngestUidlClaimLostError;
         if (!claimWasLost && claimRenewal) {
           try {
@@ -420,8 +454,12 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             });
           } catch (cleanupError) {
             retainClaimUntilExpiry = true;
-            const error =
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            const cleanupCode = databaseInfrastructureCode(cleanupError);
+            const error = cleanupCode
+              ? `database infrastructure failure (${cleanupCode})`
+              : cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError);
             items.push({
               uidl,
               status: 'error',
@@ -502,6 +540,18 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           retainClaimForQuit();
           scheduledDeletions += 1;
           items.push({ uidl, result, status: 'ok' });
+          processed += 1;
+          continue;
+        }
+
+        if (infrastructureCode) {
+          failureCounts.delete(uidl);
+          // Never include ORM query text/parameters: they can contain private mail.
+          items.push({
+            uidl,
+            status: 'error',
+            error: `database infrastructure failure (${infrastructureCode}); POP3 message retained`,
+          });
           processed += 1;
           continue;
         }
@@ -587,7 +637,12 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
       duplicateAttachmentCleanupFailureCount,
     };
   } catch (err) {
-    const cycleError = err instanceof Error ? err.message : String(err);
+    const infrastructureCode = databaseInfrastructureCode(err);
+    const cycleError = infrastructureCode
+      ? `database infrastructure failure (${infrastructureCode}); POP3 mail retained`
+      : err instanceof Error
+        ? err.message
+        : String(err);
     await pop3.close().catch(() => undefined);
     return {
       listed,
