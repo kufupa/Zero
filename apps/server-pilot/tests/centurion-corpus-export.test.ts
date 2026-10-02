@@ -266,12 +266,12 @@ describe('Centurion nine-day corpus reader', () => {
     await reader.close();
     expect(snapshot.window).toEqual({
       startInclusive: '2026-09-25T22:00:00.000Z',
-      endExclusive: '2026-09-28T22:00:00.000Z',
+      endExclusive: '2026-10-02T22:00:00.000Z',
       timezone: 'Africa/Johannesburg',
     });
     const messageQuery = fake.queries.find((query) => /FROM message AS m/i.test(query.text));
     expect(messageQuery?.values).toContain('2026-09-25T22:00:00.000');
-    expect(messageQuery?.values).toContain('2026-09-28T22:00:00.000');
+    expect(messageQuery?.values).toContain('2026-10-02T22:00:00.000');
   });
 
   it('records event timestamp fallback provenance, including missing timestamps', async () => {
