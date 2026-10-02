@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { resolveMailDisplayHtml } from '../lib/mail/resolve-mail-display-html';
+import {
+  resolveMailDisplayContent,
+  resolveMailDisplayHtml,
+} from '../lib/mail/resolve-mail-display-html';
 import { isImageTrustedSender } from '../lib/mail/trust-sender';
+import { describe, expect, it } from 'vitest';
 
 const MALICIOUS_RAW_HTML = '<body><p>visible</p><script>alert("xss")</script></body>';
 
@@ -39,6 +42,29 @@ describe('resolveMailDisplayHtml', () => {
     expect(result).toContain('<p>visible</p>');
     expect(result).toContain('data-nava-mail-font="1"');
     expect(result).not.toContain('<script');
+  });
+
+  it('blocks remote fallback images by default and reports that images were blocked', () => {
+    const result = resolveMailDisplayContent({
+      frontendOnlyDemo: false,
+      rawHtml: '<p>Reservation</p><img src="https://tracker.example/pixel" alt="tracking" />',
+      shouldLoadImages: false,
+    });
+
+    expect(result.hasBlockedImages).toBe(true);
+    expect(result.html).not.toContain('https://tracker.example/pixel');
+    expect(result.html).toContain('data:image/gif;base64,');
+  });
+
+  it('allows remote fallback images only after the user image setting permits them', () => {
+    const result = resolveMailDisplayContent({
+      frontendOnlyDemo: false,
+      rawHtml: '<img src="https://images.example/hotel.jpg" alt="Hotel" />',
+      shouldLoadImages: true,
+    });
+
+    expect(result.hasBlockedImages).toBe(false);
+    expect(result.html).toContain('https://images.example/hotel.jpg');
   });
 });
 

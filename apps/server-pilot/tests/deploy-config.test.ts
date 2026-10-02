@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
@@ -427,91 +428,45 @@ type NginxActivationScenario =
   | 'cleanup-exit'
   | 'target-ip'
   | 'legacy-only'
-  | 'remote-only';
+  | 'remote-only'
+  | 'pane-mismatch'
+  | 'index-mismatch'
+  | 'asset-mismatch'
+  | 'pm2-health'
+  | 'healthy';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
-
-const DUAL_PLANE_NGINX_CANDIDATE = `server {
-  listen 80 default_server;
-  server_name nava.legacyhotels.co.za;
-}
-server {
-  listen 443 ssl default_server;
-  server_name nava.legacyhotels.co.za;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8788/api/;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
-  server_name _;
-  return 444;
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
-  location = /health {
-    proxy_pass http://127.0.0.1:8789/health;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name nava-admin.trynava.io;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8789/api/;
-  }
-}
-`;
-
-const LEGACY_ONLY_NGINX_CANDIDATE = `server {
-  listen 443 ssl default_server;
-  server_name nava.legacyhotels.co.za;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8788/api/;
-  }
-}
-`;
-
-const REMOTE_ONLY_NGINX_CANDIDATE = `server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
-  server_name _;
-  return 444;
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
-  location = /health {
-    proxy_pass http://127.0.0.1:8789/health;
-  }
-}
-server {
-  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
-  server_name nava-admin.trynava.io;
-  location /api/ {
-    proxy_pass http://127.0.0.1:8789/api/;
-  }
-}
-`;
 
 async function runNginxActivation({
   scenario,
   priorState,
   rollbackCopyFails = false,
   ens5PrimaryIp = REMOTE_ALB_TARGET_PRIVATE_IP,
+  priorRelease = false,
+  stableOnlyChange = false,
 }: {
   scenario: NginxActivationScenario;
   priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
   ens5PrimaryIp?: string;
+  priorRelease?: boolean;
+  stableOnlyChange?: boolean;
 }): Promise<{
   status: number | null;
   stdout: string;
   stderr: string;
   site: string | null;
+  candidate: string;
+  priorCandidate: string | null;
+  currentStable: string;
+  priorStable: string | null;
+  currentId: string;
+  priorId: string;
   enabledState: 'absent' | 'valid' | 'dangling';
   enabledTarget: string | null;
   nginxCalls: number;
   reloadCalls: number;
   backupEntries: string[];
+  backupContents: Record<string, string>;
 }> {
   const {
     existsSync,
@@ -519,6 +474,7 @@ async function runNginxActivation({
     mkdirSync,
     readFileSync,
     readdirSync,
+    renameSync,
     rmSync,
     writeFileSync,
   } = await import('node:fs');
@@ -545,6 +501,9 @@ async function runNginxActivation({
   const nginxCallsPath = join(tempDir, 'nginx-calls');
   const reloadCallsPath = join(tempDir, 'reload-calls');
   const previousTargetPath = join(dirname(sitePath), 'previous-nava');
+  const webRoot = join(tempDir, 'web');
+  const index = '<!doctype html><script>window.paneTest = 1</script>';
+  const stableAsset = 'm0 w lines rounded edges.svg';
   const previousSite = 'previous nginx config\n';
   const previousTarget = '../sites-available/previous-nava';
 
@@ -558,22 +517,77 @@ async function runNginxActivation({
       mkdirSync(directory, { recursive: true });
     }
     writeFileSync(
-      join(deployDir, 'nginx.conf'),
-      scenario === 'legacy-only'
-        ? LEGACY_ONLY_NGINX_CANDIDATE
-        : scenario === 'remote-only'
-          ? REMOTE_ONLY_NGINX_CANDIDATE
-          : DUAL_PLANE_NGINX_CANDIDATE,
+      join(deployDir, 'pane-csp-release.mjs'),
+      readFileSync(join(here, '..', 'deploy', 'pane-csp-release.mjs'), 'utf8'),
+    );
+    function stageFixtureRelease(html: string, stable: string, label: string) {
+      const seed = join(tempDir, `${label}-client`);
+      mkdirSync(join(seed, 'assets'), { recursive: true });
+      writeFileSync(join(seed, 'index.html'), html);
+      writeFileSync(join(seed, 'assets', stableAsset), stable);
+      const identity = spawnSync(process.execPath, [join(deployDir, 'pane-csp-release.mjs'), 'id', seed], {
+        encoding: 'utf8',
+      });
+      if (identity.status !== 0) throw new Error(`fixture release identity failed: ${identity.stderr}`);
+      const id = identity.stdout.trim();
+      const directory = join(webRoot, 'releases', id);
+      mkdirSync(dirname(directory), { recursive: true });
+      renameSync(seed, directory);
+      return { id, directory, stable };
+    }
+    const current = stageFixtureRelease(index, '<svg>new stable asset</svg>', 'new');
+    const releaseId = current.id;
+    const releaseDir = current.directory;
+    const template = readFileSync(
+      join(here, '..', 'deploy', 'nginx.conf'),
       'utf8',
     );
+    const fixtureTemplate =
+      scenario === 'legacy-only'
+        ? template.replaceAll(
+            'server_name nava-admin.trynava.io;',
+            'server_name absent-admin.example;',
+          )
+        : scenario === 'remote-only'
+          ? template.replaceAll(
+              'server_name nava.legacyhotels.co.za;',
+              'server_name absent-mail.example;',
+            )
+          : template;
+    writeFileSync(join(deployDir, 'nginx.conf'), fixtureTemplate);
+    const candidate = fixtureTemplate
+      .replaceAll('__NAVA_RELEASE_ID__', releaseId)
+      .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+      .replace(
+        '__NAVA_PANE_SCRIPT_HASHES__',
+        `'sha256-${createHash('sha256').update('window.paneTest = 1').digest('base64')}'`,
+      );
+    const oldIndex = stableOnlyChange ? index : '<!doctype html><script>window.paneTest = 0</script>';
+    const previous = priorRelease
+      ? stageFixtureRelease(oldIndex, '<svg>old stable asset</svg>', 'old')
+      : null;
+    const oldId = previous?.id ?? '';
+    const priorCandidate = priorRelease
+      ? fixtureTemplate
+          .replaceAll('__NAVA_RELEASE_ID__', oldId)
+          .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+          .replace(
+            '__NAVA_PANE_SCRIPT_HASHES__',
+            `'sha256-${createHash('sha256').update(stableOnlyChange ? 'window.paneTest = 1' : 'window.paneTest = 0').digest('base64')}'`,
+          )
+      : null;
     writeFileSync(nginxCallsPath, '0', 'utf8');
     writeFileSync(reloadCallsPath, '0', 'utf8');
     if (priorState !== 'absent') {
-      writeFileSync(sitePath, previousSite, 'utf8');
+      writeFileSync(sitePath, priorCandidate ?? previousSite, 'utf8');
       writeFileSync(enabledModelPath, previousTarget, 'utf8');
     }
     if (priorState === 'present') {
-      writeFileSync(previousTargetPath, 'previous enabled config\n', 'utf8');
+      writeFileSync(
+        previousTargetPath,
+        priorCandidate ?? 'previous enabled config\n',
+        'utf8',
+      );
     }
 
     const harness = `set -euo pipefail
@@ -699,11 +713,34 @@ ip() {
 }
 `;
 
+    const probe =
+      scenario === 'pane-mismatch'
+        ? `sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" "$NGINX_SRC"`
+        : scenario === 'index-mismatch'
+          ? 'printf %s "changed" >> "$RELEASE_DIR/index.html"'
+          : scenario === 'asset-mismatch'
+            ? `printf %s "tampered" >> "$RELEASE_DIR/assets/m0 w lines rounded edges.svg"`
+          : '';
+    const activation = nginxBlock.replace(
+      'if command -v nginx >/dev/null 2>&1; then',
+      `${probe}\nif command -v nginx >/dev/null 2>&1; then`,
+    );
     const result = await runBash({
-      input: `${harness}\n${nginxBlock}`,
+      input: `${harness}\n${activation}\nif [ "$NGINX_TEST_SCENARIO" = 'pm2-health' ]; then
+  NGINX_FAILURE_CONTEXT='backend startup or health check failed'
+  exit 91
+fi
+if [ "$NGINX_TEST_SCENARIO" = 'cleanup-exit' ] || [ "$NGINX_TEST_SCENARIO" = 'healthy' ]; then
+  finalize_nginx_release
+fi`,
       env: {
         ...process.env,
         SERVER_PILOT: toBashPath(serverPilot),
+        WEB_ROOT: toBashPath(webRoot),
+        RELEASE_DIR: toBashPath(releaseDir),
+        PANE_RELEASE_HELPER: toBashPath(
+          join(deployDir, 'pane-csp-release.mjs'),
+        ),
         NGINX_SITE: toBashPath(sitePath),
         NGINX_ENABLED: toBashPath(enabledPath),
         TMPDIR: toBashPath(backupDir),
@@ -738,6 +775,14 @@ ip() {
       stdout: result.stdout,
       stderr: result.stderr,
       site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
+      candidate,
+      priorCandidate,
+      currentStable: readFileSync(join(releaseDir, 'assets', stableAsset), 'utf8'),
+      priorStable: previous
+        ? readFileSync(join(previous.directory, 'assets', stableAsset), 'utf8')
+        : null,
+      currentId: releaseId,
+      priorId: oldId,
       enabledState:
         enabledTarget == null
           ? 'absent'
@@ -748,6 +793,11 @@ ip() {
       nginxCalls: Number(readFileSync(nginxCallsPath, 'utf8')),
       reloadCalls: Number(readFileSync(reloadCallsPath, 'utf8')),
       backupEntries: readdirSync(backupDir),
+      backupContents: Object.fromEntries(
+        readdirSync(backupDir)
+          .filter((entry) => entry.startsWith('nava-nginx.'))
+          .map((entry) => [entry, readFileSync(join(backupDir, entry), 'utf8')]),
+      ),
     };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -1809,7 +1859,7 @@ describe('deploy config', () => {
     const nginx = readNginxConfig();
     expect(nginx).toContain('listen 443 ssl');
     expect(nginx).toContain('proxy_pass http://127.0.0.1:8788/api/');
-    expect(nginx).toContain('try_files $uri /index.html');
+    expect(nginx).toContain('try_files /releases/__NAVA_RELEASE_ID__$uri /index.html');
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
@@ -1878,7 +1928,7 @@ describe('deploy config', () => {
     expect(remoteAppVhost).toContain(`${remoteListen};`);
     expect(remoteAppVhost).toContain(`server_name ${REMOTE_ADMIN_HOST};`);
     expect(remoteAppVhost).toContain(`if ($host != ${REMOTE_ADMIN_HOST}) {`);
-    expect(remoteAppVhost).toContain('root /var/www/nava-mail;');
+    expect(remoteAppVhost).toContain('root __NAVA_WEB_ROOT__;');
     expect(remoteAppVhost).toContain('location = /health {');
     expect(remoteAppVhost).toContain('return 404;');
     expect(remoteAppVhost).toContain('proxy_pass http://127.0.0.1:8789/api/');
@@ -2015,6 +2065,62 @@ describe('deploy config', () => {
     expect(result.reloadCalls).toBe(0);
     expect(result.backupEntries).toEqual([]);
   });
+
+  it.each(['pane-mismatch', 'index-mismatch', 'asset-mismatch'] as const)(
+    'rejects %s before candidate publication and keeps the prior SPA/CSP pairing',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toMatch(/mismatch|release path/i);
+      expect(result.site).toBe('previous nginx config\n');
+      expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it.each(['validate', 'reload'] as const)(
+    'keeps the old immutable index and its old hash policy paired after %s fails',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+        priorRelease: true,
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.priorCandidate).toBeTruthy();
+      expect(result.site).toBe(result.priorCandidate);
+      expect(result.site).not.toBe(result.candidate);
+      expect(result.site).toContain("script-src 'self' 'sha256-");
+      expect(result.site).toContain('releases/');
+      expect(result.enabledState).toBe('valid');
+      expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it.each(['validate', 'reload'] as const)(
+    'retains the prior stable SVG on %s rollback despite the new release having the same index',
+    async (scenario) => {
+      const result = await runNginxActivation({
+        scenario,
+        priorState: 'present',
+        priorRelease: true,
+        stableOnlyChange: true,
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.currentId).not.toBe(result.priorId);
+      expect(result.site).toBe(result.priorCandidate);
+      expect(result.site).toContain(`releases/${result.priorId}/index.html`);
+      expect(result.site).toContain(`try_files /releases/${result.priorId}$uri /index.html;`);
+      expect(result.site).not.toContain(`releases/${result.currentId}/index.html`);
+      expect(result.priorStable).toBe('<svg>old stable asset</svg>');
+      expect(result.currentStable).toBe('<svg>new stable asset</svg>');
+      expect(result.enabledState).toBe('valid');
+    },
+  );
 
   it('deploy-ec2.sh asserts dual-plane Nginx contracts before activating the candidate', async () => {
     const { readFileSync } = await import('node:fs');
@@ -2176,6 +2282,29 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
+  it('keeps the previous web release when PM2 startup or health fails after Nginx activation', async () => {
+    const result = await runNginxActivation({
+      scenario: 'pm2-health', priorState: 'present', priorRelease: true,
+    });
+    expect(result.status, result.stderr).toBe(91);
+    expect(result.stderr).toContain('backend startup or health check failed; restored previous config');
+    expect(result.site).toBe(result.priorCandidate);
+    expect(result.site).not.toBe(result.candidate);
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('commits the matching new web release only after backend health succeeds', async () => {
+    const result = await runNginxActivation({
+      scenario: 'healthy', priorState: 'present', priorRelease: true,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.site).toBe(result.candidate);
+    expect(result.enabledState).toBe('valid');
+    expect(result.backupEntries).toEqual([]);
+  });
+
   it('disarms rollback before cleaning up a successful activation', async () => {
     const result = await runNginxActivation({
       scenario: 'cleanup-exit',
@@ -2184,7 +2313,7 @@ describe('deploy config', () => {
 
     expect(result.status).toBe(74);
     expect(result.stderr).not.toContain('restored previous config');
-    expect(result.site).toBe(DUAL_PLANE_NGINX_CANDIDATE);
+    expect(result.site).toBe(result.candidate);
     expect(result.enabledState).toBe('valid');
     expect(result.enabledTarget).toMatch(/\/sites-available\/nava-zero$/);
     expect(result.nginxCalls).toBe(1);
@@ -2192,16 +2321,23 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
-  it('reports rollback failure and still removes temporary Nginx backups', async () => {
+  it('retains the recovery backup and reports its path when rollback fails', async () => {
     const result = await runNginxActivation({
       scenario: 'validate',
       priorState: 'present',
       rollbackCopyFails: true,
     });
+    const backups = result.backupEntries.filter((entry) => entry.startsWith('nava-nginx.'));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('nginx candidate failed; rollback failed');
-    expect(result.backupEntries).toEqual([]);
+    expect(backups).toHaveLength(1);
+    expect(result.backupContents[backups[0]]).toBe('previous nginx config\n');
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `nginx rollback failed; backup retained for manual recovery: .*/backups/${backups[0]}`,
+      ),
+    );
   });
 
   it('reports trap rollback failure and exits nonzero', async () => {
@@ -2210,10 +2346,17 @@ describe('deploy config', () => {
       priorState: 'present',
       rollbackCopyFails: true,
     });
+    const backups = result.backupEntries.filter((entry) => entry.startsWith('nava-nginx.'));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('nginx transaction aborted; rollback failed');
-    expect(result.backupEntries).toEqual([]);
+    expect(backups).toHaveLength(1);
+    expect(result.backupContents[backups[0]]).toBe('previous nginx config\n');
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `nginx rollback failed; backup retained for manual recovery: .*/backups/${backups[0]}`,
+      ),
+    );
   });
 
   it('preserves the Infor hostname mapping used by the split tunnel', async () => {
@@ -2247,9 +2390,8 @@ describe('deploy config', () => {
     expect(deploy).toContain('undefined/api/trpc');
     expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
     expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
-    expect(deploy).toContain(
-      `rsync -a --delete --exclude '/downloads/' "\${MAIL_APP}/build/client/" "\${WEB_ROOT}/"`,
-    );
+    expect(deploy).toContain('rsync -a --ignore-existing --chown=root:root');
+    expect(deploy).not.toContain('rsync -a --delete');
     expect(deploy).toContain('WEB_ROOT}/downloads');
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');

@@ -1,9 +1,9 @@
 /**
  * @vitest-environment happy-dom
  */
-import { afterEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 vi.mock('../lib/workstation/use-outlook-bridge', () => ({
   useOutlookBridge: () => ({
@@ -20,6 +20,10 @@ vi.mock('../lib/auth-client', () => ({
     isLoading: false,
   }),
   signIn: { email: vi.fn() },
+}));
+
+vi.mock('../hooks/use-connections', () => ({
+  useActiveConnection: () => ({ data: null, isLoading: false }),
 }));
 
 vi.mock('../providers/query-provider', () => ({

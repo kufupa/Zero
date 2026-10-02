@@ -1,28 +1,40 @@
 import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
+import { sanitizeMailBodyHtml } from '@/lib/mail/sanitize-mail-body-html';
 
 export const UNSAFE_MAIL_CONTENT_PLACEHOLDER =
   '<p><em>Unable to load message content safely.</em></p>';
 
 /**
- * HOTFIX: when processed HTML is missing, always use the client fallback
- * (script-stripped raw HTML) instead of the hard "unable to load safely"
- * placeholder. Re-tighten after processEmailContent reliability is restored.
+ * Keep the client fallback available when server processing is unavailable,
+ * but sanitize it with the same mail allowlist and image policy before display.
  */
-export function resolveMailDisplayHtml({
+export function resolveMailDisplayContent({
   frontendOnlyDemo: _frontendOnlyDemo,
   processedHtml,
   rawHtml,
+  shouldLoadImages,
 }: {
   frontendOnlyDemo: boolean;
   processedHtml?: string | null;
   rawHtml: string;
-}): string {
+  shouldLoadImages: boolean;
+}): { html: string; hasBlockedImages: boolean } {
   if (processedHtml) {
-    return processedHtml;
+    return { html: processedHtml, hasBlockedImages: false };
   }
 
-  return resolveMailHtml({
-    rawHtml,
-    processedHtml,
-  });
+  const sanitized = sanitizeMailBodyHtml(rawHtml, { shouldLoadImages });
+  return {
+    html: resolveMailHtml({ rawHtml: sanitized.html, processedHtml }),
+    hasBlockedImages: sanitized.hasBlockedImages,
+  };
+}
+
+export function resolveMailDisplayHtml(input: {
+  frontendOnlyDemo: boolean;
+  processedHtml?: string | null;
+  rawHtml: string;
+  shouldLoadImages?: boolean;
+}): string {
+  return resolveMailDisplayContent({ ...input, shouldLoadImages: input.shouldLoadImages ?? false }).html;
 }

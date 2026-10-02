@@ -9,11 +9,43 @@ concurrency:
 
 jobs:
   autofix:
-    timeout-minutes: 10
+    timeout-minutes: 15
     runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout Code 🛎
         uses: actions/checkout@v4
+
+      - name: Detect changes requiring private Outlook source verification
+        id: outlook
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git diff --quiet "$BASE_SHA" HEAD -- \
+            apps/server-pilot/vsto apps/server-pilot/src/outlook-security \
+            apps/server-pilot/src/http/outlook-native.ts \
+            apps/server-pilot/src/trpc/routes/workstation.ts \
+            apps/server-pilot/src/db/schema/outlook-authorization.ts apps/server-pilot/src/db/schema/outlook-device.ts \
+            apps/server-pilot/src/lib/auth-profile.ts apps/server-pilot/src/lib/auth.ts \
+            apps/server-pilot/src/main.ts apps/server-pilot/deploy/nginx.conf \
+            apps/server-pilot/deploy/deploy-ec2.sh apps/server-pilot/deploy/pane-csp-release.mjs \
+            apps/server-pilot/deploy/check-web-release-ownership.mjs \
+            apps/server-pilot/deploy/write-ec2-env.sh \
+            apps/mail/lib/workstation apps/mail/app/'(routes)'/outlook-pane \
+            apps/mail/app/root.tsx \
+            .github/workflows/ci.yml; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+          else
+            gitlink_sha=$(git rev-parse HEAD:apps/server-pilot/vsto)
+            if [[ ! "$gitlink_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::Missing exact private Outlook add-in gitlink'
+              exit 1
+            fi
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            echo "gitlink_sha=$gitlink_sha" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup pnpm 🌟
         uses: pnpm/action-setup@v4
@@ -23,18 +55,6 @@ jobs:
 
       - name: Install dependencies 📦
         run: pnpm install
-
-      - name: Check Outlook bridge source and installer contracts
-        shell: bash
-        run: |
-          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
-            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx
-          if test -f apps/server-pilot/vsto/NavaOutlookAddin/ThisAddIn.cs; then
-            env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
-              tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
-          else
-            echo '::warning::Private VSTO submodule unavailable; native source and installer contracts NOT verified in root CI. Before merging or publishing, require a successful "Outlook VSTO installer" workflow in kufupa/nava-outlook-addin for the exact gitlink SHA and a Classic Outlook runtime smoke test.'
-          fi
 
       - name: Lint JS
         run: pnpm dlx oxlint@1.6.0 --deny-warnings --ignore-pattern 'external/**' --ignore-pattern 'archive/**'
@@ -51,8 +71,63 @@ jobs:
           pnpm --dir apps/server-pilot build
           pnpm --dir apps/mail build
 
+      - name: Test web-pane bridge, email HTML rendering, and CSP
+        shell: bash
+        run: |
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/outlook-pane-quote-pdf.test.tsx
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
+            tests/mail-content-rendering.test.tsx tests/resolve-mail-html.test.ts tests/mail-content-fallback.test.ts
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --dir apps/server-pilot exec vitest run \
+            tests/pane-csp-release.test.ts tests/outlook-pane-nginx-route.test.ts tests/auth-signup-guard.test.ts tests/auth-session-ttl.test.ts
+
+      - name: Require read-only private Outlook source access
+        if: steps.outlook.outputs.required == 'true'
+        shell: bash
+        env:
+          NAVA_OUTLOOK_READ_SSH_KEY: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
+        run: |
+          if test -z "$NAVA_OUTLOOK_READ_SSH_KEY"; then
+            echo '::error::Set NAVA_OUTLOOK_READ_SSH_KEY to a read-only deploy key for kufupa/nava-outlook-addin before merging Outlook security changes.'
+            exit 1
+          fi
+
+      - name: Checkout exact private Outlook add-in gitlink
+        if: steps.outlook.outputs.required == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: kufupa/nava-outlook-addin
+          ref: ${{ steps.outlook.outputs.gitlink_sha }}
+          path: apps/server-pilot/vsto
+          ssh-key: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
+          persist-credentials: false
+
+      - name: Verify the native checkout matches the gitlink
+        if: steps.outlook.outputs.required == 'true'
+        shell: bash
+        env:
+          EXPECTED_GITLINK: ${{ steps.outlook.outputs.gitlink_sha }}
+        run: |
+          set -euo pipefail
+          actual=$(git -C apps/server-pilot/vsto rev-parse HEAD)
+          if test "$actual" != "$EXPECTED_GITLINK" || \
+             ! test -f apps/server-pilot/vsto/NavaOutlookAddin/ThisAddIn.cs; then
+            echo '::error::Private Outlook source unavailable or does not match the exact gitlink.'
+            exit 1
+          fi
+
+      - name: Check private Outlook source and installer contracts
+        if: steps.outlook.outputs.required == 'true'
+        shell: bash
+        run: |
+          env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/server exec vitest run \
+            tests/vsto-source-contract.test.ts tests/outlook-addin-installer-nginx.test.ts
+      - name: Note when private source verification is not required
+        if: steps.outlook.outputs.required != 'true'
+        run: echo 'No Outlook security paths changed in this PR; private source contracts are not required here.'
+
   rocketseed-transactional:
-    timeout-minutes: 10
+    timeout-minutes: 15
     runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
     env:
       DISPOSABLE_POSTGRES_DB: zero_transactional
@@ -98,7 +173,7 @@ jobs:
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate
 
-      - name: Test transactional Rocketseed mail flow
+      - name: Test transactional Rocketseed mail flow and Outlook security
         shell: bash
         env:
           DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
@@ -110,6 +185,11 @@ jobs:
             "$DISPOSABLE_POSTGRES_HOST" ':' "$DISPOSABLE_POSTGRES_PORT" '/' \
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           export TEST_DATABASE_URL
+          MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 OUTLOOK_V4_SECURITY_TEST_REQUIRED=1 \
+            pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
+              tests/outlook-device-enrollment.test.ts \
+              tests/outlook-bridge-authorization.test.ts \
+              tests/outlook-security-retention.test.ts
           MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED=1 pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
             tests/rocketseed-returned-copy-reconciliation.test.ts \
             tests/outbound-delivery-outcome.test.ts \

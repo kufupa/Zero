@@ -1,16 +1,17 @@
 /**
  * @vitest-environment happy-dom
  */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { type ComponentProps } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailContent } from '../components/mail/mail-content';
+import { type ComponentProps } from 'react';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mocks = vi.hoisted(() => ({
   frontendOnlyDemo: false,
+  externalImages: false,
   processEmailContent: vi.fn(),
   saveUserSettings: vi.fn(),
   refetchSettings: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock('@/hooks/use-settings', () => ({
   useSettings: () => ({
     data: {
       settings: {
-        externalImages: false,
+        externalImages: mocks.externalImages,
         trustedSenders: [],
       },
     },
@@ -116,6 +117,7 @@ function expectThemeFollowingHost(host: HTMLElement | null) {
 beforeEach(() => {
   themeMocks.resolvedTheme = 'light';
   mocks.frontendOnlyDemo = false;
+  mocks.externalImages = false;
   mocks.processEmailContent.mockReset();
   mocks.saveUserSettings.mockReset();
   mocks.refetchSettings.mockReset();
@@ -132,9 +134,7 @@ describe('MailContent client fallback hotfix', () => {
     renderMailContent();
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-raw-email="true"]')?.textContent).toBe(
-        'Unprocessed mail',
-      );
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Unprocessed mail');
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -142,11 +142,41 @@ describe('MailContent client fallback hotfix', () => {
     expect(renderedHost()?.shadowRoot?.innerHTML).not.toContain('<script');
   });
 
+  it('removes executable HTML attributes and URLs before rendering mail in the shadow DOM', async () => {
+    renderMailContent({
+      html: '<p onclick="window.compromised = true">Visible</p><img src="https://tracker.example/pixel" onerror="window.compromised = true"><a href="javascript:window.compromised = true">Details</a>',
+    });
+
+    await waitFor(() => {
+      const root = renderedHost()?.shadowRoot;
+      expect(root?.querySelector('p')?.textContent).toBe('Visible');
+      expect(root?.querySelector('a')?.textContent).toBe('Details');
+    });
+
+    const root = renderedHost()?.shadowRoot;
+    expect(root?.querySelector('[onclick], [onerror]')).toBeNull();
+    expect(root?.querySelector('img')?.getAttribute('src')).not.toBe(
+      'https://tracker.example/pixel',
+    );
+    expect(root?.querySelector('a')?.getAttribute('href') ?? '').not.toMatch(/^javascript:/i);
+  });
+
+  it('loads remote email images when the user has explicitly enabled them', async () => {
+    mocks.externalImages = true;
+    renderMailContent({ html: '<img src="https://images.example/hotel.jpg" alt="Hotel" />' });
+
+    await waitFor(() => {
+      expect(renderedHost()?.shadowRoot?.querySelector('img')?.getAttribute('src')).toBe(
+        'https://images.example/hotel.jpg',
+      );
+    });
+  });
+
   it('updates same-ID source HTML without a loading gate', async () => {
     const { queryClient, rerender } = renderMailContent();
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-raw-email="true"]')).not.toBeNull();
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Unprocessed mail');
     });
 
     rerender(
@@ -156,9 +186,7 @@ describe('MailContent client fallback hotfix', () => {
     );
 
     await waitFor(() => {
-      expect(
-        renderedHost()?.shadowRoot?.querySelector('[data-second-raw-email="true"]')?.textContent,
-      ).toBe('New message');
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('New message');
     });
     expect(screen.queryByRole('status')).toBeNull();
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
@@ -168,7 +196,7 @@ describe('MailContent client fallback hotfix', () => {
     renderMailContent();
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-raw-email="true"]')).not.toBeNull();
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Unprocessed mail');
     });
 
     expectThemeFollowingHost(renderedHost());
@@ -182,9 +210,7 @@ describe('MailContent client fallback hotfix', () => {
     });
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-legacy-mail="true"]')?.textContent).toBe(
-        'Readable',
-      );
+      expect(renderedHost()?.shadowRoot?.querySelector('span')?.textContent).toBe('Readable');
     });
 
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
@@ -197,9 +223,7 @@ describe('MailContent client fallback hotfix', () => {
       html: '<p data-plain-mail="true">Hello</p>',
     });
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
-        'Hello',
-      );
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Hello');
     });
     expect(renderedHost()?.shadowRoot?.innerHTML).not.toContain('data-nava-mail-paper');
 
@@ -216,9 +240,7 @@ describe('MailContent client fallback hotfix', () => {
 
     await waitFor(() => {
       expect(renderedHost()?.shadowRoot?.innerHTML).toContain('data-nava-mail-paper');
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
-        'Hello',
-      );
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Hello');
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
   });
@@ -245,9 +267,7 @@ describe('MailContent client fallback hotfix', () => {
     });
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-demo-mail="true"]')?.textContent).toBe(
-        'Demo message',
-      );
+      expect(renderedHost()?.shadowRoot?.querySelector('p')?.textContent).toBe('Demo message');
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
     expectThemeFollowingHost(renderedHost());
