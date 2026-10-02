@@ -10,11 +10,14 @@ release's `write-ec2-env.sh` or an EC2/AWS write during code verification.
 
 - Expected root gitlink: `apps/server-pilot/vsto` at
   `0f2d0853074f241da4a4d846076f6358720956b1`; private Windows CI run
-  `36566518042` succeeded at this exact SHA. The locally downloaded, uninstalled
-  `NavaOutlookSetup.exe` artifact is **4,252,064 bytes**, SHA-256
-  `4fbefd9512f1298199661f68ebc64d7e45a29f11ab5f6290f71ae50fb3b4475e`.
-  This newer build retains successful Outlook COM results even if the signed
-  authorization lease expires after dispatch; the previous build must not be distributed.
+  `36566979908` succeeded at commit `d6a3a3545b7b90acad1e1df43f1cbfff971c1e83`,
+  whose complete source tree (`26172351ca4798e753529efcf65ca10e1625ae8a`)
+  matches that gitlink. The locally downloaded, uninstalled
+  `NavaOutlookSetup.exe` artifact is **4,252,091 bytes**, SHA-256
+  `e8c4602a9f5c1e65092aa4ad564ebd434f55a352bbcc8f6bcb186415f3e752aa`.
+  This build retains successful Outlook COM results even if the signed
+  authorization lease expires after dispatch. Distribute only this exact run
+  and hash; build output bytes can differ even when the source tree is identical.
   Re-fetch from the exact run, verify local hash/size, x86/x64 builds, manifest
   signatures and chain under supervised IT policy before distributing. Do not
   equate a CI self-signed VSTO manifest with a publisher-trusted setup EXE or
