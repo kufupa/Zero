@@ -54,14 +54,14 @@ Implement → run the focused Node contract test red then green → run `git dif
 
 ### Done criteria
 
-- [ ] Canonical HTML contains the exact 26 unique `data-gradient` slugs, in catalog order, with 26 corresponding accessible names.
-- [ ] No visible text/branding or external asset, script, font, or network dependency is present.
-- [ ] Responsive 3/2/1-column layouts and 722:335 swatch ratio are verified; document remains vertically scrollable.
-- [ ] The source passes the Node contract test and `git diff --check`; task and final reviews find no unresolved Critical or Important issue.
-- [ ] The new URL returns HTTP 200 and its bytes hash exactly matches the reviewed canonical file.
-- [ ] Existing served files retain these pre-deployment SHA-256 values: demo `eaf04bfb9b09d205deabf2efc50979308b5282356a31e2674039caa00e32da9c`, index `b7384087bed648558e3328a8c2acdd847dafb30533723b9387a2c0a2720c2178`, and image `288d4893df4fc063e7a9878b09666ab0f2cfe1604798ada943eac02edeffa27b`.
-- [ ] No unrelated working-tree file is modified, staged, or committed.
-- [ ] No unresolved blocker affects the requested live page.
+- [x] Canonical HTML contains the exact 26 unique `data-gradient` slugs, in catalog order, with 26 corresponding accessible names.
+- [x] No visible text/branding or external asset, script, font, or network dependency is present.
+- [x] Responsive 3/2/1-column layouts and 722:335 swatch ratio are verified; document remains vertically scrollable.
+- [x] The source passes the Node contract test and `git diff --check`; task and final reviews find no unresolved Critical or Important issue.
+- [x] The new URL returns HTTP 200 and its bytes hash exactly matches the reviewed canonical file.
+- [x] Existing served files retain these pre-deployment SHA-256 values: demo `eaf04bfb9b09d205deabf2efc50979308b5282356a31e2674039caa00e32da9c`, index `b7384087bed648558e3328a8c2acdd847dafb30533723b9387a2c0a2720c2178`, and image `288d4893df4fc063e7a9878b09666ab0f2cfe1604798ada943eac02edeffa27b`.
+- [x] No unrelated working-tree file is modified, staged, or committed by this feature.
+- [x] No unresolved blocker affects the requested live page.
 
 ### True blockers
 
@@ -85,7 +85,7 @@ Autonomous. Use `subagent-driven-development`, TDD, fresh task-scoped review, an
 - Consumes: the 26-entry ordered design mapping in the referenced design spec and the uploaded artwork's wide, atmospheric gradient composition.
 - Produces: a zero-dependency HTML page with one accessible swatch per catalog entry, ready to copy unchanged to the Hermes static root.
 
-- [ ] **Step 1: Run the static contract test before implementation (RED).**
+- [x] **Step 1: Run the static contract test before implementation (RED).**
 
 Run from the repository root:
 
@@ -137,13 +137,13 @@ NODE
 
 Expected before implementation: non-zero exit at the 26-slug assertion (`actual` is empty). Do not weaken the assertion to make the red run pass.
 
-- [ ] **Step 2: Implement the page.** Create only the canonical HTML file. Use a semantic `<main class="gallery">` containing 26 empty, accessible image-role elements in the exact source order. Give each element `data-gradient` equal to the source detail slug and `aria-label` equal to the source component title. Keep the CSS in one `<style>` element in this file.
+- [x] **Step 2: Implement the page.** Create only the canonical HTML file. Use a semantic `<main class="gallery">` containing 26 empty, accessible image-role elements in the exact source order. Give each element `data-gradient` equal to the source detail slug and `aria-label` equal to the source component title. Keep the CSS in one `<style>` element in this file.
 
   Use the design spec's component-by-component palette and geometry: layered native `radial-gradient`, `linear-gradient`, `repeating-linear-gradient`, and `conic-gradient` where appropriate; use pseudo-elements only for shape/textures, never copy source markup/styles verbatim. Give the overall page the quiet deep-teal surround and soft blended atmosphere of the reference. Set the swatches to `aspect-ratio: 722 / 335`; define the 3-column `.gallery` default; at `max-width: 920px` use 2 columns; at `max-width: 620px` use 1. Keep the document in normal vertical flow and avoid any visible text or external dependency.
 
-- [ ] **Step 3: Run the same static contract test (GREEN).** Re-run the exact Step 1 command; expected output is `PASS: 26 accessible, ordered swatches; text-free; responsive; self-contained.`
+- [x] **Step 3: Run the same static contract test (GREEN).** Re-run the exact Step 1 command; expected output is `PASS: 26 accessible, ordered swatches; text-free; responsive; self-contained.`
 
-- [ ] **Step 4: Check the focused diff and commit only this artifact.** Run:
+- [x] **Step 4: Check the focused diff and commit only this artifact.** Run:
 
 ```bash
 git add docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html
@@ -163,3 +163,10 @@ Run only after Task 1's task-scoped reviewer approves the source. No service res
 3. Fetch `https://hermes.trynava.io/designs/background-gradient-gallery.html`; require HTTP 200, 26 `data-gradient` values in the same order, and a response SHA-256 equal to the canonical source.
 4. Re-hash `outlook-side-pane-demo.html`, `index.html`, and `quote-rate-proof.png`; each must match its baseline. If any differ, investigate without overwriting or restoring existing files.
 5. Capture commands and outputs in the task report/SDD ledger; then run final feature-range review.
+
+## Completion Record
+
+- Task reviewer approved the canonical source at `034e8d1e`; no Critical, Important, or Minor findings.
+- Chromium verified the local page at 1440, 800, and 390 pixel viewport widths: 3/2/1 columns, 26 backgrounds, no visible text or horizontal overflow, vertical scrolling, and no network requests.
+- Deployed route: `https://hermes.trynava.io/designs/background-gradient-gallery.html` returned HTTP 200 with 26 ordered swatches. Served bytes match the canonical source SHA-256 `391afef529d2281de52b45a47d0d11b95188e359fa8fdf2ad52586e117dd0637`.
+- Existing live demo, index, and image hashes match the pre-deployment values above. No Caddy or service changes were made.
