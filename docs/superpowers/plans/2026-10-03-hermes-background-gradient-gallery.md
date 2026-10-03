@@ -1,174 +1,201 @@
-# Hermes Background Gradient Gallery Implementation Plan
+# Hermes Background Gradient Gallery — Image-Locked Rework Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` to execute this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Execution posture:** Overnight autonomous — user authorized plan, implementation, verification, and deployment without routine checkpoints.
 
-**Execution posture:** User explicitly authorized end-to-end autonomous implementation and deployment. Do not pause for routine approval.
-
-**Goal:** Publish a text-free, responsive page showing all 26 OpenSourceUI background-gradient styles, inspired by the uploaded NAVA gradient artwork, at `https://hermes.trynava.io/designs/background-gradient-gallery.html`.
-
-**Architecture:** One self-contained HTML/CSS artifact is the canonical source. It is deployed as a new file into Hermes' existing static `/designs/` root; the existing Caddy mapping and Python static server already serve that directory, so no server or app configuration changes are needed.
-
-**Tech Stack:** HTML5, CSS gradients and media queries; Node.js built-in assertions for static contract checks; `curl` and SHA-256 for live verification. No runtime JavaScript or external dependencies.
-
-## Global Constraints
-
-- Show exactly the 26 catalog entries, in the order and with the CSS visual mechanics in `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery-design.md`.
-- No visible text, labels, logo, brand, controls, or copy on the page; swatches get their exact component names through `role="img"` and `aria-label` only.
-- Desktop/tablet/phone layouts are 3/2/1 columns. Each sample uses `aspect-ratio: 722 / 335`; the page scrolls vertically and never uses a page-level horizontal scroller.
-- Keep the deliverable self-contained: no scripts, remote fonts, external assets, imports, packages, build steps, or network requests.
-- Canonical source: `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html`.
-- Live path: `/home/orca/.gstack/projects/zero/designs/current-ui-showcase/background-gradient-gallery.html`; public URL: `https://hermes.trynava.io/designs/background-gradient-gallery.html`.
-- Deployment may create only that new leaf file in the Hermes static root. Do not edit or replace `index.html`, `outlook-side-pane-demo.html`, `quote-rate-proof.png`, any other existing served file, Caddy configuration, or any application/service configuration. Do not restart services.
-- This is not a Zero pilot application deployment: do not invoke `ops-deploy.sh`, `ops-restart.sh`, EC2 deployment wrappers, database migrations, or RDS-backed tests.
-- Preserve the user's existing dirty worktree files. Stage only paths named in the current task.
-- Never run Vitest or another test runner with `DATABASE_URL` pointing at `nava-zero-mail-pilot` or any production database. Never set or use `VITEST_ALLOW_PILOT_RDS=1`; never source `.env.production` into a test process. Database-required tests use a disposable non-production database only.
+> **For agentic workers:** Use the autonomous mandate below and execute the implementation units test-first. If isolated agent capacity is unavailable, continue inline; do not pause for a routine handoff.
+>
+> **Plan path:** `docs/superpowers/plans/2026-10-03-hermes-background-gradient-gallery.md`
 
 ---
 
-## Autonomous Execution Mandate
+## Summary
 
-**User granted full autonomy.** Continue through implementation, review, deployment, and verification without routine checkpoints.
+Correct the existing gallery so all 26 OpenSourceUI gradient treatments use one palette and composition derived from the user's uploaded image. The previous gallery incorrectly reused each component's native palette; this rework keeps teal, blue, violet, and magenta-violet fixed while varying only treatment geometry and texture. Deploy the corrected gallery at its current Hermes URL, changing no other served asset or service.
+
+## Problem Frame
+
+The gallery is intended to let the user compare the 26 OpenSourceUI background treatments against one visual reference. The first implementation followed the component pages' native colors, which produced unrelated cream, green, pink, amber, and red samples. The prior design spec explicitly made that wrong choice by saying each entry should retain its own color family. The corrected contract treats the uploaded artwork—not the source examples' color palettes—as the color and composition authority.
+
+The screenshot is 722×334 pixels. Sampled background-only regions support the teal field, center violet bloom, lower-left magenta-violet wash, lower blue lift, and dark teal edges. The gallery must reproduce those background features without the NAVA wordmark or tagline.
+
+## Requirements
+
+- Show all 26 official OpenSourceUI category entries, in source order, retaining exact names and slugs.
+- Use a single shared image-derived palette and underlying composition for every artwork; vary only each entry's geometry, texture, and effect placement.
+- Place each component name below its artwork, outside the image-like background, to make user selection easy. Do not place text, logos, or controls over the art.
+- Use three desktop columns, two tablet columns, one narrow-phone column, and normal vertical scrolling.
+- Match the uploaded image's exact 722:334 aspect ratio.
+- Keep the canonical page self-contained, with original HTML/CSS and no external dependencies or network requests.
+- Replace only the existing gallery file served at `https://hermes.trynava.io/designs/background-gradient-gallery.html`; preserve the Outlook demo and every other served file.
+
+## Key Technical Decisions
+
+- **KTD-1 — Lock palette and composition; vary treatment only.** Define shared tokens from sampled image-background colors: teal edge/field (`#103935`, `#113f3f`, `#13454c`, `#145e6e`), blue/teal lift (`#1c5166`, `#35598d`, `#41699a`), indigo/violet bloom (`#6a5bb1`, `#986bcd`), and magenta-violet bloom (`#a566d1`, `#ac6ed7`). Derive translucent accents only from these colors.
+- **KTD-2 — Shared substrate plus 26 CSS treatment overlays.** Preserve the broad teal field, central violet, lower-left magenta-violet, blue lower lift, and dark edge falloff in one common artwork layer. Make source-derived arcs, pools, meshes, dots, folds, streaks, and fragments separate CSS treatments. Keep the base composition recognizable.
+- **KTD-3 — Label the comparison, not the artwork.** Put each exact component title in a small `figcaption` below the preview and expose the same title as the art's accessible name. Do not reproduce NAVA branding or image text.
+- **KTD-4 — Replace the static artifact in place.** The route already exists and is served by the current static server/Caddy mapping. Change only the gallery leaf file; no app or service configuration is needed.
+
+### Alternatives considered
+
+- Reusing each source page's native palette is rejected; it caused the reported visual mismatch.
+- Repeating one identical screenshot-derived gradient 26 times is rejected; it would not let the user compare treatments.
+- The selected approach combines one screenshot-derived base with 26 original geometry/texture treatments.
+
+## Global Constraints
+
+- Show exactly the 26 catalog entries in the design spec's order. Every tile shares the sampled image palette and composition; no native source palette may be used.
+- Artwork contains no text or branding. Component-name captions are the only visible text and sit below—not over—each sample.
+- Use three/two/one columns at desktop/tablet/phone widths, exact `aspect-ratio: 722 / 334`, normal vertical scrolling, and no page-level horizontal overflow.
+- Keep canonical HTML standalone: no JavaScript, remote fonts, external images/scripts, imports, packages, or network requests.
+- Canonical source: `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html`.
+- Public URL: `https://hermes.trynava.io/designs/background-gradient-gallery.html`.
+- Existing static root: `/home/orca/.gstack/projects/zero/designs/current-ui-showcase`. Replace only `background-gradient-gallery.html`.
+- Do not edit `index.html`, `outlook-side-pane-demo.html`, `quote-rate-proof.png`, any other served file, Caddy, the static server, an application, or infrastructure.
+- This is not a Zero pilot application deployment. Do not invoke app deployment/restart wrappers, database migrations, or RDS-backed tests.
+- Preserve unrelated dirty worktree files. Stage only the plan, design spec, canonical HTML, and focused contract test.
+- Never run Vitest or another test runner with `DATABASE_URL` pointed at `nava-zero-mail-pilot` or any production database. Never set/use `VITEST_ALLOW_PILOT_RDS=1` or source `.env.production` into tests.
+
+## Overnight Autonomous Execution Mandate
+
+**User granted full autonomy.** Continue through plan correction, implementation, review, deployment, and live verification without routine checkpoints.
+
+### Communication
+
+Keep progress updates concise. Any worker or reviewer must use a standard non-fast model and return concise findings. If isolated agent capacity is unavailable, execute inline; do not pause.
 
 ### Decision authority
 
-- Choose the safest reversible option that satisfies this plan; preserve all listed requirements.
-- This route is served by an existing static directory. The requested production action is limited to adding the single new HTML file at the path above.
-- Do not broaden scope into the existing demo, app, infrastructure, or shared assets. If the intended target becomes occupied before deployment, do not overwrite it; investigate and use a different new `/designs/` filename only if the same requested result remains clear, then record the chosen URL.
-- Use standard, non-fast subagents for implementation and reviews. Every orchestrator and subagent response uses `/caveman ultra`; technical terms remain exact.
+Choose the smallest safe, reversible approach that meets the user's clarified intent. Do not broaden the task into the Outlook demo, product UI, apps, server configuration, or AWS. If the expected live file changes before deployment, inspect it and do not overwrite an unrelated change. If a gate fails, reproduce it, identify the mechanism, fix it, and rerun the gate.
+
+### AWS / infra inventory — out of scope
+
+| Resource | ID / path |
+|----------|-----------|
+| EC2 | `i-008f737974a9ba9b3` (`af-south-1`) |
+| RDS | `nava-zero-mail-pilot` (Postgres 16) |
+| S3 | `nava-zero-mail-845242190536-af-south-1` |
+| Repo on EC2 | `/home/ubuntu/repos/zero` |
+| **Primary deploy** | `apps/server-pilot/deploy/ops-deploy.sh` (`--migrate` when schema) |
+| **Primary app bounce** | `apps/server-pilot/deploy/ops-restart.sh` |
+| **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
+| Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
+
+This task does not change any resource in this inventory. The table is retained only to make the deployment boundary explicit.
+
+**Allowed for this task:** read-only checks of the existing static mapping/process, local Node and Chromium verification, temporary backup of the current gallery, replacement of that one static HTML file, and read-only public HTTP/hash checks.
+
+**Forbidden for this task:** `ops-deploy.sh`, `ops-restart.sh`, `ops-reboot.sh`, bundle sync, EC2/SSM deploys, seed/migration actions, or any AWS/EC2/RDS/S3 change; force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail credentials, tests against pilot/production RDS, `VITEST_ALLOW_PILOT_RDS=1`, or sourcing `.env.production` into tests.
+
+### Pilot RDS safety (overrides autonomy)
+
+Never run Vitest against `nava-zero-mail-pilot` or any production database. No overnight escape hatch exists.
+
+Before every local or EC2 Vitest command:
+
+```bash
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+```
+
+If a test requires Postgres, use a disposable non-production database. If none exists, use read-only checks where they prove the requirement; otherwise report a safety blocker. Never weaken this rule to make a gate green.
+
+The pilot wrappers above are not applicable and must not be invoked. The only deployment action in scope is replacing the existing gallery HTML in the current Hermes static root.
 
 ### RCA loop
 
-FAIL → reproduce minimally → identify the root cause and mechanism → research unfamiliar behavior when useful → choose the smallest correct fix → test → resume. Do not skip a gate or declare completion while a failure remains.
-
-### Safety
-
-- Follow repository rules and the Zero pilot RDS safety rule in Global Constraints.
-- Never force-push protected branches, bypass hooks, run destructive git commands, expose secrets, or weaken safety guards.
-- The working tree contains pre-existing user changes. Do not stage, edit, discard, or include them in commits or review packages.
-- Before publishing, verify the exact target is absent and the three existing-file hashes below still match. Publish from the reviewed canonical file, then verify the live response and byte hash.
-- Do not edit the Caddyfile, restart the static server, or touch production application/AWS/RDS resources for this static file addition.
+FAIL → reproduce minimally → identify root cause and mechanism → research unfamiliar behavior when useful → choose the smallest correct fix → test → resume. Do not skip a gate or declare completion while a failure remains.
 
 ### Verification loop
 
-Implement → run the focused Node contract test red then green → run `git diff --check` → task review → deploy only the new HTML file → verify live HTTP 200, page contract, and SHA-256 equality → verify protected existing-file hashes are unchanged → run final feature-range review.
+Review the updated plan/spec → run the focused Node contract test red then green → inspect the page in Chromium at desktop, tablet, and phone widths → run `git diff --check` and task-scoped reviews → confirm static mapping and baseline hashes → replace only the gallery leaf → verify public HTTP 200, exact source/live SHA-256 equality, and unchanged protected-file hashes → perform fresh final review.
 
 ### Done criteria
 
-- [x] Canonical HTML contains the exact 26 unique `data-gradient` slugs, in catalog order, with 26 corresponding accessible names.
-- [x] No visible text/branding or external asset, script, font, or network dependency is present.
-- [x] Responsive 3/2/1-column layouts and 722:335 swatch ratio are verified; document remains vertically scrollable.
-- [x] The source passes the Node contract test and `git diff --check`; task review found no unresolved Critical or Important issue.
-- [x] Final whole-change review finds no unresolved Critical or Important issue.
-- [x] The new URL returns HTTP 200 and its bytes hash exactly matches the reviewed canonical file.
-- [x] Existing served files retain these pre-deployment SHA-256 values: demo `eaf04bfb9b09d205deabf2efc50979308b5282356a31e2674039caa00e32da9c`, index `b7384087bed648558e3328a8c2acdd847dafb30533723b9387a2c0a2720c2178`, and image `288d4893df4fc063e7a9878b09666ab0f2cfe1604798ada943eac02edeffa27b`.
-- [x] No unrelated working-tree file is modified, staged, or committed by this feature.
-- [x] No unresolved blocker affects the requested live page.
+- [ ] Plan and design spec require one screenshot-derived palette/composition for all 26 treatments; the native-palette instruction is gone.
+- [ ] All 26 official titles/order/slugs have distinct original CSS geometry/texture treatments using only the screenshot-derived artwork palette.
+- [ ] Captions identify samples outside text-free artwork; no NAVA branding or tagline appears.
+- [ ] Exact 722:334 ratio, responsive 3/2/1 grid, vertical scroll, and no horizontal overflow are verified.
+- [ ] Focused static contract test fails against the old implementation for the expected reason and passes after the correction.
+- [ ] Desktop/tablet/phone Chromium captures are inspected against the reloaded reference.
+- [ ] Task-scoped and final reviews have no unresolved Critical/Important findings; `git diff --check` passes.
+- [ ] Only the intended gallery file is replaced; the public route serves the reviewed source hash.
+- [ ] Existing demo/index/image hashes and unrelated dirty worktree files remain unchanged.
+- [ ] No abandoned experiment or unresolved blocker remains.
 
 ### True blockers
 
-Stop only if safe access to the intended static root is unavailable, an occupied target cannot be safely avoided, required verification cannot be obtained due to an external outage, or a safety-policy conflict prevents the limited static deployment. Do not pause for routine design, implementation, or verification choices.
+Stop only if safe access to the expected static root is unavailable, the live gallery changed to an unrelated file before replacement, required proof is unavailable due to external outage, or a safety/policy conflict prevents the narrow update. Do not stop for routine visual or implementation decisions.
 
 ## Execution Mode
 
-Autonomous. Use `subagent-driven-development`, TDD, fresh task-scoped review, and final whole-change review. After the task reviewer approves the local artifact, the orchestrator performs the narrow static-file deployment gate below and continues through live verification without asking which option to choose.
+Autonomous end-to-end execution as explicitly requested. Continue through the first incomplete unit without routine approval. Never stage unrelated work or push this feature to `main`.
 
-## Files and Task Decomposition
+## Implementation Units
 
-### Task 1: Build and verify the standalone gradient gallery
+### U1. Lock the corrected visual contract
 
-**Files:**
+**Goal:** Correct the stored plan/spec so the native-palette mistake cannot recur.
+**Requirements:** One shared screenshot palette/composition; only treatment geometry/texture varies; component labels do not overlay artwork.
+**Dependencies:** None.
+**Files:** `docs/superpowers/plans/2026-10-03-hermes-background-gradient-gallery.md`; `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery-design.md`.
+**Approach:** Replace native-color direction with image-locked tokens, 722×334 sizing, geometry-only treatment descriptions, external captions, and explicit deployment non-goals. Keep the existing plan/spec paths; do not create a sibling plan.
+**Test scenarios:** Confirm all 26 source treatments remain named and the docs explicitly forbid native palettes, off-reference artwork hues, branding, and changes to other served files.
+**Verification:** Re-read both docs; the corrected fixed-palette contract is consistent.
 
-- Create: `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html`
-- Reference design: `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery-design.md`
+### U2. Rebuild and regression-test the gallery
 
-**Interfaces:**
+**Goal:** Render 26 distinct OpenSourceUI treatments over the shared reference-derived teal/violet/blue/magenta composition.
+**Requirements:** Exact names/order/slugs, locked palette, captions and accessible names, exact image ratio, responsive grid, vertical flow, standalone page.
+**Dependencies:** U1.
+**Files:** Modify `docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html`; create `scripts/check-hermes-background-gradient-gallery.mjs`.
+**Approach:** Keep one shared reference substrate and create 26 per-entry CSS overlays for the official geometry/texture. Use Node built-in assertions for catalog mapping, color boundary, unique treatments, captions/accessibility, proportion, responsive rules, branding exclusion, and lack of external dependencies.
+**Execution note:** Add the contract test first and observe its expected failure before editing the canonical page.
+**Patterns to follow:** Existing self-contained HTML; Node's built-in `assert/strict`; no package or app test harness.
+**Test scenarios:**
+- Happy path: all 26 exact slugs/names appear once and in order; each caption matches its accessible name and each sample has a unique effect selector.
+- Palette invariant: required screenshot tokens and one shared base exist; treatment rules contain no literal off-palette colors.
+- Layout: CSS specifies 3/2/1 columns, 722:334 ratio, and no fixed-height page clamp.
+- Accessibility/scope: each background has a matching accessible label and visible caption; no NAVA/tagline, script, image, external stylesheet/font, import, or network URL exists.
+- Browser integration: Chromium at 1440px, 800px, and 390px shows 3/2/1 columns, all captions, no horizontal overflow, vertical scroll, and no external requests.
+**Verification:** Contract test passes; fresh screenshots show 26 distinguishable treatments of the supplied image palette/composition.
 
-- Consumes: the 26-entry ordered design mapping in the referenced design spec and the uploaded artwork's wide, atmospheric gradient composition.
-- Produces: a zero-dependency HTML page with one accessible swatch per catalog entry, ready to copy unchanged to the Hermes static root.
+### U3. Publish only the corrected static gallery
 
-- [x] **Step 1: Run the static contract test before implementation (RED).**
+**Goal:** Update the current public gallery without disturbing any other served file or service.
+**Requirements:** Same URL, byte-for-byte reviewed source, HTTP 200, protected-file hashes unchanged.
+**Dependencies:** U2 and task review.
+**Files:** No additional tracked files; deploy only `background-gradient-gallery.html` under the existing static root.
+**Approach:** Confirm the Caddy mapping and Python static-server directory. Verify the live gallery still matches the captured old hash before replacement; retain a temporary byte-for-byte rollback copy; replace only the gallery leaf. Verify public/source hashes and recheck protected files.
+**Execution note:** Deploy after local visual inspection and clean task review. Do not restart services.
+**Test scenarios:**
+- Happy path: public route returns HTTP 200 with 26 ordered entries and SHA-256 matching the canonical source.
+- Preservation: Outlook demo, index, and quote image retain their captured pre-deploy hashes.
+- Failure path: if the target differs from the known old hash, stop before overwrite and investigate the changed file.
+**Verification:** Live status/content/hash pass; service and all non-gallery files are unchanged.
 
-Run from the repository root:
+## Verification Contract
 
-```bash
-node --input-type=module <<'NODE'
-import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+| Gate | Evidence |
+|---|---|
+| Corrected artifact | `node scripts/check-hermes-background-gradient-gallery.mjs` passes after the intended RED run. |
+| Responsive visual behavior | Fresh Chromium screenshots at 1440px, 800px, and 390px are inspected against the reloaded screenshot and treatment map. |
+| Scope safety | `git diff --check`; the feature diff contains only the plan, design spec, canonical HTML, and focused test (plus an append-only task ledger note); pre-existing unrelated worktree changes remain untouched. |
+| Deployment | Existing static mapping remains active; only the gallery is replaced; public route returns 200 and matches canonical SHA-256. |
+| Preservation | Existing gallery target matched its captured old hash before replacement; Outlook demo/index/image hashes remain `eaf04bfb9b09d205deabf2efc50979308b5282356a31e2674039caa00e32da9c`, `b7384087bed648558e3328a8c2acdd847dafb30533723b9387a2c0a2720c2178`, `288d4893df4fc063e7a9878b09666ab0f2cfe1604798ada943eac02edeffa27b`. |
+| Database safety | No database-backed test or pilot app deploy applies to this static page. |
 
-const file = 'docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html';
-const html = existsSync(file) ? readFileSync(file, 'utf8') : '';
-const expected = [
-  'arc-bands-background', 'aurora-background', 'cherry-petal-background',
-  'coral-glow-background', 'dark-arc-bands-background', 'dark-aurora-background',
-  'dark-carbon-spotlight-background', 'dark-ember-background', 'dark-ink-field-background',
-  'dark-midnight-mesh-background', 'dark-rose-noir-background', 'dark-teal-depth-background',
-  'frost-mesh-background', 'halftone-pop-background', 'honey-ember-background',
-  'ink-wash-background', 'linen-weave-background', 'mint-lagoon-background',
-  'paper-fold-background', 'rain-prism-background', 'sand-drift-background',
-  'soft-spotlight-background', 'sunrise-horizon-background', 'sunset-bloom-background',
-  'terrazzo-fragment-background', 'tropical-tide-background',
-];
-const expectedLabels = [
-  'Arc Bands', 'Aurora Background', 'Cherry Petal', 'Coral Glow', 'Dark Arc Bands',
-  'Dark Aurora', 'Dark Carbon Spotlight', 'Dark Ember', 'Dark Ink Field', 'Dark Midnight Mesh',
-  'Dark Rose Noir', 'Dark Teal Depth', 'Frost Mesh', 'Halftone Pop', 'Honey Ember',
-  'Ink Wash', 'Linen Weave', 'Mint Lagoon', 'Paper Fold', 'Rain Prism', 'Sand Drift',
-  'Soft Spotlight', 'Sunrise Horizon', 'Sunset Bloom', 'Terrazzo Fragment', 'Tropical Tide',
-];
-const actual = [...html.matchAll(/data-gradient="([^"]+)"/g)].map((match) => match[1]);
-assert.deepEqual(actual, expected, 'all 26 catalog slugs must appear once and in order');
-const labels = [...html.matchAll(/role="img" aria-label="([^"]+)"/g)].map((match) => match[1]);
-assert.deepEqual(labels, expectedLabels, 'every swatch must expose its exact component title');
-assert.equal(new Set(actual).size, 26, 'gradient slugs must be unique');
+## Definition of Done
 
-const css = html.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? '';
-assert.match(css, /aspect-ratio:\s*722\s*\/\s*335/i, 'swatches must match the reference proportion');
-assert.match(css, /\.gallery\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/i, 'desktop must show three columns');
-assert.match(css, /@media\s*\(max-width:\s*920px\)[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/i, 'tablet must show two columns');
-assert.match(css, /@media\s*\(max-width:\s*620px\)[\s\S]*?grid-template-columns:\s*1fr/i, 'phone must show one column');
-assert.doesNotMatch(css, /overflow-y:\s*hidden/i, 'page must remain vertically scrollable');
+- [ ] Corrected plan/spec and implementation agree.
+- [ ] All 26 treatments share the screenshot palette/composition and differ by recognizable geometry/texture.
+- [ ] Focused test passes and its intended failing baseline was observed.
+- [ ] Chromium visual verification passes at all three widths.
+- [ ] Final scoped review and whitespace check pass.
+- [ ] Only the existing gallery file is replaced; live URL status and hash match canonical source.
+- [ ] Protected served-file hashes and unrelated dirty worktree files remain unchanged.
+- [ ] No unresolved blocker or abandoned experimental code remains.
 
-const body = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? '';
-assert.ok(body, 'document must have a body');
-assert.doesNotMatch(body, />[^<]*[^\s<][^<]*</, 'gallery must have no visible text nodes');
-assert.doesNotMatch(html, /NAVA|Autonomous Agents for Big Insurance|<script\b|<img\b|<link\b|@import|https?:\/\//i, 'page must omit branding and external dependencies');
-console.log('PASS: 26 accessible, ordered swatches; text-free; responsive; self-contained.');
-NODE
-```
+## Sources and Evidence
 
-Expected before implementation: non-zero exit at the 26-slug assertion (`actual` is empty). Do not weaken the assertion to make the red run pass.
-
-- [x] **Step 2: Implement the page.** Create only the canonical HTML file. Use a semantic `<main class="gallery">` containing 26 empty, accessible image-role elements in the exact source order. Give each element `data-gradient` equal to the source detail slug and `aria-label` equal to the source component title. Keep the CSS in one `<style>` element in this file.
-
-  Use the design spec's component-by-component palette and geometry: layered native `radial-gradient`, `linear-gradient`, `repeating-linear-gradient`, and `conic-gradient` where appropriate; use pseudo-elements only for shape/textures, never copy source markup/styles verbatim. Give the overall page the quiet deep-teal surround and soft blended atmosphere of the reference. Set the swatches to `aspect-ratio: 722 / 335`; define the 3-column `.gallery` default; at `max-width: 920px` use 2 columns; at `max-width: 620px` use 1. Keep the document in normal vertical flow and avoid any visible text or external dependency.
-
-- [x] **Step 3: Run the same static contract test (GREEN).** Re-run the exact Step 1 command; expected output is `PASS: 26 accessible, ordered swatches; text-free; responsive; self-contained.`
-
-- [x] **Step 4: Check the focused diff and commit only this artifact.** Run:
-
-```bash
-git add docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html
-git diff --cached --check -- docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html
-git diff --cached --stat -- docs/superpowers/specs/2026-10-03-hermes-background-gradient-gallery.html
-git commit -m "feat: add Hermes background gradient gallery"
-```
-
-Confirm the staged and committed path list contains only the canonical HTML file. Preserve all pre-existing dirty files.
-
-## Controller-owned Hermes deployment gate
-
-Run only after Task 1's task-scoped reviewer approves the source. No service restart or repository push is needed.
-
-1. Confirm the process still serves `/home/orca/.gstack/projects/zero/designs/current-ui-showcase` on port `9898`, Caddy still maps `/designs/*` to that server, the new target is absent, and the three existing-file hashes in Done criteria still match.
-2. Copy the reviewed canonical file to the exact new target path with mode `0644`; create no other persistent served file. Recheck the source/target SHA-256 equality before serving verification.
-3. Fetch `https://hermes.trynava.io/designs/background-gradient-gallery.html`; require HTTP 200, 26 `data-gradient` values in the same order, and a response SHA-256 equal to the canonical source.
-4. Re-hash `outlook-side-pane-demo.html`, `index.html`, and `quote-rate-proof.png`; each must match its baseline. If any differ, investigate without overwriting or restoring existing files.
-5. Capture commands and outputs in the task report/SDD ledger; then run final feature-range review.
-
-## Completion Record
-
-- Task reviewer approved the canonical source at `034e8d1e`; no Critical, Important, or Minor findings.
-- Chromium verified the local page at 1440, 800, and 390 pixel viewport widths: 3/2/1 columns, 26 backgrounds, no visible text or horizontal overflow, vertical scrolling, and no network requests.
-- Deployed route: `https://hermes.trynava.io/designs/background-gradient-gallery.html` returned HTTP 200 with 26 ordered swatches. Served bytes match the canonical source SHA-256 `391afef529d2281de52b45a47d0d11b95188e359fa8fdf2ad52586e117dd0637`.
-- Existing live demo, index, and image hashes match the pre-deployment values above. No Caddy or service changes were made.
-- Independent final feature review approved with no Critical, Important, or Minor findings.
+- User-supplied 722×334 screenshot — visual source of truth; sampled unobstructed points confirm the shared palette.
+- [Official OpenSourceUI background-gradient category](https://opensourceui.in/components/category/background-gradient) and the 26 linked detail pages — titles/order and signature geometry/texture only.
+- Existing canonical HTML and live `/designs/*` static mapping — deployment pattern.
