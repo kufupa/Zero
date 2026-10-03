@@ -129,7 +129,7 @@ assert.doesNotMatch(css, /overflow-y:\s*hidden/i, 'page must remain vertically s
 
 const body = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? '';
 assert.ok(body, 'document must have a body');
-assert.doesNotMatch(body, />[^<]*\S[^<]*</, 'gallery must have no visible text nodes');
+assert.doesNotMatch(body, />[^<]*[^\s<][^<]*</, 'gallery must have no visible text nodes');
 assert.doesNotMatch(html, /NAVA|Autonomous Agents for Big Insurance|<script\b|<img\b|<link\b|@import|https?:\/\//i, 'page must omit branding and external dependencies');
 console.log('PASS: 26 accessible, ordered swatches; text-free; responsive; self-contained.');
 NODE
