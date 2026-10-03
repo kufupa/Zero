@@ -42,6 +42,10 @@ describe('built /outlook-pane script policy in a real browser', () => {
       expect(csp).toBeDefined();
 
       let localSignInAttempts = 0;
+      let mailboxRequestsBeforeSignIn = 0;
+      let expiredStaffSession = false;
+      let expiredMailboxRequests = 0;
+      let recoverySignOuts = 0;
       const localServer = createServer((request, response) => {
         const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
         if (pathname === '/outlook-pane') {
@@ -50,11 +54,54 @@ describe('built /outlook-pane script policy in a real browser', () => {
           return;
         }
         if (pathname.startsWith('/api/')) {
+          if (pathname === '/api/auth/get-session') {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(
+              JSON.stringify(
+                expiredStaffSession
+                  ? {
+                      user: { id: 'browser-test-staff', email: 'staff@example.invalid' },
+                      session: {
+                        id: 'browser-test-session',
+                        createdAt: new Date().toISOString(),
+                        expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+                      },
+                    }
+                  : null,
+              ),
+            );
+            return;
+          }
+          if (pathname === '/api/auth/sign-out') {
+            recoverySignOuts += 1;
+            expiredStaffSession = false;
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ success: true }));
+            return;
+          }
+          if (pathname.includes('connections.') && expiredStaffSession) {
+            expiredMailboxRequests += 1;
+          }
+          if (pathname.includes('connections.') && localSignInAttempts === 0) {
+            mailboxRequestsBeforeSignIn += 1;
+          }
           if (pathname === '/api/auth/sign-in/email' && request.method === 'POST') {
             localSignInAttempts += 1;
           }
           response.writeHead(401, { 'Content-Type': 'application/json' });
-          response.end(JSON.stringify({ error: { message: 'Local test: no session' } }));
+          response.end(
+            JSON.stringify([
+              {
+                error: {
+                  json: {
+                    message: 'Local test: no session',
+                    code: -32001,
+                    data: { code: 'UNAUTHORIZED', httpStatus: 401 },
+                  },
+                },
+              },
+            ]),
+          );
           return;
         }
         const file = resolve(client, `.${pathname}`);
@@ -97,6 +144,9 @@ describe('built /outlook-pane script policy in a real browser', () => {
           .getByRole('heading', { name: 'Nava Assistant Sign In' })
           .waitFor({ timeout: 12_000 });
         const signIn = page.getByRole('button', { name: 'Sign in' });
+        await page.waitForTimeout(600);
+        expect(new URL(page.url()).pathname).toBe('/outlook-pane');
+        expect(mailboxRequestsBeforeSignIn).toBe(0);
         expect(await signIn.isEnabled()).toBe(true);
         expect(
           await page.evaluate(
@@ -138,6 +188,17 @@ describe('built /outlook-pane script policy in a real browser', () => {
             ),
           )
           .toBeGreaterThan(previousViolations);
+
+        // A cached staff session can be valid locally after the backend has
+        // expired it. Exercise the real global tRPC recovery, not just login.
+        expiredStaffSession = true;
+        await page.reload();
+        await expect.poll(() => expiredMailboxRequests).toBeGreaterThan(0);
+        await expect.poll(() => recoverySignOuts).toBeGreaterThan(0);
+        await page
+          .getByRole('heading', { name: 'Nava Assistant Sign In' })
+          .waitFor({ timeout: 12_000 });
+        expect(new URL(page.url()).pathname).toBe('/outlook-pane');
       } finally {
         await browser?.close();
         await new Promise<void>((accept) => localServer.close(() => accept()));
