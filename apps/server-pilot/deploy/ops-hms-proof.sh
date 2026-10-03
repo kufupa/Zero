@@ -221,7 +221,7 @@ if ! [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]$ ]] ||
 fi
 
 verify_transfer_bucket_policy() {
-  local public_block lifecycle versioning
+  local public_block lifecycle versioning intelligent_tiering
   public_block="$(aws s3api get-public-access-block \
     --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
     return 1
@@ -231,13 +231,28 @@ verify_transfer_bucket_policy() {
   versioning="$(aws s3api get-bucket-versioning \
     --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
     return 1
+  intelligent_tiering="$(aws s3api list-bucket-intelligent-tiering-configurations \
+    --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
+    return 1
   PUBLIC_BLOCK_JSON="$public_block" LIFECYCLE_JSON="$lifecycle" \
+    INTELLIGENT_TIERING_JSON="$intelligent_tiering" \
     VERSIONING_JSON="$versioning" TRANSFER_ROOT_VALUE="$TRANSFER_ROOT" node -e '
 const pab=JSON.parse(process.env.PUBLIC_BLOCK_JSON||"{}").PublicAccessBlockConfiguration||{};
 if(!["BlockPublicAcls","IgnorePublicAcls","BlockPublicPolicy","RestrictPublicBuckets"].every(k=>pab[k]===true))process.exit(1);
 const versioning=JSON.parse(process.env.VERSIONING_JSON||"{}");
 if(versioning.Status)process.exit(1);
-const rules=JSON.parse(process.env.LIFECYCLE_JSON||"{}").Rules||[];
+const current=JSON.parse(process.env.LIFECYCLE_JSON||"{}");
+if(!["all_storage_classes_128K","varies_by_storage_class"].includes(current.TransitionDefaultMinimumObjectSize))process.exit(1);
+const tiers=JSON.parse(process.env.INTELLIGENT_TIERING_JSON||"{}");
+if(tiers.IsTruncated!==false)process.exit(1);
+const optionalArchive=(tiers.IntelligentTieringConfigurationList||[]).some(config=>{
+  if(config.Status!=="Enabled")return false;
+  const prefix=config.Filter?.Prefix??config.Filter?.And?.Prefix??"";
+  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  return overlaps&&(config.Tierings||[]).some(tier=>["ARCHIVE_ACCESS","DEEP_ARCHIVE_ACCESS"].includes(tier.AccessTier));
+});
+if(optionalArchive)process.exit(1);
+const rules=current.Rules||[];
 const target=(process.env.TRANSFER_ROOT_VALUE||"").replace(/\/?$/,"/");
 const exactPrefix=(rule,prefix)=>rule.Status==="Enabled"&&
   rule.Filter&&Object.keys(rule.Filter).length===1&&
@@ -266,13 +281,26 @@ if(!transfer||!exactPrefix(transfer,target)||Number(transfer.Expiration?.Days)!=
 }
 
 ensure_transfer_lifecycle_rule() {
-  local lifecycle merge changed configuration minimum_object_size
+  local lifecycle merge changed configuration minimum_object_size intelligent_tiering
   lifecycle="$(aws s3api get-bucket-lifecycle-configuration \
     --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
     return 1
+  intelligent_tiering="$(aws s3api list-bucket-intelligent-tiering-configurations \
+    --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
+    return 1
   merge="$(
-    LIFECYCLE_JSON="$lifecycle" TRANSFER_ROOT_VALUE="$TRANSFER_ROOT" node -e '
+    LIFECYCLE_JSON="$lifecycle" INTELLIGENT_TIERING_JSON="$intelligent_tiering" TRANSFER_ROOT_VALUE="$TRANSFER_ROOT" node -e '
 const current=JSON.parse(process.env.LIFECYCLE_JSON||"{}");
+if(!["all_storage_classes_128K","varies_by_storage_class"].includes(current.TransitionDefaultMinimumObjectSize))process.exit(1);
+const tiers=JSON.parse(process.env.INTELLIGENT_TIERING_JSON||"{}");
+if(tiers.IsTruncated!==false)process.exit(1);
+const optionalArchive=(tiers.IntelligentTieringConfigurationList||[]).some(config=>{
+  if(config.Status!=="Enabled")return false;
+  const prefix=config.Filter?.Prefix??config.Filter?.And?.Prefix??"";
+  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  return overlaps&&(config.Tierings||[]).some(tier=>["ARCHIVE_ACCESS","DEEP_ARCHIVE_ACCESS"].includes(tier.AccessTier));
+});
+if(optionalArchive)process.exit(1);
 const rules=Array.isArray(current.Rules)?current.Rules:[];
 const exactPrefix=(rule,prefix)=>rule.Status==="Enabled"&&
   rule.Filter&&Object.keys(rule.Filter).length===1&&
@@ -308,7 +336,7 @@ const valid=prior&&prior.Status==="Enabled"&&
   Number(prior.Expiration?.Days)===1;
 const merged=valid?rules:[...rules.filter(rule=>rule.ID!==desired.ID),desired];
 process.stdout.write(JSON.stringify({changed:!valid,configuration:{Rules:merged},
-  minimumObjectSize:current.TransitionDefaultMinimumObjectSize||"all_storage_classes_128K"}));
+  minimumObjectSize:current.TransitionDefaultMinimumObjectSize}));
 '
   )" || return 1
   changed="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).changed))' "$merge")" ||

@@ -30,7 +30,11 @@ const policy = () => ({
   ],
 });
 
-function runGuard(name: string, lifecycle: ReturnType<typeof policy>) {
+function runGuard(
+  name: string,
+  lifecycle: ReturnType<typeof policy>,
+  tiering: Record<string, unknown> = { IsTruncated: false },
+) {
   const block = script.split(`${name}() {`)[1]?.split('\n}\n')[0];
   const program = block?.match(/node -e '([\s\S]*?)\n'/)?.[1];
   if (!program) throw new Error(`Missing production lifecycle guard: ${name}`);
@@ -39,6 +43,7 @@ function runGuard(name: string, lifecycle: ReturnType<typeof policy>) {
     env: {
       ...process.env,
       LIFECYCLE_JSON: JSON.stringify(lifecycle),
+      INTELLIGENT_TIERING_JSON: JSON.stringify(tiering),
       PUBLIC_BLOCK_JSON: JSON.stringify({
         PublicAccessBlockConfiguration: {
           BlockPublicAcls: true,
@@ -59,6 +64,50 @@ describe('mail lifecycle retention guards', () => {
       const result = runGuard(name, policy());
       expect(result.stderr).toBe('');
       expect(result.status).toBe(0);
+    });
+
+    for (const accessTier of ['ARCHIVE_ACCESS', 'DEEP_ARCHIVE_ACCESS']) {
+      it(`${name}: rejects optional ${accessTier} for mail`, () => {
+        expect(
+          runGuard(name, policy(), {
+            IsTruncated: false,
+            IntelligentTieringConfigurationList: [
+              {
+                Id: 'unsafe-optional-archive',
+                Status: 'Enabled',
+                Filter: { Prefix: 'raw-mime/' },
+                Tierings: [{ Days: 180, AccessTier: accessTier }],
+              },
+            ],
+          }).status,
+        ).toBe(1);
+      });
+    }
+
+    it(`${name}: rejects incomplete optional tier enumeration`, () => {
+      expect(runGuard(name, policy(), { IsTruncated: true }).status).toBe(1);
+    });
+
+    it(`${name}: permits unrelated optional archive configurations`, () => {
+      expect(
+        runGuard(name, policy(), {
+          IsTruncated: false,
+          IntelligentTieringConfigurationList: [
+            {
+              Id: 'scratch-archive',
+              Status: 'Enabled',
+              Filter: { Prefix: 'scratch/' },
+              Tierings: [{ Days: 180, AccessTier: 'DEEP_ARCHIVE_ACCESS' }],
+            },
+          ],
+        }).status,
+      ).toBe(0);
+    });
+
+    it(`${name}: rejects missing transition default instead of guessing`, () => {
+      const current = policy();
+      Object.assign(current, { TransitionDefaultMinimumObjectSize: undefined });
+      expect(runGuard(name, current).status).toBe(1);
     });
 
     it(`${name}: rejects the old mail deletion policies`, () => {
@@ -186,6 +235,7 @@ describe('mail lifecycle retention guards', () => {
 aws() {
   case "$*" in
     *get-bucket-lifecycle-configuration*) printf '%s\\n' "$TEST_POLICY_JSON" ;;
+    *list-bucket-intelligent-tiering-configurations*) printf '%s\\n' '{"IsTruncated":false}' ;;
     *put-bucket-lifecycle-configuration*) printf '%s\\n' "$@" >&2 ;;
     *) return 99 ;;
   esac
