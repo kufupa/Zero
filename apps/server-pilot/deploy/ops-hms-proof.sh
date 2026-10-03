@@ -243,19 +243,30 @@ const exactPrefix=(rule,prefix)=>rule.Status==="Enabled"&&
   rule.Filter&&Object.keys(rule.Filter).length===1&&
   rule.Filter.Prefix===prefix;
 const one=(id)=>{const found=rules.filter(rule=>rule.ID===id);return found.length===1?found[0]:null};
-const raw=one("expire-raw-mime-30d");
-const attachments=one("expire-attachments-90d");
+const raw=one("archive-raw-mime-30d");
+const attachments=one("archive-attachments-30d");
 const multipart=one("abort-incomplete-multipart-1d");
 const transfer=one("HmsBrowserProofTransferExpire1Day");
-if(!raw||!exactPrefix(raw,"raw-mime/")||Number(raw.Expiration?.Days)!==30)process.exit(1);
-if(!attachments||!exactPrefix(attachments,"attachments/")||Number(attachments.Expiration?.Days)!==90)process.exit(1);
+const retainedArchive=(rule,prefix)=>rule&&exactPrefix(rule,prefix)&&
+  !rule.Expiration&&!rule.NoncurrentVersionExpiration&&
+  rule.Transitions?.length===1&&rule.Transitions[0].Days===30&&
+  rule.Transitions[0].StorageClass==="INTELLIGENT_TIERING";
+const unsafeMailLifecycle=rules.some(rule=>{
+  if(rule.Status!=="Enabled")return false;
+  const prefix=rule.Filter?.Prefix??rule.Filter?.And?.Prefix??rule.Prefix??"";
+  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const restoreRequired=[...(rule.Transitions||[]),...(rule.NoncurrentVersionTransitions||[])]
+    .some(transition=>["GLACIER","DEEP_ARCHIVE"].includes(transition.StorageClass));
+  return overlaps&&Boolean(rule.Expiration||rule.NoncurrentVersionExpiration||restoreRequired);
+});
+if(unsafeMailLifecycle||!retainedArchive(raw,"raw-mime/")||!retainedArchive(attachments,"attachments/"))process.exit(1);
 if(!multipart||!exactPrefix(multipart,"")||Number(multipart.AbortIncompleteMultipartUpload?.DaysAfterInitiation)!==1)process.exit(1);
 if(!transfer||!exactPrefix(transfer,target)||Number(transfer.Expiration?.Days)!==1)process.exit(1);
 '
 }
 
 ensure_transfer_lifecycle_rule() {
-  local lifecycle merge changed configuration
+  local lifecycle merge changed configuration minimum_object_size
   lifecycle="$(aws s3api get-bucket-lifecycle-configuration \
     --bucket "$TRANSFER_BUCKET" --region "$AWS_REGION" --output json)" ||
     return 1
@@ -267,11 +278,22 @@ const exactPrefix=(rule,prefix)=>rule.Status==="Enabled"&&
   rule.Filter&&Object.keys(rule.Filter).length===1&&
   rule.Filter.Prefix===prefix;
 const one=(id)=>{const found=rules.filter(rule=>rule.ID===id);return found.length===1?found[0]:null};
-const raw=one("expire-raw-mime-30d");
-const attachments=one("expire-attachments-90d");
+const raw=one("archive-raw-mime-30d");
+const attachments=one("archive-attachments-30d");
 const multipart=one("abort-incomplete-multipart-1d");
-if(!raw||!exactPrefix(raw,"raw-mime/")||Number(raw.Expiration?.Days)!==30)process.exit(1);
-if(!attachments||!exactPrefix(attachments,"attachments/")||Number(attachments.Expiration?.Days)!==90)process.exit(1);
+const retainedArchive=(rule,prefix)=>rule&&exactPrefix(rule,prefix)&&
+  !rule.Expiration&&!rule.NoncurrentVersionExpiration&&
+  rule.Transitions?.length===1&&rule.Transitions[0].Days===30&&
+  rule.Transitions[0].StorageClass==="INTELLIGENT_TIERING";
+const unsafeMailLifecycle=rules.some(rule=>{
+  if(rule.Status!=="Enabled")return false;
+  const prefix=rule.Filter?.Prefix??rule.Filter?.And?.Prefix??rule.Prefix??"";
+  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const restoreRequired=[...(rule.Transitions||[]),...(rule.NoncurrentVersionTransitions||[])]
+    .some(transition=>["GLACIER","DEEP_ARCHIVE"].includes(transition.StorageClass));
+  return overlaps&&Boolean(rule.Expiration||rule.NoncurrentVersionExpiration||restoreRequired);
+});
+if(unsafeMailLifecycle||!retainedArchive(raw,"raw-mime/")||!retainedArchive(attachments,"attachments/"))process.exit(1);
 if(!multipart||!exactPrefix(multipart,"")||Number(multipart.AbortIncompleteMultipartUpload?.DaysAfterInitiation)!==1)process.exit(1);
 const target=(process.env.TRANSFER_ROOT_VALUE||"").replace(/\/?$/,"/");
 const desired={
@@ -285,7 +307,8 @@ const valid=prior&&prior.Status==="Enabled"&&
   Object.keys(prior.Filter||{}).length===1&&prior.Filter.Prefix===target&&
   Number(prior.Expiration?.Days)===1;
 const merged=valid?rules:[...rules.filter(rule=>rule.ID!==desired.ID),desired];
-process.stdout.write(JSON.stringify({changed:!valid,configuration:{Rules:merged}}));
+process.stdout.write(JSON.stringify({changed:!valid,configuration:{Rules:merged},
+  minimumObjectSize:current.TransitionDefaultMinimumObjectSize||"all_storage_classes_128K"}));
 '
   )" || return 1
   changed="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).changed))' "$merge")" ||
@@ -293,9 +316,12 @@ process.stdout.write(JSON.stringify({changed:!valid,configuration:{Rules:merged}
   if [ "$changed" = "true" ]; then
     configuration="$(node -e 'process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).configuration))' "$merge")" ||
       return 1
+    minimum_object_size="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).minimumObjectSize)' "$merge")" ||
+      return 1
     aws s3api put-bucket-lifecycle-configuration \
       --bucket "$TRANSFER_BUCKET" \
       --region "$AWS_REGION" \
+      --transition-default-minimum-object-size "$minimum_object_size" \
       --lifecycle-configuration "$configuration" >/dev/null ||
       return 1
   fi

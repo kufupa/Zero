@@ -439,11 +439,11 @@ describe('hms live proof Phase A contracts', () => {
     expect(script).toMatch(/Object\.keys\(rule\.Filter\)\.length===1/);
     expect(script).toMatch(/exactPrefix\(transfer,target\)/);
     expect(script).toMatch(/put-bucket-lifecycle-configuration/);
-    expect(script).toMatch(/expire-raw-mime-30d/);
-    expect(script).toMatch(/expire-attachments-90d/);
+    expect(script).toMatch(/archive-raw-mime-30d/);
+    expect(script).toMatch(/archive-attachments-30d/);
     expect(script).toMatch(/abort-incomplete-multipart-1d/);
-    expect(script).toMatch(/Number\(raw\.Expiration\?\.Days\)!==30/);
-    expect(script).toMatch(/Number\(attachments\.Expiration\?\.Days\)!==90/);
+    expect(script).toMatch(/INTELLIGENT_TIERING/);
+    expect(script).not.toMatch(/expire-raw-mime-30d|expire-attachments-90d/);
     expect(script).toMatch(
       /Number\(multipart\.AbortIncompleteMultipartUpload\?\.DaysAfterInitiation\)!==1/,
     );
