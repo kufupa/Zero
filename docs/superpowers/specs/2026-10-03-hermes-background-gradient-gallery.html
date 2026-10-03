@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Background Gradient Gallery</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    html {
+      color-scheme: dark;
+      background: #061c20;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      background:
+        radial-gradient(ellipse at 45% 0%, #173a42 0%, transparent 48%),
+        linear-gradient(160deg, #0b252b, #06191e 65%, #071e22);
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(18px, 2.2vw, 34px);
+      width: min(100%, 1720px);
+      margin: 0 auto;
+      padding: clamp(20px, 3.6vw, 58px);
+    }
+
+    .swatch {
+      position: relative;
+      isolation: isolate;
+      container-type: inline-size;
+      min-width: 0;
+      aspect-ratio: 722 / 335;
+      overflow: hidden;
+      border-radius: 13px;
+      box-shadow: 0 12px 32px #0003, inset 0 0 0 1px #ffffff18;
+    }
+
+    .swatch::before,
+    .swatch::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+    }
+
+    .arc-bands,
+    .dark-arc-bands {
+      background:
+        radial-gradient(ellipse 72% 142% at 50% 116%,
+          #de999c 0% 27%, #d9aa63 27.5% 40%, #6faaa0 40.5% 53%,
+          #a6c9d8 53.5% 66%, transparent 66.5%),
+        linear-gradient(130deg, #f4efe3, #e8e0d0);
+    }
+
+    .aurora {
+      background:
+        radial-gradient(ellipse at 18% 30%, #c7e68dbf, transparent 55%),
+        radial-gradient(ellipse at 68% 12%, #99e4c5d9, transparent 54%),
+        radial-gradient(ellipse at 82% 73%, #6bcad4c4, transparent 56%),
+        radial-gradient(ellipse at 27% 87%, #829ddac9, transparent 60%),
+        #edf2e4;
+    }
+
+    .cherry-petal {
+      background:
+        radial-gradient(ellipse at 52% 43%, #fff4ee, transparent 58%),
+        radial-gradient(ellipse at 14% 96%, #e8a8babf, transparent 61%),
+        linear-gradient(140deg, #f8e3e8, #ecc4d4);
+    }
+
+    .cherry-petal::before {
+      width: 6.5%;
+      height: 21%;
+      left: 16%;
+      top: 37%;
+      border-radius: 85% 16% 76% 23%;
+      background: #eeb8c5b8;
+      box-shadow:
+        18cqw -5cqw 1px #f0c3ceb8,
+        38cqw 5cqw 1px #e7aabb9c,
+        53cqw 14cqw 1px #e6b0c5ba,
+        9cqw 15cqw 1px #d99db484,
+        31cqw 22cqw 1px #f5cbd5ca,
+        54cqw 30cqw 1px #e9b2c1ad;
+      transform: rotate(-27deg);
+    }
+
+    .coral-glow {
+      background:
+        radial-gradient(ellipse at 13% 29%, #e9a0b6dc, transparent 58%),
+        radial-gradient(ellipse at 75% 10%, #f5c4a6ed, transparent 56%),
+        radial-gradient(ellipse at 61% 88%, #eb8e79d9, transparent 63%),
+        radial-gradient(ellipse at 94% 71%, #eec473e0, transparent 51%),
+        #f5ded3;
+    }
+
+    .dark-arc-bands {
+      background:
+        radial-gradient(ellipse 72% 142% at 50% 116%,
+          #714452 0% 27%, #796342 27.5% 40%, #326769 40.5% 53%,
+          #385a72 53.5% 66%, transparent 66.5%),
+        linear-gradient(130deg, #15232e, #0b151f);
+    }
+
+    .dark-aurora {
+      background:
+        radial-gradient(ellipse at 16% 37%, #247a756e, transparent 59%),
+        radial-gradient(ellipse at 71% 8%, #32949a70, transparent 57%),
+        radial-gradient(ellipse at 82% 81%, #24825c66, transparent 62%),
+        radial-gradient(ellipse at 31% 94%, #397c9b5c, transparent 58%),
+        #111c21;
+    }
+
+    .dark-carbon-spotlight {
+      background:
+        radial-gradient(ellipse at 50% 50%, transparent 25%, #030507d9 100%),
+        radial-gradient(ellipse 58% 112% at 50% -18%, #b3b6b669, transparent 75%),
+        linear-gradient(180deg, #303437, #101214 74%);
+    }
+
+    .dark-ember {
+      background:
+        radial-gradient(ellipse at 17% 36%, #ad702c82, transparent 57%),
+        radial-gradient(ellipse at 73% 12%, #ac502978, transparent 56%),
+        radial-gradient(ellipse at 80% 84%, #a2413c77, transparent 55%),
+        radial-gradient(ellipse at 37% 95%, #bc59236b, transparent 60%),
+        #1b1211;
+    }
+
+    .dark-ink-field {
+      background: linear-gradient(130deg, #171c21, #080c10);
+    }
+
+    .dark-ink-field::before {
+      inset: 12% 42% 18% -12%;
+      border-radius: 41% 59% 28% 72% / 65% 31% 69% 35%;
+      background: #42484f72;
+      filter: blur(15px);
+      transform: rotate(-13deg);
+      box-shadow: 51cqw -8cqw 18px #363c445c;
+    }
+
+    .dark-ink-field::after {
+      inset: 49% 9% -29% 32%;
+      border-radius: 71% 29% 56% 44% / 36% 62% 38% 64%;
+      background: #4a4e514d;
+      filter: blur(17px);
+      transform: rotate(12deg);
+    }
+
+    .dark-midnight-mesh {
+      background:
+        radial-gradient(ellipse at 50% 50%, transparent 28%, #071018d9 100%),
+        repeating-linear-gradient(0deg, #9fc6ce10 0 1px, transparent 1px 17px),
+        repeating-linear-gradient(90deg, #9fc6ce10 0 1px, transparent 1px 17px),
+        radial-gradient(ellipse at 0% 0%, #236f76a8, transparent 65%),
+        radial-gradient(ellipse at 100% 100%, #3563889e, transparent 67%),
+        #0d202d;
+    }
+
+    .dark-rose-noir {
+      background:
+        radial-gradient(ellipse at 50% 50%, transparent 10%, #120e17bd 100%),
+        radial-gradient(ellipse at 29% 29%, #a35e788f, transparent 65%),
+        radial-gradient(ellipse at 77% 77%, #8d293b96, transparent 63%),
+        #251721;
+    }
+
+    .dark-teal-depth {
+      background:
+        radial-gradient(ellipse at 32% 18%, #297e897f, transparent 69%),
+        radial-gradient(ellipse at 86% 74%, #1c636f8c, transparent 66%),
+        radial-gradient(ellipse at 14% 100%, #103745c7, transparent 55%),
+        linear-gradient(145deg, #0a2533, #07131f);
+    }
+
+    .frost-mesh {
+      background:
+        repeating-linear-gradient(0deg, #718e9315 0 1px, transparent 1px 17px),
+        repeating-linear-gradient(90deg, #718e9315 0 1px, transparent 1px 17px),
+        radial-gradient(ellipse at 0% 0%, #b0dde8d9, transparent 64%),
+        radial-gradient(ellipse at 100% 100%, #afd6c3c4, transparent 62%),
+        linear-gradient(145deg, #f3f8f8, #e2ebec);
+    }
+
+    .halftone-pop {
+      background:
+        radial-gradient(ellipse at 17% 29%, #dea0ac3d, transparent 48%),
+        radial-gradient(ellipse at 70% 37%, #7bb6ac38, transparent 49%),
+        radial-gradient(ellipse at 51% 98%, #e8bf6f42, transparent 54%),
+        #f3ecdf;
+    }
+
+    .halftone-pop::before {
+      inset: 0;
+      background:
+        radial-gradient(ellipse at 17% 29%, #c5768abf 8%, transparent 48%),
+        radial-gradient(ellipse at 70% 37%, #4b8d85bf 7%, transparent 47%),
+        radial-gradient(ellipse at 51% 98%, #c99643bf 8%, transparent 49%);
+      mask-image: radial-gradient(circle, #000 0 0.85px, transparent 1px);
+      mask-size: 6px 6px;
+    }
+
+    .honey-ember {
+      background:
+        radial-gradient(ellipse at 14% 32%, #efd794df, transparent 57%),
+        radial-gradient(ellipse at 78% 12%, #e4b267c4, transparent 55%),
+        radial-gradient(ellipse at 67% 92%, #d98d55b0, transparent 61%),
+        radial-gradient(ellipse at 8% 99%, #e4b4b59c, transparent 54%),
+        #f7eddb;
+    }
+
+    .ink-wash {
+      background: linear-gradient(135deg, #f3efe6, #e6e0d4);
+    }
+
+    .ink-wash::before {
+      inset: 3% 46% 30% -8%;
+      border-radius: 37% 63% 71% 29% / 64% 29% 71% 36%;
+      background: #777d7b30;
+      filter: blur(17px);
+      transform: rotate(-16deg);
+      box-shadow: 46cqw 20cqw 20px #63686537;
+    }
+
+    .ink-wash::after {
+      inset: 40% 43% -22% 10%;
+      border-radius: 65% 35% 27% 73% / 26% 63% 37% 74%;
+      background: #515d5d22;
+      filter: blur(19px);
+      transform: rotate(12deg);
+      box-shadow: 38cqw -24cqw 22px #8a8d862c;
+    }
+
+    .linen-weave {
+      background:
+        radial-gradient(ellipse at 50% 45%, transparent 24%, #967e6126 100%),
+        repeating-linear-gradient(0deg, #a9937120 0 1px, #fff8e710 1px 2px, transparent 2px 5px),
+        repeating-linear-gradient(90deg, #aa96741c 0 1px, transparent 1px 5px),
+        linear-gradient(135deg, #f0e9da, #e5d8c3);
+    }
+
+    .mint-lagoon {
+      background:
+        radial-gradient(ellipse at 13% 33%, #81c7a8b3, transparent 57%),
+        radial-gradient(ellipse at 73% 12%, #79bfbab3, transparent 58%),
+        radial-gradient(ellipse at 79% 84%, #95dbe0b0, transparent 60%),
+        radial-gradient(ellipse at 25% 100%, #c4ecd5e6, transparent 57%),
+        #edf7f3;
+    }
+
+    .paper-fold {
+      background:
+        linear-gradient(146deg, transparent 47%, #fffefb8c 49.5%, #b2b9b548 50%, transparent 53%),
+        repeating-linear-gradient(0deg, #7485820d 0 1px, transparent 1px 15px),
+        repeating-linear-gradient(90deg, #7485820d 0 1px, transparent 1px 15px),
+        conic-gradient(from 56deg at 50% 50%, #e1e6e1, #f2f1e9 50%, #e1e6e1),
+        #edf0e9;
+    }
+
+    .rain-prism {
+      background:
+        repeating-linear-gradient(114deg, #ffffff3b 0 1px, transparent 1px 10px),
+        linear-gradient(114deg, transparent 12%, #89bbb66e 30%, #d3abc478 48%, #a1c5dc87 64%, transparent 83%),
+        linear-gradient(140deg, #e3ece8, #cddbdc);
+    }
+
+    .sand-drift {
+      background:
+        radial-gradient(ellipse 85% 100% at 78% 144%, #bba583 0% 70%, transparent 70.5%),
+        radial-gradient(ellipse 106% 105% at 4% 142%, #d4ba8e 0% 76%, transparent 76.5%),
+        radial-gradient(ellipse 95% 112% at 76% 134%, #ded0b5 0% 73%, transparent 73.5%),
+        linear-gradient(180deg, #f4efe3, #e6ddcb);
+    }
+
+    .sand-drift::before {
+      inset: 0;
+      opacity: 0.14;
+      background:
+        repeating-linear-gradient(23deg, #85765f 0 0.5px, transparent 0.5px 3px),
+        repeating-linear-gradient(113deg, #fffaeb 0 0.5px, transparent 0.5px 4px);
+    }
+
+    .soft-spotlight {
+      background:
+        radial-gradient(ellipse at 50% 50%, transparent 22%, #817e752c 100%),
+        radial-gradient(ellipse 63% 106% at 50% -12%, #fffdf3e6, transparent 85%),
+        linear-gradient(180deg, #e4e1d8, #c9c8c0);
+    }
+
+    .sunrise-horizon {
+      background:
+        radial-gradient(ellipse 36% 29% at 50% 68%, #f9d7a8bf, transparent 80%),
+        linear-gradient(180deg, #e8c4b4 0%, #efd6bf 44%, #f3d5b3 62%, #d8d5be 72%, #9cb7b0 100%);
+    }
+
+    .sunrise-horizon::before {
+      inset: 0;
+      background: repeating-linear-gradient(0deg, #ffead815 0 2px, transparent 2px 15px);
+      mask-image: linear-gradient(transparent 24%, #000 68%, transparent);
+    }
+
+    .sunset-bloom {
+      background:
+        radial-gradient(ellipse at 17% 29%, #efaa79c7, transparent 57%),
+        radial-gradient(ellipse at 77% 15%, #e796a5ba, transparent 58%),
+        radial-gradient(ellipse at 75% 91%, #e1b45fdb, transparent 58%),
+        radial-gradient(ellipse at 27% 92%, #f2d88ec9, transparent 58%),
+        #f3d4b8;
+    }
+
+    .terrazzo-fragment {
+      background:
+        radial-gradient(ellipse at 50% 45%, #f6f1e5, transparent 76%),
+        #e6dfcf;
+    }
+
+    .terrazzo-fragment::before {
+      width: 4.5%;
+      height: 12%;
+      left: 17%;
+      top: 31%;
+      border-radius: 25% 64% 32% 18%;
+      background: #b2aaa092;
+      box-shadow:
+        20cqw -2cqw 0 #cb9a9c91,
+        41cqw 5cqw 0 #79a6a09c,
+        16cqw 18cqw 0 #c7a87599,
+        56cqw 25cqw 0 #b98e7894;
+      transform: rotate(-19deg);
+    }
+
+    .terrazzo-fragment::after {
+      width: 3%;
+      height: 9%;
+      left: 27%;
+      top: 65%;
+      border-radius: 55% 18% 42% 30%;
+      background: #ccaa8799;
+      box-shadow:
+        -17cqw -11cqw 0 #93aba38f,
+        22cqw -22cqw 0 #b59b9694,
+        37cqw -7cqw 0 #c08f8991,
+        52cqw -28cqw 0 #b9b1a491;
+      transform: rotate(23deg);
+    }
+
+    .tropical-tide {
+      background:
+        radial-gradient(ellipse at 15% 32%, #63c7c6bd, transparent 57%),
+        radial-gradient(ellipse at 72% 11%, #c3dc85d4, transparent 58%),
+        radial-gradient(ellipse at 79% 83%, #7dc4dfd4, transparent 61%),
+        radial-gradient(ellipse at 23% 94%, #86c9a9c7, transparent 59%),
+        #e0eee0;
+    }
+
+    @media (max-width: 920px) {
+      .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 620px) {
+      .gallery { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="gallery">
+    <div class="swatch arc-bands" data-gradient="arc-bands-background" role="img" aria-label="Arc Bands"></div>
+    <div class="swatch aurora" data-gradient="aurora-background" role="img" aria-label="Aurora Background"></div>
+    <div class="swatch cherry-petal" data-gradient="cherry-petal-background" role="img" aria-label="Cherry Petal"></div>
+    <div class="swatch coral-glow" data-gradient="coral-glow-background" role="img" aria-label="Coral Glow"></div>
+    <div class="swatch dark-arc-bands" data-gradient="dark-arc-bands-background" role="img" aria-label="Dark Arc Bands"></div>
+    <div class="swatch dark-aurora" data-gradient="dark-aurora-background" role="img" aria-label="Dark Aurora"></div>
+    <div class="swatch dark-carbon-spotlight" data-gradient="dark-carbon-spotlight-background" role="img" aria-label="Dark Carbon Spotlight"></div>
+    <div class="swatch dark-ember" data-gradient="dark-ember-background" role="img" aria-label="Dark Ember"></div>
+    <div class="swatch dark-ink-field" data-gradient="dark-ink-field-background" role="img" aria-label="Dark Ink Field"></div>
+    <div class="swatch dark-midnight-mesh" data-gradient="dark-midnight-mesh-background" role="img" aria-label="Dark Midnight Mesh"></div>
+    <div class="swatch dark-rose-noir" data-gradient="dark-rose-noir-background" role="img" aria-label="Dark Rose Noir"></div>
+    <div class="swatch dark-teal-depth" data-gradient="dark-teal-depth-background" role="img" aria-label="Dark Teal Depth"></div>
+    <div class="swatch frost-mesh" data-gradient="frost-mesh-background" role="img" aria-label="Frost Mesh"></div>
+    <div class="swatch halftone-pop" data-gradient="halftone-pop-background" role="img" aria-label="Halftone Pop"></div>
+    <div class="swatch honey-ember" data-gradient="honey-ember-background" role="img" aria-label="Honey Ember"></div>
+    <div class="swatch ink-wash" data-gradient="ink-wash-background" role="img" aria-label="Ink Wash"></div>
+    <div class="swatch linen-weave" data-gradient="linen-weave-background" role="img" aria-label="Linen Weave"></div>
+    <div class="swatch mint-lagoon" data-gradient="mint-lagoon-background" role="img" aria-label="Mint Lagoon"></div>
+    <div class="swatch paper-fold" data-gradient="paper-fold-background" role="img" aria-label="Paper Fold"></div>
+    <div class="swatch rain-prism" data-gradient="rain-prism-background" role="img" aria-label="Rain Prism"></div>
+    <div class="swatch sand-drift" data-gradient="sand-drift-background" role="img" aria-label="Sand Drift"></div>
+    <div class="swatch soft-spotlight" data-gradient="soft-spotlight-background" role="img" aria-label="Soft Spotlight"></div>
+    <div class="swatch sunrise-horizon" data-gradient="sunrise-horizon-background" role="img" aria-label="Sunrise Horizon"></div>
+    <div class="swatch sunset-bloom" data-gradient="sunset-bloom-background" role="img" aria-label="Sunset Bloom"></div>
+    <div class="swatch terrazzo-fragment" data-gradient="terrazzo-fragment-background" role="img" aria-label="Terrazzo Fragment"></div>
+    <div class="swatch tropical-tide" data-gradient="tropical-tide-background" role="img" aria-label="Tropical Tide"></div>
+  </main>
+</body>
+</html>
