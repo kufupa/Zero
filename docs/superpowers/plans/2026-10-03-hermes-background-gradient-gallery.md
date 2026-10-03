@@ -185,14 +185,14 @@ Autonomous end-to-end execution as explicitly requested. Continue through the fi
 
 ## Definition of Done
 
-- [ ] Corrected plan/spec and implementation agree.
-- [ ] All 26 treatments share the screenshot palette/composition and differ by recognizable geometry/texture.
-- [ ] Focused test passes and its intended failing baseline was observed.
-- [ ] Chromium visual verification passes at all three widths.
-- [ ] Final scoped review and whitespace check pass.
-- [ ] Only the existing gallery file is replaced; live URL status and hash match canonical source.
-- [ ] Protected served-file hashes and unrelated dirty worktree files remain unchanged.
-- [ ] No unresolved blocker or abandoned experimental code remains.
+- [x] Corrected plan/spec and implementation agree.
+- [x] All 26 treatments share the screenshot palette/composition and differ by recognizable geometry/texture.
+- [x] Focused test passes and its intended failing baseline was observed.
+- [x] Chromium visual verification passes at all three widths.
+- [x] Final scoped review and whitespace check pass.
+- [x] Only the existing gallery file is replaced; live URL status and hash match canonical source.
+- [x] Protected served-file hashes and unrelated dirty worktree files remain unchanged.
+- [x] No unresolved blocker or abandoned experimental code remains.
 
 ## Sources and Evidence
 
