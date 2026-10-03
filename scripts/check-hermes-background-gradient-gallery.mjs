@@ -49,6 +49,10 @@ check('exact catalog order, slugs, accessible names, and outside captions', () =
   const body = html.match(/<body>([\s\S]*?)<\/body>/)?.[1];
   const visibleText = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   assert.equal(visibleText, catalog.map(([, name]) => name).join(' '), 'only captions may be visible');
+  for (const { selector, declarations } of rules) {
+    const content = declarations.match(/(?:^|;)\s*content\s*:\s*([^;]+)/i);
+    if (content) assert.match(content[1].trim(), /^(?:""|'')$/, `${selector} generates visible text`);
+  }
 });
 
 check('reference tokens and one common composition', () => {
