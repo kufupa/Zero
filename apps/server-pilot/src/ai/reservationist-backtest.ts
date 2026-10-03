@@ -6,7 +6,7 @@ import {
   stripQuotedHistory,
 } from '../ops/centurion-eval-lab.js';
 import type { CenturionCorpusMessageRow } from '../ops/centurion-thread-corpus-postgres-reader.js';
-import { QUOTE_STUB_NOT_ORACLE, type ReservationistDecision } from './reservationist-agent.js';
+import { QUOTE_UNAVAILABLE, type ReservationistDecision } from './reservationist-agent.js';
 
 export const STRATA = ['quote_party', 'quote_fit', 'create', 'no_tool', 'other'] as const;
 export type Stratum = (typeof STRATA)[number];
@@ -61,8 +61,8 @@ export function amountsIn(text: string): Set<number> {
 }
 
 function numbersIn(value: unknown, out = new Set<number>()): Set<number> {
-  if (typeof value === 'number') out.add(Math.round(value));
-  else if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value)) out.add(Math.round(Number(value)));
+  if (typeof value === 'number') out.add(Math.floor(value));
+  else if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value)) out.add(Math.floor(Number(value)));
   else if (Array.isArray(value)) for (const v of value) numbersIn(v, out);
   else if (value && typeof value === 'object') for (const v of Object.values(value)) numbersIn(v, out);
   return out;
@@ -192,29 +192,35 @@ export function describeRun(cases: readonly BacktestCase[]) {
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const MON = MONTHS.join('|');
-const DATE_PATTERNS: Array<[RegExp, (m: RegExpExecArray) => [number, number, number]]> = [
+const DATE_PATTERNS: Array<[RegExp, (m: RegExpExecArray) => [number | null, number, number]]> = [
   [/\b(\d{4})-(\d{2})-(\d{2})\b/, (m) => [+m[1]!, +m[2]!, +m[3]!]],
   [/\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b/, (m) => [+m[3]!, +m[2]!, +m[1]!]],
   [
     new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON})[a-z]*\\.?(?:,?\\s+(\\d{4}))?`, 'i'),
-    (m) => [+(m[3] ?? 2026), MONTHS.indexOf(m[2]!.toLowerCase()) + 1, +m[1]!],
+    (m) => [m[3] ? +m[3] : null, MONTHS.indexOf(m[2]!.toLowerCase()) + 1, +m[1]!],
   ],
   [
     new RegExp(`\\b(${MON})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?`, 'i'),
-    (m) => [+(m[3] ?? 2026), MONTHS.indexOf(m[1]!.toLowerCase()) + 1, +m[2]!],
+    (m) => [m[3] ? +m[3] : null, MONTHS.indexOf(m[1]!.toLowerCase()) + 1, +m[2]!],
   ],
 ];
 
-export function toIsoDay(raw: string): string | null {
-  let best: { index: number; ymd: [number, number, number] } | null = null;
+/** A day-month without a year resolves to its next occurrence on or after `asOf`. */
+export function toIsoDay(raw: string, asOf?: string | null): string | null {
+  let best: { index: number; ymd: [number | null, number, number] } | null = null;
   for (const [re, pick] of DATE_PATTERNS) {
     const m = re.exec(raw);
     if (m && (!best || m.index < best.index)) best = { index: m.index, ymd: pick(m) };
   }
   if (!best) return null;
-  const [y, mo, d] = best.ymd;
+  const [year, mo, d] = best.ymd;
   if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const ref = asOf ? asOf.slice(0, 10) : null;
+  let y = year ?? Number(ref?.slice(0, 4) ?? NaN);
+  if (!Number.isFinite(y)) return null;
+  const iso = (yy: number) => `${yy}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  if (year == null && ref && iso(y) < ref) y += 1;
+  return iso(y);
 }
 
 export type L1Row = {
@@ -246,9 +252,9 @@ export function scoreCase(
 ): L1Row {
   const named = (name: string) => calls.filter((call) => call.toolName === name);
   const quotes = named('quote_stay');
-  const liveQuotes = quotes.filter(
-    (call) => (call.result as { status?: string } | null)?.status !== QUOTE_STUB_NOT_ORACLE,
-  );
+  const liveQuotes = c.oracle.quote
+    ? quotes.filter((call) => (call.result as { status?: string } | null)?.status !== QUOTE_UNAVAILABLE)
+    : [];
   const creates = named('create_reservation_dry_run');
   const workflow = decision?.workflow ?? null;
   const expected = c.oracle.quote ? 'quote' : c.oracle.create ? 'create' : null;
@@ -256,7 +262,7 @@ export function scoreCase(
 
   const triggerText = `${c.trigger.subject}\n${c.trigger.text}`;
   const harvested = harvestStayDates(triggerText).arrival;
-  const goldArrival = harvested ? toIsoDay(harvested) : null;
+  const goldArrival = harvested ? toIsoDay(harvested, c.trigger.eventAt) : null;
   const datesOk = goldArrival && decision?.stayAsk ? decision.stayAsk.arrivalDate === goldArrival : null;
   const pax = parseOccupancyFromBody(triggerText).paxTotal;
   const paxOk = pax != null && decision?.stayAsk ? decision.stayAsk.adults + decision.stayAsk.children === pax : null;

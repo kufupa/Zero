@@ -16,7 +16,7 @@ import { createLunaModel } from './bedrock/luna.js';
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const TOOLING = fileURLToPath(new URL('../../tooling/playwright-quote/', import.meta.url));
 
-export const QUOTE_STUB_NOT_ORACLE = 'quote_stub_not_oracle';
+export const QUOTE_UNAVAILABLE = 'unavailable';
 
 export type ReservationistContext = {
   propertyCode: string;
@@ -137,7 +137,7 @@ export function createReservationistTools(runners: ReservationistRunners) {
       inputSchema: quoteInput,
       execute: async (input, { requestContext }) => {
         const rc = requestContext as RequestContext<ReservationistContext>;
-        if (!rc.get('liveQuoteOk')) return { status: QUOTE_STUB_NOT_ORACLE };
+        if (!rc.get('liveQuoteOk')) return { status: QUOTE_UNAVAILABLE };
         return runners.quote({
           schemaVersion: 2,
           propertyCode: rc.get('propertyCode'),

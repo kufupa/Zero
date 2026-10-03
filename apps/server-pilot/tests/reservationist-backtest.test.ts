@@ -8,7 +8,7 @@ import {
   type BacktestCase,
   type ToolCall,
 } from '../src/ai/reservationist-backtest.js';
-import { QUOTE_STUB_NOT_ORACLE, type ReservationistDecision } from '../src/ai/reservationist-agent.js';
+import { QUOTE_UNAVAILABLE, type ReservationistDecision } from '../src/ai/reservationist-agent.js';
 
 let seq = 0;
 function msg(p: Partial<CenturionCorpusMessageRow>): CenturionCorpusMessageRow {
@@ -117,7 +117,8 @@ describe('toIsoDay', () => {
     expect(toIsoDay('2 October 2026')).toBe('2026-10-02');
     expect(toIsoDay('02/10/2026')).toBe('2026-10-02');
     expect(toIsoDay('2026-10-02')).toBe('2026-10-02');
-    expect(toIsoDay('Fri 2 Oct')).toBe('2026-10-02');
+    expect(toIsoDay('Fri 2 Oct', '2026-09-27T08:00:00.000Z')).toBe('2026-10-02');
+    expect(toIsoDay('15 Jan', '2026-09-27T08:00:00.000Z')).toBe('2027-01-15');
     expect(toIsoDay('soon')).toBeNull();
   });
 });
@@ -150,6 +151,11 @@ describe('scoreCase', () => {
     expect(scoreCase(quoteCase, decision({ replyDraft: 'R1,850' }), [call]).money).toBe('match');
   });
 
+  it('grounds cents the same way on both sides', () => {
+    const call: ToolCall = { ...live(0), result: { outcome: 'quote', groups: [{ options: [{ amount: 1850.5 }] }] } };
+    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1 850.50' }), [call]).money).toBe('match');
+  });
+
   it('separates rate_stale from extract_fail', () => {
     expect(scoreCase(quoteCase, decision({ replyDraft: 'R2 100' }), [live(2100)]).money).toBe('rate_stale');
     const bad = scoreCase(quoteCase, decision({ replyDraft: 'R1 234' }), [live(2100)]);
@@ -159,7 +165,7 @@ describe('scoreCase', () => {
 
   it('flags quote false positive on stub and quote miss', () => {
     const fp = scoreCase(noneCase, decision({ workflow: 'quote' }), [
-      { toolName: 'quote_stay', args: {}, result: { status: QUOTE_STUB_NOT_ORACLE } },
+      { toolName: 'quote_stay', args: {}, result: { status: QUOTE_UNAVAILABLE } },
     ]);
     expect(fp).toMatchObject({ quoteCalled: true, quoteLive: false, quoteFalsePositive: true, workflowOk: false, pass: false });
     const miss = scoreCase(quoteCase, decision({ workflow: 'other' }), []);

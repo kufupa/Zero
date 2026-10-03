@@ -6,7 +6,7 @@ import {
   createDefaultRunners,
   createReservationistAgent,
   createReservationistTools,
-  QUOTE_STUB_NOT_ORACLE,
+  QUOTE_UNAVAILABLE,
   type ReservationistContext,
   type ReservationistRunners,
 } from '../src/ai/reservationist-agent.js';
@@ -42,7 +42,8 @@ describe('reservationist tools', () => {
     const runners = fakeRunners();
     const tools = createReservationistTools(runners);
     const out = await exec(tools.quote_stay)(stay, { requestContext: ctx(false) });
-    expect(out).toEqual({ status: QUOTE_STUB_NOT_ORACLE });
+    expect(out).toEqual({ status: QUOTE_UNAVAILABLE });
+    expect(JSON.stringify(out)).not.toMatch(/oracle/i);
     expect(runners.quote).not.toHaveBeenCalled();
   });
 

@@ -47,6 +47,10 @@ const readJsonl = <T>(path: string): T[] =>
         .filter(Boolean)
         .map((line) => JSON.parse(line) as T)
     : [];
+/** Resumed runs append retries; the last trace per thread wins. */
+const latestTraces = (path: string): Trace[] => [
+  ...new Map(readJsonl<Trace>(path).map((t) => [t.threadId, t])).values(),
+];
 
 const writePrivate = (path: string, text: string) => writeFileSync(path, text, { mode: 0o600 });
 const appendPrivate = (path: string, row: unknown) =>
@@ -132,7 +136,7 @@ async function runPhase(phase: 'a' | 'b', runId: string, dryTools: boolean) {
     ),
   );
   const tracesPath = join(dir, 'traces.jsonl');
-  const done = new Set(readJsonl<Trace>(tracesPath).map((t) => t.threadId));
+  const done = new Set(latestTraces(tracesPath).filter((t) => !t.error).map((t) => t.threadId));
   const agent = createReservationistAgent({
     model: createAzureLunaModel(),
     runners: dryTools
@@ -205,7 +209,7 @@ async function runPhase(phase: 'a' | 'b', runId: string, dryTools: boolean) {
 function score(runId: string) {
   const dir = join(ROOT, runId);
   const cases = new Map(loadCases().map((c) => [c.threadId, c]));
-  const rows = readJsonl<Trace>(join(dir, 'traces.jsonl')).flatMap((t) => {
+  const rows = latestTraces(join(dir, 'traces.jsonl')).flatMap((t) => {
     const c = cases.get(t.threadId);
     return c ? [{ ...scoreCase(c, t.decision, t.toolCalls), error: Boolean(t.error) }] : [];
   });
@@ -239,7 +243,7 @@ async function review(runId: string) {
   const reviewPath = join(dir, 'review.jsonl');
   const done = new Set(readJsonl<{ threadId: string }>(reviewPath).map((r) => r.threadId));
   const adapter = new LunaModelAdapter({ model: createAzureLunaModel() });
-  const traces = readJsonl<Trace>(join(dir, 'traces.jsonl'));
+  const traces = latestTraces(join(dir, 'traces.jsonl'));
   for (const [i, t] of traces.entries()) {
     const c = cases.get(t.threadId);
     if (!c || done.has(t.threadId)) continue;
@@ -263,7 +267,7 @@ ${c.goldText.slice(0, MAX_MESSAGE_CHARS)}
       appendPrivate(reviewPath, { threadId: t.threadId, ...res.output, usage: res.usage });
       console.log(JSON.stringify({ i: i + 1, of: traces.length, threadId: t.threadId, verdict: res.output.verdict }));
     } catch (err) {
-      console.log(JSON.stringify({ i: i + 1, threadId: t.threadId, reviewError: err instanceof Error ? err.message : 'error' }));
+      console.log(JSON.stringify({ i: i + 1, threadId: t.threadId, reviewError: err instanceof Error ? err.name : 'error' }));
     }
   }
   const rows = readJsonl<{ verdict: string; agentQuality: string; l1Agrees: boolean }>(reviewPath);
