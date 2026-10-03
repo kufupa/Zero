@@ -44,25 +44,26 @@ import {
   type PersistResult,
 } from './store.js';
 import {
+  candidateMessageIdForPop3Uidl,
+  MalformedMimeError,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
+import {
   createPop3Client,
   type Pop3Client,
   type FakePop3Client,
   FakePop3Client as FakePop3ClientCtor,
   type FakePop3Message,
 } from './pop3-client.js';
-import {
-  candidateMessageIdForPop3Uidl,
-  parseRawMessage,
-  uploadedAttachmentsFromParseFailure,
-  type ParsedInboundMessage,
-} from './parse-message.js';
 import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import { rawMimeKey, getS3Storage, archiveQuarantineRawMime } from '../../storage/s3.js';
 import { isCliEntry } from '../../lib/is-cli-entry.js';
 import { getDb, closeDb } from '../../db/client.js';
 import { parseEnv } from '../../env.js';
 
-/** After this many consecutive failures for one UIDL, quarantine + DELE. */
+/** After this many confirmed MIME failures for one UIDL, quarantine + DELE. */
 export const POISON_MAX_RETRIES = 3;
 
 /** ORM query errors wrap PostgreSQL/driver failures in one or more causes. */
@@ -102,6 +103,38 @@ class IngestUidlClaimLostError extends Error {
     super('ingest UIDL claim was lost before POP3 processing completed');
     this.name = 'IngestUidlClaimLostError';
   }
+}
+
+/** Only bounded codes, never driver messages, SQL parameters or private mail. */
+function safeProcessingErrorCode(error: unknown): string {
+  const seen = new Set<object>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const { code, name, cause } = current as { code?: unknown; name?: unknown; cause?: unknown };
+    for (const candidate of [code, name]) {
+      if (typeof candidate !== 'string') continue;
+      if (/^(?:[0-9]{2}|P0|F0|HV|XX)[0-9A-Z]{3}$/.test(candidate)) return candidate;
+      if (
+        [
+          'AccessDenied',
+          'NoSuchBucket',
+          'SlowDown',
+          'ServiceUnavailable',
+          'RequestTimeout',
+          'ECONNRESET',
+          'ECONNREFUSED',
+          'ETIMEDOUT',
+          'EPIPE',
+          'ENOTFOUND',
+          'EAI_AGAIN',
+        ].includes(candidate)
+      )
+        return candidate;
+    }
+    current = cause;
+  }
+  return 'unknown';
 }
 
 function startIngestUidlClaimRenewal(
@@ -277,6 +310,13 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
     for (const uidl of selectUidlWindow(uidls, maxMessages, opts.uidlCursor)) {
       if (opts.uidlCursor) opts.uidlCursor.lastProcessedUidl = uidl;
       let rawKey: string | undefined;
+      let processingStage:
+        | 'claim'
+        | 'retrieve'
+        | 'raw_upload'
+        | 'parse_and_upload'
+        | 'persist'
+        | 'acknowledge' = 'claim';
       let parsedAttachmentsRequiringCleanup: ParsedInboundMessage['attachments'] = [];
       const claimMeta = { ingestMailboxId, pop3Uidl: uidl };
       let claimToken: string | null = null;
@@ -333,6 +373,7 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             continue;
           }
         }
+        processingStage = 'retrieve';
         const msg = await pop3.retr(uidl);
         assertWithinIngestLimits(msg.raw.byteLength, 'message', limits);
         const messageId = candidateMessageIdForPop3Uidl(ingestMailboxId, uidl);
@@ -347,17 +388,20 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           messageId,
           rawMimeS3Key: currentRawKey,
         };
+        processingStage = 'raw_upload';
         await storage.putObject({
           key: currentRawKey,
           body: msg.raw,
           contentType: 'message/rfc822',
         });
+        processingStage = 'parse_and_upload';
         const parsed = await parseRawMessage(msg.raw, {
           messageId,
           storage,
         });
         parsedAttachmentsRequiringCleanup = parsed.attachments;
         await renewClaim();
+        processingStage = 'persist';
         const result = await persistInboundMessage(parsed, msg.raw, meta, {
           db,
           storage,
@@ -365,6 +409,7 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           activeIngestUidlClaimToken: claimToken ?? undefined,
         });
 
+        processingStage = 'acknowledge';
         parsedAttachmentsRequiringCleanup = [];
 
         if (result.kind === 'duplicate') {
@@ -551,6 +596,19 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             uidl,
             status: 'error',
             error: `database infrastructure failure (${infrastructureCode}); POP3 message retained`,
+          });
+          processed += 1;
+          continue;
+        }
+
+        if (!(err instanceof MalformedMimeError)) {
+          failureCounts.delete(uidl);
+          const diagnostic = `ingest processing failure (${processingStage}/${safeProcessingErrorCode(err)}); POP3 message retained`;
+          console.warn(`worker: ${diagnostic}`);
+          items.push({
+            uidl,
+            status: 'error',
+            error: diagnostic,
           });
           processed += 1;
           continue;

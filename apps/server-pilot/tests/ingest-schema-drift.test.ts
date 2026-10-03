@@ -1,8 +1,9 @@
 import { FakeS3Storage, rawMimeKey, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
+import { assertMigrationCompatibility } from '../src/db/migration-compatibility.js';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker.js';
 import { FakePop3Client } from '../src/mail/ingest/pop3-client.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withIngestionDb } from './helpers/ingestion-db.js';
-import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 function validMail(): Buffer {
@@ -138,6 +139,103 @@ describe('real PostgreSQL ingest infrastructure failures', () => {
       }
     });
   }, 30000);
+
+  it.each([
+    {
+      name: 'check constraint',
+      code: '23514',
+      breakSql:
+        'ALTER TABLE ai_workflow_run ADD CONSTRAINT incident_reject_write CHECK (false) NOT VALID',
+      repairSql: 'ALTER TABLE ai_workflow_run DROP CONSTRAINT incident_reject_write',
+    },
+    {
+      name: 'unexpected trigger exception',
+      code: 'P0001',
+      breakSql: `CREATE FUNCTION incident_reject_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic processing failure'; END $$;
+        CREATE TRIGGER incident_reject_write BEFORE INSERT ON ai_workflow_run FOR EACH ROW EXECUTE FUNCTION incident_reject_write()`,
+      repairSql:
+        'DROP TRIGGER incident_reject_write ON ai_workflow_run; DROP FUNCTION incident_reject_write()',
+    },
+  ])(
+    'retains valid mail on $name even when the compatibility gate passes',
+    async ({ breakSql, repairSql, code }) => {
+      await withIngestionDb(async ({ db, sql }) => {
+        await sql.unsafe(breakSql);
+        await assertMigrationCompatibility(sql);
+        const uidl = 'uidl-persistence-failure';
+        const storage = new FakeS3Storage('incident-persistence');
+        setS3Storage(storage);
+        const pop3 = new FakePop3Client({ messages: [{ uidl, raw: validMail() }] });
+        const failureCounts = new Map<string, number>();
+        const warning = vi.spyOn(console, 'warn');
+        for (let i = 0; i < POISON_MAX_RETRIES; i++) {
+          const cycle = await ingestOnce({ db, pop3, failureCounts });
+          expect(cycle.deled).toBe(0);
+          expect(cycle.items[0]).toMatchObject({
+            error: `ingest processing failure (persist/${code}); POP3 message retained`,
+          });
+        }
+        expect(warning).toHaveBeenCalledWith(
+          `worker: ingest processing failure (persist/${code}); POP3 message retained`,
+        );
+        warning.mockRestore();
+        expect(pop3.deleLog).toEqual([]);
+        expect(failureCounts.size).toBe(0);
+        expect(await sql`SELECT id FROM mail_ingest_quarantine`).toHaveLength(0);
+        expect(await sql`SELECT id FROM message`).toHaveLength(0);
+        expect(
+          storage.get(rawMimeKey({ ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: uidl })),
+        ).toEqual(validMail());
+        await sql.unsafe(repairSql);
+        expect((await ingestOnce({ db, pop3, failureCounts })).deled).toBe(1);
+        expect(await sql`SELECT id FROM message`).toHaveLength(1);
+        expect(await sql`SELECT id FROM attachment`).toHaveLength(1);
+        expect(
+          await sql`SELECT id FROM ai_workflow_run WHERE run_kind = 'inbound_triage'`,
+        ).toHaveLength(1);
+      });
+    },
+    30000,
+  );
+
+  it.each(['raw-mime/', 'attachments/'])(
+    'retains valid mail when %s uploads fail repeatedly',
+    async (prefix) => {
+      await withIngestionDb(async ({ db, sql }) => {
+        let failUploads = true;
+        class FailingStorage extends FakeS3Storage {
+          override async putObject(input: Parameters<FakeS3Storage['putObject']>[0]) {
+            if (failUploads && input.key.startsWith(prefix))
+              throw Object.assign(new Error('synthetic private upload details'), {
+                name: 'AccessDenied',
+              });
+            return super.putObject(input);
+          }
+        }
+        const storage = new FailingStorage('incident-upload');
+        setS3Storage(storage);
+        const uidl = 'uidl-upload-failure';
+        const pop3 = new FakePop3Client({ messages: [{ uidl, raw: validMail() }] });
+        const failureCounts = new Map<string, number>();
+        for (let i = 0; i < POISON_MAX_RETRIES; i++) {
+          const cycle = await ingestOnce({ db, pop3, failureCounts });
+          expect(cycle.deled).toBe(0);
+          expect(cycle.items[0]).toMatchObject({
+            error: `ingest processing failure (${prefix === 'raw-mime/' ? 'raw_upload' : 'parse_and_upload'}/AccessDenied); POP3 message retained`,
+          });
+        }
+        expect(pop3.deleLog).toEqual([]);
+        expect(failureCounts.size).toBe(0);
+        expect(await sql`SELECT id FROM mail_ingest_quarantine`).toHaveLength(0);
+        expect(await sql`SELECT id FROM message`).toHaveLength(0);
+        failUploads = false;
+        expect((await ingestOnce({ db, pop3, failureCounts })).deled).toBe(1);
+        expect(await sql`SELECT id FROM message`).toHaveLength(1);
+        expect(await sql`SELECT id FROM attachment`).toHaveLength(1);
+      });
+    },
+    30000,
+  );
 
   it('keeps malformed MIME parser failures bounded without mocking persistence', async () => {
     await withIngestionDb(async ({ db, sql }) => {

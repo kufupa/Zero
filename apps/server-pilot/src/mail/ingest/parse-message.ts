@@ -32,6 +32,9 @@ export type ParseFailureWithUploadedAttachments = Error & {
   uploadedAttachments: ParsedAttachment[];
 };
 
+/** Only a recognised MIME input failure may spend the poison retry budget. */
+export class MalformedMimeError extends Error {}
+
 /**
  * Return only attachments whose S3 PUT completed before parsing failed.
  * Callers use this to persist durable cleanup work before poison handling.
@@ -173,7 +176,13 @@ export async function parseRawMessage(
   });
 
   parser.on('error', (err) => {
-    errors.push(err instanceof Error ? err : new Error(String(err)));
+    // Attachment uploads and unexpected parser exceptions remain retryable.
+    // mailsplit emits EMAXLEN for excessive MIME headers or child nodes.
+    if ((err as NodeJS.ErrnoException).code === 'EMAXLEN') {
+      errors.push(new MalformedMimeError('MIME structure exceeds parser limits', { cause: err }));
+    } else {
+      errors.push(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 
   // Feed the raw bytes through the parser.
@@ -194,14 +203,16 @@ export async function parseRawMessage(
   // Wait before exposing the failure so cleanup has an exact durable key set.
   await Promise.all(attachmentPromises);
 
-  const failure = parserFailure ?? errors[0];
+  // Do not classify a concurrent storage failure as malformed MIME.
+  const failure =
+    errors.find((error) => !(error instanceof MalformedMimeError)) ?? errors[0] ?? parserFailure;
   if (failure) {
     throw withUploadedAttachments(failure, uploadedAttachments);
   }
 
   if (!headers) {
     throw withUploadedAttachments(
-      new Error('parseRawMessage: headers event never fired'),
+      new MalformedMimeError('parseRawMessage: headers event never fired'),
       uploadedAttachments,
     );
   }

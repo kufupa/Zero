@@ -1258,15 +1258,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             return originalPutObject(opts);
           };
 
+          const failureCounts = new Map([[pop3Uidl, 2]]);
           const retry = await ingestOnce({
             pop3,
             db,
-            failureCounts: new Map([[pop3Uidl, 2]]),
+            failureCounts,
             ingestMailboxId,
           });
 
-          expect(retry.deled).toBe(1);
+          expect(retry.deled).toBe(0);
+          expect(failureCounts.has(pop3Uidl)).toBe(false);
+          expect(retry.items[0]).toMatchObject({ status: 'error' });
           expect(storage.get(canonicalKey)).toBeDefined();
+          expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
+
+          storage.putObject = originalPutObject;
+          const repaired = await ingestOnce({ pop3, db, failureCounts, ingestMailboxId });
+          expect(repaired.deled).toBe(1);
+          expect(repaired.items[0]).toMatchObject({ result: { kind: 'duplicate' } });
+          expect(storage.get(canonicalKey)).toBeDefined();
+          expect(storage.listKeys('attachments/')).toHaveLength(2);
           expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
         });
       } finally {
@@ -1313,7 +1324,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30000);
 
-    it('holds poison POP3 until partial parser uploads have durable cleanup', async () => {
+    it('holds POP3 until failed partial uploads have durable cleanup', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-worker-partial');
       const ingestMailboxId = 'ingest-nava-legacy';
       const pop3Uidl = `parser-partial-${randomUUID()}`;
@@ -1389,7 +1400,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       }
     }, 30000);
 
-    it('cleans parsed uploads when persistence rolls back before poison deletion', async () => {
+    it('cleans rolled-back uploads and retains POP3 until persistence is repaired', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-persist-rollback');
       const ingestMailboxId = 'ingest-nava-legacy';
       const pop3Uidl = `persist-rollback-${randomUUID()}`;
@@ -1423,15 +1434,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           `),
           );
 
+          const failureCounts = new Map([[pop3Uidl, 2]]);
           const result = await ingestOnce({
             pop3,
             db,
-            failureCounts: new Map([[pop3Uidl, 2]]),
+            failureCounts,
             ingestMailboxId,
           });
 
-          expect(result.deled).toBe(1);
+          expect(result.deled).toBe(0);
+          expect(failureCounts.has(pop3Uidl)).toBe(false);
+          expect(result.items[0]).toMatchObject({ status: 'error' });
           expect(storage.listKeys('attachments/')).toEqual([]);
+          expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
+
+          await db.execute(sql.raw(`DROP TRIGGER "${triggerName}" ON "message"`));
+          const repaired = await ingestOnce({ pop3, db, failureCounts, ingestMailboxId });
+          expect(repaired.deled).toBe(1);
+          expect(repaired.items[0]).toMatchObject({ result: { kind: 'stored' } });
+          expect(storage.listKeys('attachments/')).toHaveLength(1);
           expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
         });
       } finally {
