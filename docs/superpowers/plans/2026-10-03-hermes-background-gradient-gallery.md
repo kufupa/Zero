@@ -57,7 +57,8 @@ Implement → run the focused Node contract test red then green → run `git dif
 - [x] Canonical HTML contains the exact 26 unique `data-gradient` slugs, in catalog order, with 26 corresponding accessible names.
 - [x] No visible text/branding or external asset, script, font, or network dependency is present.
 - [x] Responsive 3/2/1-column layouts and 722:335 swatch ratio are verified; document remains vertically scrollable.
-- [x] The source passes the Node contract test and `git diff --check`; task and final reviews find no unresolved Critical or Important issue.
+- [x] The source passes the Node contract test and `git diff --check`; task review found no unresolved Critical or Important issue.
+- [ ] Final whole-change review finds no unresolved Critical or Important issue.
 - [x] The new URL returns HTTP 200 and its bytes hash exactly matches the reviewed canonical file.
 - [x] Existing served files retain these pre-deployment SHA-256 values: demo `eaf04bfb9b09d205deabf2efc50979308b5282356a31e2674039caa00e32da9c`, index `b7384087bed648558e3328a8c2acdd847dafb30533723b9387a2c0a2720c2178`, and image `288d4893df4fc063e7a9878b09666ab0f2cfe1604798ada943eac02edeffa27b`.
 - [x] No unrelated working-tree file is modified, staged, or committed by this feature.
