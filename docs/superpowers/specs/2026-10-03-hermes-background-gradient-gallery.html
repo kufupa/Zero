@@ -5,396 +5,399 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Background Gradient Gallery</title>
   <style>
+    :root {
+      --teal-edge: #113f3f;
+      --teal: #13454c;
+      --blue: #35598d;
+      --blue-lift: #41699a;
+      --indigo: #6a5bb1;
+      --violet: #986bcd;
+      --magenta: #a566d1;
+      --magenta-lift: #ac6ed7;
+    }
+
     * { box-sizing: border-box; }
-
-    html {
-      color-scheme: dark;
-      background: #061c20;
-    }
-
-    body {
-      margin: 0;
-      min-width: 0;
-      background:
-        radial-gradient(ellipse at 45% 0%, #173a42 0%, transparent 48%),
-        linear-gradient(160deg, #0b252b, #06191e 65%, #071e22);
-    }
+    html { color-scheme: dark; background: #0c252a; }
+    body { margin: 0; min-width: 0; font: 13px/1.4 system-ui, sans-serif; color: #d9e1e5; }
 
     .gallery {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: clamp(18px, 2.2vw, 34px);
+      gap: clamp(22px, 2.2vw, 34px);
       width: min(100%, 1720px);
       margin: 0 auto;
       padding: clamp(20px, 3.6vw, 58px);
     }
 
+    figure { margin: 0; min-width: 0; }
+    figcaption { margin-top: 10px; letter-spacing: 0.015em; }
+
+    /* Every treatment inherits the same sampled field and bloom positions. */
     .swatch {
       position: relative;
       isolation: isolate;
       container-type: inline-size;
       min-width: 0;
-      aspect-ratio: 722 / 335;
+      aspect-ratio: 722 / 334;
       overflow: hidden;
-      border-radius: 13px;
-      box-shadow: 0 12px 32px #0003, inset 0 0 0 1px #ffffff18;
+      border-radius: 10px;
+      background:
+        radial-gradient(ellipse 78% 108% at 45% 45%, transparent 42%, color-mix(in srgb, var(--teal-edge) 76%, transparent) 100%),
+        radial-gradient(ellipse 29% 76% at 46% 8%, var(--violet) 0%, color-mix(in srgb, var(--violet) 80%, transparent) 36%, transparent 100%),
+        radial-gradient(ellipse 28% 65% at 0% 88%, var(--magenta-lift) 0%, color-mix(in srgb, var(--magenta) 90%, transparent) 30%, transparent 100%),
+        radial-gradient(ellipse 36% 73% at 48% 100%, var(--blue-lift) 0%, color-mix(in srgb, var(--blue) 70%, transparent) 55%, transparent 100%),
+        radial-gradient(ellipse 35% 56% at 45% 62%, color-mix(in srgb, var(--indigo) 68%, transparent), transparent 100%),
+        linear-gradient(135deg, var(--teal), var(--teal-edge));
     }
 
     .swatch::before,
-    .swatch::after {
-      content: "";
-      position: absolute;
-      pointer-events: none;
+    .swatch::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
+
+    .arc-bands::before {
+      background: radial-gradient(ellipse 74% 150% at 50% 125%,
+        transparent 0% 26%, color-mix(in srgb, var(--violet) 35%, transparent) 26.5% 38%,
+        color-mix(in srgb, var(--blue-lift) 30%, transparent) 38.5% 50%, color-mix(in srgb, var(--magenta) 27%, transparent) 50.5% 62%,
+        color-mix(in srgb, var(--teal) 35%, transparent) 62.5% 74%, transparent 74.5%);
     }
 
-    .arc-bands,
-    .dark-arc-bands {
+    .aurora::before {
       background:
-        radial-gradient(ellipse 72% 142% at 50% 116%,
-          #de999c 0% 27%, #d9aa63 27.5% 40%, #6faaa0 40.5% 53%,
-          #a6c9d8 53.5% 66%, transparent 66.5%),
-        linear-gradient(130deg, #f4efe3, #e8e0d0);
-    }
-
-    .aurora {
-      background:
-        radial-gradient(ellipse at 18% 30%, #c7e68dbf, transparent 55%),
-        radial-gradient(ellipse at 68% 12%, #99e4c5d9, transparent 54%),
-        radial-gradient(ellipse at 82% 73%, #6bcad4c4, transparent 56%),
-        radial-gradient(ellipse at 27% 87%, #829ddac9, transparent 60%),
-        #edf2e4;
-    }
-
-    .cherry-petal {
-      background:
-        radial-gradient(ellipse at 52% 43%, #fff4ee, transparent 58%),
-        radial-gradient(ellipse at 14% 96%, #e8a8babf, transparent 61%),
-        linear-gradient(140deg, #f8e3e8, #ecc4d4);
+        radial-gradient(ellipse 12% 90% at 34% 14%, color-mix(in srgb, var(--violet) 46%, transparent) 25%, transparent 90%),
+        radial-gradient(ellipse 13% 80% at 55% 57%, color-mix(in srgb, var(--blue-lift) 52%, transparent) 20%, transparent 90%),
+        radial-gradient(ellipse 14% 70% at 14% 90%, color-mix(in srgb, var(--magenta) 44%, transparent) 25%, transparent 90%);
+      transform: skewX(-23deg);
+      filter: blur(5px);
     }
 
     .cherry-petal::before {
-      width: 6.5%;
-      height: 21%;
-      left: 16%;
-      top: 37%;
+      inset: auto;
+      width: 5%; height: 15%; left: 12%; top: 29%;
       border-radius: 85% 16% 76% 23%;
-      background: #eeb8c5b8;
-      box-shadow:
-        18cqw -5cqw 1px #f0c3ceb8,
-        38cqw 5cqw 1px #e7aabb9c,
-        53cqw 14cqw 1px #e6b0c5ba,
-        9cqw 15cqw 1px #d99db484,
-        31cqw 22cqw 1px #f5cbd5ca,
-        54cqw 30cqw 1px #e9b2c1ad;
+      background: color-mix(in srgb, var(--violet) 38%, transparent);
+      box-shadow: 18cqw -4cqw 1px color-mix(in srgb, var(--blue-lift) 42%, transparent),
+        39cqw 5cqw 1px color-mix(in srgb, var(--violet) 40%, transparent), 63cqw 8cqw 1px color-mix(in srgb, var(--teal) 55%, transparent),
+        8cqw 17cqw 1px color-mix(in srgb, var(--magenta-lift) 45%, transparent), 31cqw 24cqw 1px color-mix(in srgb, var(--indigo) 44%, transparent),
+        54cqw 30cqw 1px color-mix(in srgb, var(--blue-lift) 42%, transparent);
       transform: rotate(-27deg);
     }
 
-    .coral-glow {
+    .coral-glow::before {
       background:
-        radial-gradient(ellipse at 13% 29%, #e9a0b6dc, transparent 58%),
-        radial-gradient(ellipse at 75% 10%, #f5c4a6ed, transparent 56%),
-        radial-gradient(ellipse at 61% 88%, #eb8e79d9, transparent 63%),
-        radial-gradient(ellipse at 94% 71%, #eec473e0, transparent 51%),
-        #f5ded3;
+        radial-gradient(ellipse 19% 39% at 33% 18%, color-mix(in srgb, var(--violet) 42%, transparent) 32%, transparent),
+        radial-gradient(ellipse 17% 35% at 59% 35%, color-mix(in srgb, var(--indigo) 45%, transparent) 32%, transparent),
+        radial-gradient(ellipse 19% 39% at 11% 82%, color-mix(in srgb, var(--magenta) 44%, transparent) 32%, transparent),
+        radial-gradient(ellipse 20% 41% at 44% 87%, color-mix(in srgb, var(--blue-lift) 48%, transparent) 32%, transparent);
     }
 
-    .dark-arc-bands {
-      background:
-        radial-gradient(ellipse 72% 142% at 50% 116%,
-          #714452 0% 27%, #796342 27.5% 40%, #326769 40.5% 53%,
-          #385a72 53.5% 66%, transparent 66.5%),
-        linear-gradient(130deg, #15232e, #0b151f);
+    .dark-arc-bands::before {
+      background: radial-gradient(ellipse 78% 164% at 50% 130%,
+        transparent 0% 28%, color-mix(in srgb, var(--teal-edge) 34%, transparent) 28.5% 39%,
+        color-mix(in srgb, var(--indigo) 23%, transparent) 39.5% 50%, color-mix(in srgb, var(--teal-edge) 32%, transparent) 50.5% 61%,
+        color-mix(in srgb, var(--blue) 25%, transparent) 61.5% 72%, transparent 72.5%);
     }
 
-    .dark-aurora {
+    .dark-aurora::before {
       background:
-        radial-gradient(ellipse at 16% 37%, #247a756e, transparent 59%),
-        radial-gradient(ellipse at 71% 8%, #32949a70, transparent 57%),
-        radial-gradient(ellipse at 82% 81%, #24825c66, transparent 62%),
-        radial-gradient(ellipse at 31% 94%, #397c9b5c, transparent 58%),
-        #111c21;
+        radial-gradient(ellipse 10% 95% at 34% 30%, color-mix(in srgb, var(--teal-edge) 54%, transparent) 35%, transparent 90%),
+        radial-gradient(ellipse 12% 88% at 54% 52%, color-mix(in srgb, var(--indigo) 34%, transparent) 30%, transparent 95%),
+        radial-gradient(ellipse 10% 85% at 18% 85%, color-mix(in srgb, var(--magenta) 27%, transparent) 20%, transparent 90%);
+      transform: skewX(25deg);
+      filter: blur(13px);
     }
 
-    .dark-carbon-spotlight {
+    .dark-carbon-spotlight::before {
       background:
-        radial-gradient(ellipse at 50% 50%, transparent 25%, #030507d9 100%),
-        radial-gradient(ellipse 58% 112% at 50% -18%, #b3b6b669, transparent 75%),
-        linear-gradient(180deg, #303437, #101214 74%);
+        radial-gradient(ellipse 30% 115% at 46% -22%, color-mix(in srgb, var(--violet) 44%, transparent) 30%, transparent 90%),
+        radial-gradient(ellipse 50% 76% at 46% 25%, transparent 18%, color-mix(in srgb, var(--teal-edge) 72%, transparent) 100%);
     }
 
-    .dark-ember {
+    .dark-ember::before {
       background:
-        radial-gradient(ellipse at 17% 36%, #ad702c82, transparent 57%),
-        radial-gradient(ellipse at 73% 12%, #ac502978, transparent 56%),
-        radial-gradient(ellipse at 80% 84%, #a2413c77, transparent 55%),
-        radial-gradient(ellipse at 37% 95%, #bc59236b, transparent 60%),
-        #1b1211;
-    }
-
-    .dark-ink-field {
-      background: linear-gradient(130deg, #171c21, #080c10);
+        radial-gradient(ellipse 10% 21% at 47% 16%, color-mix(in srgb, var(--violet) 40%, transparent) 34%, transparent),
+        radial-gradient(ellipse 11% 23% at 9% 79%, color-mix(in srgb, var(--magenta) 36%, transparent) 34%, transparent),
+        radial-gradient(ellipse 12% 25% at 41% 88%, color-mix(in srgb, var(--blue-lift) 42%, transparent) 34%, transparent),
+        radial-gradient(ellipse 16% 33% at 77% 74%, color-mix(in srgb, var(--teal-edge) 62%, transparent) 34%, transparent);
     }
 
     .dark-ink-field::before {
-      inset: 12% 42% 18% -12%;
+      inset: 9% 39% 16% 20%;
       border-radius: 41% 59% 28% 72% / 65% 31% 69% 35%;
-      background: #42484f72;
-      filter: blur(15px);
-      transform: rotate(-13deg);
-      box-shadow: 51cqw -8cqw 18px #363c445c;
+      background: color-mix(in srgb, var(--teal-edge) 35%, transparent);
+      filter: blur(12px);
+      transform: rotate(-19deg);
+      box-shadow: -29cqw 25cqw 15px color-mix(in srgb, var(--magenta) 23%, transparent), 23cqw 20cqw 17px color-mix(in srgb, var(--blue) 25%, transparent);
     }
 
-    .dark-ink-field::after {
-      inset: 49% 9% -29% 32%;
-      border-radius: 71% 29% 56% 44% / 36% 62% 38% 64%;
-      background: #4a4e514d;
-      filter: blur(17px);
-      transform: rotate(12deg);
-    }
-
-    .dark-midnight-mesh {
+    .dark-midnight-mesh::before {
       background:
-        radial-gradient(ellipse at 50% 50%, transparent 28%, #071018d9 100%),
-        repeating-linear-gradient(0deg, #9fc6ce10 0 1px, transparent 1px 17px),
-        repeating-linear-gradient(90deg, #9fc6ce10 0 1px, transparent 1px 17px),
-        radial-gradient(ellipse at 0% 0%, #236f76a8, transparent 65%),
-        radial-gradient(ellipse at 100% 100%, #3563889e, transparent 67%),
-        #0d202d;
+        repeating-linear-gradient(0deg, color-mix(in srgb, var(--teal-edge) 27%, transparent) 0 1px, transparent 1px 15px),
+        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 22%, transparent) 0 1px, transparent 1px 15px),
+        radial-gradient(ellipse at 50% 45%, transparent 28%, color-mix(in srgb, var(--teal-edge) 40%, transparent) 100%);
     }
 
-    .dark-rose-noir {
+    .dark-rose-noir::before {
       background:
-        radial-gradient(ellipse at 50% 50%, transparent 10%, #120e17bd 100%),
-        radial-gradient(ellipse at 29% 29%, #a35e788f, transparent 65%),
-        radial-gradient(ellipse at 77% 77%, #8d293b96, transparent 63%),
-        #251721;
+        radial-gradient(ellipse 21% 43% at 39% 13%, color-mix(in srgb, var(--magenta) 43%, transparent) 40%, transparent),
+        radial-gradient(ellipse 25% 55% at 5% 87%, color-mix(in srgb, var(--magenta-lift) 46%, transparent) 38%, transparent),
+        radial-gradient(ellipse at 42% 43%, transparent 30%, color-mix(in srgb, var(--teal-edge) 44%, transparent) 100%);
     }
 
-    .dark-teal-depth {
+    .dark-teal-depth::before {
       background:
-        radial-gradient(ellipse at 32% 18%, #297e897f, transparent 69%),
-        radial-gradient(ellipse at 86% 74%, #1c636f8c, transparent 66%),
-        radial-gradient(ellipse at 14% 100%, #103745c7, transparent 55%),
-        linear-gradient(145deg, #0a2533, #07131f);
+        radial-gradient(ellipse 44% 76% at 105% 17%, color-mix(in srgb, var(--teal) 72%, transparent) 55%, transparent 95%),
+        radial-gradient(ellipse 35% 58% at 79% 114%, color-mix(in srgb, var(--teal-edge) 64%, transparent) 50%, transparent 95%),
+        radial-gradient(ellipse 19% 45% at 15% 15%, color-mix(in srgb, var(--teal) 42%, transparent) 35%, transparent 95%);
     }
 
-    .frost-mesh {
+    .frost-mesh::before {
       background:
-        repeating-linear-gradient(0deg, #718e9315 0 1px, transparent 1px 17px),
-        repeating-linear-gradient(90deg, #718e9315 0 1px, transparent 1px 17px),
-        radial-gradient(ellipse at 0% 0%, #b0dde8d9, transparent 64%),
-        radial-gradient(ellipse at 100% 100%, #afd6c3c4, transparent 62%),
-        linear-gradient(145deg, #f3f8f8, #e2ebec);
-    }
-
-    .halftone-pop {
-      background:
-        radial-gradient(ellipse at 17% 29%, #dea0ac3d, transparent 48%),
-        radial-gradient(ellipse at 70% 37%, #7bb6ac38, transparent 49%),
-        radial-gradient(ellipse at 51% 98%, #e8bf6f42, transparent 54%),
-        #f3ecdf;
+        repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 23%, transparent) 0 1px, transparent 1px 12px),
+        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 28%, transparent) 0 1px, transparent 1px 12px),
+        radial-gradient(ellipse at 0% 100%, color-mix(in srgb, var(--magenta-lift) 18%, transparent), transparent 50%);
     }
 
     .halftone-pop::before {
-      inset: 0;
       background:
-        radial-gradient(ellipse at 17% 29%, #c5768abf 8%, transparent 48%),
-        radial-gradient(ellipse at 70% 37%, #4b8d85bf 7%, transparent 47%),
-        radial-gradient(ellipse at 51% 98%, #c99643bf 8%, transparent 49%);
-      mask-image: radial-gradient(circle, #000 0 0.85px, transparent 1px);
-      mask-size: 6px 6px;
+        radial-gradient(ellipse at 43% 12%, var(--violet), transparent 70%),
+        radial-gradient(ellipse at 6% 88%, var(--magenta-lift), transparent 65%),
+        radial-gradient(ellipse at 48% 95%, var(--blue-lift), transparent 65%);
+      mask-image: radial-gradient(circle, var(--teal-edge) 0 1px, transparent 1.3px);
+      mask-size: 7px 7px;
+      opacity: 0.42;
     }
 
-    .honey-ember {
+    .honey-ember::before {
       background:
-        radial-gradient(ellipse at 14% 32%, #efd794df, transparent 57%),
-        radial-gradient(ellipse at 78% 12%, #e4b267c4, transparent 55%),
-        radial-gradient(ellipse at 67% 92%, #d98d55b0, transparent 61%),
-        radial-gradient(ellipse at 8% 99%, #e4b4b59c, transparent 54%),
-        #f7eddb;
-    }
-
-    .ink-wash {
-      background: linear-gradient(135deg, #f3efe6, #e6e0d4);
+        radial-gradient(ellipse 13% 27% at 31% 9%, color-mix(in srgb, var(--violet) 46%, transparent) 35%, transparent),
+        radial-gradient(ellipse 15% 31% at 54% 31%, color-mix(in srgb, var(--indigo) 48%, transparent) 35%, transparent),
+        radial-gradient(ellipse 17% 35% at 10% 70%, color-mix(in srgb, var(--magenta-lift) 48%, transparent) 35%, transparent),
+        radial-gradient(ellipse 17% 35% at 29% 100%, color-mix(in srgb, var(--magenta) 42%, transparent) 35%, transparent),
+        radial-gradient(ellipse 20% 41% at 58% 89%, color-mix(in srgb, var(--blue-lift) 48%, transparent) 35%, transparent);
     }
 
     .ink-wash::before {
-      inset: 3% 46% 30% -8%;
+      inset: -10% 34% 32% 23%;
       border-radius: 37% 63% 71% 29% / 64% 29% 71% 36%;
-      background: #777d7b30;
-      filter: blur(17px);
+      background: color-mix(in srgb, var(--violet) 25%, transparent);
+      filter: blur(8px);
       transform: rotate(-16deg);
-      box-shadow: 46cqw 20cqw 20px #63686537;
+      box-shadow: -35cqw 28cqw 12px color-mix(in srgb, var(--magenta) 35%, transparent);
     }
-
     .ink-wash::after {
-      inset: 40% 43% -22% 10%;
+      inset: 58% 36% -23% 24%;
       border-radius: 65% 35% 27% 73% / 26% 63% 37% 74%;
-      background: #515d5d22;
-      filter: blur(19px);
+      background: color-mix(in srgb, var(--blue-lift) 28%, transparent);
+      filter: blur(10px);
       transform: rotate(12deg);
-      box-shadow: 38cqw -24cqw 22px #8a8d862c;
     }
 
-    .linen-weave {
+    .linen-weave::before {
       background:
-        radial-gradient(ellipse at 50% 45%, transparent 24%, #967e6126 100%),
-        repeating-linear-gradient(0deg, #a9937120 0 1px, #fff8e710 1px 2px, transparent 2px 5px),
-        repeating-linear-gradient(90deg, #aa96741c 0 1px, transparent 1px 5px),
-        linear-gradient(135deg, #f0e9da, #e5d8c3);
+        repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 13%, transparent) 0 1px, color-mix(in srgb, var(--teal-edge) 12%, transparent) 1px 2px, transparent 2px 5px),
+        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 15%, transparent) 0 1px, transparent 1px 5px);
     }
 
-    .mint-lagoon {
+    .mint-lagoon::before {
+      inset: -30% -10%;
       background:
-        radial-gradient(ellipse at 13% 33%, #81c7a8b3, transparent 57%),
-        radial-gradient(ellipse at 73% 12%, #79bfbab3, transparent 58%),
-        radial-gradient(ellipse at 79% 84%, #95dbe0b0, transparent 60%),
-        radial-gradient(ellipse at 25% 100%, #c4ecd5e6, transparent 57%),
-        #edf7f3;
+        radial-gradient(ellipse 64% 10% at 45% 25%, color-mix(in srgb, var(--violet) 42%, transparent) 35%, transparent 95%),
+        radial-gradient(ellipse 58% 11% at 24% 63%, color-mix(in srgb, var(--magenta) 44%, transparent) 35%, transparent 95%),
+        radial-gradient(ellipse 55% 10% at 51% 82%, color-mix(in srgb, var(--blue-lift) 46%, transparent) 35%, transparent 95%);
+      transform: rotate(-19deg);
+      filter: blur(4px);
     }
 
-    .paper-fold {
+    .paper-fold::before {
       background:
-        linear-gradient(146deg, transparent 47%, #fffefb8c 49.5%, #b2b9b548 50%, transparent 53%),
-        repeating-linear-gradient(0deg, #7485820d 0 1px, transparent 1px 15px),
-        repeating-linear-gradient(90deg, #7485820d 0 1px, transparent 1px 15px),
-        conic-gradient(from 56deg at 50% 50%, #e1e6e1, #f2f1e9 50%, #e1e6e1),
-        #edf0e9;
+        linear-gradient(146deg, transparent 46%, color-mix(in srgb, var(--violet) 30%, transparent) 49.5%, color-mix(in srgb, var(--teal-edge) 52%, transparent) 50%, transparent 54%),
+        repeating-linear-gradient(0deg, color-mix(in srgb, var(--blue-lift) 13%, transparent) 0 1px, transparent 1px 16px),
+        repeating-linear-gradient(90deg, color-mix(in srgb, var(--violet) 13%, transparent) 0 1px, transparent 1px 16px);
     }
 
-    .rain-prism {
+    .rain-prism::before {
       background:
-        repeating-linear-gradient(114deg, #ffffff3b 0 1px, transparent 1px 10px),
-        linear-gradient(114deg, transparent 12%, #89bbb66e 30%, #d3abc478 48%, #a1c5dc87 64%, transparent 83%),
-        linear-gradient(140deg, #e3ece8, #cddbdc);
-    }
-
-    .sand-drift {
-      background:
-        radial-gradient(ellipse 85% 100% at 78% 144%, #bba583 0% 70%, transparent 70.5%),
-        radial-gradient(ellipse 106% 105% at 4% 142%, #d4ba8e 0% 76%, transparent 76.5%),
-        radial-gradient(ellipse 95% 112% at 76% 134%, #ded0b5 0% 73%, transparent 73.5%),
-        linear-gradient(180deg, #f4efe3, #e6ddcb);
+        repeating-linear-gradient(114deg, color-mix(in srgb, var(--blue-lift) 34%, transparent) 0 1px, transparent 1px 11px),
+        linear-gradient(180deg, transparent 38%, color-mix(in srgb, var(--violet) 26%, transparent) 48%, color-mix(in srgb, var(--blue-lift) 30%, transparent) 58%, transparent 68%);
     }
 
     .sand-drift::before {
-      inset: 0;
-      opacity: 0.14;
       background:
-        repeating-linear-gradient(23deg, #85765f 0 0.5px, transparent 0.5px 3px),
-        repeating-linear-gradient(113deg, #fffaeb 0 0.5px, transparent 0.5px 4px);
+        radial-gradient(ellipse 82% 110% at 64% 159%, color-mix(in srgb, var(--blue) 32%, transparent) 0% 72%, transparent 72.5%),
+        radial-gradient(ellipse 102% 110% at 17% 161%, color-mix(in srgb, var(--magenta) 25%, transparent) 0% 80%, transparent 80.5%),
+        radial-gradient(ellipse 88% 120% at 52% 150%, color-mix(in srgb, var(--indigo) 27%, transparent) 0% 75%, transparent 75.5%);
+    }
+    .sand-drift::after {
+      background:
+        repeating-linear-gradient(23deg, color-mix(in srgb, var(--teal-edge) 24%, transparent) 0 0.5px, transparent 0.5px 3px),
+        repeating-linear-gradient(113deg, color-mix(in srgb, var(--blue-lift) 18%, transparent) 0 0.5px, transparent 0.5px 4px);
+      opacity: 0.6;
     }
 
-    .soft-spotlight {
+    .soft-spotlight::before {
       background:
-        radial-gradient(ellipse at 50% 50%, transparent 22%, #817e752c 100%),
-        radial-gradient(ellipse 63% 106% at 50% -12%, #fffdf3e6, transparent 85%),
-        linear-gradient(180deg, #e4e1d8, #c9c8c0);
-    }
-
-    .sunrise-horizon {
-      background:
-        radial-gradient(ellipse 36% 29% at 50% 68%, #f9d7a8bf, transparent 80%),
-        linear-gradient(180deg, #e8c4b4 0%, #efd6bf 44%, #f3d5b3 62%, #d8d5be 72%, #9cb7b0 100%);
+        radial-gradient(ellipse 61% 75% at 46% -18%, color-mix(in srgb, var(--violet) 36%, transparent) 28%, transparent 95%),
+        radial-gradient(ellipse at 45% 43%, transparent 42%, color-mix(in srgb, var(--teal-edge) 24%, transparent) 100%);
     }
 
     .sunrise-horizon::before {
-      inset: 0;
-      background: repeating-linear-gradient(0deg, #ffead815 0 2px, transparent 2px 15px);
-      mask-image: linear-gradient(transparent 24%, #000 68%, transparent);
+      background:
+        radial-gradient(ellipse 31% 19% at 45% 79%, color-mix(in srgb, var(--blue-lift) 40%, transparent), transparent 95%),
+        linear-gradient(180deg, transparent 52%, color-mix(in srgb, var(--indigo) 22%, transparent) 52.5% 63%, color-mix(in srgb, var(--blue) 24%, transparent) 63.5% 75%, transparent 75.5%);
+    }
+    .sunrise-horizon::after {
+      background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 20%, transparent) 0 1px, transparent 1px 14px);
+      mask-image: linear-gradient(transparent 34%, var(--teal-edge) 76%, transparent);
     }
 
-    .sunset-bloom {
+    .sunset-bloom::before {
       background:
-        radial-gradient(ellipse at 17% 29%, #efaa79c7, transparent 57%),
-        radial-gradient(ellipse at 77% 15%, #e796a5ba, transparent 58%),
-        radial-gradient(ellipse at 75% 91%, #e1b45fdb, transparent 58%),
-        radial-gradient(ellipse at 27% 92%, #f2d88ec9, transparent 58%),
-        #f3d4b8;
-    }
-
-    .terrazzo-fragment {
-      background:
-        radial-gradient(ellipse at 50% 45%, #f6f1e5, transparent 76%),
-        #e6dfcf;
+        radial-gradient(ellipse 36% 65% at 39% -8%, color-mix(in srgb, var(--magenta) 42%, transparent) 35%, transparent 85%),
+        radial-gradient(ellipse 26% 62% at 55% 29%, color-mix(in srgb, var(--violet) 40%, transparent) 35%, transparent 90%),
+        radial-gradient(ellipse 29% 58% at 12% 100%, color-mix(in srgb, var(--magenta-lift) 44%, transparent) 35%, transparent 85%),
+        radial-gradient(ellipse 36% 49% at 46% 97%, color-mix(in srgb, var(--blue-lift) 42%, transparent) 35%, transparent 85%);
     }
 
     .terrazzo-fragment::before {
-      width: 4.5%;
-      height: 12%;
-      left: 17%;
-      top: 31%;
+      inset: auto;
+      width: 4.5%; height: 12%; left: 13%; top: 23%;
       border-radius: 25% 64% 32% 18%;
-      background: #b2aaa092;
-      box-shadow:
-        20cqw -2cqw 0 #cb9a9c91,
-        41cqw 5cqw 0 #79a6a09c,
-        16cqw 18cqw 0 #c7a87599,
-        56cqw 25cqw 0 #b98e7894;
+      background: color-mix(in srgb, var(--violet) 35%, transparent);
+      box-shadow: 20cqw -2cqw 0 color-mix(in srgb, var(--magenta) 35%, transparent), 41cqw 5cqw 0 color-mix(in srgb, var(--blue-lift) 42%, transparent),
+        16cqw 18cqw 0 color-mix(in srgb, var(--indigo) 44%, transparent), 56cqw 25cqw 0 color-mix(in srgb, var(--teal) 48%, transparent);
       transform: rotate(-19deg);
     }
-
     .terrazzo-fragment::after {
-      width: 3%;
-      height: 9%;
-      left: 27%;
-      top: 65%;
+      inset: auto;
+      width: 3%; height: 9%; left: 27%; top: 65%;
       border-radius: 55% 18% 42% 30%;
-      background: #ccaa8799;
-      box-shadow:
-        -17cqw -11cqw 0 #93aba38f,
-        22cqw -22cqw 0 #b59b9694,
-        37cqw -7cqw 0 #c08f8991,
-        52cqw -28cqw 0 #b9b1a491;
+      background: color-mix(in srgb, var(--magenta-lift) 40%, transparent);
+      box-shadow: -17cqw -11cqw 0 color-mix(in srgb, var(--violet) 38%, transparent), 22cqw -22cqw 0 color-mix(in srgb, var(--blue-lift) 38%, transparent),
+        37cqw -7cqw 0 color-mix(in srgb, var(--indigo) 45%, transparent), 52cqw -28cqw 0 color-mix(in srgb, var(--teal) 45%, transparent);
       transform: rotate(23deg);
     }
 
-    .tropical-tide {
+    .tropical-tide::before {
       background:
-        radial-gradient(ellipse at 15% 32%, #63c7c6bd, transparent 57%),
-        radial-gradient(ellipse at 72% 11%, #c3dc85d4, transparent 58%),
-        radial-gradient(ellipse at 79% 83%, #7dc4dfd4, transparent 61%),
-        radial-gradient(ellipse at 23% 94%, #86c9a9c7, transparent 59%),
-        #e0eee0;
+        radial-gradient(ellipse 54% 31% at 26% 117%, color-mix(in srgb, var(--magenta) 42%, transparent) 48%, transparent 85%),
+        radial-gradient(ellipse 46% 26% at 52% 88%, color-mix(in srgb, var(--blue-lift) 46%, transparent) 46%, transparent 90%),
+        radial-gradient(ellipse 45% 23% at 58% 44%, color-mix(in srgb, var(--teal) 42%, transparent) 43%, transparent 95%);
+      transform: rotate(-8deg) scale(1.1);
     }
 
     @media (max-width: 920px) {
       .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-
     @media (max-width: 620px) {
       .gallery { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <main class="gallery">
-    <div class="swatch arc-bands" data-gradient="arc-bands-background" role="img" aria-label="Arc Bands"></div>
-    <div class="swatch aurora" data-gradient="aurora-background" role="img" aria-label="Aurora Background"></div>
-    <div class="swatch cherry-petal" data-gradient="cherry-petal-background" role="img" aria-label="Cherry Petal"></div>
-    <div class="swatch coral-glow" data-gradient="coral-glow-background" role="img" aria-label="Coral Glow"></div>
-    <div class="swatch dark-arc-bands" data-gradient="dark-arc-bands-background" role="img" aria-label="Dark Arc Bands"></div>
-    <div class="swatch dark-aurora" data-gradient="dark-aurora-background" role="img" aria-label="Dark Aurora"></div>
-    <div class="swatch dark-carbon-spotlight" data-gradient="dark-carbon-spotlight-background" role="img" aria-label="Dark Carbon Spotlight"></div>
-    <div class="swatch dark-ember" data-gradient="dark-ember-background" role="img" aria-label="Dark Ember"></div>
-    <div class="swatch dark-ink-field" data-gradient="dark-ink-field-background" role="img" aria-label="Dark Ink Field"></div>
-    <div class="swatch dark-midnight-mesh" data-gradient="dark-midnight-mesh-background" role="img" aria-label="Dark Midnight Mesh"></div>
-    <div class="swatch dark-rose-noir" data-gradient="dark-rose-noir-background" role="img" aria-label="Dark Rose Noir"></div>
-    <div class="swatch dark-teal-depth" data-gradient="dark-teal-depth-background" role="img" aria-label="Dark Teal Depth"></div>
-    <div class="swatch frost-mesh" data-gradient="frost-mesh-background" role="img" aria-label="Frost Mesh"></div>
-    <div class="swatch halftone-pop" data-gradient="halftone-pop-background" role="img" aria-label="Halftone Pop"></div>
-    <div class="swatch honey-ember" data-gradient="honey-ember-background" role="img" aria-label="Honey Ember"></div>
-    <div class="swatch ink-wash" data-gradient="ink-wash-background" role="img" aria-label="Ink Wash"></div>
-    <div class="swatch linen-weave" data-gradient="linen-weave-background" role="img" aria-label="Linen Weave"></div>
-    <div class="swatch mint-lagoon" data-gradient="mint-lagoon-background" role="img" aria-label="Mint Lagoon"></div>
-    <div class="swatch paper-fold" data-gradient="paper-fold-background" role="img" aria-label="Paper Fold"></div>
-    <div class="swatch rain-prism" data-gradient="rain-prism-background" role="img" aria-label="Rain Prism"></div>
-    <div class="swatch sand-drift" data-gradient="sand-drift-background" role="img" aria-label="Sand Drift"></div>
-    <div class="swatch soft-spotlight" data-gradient="soft-spotlight-background" role="img" aria-label="Soft Spotlight"></div>
-    <div class="swatch sunrise-horizon" data-gradient="sunrise-horizon-background" role="img" aria-label="Sunrise Horizon"></div>
-    <div class="swatch sunset-bloom" data-gradient="sunset-bloom-background" role="img" aria-label="Sunset Bloom"></div>
-    <div class="swatch terrazzo-fragment" data-gradient="terrazzo-fragment-background" role="img" aria-label="Terrazzo Fragment"></div>
-    <div class="swatch tropical-tide" data-gradient="tropical-tide-background" role="img" aria-label="Tropical Tide"></div>
+  <main class="gallery" aria-label="Background gradient gallery">
+    <figure>
+      <div class="swatch arc-bands" data-gradient="arc-bands-background" role="img" aria-label="Arc Bands"></div>
+      <figcaption>Arc Bands</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch aurora" data-gradient="aurora-background" role="img" aria-label="Aurora Background"></div>
+      <figcaption>Aurora Background</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch cherry-petal" data-gradient="cherry-petal-background" role="img" aria-label="Cherry Petal"></div>
+      <figcaption>Cherry Petal</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch coral-glow" data-gradient="coral-glow-background" role="img" aria-label="Coral Glow"></div>
+      <figcaption>Coral Glow</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-arc-bands" data-gradient="dark-arc-bands-background" role="img" aria-label="Dark Arc Bands"></div>
+      <figcaption>Dark Arc Bands</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-aurora" data-gradient="dark-aurora-background" role="img" aria-label="Dark Aurora"></div>
+      <figcaption>Dark Aurora</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-carbon-spotlight" data-gradient="dark-carbon-spotlight-background" role="img" aria-label="Dark Carbon Spotlight"></div>
+      <figcaption>Dark Carbon Spotlight</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-ember" data-gradient="dark-ember-background" role="img" aria-label="Dark Ember"></div>
+      <figcaption>Dark Ember</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-ink-field" data-gradient="dark-ink-field-background" role="img" aria-label="Dark Ink Field"></div>
+      <figcaption>Dark Ink Field</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-midnight-mesh" data-gradient="dark-midnight-mesh-background" role="img" aria-label="Dark Midnight Mesh"></div>
+      <figcaption>Dark Midnight Mesh</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-rose-noir" data-gradient="dark-rose-noir-background" role="img" aria-label="Dark Rose Noir"></div>
+      <figcaption>Dark Rose Noir</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch dark-teal-depth" data-gradient="dark-teal-depth-background" role="img" aria-label="Dark Teal Depth"></div>
+      <figcaption>Dark Teal Depth</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch frost-mesh" data-gradient="frost-mesh-background" role="img" aria-label="Frost Mesh"></div>
+      <figcaption>Frost Mesh</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch halftone-pop" data-gradient="halftone-pop-background" role="img" aria-label="Halftone Pop"></div>
+      <figcaption>Halftone Pop</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch honey-ember" data-gradient="honey-ember-background" role="img" aria-label="Honey Ember"></div>
+      <figcaption>Honey Ember</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch ink-wash" data-gradient="ink-wash-background" role="img" aria-label="Ink Wash"></div>
+      <figcaption>Ink Wash</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch linen-weave" data-gradient="linen-weave-background" role="img" aria-label="Linen Weave"></div>
+      <figcaption>Linen Weave</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch mint-lagoon" data-gradient="mint-lagoon-background" role="img" aria-label="Mint Lagoon"></div>
+      <figcaption>Mint Lagoon</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch paper-fold" data-gradient="paper-fold-background" role="img" aria-label="Paper Fold"></div>
+      <figcaption>Paper Fold</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch rain-prism" data-gradient="rain-prism-background" role="img" aria-label="Rain Prism"></div>
+      <figcaption>Rain Prism</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch sand-drift" data-gradient="sand-drift-background" role="img" aria-label="Sand Drift"></div>
+      <figcaption>Sand Drift</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch soft-spotlight" data-gradient="soft-spotlight-background" role="img" aria-label="Soft Spotlight"></div>
+      <figcaption>Soft Spotlight</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch sunrise-horizon" data-gradient="sunrise-horizon-background" role="img" aria-label="Sunrise Horizon"></div>
+      <figcaption>Sunrise Horizon</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch sunset-bloom" data-gradient="sunset-bloom-background" role="img" aria-label="Sunset Bloom"></div>
+      <figcaption>Sunset Bloom</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch terrazzo-fragment" data-gradient="terrazzo-fragment-background" role="img" aria-label="Terrazzo Fragment"></div>
+      <figcaption>Terrazzo Fragment</figcaption>
+    </figure>
+    <figure>
+      <div class="swatch tropical-tide" data-gradient="tropical-tide-background" role="img" aria-label="Tropical Tide"></div>
+      <figcaption>Tropical Tide</figcaption>
+    </figure>
   </main>
 </body>
 </html>
