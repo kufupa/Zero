@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
@@ -106,6 +107,17 @@ function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      // A killed child can remain a zombie until its new parent reaps it.
+      // kill(pid, 0) still succeeds, but it cannot execute or write the marker.
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    }
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
@@ -814,6 +826,9 @@ async function readLaunchReadiness(): Promise<string> {
 
 function validReportShellEnv(): Record<string, string> {
   return {
+    REMOTE_ADMIN_FACTS: '{}',
+    REMOTE_ADMIN_MODE: '0',
+    REMOTE_TARGET_HEALTH_REQUIRED: '0',
     REMOTE_JSON: JSON.stringify({
       health: { http: true, https: true, tls: true },
       pm2: {
@@ -1218,7 +1233,8 @@ const facts = {
 };
 process.stdout.write("AWS_FACTS=" + JSON.stringify(facts) + "\\n");
 NODE
-printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
+AWS_REPORT="$(build_readiness_report)"
+printf 'AWS_REPORT=%s\\n' "$AWS_REPORT"
 `;
     const result = await runBash({
       input: script,
@@ -4025,7 +4041,7 @@ if (!realMailGate) {
     );
     expect(
       readiness.includes(
-        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh',
+        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"',
       ),
     ).toBe(true);
     expect(runbook.includes('Gate A')).toBe(true);
