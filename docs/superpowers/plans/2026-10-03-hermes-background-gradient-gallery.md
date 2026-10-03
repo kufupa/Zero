@@ -131,7 +131,7 @@ Autonomous end-to-end execution as explicitly requested. Continue through the fi
 
 ## Implementation Units
 
-### U1. Lock the corrected visual contract
+### Task 1: Lock the corrected visual contract (U1)
 
 **Goal:** Correct the stored plan/spec so the native-palette mistake cannot recur.
 **Requirements:** One shared screenshot palette/composition; only treatment geometry/texture varies; component labels do not overlay artwork.
@@ -141,7 +141,7 @@ Autonomous end-to-end execution as explicitly requested. Continue through the fi
 **Test scenarios:** Confirm all 26 source treatments remain named and the docs explicitly forbid native palettes, off-reference artwork hues, branding, and changes to other served files.
 **Verification:** Re-read both docs; the corrected fixed-palette contract is consistent.
 
-### U2. Rebuild and regression-test the gallery
+### Task 2: Rebuild and regression-test the gallery (U2)
 
 **Goal:** Render 26 distinct OpenSourceUI treatments over the shared reference-derived teal/violet/blue/magenta composition.
 **Requirements:** Exact names/order/slugs, locked palette, captions and accessible names, exact image ratio, responsive grid, vertical flow, standalone page.
@@ -158,7 +158,7 @@ Autonomous end-to-end execution as explicitly requested. Continue through the fi
 - Browser integration: Chromium at 1440px, 800px, and 390px shows 3/2/1 columns, all captions, no horizontal overflow, vertical scroll, and no external requests.
 **Verification:** Contract test passes; fresh screenshots show 26 distinguishable treatments of the supplied image palette/composition.
 
-### U3. Publish only the corrected static gallery
+### Task 3: Publish only the corrected static gallery (U3)
 
 **Goal:** Update the current public gallery without disturbing any other served file or service.
 **Requirements:** Same URL, byte-for-byte reviewed source, HTTP 200, protected-file hashes unchanged.
