@@ -11,6 +11,7 @@
  * sees the `S3Storage` interface, so production and fixture paths share code.
  */
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import {
   S3Client,
   PutObjectCommand,
@@ -469,4 +470,44 @@ export function setS3Storage(storage: S3Storage): void {
 
 export function resetS3Storage(): void {
   current = null;
+}
+
+/** Hash at stream speed; enforce declared maximum without retaining the object. */
+export async function sha256Stream(stream: Readable, maxBytes: number): Promise<{ bytes: number; sha256: string }> {
+  assertBoundedMaxBytes(maxBytes);
+  const hash = createHash('sha256'); let bytes = 0;
+  try {
+    for await (const value of stream) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      bytes += chunk.length;
+      if (bytes > maxBytes) throw new Error('Artifact size exceeded');
+      hash.update(chunk);
+    }
+    return { bytes, sha256: hash.digest('hex') };
+  } finally { stream.destroy(); }
+}
+
+/** One part buffer and upstream backpressure; never concatenate a whole original. */
+export async function* fixedSizeStreamParts(stream: Readable, partBytes: number, maxBytes: number): AsyncGenerator<Buffer> {
+  assertBoundedMaxBytes(maxBytes);
+  if (!Number.isSafeInteger(partBytes) || partBytes < 1) throw new Error('Invalid part size');
+  let current = Buffer.alloc(Math.min(partBytes, maxBytes)); let used = 0; let total = 0;
+  try {
+    for await (const value of stream) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      total += chunk.length;
+      if (total > maxBytes) throw new Error('Artifact size exceeded');
+      let offset = 0;
+      while (offset < chunk.length) {
+        const take = Math.min(current.length - used, chunk.length - offset);
+        chunk.copy(current, used, offset, offset + take); used += take; offset += take;
+        if (used === current.length) {
+          yield current;
+          current = Buffer.alloc(Math.min(partBytes, maxBytes - (total - chunk.length + offset)));
+          used = 0;
+        }
+      }
+    }
+    if (used) yield current.subarray(0, used);
+  } finally { stream.destroy(); }
 }

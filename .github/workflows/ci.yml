@@ -25,6 +25,10 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           if git diff --quiet "$BASE_SHA" HEAD -- \
             apps/server-pilot/vsto apps/server-pilot/src/outlook-security \
+            apps/server-pilot/src/outlook-sync apps/server-pilot/src/http/outlook-sync-native.ts \
+            apps/server-pilot/src/db/schema/outlook-sync.ts apps/server-pilot/src/mail/ingest \
+            apps/server-pilot/tests/outlook-sync* apps/server-pilot/package.json \
+            apps/server-pilot/drizzle apps/server-pilot/src/storage/s3.ts \
             apps/server-pilot/src/http/outlook-native.ts \
             apps/server-pilot/src/trpc/routes/workstation.ts \
             apps/server-pilot/src/db/schema/outlook-authorization.ts apps/server-pilot/src/db/schema/outlook-device.ts \
@@ -75,7 +79,8 @@ jobs:
         shell: bash
         run: |
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
-            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/outlook-pane-quote-pdf.test.tsx
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/outlook-pane-quote-pdf.test.tsx \
+            tests/outlook-sync-progress.test.tsx tests/outlook-sync-client.test.tsx tests/outlook-pane-onboarding.test.tsx
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
             tests/mail-content-rendering.test.tsx tests/resolve-mail-html.test.ts tests/mail-content-fallback.test.ts
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --dir apps/server-pilot exec vitest run \
@@ -213,3 +218,39 @@ jobs:
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           export TEST_DATABASE_URL
           CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot run test:ingestion
+
+  outlook-sync:
+    timeout-minutes: 20
+    runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: outlook_sync_test
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d outlook_sync_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require migrated disposable PostgreSQL sync proof without skips
+        shell: bash
+        env:
+          DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+        run: |
+          set -euo pipefail
+          unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS
+          printf -v TEST_DATABASE_URL '%s%s%s%s%s' 'postgres' 'ql://postgres@127.0.0.1:' "$DISPOSABLE_POSTGRES_PORT" '/outlook_sync_test' '?sslmode=disable'
+          export TEST_DATABASE_URL
+          CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot run test:outlook-sync
+      - name: Build server with sync contracts
+        run: pnpm --dir apps/server-pilot build

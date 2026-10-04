@@ -93,11 +93,17 @@ function compareCausalOrder(a: TriageMessageRow, b: TriageMessageRow): number {
 export function buildCausalTriageMessages(
   rows: readonly TriageMessageRow[],
   triggerMessageId: string,
+  authority?: { snapshotMessageIds: readonly string[] },
 ): TriageMessageRow[] {
   const sorted = [...rows].sort(compareCausalOrder);
   const triggerIndex = sorted.findIndex((row) => row.id === triggerMessageId);
   if (triggerIndex < 0) {
     throw new Error(`trigger message not found for causal cutoff: ${triggerMessageId}`);
+  }
+  if (authority) {
+    const ids = new Set(authority.snapshotMessageIds);
+    if (!ids.has(triggerMessageId)) throw new Error('Snapshot does not contain trigger');
+    return sorted.filter((row) => ids.has(row.id));
   }
   return sorted.slice(0, triggerIndex + 1);
 }

@@ -1,3 +1,4 @@
+import { outlookSyncRouter } from './outlook-sync.js';
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { readFileSync } from 'node:fs';
@@ -42,6 +43,7 @@ const TEMPLATE_PATH = fileURLToPath(
 );
 
 export const workstationRouter = router({
+  outlookSync: outlookSyncRouter,
   bridgeTicket: publicProcedure.input(z.object({
     deviceId: z.string().uuid(), paneChallenge: z.string().length(43), action: z.string().min(1).max(64),
     storeId: z.string().min(1).max(512).optional(), operationId: z.string().min(1).max(128).optional(),

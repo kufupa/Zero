@@ -52,6 +52,10 @@ export function buildMailFolderConditions(
     conditions.push(isNull(mailThread.spamAt));
   }
 
+  if (folder !== 'all' && folder !== 'archive' && folder !== 'archived') {
+    conditions.push(eq(mailThread.historyOnly, false));
+  }
+
   if (folder === 'inbox') {
     conditions.push(eq(mailThread.isArchived, false));
     const snoozedCond = or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`));

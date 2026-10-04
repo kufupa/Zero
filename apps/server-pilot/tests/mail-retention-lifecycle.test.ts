@@ -119,7 +119,7 @@ describe('mail lifecycle retention guards', () => {
       expect(runGuard(name, current).status).toBe(1);
     });
 
-    for (const overlappingPrefix of ['', 'raw-mime/', 'attachments/hotel/']) {
+    for (const overlappingPrefix of ['', 'raw-mime/', 'attachments/hotel/', 'outlook-sync-originals/', 'outlook-sync-originals/v1/hotel/']) {
       it(`${name}: rejects overlapping mail expiration at ${JSON.stringify(overlappingPrefix)}`, () => {
         const current = policy();
         current.Rules.push(
@@ -213,7 +213,7 @@ describe('mail lifecycle retention guards', () => {
     const match = resources.match(/--lifecycle-configuration '(\{"Rules":.*\})'/);
     expect(match).not.toBeNull();
     const configured = JSON.parse(match![1]);
-    for (const mailPrefix of ['raw-mime/', 'attachments/']) {
+    for (const mailPrefix of ['raw-mime/', 'attachments/', 'outlook-sync-originals/v1/']) {
       const matched = configured.Rules.filter(
         (entry: { Filter?: { Prefix?: string } }) => entry.Filter?.Prefix === mailPrefix,
       );
@@ -223,6 +223,14 @@ describe('mail lifecycle retention guards', () => {
     }
   });
 
+  it('sync staging expires after seven days while committed sync originals are retained', () => {
+    const resources = readFileSync(new URL('../deploy/aws-resources.md', import.meta.url), 'utf8');
+    const match = resources.match(/--lifecycle-configuration '(\{"Rules":.*\})'/);
+    const configured = JSON.parse(match![1]);
+    const staging = configured.Rules.find((entry: any) => entry.Filter?.Prefix === 'outlook-sync-staging/v1/');
+    expect(staging.Expiration.Days).toBe(7);
+    expect(staging.AbortIncompleteMultipartUpload.DaysAfterInitiation).toBe(1);
+  });
   it('the shell merge forwards the original transition minimum and preserved rules to AWS', () => {
     const current = policy();
     current.Rules = current.Rules.filter(

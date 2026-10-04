@@ -5,6 +5,7 @@ import {
   timestamp,
   boolean,
   integer,
+  bigint,
   jsonb,
   index,
   uniqueIndex,
@@ -283,6 +284,7 @@ export const mailThread = pgTable(
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
     threadRootId: text('thread_root_id').notNull(),
+    historyOnly: boolean('history_only').notNull().default(false),
     subject: text('subject'),
     snippet: text('snippet'),
     searchVector: tsvector('search_vector'),
@@ -322,6 +324,9 @@ export const message = pgTable(
       onDelete: 'set null',
     }),
     direction: messageDirectionEnum('direction').notNull(),
+    historyOnly: boolean('history_only').notNull().default(false),
+    originalMsgS3Key: text('original_msg_s3_key'),
+    sourceProvenance: jsonb('source_provenance').$type<Record<string, unknown>>(),
     pop3Uidl: text('pop3_uidl'),
     ownerHeaderValue: text('owner_header_value'),
     messageIdHeader: text('message_id_header'),
@@ -363,7 +368,9 @@ export const attachment = pgTable(
       .references(() => message.id, { onDelete: 'cascade' }),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
-    sizeBytes: integer('size_bytes').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    sha256: text('sha256'),
+    sourceAttachmentId: text('source_attachment_id'),
     s3Key: text('s3_key').notNull(),
     contentId: text('content_id'),
     isInline: boolean('is_inline').notNull().default(false),
@@ -527,6 +534,8 @@ export const aiWorkflowRun = pgTable(
     modelId: text('model_id').notNull(),
     promptVersion: text('prompt_version').notNull(),
     promptHash: text('prompt_hash'),
+    admissionSnapshotId: text('admission_snapshot_id'),
+    admissionSnapshotHash: text('admission_snapshot_hash'),
     /** Closed typed read request; private server-side input, never model text. */
     readRequest: jsonb('read_request').$type<Record<string, unknown>>(),
     /** Durable typed receipt reference for read_tool runs. */
@@ -604,3 +613,48 @@ export type OutboundSendQueueStatus = 'pending' | 'sending' | 'sent' | 'cancelle
 export type MailboxAccessRole = (typeof mailboxAccessRoleEnum.enumValues)[number];
 export type MailboxType = (typeof mailboxTypeEnum.enumValues)[number];
 export type MessageDirection = (typeof messageDirectionEnum.enumValues)[number];
+
+/** One immutable first operational admission; history insertion is independent. */
+export const mailLiveAdmission = pgTable(
+  'mail_live_admission',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id),
+    canonicalMessageId: text('canonical_message_id')
+      .notNull()
+      .references(() => message.id),
+    evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull(),
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull(),
+    snapshotHash: text('snapshot_hash').notNull(),
+    effectState: text('effect_state').notNull(),
+    admittedAt: timestamp('admitted_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('mail_live_admission_canonical_uq').on(t.transportId, t.canonicalMessageId)],
+);
+
+/** Independent verified POP3 sources remain addressable after canonical merging. */
+export const mailIngestSourceReceipt = pgTable(
+  'mail_ingest_source_receipt',
+  {
+    id: text('id').primaryKey(),
+    ingestMailboxId: text('ingest_mailbox_id')
+      .notNull()
+      .references(() => mailIngestMailbox.id, { onDelete: 'cascade' }),
+    pop3Uidl: text('pop3_uidl').notNull(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    canonicalMessageId: text('canonical_message_id')
+      .notNull()
+      .references(() => message.id, { onDelete: 'cascade' }),
+    rawMimeS3Key: text('raw_mime_s3_key').notNull(),
+    sha256: text('sha256').notNull(),
+    acceptedAt: timestamp('accepted_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('mail_ingest_source_receipt_identity_uidx').on(t.ingestMailboxId, t.pop3Uidl),
+    index('mail_ingest_source_receipt_canonical_idx').on(t.canonicalMessageId),
+  ],
+);

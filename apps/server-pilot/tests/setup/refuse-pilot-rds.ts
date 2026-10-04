@@ -5,3 +5,9 @@
 import { assertNotPilotProdDatabase } from '../helpers/pilot-rds-guard.js';
 
 assertNotPilotProdDatabase(process.env.DATABASE_URL);
+
+assertNotPilotProdDatabase(process.env.TEST_DATABASE_URL);
+if (process.env.OUTLOOK_SYNC_TEST_REQUIRED === '1') {
+  const { assertOutlookSyncTestDatabase } = await import('../../scripts/outlook-sync-test-gate.js');
+  await assertOutlookSyncTestDatabase();
+}

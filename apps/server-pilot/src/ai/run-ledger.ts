@@ -244,6 +244,8 @@ export interface EnqueueAiRunInput {
   modelId: string;
   promptVersion: string;
   promptHash?: string;
+  admissionSnapshotId?: string;
+  admissionSnapshotHash?: string;
   executorLane?: AiExecutorLane;
   /** Closed, trusted read request; only present for read_tool runs. */
   readRequest?: Record<string, unknown>;
@@ -449,6 +451,8 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     modelId: input.modelId,
     promptVersion: input.promptVersion,
     promptHash: input.promptHash,
+    admissionSnapshotId: input.admissionSnapshotId,
+    admissionSnapshotHash: input.admissionSnapshotHash,
     readRequest: input.readRequest,
     readResultRef: input.readResultRef,
     ...(readAdmissionBinding || readAdmissionIssuer

@@ -86,6 +86,8 @@ const TOUR_SLIDES: TourSlide[] = [
     ],
   },
 ];
+import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
+import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -234,6 +236,7 @@ export default function OutlookPanePage() {
     sendCommand,
     pairDevice,
     refreshAuthorization,
+    activateMailboxSync,
   } = useOutlookBridge();
   const replyRetries = useRef(new Map<string, PendingReplyOperation>());
   const expiredReplyOutcomes = useRef(new Set<string>());
@@ -249,6 +252,7 @@ export default function OutlookPanePage() {
     : null;
   const { data: session, isLoading } = useSession();
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  const sync = useOutlookSync({userId:session?.user?.id??null,sessionId:session?.session?.id??null,transportId:activeConnection?.id??null,mailbox:activeConnection?.email??'',deviceId:workstationInfo?.deviceId??null,capabilityVersion:capabilities?.mailboxSync,readRoots:capabilities?.readRoots??[],authorized:Boolean(isConnected&&!requiresRelogin&&!authorizationUnavailable),activateNative:activateMailboxSync});
   const currentScope =
     !requiresRelogin && session?.user?.id && activeConnection?.id
       ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
@@ -872,7 +876,7 @@ export default function OutlookPanePage() {
                 isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
               }`}
             />
-            <span>Centurion</span>
+            {sync.eligible ? <OutlookSyncProgress status={sync.status} mailbox={activeConnection?.email??''} error={sync.error} busy={sync.busy} onControl={(operation)=>{void sync.control(operation).catch(()=>undefined);}}/> : <span>Centurion</span>}
             <span className="sr-only">
               {isConnected
                 ? `Connected to Classic Outlook (${capabilities?.outlookVersion ?? 'version unavailable'}; product/build unknown)`
@@ -881,6 +885,7 @@ export default function OutlookPanePage() {
           </div>
         </header>
 
+        {isConnected && capabilities && capabilities.mailboxSync !== 1 && <p className="mx-3 mt-2 text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>}
         {/* An old installer cannot perform even read-only COM actions. */}
         {isConnected && (updateRequired || workstationInfo?.bridgeProtocolVersion !== 4) && (
           <div

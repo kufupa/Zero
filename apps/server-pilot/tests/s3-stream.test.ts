@@ -49,3 +49,21 @@ describe('s3 stream upload', () => {
     ).rejects.toBeInstanceOf(TypeError);
   });
 });
+
+describe('bounded sync stream helpers', () => {
+  it('hashes a stream without collecting whole-object buffers', async () => {
+    const { sha256Stream } = await import('../src/storage/s3.js');
+    const result = await sha256Stream(Readable.from([Buffer.from('ab'), Buffer.from('c')]), 3);
+    expect(result).toEqual({ bytes: 3, sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' });
+    await expect(sha256Stream(Readable.from([Buffer.alloc(4)]), 3)).rejects.toThrow('size');
+  });
+  it('parts fragmented input into fixed buffers with exact final size and rejects oversized streams', async () => {
+    const { fixedSizeStreamParts } = await import('../src/storage/s3.js');
+    const chunks: Buffer[] = [];
+    for await (const chunk of fixedSizeStreamParts(Readable.from([Buffer.from('ab'), Buffer.from('cdefg')]), 3, 7)) chunks.push(chunk);
+    expect(chunks.map((b) => b.toString())).toEqual(['abc', 'def', 'g']);
+    await expect((async () => {
+      for await (const _part of fixedSizeStreamParts(Readable.from([Buffer.alloc(8)]), 3, 7)) { /* drain */ }
+    })()).rejects.toThrow('size');
+  });
+});

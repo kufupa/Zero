@@ -21,11 +21,11 @@ import {
   type TriageInput,
   type TriageMessageRow,
 } from '../triage-input.js';
-import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
-import { validateStructuredJsonOutput } from '../security/policy.js';
 import { computeConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
+import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
 import type { IndexableMessage } from '../../mail/conversation-signals.js';
+import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { AI_WORKFLOW_PRIMARY_SLUGS } from '../categories.js';
 import { createModelAdapter } from '../bedrock/factory.js';
@@ -87,6 +87,7 @@ const triageInputSchema = z.object({
   messages: z.array(triageMessageSchema).default([]),
   threadSignals: threadSignalsSchema.optional(),
   transportIndexMessages: z.array(indexableMessageSchema).optional(),
+  snapshotMessageIds: z.array(z.string()).optional(),
   asOf: z.string().datetime({ offset: true }),
   modelId: z.string().min(1),
   promptVersion: z.string().min(1),
@@ -424,6 +425,7 @@ type MailTriageInput = {
   messages: TriagePromptRow[];
   threadSignals?: ThreadSignals;
   transportIndexMessages?: IndexableMessage[];
+  snapshotMessageIds?: readonly string[];
   asOf: string;
   modelId: string;
   promptVersion: string;
@@ -522,10 +524,7 @@ function legacyToWorkflowOutput(output: TriageOutput): WorkflowTriageOutput {
   });
 }
 
-const LEGACY_PRIMARY_FOLDER_ALIASES: Record<
-  string,
-  WorkflowTriageOutput['primaryFolder']
-> = {
+const LEGACY_PRIMARY_FOLDER_ALIASES: Record<string, WorkflowTriageOutput['primaryFolder']> = {
   'new-bookings': 'bookings',
   'groups-events': 'groups-events',
   'at-risk': 'exceptions-recovery',
@@ -627,7 +626,11 @@ function normalizeNovaOverlays(value: unknown): unknown {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase();
     if (!normalized || normalized === 'none') return {};
-    const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+    const alias =
+      NOVA_OVERLAY_ALIASES[normalized] ??
+      (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number])
+        ? normalized
+        : null);
     if (!alias) return {};
     return { [alias]: true };
   }
@@ -636,7 +639,11 @@ function normalizeNovaOverlays(value: unknown): unknown {
   for (const overlay of value) {
     if (typeof overlay === 'string') {
       const normalized = overlay.trim().toLowerCase();
-      const alias = NOVA_OVERLAY_ALIASES[normalized] ?? (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number]) ? normalized : null);
+      const alias =
+        NOVA_OVERLAY_ALIASES[normalized] ??
+        (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number])
+          ? normalized
+          : null);
       if (alias) overlays[alias] = true;
     }
   }
@@ -664,15 +671,22 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   if (typeof structured.sourceScope === 'string') {
     structured.sourceScope =
       NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
-    if (!TRIAGE_SOURCE_SCOPES.includes(structured.sourceScope as (typeof TRIAGE_SOURCE_SCOPES)[number])) {
+    if (
+      !TRIAGE_SOURCE_SCOPES.includes(
+        structured.sourceScope as (typeof TRIAGE_SOURCE_SCOPES)[number],
+      )
+    ) {
       structured.sourceScope = 'external';
     }
   }
   if (typeof structured.automationState === 'string') {
     structured.automationState =
-      NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ??
-      structured.automationState;
-    if (!TRIAGE_AUTOMATION_STATES.includes(structured.automationState as (typeof TRIAGE_AUTOMATION_STATES)[number])) {
+      NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ?? structured.automationState;
+    if (
+      !TRIAGE_AUTOMATION_STATES.includes(
+        structured.automationState as (typeof TRIAGE_AUTOMATION_STATES)[number],
+      )
+    ) {
       structured.automationState = 'unknown';
     }
   }
@@ -683,7 +697,11 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   } else if (typeof structured.humanAction === 'string') {
     structured.humanAction =
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
-    if (!TRIAGE_HUMAN_ACTIONS.includes(structured.humanAction as (typeof TRIAGE_HUMAN_ACTIONS)[number])) {
+    if (
+      !TRIAGE_HUMAN_ACTIONS.includes(
+        structured.humanAction as (typeof TRIAGE_HUMAN_ACTIONS)[number],
+      )
+    ) {
       structured.humanAction = 'review_required';
     }
   }
@@ -761,6 +779,7 @@ function causalPromptMessages(input: MailTriageInput): PromptMessage[] {
   return buildCausalTriageMessages(
     rows as TriageMessageRow[],
     input.triggerMessageId,
+    input.snapshotMessageIds ? { snapshotMessageIds: input.snapshotMessageIds } : undefined,
   ) as PromptMessage[];
 }
 
@@ -896,6 +915,7 @@ const classifyStep = createStep({
         cc: inputData.cc,
         bcc: inputData.bcc,
         transportIndexMessages: inputData.transportIndexMessages,
+        snapshotMessageIds: inputData.snapshotMessageIds,
         asOf: inputData.asOf,
         modelId: inputData.modelId,
         promptVersion: TRIAGE_PROMPT_VERSION,

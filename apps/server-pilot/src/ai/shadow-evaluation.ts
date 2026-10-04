@@ -125,6 +125,7 @@ export function freezeShadowInput(input: {
   triggerMessageId: string;
   asOfAt: Date | string;
   messages: readonly ShadowMessageInput[];
+  snapshotMessageIds?: readonly string[];
 }): FrozenShadowInput {
   const asOf = asDate(input.asOfAt);
   if (!asOf) throw new Error('shadow prediction as-of must be a valid instant');
@@ -142,7 +143,9 @@ export function freezeShadowInput(input: {
   });
   const included = ordered.filter((message) => {
     const at = messageAvailableAt(message)?.getTime();
-    return at !== undefined && at !== null && at <= asOf.getTime();
+    return input.snapshotMessageIds
+      ? input.snapshotMessageIds.includes(message.id)
+      : at !== undefined && at !== null && at <= asOf.getTime();
   });
   if (!included.some((message) => message.id === input.triggerMessageId)) {
     throw new Error('shadow prediction trigger is outside the frozen horizon');
@@ -515,6 +518,8 @@ export async function enqueueShadowPrediction(input: {
   threadId: string;
   triggerMessageId: string;
   db?: DB;
+  admissionSnapshotId?: string;
+  admissionSnapshotHash?: string;
 }): Promise<Awaited<ReturnType<typeof enqueueAiRun>> | null> {
   const targetDb = input.db ?? getDb();
   const now = new Date();
@@ -573,6 +578,8 @@ export async function enqueueShadowPrediction(input: {
           threadId: input.threadId,
           triggerMessageId: input.triggerMessageId,
           runKind: 'shadow_prediction',
+          admissionSnapshotId: input.admissionSnapshotId,
+          admissionSnapshotHash: input.admissionSnapshotHash,
           idempotencyKey: admissionKey,
           modelId: 'approved-local',
           promptVersion: SHADOW_PROMPT_VERSION,
@@ -632,6 +639,8 @@ export async function enqueueShadowPrediction(input: {
         threadId: input.threadId,
         triggerMessageId: input.triggerMessageId,
         runKind: 'shadow_prediction',
+        admissionSnapshotId: input.admissionSnapshotId,
+        admissionSnapshotHash: input.admissionSnapshotHash,
         idempotencyKey: admissionKey,
         modelId: 'approved-local',
         promptVersion: SHADOW_PROMPT_VERSION,

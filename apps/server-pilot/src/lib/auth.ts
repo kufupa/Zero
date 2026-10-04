@@ -1,7 +1,3 @@
-import { betterAuth, type BetterAuthOptions } from 'better-auth';
-import { APIError, createAuthMiddleware } from 'better-auth/api';
-import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { getSocialProviders } from './auth-providers.js';
 import {
   resolveAuthProfilePolicy,
   resolveAuthSessionProfile,
@@ -9,8 +5,13 @@ import {
   SESSION_TTL_SEC,
   SESSION_UPDATE_AGE_SEC,
 } from './auth-profile.js';
-import { getDb } from '../db/client.js';
+import { invalidateSourceSession } from '../outlook-sync/service.js';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
+import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { getSocialProviders } from './auth-providers.js';
 import * as schema from '../db/schema/index.js';
+import { getDb } from '../db/client.js';
 
 export {
   resolveAuthProfilePolicy,
@@ -26,9 +27,7 @@ export type PilotSignupEnv = {
 };
 
 /** Comma-separated allowlist entries, normalized to lowercase. */
-export function parsePilotSignupAllowlist(
-  allowlist: string | undefined,
-): string[] {
+export function parsePilotSignupAllowlist(allowlist: string | undefined): string[] {
   if (!allowlist?.trim()) return [];
   return allowlist
     .split(',')
@@ -36,10 +35,7 @@ export function parsePilotSignupAllowlist(
     .filter(Boolean);
 }
 
-export function isPilotSignupEmailAllowed(
-  email: string | undefined,
-  env: PilotSignupEnv,
-): boolean {
+export function isPilotSignupEmailAllowed(email: string | undefined, env: PilotSignupEnv): boolean {
   if (env.PILOT_OPEN_SIGNUP === '0') return false;
   if (env.PILOT_OPEN_SIGNUP === '1') return true;
   if (!email) return false;
@@ -47,10 +43,7 @@ export function isPilotSignupEmailAllowed(
   return allow.includes(email.trim().toLowerCase());
 }
 
-export function assertPilotSignupAllowed(
-  email: string | undefined,
-  env: PilotSignupEnv,
-): void {
+export function assertPilotSignupAllowed(email: string | undefined, env: PilotSignupEnv): void {
   if (isPilotSignupEmailAllowed(email, env)) return;
   throw new APIError('FORBIDDEN', { message: 'signup disabled for pilot' });
 }
@@ -94,6 +87,16 @@ export const createAuth = (): ReturnType<typeof betterAuth> => {
       schema: schema as Record<string, unknown>,
     }),
     socialProviders,
+    databaseHooks: {
+      session: {
+        delete: {
+          // Deleting the real staff session fences native capture; pane navigation never deletes it.
+          after: async (deletedSession) => {
+            if (profile === 'legacy') await invalidateSourceSession(db, deletedSession.id);
+          },
+        },
+      },
+    },
     emailAndPassword: {
       enabled: emailAndPasswordEnabled,
       requireEmailVerification: false,
@@ -127,8 +130,7 @@ export const createAuth = (): ReturnType<typeof betterAuth> => {
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         if (!ctx.path.startsWith('/sign-up')) return;
-        const email =
-          typeof ctx.body?.email === 'string' ? ctx.body.email : undefined;
+        const email = typeof ctx.body?.email === 'string' ? ctx.body.email : undefined;
         assertPilotSignupAllowed(email, env);
       }),
     },

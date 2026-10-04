@@ -30,7 +30,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | S3 mail bucket | `nava-zero-mail-845242190536-af-south-1` |
 | S3 SSE | AES256 |
 | S3 public access block | all 4 blocks enabled (private) |
-| S3 lifecycle | Retain `raw-mime/*` and `attachments/*` indefinitely; transition eligible objects to Intelligent-Tiering after 30d. Incomplete multipart abort 1d; temporary `hms-browser-proof-transfer/v1/*` expire 1d. |
+| S3 lifecycle | Retain `raw-mime/*`, `attachments/*` and `outlook-sync-originals/v1/*` indefinitely; transition eligible objects to Intelligent-Tiering after 30d. Incomplete multipart abort 1d; temporary `hms-browser-proof-transfer/v1/*` expire 1d; uncommitted `outlook-sync-staging/v1/*` expire 7d. |
 | S3 CORS | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
 | Bootstrap bucket (Task 1) | `nava-zero-bootstrap-845242190536` |
 
@@ -111,7 +111,7 @@ NAVA_MAIL_BUCKET="nava-zero-mail-${AWS_ACCOUNT_ID}-af-south-1"
 aws s3api create-bucket --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --create-bucket-configuration LocationConstraint=af-south-1 || true
 aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --transition-default-minimum-object-size all_storage_classes_128K --lifecycle-configuration '{"Rules":[{"ID":"archive-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-attachments-30d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}}]}'
+aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --transition-default-minimum-object-size all_storage_classes_128K --lifecycle-configuration '{"Rules":[{"ID":"archive-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-attachments-30d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-outlook-sync-originals-30d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-originals/v1/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"outlook-sync-staging-expire-7d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-staging/v1/"},"Expiration":{"Days":7},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}}]}'
 # Proof wrappers semantically merge/read back this named rule; never replace
 # unrelated lifecycle rules during ordinary proof operation.
 # Browser attachment fetch and catch-up upload. Origin allowlist only — never *.
@@ -128,7 +128,7 @@ aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name
 ## Mail retention and storage tiering
 
 Since 2026-10-03, original MIME files and attachments have **no lifecycle expiration**.
-Both prefixes transition eligible objects to S3 Intelligent-Tiering at 30 days of object age,
+These original prefixes transition eligible objects to S3 Intelligent-Tiering at 30 days of object age,
 not the email sent/received date. RDS message bodies, metadata and S3 keys remain in place;
 this policy does not move Outlook mail to an Archive folder or purge database rows.
 
@@ -145,6 +145,23 @@ unrelated rules and `TransitionDefaultMinimumObjectSize`, then read back and ver
 Temporary proof transfers and incomplete multipart uploads are not retained email data;
 their one-day cleanup remains enabled. Any future committed mailbox-sync object prefix
 must use the same no-expiration retention policy; abandoned staging uploads are separate.
+
+Outlook sync uploads use `outlook-sync-staging/v1/<scope-hash>/<attempt-uuid>` and are
+checksum/length bound. Expire unaccepted staging after seven days and abort incomplete
+multipart after one day. Sealing streams the verified staging version into
+`outlook-sync-originals/v1/<scope-hash>/<sha256>` with conditional completion; those
+keys are never presigned for writes and have no expiration or restore-required tier.
+A late staging overwrite or staging cleanup cannot change a sealed accepted original.
+Server IAM retains GetObject, PutObject, ListMultipartUploadParts and
+AbortMultipartUpload within these prefixes. Grant URLs expire within the staff/read
+lease, at most five minutes. No additional public bucket or CORS origin is required.
+
+Apply the additive sync lifecycle rules only in the separately authorized release:
+read the current bucket policy, preserve existing rules and the transition minimum,
+append the exact original/staging rules above, verify no enabled expiration or Glacier
+rule overlaps any retained original prefix, and verify readback. A global deletion
+rule also overlaps originals and must fail the retention guard. Do not replace the
+existing policy with this bootstrap example on a live bucket.
 
 ## S3 CORS cutover states
 

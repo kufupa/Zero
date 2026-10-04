@@ -25,7 +25,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('Outlook device enrollment (disposable Postg
       const input = { code, deviceId, storeId, version: '4', secret };
       expect(await enrollDevice(db, input, key)).toEqual({ deviceId });
       expect(await enrollDevice(db, { ...input, deviceId: randomUUID() }, key)).toBeNull();
-      const [saved] = await db.select().from(outlookDevice);
+      const [saved] = await db.select().from(outlookDevice).where(eq(outlookDevice.deviceId,deviceId));
       expect(saved.secretCiphertext).not.toContain(secret);
       expect(saved.secretCiphertext).not.toContain(code);
       expect(saved.storeId).toBe(storeId);

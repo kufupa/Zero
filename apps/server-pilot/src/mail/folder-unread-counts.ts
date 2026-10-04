@@ -49,7 +49,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
   const systemCounts = await db
     .select({
       inboxUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."is_archived" = false
@@ -62,7 +63,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           )
       )`,
       inboxTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."trashed_at" IS NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."is_archived" = false
           AND ("mail_thread"."snoozed_until" IS NULL OR "mail_thread"."snoozed_until" <= now())
@@ -74,7 +76,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           )
       )`,
       sentUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND EXISTS (
@@ -85,7 +88,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           )
       )`,
       sentTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."trashed_at" IS NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND EXISTS (
             SELECT 1 FROM "message"
@@ -95,29 +99,34 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           )
       )`,
       archiveUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."is_archived" = true
       )`,
       archiveTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."trashed_at" IS NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."is_archived" = true
       )`,
       snoozedUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."snoozed_until" IS NOT NULL
       )`,
       snoozedTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."trashed_at" IS NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."snoozed_until" IS NOT NULL
       )`,
       binUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."trashed_at" IS NOT NULL
           AND "mail_thread"."spam_at" IS NULL
       )`,
@@ -126,7 +135,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           AND "mail_thread"."spam_at" IS NULL
       )`,
       spamUnread: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."is_read" = false
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."is_read" = false
           AND "mail_thread"."spam_at" IS NOT NULL
           AND "mail_thread"."trashed_at" IS NULL
       )`,

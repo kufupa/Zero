@@ -232,6 +232,90 @@
       "when": 1790640003000,
       "tag": "0032_outlook_native_move_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791064800000,
+      "tag": "0033_outlook_read_root",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791072001000,
+      "tag": "0034_outlook_sync_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1791072002000,
+      "tag": "0035_outlook_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791072003000,
+      "tag": "0036_mail_live_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791072004000,
+      "tag": "0037_outlook_sync_drain",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791072005000,
+      "tag": "0038_outlook_sync_status_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791072006000,
+      "tag": "0039_mail_ingest_source_receipt",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791072007000,
+      "tag": "0040_outlook_sync_semantic_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791072008000,
+      "tag": "0041_outlook_sync_incremental_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791072009000,
+      "tag": "0042_outlook_sync_pending_quota",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791072010000,
+      "tag": "0043_outlook_sync_artifact_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791072011000,
+      "tag": "0044_outlook_sync_reservation_expiry",
+      "breakpoints": true
     }
   ]
 }

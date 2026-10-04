@@ -1,22 +1,25 @@
-import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
-import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
-import { getPublicAuthProviders } from './lib/auth-providers.js';
-import { createAuth } from './lib/auth.js';
-import { resolveAuthSessionProfile } from './lib/auth-profile.js';
-import { closeDb, getDb } from './db/client.js';
-import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
-import { createEmlDownloadHandler } from './http/eml-download.js';
-import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.js';
+import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
+import { createOutlookSyncNativeHandler } from './http/outlook-sync-native.js';
+import { seedLiveAdmissionBaseline } from './mail/ingest/live-admission.js';
+import { createOutlookNativeHandler } from './http/outlook-native.js';
+import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
+import { createEmlDownloadHandler } from './http/eml-download.js';
+import { resolveAuthSessionProfile } from './lib/auth-profile.js';
+import { getPublicAuthProviders } from './lib/auth-providers.js';
+import { startOutlookSyncDrain } from './outlook-sync/drain.js';
+import { OutlookSyncStorage } from './outlook-sync/storage.js';
+import { mailboxTransport } from './db/schema/mail.js';
+import { closeDb, getDb } from './db/client.js';
 import { appRouter } from './trpc/router.js';
+import { createAuth } from './lib/auth.js';
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
 
 const app = new Hono();
 
-app.get('/health', (c) =>
-  c.json({ ok: true, service: 'server-pilot' }),
-);
+app.get('/health', (c) => c.json({ ok: true, service: 'server-pilot' }));
 
 // Public providers endpoint consumed by apps/mail login page.
 app.get('/api/public/providers', (c) => {
@@ -34,35 +37,54 @@ const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
 
 // Native enrollment is a one-use, operator-approved pairing; no browser signup exists.
-app.post('/api/outlook/native/enroll', (c) => createOutlookNativeHandler(
-  // Lazily load DB but fail closed when the separate wrapping key is missing.
-  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
-)(c.req.raw));
-app.post('/api/outlook/native/challenge', (c) => createOutlookNativeHandler(
-  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
-)(c.req.raw));
-app.post('/api/outlook/native/bootstrap', (c) => createOutlookNativeHandler(
-  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
-)(c.req.raw));
-app.post('/api/outlook/native/register-navigation', (c) => createOutlookNativeHandler(
-  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
-)(c.req.raw));
-app.post('/api/outlook/native/authorize', (c) => createOutlookNativeHandler(
-  getDb(), process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
-)(c.req.raw));
+app.post('/api/outlook/native/sync/:operation', (c) =>
+  createOutlookSyncNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
+app.post('/api/outlook/native/enroll', (c) =>
+  createOutlookNativeHandler(
+    // Lazily load DB but fail closed when the separate wrapping key is missing.
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
+app.post('/api/outlook/native/challenge', (c) =>
+  createOutlookNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
+app.post('/api/outlook/native/bootstrap', (c) =>
+  createOutlookNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
+app.post('/api/outlook/native/register-navigation', (c) =>
+  createOutlookNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
+app.post('/api/outlook/native/authorize', (c) =>
+  createOutlookNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
 
 // CID inline images: cookie session + mailbox_access join (no active-transport
 // header — <img> tags cannot set custom headers). Must mount before /api/trpc/*.
 const inlineAttachmentHandler = createWiredInlineAttachmentHandler(auth);
 const centurionLabIndexHandler = createWiredCenturionLabIndexHandler(auth);
 app.get('/api/lab/centurion-index', (c) => centurionLabIndexHandler(c.req.raw));
-app.get(
-  '/api/mail/messages/:messageId/attachments/:attachmentId/inline',
-  async (c) =>
-    inlineAttachmentHandler(c.req.raw, {
-      messageId: c.req.param('messageId'),
-      attachmentId: c.req.param('attachmentId'),
-    }),
+app.get('/api/mail/messages/:messageId/attachments/:attachmentId/inline', async (c) =>
+  inlineAttachmentHandler(c.req.raw, {
+    messageId: c.req.param('messageId'),
+    attachmentId: c.req.param('attachmentId'),
+  }),
 );
 
 // EML message download: cookie session + mailbox_access join.
@@ -95,6 +117,22 @@ app.on(['GET', 'POST'], '/api/trpc/*', (c) =>
 
 const port = Number(process.env.PORT ?? 8788);
 
+// Snapshot operational pre-sync mail before native positive arrivals or the accepted-artifact drain.
+// HTTP listening starts only after the real DB baseline is durable; failures stop startup.
+if (resolveAuthSessionProfile() === 'legacy') {
+  for (const transport of await getDb()
+    .select({ id: mailboxTransport.id })
+    .from(mailboxTransport)) {
+    while ((await seedLiveAdmissionBaseline(getDb(), transport.id)) === 250) {
+      /* bounded committed batches */
+    }
+  }
+}
+const stopOutlookSyncDrain =
+  resolveAuthSessionProfile() === 'legacy' && process.env.S3_BUCKET && process.env.AWS_REGION
+    ? startOutlookSyncDrain(getDb(), new OutlookSyncStorage())
+    : async () => {};
+
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
   console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
@@ -114,7 +152,8 @@ function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);
   clearInterval(outlookRetentionTimer);
   server.close(() => {
-    void closeDb()
+    void stopOutlookSyncDrain()
+      .then(() => closeDb())
       .then(() => {
         console.log('shutdown complete');
         process.exit(0);

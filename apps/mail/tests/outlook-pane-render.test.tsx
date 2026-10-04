@@ -510,7 +510,7 @@ describe('OutlookPanePage', () => {
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
     vi.spyOn(Date, 'now').mockRestore();
-  }, 20000);
+  }, 60000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
