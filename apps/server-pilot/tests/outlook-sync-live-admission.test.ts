@@ -421,12 +421,13 @@ it(
         ...history('worker-later'),
         inReplyTo: original.internetMessageId,
       });
-      let seen: Record<string, any> | undefined;
+      const attempts: Record<string, any>[] = [];
       const spy = vi.spyOn(mastra, 'createMastraRuntime').mockReturnValue({
         getWorkflow: () => ({
           createRun: async () => ({
             start: async ({ inputData }: any) => {
-              seen = inputData;
+              attempts.push(inputData);
+              if (attempts.length === 1) throw new Error('ECONNRESET snapshot retry fixture');
               return {
                 status: 'success',
                 result: {
@@ -473,7 +474,29 @@ it(
           lane: 'default',
         });
         expect(claimed?.admissionSnapshotId).toBe(admitted.receiptId);
-        expect((await executeAiRun(claimed!.id)).state).toBe('succeeded');
+        expect((await executeAiRun(claimed!.id)).state).toBe('retry_wait');
+        expect(
+          (await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, claimed!.id)))[0],
+        ).toMatchObject({ state: 'retry_wait', attempts: 1, failureClass: 'TRANSIENT_NETWORK' });
+        await db
+          .update(message)
+          .set({
+            textBody: 'EVEN_LATER_RETRY_BODY',
+            fromAddress: 'changed@example.test',
+            references: ['late-retry@example.test'],
+          })
+          .where(eq(message.id, trigger.messageId));
+        // Drive the persisted retry deadline without sleeping through its backoff.
+        await db
+          .update(aiWorkflowRun)
+          .set({ nextRunAt: new Date(0) })
+          .where(eq(aiWorkflowRun.id, claimed!.id));
+        const retried = await claimNextAiRun({ ownerId: 'outlook-retry-worker', lane: 'default' });
+        expect(retried?.id).toBe(claimed!.id);
+        expect((await executeAiRun(retried!.id)).state).toBe('succeeded');
+        expect(attempts).toHaveLength(2);
+        expect(attempts[1]).toEqual(attempts[0]);
+        const seen = attempts[1];
         expect(seen?.body).toBe(original.textBody);
         expect(seen?.messages.map((m: any) => m.id)).toEqual(
           frozen.threadMessages.map((m) => m.id),
@@ -484,6 +507,165 @@ it(
         expect(seen?.snapshotMessageIds).toEqual(frozen.threadMessages.map((m) => m.id));
       } finally {
         spy.mockRestore();
+        __setDbForTests(null);
+        for (const [key, value] of previous)
+          value === undefined ? delete process.env[key] : (process.env[key] = value);
+      }
+    }),
+  30_000,
+);
+
+it(
+  'a later authorized staff draft uses enriched history without inheriting automatic admission inputs',
+  async () =>
+    withIngestionDb(async ({ db, url }) => {
+      const { __setDbForTests } = await import('../src/db/client.js');
+      const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+      const { admitLiveMessage, readAdmissionSnapshot } = await import(
+        '../src/mail/ingest/live-admission.js'
+      );
+      const { runAiWorkerOnce } = await import('../src/ai/worker.js');
+      const { appRouter } = await import('../src/trpc/router.js');
+      const { resolveMailboxContext } = await import('../src/trpc/context.js');
+      const { user } = await import('../src/db/schema/auth.js');
+      const { aiDraftGeneration, mailDraft, mailLiveAdmission, mailboxAccess, outboundSendQueue } =
+        await import('../src/db/schema/mail.js');
+      const staffId = 'staff-current-history';
+      await db.insert(user).values({
+        id: staffId,
+        name: 'History draft staff',
+        email: 'staff-history@example.test',
+        emailVerified: true,
+      });
+      await db.insert(mailboxAccess).values({
+        id: 'staff-current-history-access',
+        userId: staffId,
+        transportId: 'transport-centurion',
+        role: 'member',
+      });
+      const original = { ...history('staff-draft-trigger'), textBody: null };
+      const trigger = await persistOutlookHistory(db, original);
+      const admitted = await db.transaction((tx) =>
+        admitLiveMessage(tx as typeof db, {
+          transportId: original.transportId,
+          canonicalMessageId: trigger.messageId,
+          evidence: { kind: 'verified-pop3', sourceReceiptId: 'staff-draft-live' },
+        }),
+      );
+      expect(admitted.admitted).toBe(true);
+      const frozen = await readAdmissionSnapshot(db, admitted.receiptId);
+      expect(
+        frozen.threadMessages.find((row) => row.id === trigger.messageId)?.textBody,
+      ).toBeNull();
+      const enrichedBody = 'CURRENT_HISTORY_BODY Please confirm my reservation.';
+      const enriched = await persistOutlookHistory(db, {
+        ...original,
+        semanticVersion: '2',
+        textBody: enrichedBody,
+        originalMsgKey: 'outlook-sync-originals/v1/source/staff-draft-trigger-v2',
+      });
+      expect(enriched.messageId).toBe(trigger.messageId);
+      expect(
+        (await db.select().from(message).where(eq(message.id, trigger.messageId)))[0]?.textBody,
+      ).toBe(enrichedBody);
+      expect(await db.select().from(aiWorkflowRun)).toHaveLength(1);
+      expect(await db.select().from(mailDraft)).toHaveLength(0);
+      const testEnv = {
+        PORT: '39999',
+        DATABASE_URL: url,
+        BETTER_AUTH_URL: 'http://localhost:39999',
+        BETTER_AUTH_SECRET: 'outlook-sync-test-secret',
+        AWS_REGION: 'us-east-1',
+        S3_BUCKET: 'outlook-sync-test',
+        AI_ENABLED: 'false',
+        AI_WRITE_GATE_ENABLED: 'false',
+        AI_DRAFTS_ENABLED: 'true',
+        AI_MODEL_ROUTE: 'approved-local',
+        AI_WORKER_LANE: 'default',
+        HMS_DRAFT_ENRICHMENT_MODE: 'off',
+      };
+      const previous = new Map(Object.keys(testEnv).map((key) => [key, process.env[key]]));
+      __setDbForTests({ db, conn: null as never });
+      Object.assign(process.env, testEnv);
+      try {
+        // Resolve the real grant instead of injecting a pre-resolved mailbox context.
+        expect(await resolveMailboxContext(staffId, original.transportId, db)).toMatchObject({
+          accessRole: 'member',
+          activeTransportId: original.transportId,
+        });
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers({ 'x-zero-active-transport': original.transportId }),
+          sessionUser: { id: staffId, email: 'staff-history@example.test', name: 'Staff' },
+        });
+        const refresh = await caller.ai.refreshHmsCandidate({ threadId: trigger.threadId });
+        const [queued] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, refresh.runId));
+        expect(queued).toMatchObject({
+          runKind: 'candidate_draft',
+          executorLane: 'default',
+          triggerMessageId: trigger.messageId,
+          admissionSnapshotId: null,
+          admissionSnapshotHash: null,
+        });
+        expect(
+          (
+            await db
+              .select()
+              .from(aiDraftGeneration)
+              .where(eq(aiDraftGeneration.id, queued!.generationId!))
+          )[0],
+        ).toMatchObject({ requestedByUserId: staffId });
+        let prompt = '';
+        const worked = await runAiWorkerOnce({
+          runKind: 'candidate_draft',
+          idempotencyPrefix: refresh.idempotencyKey,
+          candidateDraftRouteFactory: () => ({
+            route: {
+              routeId: 'outlook-history-staff-draft-local',
+              purpose: 'draft',
+              protocol: 'in_process',
+              access: 'current_app',
+              egress: 'none',
+              retention: 'bounded',
+              usage: 'reported',
+              modelId: 'outlook-history-staff-draft-model',
+            },
+            transport: async (request) => {
+              prompt = request.userPrompt;
+              return {
+                output: {
+                  replyText: '[MISSING: reservation status | how: approved reservation read]',
+                },
+                usage: { inputTokens: 5, outputTokens: 7, latencyMs: 1 },
+              };
+            },
+          }),
+        });
+        expect(worked).toBe(true);
+        expect(prompt).toContain('u5-prepared-draft-input-v1');
+        expect(prompt).toContain(enrichedBody);
+        const [draft] = await db
+          .select()
+          .from(mailDraft)
+          .where(eq(mailDraft.threadId, trigger.threadId));
+        expect(draft).toMatchObject({ status: 'candidate', createdByUserId: staffId });
+        expect(
+          (await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, refresh.runId)))[0],
+        ).toMatchObject({
+          state: 'succeeded',
+          admissionSnapshotId: null,
+          admissionSnapshotHash: null,
+        });
+        expect(await readAdmissionSnapshot(db, admitted.receiptId)).toEqual(frozen);
+        expect(await db.select().from(mailLiveAdmission)).toHaveLength(1);
+        const runs = await db.select().from(aiWorkflowRun);
+        expect(runs.filter((run) => run.runKind === 'inbound_triage')).toHaveLength(1);
+        expect(runs.filter((run) => run.runKind === 'candidate_draft')).toHaveLength(1);
+        expect(await db.select().from(outboundSendQueue)).toHaveLength(0);
+      } finally {
         __setDbForTests(null);
         for (const [key, value] of previous)
           value === undefined ? delete process.env[key] : (process.env[key] = value);

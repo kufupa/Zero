@@ -206,10 +206,20 @@ export async function refreshSourceSummary(db: DB, sourceId: string, affectedIds
         countCommitted = next.committed && next.retained && !next.gap,
         dc = Number(countCommitted) - Number(prior.committed ?? false),
         dg = Number(next.gap) - Number(prior.gap ?? false);
-      await db
-        .update(scanTable)
-        .set({ checkpoint: { committed: countCommitted, gap: next.gap, eligible: countEligible } })
-        .where(eq(scanTable.id, m.id));
+      if (
+        dc ||
+        dg ||
+        de ||
+        prior.eligible === undefined ||
+        prior.committed === undefined ||
+        prior.gap === undefined
+      )
+        await db
+          .update(scanTable)
+          .set({
+            checkpoint: { committed: countCommitted, gap: next.gap, eligible: countEligible },
+          })
+          .where(eq(scanTable.id, m.id));
       if (dc || dg || de)
         await db
           .update(scanTable)
@@ -219,7 +229,7 @@ export async function refreshSourceSummary(db: DB, sourceId: string, affectedIds
             gapCount: sql`${scanTable.gapCount}+${dg}`,
           })
           .where(eq(scanTable.id, m.parentId!));
-      scans.add(m.parentId!);
+      if (dc || dg || de) scans.add(m.parentId!);
     }
   }
   await db
@@ -435,6 +445,8 @@ export async function recordInventory(
         target: [scanTable.sourceId, scanTable.recordKey],
         set: { checkpoint: input.checkpoint, claimFence: s.claimFence },
       });
+    const summaryIds: string[] = [];
+    const historyMove = { discovered: 0, retained: 0, committed: 0, gaps: 0 };
     for (const o of input.observations) {
       if (
         o.locator.storeId !== s.storeId ||
@@ -484,6 +496,32 @@ export async function recordInventory(
             .where(eq(observationTable.id, obs.id));
         }
       }
+      const cached = obs.summaryCache;
+      const currentSummary =
+        cached && !obs.summaryDirty
+          ? {
+              ...cached,
+              history: cached.history || scan.mode === 'history',
+              eligible: cached.eligible ?? true,
+              retained: obs.exportState === 'retained',
+              committed: obs.ingestionState === 'committed',
+              gap: obs.availability !== 'available' || obs.ingestionState === 'attention',
+            }
+          : null;
+      const unchanged =
+        currentSummary &&
+        cached &&
+        currentSummary.eligible === isExportEligible(s, obs) &&
+        currentSummary.retained === cached.retained &&
+        currentSummary.committed === cached.committed &&
+        currentSummary.gap === cached.gap;
+      const checkpoint = unchanged
+        ? {
+            eligible: currentSummary.eligible,
+            committed: currentSummary.committed && currentSummary.retained && !currentSummary.gap,
+            gap: currentSummary.gap,
+          }
+        : { eligible: true, committed: false, gap: false };
       const [membership] = await t
         .insert(scanTable)
         .values({
@@ -497,18 +535,39 @@ export async function recordInventory(
           to,
           claimFence: s.claimFence,
           observationId: obs.id,
+          checkpoint,
         })
         .onConflictDoNothing()
         .returning();
       if (membership)
         await t
           .update(scanTable)
-          .set({ discoveredCount: sql`${scanTable.discoveredCount}+1` })
+          .set({
+            discoveredCount: sql`${scanTable.discoveredCount}+${Number(checkpoint.eligible)}`,
+            committedCount: sql`${scanTable.committedCount}+${Number(checkpoint.committed)}`,
+            gapCount: sql`${scanTable.gapCount}+${Number(checkpoint.gap)}`,
+          })
           .where(eq(scanTable.id, scan.id));
-      await t
-        .update(observationTable)
-        .set({ summaryDirty: true })
-        .where(eq(observationTable.id, obs.id));
+      if (unchanged) {
+        if (!cached.history && currentSummary.history) {
+          // First history membership changes only the source category; counted
+          // state of earlier scans stays identical.
+          historyMove.discovered += Number(checkpoint.eligible);
+          historyMove.retained += Number(currentSummary.retained);
+          historyMove.committed += Number(currentSummary.committed);
+          historyMove.gaps += Number(currentSummary.gap);
+          await t
+            .update(observationTable)
+            .set({ summaryCache: currentSummary })
+            .where(eq(observationTable.id, obs.id));
+        }
+      } else {
+        summaryIds.push(obs.id);
+        await t
+          .update(observationTable)
+          .set({ summaryDirty: true })
+          .where(eq(observationTable.id, obs.id));
+      }
     }
     await t.insert(scanTable).values({
       id: randomUUID(),
@@ -537,7 +596,20 @@ export async function recordInventory(
         .set({ historySummary: { ...ss.historySummary, discoveryComplete: true } })
         .where(eq(sourceTable.id, s.id));
     }
-    await refreshSourceSummary(t, s.id);
+    if (Object.values(historyMove).some(Boolean)) {
+      const [currentSource] = await t.select().from(sourceTable).where(eq(sourceTable.id, s.id));
+      const historySummary = { ...currentSource.historySummary },
+        liveSummary = { ...currentSource.liveSummary };
+      for (const key of ['discovered', 'retained', 'committed', 'gaps'] as const) {
+        historySummary[key] += historyMove[key];
+        liveSummary[key] -= historyMove[key];
+      }
+      await t
+        .update(sourceTable)
+        .set({ historySummary, liveSummary })
+        .where(eq(sourceTable.id, s.id));
+    }
+    if (summaryIds.length) await refreshSourceSummary(t, s.id, summaryIds);
     await recomputeScan(t, scan.id);
     return inventoryResponse(t, scan.id, input);
   });

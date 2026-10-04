@@ -1,0 +1,52 @@
+# Outlook history and live sync: PR evidence
+
+This records the implementation and review milestone for the [accepted plan](../superpowers/plans/2026-10-04-outlook-history-and-live-sync.md). Merge, production migrations, source enablement and staff installer publication require the subsequent release instruction. Actual Outlook profile acceptance remains in the [onboarding checklist](outlook-history-live-sync-onboarding.md).
+
+## Source isolation and revisions
+
+- Task worktree: `/home/ubuntu/projects/zero/.worktrees/outlook-history-live-sync`; both repository branches: `feat/outlook-history-live-sync`.
+- Zero baseline: `d28fcd3e8fee35d1cf91da527d5d8dbb38498b1e`; native baseline: `d6a3a3545b7b90acad1e1df43f1cbfff971c1e83`.
+- The occupied reservationist worktree and its unrelated changes were preserved. Only the accepted plan and its earlier-plan supersession link were copied.
+- Native source commits live in `kufupa/nava-outlook-addin`; Zero stores an exact remotely reachable gitlink. Final PR bodies record both final heads, the gitlink, final review IDs and CI/artifact evidence without making this document self-reference a later commit.
+- Candidate installer version: **1.0.13**. It is a CI candidate; the existing staff download was not changed.
+
+## Requirements audit
+
+| Requirement | Implemented boundary and evidence | Release proof still required |
+|---|---|---|
+| R1 | Operator read-root approval and actual native ancestry checks; exact write grants remain separate; server authorization and native root-policy regressions. | Representative shared/nondefault and mixed personal/hotel stores. |
+| R2 | Named verified staff, enrolled HMAC device, live 24-hour session, approved root, policy generation, fenced claims and one-use native redemption; replay, logout/rebind and stale-authority negatives. | Upgrade an enrolled PC and exercise daily sign-in. |
+| R3 | Retained navigation/CSP, Send/Delete denial, destination denials and mutation confirmations; old native policy and bridge suites remain required. | Released CSP and installed manual drafts/moves. |
+| R4 | Nonmodal pane status and application-owned capture; hosted bridge/draft/PDF/popout compatibility tests and production build. | Installed interaction during large exports. |
+| R5 | Fixed Johannesburg rolling-calendar-month onboarding at first native redemption, metadata-first global newest ordering and eligible-floor guards; 10,001-item and calendar fixtures. | Actual provider timestamps/order/fidelity. |
+| R6 | Durable coverage, fenced partition replay, 48-hour overlap, six-week catch-up, startup/rebind and quick/full reconciliation; native behavioral and ledger tests. | Long-offline representative profile. |
+| R7 | Application-level NewMailEx/folder subscriptions, saved-unsent transition evidence, durable hints and eventless scan copying; cancelled/no-copy sends never admit. | Real saved-sent destinations and bulk/provider events. |
+| R8 | Unicode MSG, structured bodies/headers/identities and all accessible inline/embedded attachment roles; individual protected roles preserve available originals; golden DTO and partial-copy tests. | Real received/sent/filed/large/protected fixtures. |
+| R9 | Separate original/projection provenance and explicit unknown-date/direction/protected gaps; neither export nor receipt alone claims canonical copied coverage. | Provider unavailable-content behavior. |
+| R10 | Durable observations, immutable receipts, private resume references, quota/expiry recovery, shared canonical mailbox lock and independent POP3/native receipts; real PostgreSQL race/restart tests. | Outlook shutdown/network/proxy interruptions. |
+| R11 | Dedicated history persistence, read/active exclusion, no queue/AI/HMS/send/move effects and no active work-state overwrite; richer search content and history-only reference repair. | Supervised staff search/access acceptance. |
+| R12 | Positive native arrival/saved-copy evidence or verified server ingestion admits once; bounded input projections and pinned immutable artifacts feed automatic triage/shadow. Outbound baseline remains analytics-only. | Saved-sent provider proof; eventless scans stay copy-only. |
+| R13 | Compact truthful history/live status and finite accessible Pause/Resume/Sync now/Retry controls; source/account/navigation races and resource pause tests. | 350–450px installed pane usability. |
+| R14 | Versioned `mailboxSync:1`, finite native actions and hosted controls; old/unknown capabilities fail closed, no arbitrary paths/URLs/code evaluation. | Demonstrate a hosted supported control on the installed candidate. |
+| R15 | Existing inbound/BCC routing remains; native and existing feeds share identity/admission; operator checklist retains the macro until saved-copy and dedup acceptance. | Named-PC macro retirement record. |
+| R16 | Immutable sealed originals have no expiration; temporary staging expires after seven days and native unaccepted spool after 24 hours with re-export references; retention guards preserve MIME/MSG/attachments. | Read-only production storage policy verification during release. |
+
+U1–U6, U8 and U9 are implemented. U7 supplies mandatory disposable-PostgreSQL discovery of every sync suite, signed route/storage/drain E2E, exact private gitlink verification, Windows compiled behavioral suites, both architecture builds and a hashed installer manifest. U0 isolated the task and characterized the retained security/ingestion baseline. No new queue/service/local database/updater or paid signing dependency was added.
+
+The refreshed main baseline does not contain the separate qualified reservationist runtime. Tests therefore cover the actual automatic triage/shadow/default draft composition present here. Integrating that runtime later requires its own immutable-membership and original-business-clock regressions; this PR does not claim coverage of absent code.
+
+## Verification and review records
+
+All persistence tests used an explicit local disposable PostgreSQL 16 database with production database variables unset. Real migrations through `0044` were applied and schema compatibility was checked. The required gate rejects unreachable prerequisites, skipped/pending/todo tests and empty results. Test fixtures contain synthetic mail only.
+
+The integrated pre-review server gate passed **213 tests / 17 files, zero skips**; ingestion compatibility passed **33**, Rocketseed **116**, server build and whole-repository lint passed. Hosted bridge/sync/onboarding/draft/PDF compatibility passed **107 tests / 6 files** and the production hosted build passed. These are intermediate evidence; final PR checks must reflect the last review fix.
+
+Native commit `dec0ceeea848eee3e9efd06aeb031d885769f8e3` passed **31 compiled behavioral suites**, actual PIA adapter compilation and **50 source checks** locally. [Windows CI 37244337990](https://github.com/kufupa/nava-outlook-addin/actions/runs/37244337990) built x86/x64, verified VSTO manifests and produced candidate 1.0.13. Downloaded installer: 4,308,414 bytes; SHA-256 `f2608d9dd60e665cc7f30468b59e4fc76b9324de3122e511ae538be9cdbbb86d`, independently matched to the CI manifest. Later native fixes require a new build/artifact; this artifact is not the final candidate after those fixes.
+
+Local review artifacts are retained under `/tmp/compound-engineering/ce-code-review/outlook-final-20261004/`; execution logs and final handoff records are local task artifacts. Independent correctness, security and performance findings receive minimal reproductions and test-first fixes. Cross-model review was unavailable because the Claude CLI was not installed; no cross-model pass is claimed.
+
+Initial native Greptile review: `0f29c5d7-2f83-4cac-8e58-941765083b6b` at `dec0cee`; initial Zero review: `d14ced98-b092-46b4-92ba-e1118734fd14` at `910a2ac`. Final review IDs and dispositions belong in the PR evidence after all fixes and fresh checks.
+
+## Release limits
+
+Windows compilation and CI tests do not execute a real Outlook profile. Before staff publication, the operator must verify actual COM event/order/ancestry behavior, saved sent copies, large SaveAs latency, disk/memory/spool use, hotel proxy/S3 connectivity, upgrade/session recovery and retained drafting/moves under the released CSP. Preserve the existing capture route and macro until that acceptance record passes. Production quiescence/migration/activation, storage-policy checks and served installer hash verification follow the existing coordinated runbook.

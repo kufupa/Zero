@@ -392,7 +392,7 @@ import { outlookSyncFixture } from './helpers/outlook-sync-fixture.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { session } from '../src/db/schema/auth.js';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 describe('real PostgreSQL source authority and coverage', () => {
   it('recovers lost activation and redemption replies without duplicating or extending authority', async () =>
@@ -1578,4 +1578,175 @@ it.each(['eligible', 'excluded', 'declared', 'enriched'] as const)(
       expect(status.gaps).toBe(0);
       expect(status.discovered).toBe(scenario === 'excluded' ? 0 : 1);
     }),
+);
+
+it(
+  'repeated unchanged sweeps touch only new memberships and preserve historical counts',
+  async () =>
+    withIngestionDb(async ({ db, sql: connection }) => {
+      const service = await import('../src/outlook-sync/service.js');
+      const ledger = await import('../src/outlook-sync/ledger.js');
+      const { outlookSyncObservation, outlookSyncScan } = await import(
+        '../src/db/schema/outlook-sync.js'
+      );
+      const f = await outlookSyncFixture(db);
+      const a = await service.activateSource(
+        db,
+        f.auth,
+        new Headers(),
+        f.transportId,
+        f.activation,
+        f.key,
+      );
+      const r = await service.redeemActivation(
+        db,
+        f.deviceId,
+        {
+          version: 1,
+          sourceId: a.sourceId,
+          activationTicket: a.activationTicket,
+          idempotencyKey: f.activation.idempotencyKey,
+          storeId: f.storeId,
+          rootEntryId: f.rootEntryId,
+        },
+        f.key,
+      );
+      const scope = {
+        version: 1 as const,
+        sourceId: a.sourceId,
+        sourceHandle: r.sourceHandle,
+        storeId: f.storeId,
+        rootEntryId: f.rootEntryId,
+      };
+      const workerId = randomUUID();
+      const observations = Array.from({ length: 100 }, (_, i) => f.observation(`repeat-${i}`));
+      const claim = await service.claimSource(db, f.deviceId, { ...scope, workerId });
+      const first = await ledger.recordInventory(db, f.deviceId, {
+        ...scope,
+        claimFence: claim.claimFence,
+        scan: { mode: 'reconcile', from: r.historyFrom, to: r.historyTo },
+        partitionId: 'root',
+        pageId: 'initial',
+        checkpoint: { cursor: null, generation: '1', complete: true, gapCode: null },
+        observations,
+        discoveryComplete: true,
+      });
+      await db
+        .update(outlookSyncObservation)
+        .set({ exportState: 'retained', ingestionState: 'committed' });
+      await ledger.refreshSourceSummary(
+        db,
+        a.sourceId,
+        first.observations.map((o) => o.observationId),
+      );
+      await connection`CREATE TABLE repeat_scan_writes (kind text NOT NULL)`;
+      await connection.unsafe(`CREATE FUNCTION audit_repeat_scan_writes() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF OLD.record_kind = 'membership' OR (OLD.record_kind = 'scan' AND OLD.status = 'committed') THEN
+          INSERT INTO repeat_scan_writes VALUES (OLD.record_kind);
+        END IF; RETURN NEW; END $$`);
+      await connection.unsafe(
+        `CREATE TRIGGER audit_repeat_scan_writes BEFORE UPDATE ON outlook_sync_scan FOR EACH ROW EXECUTE FUNCTION audit_repeat_scan_writes()`,
+      );
+      const { drizzle } = await import('drizzle-orm/postgres-js');
+      const schema = await import('../src/db/schema/index.js');
+      let oldMembershipReads = 0;
+      const measured = drizzle(connection, {
+        schema,
+        logger: {
+          logQuery(query) {
+            if (
+              query.startsWith('select') &&
+              query.includes('"outlook_sync_scan"."observation_id"') &&
+              query.includes('from "outlook_sync_scan"')
+            )
+              oldMembershipReads++;
+          },
+        },
+      });
+      const scanIds = [first.scanId];
+      for (let sweep = 0; sweep < 20; sweep++) {
+        const claim = await service.claimSource(measured, f.deviceId, { ...scope, workerId });
+        const result = await ledger.recordInventory(measured, f.deviceId, {
+          ...scope,
+          claimFence: claim.claimFence,
+          scan: {
+            mode: sweep === 0 ? 'history' : 'reconcile',
+            from: r.historyFrom,
+            to: r.historyTo,
+          },
+          partitionId: 'root',
+          pageId: `repeat-${sweep}`,
+          checkpoint: { cursor: null, generation: '1', complete: true, gapCode: null },
+          observations,
+          discoveryComplete: true,
+        });
+        expect(result).toMatchObject({
+          status: 'committed',
+          discoveredCount: 100,
+          committedCount: 100,
+          gapCount: 0,
+        });
+        scanIds.push(result.scanId);
+      }
+      const writes =
+        await connection`SELECT kind,count(*)::integer AS count FROM repeat_scan_writes GROUP BY kind`;
+      expect(writes).toEqual([]);
+      expect(oldMembershipReads).toBe(0);
+      const scans = await db
+        .select()
+        .from(outlookSyncScan)
+        .where(inArray(outlookSyncScan.id, scanIds));
+      expect(scans).toHaveLength(21);
+      expect(
+        scans.every(
+          (s) => s.status === 'committed' && s.committedCount === 100 && s.discoveredCount === 100,
+        ),
+      ).toBe(true);
+      const status = await service.sourceStatus(
+        db,
+        f.auth,
+        new Headers(),
+        f.transportId,
+        a.sourceId,
+      );
+      expect(status).toMatchObject({
+        discovered: 100,
+        retained: 100,
+        committed: 100,
+        gaps: 0,
+        history: { discovered: 100, retained: 100, committed: 100 },
+        live: { discovered: 0 },
+      });
+      // A real state change still repairs every historical membership.
+      const changedId = first.observations[0].observationId;
+      await db
+        .update(outlookSyncObservation)
+        .set({ availability: 'protected', ingestionState: 'attention' })
+        .where(eq(outlookSyncObservation.id, changedId));
+      await ledger.refreshSourceSummary(db, a.sourceId, [changedId]);
+      const changedScans = await db
+        .select()
+        .from(outlookSyncScan)
+        .where(inArray(outlookSyncScan.id, scanIds));
+      expect(
+        changedScans.every(
+          (row) => row.gapCount === 1 && row.committedCount === 99 && row.status === 'discovered',
+        ),
+      ).toBe(true);
+      await db
+        .update(outlookSyncObservation)
+        .set({ availability: 'available', ingestionState: 'committed' })
+        .where(eq(outlookSyncObservation.id, changedId));
+      await ledger.refreshSourceSummary(db, a.sourceId, [changedId]);
+      const repairedScans = await db
+        .select()
+        .from(outlookSyncScan)
+        .where(inArray(outlookSyncScan.id, scanIds));
+      expect(
+        repairedScans.every(
+          (row) => row.gapCount === 0 && row.committedCount === 100 && row.status === 'committed',
+        ),
+      ).toBe(true);
+    }),
+  120000,
 );
