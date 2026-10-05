@@ -326,7 +326,7 @@ function timestampOrNull(value: unknown): string | null {
   return date.toISOString();
 }
 
-function distinctText(values: readonly string[]): string[] {
+function distinctText(values: readonly unknown[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const value of values) {
@@ -338,7 +338,7 @@ function distinctText(values: readonly string[]): string[] {
   return result;
 }
 
-function sortedDistinctText(values: readonly string[]): string[] {
+function sortedDistinctText(values: readonly unknown[]): string[] {
   return distinctText(values).sort((left, right) => (left === right ? 0 : left < right ? -1 : 1));
 }
 
