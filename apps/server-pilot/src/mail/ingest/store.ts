@@ -33,6 +33,7 @@ import {
   mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
   mailIngestUidlClaim,
+  mailIngestSourceReceipt,
   mailLabel,
   mailboxTransport,
   message,
@@ -45,6 +46,11 @@ import {
   evaluateRocketseedReturnedCopyPrecheck,
   normalizeRocketseedMailbox,
 } from './rocketseed-returned-copy.js';
+import {
+  findCanonicalCandidate,
+  lockCanonicalMailbox,
+  newCanonicalAttachments,
+} from './canonical-identity.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
@@ -60,9 +66,10 @@ import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import { admitLiveMessage } from './live-admission.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
-import { randomUUID } from 'node:crypto';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
@@ -319,8 +326,38 @@ export async function persistInboundMessage(
   let deferred: Omit<PersistDeferredResult, 'candidateAttachmentCleanupFailureCount'> | null = null;
   let malformedDeliveryOutcomeQuarantine = false;
   let reconciliation: PersistReconciledResult | null = null;
+  let ambiguousSource = false;
   await db.transaction(async (tx) => {
     const transactionDb = tx as unknown as DB;
+    await lockCanonicalMailbox(transactionDb, transport.id);
+    const retainSource = async (canonicalMessageId: string) => {
+      await tx
+        .insert(mailIngestSourceReceipt)
+        .values({
+          id: randomUUID(),
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+          transportId: transport.id,
+          canonicalMessageId,
+          rawMimeS3Key,
+          sha256: createHash('sha256').update(raw).digest('hex'),
+        })
+        .onConflictDoNothing({
+          target: [mailIngestSourceReceipt.ingestMailboxId, mailIngestSourceReceipt.pop3Uidl],
+        });
+    };
+    const existingSource = await findExistingMessageByIngestIdentity(transactionDb, meta);
+    if (existingSource) {
+      duplicate = {
+        kind: 'duplicate',
+        transportId: transport.id,
+        messageId: existingSource.id,
+        rawMimeS3Key,
+        candidateAttachmentCleanupFailureCount: 0,
+      };
+      duplicateCanonicalMessageId = existingSource.id;
+      return;
+    }
     await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
     const correlationId =
       parsed.outboundCorrelation.kind === 'valid'
@@ -439,6 +476,7 @@ export async function persistInboundMessage(
           rawMimeS3Key,
           candidateAttachmentCleanupFailureCount: 0,
         };
+        await retainSource(canonical.id);
         duplicateCanonicalMessageId = canonical.id;
         return;
       }
@@ -478,12 +516,14 @@ export async function persistInboundMessage(
             filename: a.filename,
             mimeType: a.mimeType,
             sizeBytes: a.sizeBytes,
+            sha256: a.sha256 ?? null,
             s3Key: a.s3Key,
             contentId: a.contentId,
             isInline: a.isInline,
           })),
         );
       }
+      await retainSource(canonical.id);
       reconciliation = {
         kind: 'reconciled',
         transportId: canonical.transportId,
@@ -509,12 +549,92 @@ export async function persistInboundMessage(
       return;
     }
 
-    threadId = await resolveThreadId({
-      tx: tx as unknown as DB,
-      transportId: transport.id,
-      parsed,
-      pop3Uidl: meta.pop3Uidl,
+    const sender = normalizeEmailAddress(parsed.fromAddress ?? '');
+    const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
+    const recipients = [...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses].map(
+      normalizeEmailAddress,
+    );
+    const direction =
+      opts.directionOverride ??
+      (identities.has(sender) && !recipients.some((a) => identities.has(a))
+        ? 'outbound'
+        : 'inbound');
+    const sourceCandidate = await findCanonicalCandidate(transactionDb, transport.id, {
+      internetMessageId: parsed.messageId,
+      direction,
+      fromAddress: parsed.fromAddress ?? '',
+      toAddresses: parsed.toAddresses,
+      ccAddresses: parsed.ccAddresses,
+      authoredAt: parsed.receivedAt,
+      textBody: parsed.textBody,
+      htmlBody: parsed.htmlBody,
+      attachments: parsed.attachments.map((a) => ({
+        sizeBytes: a.sizeBytes,
+        sha256: a.sha256 ?? null,
+      })),
     });
+    ambiguousSource = sourceCandidate.kind === 'ambiguous';
+    if (sourceCandidate.kind === 'unique') {
+      const found = sourceCandidate.message;
+      await tx
+        .update(message)
+        .set({
+          ingestMailboxId: found.ingestMailboxId ?? meta.ingestMailboxId,
+          pop3Uidl: found.pop3Uidl ?? meta.pop3Uidl,
+          rawMimeS3Key: found.rawMimeS3Key ?? rawMimeS3Key,
+          textBody: found.textBody ?? parsed.textBody,
+          htmlBody: found.htmlBody ?? sanitizeHtmlBodyForStorage(parsed.htmlBody),
+        })
+        .where(eq(message.id, found.id));
+      if (parsed.attachments.length) {
+        const existing = await tx
+          .select()
+          .from(attachment)
+          .where(eq(attachment.messageId, found.id));
+        const additions = newCanonicalAttachments(existing, parsed.attachments);
+        if (additions.length)
+          await tx
+            .insert(attachment)
+            .values(additions.map((a) => ({ id: randomUUID(), messageId: found.id, ...a })));
+      }
+      if (!opts.skipAiEnqueue && opts.ingestSource === 'live-pop3')
+        await admitLiveMessage(transactionDb, {
+          transportId: transport.id,
+          canonicalMessageId: found.id,
+          evidence: {
+            kind: 'verified-pop3',
+            sourceReceiptId: `${meta.ingestMailboxId}:${meta.pop3Uidl}`,
+          },
+        });
+      await retainSource(found.id);
+      reconciliation = {
+        kind: 'reconciled',
+        transportId: transport.id,
+        messageId: found.id,
+        rawMimeS3Key,
+        attachmentCount: parsed.attachments.length,
+      };
+      return;
+    }
+
+    if (ambiguousSource) {
+      threadId = randomUUID();
+      await tx.insert(mailThread).values({
+        id: threadId,
+        transportId: transport.id,
+        threadRootId: `ambiguous:${messageId}`,
+        historyOnly: true,
+        isRead: true,
+        subject: parsed.subject,
+        latestMessageAt: parsed.receivedAt,
+      });
+    } else
+      threadId = await resolveThreadId({
+        tx: tx as unknown as DB,
+        transportId: transport.id,
+        parsed,
+        pop3Uidl: meta.pop3Uidl,
+      });
 
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
     const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
@@ -542,6 +662,10 @@ export async function persistInboundMessage(
       threadId,
       ingestMailboxId: meta.ingestMailboxId,
       direction: isHotelSent ? 'outbound' : 'inbound',
+      historyOnly: ambiguousSource,
+      sourceProvenance: ambiguousSource
+        ? { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' }
+        : null,
       pop3Uidl: meta.pop3Uidl,
       ownerHeaderValue: parsed.ownerHeaderValue,
       messageIdHeader: persistedHeaders.messageIdHeader,
@@ -557,10 +681,10 @@ export async function persistInboundMessage(
       rawMimeS3Key,
       receivedAt: parsed.receivedAt,
       sentAt: parsed.receivedAt ?? null,
-      isRead: isHotelSent,
+      isRead: isHotelSent || ambiguousSource,
     });
 
-    if (isHotelSent) {
+    if (isHotelSent && !ambiguousSource) {
       await markThreadRead(tx as unknown as DB, transport.id, [threadId]);
     }
 
@@ -572,6 +696,7 @@ export async function persistInboundMessage(
           filename: a.filename,
           mimeType: a.mimeType,
           sizeBytes: a.sizeBytes,
+          sha256: a.sha256 ?? null,
           s3Key: a.s3Key,
           contentId: a.contentId,
           isInline: a.isInline,
@@ -583,6 +708,7 @@ export async function persistInboundMessage(
     // only. Does not set spamAt — inbox-first until AI can triage.
     if (
       !isHotelSent &&
+      !ambiguousSource &&
       process.env.AI_WRITE_GATE_ENABLED !== 'true' &&
       isExternalFromDomain(fromEmail, transportEmail)
     ) {
@@ -590,9 +716,10 @@ export async function persistInboundMessage(
       await applyThreadLabels(tx as unknown as DB, threadId, [softLabelId]);
     }
 
+    await retainSource(messageId);
     await refreshThreadSearchVector(tx as unknown as DB, threadId);
 
-    if (!isHotelSent && parsed.fromAddress) {
+    if (!isHotelSent && !ambiguousSource && parsed.fromAddress) {
       const preference = await getSenderPreference({
         db: tx as unknown as DB,
         transportId: transport.id,
@@ -606,7 +733,17 @@ export async function persistInboundMessage(
       }
     }
 
-    if (!opts.skipAiEnqueue) {
+    if (!ambiguousSource && !opts.skipAiEnqueue && opts.ingestSource === 'live-pop3') {
+      await admitLiveMessage(transactionDb, {
+        transportId: transport.id,
+        canonicalMessageId: messageId,
+        newlyPersisted: true,
+        evidence: {
+          kind: 'verified-pop3',
+          sourceReceiptId: `${meta.ingestMailboxId}:${meta.pop3Uidl}`,
+        },
+      });
+    } else if (!ambiguousSource && !opts.skipAiEnqueue) {
       await enqueueAiRun(
         {
           transportId: transport.id,
@@ -638,11 +775,10 @@ export async function persistInboundMessage(
         });
       }
     }
-
     // External Sent/imported hotel mail is the delayed reference producer. A
     // rematch reads only private prediction rows and appends an assessment;
     // it never mutates the just-stored message or visible thread state.
-    if (isHotelSent && !opts.skipAiEnqueue) {
+    if (isHotelSent && !ambiguousSource && !opts.skipAiEnqueue) {
       await rematchShadowPredictions({
         transportId: transport.id,
         threadId,
@@ -700,7 +836,19 @@ export async function persistInboundMessage(
       activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
   }
-  if (reconciliation) return reconciliation;
+  const reconciledResult = reconciliation as PersistReconciledResult | null;
+  if (reconciledResult) {
+    if (parsed.attachments.length)
+      await cleanupCandidateAttachmentTasks({
+        db,
+        storage,
+        attachments: parsed.attachments,
+        meta,
+        canonicalMessageId: reconciledResult.messageId,
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+    return reconciledResult;
+  }
 
   return {
     kind: 'stored',
@@ -1340,6 +1488,20 @@ async function findExistingMessageByIngestIdentity(
   db: DB,
   meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
 ): Promise<{ id: string; transportId: string } | undefined> {
+  const [receipt] = await db
+    .select({
+      id: mailIngestSourceReceipt.canonicalMessageId,
+      transportId: mailIngestSourceReceipt.transportId,
+    })
+    .from(mailIngestSourceReceipt)
+    .where(
+      and(
+        eq(mailIngestSourceReceipt.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestSourceReceipt.pop3Uidl, meta.pop3Uidl),
+      ),
+    )
+    .limit(1);
+  if (receipt) return receipt;
   const rows = await db
     .select({ id: message.id, transportId: message.transportId })
     .from(message)

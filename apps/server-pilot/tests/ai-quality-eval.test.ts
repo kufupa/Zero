@@ -667,7 +667,15 @@ describe('export-centurion-triage-quality', () => {
 
   it('CLI scopes are mutually exclusive', () => {
     expect(() =>
-      parseQualityExportArgs(['--labels', 'a.jsonl', '--all-inbound-triggers', '--out', 'o.jsonl']),
+      parseQualityExportArgs([
+        '--labels',
+        'a.jsonl',
+        '--all-inbound-triggers',
+        '--out',
+        'o.jsonl',
+        '--transport-id',
+        'transport-a',
+      ]),
     ).toThrow(/mutually exclusive|exclusive/i);
     expect(() =>
       parseQualityExportArgs([
@@ -677,10 +685,19 @@ describe('export-centurion-triage-quality', () => {
         't.json',
         '--out',
         'o.jsonl',
+        '--transport-id',
+        'transport-a',
       ]),
     ).toThrow(/mutually exclusive|exclusive/i);
-    expect(parseQualityExportArgs(['--all-inbound-triggers', '--out', 'o.jsonl']).mode).toBe(
-      'all-inbound-triggers',
+    expect(parseQualityExportArgs([
+      '--all-inbound-triggers',
+      '--out',
+      'o.jsonl',
+      '--transport-id',
+      'transport-a',
+    ]).mode).toBe('all-inbound-triggers');
+    expect(() => parseQualityExportArgs(['--all-inbound-triggers', '--out', 'o.jsonl'])).toThrow(
+      /transport-id/i,
     );
   });
 

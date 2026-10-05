@@ -131,6 +131,8 @@ export const MoveEmailResultSchema = z.discriminatedUnion('moveStatus', [
 export type MoveEmailResult = z.infer<typeof MoveEmailResultSchema>;
 
 export const BridgeCapabilitiesSchema = z.object({
+  mailboxSync: z.number().int().optional(),
+  readRoots: z.array(z.object({storeId:z.string().min(1).max(512),rootEntryId:z.string().min(1).max(512),policyVersion:z.literal(1),policyGeneration:z.number().int().positive()}).strict()).max(25).default([]),
   bridgeProtocolVersion: z.number(),
   addinVersion: z.string(),
   outlookVersion: z.string(),
@@ -215,6 +217,8 @@ export type BridgeAction =
   | 'PAIR_DEVICE'
   | 'REGISTER_NAVIGATION'
   | 'CLEAR_SESSION'
+  | 'CLEAR_NAVIGATION'
+  | 'MAILBOX_SYNC_ACTIVATE'
   | 'PREPARE_MOVE_CONSENT'
   | 'NATIVE_MOVE_CONSENT_RESOLVED'
   | 'GET_CAPABILITIES'
@@ -303,4 +307,26 @@ export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> 
 
 export function isSelectionChangedEvent(response: BridgeResponse): boolean {
   return response.requestId.startsWith('evt_') && response.action === 'ON_SELECTION_CHANGED';
+}
+
+// These finite DTOs are additive to bridge v4. Unknown sync versions deny only sync.
+export const MAILBOX_SYNC_CAPABILITY_VERSION = 1 as const;
+const SyncIdentitySchema = z.string().min(1).max(512);
+export const ReadRootPolicyV1Schema = z.object({
+  storeId: SyncIdentitySchema, rootEntryId: SyncIdentitySchema,
+  policyVersion: z.literal(1), policyGeneration: z.number().int().positive().max(2147483647),
+}).strict();
+export type ReadRootPolicyV1 = z.infer<typeof ReadRootPolicyV1Schema>;
+export const MailboxSyncWindowSchema = z.object({
+  from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }),
+}).strict().refine(value => Date.parse(value.from) <= Date.parse(value.to), 'Sync window is reversed');
+export const MailboxSyncControlSchema = z.object({
+  sourceId: SyncIdentitySchema,
+  operation: z.enum(['start', 'pause', 'resume', 'syncNow', 'retryMissing']),
+  window: MailboxSyncWindowSchema.optional(),
+}).strict();
+export type MailboxSyncControl = z.infer<typeof MailboxSyncControlSchema>;
+export function supportsMailboxSync(capabilities: unknown): boolean {
+  return typeof capabilities === 'object' && capabilities !== null
+    && (capabilities as { mailboxSync?: unknown }).mailboxSync === MAILBOX_SYNC_CAPABILITY_VERSION;
 }

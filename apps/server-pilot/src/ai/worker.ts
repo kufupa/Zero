@@ -44,6 +44,13 @@ import {
   type ExistingDocumentRecord,
 } from '../mail/artifacts/existing-document-service.js';
 import {
+  executeReadToolRun,
+  readRequestSchema,
+  type ReadExecutionContext,
+  executeTrustedSynchronousHmsFindReservation,
+  type TrustedSynchronousHmsFindSessionFactory,
+} from '../hms/read-service.js';
+import {
   assertLinkedContextReference,
   linkedContextReferenceSchema,
   type LinkedContextReference,
@@ -113,6 +120,21 @@ import {
   type DraftModelRouteFactory,
 } from './draft-route-factory.js';
 import {
+  assertCurrentAppAccessProof,
+  issueCurrentAppAccessProof,
+  type CurrentAppAccessProof,
+} from '../hms/requester-authorization.js';
+import {
+  issueReadAdmissionFromMailbox,
+  loadReadMailboxGrant,
+  positiveFindEvidence,
+} from '../hms/read-admission-issuer.js';
+import {
+  admitReadBranch,
+  assertPersistedReadAdmissionIssuer,
+  READ_BRANCH_WORST_CASE_MS,
+} from '../hms/read-admission.js';
+import {
   extractMailBaselineWithApprovedRoute,
   resolveMailBaselineExtractionRoute,
 } from './mail-baseline-extraction.js';
@@ -130,23 +152,6 @@ import {
   runPreparedReplyWorkflow,
   type PreparedReplyWorkflowResult,
 } from './workflows/candidate-draft.js';
-import {
-  executeReadToolRun,
-  readRequestSchema,
-  type ReadExecutionContext,
-  executeTrustedSynchronousHmsFindReservation,
-  type TrustedSynchronousHmsFindSessionFactory,
-} from '../hms/read-service.js';
-import {
-  assertCurrentAppAccessProof,
-  issueCurrentAppAccessProof,
-  type CurrentAppAccessProof,
-} from '../hms/requester-authorization.js';
-import {
-  admitReadBranch,
-  assertPersistedReadAdmissionIssuer,
-  READ_BRANCH_WORST_CASE_MS,
-} from '../hms/read-admission.js';
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
@@ -163,11 +168,6 @@ import { aiShadowPrediction } from '../db/schema/ai-shadow-evaluation.js';
 import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
 import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
-import {
-  issueReadAdmissionFromMailbox,
-  loadReadMailboxGrant,
-  positiveFindEvidence,
-} from '../hms/read-admission-issuer.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
@@ -977,8 +977,7 @@ export function createLiveHmsCandidateSessionFactory(
       notesReleaseRaw && notesReleaseRaw.evidenceKind === 'hms' ? notesReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
     const surnameDates = input.lookupCandidates.filter(
-      (c): c is Extract<LookupCandidate, { kind: 'surname_dates' }> =>
-        c.kind === 'surname_dates',
+      (c): c is Extract<LookupCandidate, { kind: 'surname_dates' }> => c.kind === 'surname_dates',
     );
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
@@ -1502,8 +1501,7 @@ export function createLiveHmsCandidateSessionFactory(
                 roleProofPath: config.roleProofPath,
                 roleProofSha256: notesRelease.roleProofSha256 ?? placeholderDigest('notes-role'),
                 credentialVersionHmacSha256:
-                  notesRelease.credentialVersionHmacSha256 ??
-                  placeholderDigest('notes-credential'),
+                  notesRelease.credentialVersionHmacSha256 ?? placeholderDigest('notes-credential'),
                 runtimeFingerprintSha256: notesRelease.runtimeFingerprintSha256 ?? runtimeFp,
                 privateDigestKeyVersion: notesRelease.privateDigestKeyVersion ?? 'v1',
                 sourceRevision: notesRelease.sourceRevision ?? sourceRevision,
@@ -1756,8 +1754,7 @@ export async function executeSynchronousHmsFindReservation(input: SynchronousHms
     },
     now: new Date(),
   });
-  const runtime =
-    input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt));
+  const runtime = input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt));
   assertSynchronousReadActive(signal, deadlineAt);
   const liveSessionFactory = createLiveHmsCandidateSessionFactory({
     runtime,
@@ -3874,43 +3871,65 @@ async function executeShadowPredictionRun(
     return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
   }
 
-  const [trigger] = await db
-    .select()
-    .from(message)
-    .where(
-      and(
-        eq(message.id, run.triggerMessageId),
-        eq(message.transportId, run.transportId),
-        eq(message.threadId, run.threadId),
-      ),
-    )
-    .limit(1);
+  const { readAdmissionSnapshot } = await import('../mail/ingest/live-admission.js');
+  const admissionSnapshot = run.admissionSnapshotId
+    ? await readAdmissionSnapshot(
+        db,
+        run.admissionSnapshotId,
+        run.admissionSnapshotHash ?? undefined,
+      )
+    : null;
+  const fromSnapshot = (row: import('../mail/ingest/live-admission.js').AdmissionProjection) => ({
+    ...row,
+    createdAt: new Date(row.createdAt),
+    receivedAt: row.receivedAt ? new Date(row.receivedAt) : null,
+    sentAt: row.sentAt ? new Date(row.sentAt) : null,
+  });
+  const [trigger] = admissionSnapshot
+    ? admissionSnapshot.threadMessages
+        .filter((row) => row.id === run.triggerMessageId)
+        .map(fromSnapshot)
+    : await db
+        .select()
+        .from(message)
+        .where(
+          and(
+            eq(message.id, run.triggerMessageId),
+            eq(message.transportId, run.transportId),
+            eq(message.threadId, run.threadId),
+          ),
+        )
+        .limit(1);
   if (!trigger) throw new Error('shadow prediction trigger message not found');
   if (trigger.direction !== 'inbound') {
     throw new Error('shadow prediction trigger must be inbound');
   }
 
-  const threadRows = await db
-    .select({
-      id: message.id,
-      direction: message.direction,
-      subject: message.subject,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      receivedAt: message.receivedAt,
-      sentAt: message.sentAt,
-      createdAt: message.createdAt,
-    })
-    .from(message)
-    .where(and(eq(message.transportId, run.transportId), eq(message.threadId, run.threadId)))
-    .orderBy(asc(message.createdAt), asc(message.id));
+  const threadRows = admissionSnapshot
+    ? admissionSnapshot.threadMessages.map(fromSnapshot)
+    : await db
+        .select({
+          id: message.id,
+          direction: message.direction,
+          subject: message.subject,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+          createdAt: message.createdAt,
+        })
+        .from(message)
+        .where(and(eq(message.transportId, run.transportId), eq(message.threadId, run.threadId)))
+        .orderBy(asc(message.createdAt), asc(message.id));
   const threadMessageIds = threadRows.map((row) => row.id);
-  const attachmentRows = threadMessageIds.length
-    ? await db
-        .select({ id: attachment.id, messageId: attachment.messageId })
-        .from(attachment)
-        .where(inArray(attachment.messageId, threadMessageIds))
-    : [];
+  const attachmentRows = admissionSnapshot
+    ? admissionSnapshot.artifacts
+    : threadMessageIds.length
+      ? await db
+          .select({ id: attachment.id, messageId: attachment.messageId })
+          .from(attachment)
+          .where(inArray(attachment.messageId, threadMessageIds))
+      : [];
   const attachmentIdsByMessage = new Map<string, string[]>();
   for (const row of attachmentRows) {
     const ids = attachmentIdsByMessage.get(row.messageId) ?? [];
@@ -3920,12 +3939,15 @@ async function executeShadowPredictionRun(
   // `createdAt` is the availability clock. RFC822 received/sent clocks remain
   // event evidence for matching and cannot pull a late-imported body into an
   // earlier frozen context.
-  const asOfAt = trigger.createdAt;
+  const asOfAt = admissionSnapshot?.admittedAt
+    ? new Date(admissionSnapshot.admittedAt)
+    : trigger.createdAt;
   const frozen = freezeShadowInput({
     transportId: run.transportId,
     threadId: run.threadId,
     triggerMessageId: trigger.id,
     asOfAt,
+    snapshotMessageIds: admissionSnapshot?.threadMessages.map((row) => row.id),
     messages: threadRows.map(
       (row): ShadowMessageInput => ({
         ...row,
@@ -4252,66 +4274,88 @@ export async function executeAiRun(
     }
 
     if (run.runKind === 'inbound_triage') {
-      const [trigger] = await db
-        .select()
-        .from(message)
-        .where(eq(message.id, run.triggerMessageId))
-        .limit(1);
+      const { readAdmissionSnapshot } = await import('../mail/ingest/live-admission.js');
+      const admissionSnapshot = run.admissionSnapshotId
+        ? await readAdmissionSnapshot(
+            db,
+            run.admissionSnapshotId,
+            run.admissionSnapshotHash ?? undefined,
+          )
+        : null;
+      const fromSnapshot = (
+        row: import('../mail/ingest/live-admission.js').AdmissionProjection,
+      ) => ({
+        ...row,
+        createdAt: new Date(row.createdAt),
+        receivedAt: row.receivedAt ? new Date(row.receivedAt) : null,
+        sentAt: row.sentAt ? new Date(row.sentAt) : null,
+      });
+      const [trigger] = admissionSnapshot
+        ? admissionSnapshot.threadMessages
+            .filter((row) => row.id === run.triggerMessageId)
+            .map(fromSnapshot)
+        : await db.select().from(message).where(eq(message.id, run.triggerMessageId)).limit(1);
 
-      const threadMessages = await db
-        .select({
-          id: message.id,
-          threadId: message.threadId,
-          fromAddress: message.fromAddress,
-          subject: message.subject,
-          textBody: message.textBody,
-          htmlBody: message.htmlBody,
-          direction: message.direction,
-          createdAt: message.createdAt,
-          receivedAt: message.receivedAt,
-          sentAt: message.sentAt,
-          toAddresses: message.toAddresses,
-          ccAddresses: message.ccAddresses,
-          bccAddresses: message.bccAddresses,
-          messageIdHeader: message.messageIdHeader,
-          inReplyTo: message.inReplyTo,
-          references: message.references,
-        })
-        .from(message)
-        .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
-        .orderBy(asc(message.createdAt), asc(message.id));
+      const threadMessages = admissionSnapshot
+        ? admissionSnapshot.threadMessages.map(fromSnapshot)
+        : await db
+            .select({
+              id: message.id,
+              threadId: message.threadId,
+              fromAddress: message.fromAddress,
+              subject: message.subject,
+              textBody: message.textBody,
+              htmlBody: message.htmlBody,
+              direction: message.direction,
+              createdAt: message.createdAt,
+              receivedAt: message.receivedAt,
+              sentAt: message.sentAt,
+              toAddresses: message.toAddresses,
+              ccAddresses: message.ccAddresses,
+              bccAddresses: message.bccAddresses,
+              messageIdHeader: message.messageIdHeader,
+              inReplyTo: message.inReplyTo,
+              references: message.references,
+            })
+            .from(message)
+            .where(
+              and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)),
+            )
+            .orderBy(asc(message.createdAt), asc(message.id));
 
-      const transportMessages = await db
-        .select({
-          id: message.id,
-          threadId: message.threadId,
-          fromAddress: message.fromAddress,
-          subject: message.subject,
-          direction: message.direction,
-          createdAt: message.createdAt,
-          receivedAt: message.receivedAt,
-          sentAt: message.sentAt,
-          toAddresses: message.toAddresses,
-          ccAddresses: message.ccAddresses,
-          bccAddresses: message.bccAddresses,
-          messageIdHeader: message.messageIdHeader,
-          inReplyTo: message.inReplyTo,
-          references: message.references,
-        })
-        .from(message)
-        .where(
-          and(
-            eq(message.transportId, run.transportId),
-            or(
-              lt(message.createdAt, trigger?.createdAt ?? run.createdAt),
+      const transportMessages = admissionSnapshot
+        ? admissionSnapshot.transportMessages.map(fromSnapshot)
+        : await db
+            .select({
+              id: message.id,
+              threadId: message.threadId,
+              fromAddress: message.fromAddress,
+              subject: message.subject,
+              direction: message.direction,
+              createdAt: message.createdAt,
+              receivedAt: message.receivedAt,
+              sentAt: message.sentAt,
+              toAddresses: message.toAddresses,
+              ccAddresses: message.ccAddresses,
+              bccAddresses: message.bccAddresses,
+              messageIdHeader: message.messageIdHeader,
+              inReplyTo: message.inReplyTo,
+              references: message.references,
+            })
+            .from(message)
+            .where(
               and(
-                eq(message.createdAt, trigger?.createdAt ?? run.createdAt),
-                lte(message.id, trigger?.id ?? run.triggerMessageId),
+                eq(message.transportId, run.transportId),
+                or(
+                  lt(message.createdAt, trigger?.createdAt ?? run.createdAt),
+                  and(
+                    eq(message.createdAt, trigger?.createdAt ?? run.createdAt),
+                    lte(message.id, trigger?.id ?? run.triggerMessageId),
+                  ),
+                ),
               ),
-            ),
-          ),
-        )
-        .orderBy(asc(message.createdAt), asc(message.id));
+            )
+            .orderBy(asc(message.createdAt), asc(message.id));
 
       const rows: (TriageMessageRow & {
         to?: string[];
@@ -4333,7 +4377,13 @@ export async function executeAiRun(
         inReplyTo: m.inReplyTo,
         references: m.references,
       }));
-      const messages = buildCausalTriageMessages(rows, run.triggerMessageId);
+      const messages = buildCausalTriageMessages(
+        rows,
+        run.triggerMessageId,
+        admissionSnapshot
+          ? { snapshotMessageIds: admissionSnapshot.threadMessages.map((row) => row.id) }
+          : undefined,
+      );
       const threadSignals = deriveThreadSignals(
         messages.map((m) => ({
           fromAddress: m.from,
@@ -4384,6 +4434,7 @@ export async function executeAiRun(
             messages,
             threadSignals,
             transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
+            snapshotMessageIds: admissionSnapshot?.threadMessages.map((row) => row.id),
             asOf: run.createdAt.toISOString(),
             modelId: run.modelId,
             promptVersion: TRIAGE_PROMPT_VERSION,

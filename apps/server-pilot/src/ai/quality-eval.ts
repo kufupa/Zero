@@ -762,15 +762,22 @@ export function buildTargetsExportCases(input: {
 }
 
 export type QualityExportCliArgs =
-  | { mode: 'labels'; labelsPath: string; outPath: string }
-  | { mode: 'all-inbound-triggers'; outPath: string }
-  | { mode: 'targets'; targetsPath: string; outPath: string };
+  | { mode: 'labels'; labelsPath: string; outPath: string; transportIds: readonly string[] }
+  | { mode: 'all-inbound-triggers'; outPath: string; transportIds: readonly string[] }
+  | { mode: 'targets'; targetsPath: string; outPath: string; transportIds: readonly string[] };
+
+function sortedDistinctExportTransportIds(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) =>
+    left === right ? 0 : left < right ? -1 : 1,
+  );
+}
 
 export function parseQualityExportArgs(argv: string[]): QualityExportCliArgs {
   let labelsPath: string | null = null;
   let targetsPath: string | null = null;
   let allInbound = false;
   let outPath: string | null = null;
+  const transportIds: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -784,12 +791,37 @@ export function parseQualityExportArgs(argv: string[]): QualityExportCliArgs {
       targetsPath = arg.slice('--targets='.length);
     } else if (arg === '--all-inbound-triggers') {
       allInbound = true;
+    } else if (arg === '--transport-id') {
+      const value = argv[++i];
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new Error('--transport-id requires a value');
+      }
+      transportIds.push(value.trim());
+    } else if (arg.startsWith('--transport-id=')) {
+      const value = arg.slice('--transport-id='.length);
+      if (!value.trim()) {
+        throw new Error('--transport-id requires a value');
+      }
+      transportIds.push(value.trim());
     } else if (arg === '--out') {
       outPath = argv[++i] ?? null;
     } else if (arg.startsWith('--out=')) {
       outPath = arg.slice('--out='.length);
     } else {
       throw new Error(`unknown export option: ${arg}`);
+    }
+  }
+
+  const normalizedTransportIds = sortedDistinctExportTransportIds(transportIds);
+  if (normalizedTransportIds.length === 0) {
+    throw new Error('Quality export requires at least one --transport-id');
+  }
+  if (normalizedTransportIds.length !== transportIds.length) {
+    throw new Error('Quality export transport scope is invalid');
+  }
+  for (let index = 0; index < transportIds.length; index += 1) {
+    if (transportIds[index] !== normalizedTransportIds[index]) {
+      throw new Error('Quality export transport scope is invalid');
     }
   }
 
@@ -802,7 +834,11 @@ export function parseQualityExportArgs(argv: string[]): QualityExportCliArgs {
   if (!outPath) {
     throw new Error('--out is required');
   }
-  if (labelsPath) return { mode: 'labels', labelsPath, outPath };
-  if (targetsPath) return { mode: 'targets', targetsPath, outPath };
-  return { mode: 'all-inbound-triggers', outPath };
+  if (labelsPath) {
+    return { mode: 'labels', labelsPath, outPath, transportIds: normalizedTransportIds };
+  }
+  if (targetsPath) {
+    return { mode: 'targets', targetsPath, outPath, transportIds: normalizedTransportIds };
+  }
+  return { mode: 'all-inbound-triggers', outPath, transportIds: normalizedTransportIds };
 }

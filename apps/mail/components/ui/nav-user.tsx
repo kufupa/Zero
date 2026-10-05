@@ -29,7 +29,10 @@ import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
 import { clear as idbClear, del } from 'idb-keyval';
 import { runLogoutCleanup } from '@/lib/mail/query-cache-policy';
-import { previousScopeBeforeSwitch } from '@/lib/mail/account-switch-cache';
+import {
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '@/lib/mail/account-switch-cache';
 import {
   getMailCacheScope,
   idbCacheKeyForScope,
@@ -175,11 +178,10 @@ export function NavUser() {
         userId: session?.user?.id ?? null,
         activeTransportId: connectionId,
       });
-      await runLogoutCleanup({
+      await runAccountSwitchCacheCleanup({
+        previousScope,
         queryClient,
-        clearIdb: async () => {
-          await del(idbCacheKeyForScope(previousScope));
-        },
+        deleteIdbKey: del,
       });
       await Promise.all([
         queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),

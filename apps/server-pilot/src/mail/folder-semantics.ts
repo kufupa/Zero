@@ -52,11 +52,16 @@ export function buildMailFolderConditions(
     conditions.push(isNull(mailThread.spamAt));
   }
 
+  if (folder !== 'all' && folder !== 'archive' && folder !== 'archived') {
+    conditions.push(eq(mailThread.historyOnly, false));
+  }
+
   if (folder === 'inbox') {
     conditions.push(eq(mailThread.isArchived, false));
     const snoozedCond = or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`));
     if (snoozedCond) conditions.push(snoozedCond);
-    // Inbox = has inbound mail; outbound-only compose threads live in sent.
+    // Folder membership requires operational mail; historical context cannot activate a folder.
+    // Outbound-only compose threads live in sent.
     conditions.push(
       exists(
         db
@@ -67,6 +72,7 @@ export function buildMailFolderConditions(
               eq(message.threadId, mailThread.id),
               eq(message.transportId, transportId),
               eq(message.direction, 'inbound'),
+              eq(message.historyOnly, false),
             ),
           ),
       ),
@@ -90,6 +96,7 @@ export function buildMailFolderConditions(
               eq(message.threadId, mailThread.id),
               eq(message.transportId, transportId),
               eq(message.direction, 'outbound'),
+              eq(message.historyOnly, false),
             ),
           ),
       ),

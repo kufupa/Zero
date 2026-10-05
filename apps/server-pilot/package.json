@@ -9,7 +9,8 @@
     "./auth": "./src/lib/auth.ts",
     "./auth-providers": "./src/lib/auth-providers.ts",
     "./schemas": "./src/lib/schemas.ts",
-    "./driver/types": "./src/lib/driver/types.ts"
+    "./driver/types": "./src/lib/driver/types.ts",
+    "./outlook-sync-contracts": "./src/outlook-sync/contracts.ts"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
@@ -25,6 +26,7 @@
     "eval:hms-shadow": "tsx src/ai/eval-runner.ts --mode=hms-shadow --denominators=evals/hms/denominators.v1.json",
     "eval:hms-portfolio-ablation": "tsx src/ops/portfolio-ablation-replay.ts",
     "test": "vitest run",
+    "test:outlook-sync": "tsx scripts/outlook-sync-test-gate.ts",
     "test:ingestion": "INGESTION_DB_TEST_REQUIRED=1 vitest run --maxWorkers=1 tests/ingest-schema-drift.test.ts tests/pop3-worker.test.ts tests/recover-parse-failure.test.ts tests/migration-compatibility.test.ts",
     "test:rocketseed": "vitest run tests/transport-mode.test.ts tests/fixture-loopback.test.ts tests/worker-mode.test.ts tests/rocketseed-returned-copy.test.ts tests/rocketseed-returned-copy-correlation.test.ts tests/cid-images.test.ts tests/ingest-duplicate-cleanup.test.ts tests/sanitize-email-html.test.ts tests/safe-inline-image.test.ts tests/inline-attachment-http.test.ts tests/rocketseed-flow.test.ts tests/rocketseed-ci-contract.test.ts",
     "db:generate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs generate",

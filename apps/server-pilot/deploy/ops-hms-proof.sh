@@ -248,7 +248,7 @@ if(tiers.IsTruncated!==false)process.exit(1);
 const optionalArchive=(tiers.IntelligentTieringConfigurationList||[]).some(config=>{
   if(config.Status!=="Enabled")return false;
   const prefix=config.Filter?.Prefix??config.Filter?.And?.Prefix??"";
-  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const overlaps=["raw-mime/","attachments/","outlook-sync-originals/v1/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
   return overlaps&&(config.Tierings||[]).some(tier=>["ARCHIVE_ACCESS","DEEP_ARCHIVE_ACCESS"].includes(tier.AccessTier));
 });
 if(optionalArchive)process.exit(1);
@@ -269,7 +269,7 @@ const retainedArchive=(rule,prefix)=>rule&&exactPrefix(rule,prefix)&&
 const unsafeMailLifecycle=rules.some(rule=>{
   if(rule.Status!=="Enabled")return false;
   const prefix=rule.Filter?.Prefix??rule.Filter?.And?.Prefix??rule.Prefix??"";
-  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const overlaps=["raw-mime/","attachments/","outlook-sync-originals/v1/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
   const restoreRequired=[...(rule.Transitions||[]),...(rule.NoncurrentVersionTransitions||[])]
     .some(transition=>["GLACIER","DEEP_ARCHIVE"].includes(transition.StorageClass));
   return overlaps&&Boolean(rule.Expiration||rule.NoncurrentVersionExpiration||restoreRequired);
@@ -297,7 +297,7 @@ if(tiers.IsTruncated!==false)process.exit(1);
 const optionalArchive=(tiers.IntelligentTieringConfigurationList||[]).some(config=>{
   if(config.Status!=="Enabled")return false;
   const prefix=config.Filter?.Prefix??config.Filter?.And?.Prefix??"";
-  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const overlaps=["raw-mime/","attachments/","outlook-sync-originals/v1/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
   return overlaps&&(config.Tierings||[]).some(tier=>["ARCHIVE_ACCESS","DEEP_ARCHIVE_ACCESS"].includes(tier.AccessTier));
 });
 if(optionalArchive)process.exit(1);
@@ -316,7 +316,7 @@ const retainedArchive=(rule,prefix)=>rule&&exactPrefix(rule,prefix)&&
 const unsafeMailLifecycle=rules.some(rule=>{
   if(rule.Status!=="Enabled")return false;
   const prefix=rule.Filter?.Prefix??rule.Filter?.And?.Prefix??rule.Prefix??"";
-  const overlaps=["raw-mime/","attachments/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
+  const overlaps=["raw-mime/","attachments/","outlook-sync-originals/v1/"].some(mail=>mail.startsWith(prefix)||prefix.startsWith(mail));
   const restoreRequired=[...(rule.Transitions||[]),...(rule.NoncurrentVersionTransitions||[])]
     .some(transition=>["GLACIER","DEEP_ARCHIVE"].includes(transition.StorageClass));
   return overlaps&&Boolean(rule.Expiration||rule.NoncurrentVersionExpiration||restoreRequired);

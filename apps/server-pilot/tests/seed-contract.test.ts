@@ -149,13 +149,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-        'seeds Nava owner on every active transport; Centurion-scoped staff own Centurion only',
+      'seeds explicit Nava grants on transport-nava and transport-centurion; Centurion-scoped staff own Centurion only',
       async () => {
         const result = await withSeededTestDb(async (db) => {
-          const active = await db
-            .select({ id: mailboxTransport.id })
-            .from(mailboxTransport)
-            .where(eq(mailboxTransport.isActive, true));
           const access = await db
             .select({
               userId: mailboxAccess.userId,
@@ -164,15 +160,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               isDefault: mailboxAccess.isDefault,
             })
             .from(mailboxAccess);
-          return { activeIds: active.map((r) => r.id).sort(), access };
+          return { access };
         });
 
         const navaRows = result.access.filter((r) => r.userId === NAVA_USER_ID);
-        expect(navaRows).toHaveLength(result.activeIds.length);
-        expect(navaRows.map((r) => r.transportId).sort()).toEqual(result.activeIds);
+        expect(navaRows.map((r) => r.transportId).sort()).toEqual([
+          'transport-centurion',
+          'transport-nava',
+        ]);
         expect(navaRows.every((r) => r.role === 'owner')).toBe(true);
         expect(navaRows.find((r) => r.transportId === 'transport-nava')?.isDefault).toBe(true);
         expect(navaRows.filter((r) => r.isDefault)).toHaveLength(1);
+        expect(result.access.filter((r) => r.isDefault)).toHaveLength(6);
 
         for (const userId of [
           CENTURION_USER_ID,
@@ -250,7 +249,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'applyPilotMailboxAccess grants Nava a new active transport without static ACCESS_ROWS edit',
+      'applyPilotMailboxAccess grants a new active transport to nobody until explicitly listed',
       async () => {
         const { applyPilotMailboxAccess } = await import('../src/db/seed.js');
         const outcome = await withSeededTestDb(async (db) => {
@@ -263,6 +262,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             isActive: true,
           });
           await applyPilotMailboxAccess(db);
+          const davinciAccess = await db
+            .select({ userId: mailboxAccess.userId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.transportId, 'transport-davinci'));
           const nava = await db
             .select({ transportId: mailboxAccess.transportId })
             .from(mailboxAccess)
@@ -288,6 +291,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.userId, KAMALA_USER_ID));
           return {
+            davinciAccess,
             navaIds: nava.map((r) => r.transportId).sort(),
             cenIds: cen.map((r) => r.transportId),
             marthaIds: martha.map((r) => r.transportId),
@@ -296,9 +300,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             kamalaIds: kamala.map((r) => r.transportId),
           };
         });
-        expect(outcome.navaIds).toContain('transport-davinci');
-        expect(outcome.navaIds).toContain('transport-nava');
-        expect(outcome.navaIds).toContain('transport-centurion');
+        expect(outcome.davinciAccess).toEqual([]);
+        expect(outcome.navaIds).toEqual(['transport-centurion', 'transport-nava']);
         expect(outcome.cenIds).toEqual(['transport-centurion']);
         expect(outcome.marthaIds).toEqual(['transport-centurion']);
         expect(outcome.roppermanIds).toEqual(['transport-centurion']);

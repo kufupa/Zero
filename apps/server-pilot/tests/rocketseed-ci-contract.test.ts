@@ -54,7 +54,9 @@ describe('Rocketseed CI contract', () => {
   });
 
   it('runs transactional mail-flow suites on an ephemeral Postgres service', () => {
-    const transactionalJob = workflow.slice(workflow.indexOf('rocketseed-transactional:'));
+    const transactionalJob = workflow
+      .slice(workflow.indexOf('rocketseed-transactional:'))
+      .split(/\n  [a-zA-Z][\w-]*:/)[0]!;
 
     expect(transactionalJob).toContain('image: postgres:16');
     expect(transactionalJob).toContain('POSTGRES_HOST_AUTH_METHOD: trust');
@@ -86,7 +88,9 @@ describe('Rocketseed CI contract', () => {
   });
 
   it('builds an unlogged disposable database URL after clearing inherited test config', () => {
-    const transactionalJob = workflow.slice(workflow.indexOf('rocketseed-transactional:'));
+    const transactionalJob = workflow
+      .slice(workflow.indexOf('rocketseed-transactional:'))
+      .split(/\n  [a-zA-Z][\w-]*:/)[0]!;
     const transactionalTestStep = transactionalJob.slice(
       transactionalJob.indexOf('Test transactional Rocketseed mail flow'),
     );

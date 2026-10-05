@@ -6,7 +6,7 @@ import { resolveAuthSessionProfile } from '../lib/auth-profile.js';
 import { mailboxTransport } from '../db/schema/mail.js';
 import { outlookApprovedFolder, outlookBridgeTicket, outlookMoveReceipt, outlookNavigation, outlookNavigationHistory } from '../db/schema/outlook-authorization.js';
 import { outlookDevice } from '../db/schema/outlook-device.js';
-import { isDeviceAuthorized } from './device.js';
+import { isDeviceAuthorized, getApprovedReadRoots } from './device.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const ticketExpiredDuringTransaction = Symbol('ticket expired while issuing native scope');
@@ -217,7 +217,10 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
       .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
         eq(outlookApprovedFolder.transportId, input.transportId))).for('share');
     const approved = (id: string | undefined, kind?: string) => folderRows.some((row) => row.folderId === id && (!kind || row.kind === kind));
-    if (input.sourceFolderId && !approved(input.sourceFolderId)) return null;
+    const approvedReadRoots = readActions.has(input.action)
+      ? await getApprovedReadRoots(tx as DB, deviceId, ticket.userId, ticket.transportId, input.storeId, true) : [];
+    // Root policies authorize only reads; ancestry is independently verified on the native STA.
+    if (input.sourceFolderId && !approved(input.sourceFolderId) && !approvedReadRoots.length) return null;
     // DB kind must match native's observed kind; a Drafts source approval is never a move destination.
     if (input.destinationFolderId && !approved(input.destinationFolderId, input.destinationKind)) return null;
     if (moveActions.has(input.action) && (!approved(input.sourceFolderId) || !approved(input.destinationFolderId, input.destinationKind))) return null;
@@ -325,6 +328,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     return { kind: mutation ? 'mutation' : 'read', action: input.action, storeId: input.storeId,
       transportId: input.transportId, operationId: input.operationId ?? null, resources: input.resources ?? [],
       sourceFolderId: input.sourceFolderId ?? null, destinationFolderId: input.destinationFolderId ?? null,
+      approvedReadRoots,
       approvedFolderIds: folderRows.map((row) => ({ folderId: row.folderId, kind: row.kind })),
       retry, expiresAt: expiresAt.toISOString() };
   }).catch((error: unknown) => {

@@ -96,7 +96,21 @@ function createFakePostgres(
     const text = queryText(strings);
     queries.push({ text, values, insideTransaction });
     if (/CURRENT_TIMESTAMP/i.test(text)) return [{ asOf: AS_OF }];
-    if (/FROM mailbox_transport/i.test(text)) return activeTransportRows;
+    if (/FROM mailbox_transport/i.test(text)) {
+      const requestedIds = values
+        .flatMap((value) => (Array.isArray(value) ? value : []))
+        .filter((entry): entry is string => typeof entry === 'string');
+      if (requestedIds.length === 0) return activeTransportRows;
+      const activeIds = new Set(
+        activeTransportRows
+          .map((row) => (typeof row.id === 'string' ? row.id : null))
+          .filter((id): id is string => id !== null),
+      );
+      return requestedIds
+        .filter((id) => activeIds.has(id))
+        .sort()
+        .map((id) => ({ id }));
+    }
     if (/FROM message AS m/i.test(text)) return messages;
     if (/FROM attachment AS a/i.test(text)) return attachments;
     if (/FROM mail_draft AS d/i.test(text)) return [];
@@ -125,11 +139,15 @@ function createFakePostgres(
   return { client, beginOptions, queries };
 }
 
-function createReader(fake: FakePostgres) {
+function createReader(
+  fake: FakePostgres,
+  transportIds: readonly string[] = ACTIVE_TRANSPORT_IDS,
+) {
   return createThreadCorpusPostgresReader({
     databaseUrl: 'postgresql://localhost:5432/synthetic',
+    transportIds: [...transportIds],
     clientFactory: () => fake.client,
-  } as unknown as Parameters<typeof createThreadCorpusPostgresReader>[0]);
+  });
 }
 
 async function loadSnapshot(fake: FakePostgres): Promise<ThreadCorpusSnapshotLoadResult> {
@@ -158,7 +176,15 @@ function sourceRows(result: ThreadCorpusSnapshotLoadResult): Array<Record<string
 }
 
 describe('connected mailbox corpus PostgreSQL reader', () => {
-  it('seals sorted active transport IDs, excludes inactive membership, and preserves each row transport ID', async () => {
+  it('rejects reader construction when explicit transport IDs are omitted', () => {
+    expect(() =>
+      createThreadCorpusPostgresReader({
+        databaseUrl: 'postgresql://localhost:5432/synthetic',
+      }),
+    ).toThrow('Explicit transport scope is required');
+  });
+
+  it('seals only requested active transport IDs, excludes inactive membership, and preserves each row transport ID', async () => {
     const fake = createFakePostgres();
 
     const result = await loadSnapshot(fake);
@@ -173,6 +199,8 @@ describe('connected mailbox corpus PostgreSQL reader', () => {
       transportIds: ACTIVE_TRANSPORT_IDS,
     });
     expect(activeScope.text).toMatch(/WHERE\s+is_active\s*=\s*true/i);
+    expect(activeScope.text).toMatch(/id\s*=\s*ANY/i);
+    expect(activeScope.values).toContainEqual([...ACTIVE_TRANSPORT_IDS]);
     expect(activeScope.text).toMatch(/ORDER BY\s+id/i);
     expect(activeScope.text).not.toMatch(/\b(email|owner_header_value|ingest_mailbox)\b/i);
     expect(messages.values).toContainEqual([...ACTIVE_TRANSPORT_IDS]);
@@ -304,10 +332,41 @@ describe('connected mailbox corpus PostgreSQL reader', () => {
     expect(drafts.text).toMatch(/mail_draft_revision/i);
   });
 
+  it('exports only transport-a when transport-a is the explicit reader scope', async () => {
+    const fake = createFakePostgres({
+      messages: [messageRow({ id: 'message-a', transportId: 'transport-a' })],
+    });
+    const reader = createReader(fake, ['transport-a']);
+    const load = createThreadCorpusSnapshotLoader(reader);
+    const result = await load();
+    const rows = sourceRows(result);
+    const messages = queryContaining(fake.queries, 'FROM message AS m');
+
+    expect(messages.values).toContainEqual(['transport-a']);
+    expect(rows.map((row) => row.sourceRowId)).toEqual(['message-a']);
+    expect(rows.every((row) => row.privateMessage?.sourceMetadata?.transportId === 'transport-a')).toBe(
+      true,
+    );
+  });
+
+  it('rejects unknown requested transport IDs before message, relation, or corpus reads', async () => {
+    const fake = createFakePostgres();
+    const reader = createReader(fake, ['transport-a', 'transport-missing']);
+
+    await expect(createThreadCorpusSnapshotLoader(reader)()).rejects.toThrow(
+      'Requested transport scope is not active',
+    );
+
+    expect(fake.queries.some((query) => /FROM message AS m/i.test(query.text))).toBe(false);
+  });
+
   it('rejects empty active scope before message, relation, or corpus reads', async () => {
     const fake = createFakePostgres({ activeTransportRows: [] });
+    const reader = createReader(fake, ['transport-a']);
 
-    await expect(loadSnapshot(fake)).rejects.toThrow('Active transport scope is empty');
+    await expect(createThreadCorpusSnapshotLoader(reader)()).rejects.toThrow(
+      'Requested transport scope is not active',
+    );
 
     expect(fake.queries.some((query) => /FROM message AS m/i.test(query.text))).toBe(false);
     expect(fake.queries.some((query) => /FROM attachment AS a/i.test(query.text))).toBe(false);

@@ -19,6 +19,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 export interface ParsedAttachment {
+  /** SHA256 of uploaded attachment bytes; absent only on legacy projections. */
+  sha256?: string;
   /** Generated S3 key under `attachments/`. */
   s3Key: string;
   filename: string;
@@ -160,6 +162,7 @@ export async function parseRawMessage(
             contentType: attachment.mimeType,
           });
           attachment.sizeBytes = result.bytes;
+          attachment.sha256 = createHash('sha256').update(buf).digest('hex');
           uploadedAttachments.push(attachment);
         } catch (err) {
           errors.push(err instanceof Error ? err : new Error(String(err)));

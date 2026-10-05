@@ -75,11 +75,29 @@ function message(overrides: Partial<FixtureMessage> = {}): FixtureMessage {
 type ReaderFixture = {
   asOf?: string;
   activeTransportIds?: string[];
+  explicitTransportIds?: readonly string[];
   triggers?: FixtureMessage[];
   messagesByThread?: Map<string, FixtureMessage[]>;
   allMessages?: FixtureMessage[];
   normalRunAsOfByTrigger?: Map<string, string>;
 };
+
+function withExplicitTransportIds(
+  argv: readonly string[],
+  transportIds: readonly string[] = ['transport-a'],
+): string[] {
+  return [...argv, ...transportIds.flatMap((id) => ['--transport-id', id])];
+}
+
+function scopedTransportIds(fixture: ReaderFixture): string[] {
+  const requested =
+    fixture.explicitTransportIds && fixture.explicitTransportIds.length > 0
+      ? [...fixture.explicitTransportIds]
+      : (fixture.activeTransportIds ?? ['transport-a']);
+  return [...new Set(requested.map((id) => id.trim()).filter(Boolean))].sort((left, right) =>
+    left === right ? 0 : left < right ? -1 : 1,
+  );
+}
 
 function createReaderFixture(fixture: ReaderFixture = {}) {
   const calls: string[] = [];
@@ -87,9 +105,19 @@ function createReaderFixture(fixture: ReaderFixture = {}) {
     asOf: fixture.asOf ?? AS_OF,
     async discoverActiveTransportScope() {
       calls.push('scope');
+      const transportIds = scopedTransportIds(fixture);
+      if (transportIds.length === 0) {
+        throw new Error('Active transport scope is empty');
+      }
+      const active = new Set(fixture.activeTransportIds ?? ['transport-a']);
+      for (const id of transportIds) {
+        if (!active.has(id)) {
+          throw new Error('Quality export target is not active');
+        }
+      }
       return {
         asOf: fixture.asOf ?? AS_OF,
-        transportIds: fixture.activeTransportIds ?? ['transport-a'],
+        transportIds,
       };
     },
     async loadTriggers(ids: readonly string[]) {
@@ -106,7 +134,8 @@ function createReaderFixture(fixture: ReaderFixture = {}) {
     },
     async loadAllMessages() {
       calls.push('all');
-      return fixture.allMessages ?? [message()];
+      const allowed = new Set(scopedTransportIds(fixture));
+      return (fixture.allMessages ?? [message()]).filter((row) => allowed.has(row.transportId));
     },
   };
 
@@ -127,7 +156,8 @@ function createReaderFixture(fixture: ReaderFixture = {}) {
 type Harness = ReturnType<typeof createHarness>;
 
 function createHarness(fixture: ReaderFixture = {}, input = `${JSON.stringify(label('in-a'))}\n`) {
-  const { calls, reader } = createReaderFixture(fixture);
+  const fixtureState: ReaderFixture = { ...fixture };
+  const { calls, reader } = createReaderFixture(fixtureState);
   const inputReads: string[] = [];
   const writes: Array<{ name: string; content: string | Uint8Array }> = [];
   const inputPreflights: Array<{
@@ -156,7 +186,10 @@ function createHarness(fixture: ReaderFixture = {}, input = `${JSON.stringify(la
       preflightOutputRoot: async (config) => {
         outputPreflights.push(config);
       },
-      createReader: () => reader,
+      createReader: (options) => {
+        fixtureState.explicitTransportIds = options.explicitTransportIds;
+        return reader;
+      },
       createPrivateInputReader: () => ({
         async read(name: string) {
           inputReads.push(name);
@@ -235,19 +268,58 @@ describe('active connected-mailbox triage quality exporter', () => {
     });
 
     await expect(
-      exporter(['--all-inbound-triggers', '--out', '../outside.jsonl']),
+      exporter(
+        withExplicitTransportIds(['--all-inbound-triggers', '--out', '../outside.jsonl']),
+      ),
     ).rejects.toThrow(/private output name is invalid/i);
 
     expect(sideEffects).toEqual([]);
     expect(calls).toEqual([]);
   });
 
+  it('fails closed when transport ids are omitted', async () => {
+    const harness = createHarness({ activeTransportIds: ['transport-a'] });
+
+    await expect(
+      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+    ).rejects.toThrow(/transport-id|transport scope/i);
+
+    expect(harness.calls).toEqual([]);
+    expect(harness.inputReads).toEqual([]);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('explicit transport-a scope excludes transport-b in all-inbound export', async () => {
+    const first = message();
+    const second = message({
+      id: 'in-b',
+      transportId: 'transport-b',
+      threadId: 'thread-b',
+      threadTransportId: 'transport-b',
+    });
+    const harness = createHarness({
+      activeTransportIds: ['transport-a', 'transport-b'],
+      allMessages: [first, second],
+    });
+
+    const result = await harness.exporter(
+      withExplicitTransportIds(['--all-inbound-triggers', '--out', 'cases.jsonl'], ['transport-a']),
+    );
+
+    expect(result).toEqual({ mode: 'all-inbound-triggers', count: 1, transportCount: 1 });
+    expect(privateOutputRows(harness).map((row) => row.transportId)).toEqual(['transport-a']);
+  });
+
   it('fails empty active scope before reading raw inputs or publishing output', async () => {
     const harness = createHarness({ activeTransportIds: [] });
 
     await expect(
-      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
-    ).rejects.toThrow(/active transport scope/i);
+      harness.exporter(
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'], [
+          'transport-a',
+        ]),
+      ),
+    ).rejects.toThrow(/active transport scope|not active/i);
 
     expect(harness.inputReads).toEqual([]);
     expect(harness.writes).toEqual([]);
@@ -263,7 +335,9 @@ describe('active connected-mailbox triage quality exporter', () => {
     });
 
     await expect(
-      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      harness.exporter(
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      ),
     ).rejects.toThrow(/not active/i);
 
     expect(harness.inputReads).toEqual(['labels.jsonl']);
@@ -277,7 +351,12 @@ describe('active connected-mailbox triage quality exporter', () => {
     });
 
     await expect(
-      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      harness.exporter(
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'], [
+          'transport-a',
+          'transport-b',
+        ]),
+      ),
     ).rejects.toThrow(/thread.*transport|transport.*thread/i);
 
     expect(harness.writes).toEqual([]);
@@ -303,7 +382,12 @@ describe('active connected-mailbox triage quality exporter', () => {
       `${JSON.stringify(label('in-a'))}\n${JSON.stringify(label('in-b'))}\n`,
     );
 
-    const result = await harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']);
+    const result = await harness.exporter(
+      withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'], [
+        'transport-a',
+        'transport-b',
+      ]),
+    );
 
     expect(result).toEqual({ mode: 'labels', count: 2, transportCount: 2 });
     expect(
@@ -347,7 +431,11 @@ describe('active connected-mailbox triage quality exporter', () => {
       }),
     );
 
-    const result = await harness.exporter(['--targets', 'targets.json', '--out', 'cases.jsonl']);
+    const result = await harness.exporter(
+      withExplicitTransportIds(['--targets', 'targets.json', '--out', 'cases.jsonl'], [
+        'transport-b',
+      ]),
+    );
 
     expect(result).toEqual({ mode: 'targets', count: 1, transportCount: 1 });
     expect(privateOutputRows(harness).map((row) => row.transportId)).toEqual(['transport-b']);
@@ -366,7 +454,12 @@ describe('active connected-mailbox triage quality exporter', () => {
       allMessages: [second, first],
     });
 
-    const result = await harness.exporter(['--all-inbound-triggers', '--out', 'cases.jsonl']);
+    const result = await harness.exporter(
+      withExplicitTransportIds(['--all-inbound-triggers', '--out', 'cases.jsonl'], [
+        'transport-a',
+        'transport-b',
+      ]),
+    );
 
     expect(result).toEqual({ mode: 'all-inbound-triggers', count: 2, transportCount: 2 });
     expect(
@@ -381,7 +474,9 @@ describe('active connected-mailbox triage quality exporter', () => {
     const harness = createHarness({}, malformed);
 
     await expect(
-      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      harness.exporter(
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      ),
     ).rejects.toThrow(/quality label JSONL/i);
 
     expect(harness.writes).toEqual([]);
@@ -406,7 +501,8 @@ describe('active connected-mailbox triage quality exporter', () => {
       );
       const rootEntriesAfterFixtureSetup = await readdir(repoRoot);
 
-      const { reader } = createReaderFixture();
+      const fixtureState: ReaderFixture = { activeTransportIds: ['transport-a'] };
+      const { reader } = createReaderFixture(fixtureState);
       const exporter = createTriageQualityExporter({
         repoRoot: () => repoRoot,
         databaseUrl: () => 'postgres://synthetic.invalid/zero',
@@ -416,7 +512,10 @@ describe('active connected-mailbox triage quality exporter', () => {
         preflightOutputRoot: async (config) => {
           await prepareTrustedPrivateOutputRoot(config, privateOutputWindowsAclTestOptions);
         },
-        createReader: () => reader,
+        createReader: (options) => {
+          fixtureState.explicitTransportIds = options.explicitTransportIds;
+          return reader;
+        },
         createPrivateInputReader: (config) =>
           createPrivateInputReader(config, {
             verifyIgnoredPrivateOutputDirectory: () => true,
@@ -429,9 +528,11 @@ describe('active connected-mailbox triage quality exporter', () => {
           }),
       });
 
-      await expect(exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'])).resolves.toEqual(
-        { mode: 'labels', count: 1, transportCount: 1 },
-      );
+      await expect(
+        exporter(
+          withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+        ),
+      ).resolves.toEqual({ mode: 'labels', count: 1, transportCount: 1 });
       await expect(readdir(privateRoot)).resolves.toEqual([
         'cases.jsonl',
         'labels.jsonl',
@@ -441,7 +542,11 @@ describe('active connected-mailbox triage quality exporter', () => {
         PRIVATE_MARKER,
       );
       await expect(
-        exporter(['--targets', 'targets.json', '--out', 'target-cases.jsonl']),
+        exporter(
+          withExplicitTransportIds(['--targets', 'targets.json', '--out', 'target-cases.jsonl'], [
+            'transport-a',
+          ]),
+        ),
       ).resolves.toEqual({ mode: 'targets', count: 1, transportCount: 1 });
       await expect(readdir(privateRoot)).resolves.toEqual([
         'cases.jsonl',
@@ -451,7 +556,9 @@ describe('active connected-mailbox triage quality exporter', () => {
       ]);
 
       await expect(
-        exporter(['--labels', '../tracked.jsonl', '--out', 'nested/cases.jsonl']),
+        exporter(
+          withExplicitTransportIds(['--labels', '../tracked.jsonl', '--out', 'nested/cases.jsonl']),
+        ),
       ).rejects.toThrow();
       await expect(readdir(repoRoot)).resolves.toEqual(rootEntriesAfterFixtureSetup);
     });
@@ -483,9 +590,11 @@ describe('active connected-mailbox triage quality exporter', () => {
       }),
     });
 
-    await expect(exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'])).rejects.toThrow(
-      /private/i,
-    );
+    await expect(
+      exporter(
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      ),
+    ).rejects.toThrow(/private/i);
     expect(reads).toBe(0);
   });
 
@@ -532,7 +641,9 @@ describe('active connected-mailbox triage quality exporter', () => {
       });
 
       await expect(
-        exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+        exporter(
+          withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+        ),
       ).rejects.toThrow();
 
       expect(databaseUrlCalls).toBe(0);
@@ -544,16 +655,21 @@ describe('active connected-mailbox triage quality exporter', () => {
   });
 
   it('emits count-only CLI metadata and never private payload or paths', async () => {
-    const { reader } = createReaderFixture();
+    const fixtureState: ReaderFixture = { activeTransportIds: ['transport-a'] };
+    const { reader } = createReaderFixture(fixtureState);
     const stdout: string[] = [];
     const stderr: string[] = [];
     const command = createTriageQualityExportCommand({
-      args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
+      args: () =>
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
       preflightInputRoot: async () => undefined,
       preflightOutputRoot: async () => undefined,
-      createReader: () => reader,
+      createReader: (options) => {
+        fixtureState.explicitTransportIds = options.explicitTransportIds;
+        return reader;
+      },
       createPrivateInputReader: () => ({
         async read() {
           return `${JSON.stringify(label('in-a'))}\n`;
@@ -581,16 +697,21 @@ describe('active connected-mailbox triage quality exporter', () => {
   });
 
   it('hides private parser failures behind fixed stderr metadata', async () => {
-    const { reader } = createReaderFixture();
+    const fixtureState: ReaderFixture = { activeTransportIds: ['transport-a'] };
+    const { reader } = createReaderFixture(fixtureState);
     const stdout: string[] = [];
     const stderr: string[] = [];
     const command = createTriageQualityExportCommand({
-      args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
+      args: () =>
+        withExplicitTransportIds(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
       preflightInputRoot: async () => undefined,
       preflightOutputRoot: async () => undefined,
-      createReader: () => reader,
+      createReader: (options) => {
+        fixtureState.explicitTransportIds = options.explicitTransportIds;
+        return reader;
+      },
       createPrivateInputReader: () => ({
         async read() {
           return PRIVATE_MARKER;
@@ -613,7 +734,7 @@ describe('active connected-mailbox triage quality exporter', () => {
     expect(`${stdout}${stderr}`).not.toContain(PRIVATE_MARKER);
   });
 
-  it('opens one repeatable-read snapshot and sorts active transport IDs before content reads', async () => {
+  it('opens one repeatable-read snapshot and validates explicit transport IDs before content reads', async () => {
     const queries: Array<{ text: string; values: readonly unknown[] }> = [];
     let beginOptions: string | undefined;
     const client = ((strings: TemplateStringsArray, ...values: readonly unknown[]) => {
@@ -623,7 +744,7 @@ describe('active connected-mailbox triage quality exporter', () => {
         return Promise.resolve([{ asOf: new Date(AS_OF) }]);
       }
       if (text.includes('FROM mailbox_transport')) {
-        return Promise.resolve([{ id: 'transport-z' }, { id: 'transport-a' }]);
+        return Promise.resolve([{ id: 'transport-a' }, { id: 'transport-z' }]);
       }
       throw new Error('unexpected query');
     }) as {
@@ -639,6 +760,7 @@ describe('active connected-mailbox triage quality exporter', () => {
 
     const reader = createTriageQualityPostgresReader({
       databaseUrl: 'postgres://synthetic.invalid/zero',
+      explicitTransportIds: ['transport-z', 'transport-a'],
       clientFactory: () => client,
     });
     await reader.withRepeatableReadOnly(async (session) => {
@@ -653,6 +775,7 @@ describe('active connected-mailbox triage quality exporter', () => {
     expect(queries).toHaveLength(2);
     expect(queries[1]?.text).toMatch(/FROM mailbox_transport/);
     expect(queries[1]?.text).toMatch(/is_active = true/);
+    expect(queries[1]?.text).toMatch(/id = ANY/);
     expect(queries[1]?.text).not.toMatch(/from_address|text_body|html_body|owner_header/i);
   });
 

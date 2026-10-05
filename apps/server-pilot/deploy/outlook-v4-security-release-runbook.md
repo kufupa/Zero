@@ -221,3 +221,58 @@ verification in the
 [`outlook-web-mail-html-xss-follow-up.md`](../../../docs/production-readiness/outlook-web-mail-html-xss-follow-up.md)
 before pilot sign-off. Pane-only CSP does not govern other web routes. Do not
 claim generic web-mail CSP review or browser verification is complete.
+
+## History/live sync candidate proof before publication
+
+This source stage prepares a reviewed candidate. It does not authorize production migration,
+merge, installer publication or BCC macro retirement. Preserve the current installer and
+stable wrapping key until the separately authorized release.
+
+1. Record the Zero candidate commit and exact `apps/server-pilot/vsto` gitlink. Require
+   private native source checkout at that SHA, native Windows behavioral CI and x86/x64
+   candidate builds. Missing private-source access fails the gate. Source regex/Linux
+   checks cannot stand in for Outlook/COM execution.
+2. Run `pnpm --dir apps/server-pilot run test:outlook-sync` with a local disposable
+   PostgreSQL `TEST_DATABASE_URL` and `CONFIRM_DISPOSABLE_TEST_DB=1`, after unsetting
+   `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS`. The command probes PostgreSQL, applies
+   actual migrations in disposable databases and refuses skipped/todo tests. The CI
+   `outlook-sync` job provisions PostgreSQL16 independently; it never reads pilot RDS.
+3. Run the existing ingestion gate, server/mail builds, pane bridge/onboarding/draft/PDF
+   compatibility tests and exact native source/installer contracts. Resolve migration
+   journal incompatibility before preparing release assets; retain all originals.
+4. In the later authorized release, add/read-back retained
+   `outlook-sync-originals/v1/` Intelligent-Tiering30d and staging7d/abandoned multipart1d
+   rules using the additive procedure in [aws-resources.md](aws-resources.md). Verify no
+   expiration, noncurrent deletion or restore-required tier overlaps originals.
+5. On representative authorized PCs approve the actual hotel store/root and named staff,
+   then prove month history, absence over one month, pane closed, Outlook restart,
+   sign-in expiry/rebind, durable pause/resume, zero/protected content and at least100MiB
+   artifact transfer over the hotel proxy. Inspect truthful gaps and copied counts after
+   canonical receipts commit. Staff drafts, manual sending, attachments and moves must
+   remain usable; collect Windows STA responsiveness evidence.
+6. Prove actually saved sent copies inside the approved root and concurrent BCC/native
+   canonical dedup on each representative PC before removing only that known outbound
+   BCC macro/rule. No saved copy or inaccessible content remains a coverage limitation.
+7. Record candidate native SHA, Windows CI run/artifact manifest and installer SHA256,
+   Zero review head, migration/retention readback and supervised profile acceptance.
+   Publishing must serve the exact tested installer artifact; a source-stage pass alone
+   does not prove client readiness.
+
+Revocation/logout denies new leases and grants. The bounded existing-process server drain
+may finish already accepted sealed originals after staff logout or Outlook exit. Rollback
+must preserve these keys and durable receipts, pending ingestion and the stable wrapping
+secret; do not delete customer mail or restore native Send/Delete capability.
+
+Pending upload capacity is source-scoped and durable. The default server reservation budget is 1,073,741,824 bytes (1 GiB); a single larger artifact alone may transfer up to 167,772,160,000 bytes. A larger multi-artifact manifest needs an explicit operator adjustment for that exact enrolled source. Replayed manifests reserve once; accepted sealed receipts release transfer reservations without removing originals. Quota pauses new extraction while already queued reserved artifacts can finish. Unaccepted reservations expire after seven days; an authorized heartbeat reclaims at most100 expired reservations and resumes capacity. This does not change indefinite accepted-original retention.
+
+For a legitimate wider transfer, from the restricted server shell with the existing deployment environment:
+
+```bash
+pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts set-sync-quota \
+  --source-id '<exact source ID>' --device-id '<exact enrolled device ID>' \
+  --staff-email '<verified staff email>' --transport-email '<exact mailbox email>' \
+  --store-id '<exact approved StoreID>' --root-entry-id '<exact approved root EntryID>' \
+  --limit-bytes 4294967296
+```
+
+The command verifies every source owner/root field and persists a bounded safe integer limit for that source. It creates no read/write grant and deletes no mail or accepted originals.

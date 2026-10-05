@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { previousScopeBeforeSwitch } from '../lib/mail/account-switch-cache';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '../lib/mail/account-switch-cache';
 import { idbCacheKeyForScope } from '../lib/mail/mail-cache-scope';
 
 describe('account switch cache', () => {
@@ -23,5 +26,27 @@ describe('account switch cache', () => {
     expect(idbCacheKeyForScope(previous)).not.toBe(idbCacheKeyForScope(newScope));
     expect(idbCacheKeyForScope(previous)).toBe('zero-query-cache-u1-t-old');
     expect(idbCacheKeyForScope(newScope)).toBe('zero-query-cache-u1-t-new');
+  });
+
+  it('clears previous mailbox idb cache key and react query cache on account switch cleanup', async () => {
+    const current = { userId: 'u1', activeTransportId: 't-old' };
+    const previous = previousScopeBeforeSwitch({
+      current,
+      nextTransportId: 't-new',
+    });
+    const newScope = { userId: 'u1', activeTransportId: 't-new' };
+    const deleteIdbKey = vi.fn(async () => undefined);
+    const queryClient = { clear: vi.fn() };
+
+    await runAccountSwitchCacheCleanup({
+      previousScope: previous,
+      queryClient,
+      deleteIdbKey,
+    });
+
+    expect(queryClient.clear).toHaveBeenCalledOnce();
+    expect(deleteIdbKey).toHaveBeenCalledOnce();
+    expect(deleteIdbKey).toHaveBeenCalledWith('zero-query-cache-u1-t-old');
+    expect(deleteIdbKey.mock.calls[0][0]).not.toBe(idbCacheKeyForScope(newScope));
   });
 });

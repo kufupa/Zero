@@ -22,6 +22,7 @@ import {
   type ThreadCorpusSnapshotReader,
   type ThreadCorpusSourceRow,
 } from '../src/ops/centurion-thread-corpus-snapshot';
+import { createThreadCorpusPostgresReader } from '../src/ops/centurion-thread-corpus-postgres-reader';
 import {
   chmod,
   lstat,
@@ -1821,5 +1822,21 @@ describe('sealed active transport hydration artifacts', () => {
         },
       }),
     ).toThrow('Invalid private snapshot contract');
+  });
+});
+
+describe('corpus postgres reader explicit transport scope', () => {
+  it('rejects omitted or empty transport IDs at reader construction', () => {
+    expect(() =>
+      createThreadCorpusPostgresReader({
+        databaseUrl: 'postgresql://localhost/synthetic',
+      }),
+    ).toThrow('Explicit transport scope is required');
+    expect(() =>
+      createThreadCorpusPostgresReader({
+        databaseUrl: 'postgresql://localhost/synthetic',
+        transportIds: [],
+      }),
+    ).toThrow('Explicit transport scope is required');
   });
 });

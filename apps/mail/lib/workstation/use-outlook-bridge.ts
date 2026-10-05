@@ -226,7 +226,7 @@ export function useOutlookBridge() {
     }
   }, []);
 
-  const invalidateNavigation = useCallback(() => {
+  const invalidateNavigation = useCallback((clearSession = false) => {
     navigationRevision.current++;
     wakeIdleWaiters();
     const wasRegistered = navigation.current !== null;
@@ -238,7 +238,7 @@ export function useOutlookBridge() {
     renewalTimer.current = null;
     retryTimer.current = null;
     if (wasRegistered) {
-      window.chrome?.webview?.postMessage(JSON.stringify(createBridgeRequest('CLEAR_SESSION', {})));
+      window.chrome?.webview?.postMessage(JSON.stringify(createBridgeRequest(clearSession ? 'CLEAR_SESSION' : 'CLEAR_NAVIGATION', {})));
     }
     cancelMoveConsent();
     clearPending(false);
@@ -342,7 +342,7 @@ export function useOutlookBridge() {
         if (!isCurrent()) return;
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
-            invalidateNavigation();
+            invalidateNavigation(true);
             setRequiresRelogin(true);
             void refetchRef.current?.();
             const denied = new Error('Outlook navigation denied') as Error & { code?: string };
@@ -451,7 +451,7 @@ export function useOutlookBridge() {
         // Never forward a browser-supplied code or secret into the native pairing dialog.
         return nativeRequest<TResp>(action, {});
       }
-      if (action === 'REGISTER_NAVIGATION' || action === 'CLEAR_SESSION' ||
+      if (action === 'REGISTER_NAVIGATION' || action === 'CLEAR_SESSION' || action === 'CLEAR_NAVIGATION' || action === 'MAILBOX_SYNC_ACTIVATE' ||
         action === 'PREPARE_MOVE_CONSENT' || action === 'NATIVE_MOVE_CONSENT_RESOLVED')
         throw new Error('Native session controls are internal');
       const renewing = registrationFlight.current;
@@ -540,7 +540,8 @@ export function useOutlookBridge() {
         registered.storeId = ticket.storeId;
       } catch (error) {
         if (navigation.current === registered) {
-          invalidateNavigation();
+          const code = (error as { data?: { code?: string } })?.data?.code;
+          invalidateNavigation(code === 'UNAUTHORIZED' || code === 'FORBIDDEN');
           void refetchRef.current?.();
           if (++deniedTickets.current <= 1) {
             startRegistration.current(
@@ -810,7 +811,7 @@ export function useOutlookBridge() {
       if (retryTimer.current) clearTimeout(retryTimer.current);
       if (navigation.current)
         window.chrome?.webview?.postMessage(
-          JSON.stringify(createBridgeRequest('CLEAR_SESSION', {})),
+          JSON.stringify(createBridgeRequest('CLEAR_NAVIGATION', {})),
         );
       navigation.current = null;
       wakeIdleWaiters();
@@ -912,6 +913,11 @@ export function useOutlookBridge() {
       failedNativeAuthorizations.current = 0;
       setAuthorizationUnavailable(false);
       startRegistration.current(epoch.current, workstationInfo.deviceId, connection.id);
+    },
+    activateMailboxSync: async (payload: {version:1;sourceId:string;storeId:string;rootEntryId:string;activationTicket:string;idempotencyKey:string}) => {
+      if (!scopeKey || currentScope.current !== scopeKey || !navigation.current || Date.now() >= sessionExpiresAt.current || capabilities?.mailboxSync !== 1)
+        throw new Error('Mailbox sync authorization unavailable');
+      return nativeRequest('MAILBOX_SYNC_ACTIVATE', payload);
     },
     pairDevice: async () => {
       await nativeRequest('PAIR_DEVICE', {});

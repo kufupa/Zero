@@ -3,7 +3,7 @@ import { and, eq, gt, lt, isNull, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailboxAccess, mailboxTransport } from '../db/schema/mail.js';
 import { user } from '../db/schema/auth.js';
-import { outlookEnrollment, outlookEnrollmentGrant, outlookDevice, outlookDeviceGrant, outlookDeviceNonce } from '../db/schema/outlook-device.js';
+import { outlookEnrollment, outlookEnrollmentGrant, outlookDevice, outlookDeviceGrant, outlookDeviceNonce, outlookDeviceReadRoot } from '../db/schema/outlook-device.js';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -165,4 +165,72 @@ export async function revokeDevice(db: DB, deviceId: string): Promise<boolean> {
   const rows = await db.update(outlookDevice).set({ revokedAt: new Date() })
     .where(and(eq(outlookDevice.deviceId, deviceId), isNull(outlookDevice.revokedAt))).returning({ deviceId: outlookDevice.deviceId });
   return rows.length === 1;
+}
+
+export type ReadRootPolicyV1 = { storeId: string; rootEntryId: string; policyVersion: 1; policyGeneration: number };
+export type ReadRootApprovalInput = StaffMailboxGrant & { deviceId: string; storeId: string; rootEntryId: string; policyVersion: 1 };
+const validReadRoot = (input: ReadRootApprovalInput) => UUID_V4.test(input.deviceId) && input.policyVersion === 1
+  && [input.userId, input.transportId, input.storeId, input.rootEntryId].every(v => typeof v === 'string' && v.length > 0 && v.length <= 512);
+const readRootWhere = (input: ReadRootApprovalInput) => and(eq(outlookDeviceReadRoot.deviceId, input.deviceId),
+  eq(outlookDeviceReadRoot.userId, input.userId), eq(outlookDeviceReadRoot.transportId, input.transportId),
+  eq(outlookDeviceReadRoot.storeId, input.storeId), eq(outlookDeviceReadRoot.rootEntryId, input.rootEntryId));
+
+/** Restricted operator only. Approval cannot create a device/mailbox/staff grant. */
+export async function approveReadRoot(db: DB, input: ReadRootApprovalInput): Promise<void> {
+  if (!validReadRoot(input)) throw new Error('Invalid read root approval');
+  await db.transaction(async tx => {
+    // Serialize operator approvals per enrolled device so concurrent adds cannot exceed the finite DTO bound.
+    await tx.select({ id: outlookDevice.deviceId }).from(outlookDevice).where(eq(outlookDevice.deviceId, input.deviceId)).for('update');
+    if (!await isDeviceAuthorized(tx as DB, input.deviceId, input.userId, input.transportId, input.storeId, true))
+      throw new Error('Read root requires an active exact device, staff and mailbox grant');
+    const activeForStore = await tx
+      .select({
+        userId: outlookDeviceReadRoot.userId,
+        transportId: outlookDeviceReadRoot.transportId,
+        rootEntryId: outlookDeviceReadRoot.rootEntryId,
+      })
+      .from(outlookDeviceReadRoot)
+      .where(
+        and(
+          eq(outlookDeviceReadRoot.deviceId, input.deviceId),
+          eq(outlookDeviceReadRoot.storeId, input.storeId),
+          isNull(outlookDeviceReadRoot.revokedAt),
+        ),
+      )
+      .for('share');
+    const sameBinding = activeForStore.some(
+      (root) =>
+        root.userId === input.userId &&
+        root.transportId === input.transportId &&
+        root.rootEntryId === input.rootEntryId,
+    );
+    if (activeForStore.length >= 1 && !sameBinding)
+      throw new Error('Read root policy allows at most one active root per device store');
+    await tx.insert(outlookDeviceReadRoot).values(input).onConflictDoUpdate({
+      target: [outlookDeviceReadRoot.deviceId, outlookDeviceReadRoot.userId, outlookDeviceReadRoot.transportId,
+        outlookDeviceReadRoot.storeId, outlookDeviceReadRoot.rootEntryId],
+      set: { policyVersion: 1, policyGeneration: sql`${outlookDeviceReadRoot.policyGeneration} + 1`, revokedAt: null, approvedAt: new Date() },
+    });
+  });
+}
+export async function revokeReadRoot(db: DB, input: ReadRootApprovalInput): Promise<boolean> {
+  if (!validReadRoot(input)) throw new Error('Invalid read root revocation');
+  const rows = await db.update(outlookDeviceReadRoot).set({ revokedAt: new Date(),
+    policyGeneration: sql`${outlookDeviceReadRoot.policyGeneration} + 1` })
+    .where(and(readRootWhere(input), isNull(outlookDeviceReadRoot.revokedAt))).returning({ root: outlookDeviceReadRoot.rootEntryId });
+  return rows.length === 1;
+}
+/** Caller must also validate live staff session. Native must check actual COM ancestry before every read. */
+export async function getApprovedReadRoots(db: DB, deviceId: string, userId: string, transportId: string,
+  storeId: string, holdThroughGrant = false): Promise<ReadRootPolicyV1[]> {
+  if (!await isDeviceAuthorized(db, deviceId, userId, transportId, storeId, holdThroughGrant)) return [];
+  const query = db.select({ storeId: outlookDeviceReadRoot.storeId, rootEntryId: outlookDeviceReadRoot.rootEntryId,
+    policyVersion: outlookDeviceReadRoot.policyVersion, policyGeneration: outlookDeviceReadRoot.policyGeneration })
+    .from(outlookDeviceReadRoot).where(and(eq(outlookDeviceReadRoot.deviceId, deviceId),
+      eq(outlookDeviceReadRoot.userId, userId), eq(outlookDeviceReadRoot.transportId, transportId),
+      eq(outlookDeviceReadRoot.storeId, storeId), eq(outlookDeviceReadRoot.policyVersion, 1), isNull(outlookDeviceReadRoot.revokedAt)))
+    .orderBy(outlookDeviceReadRoot.rootEntryId).limit(2);
+  const rows = await (holdThroughGrant ? query.for('share') : query);
+  if (rows.length > 1) throw new Error('Read root policy exceeds one active root per device store');
+  return rows as ReadRootPolicyV1[];
 }

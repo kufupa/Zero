@@ -3,6 +3,7 @@ import {
   mailIngestMailbox,
   mailIngestQuarantine,
   mailIngestUidlClaim,
+  mailLiveAdmission,
   mailThread,
   mailboxTransport,
   message,
@@ -328,15 +329,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('POP3 UIDL claim', () => {
           (promise): promise is Promise<unknown> => promise !== undefined,
         ),
       );
-      await setup.db
-        .delete(mailboxTransport)
-        .where(eq(mailboxTransport.id, transportId))
-        .catch(() => undefined);
-      await setup.db
-        .delete(mailIngestMailbox)
-        .where(eq(mailIngestMailbox.id, ingestMailboxId))
-        .catch(() => undefined);
-      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      try {
+        // Live receipts retain their canonical message; remove only this fixture's receipts first.
+        await setup.db
+          .delete(mailLiveAdmission)
+          .where(eq(mailLiveAdmission.transportId, transportId));
+        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+        await setup.db.delete(mailIngestMailbox).where(eq(mailIngestMailbox.id, ingestMailboxId));
+      } finally {
+        await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      }
     }
   }, 30000);
 
@@ -455,15 +457,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('POP3 UIDL claim', () => {
           (promise): promise is Promise<unknown> => promise !== undefined,
         ),
       );
-      await setup.db
-        .delete(mailboxTransport)
-        .where(eq(mailboxTransport.id, transportId))
-        .catch(() => undefined);
-      await setup.db
-        .delete(mailIngestMailbox)
-        .where(eq(mailIngestMailbox.id, ingestMailboxId))
-        .catch(() => undefined);
-      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      try {
+        // Live receipts retain their canonical message; remove only this fixture's receipts first.
+        await setup.db
+          .delete(mailLiveAdmission)
+          .where(eq(mailLiveAdmission.transportId, transportId));
+        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+        await setup.db.delete(mailIngestMailbox).where(eq(mailIngestMailbox.id, ingestMailboxId));
+      } finally {
+        await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      }
     }
   }, 30000);
 
@@ -663,15 +666,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('POP3 UIDL claim', () => {
           (promise): promise is Promise<unknown> => promise !== undefined,
         ),
       );
-      await setup.db
-        .delete(mailboxTransport)
-        .where(eq(mailboxTransport.id, transportId))
-        .catch(() => undefined);
-      await setup.db
-        .delete(mailIngestMailbox)
-        .where(eq(mailIngestMailbox.id, ingestMailboxId))
-        .catch(() => undefined);
-      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      try {
+        // Live receipts retain their canonical message; remove only this fixture's receipts first.
+        await setup.db
+          .delete(mailLiveAdmission)
+          .where(eq(mailLiveAdmission.transportId, transportId));
+        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+        await setup.db.delete(mailIngestMailbox).where(eq(mailIngestMailbox.id, ingestMailboxId));
+      } finally {
+        await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+      }
     }
   }, 30000);
 });

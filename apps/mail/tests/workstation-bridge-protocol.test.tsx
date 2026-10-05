@@ -9,6 +9,9 @@ import {
   AccountSummarySchema,
   AccountCollectionResultSchema,
   BridgeCapabilitiesSchema,
+  MailboxSyncControlSchema,
+  ReadRootPolicyV1Schema,
+  supportsMailboxSync,
   DeleteEmailResultSchema,
   FolderCollectionResultSchema,
   FolderEmailSummarySchema,
@@ -60,7 +63,23 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: { workstation: { bridgeTicket: { mutate: ticketMutate } } },
 }));
 
+it('separates pane navigation cancellation from staff logout',()=>{expect(createBridgeRequest('CLEAR_NAVIGATION',{}).action).toBe('CLEAR_NAVIGATION');expect(createBridgeRequest('CLEAR_SESSION',{}).action).toBe('CLEAR_SESSION');});
+
 describe('Workstation Bridge Protocol', () => {
+  it('negotiates only mailboxSync version one and finite bounded controls', () => {
+    expect(supportsMailboxSync({ mailboxSync: 1 })).toBe(true);
+    expect(supportsMailboxSync({})).toBe(false);
+    expect(supportsMailboxSync({ mailboxSync: 2 })).toBe(false);
+    expect(supportsMailboxSync({ mailboxSync: '1' })).toBe(false);
+    for (const operation of ['start', 'pause', 'resume', 'syncNow', 'retryMissing'])
+      expect(MailboxSyncControlSchema.safeParse({ sourceId: 'source', operation }).success).toBe(true);
+    expect(MailboxSyncControlSchema.safeParse({ sourceId: 'source', operation: 'evaluate' }).success).toBe(false);
+    expect(MailboxSyncControlSchema.safeParse({ sourceId: 'source', operation: 'start', code: 'arbitrary' }).success).toBe(false);
+    expect(MailboxSyncControlSchema.safeParse({ sourceId: 'source', operation: 'start', window: { from: '2026-10-04T00:00:00Z', to: '2026-10-03T00:00:00Z' } }).success).toBe(false);
+    expect(ReadRootPolicyV1Schema.safeParse({ storeId: 'store', rootEntryId: 'root', policyVersion: 1, policyGeneration: 1 }).success).toBe(true);
+    expect(ReadRootPolicyV1Schema.safeParse({ storeId: 'store', rootEntryId: 'root', policyVersion: 2, policyGeneration: 1 }).success).toBe(false);
+  });
+
   it('requires protocol v4 and retains only authorized native mail actions', () => {
     expect(BRIDGE_PROTOCOL_VERSION).toBe(4);
     const actions = [
@@ -534,6 +553,11 @@ describe('v4 staff-authorized Outlook navigation', () => {
     respondV4(registration, { registered: true });
   }
 
+  it('pane unmount clears only navigation while explicit staff scope loss clears capture',async()=>{
+    security.userId='staff-1';security.transportId='transport-1';setMailCacheScope({userId:'staff-1',activeTransportId:'transport-1'});
+    const pane=render(<BridgeProbe/>);await registerPane();respondV4(await waitForBridgeRequest('GET_CAPABILITIES'),{bridgeProtocolVersion:4,addinVersion:'1.0.12',outlookVersion:'16.0',runtime:'Classic Outlook',newOutlookSupported:false,interactiveProfileRequired:true,maxPageSize:200,maxFolderDepth:64,maxFolderCount:5000,maxFolderSnapshotItems:5000,supportedActions:['GET_ACTIVE_EMAIL']});respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'),null);const start=nativeMessages().length;pane.unmount();expect(nativeMessages().slice(start).map(x=>x.action)).toContain('CLEAR_NAVIGATION');expect(nativeMessages().slice(start).map(x=>x.action)).not.toContain('CLEAR_SESSION');
+  });
+
   it('never requests mail or a ticket until real session and selected transport are ready', async () => {
     const pane = render(<BridgeProbe />);
     respondV4(await waitForBridgeRequest('PING'), {
@@ -654,6 +678,25 @@ describe('v4 staff-authorized Outlook navigation', () => {
     vi.useRealTimers();
     respondV4(await waitForBridgeRequest('REGISTER_NAVIGATION'), { registered: true });
     await waitFor(() => expect(ticketMutate).toHaveBeenCalledTimes(1));
+  });
+
+  it('clears only interactive navigation on transient ticket failure while capture stays authorized', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    const start = nativeMessages().length;
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), {
+      bridgeProtocolVersion: 4, addinVersion: '1.0.13', outlookVersion: '16.0',
+      runtime: 'Classic Outlook', newOutlookSupported: false, interactiveProfileRequired: true,
+      maxPageSize: 200, maxFolderDepth: 64, maxFolderCount: 5000, maxFolderSnapshotItems: 5000,
+      supportedActions: ['GET_ACTIVE_EMAIL'],
+    });
+    ticketMutate.mockRejectedValueOnce(new Error('Network temporarily unavailable'));
+    await waitFor(() => expect(nativeMessages().slice(start).some(x => x.action.startsWith('CLEAR_'))).toBe(true));
+    expect(nativeMessages().slice(start).map(x => x.action)).toContain('CLEAR_NAVIGATION');
+    expect(nativeMessages().slice(start).map(x => x.action)).not.toContain('CLEAR_SESSION');
   });
 
   it('coalesces simultaneous navigation renewals into one native registration', async () => {
@@ -1495,7 +1538,7 @@ describe('v4 staff-authorized Outlook navigation', () => {
     });
     const pendingRead = await waitForBridgeRequest('GET_ACTIVE_EMAIL');
     vi.mocked(fetch).mockImplementationOnce(() => new Promise(() => undefined));
-    ticketMutate.mockRejectedValueOnce(new Error('Staff grant denied'));
+    ticketMutate.mockRejectedValueOnce(Object.assign(new Error('Staff grant denied'), { data: { code: 'FORBIDDEN' } }));
     fireEvent.click(screen.getByRole('button', { name: 'List approved stores' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(nativeMessages().map((message) => message.action)).toContain('CLEAR_SESSION');
