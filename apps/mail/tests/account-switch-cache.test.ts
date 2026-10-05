@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { previousScopeBeforeSwitch } from '../lib/mail/account-switch-cache';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '../lib/mail/account-switch-cache';
 import { idbCacheKeyForScope } from '../lib/mail/mail-cache-scope';
-import { runLogoutCleanup } from '../lib/mail/query-cache-policy';
 
 describe('account switch cache', () => {
   it('captures previous scope before switch', () => {
@@ -26,23 +28,25 @@ describe('account switch cache', () => {
     expect(idbCacheKeyForScope(newScope)).toBe('zero-query-cache-u1-t-new');
   });
 
-  it('clears previous mailbox idb cache key on account switch cleanup', async () => {
-    const clearedKeys: string[] = [];
+  it('clears previous mailbox idb cache key and react query cache on account switch cleanup', async () => {
     const current = { userId: 'u1', activeTransportId: 't-old' };
     const previous = previousScopeBeforeSwitch({
       current,
       nextTransportId: 't-new',
     });
     const newScope = { userId: 'u1', activeTransportId: 't-new' };
+    const deleteIdbKey = vi.fn(async () => undefined);
+    const queryClient = { clear: vi.fn() };
 
-    await runLogoutCleanup({
-      queryClient: { clear: () => undefined },
-      clearIdb: async () => {
-        clearedKeys.push(idbCacheKeyForScope(previous));
-      },
+    await runAccountSwitchCacheCleanup({
+      previousScope: previous,
+      queryClient,
+      deleteIdbKey,
     });
 
-    expect(clearedKeys).toEqual(['zero-query-cache-u1-t-old']);
-    expect(clearedKeys[0]).not.toBe(idbCacheKeyForScope(newScope));
+    expect(queryClient.clear).toHaveBeenCalledOnce();
+    expect(deleteIdbKey).toHaveBeenCalledOnce();
+    expect(deleteIdbKey).toHaveBeenCalledWith('zero-query-cache-u1-t-old');
+    expect(deleteIdbKey.mock.calls[0][0]).not.toBe(idbCacheKeyForScope(newScope));
   });
 });
