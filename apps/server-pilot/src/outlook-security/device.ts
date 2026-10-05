@@ -183,9 +183,29 @@ export async function approveReadRoot(db: DB, input: ReadRootApprovalInput): Pro
     await tx.select({ id: outlookDevice.deviceId }).from(outlookDevice).where(eq(outlookDevice.deviceId, input.deviceId)).for('update');
     if (!await isDeviceAuthorized(tx as DB, input.deviceId, input.userId, input.transportId, input.storeId, true))
       throw new Error('Read root requires an active exact device, staff and mailbox grant');
-    const active = await getApprovedReadRoots(tx as DB, input.deviceId, input.userId, input.transportId, input.storeId, true);
-    if (active.length >= 25 && !active.some(root => root.rootEntryId === input.rootEntryId))
-      throw new Error('Read root policy supports at most 25 active roots');
+    const activeForStore = await tx
+      .select({
+        userId: outlookDeviceReadRoot.userId,
+        transportId: outlookDeviceReadRoot.transportId,
+        rootEntryId: outlookDeviceReadRoot.rootEntryId,
+      })
+      .from(outlookDeviceReadRoot)
+      .where(
+        and(
+          eq(outlookDeviceReadRoot.deviceId, input.deviceId),
+          eq(outlookDeviceReadRoot.storeId, input.storeId),
+          isNull(outlookDeviceReadRoot.revokedAt),
+        ),
+      )
+      .for('share');
+    const sameBinding = activeForStore.some(
+      (root) =>
+        root.userId === input.userId &&
+        root.transportId === input.transportId &&
+        root.rootEntryId === input.rootEntryId,
+    );
+    if (activeForStore.length >= 1 && !sameBinding)
+      throw new Error('Read root policy allows at most one active root per device store');
     await tx.insert(outlookDeviceReadRoot).values(input).onConflictDoUpdate({
       target: [outlookDeviceReadRoot.deviceId, outlookDeviceReadRoot.userId, outlookDeviceReadRoot.transportId,
         outlookDeviceReadRoot.storeId, outlookDeviceReadRoot.rootEntryId],
@@ -209,8 +229,8 @@ export async function getApprovedReadRoots(db: DB, deviceId: string, userId: str
     .from(outlookDeviceReadRoot).where(and(eq(outlookDeviceReadRoot.deviceId, deviceId),
       eq(outlookDeviceReadRoot.userId, userId), eq(outlookDeviceReadRoot.transportId, transportId),
       eq(outlookDeviceReadRoot.storeId, storeId), eq(outlookDeviceReadRoot.policyVersion, 1), isNull(outlookDeviceReadRoot.revokedAt)))
-    .orderBy(outlookDeviceReadRoot.rootEntryId).limit(26);
+    .orderBy(outlookDeviceReadRoot.rootEntryId).limit(2);
   const rows = await (holdThroughGrant ? query.for('share') : query);
-  if (rows.length > 25) throw new Error('Read root policy exceeds 25 active roots');
+  if (rows.length > 1) throw new Error('Read root policy exceeds one active root per device store');
   return rows as ReadRootPolicyV1[];
 }

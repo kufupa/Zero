@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { withTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
+import { withTestDb, openTestDbSession, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 import { user, session } from '../src/db/schema/auth.js';
 import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
+import { outlookDeviceGrant, outlookDeviceReadRoot } from '../src/db/schema/outlook-device.js';
 import * as devicePolicy from '../src/outlook-security/device.js';
 import { authorizeNative, issueBridgeTicket, registerNavigation } from '../src/outlook-security/authorization.js';
 
@@ -27,7 +28,51 @@ async function fixture(db: Parameters<typeof devicePolicy.issueEnrollment>[0]) {
     const { ticket } = await issueBridgeTicket(db, auth, new Headers(), input);
     return authorizeNative(db, deviceId, { ...input, ticket });
   }
-  return { approval, read, auth, paneChallenge, sessionId };
+  return { approval, read, auth, paneChallenge, sessionId, userId, transportId, deviceId };
+}
+
+async function withSecondTransportGrant(
+  db: Parameters<typeof devicePolicy.issueEnrollment>[0],
+  f: Awaited<ReturnType<typeof fixture>>,
+) {
+  const transportB = randomUUID();
+  await db.insert(mailboxTransport).values({
+    id: transportB,
+    email: `${transportB}@example.test`,
+    ownerHeaderValue: transportB,
+  });
+  await db.insert(mailboxAccess).values({ id: randomUUID(), userId: f.userId, transportId: transportB, role: 'member' });
+  await db.insert(outlookDeviceGrant).values({
+    deviceId: f.deviceId,
+    userId: f.userId,
+    transportId: transportB,
+  });
+  return {
+    transportB,
+    approvalB: {
+      ...f.approval,
+      transportId: transportB,
+      rootEntryId: 'root-transport-b',
+    },
+  };
+}
+
+async function countActiveRootsForStore(
+  db: Parameters<typeof devicePolicy.approveReadRoot>[0],
+  deviceId: string,
+  storeId: string,
+) {
+  const rows = await db
+    .select({ rootEntryId: outlookDeviceReadRoot.rootEntryId })
+    .from(outlookDeviceReadRoot)
+    .where(
+      and(
+        eq(outlookDeviceReadRoot.deviceId, deviceId),
+        eq(outlookDeviceReadRoot.storeId, storeId),
+        isNull(outlookDeviceReadRoot.revokedAt),
+      ),
+    );
+  return rows.length;
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE)('approved root read policy', () => {
@@ -55,12 +100,43 @@ describe.skipIf(!TEST_DB_AVAILABLE)('approved root read policy', () => {
     expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, f.approval.userId, f.approval.transportId, storeId)).toEqual([{ storeId, rootEntryId: 'retained-root', policyVersion: 1, policyGeneration: 3 }]);
     expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, randomUUID(), f.approval.transportId, storeId)).toEqual([]);
   }));
-  it('refuses a 26th root instead of silently truncating approved authority', async () => withTestDb(async db => {
-    const f = await fixture(db);
-    for (let i = 0; i < 25; i++) await devicePolicy.approveReadRoot(db, { ...f.approval, rootEntryId: `root-${i}` });
-    await expect(devicePolicy.approveReadRoot(db, { ...f.approval, rootEntryId: 'root-26' })).rejects.toThrow('25');
-    expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, f.approval.userId, f.approval.transportId, storeId)).toHaveLength(25);
-  }));
+  it('allows only one active read root per device store across root entry ids', async () =>
+    withTestDb(async (db) => {
+      const f = await fixture(db);
+      await devicePolicy.approveReadRoot(db, f.approval);
+      await expect(
+        devicePolicy.approveReadRoot(db, { ...f.approval, rootEntryId: 'second-root' }),
+      ).rejects.toThrow(/one active root/i);
+      expect(await countActiveRootsForStore(db, f.deviceId, storeId)).toBe(1);
+    }));
+  it('rejects a second transport binding on the same device store', async () =>
+    withTestDb(async (db) => {
+      const f = await fixture(db);
+      const { approvalB } = await withSecondTransportGrant(db, f);
+      await devicePolicy.approveReadRoot(db, f.approval);
+      await expect(devicePolicy.approveReadRoot(db, approvalB)).rejects.toThrow(/one active root/i);
+      expect(await countActiveRootsForStore(db, f.deviceId, storeId)).toBe(1);
+    }));
+  it('allows at most one concurrent transport binding per device store', async () => {
+    const setup = openTestDbSession();
+    const left = openTestDbSession();
+    const right = openTestDbSession();
+    try {
+      const f = await fixture(setup.db);
+      const { approvalB } = await withSecondTransportGrant(setup.db, f);
+      const outcomes = await Promise.allSettled([
+        devicePolicy.approveReadRoot(left.db, f.approval),
+        devicePolicy.approveReadRoot(right.db, approvalB),
+      ]);
+      expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+      expect(outcomes.filter((o) => o.status === 'rejected')).toHaveLength(1);
+      expect(await countActiveRootsForStore(setup.db, f.deviceId, storeId)).toBe(1);
+    } finally {
+      await left.close();
+      await right.close();
+      await setup.close();
+    }
+  });
   it('root approval fails closed after logout, device revocation and mailbox revocation', async () => withTestDb(async db => {
     expect(typeof devicePolicy.approveReadRoot).toBe('function');
     const f = await fixture(db);

@@ -12,6 +12,7 @@ import {
   primaryKey,
   check,
   customType,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { user } from './auth.js';
@@ -301,6 +302,7 @@ export const mailThread = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('mail_thread_id_transport_uidx').on(t.id, t.transportId),
     uniqueIndex('mail_thread_transport_root_uidx').on(t.transportId, t.threadRootId),
     index('mail_thread_transport_list_idx').on(t.transportId, t.isArchived, t.latestMessageAt),
     index('mail_thread_snooze_wake_idx')
@@ -356,6 +358,11 @@ export const message = pgTable(
     index('message_transport_header_idx')
       .on(t.transportId, t.messageIdHeader)
       .where(sql`${t.messageIdHeader} IS NOT NULL`),
+    foreignKey({
+      name: 'message_thread_transport_fk',
+      columns: [t.threadId, t.transportId],
+      foreignColumns: [mailThread.id, mailThread.transportId],
+    }).onDelete('cascade'),
   ],
 );
 

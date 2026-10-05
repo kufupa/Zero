@@ -80,6 +80,88 @@ describe('conservative shared canonical identity', () => {
     }));
 });
 
+it('keeps identical RFC Message-ID separate across transports', async () =>
+  withIngestionDb(async ({ db }) => {
+    const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+    const { mailboxTransport, message, mailThread } = await import('../src/db/schema/mail.js');
+    const { eq } = await import('drizzle-orm');
+    await db.insert(mailboxTransport).values({
+      id: 'transport-mailbox-b',
+      email: 'mailbox-b@example.test',
+      ownerHeaderValue: 'mailbox-b@example.test',
+    });
+    const sharedMessageId = data().internetMessageId;
+    const base = {
+      semanticVersion: 'v1',
+      ...data(),
+      subject: 'Cross transport',
+      inReplyTo: null,
+      references: [],
+      bccAddresses: [],
+      sentAt: null,
+      attachments: [],
+      originalMsgKey: 'outlook-sync-originals/v1/source/cross.msg',
+      sourceProvenance: {},
+    };
+    const onA = await persistOutlookHistory(db, {
+      transportId: 'transport-centurion',
+      sourceObservationId: 'cross-a',
+      ...base,
+    });
+    const onB = await persistOutlookHistory(db, {
+      transportId: 'transport-mailbox-b',
+      sourceObservationId: 'cross-b',
+      ...base,
+    });
+    expect(onB.messageId).not.toBe(onA.messageId);
+    expect(onB.threadId).not.toBe(onA.threadId);
+    const messages = await db.select().from(message).where(eq(message.messageIdHeader, sharedMessageId));
+    expect(messages).toHaveLength(2);
+    expect(new Set(messages.map((row) => row.transportId))).toEqual(
+      new Set(['transport-centurion', 'transport-mailbox-b']),
+    );
+    const threads = await db
+      .select()
+      .from(mailThread)
+      .where(eq(mailThread.id, onA.threadId));
+    expect(threads[0]!.transportId).toBe('transport-centurion');
+  }));
+
+it('rejects cross-transport message thread links at the database', async () =>
+  withIngestionDb(async ({ db, sql }) => {
+    const { mailThread, mailboxTransport } = await import('../src/db/schema/mail.js');
+    await db.insert(mailboxTransport).values({
+      id: 'transport-mailbox-b',
+      email: 'mailbox-b@example.test',
+      ownerHeaderValue: 'mailbox-b@example.test',
+    });
+    const threadId = 'thread-centurion-only';
+    await db.insert(mailThread).values({
+      id: threadId,
+      transportId: 'transport-centurion',
+      threadRootId: 'root-centurion-only',
+    });
+    await expect(
+      sql.unsafe(`
+        INSERT INTO message (
+          id, transport_id, thread_id, direction, from_address, to_addresses,
+          cc_addresses, bcc_addresses, message_id_header, received_at
+        ) VALUES (
+          'msg-cross-transport-link',
+          'transport-mailbox-b',
+          '${threadId}',
+          'inbound',
+          'guest@example.test',
+          '["mailbox-b@example.test"]'::jsonb,
+          '[]'::jsonb,
+          '[]'::jsonb,
+          'cross-link@example.test',
+          now()
+        )
+      `),
+    ).rejects.toThrow(/message_thread_transport_fk/i);
+  }));
+
 it('POP3 and native twins use one mailbox resolver while retaining independent originals', async () =>
   withIngestionDb(async ({ db }) => {
     const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
