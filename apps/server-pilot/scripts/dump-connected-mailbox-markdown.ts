@@ -48,7 +48,10 @@ type ConnectedMailboxDumpConnection = ConnectedMailboxDumpPostgresClient & {
 type DumpFactory = (input: {
   client: ConnectedMailboxDumpPostgresClient;
   repoRoot: string;
-}) => (request: { outputName: string }) => Promise<ConnectedMailboxMarkdownDumpResult>;
+}) => (request: {
+  outputName: string;
+  transportIds: readonly string[];
+}) => Promise<ConnectedMailboxMarkdownDumpResult>;
 
 export type ConnectedMailboxMarkdownDumpCommandDependencies = {
   args(): readonly string[];
@@ -71,12 +74,44 @@ function isSafeOutputName(value: unknown): value is string {
   );
 }
 
-function parseArgs(argv: readonly string[]): { outputName: string } {
-  if (argv.length === 0) return { outputName: DEFAULT_OUTPUT_NAME };
-  if (argv.length !== 2 || argv[0] !== '--out' || !isSafeOutputName(argv[1])) {
+function sortedDistinctTransportIds(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) =>
+    left === right ? 0 : left < right ? -1 : 1,
+  );
+}
+
+function parseArgs(argv: readonly string[]): { outputName: string; transportIds: readonly string[] } {
+  let outputName = DEFAULT_OUTPUT_NAME;
+  const transportIds: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === '--out') {
+      const value = argv[index + 1];
+      if (!isSafeOutputName(value)) throw new Error('Invalid arguments');
+      outputName = value!;
+      index += 1;
+      continue;
+    }
+    if (token === '--transport-id') {
+      const value = argv[index + 1];
+      if (typeof value !== 'string' || !value.trim()) throw new Error('Invalid arguments');
+      transportIds.push(value.trim());
+      index += 1;
+      continue;
+    }
     throw new Error('Invalid arguments');
   }
-  return { outputName: argv[1]! };
+  const normalizedTransportIds = sortedDistinctTransportIds(transportIds);
+  if (normalizedTransportIds.length === 0) throw new Error('Invalid arguments');
+  if (normalizedTransportIds.length !== transportIds.length) {
+    throw new Error('Invalid arguments');
+  }
+  for (let index = 0; index < transportIds.length; index += 1) {
+    if (transportIds[index] !== normalizedTransportIds[index]) {
+      throw new Error('Invalid arguments');
+    }
+  }
+  return { outputName, transportIds: normalizedTransportIds };
 }
 
 function nonBlank(value: unknown): string {
@@ -149,9 +184,9 @@ export function createConnectedMailboxMarkdownDumpCommand(
   };
 
   return async () => {
-    let outputName: string;
+    let parsed: ReturnType<typeof parseArgs>;
     try {
-      outputName = parseArgs(dependencies.args()).outputName;
+      parsed = parseArgs(dependencies.args());
     } catch {
       return writeFailure(dependencies, 'invalid_arguments');
     }
@@ -167,7 +202,10 @@ export function createConnectedMailboxMarkdownDumpCommand(
       const databaseUrl = nonBlank(dependencies.environment().DATABASE_URL);
       client = dependencies.createClient(databaseUrl);
       const dump = dependencies.createDump({ client, repoRoot });
-      const result = await dump({ outputName });
+      const result = await dump({
+        outputName: parsed.outputName,
+        transportIds: parsed.transportIds,
+      });
       dependencies.writeStdout(`${JSON.stringify(safeCountMetadata(result))}\n`);
       return 0;
     } catch {

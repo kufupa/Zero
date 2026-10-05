@@ -141,6 +141,7 @@ async function readCenturionSnapshot(fake: {
 }): Promise<CenturionCorpusSnapshot> {
   const reader = createThreadCorpusPostgresReader({
     databaseUrl: 'fixture://non-production',
+    transportIds: [CENTURION_TRANSPORT_ID],
     clientFactory: () => fake.client,
   });
   try {
@@ -238,6 +239,7 @@ describe('Centurion nine-day corpus reader', () => {
     const fake = createFakePostgres();
     const reader = createThreadCorpusPostgresReader({
       databaseUrl: 'fixture://non-production',
+      transportIds: [CENTURION_TRANSPORT_ID],
       clientFactory: () => fake.client,
     });
 

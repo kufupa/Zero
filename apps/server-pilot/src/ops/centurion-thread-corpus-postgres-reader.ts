@@ -183,6 +183,7 @@ export type ThreadCorpusPostgresClientFactory = (
 
 export type ThreadCorpusPostgresReaderOptions = {
   databaseUrl: string;
+  transportIds: readonly string[];
   asOf?: string;
   clientFactory?: ThreadCorpusPostgresClientFactory;
 };
@@ -275,6 +276,7 @@ type CenturionMessageRow = {
 
 type Selection = {
   asOf: string | undefined;
+  transportIds: readonly string[];
 };
 
 type SessionLifecycle = {
@@ -462,15 +464,44 @@ function mapQueueRow(
   };
 }
 
+function sortedDistinctTransportIds(values: readonly unknown[]): string[] {
+  const distinct = distinctText(values);
+  return distinct.sort((left, right) => (left === right ? 0 : left < right ? -1 : 1));
+}
+
+function assertExplicitTransportIds(transportIds: readonly unknown[]): readonly string[] {
+  if (!Array.isArray(transportIds) || transportIds.length === 0) {
+    throw new Error('Explicit transport scope is required');
+  }
+  const normalized = sortedDistinctTransportIds(transportIds);
+  if (normalized.length === 0) {
+    throw new Error('Explicit transport scope is required');
+  }
+  if (normalized.length !== transportIds.length) {
+    throw new Error('Explicit transport scope is required');
+  }
+  for (let index = 0; index < transportIds.length; index += 1) {
+    const value = transportIds[index];
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error('Explicit transport scope is required');
+    }
+    if (value !== normalized[index]) {
+      throw new Error('Explicit transport scope must be sorted');
+    }
+  }
+  return normalized;
+}
+
 function selectionFrom(options: ThreadCorpusPostgresReaderOptions): Selection {
   const databaseUrl = textOrNull(options.databaseUrl);
   if (!databaseUrl) throw new Error('Reader configuration is incomplete');
+  const transportIds = assertExplicitTransportIds(options.transportIds);
   if (options.asOf === undefined) {
-    return { asOf: undefined };
+    return { asOf: undefined, transportIds };
   }
   const asOf = timestampOrNull(options.asOf);
   if (!asOf) throw new Error('Snapshot timestamp is invalid');
-  return { asOf };
+  return { asOf, transportIds };
 }
 
 async function resolveAsOf(
@@ -486,26 +517,27 @@ async function resolveAsOf(
   return asOf;
 }
 
-async function discoverActiveTransportScope(
+async function resolveExplicitTransportScope(
   connection: ThreadCorpusPostgresClient,
   asOf: string,
+  requestedTransportIds: readonly string[],
 ): Promise<ActiveTransportScope> {
+  const transportIds = assertExplicitTransportIds(requestedTransportIds);
   const rows = await connection<ActiveTransportRow>`
     SELECT id
     FROM mailbox_transport
     WHERE is_active = true
+      AND id = ANY(${transportIds})
     ORDER BY id
   `;
-  return {
-    asOf,
-    transportIds: sortedDistinctText(rows.map((row) => textOrNull(row.id) ?? '')),
-  };
-}
-
-function assertNonEmptyActiveTransportScope(scope: ActiveTransportScope): void {
-  if (scope.transportIds.length === 0) {
-    throw new Error('Active transport scope is empty');
+  const activeIds = sortedDistinctText(rows.map((row) => textOrNull(row.id) ?? ''));
+  if (
+    activeIds.length !== transportIds.length ||
+    activeIds.some((id, index) => id !== transportIds[index])
+  ) {
+    throw new Error('Requested transport scope is not active');
   }
+  return { asOf, transportIds };
 }
 
 async function readMessages(
@@ -1140,6 +1172,7 @@ function makeSessionLifecycle(): SessionLifecycle {
 function sessionFor(
   connection: ThreadCorpusPostgresClient,
   asOf: string,
+  requestedTransportIds: readonly string[],
   lifecycle: SessionLifecycle,
 ): ThreadCorpusSnapshotReadSession {
   let activeTransportScope: Promise<ActiveTransportScope> | undefined;
@@ -1154,10 +1187,11 @@ function sessionFor(
   };
   const loadActiveTransportScope = (): Promise<ActiveTransportScope> => {
     assertActive();
-    activeTransportScope ??= discoverActiveTransportScope(connection, asOf).then((scope) => {
-      assertNonEmptyActiveTransportScope(scope);
-      return scope;
-    });
+    activeTransportScope ??= resolveExplicitTransportScope(
+      connection,
+      asOf,
+      requestedTransportIds,
+    );
     return activeTransportScope;
   };
   const loadMessages = async (): Promise<ThreadCorpusMessageRow[]> => {
@@ -1269,7 +1303,7 @@ export function createThreadCorpusPostgresReader(
           async (transaction) => {
             const asOf = await resolveAsOf(transaction, selection.asOf);
             const lifecycle = makeSessionLifecycle();
-            const session = sessionFor(transaction, asOf, lifecycle);
+            const session = sessionFor(transaction, asOf, selection.transportIds, lifecycle);
             try {
               return await load(session);
             } finally {

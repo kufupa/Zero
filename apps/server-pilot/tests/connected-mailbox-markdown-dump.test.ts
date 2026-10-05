@@ -17,6 +17,7 @@ import path from 'node:path';
 const AS_OF = '2026-08-25T10:00:00.000Z';
 const PRIVATE_BODY_MARKER = 'SYNTHETIC_PRIVATE_BODY_MARKER';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const EXPLICIT_TRANSPORT_SCOPE = ['transport-a', 'transport-z'] as const;
 
 type FakeRow = Record<string, unknown>;
 
@@ -107,7 +108,22 @@ function createFakePostgres(
     const text = queryText(strings);
     queries.push({ text, values, insideTransaction });
     if (/CURRENT_TIMESTAMP/i.test(text)) return [{ asOf: AS_OF }];
-    if (/FROM mailbox_transport/i.test(text)) return activeTransportRows;
+    if (/FROM mailbox_transport/i.test(text)) {
+      const requestedIds = values.find(
+        (value): value is string[] =>
+          Array.isArray(value) && value.every((entry) => typeof entry === 'string'),
+      );
+      if (!requestedIds) return activeTransportRows;
+      const activeIds = new Set(
+        activeTransportRows
+          .map((row) => (typeof row.id === 'string' ? row.id : null))
+          .filter((id): id is string => id !== null),
+      );
+      return requestedIds
+        .filter((id) => activeIds.has(id))
+        .sort()
+        .map((id) => ({ id }));
+    }
     if (/FROM message AS m/i.test(text)) return messages;
     throw new Error('Unexpected synthetic query');
   };
@@ -190,9 +206,12 @@ describe('connected mailbox Markdown dump', () => {
         },
       });
 
-      await expect(dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow(
-        'Private output root is not ignored',
-      );
+      await expect(
+        dump({
+          outputName: 'reservationist-inbox.md',
+          transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+        }),
+      ).rejects.toThrow('Private output root is not ignored');
 
       expect(fake.beginOptions).toEqual([]);
       expect(fake.queries).toEqual([]);
@@ -226,7 +245,12 @@ describe('connected mailbox Markdown dump', () => {
         },
       });
 
-      await expect(dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow();
+      await expect(
+        dump({
+          outputName: 'reservationist-inbox.md',
+          transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+        }),
+      ).rejects.toThrow();
 
       expect(fake.beginOptions).toEqual([]);
       expect(fake.queries).toEqual([]);
@@ -235,17 +259,53 @@ describe('connected mailbox Markdown dump', () => {
     });
   });
 
-  it('seals sorted active transports in one read-only snapshot and renders each row transport ID', async () => {
+  it('rejects omitted or empty transport IDs before opening a database snapshot', async () => {
     const fake = createFakePostgres();
     const harness = createDumpHarness(fake);
 
-    const result = await harness.dump({ outputName: 'reservationist-inbox.md' });
+    await expect(harness.dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow(
+      'Explicit transport scope is required',
+    );
+    await expect(
+      harness.dump({ outputName: 'reservationist-inbox.md', transportIds: [] }),
+    ).rejects.toThrow('Explicit transport scope is required');
+
+    expect(fake.beginOptions).toEqual([]);
+    expect(fake.queries).toEqual([]);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('rejects unsorted explicit transport IDs before reading messages', async () => {
+    const fake = createFakePostgres();
+    const harness = createDumpHarness(fake);
+
+    await expect(
+      harness.dump({
+        outputName: 'reservationist-inbox.md',
+        transportIds: ['transport-z', 'transport-a'],
+      }),
+    ).rejects.toThrow('Explicit transport scope must be sorted');
+
+    expect(fake.queries.some((query) => /FROM message AS m/i.test(query.text))).toBe(false);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('seals only requested active transports in one read-only snapshot and renders each row transport ID', async () => {
+    const fake = createFakePostgres();
+    const harness = createDumpHarness(fake);
+
+    const result = await harness.dump({
+      outputName: 'reservationist-inbox.md',
+      transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+    });
     const scopeQuery = queryContaining(fake.queries, 'FROM mailbox_transport');
     const messageQuery = queryContaining(fake.queries, 'FROM message AS m');
 
     expect(fake.beginOptions).toEqual(['isolation level repeatable read read only']);
     expect(fake.queries.every((query) => query.insideTransaction)).toBe(true);
     expect(scopeQuery.text).toMatch(/WHERE\s+is_active\s*=\s*true/i);
+    expect(scopeQuery.text).toMatch(/id\s*=\s*ANY/i);
+    expect(scopeQuery.values).toContainEqual([...EXPLICIT_TRANSPORT_SCOPE]);
     expect(scopeQuery.text).toMatch(/ORDER BY\s+id/i);
     expect(messageQuery.values).toContainEqual(['transport-a', 'transport-z']);
     expect(messageQuery.values).toContain(AS_OF);
@@ -278,13 +338,48 @@ describe('connected mailbox Markdown dump', () => {
     expect(harness.writes[0]?.content).not.toContain('message-thread-mismatch');
   });
 
+  it('rejects unknown or inactive requested transport IDs before reading messages', async () => {
+    const fake = createFakePostgres();
+    const harness = createDumpHarness(fake);
+
+    await expect(
+      harness.dump({
+        outputName: 'reservationist-inbox.md',
+        transportIds: ['transport-a', 'transport-missing'],
+      }),
+    ).rejects.toThrow('Requested transport scope is not active');
+
+    expect(fake.queries.some((query) => /FROM message AS m/i.test(query.text))).toBe(false);
+    expect(harness.writerConfigurations).toEqual([]);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('exports only transport-a rows when transport-a is the explicit scope', async () => {
+    const fake = createFakePostgres();
+    const harness = createDumpHarness(fake);
+
+    await harness.dump({
+      outputName: 'reservationist-inbox.md',
+      transportIds: ['transport-a'],
+    });
+
+    const messageQuery = queryContaining(fake.queries, 'FROM message AS m');
+    expect(messageQuery.values).toContainEqual(['transport-a']);
+    const markdown = harness.writes[0]?.content ?? '';
+    expect(markdown).toContain('**Transport ID:** `transport-a`');
+    expect(markdown).not.toContain('**Transport ID:** `transport-z`');
+  });
+
   it('rejects an empty active scope before reading messages or creating private output', async () => {
     const fake = createFakePostgres({ activeTransportRows: [] });
     const harness = createDumpHarness(fake);
 
-    await expect(harness.dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow(
-      'Active transport scope is empty',
-    );
+    await expect(
+      harness.dump({
+        outputName: 'reservationist-inbox.md',
+        transportIds: ['transport-a'],
+      }),
+    ).rejects.toThrow('Requested transport scope is not active');
 
     expect(fake.queries.some((query) => /FROM message AS m/i.test(query.text))).toBe(false);
     expect(harness.writerConfigurations).toEqual([]);
@@ -295,7 +390,10 @@ describe('connected mailbox Markdown dump', () => {
     const fake = createFakePostgres();
     const harness = createDumpHarness(fake);
 
-    await harness.dump({ outputName: 'reservationist-inbox.md' });
+    await harness.dump({
+      outputName: 'reservationist-inbox.md',
+      transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+    });
 
     const scopeQuery = queryContaining(fake.queries, 'FROM mailbox_transport');
     const messageQuery = queryContaining(fake.queries, 'FROM message AS m');
@@ -318,7 +416,10 @@ describe('connected mailbox Markdown dump', () => {
     });
     const harness = createDumpHarness(fake);
 
-    await harness.dump({ outputName: 'reservationist-inbox.md' });
+    await harness.dump({
+      outputName: 'reservationist-inbox.md',
+      transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+    });
 
     const messageQuery = queryContaining(fake.queries, 'FROM message AS m');
     expect(messageQuery.text).toMatch(/m\.message_id_header AS "messageIdHeader"/i);
@@ -346,7 +447,10 @@ describe('connected mailbox Markdown dump', () => {
     });
     const harness = createDumpHarness(fake);
 
-    await harness.dump({ outputName: 'reservationist-inbox.md' });
+    await harness.dump({
+      outputName: 'reservationist-inbox.md',
+      transportIds: [...EXPLICIT_TRANSPORT_SCOPE],
+    });
 
     const markdown = harness.writes[0]?.content ?? '';
     expect(markdown).toMatch(/reservationist inbox/i);
@@ -401,7 +505,14 @@ function createCommandHarness(args: readonly string[] = []) {
 
 describe('connected mailbox Markdown dump command', () => {
   it('fails closed before environment, client, or dump when output preflight rejects', async () => {
-    const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+    const harness = createCommandHarness([
+      '--transport-id',
+      'transport-a',
+      '--transport-id',
+      'transport-z',
+      '--out',
+      'reservationist-inbox.md',
+    ]);
     let environmentCalls = 0;
     let createClientCalls = 0;
     let createDumpCalls = 0;
@@ -446,7 +557,14 @@ describe('connected mailbox Markdown dump command', () => {
         'utf8',
       );
       await writeFile(path.join(repoRoot, '.private'), 'not-a-directory', 'utf8');
-      const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+      const harness = createCommandHarness([
+      '--transport-id',
+      'transport-a',
+      '--transport-id',
+      'transport-z',
+      '--out',
+      'reservationist-inbox.md',
+    ]);
       let environmentCalls = 0;
       let createClientCalls = 0;
       let createDumpCalls = 0;
@@ -483,6 +601,19 @@ describe('connected mailbox Markdown dump command', () => {
     });
   });
 
+  it('rejects missing --transport-id before creating a client or private output', async () => {
+    const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+
+    const code = await createConnectedMailboxMarkdownDumpCommand(harness.dependencies)();
+
+    expect(code).toBe(1);
+    expect(harness.calls).toEqual(['stderr']);
+    expect(harness.stdout).toEqual([]);
+    expect(harness.stderr).toEqual([
+      `${JSON.stringify({ event: 'connected_mailbox_markdown_dump.failed', code: 'invalid_arguments' })}\n`,
+    ]);
+  });
+
   it('rejects unsafe --out before creating a client or private output', async () => {
     const harness = createCommandHarness(['--out', '../outside.md']);
 
@@ -497,7 +628,14 @@ describe('connected mailbox Markdown dump command', () => {
   });
 
   it('writes count-only metadata to stdout', async () => {
-    const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+    const harness = createCommandHarness([
+      '--transport-id',
+      'transport-a',
+      '--transport-id',
+      'transport-z',
+      '--out',
+      'reservationist-inbox.md',
+    ]);
 
     const code = await createConnectedMailboxMarkdownDumpCommand(harness.dependencies)();
 
@@ -522,7 +660,14 @@ describe('connected mailbox Markdown dump command', () => {
   });
 
   it('does not echo private downstream content in errors', async () => {
-    const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+    const harness = createCommandHarness([
+      '--transport-id',
+      'transport-a',
+      '--transport-id',
+      'transport-z',
+      '--out',
+      'reservationist-inbox.md',
+    ]);
     harness.dependencies.createDump = () => async () => {
       throw new Error(PRIVATE_BODY_MARKER);
     };

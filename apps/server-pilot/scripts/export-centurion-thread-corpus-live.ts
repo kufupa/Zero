@@ -6,6 +6,7 @@ import {
   type ThreadCorpusExportSafeResult,
 } from '../src/ops/centurion-thread-corpus-exporter.js';
 import {
+  CENTURION_TRANSPORT_ID,
   createThreadCorpusPostgresReader,
   type ThreadCorpusPostgresReaderOptions,
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
@@ -408,6 +409,7 @@ async function prepareExport(
   const createReader = (): ClosableThreadCorpusReader =>
     dependencies.createReader({
       databaseUrl,
+      transportIds: [CENTURION_TRANSPORT_ID],
     });
 
   return {

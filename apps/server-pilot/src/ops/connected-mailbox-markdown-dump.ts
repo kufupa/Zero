@@ -69,6 +69,7 @@ export type ConnectedMailboxDumpPostgresClient = {
 
 export type ConnectedMailboxMarkdownDumpRequest = {
   outputName: string;
+  transportIds: readonly string[];
 };
 
 export type ConnectedMailboxMarkdownDumpResult = {
@@ -212,18 +213,49 @@ async function captureAsOf(client: ConnectedMailboxDumpPostgresClient): Promise<
   return asOf;
 }
 
-async function discoverActiveTransportScope(
+function assertExplicitTransportIds(transportIds: readonly unknown[]): readonly string[] {
+  if (!Array.isArray(transportIds) || transportIds.length === 0) {
+    throw new Error('Explicit transport scope is required');
+  }
+  const normalized = sortedDistinctText(transportIds);
+  if (normalized.length === 0) {
+    throw new Error('Explicit transport scope is required');
+  }
+  if (normalized.length !== transportIds.length) {
+    throw new Error('Explicit transport scope is required');
+  }
+  for (let index = 0; index < transportIds.length; index += 1) {
+    const value = transportIds[index];
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error('Explicit transport scope is required');
+    }
+    if (value !== normalized[index]) {
+      throw new Error('Explicit transport scope must be sorted');
+    }
+  }
+  return normalized;
+}
+
+async function resolveExplicitTransportScope(
   client: ConnectedMailboxDumpPostgresClient,
   asOf: string,
+  requestedTransportIds: readonly string[],
 ): Promise<ActiveTransportScope> {
+  const transportIds = assertExplicitTransportIds(requestedTransportIds);
   const rows = await client<{ id?: unknown }>`
     SELECT id
     FROM mailbox_transport
     WHERE is_active = true
+      AND id = ANY(${transportIds})
     ORDER BY id
   `;
-  const transportIds = sortedDistinctText(rows.map((row) => row.id));
-  if (transportIds.length === 0) throw new Error('Active transport scope is empty');
+  const activeIds = sortedDistinctText(rows.map((row) => row.id));
+  if (
+    activeIds.length !== transportIds.length ||
+    activeIds.some((id, index) => id !== transportIds[index])
+  ) {
+    throw new Error('Requested transport scope is not active');
+  }
   return { asOf, transportIds };
 }
 
@@ -347,13 +379,14 @@ export function createConnectedMailboxMarkdownDump(
   };
 
   return async (request) => {
+    const requestedTransportIds = assertExplicitTransportIds(request.transportIds);
     await preflightOutputRoot(outputConfig);
 
     const snapshot = await dependencies.client.begin(
       'isolation level repeatable read read only',
       async (client) => {
         const asOf = await captureAsOf(client);
-        const scope = await discoverActiveTransportScope(client, asOf);
+        const scope = await resolveExplicitTransportScope(client, asOf, requestedTransportIds);
         const messages = await readMessages(client, scope);
         return { asOf, scope, messages };
       },

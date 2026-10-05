@@ -90,39 +90,35 @@ function pilotUserIds(): string[] {
   return PILOT_USERS.map((u) => u.id);
 }
 
-/** Nava owns every active transport; Centurion-scoped staff own Centurion only. */
+type PilotMailboxAccessRow = {
+  userId: string;
+  transportId: string;
+  role: 'owner';
+  isDefault: boolean;
+};
+
+/** Deliberate pilot mailbox grants; new transports grant nobody until listed here. */
+export const PILOT_MAILBOX_ACCESS_ROWS: readonly PilotMailboxAccessRow[] = [
+  { userId: NAVA_USER_ID, transportId: NAVA_TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: NAVA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: CENTURION_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: MARTHA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: ROPPERMAN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: DARREN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: KAMALA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+];
+
 export async function applyPilotMailboxAccess(db: DB): Promise<void> {
   const keepIds = pilotUserIds();
   await db.delete(mailboxAccess).where(inArray(mailboxAccess.userId, keepIds));
 
-  const active = await db
-    .select({ id: mailboxTransport.id })
-    .from(mailboxTransport)
-    .where(eq(mailboxTransport.isActive, true));
-
-  for (const transport of active) {
+  for (const row of PILOT_MAILBOX_ACCESS_ROWS) {
     await db.insert(mailboxAccess).values({
-      id: `access-${NAVA_USER_ID}-${transport.id}`,
-      userId: NAVA_USER_ID,
-      transportId: transport.id,
-      role: 'owner',
-      isDefault: transport.id === NAVA_TRANSPORT_ID,
-    });
-  }
-
-  for (const userId of [
-    CENTURION_USER_ID,
-    MARTHA_USER_ID,
-    ROPPERMAN_USER_ID,
-    DARREN_USER_ID,
-    KAMALA_USER_ID,
-  ]) {
-    await db.insert(mailboxAccess).values({
-      id: `access-${userId}-${TRANSPORT_ID}`,
-      userId,
-      transportId: TRANSPORT_ID,
-      role: 'owner',
-      isDefault: true,
+      id: `access-${row.userId}-${row.transportId}`,
+      userId: row.userId,
+      transportId: row.transportId,
+      role: row.role,
+      isDefault: row.isDefault,
     });
   }
 }

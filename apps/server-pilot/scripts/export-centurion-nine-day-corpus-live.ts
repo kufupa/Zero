@@ -449,7 +449,10 @@ export function createCenturionNineDayCorpusExportCommand(
 
     let reader: CenturionNineDayCorpusReader | undefined;
     try {
-      reader = dependencies.createReader({ databaseUrl: prepared.databaseUrl });
+      reader = dependencies.createReader({
+        databaseUrl: prepared.databaseUrl,
+        transportIds: [CENTURION_TRANSPORT_ID],
+      });
       const snapshot = await reader.readCenturionSnapshot({
         transportId: CENTURION_TRANSPORT_ID,
         startInclusive: CENTURION_WINDOW_START_UTC,
