@@ -55,3 +55,76 @@ pnpm --dir apps/server-pilot exec tsx scripts/outlook-device-operator.ts revoke-
 ```
 
 The supervised acceptance record, production retention/migration readback and served artifact hash are still required before release. No Windows/profile/proxy or production acceptance is asserted by this document.
+
+## Mailbox isolation operator audit (read-only)
+
+This section supports mailbox-isolation release review. It does **not** authorize running these queries against pilot RDS from CI, Vitest, or this implementation session. Operators run them manually under a later release instruction with read-only database access.
+
+### Ownership and provisioning rules
+
+- Confirmed Centurion history stays on the Centurion transport; do not reassign Centurion threads because a message was seen on a shared PC or in a pane session.
+- `navaai@legacyhotels.co.za` is an ingest route and service identity, not the owner of every delivered message. Nava transport rows are not a substitute for Centurion or property-specific transports.
+- PMBobo ownership follows its trusted configured ingest route and transport mapping, not sender or recipient headers alone.
+- Unresolved legacy ownership stays quarantined or held for an operator decision. Never auto-retag from mailbox-looking headers, uploader identity, or staff role.
+- Da Vinci (and similar multi-inbox sites): create one `mailbox_transport` per real reservations inbox, grant each reservationist only their transport via `mailbox_access`, and keep one Outlook device/store root per authorized tuple. Admins receive multiple `mailbox_access` rows only for mailboxes they should access.
+
+### Read-only SQL checklist
+
+Replace placeholders before execution. Use a read-only role; do not run updates from this checklist.
+
+List active transports and display metadata:
+
+```sql
+SELECT id, email, owner_header_value, mailbox_type, is_active, display_name
+FROM mailbox_transport
+ORDER BY id;
+```
+
+List explicit grants (no inferred ownership):
+
+```sql
+SELECT ma.id, ma.user_id, u.email AS user_email, ma.transport_id, mt.email AS transport_email, ma.role, ma.is_default
+FROM mailbox_access AS ma
+INNER JOIN "user" AS u ON u.id = ma.user_id
+INNER JOIN mailbox_transport AS mt ON mt.id = ma.transport_id
+ORDER BY ma.user_id, ma.transport_id;
+```
+
+List Outlook sync sources bound to transports:
+
+```sql
+SELECT oss.id, oss.device_id, oss.transport_id, mt.email AS transport_email, oss.user_id, oss.store_id, oss.root_entry_id, oss.status
+FROM outlook_sync_source AS oss
+INNER JOIN mailbox_transport AS mt ON mt.id = oss.transport_id
+ORDER BY oss.transport_id, oss.device_id;
+```
+
+List trusted ingest mailboxes (service routes, not universal message owners):
+
+```sql
+SELECT id, email, display_name, is_active
+FROM mail_ingest_mailbox
+ORDER BY email;
+```
+
+Find message/thread transport mismatches (should return zero rows in a healthy corpus):
+
+```sql
+SELECT m.id AS message_id, m.transport_id AS message_transport_id, t.id AS thread_id, t.transport_id AS thread_transport_id
+FROM message AS m
+INNER JOIN mail_thread AS t ON t.id = m.thread_id
+WHERE m.transport_id <> t.transport_id
+ORDER BY m.id
+LIMIT 200;
+```
+
+List quarantined ingest rows awaiting operator ownership decisions:
+
+```sql
+SELECT q.id, q.ingest_mailbox_id, q.reason, q.created_at
+FROM mail_ingest_quarantine AS q
+ORDER BY q.created_at DESC
+LIMIT 200;
+```
+
+Hold unresolved quarantine rows for manual adjudication; do not bulk-retag into Centurion, Nava, or PMBobo based on headers alone.

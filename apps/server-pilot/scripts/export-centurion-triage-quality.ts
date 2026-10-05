@@ -1,5 +1,5 @@
 /**
- * Read-only triage quality exporter for every active connected mailbox.
+ * Read-only triage quality exporter for explicitly scoped connected mailboxes.
  *
  * Raw inputs and model-shaped outputs stay inside one verified private root.
  * Expected labels never enter model input or command output.
@@ -102,6 +102,7 @@ export type QualityPostgresClient = {
 
 export type TriageQualityPostgresReaderOptions = {
   databaseUrl: string;
+  explicitTransportIds: readonly string[];
   clientFactory?: (
     databaseUrl: string,
     options: {
@@ -309,31 +310,41 @@ async function resolveSnapshotAsOf(connection: QualityPostgresClient): Promise<s
   return asOf;
 }
 
-async function discoverActiveTransportScope(
+async function discoverExplicitTransportScope(
   connection: QualityPostgresClient,
   asOf: string,
+  explicitTransportIds: readonly string[],
 ): Promise<QualityActiveTransportScope> {
+  const transportIds = sortedDistinctTransportIds(explicitTransportIds);
+  if (transportIds.length === 0) {
+    return exportFailure('Active transport scope is empty');
+  }
   const rows = await connection<ActiveTransportRow>`
     SELECT id
     FROM mailbox_transport
     WHERE is_active = true
+      AND id = ANY(${transportIds})
     ORDER BY id
   `;
-  return {
-    asOf,
-    transportIds: sortedDistinctTransportIds(rows.map((row) => row.id)),
-  };
+  const found = sortedDistinctTransportIds(rows.map((row) => row.id));
+  if (found.length !== transportIds.length) {
+    return exportFailure('Quality export transport scope is not active');
+  }
+  return { asOf, transportIds: found };
 }
 
 function qualitySnapshotSession(
   connection: QualityPostgresClient,
   asOf: string,
+  explicitTransportIds: readonly string[],
 ): QualitySnapshotSession {
   let activeTransportScope: Promise<QualityActiveTransportScope> | undefined;
   const loadScope = (): Promise<QualityActiveTransportScope> => {
-    activeTransportScope ??= discoverActiveTransportScope(connection, asOf).then((scope) =>
-      assertActiveTransportScope(scope, asOf),
-    );
+    activeTransportScope ??= discoverExplicitTransportScope(
+      connection,
+      asOf,
+      explicitTransportIds,
+    ).then((scope) => assertActiveTransportScope(scope, asOf));
     return activeTransportScope;
   };
 
@@ -452,6 +463,10 @@ export function createTriageQualityPostgresReader(
 ): QualitySnapshotReader {
   const databaseUrl = textOrNull(options.databaseUrl);
   if (!databaseUrl) return exportFailure('Quality export reader configuration is incomplete');
+  const explicitTransportIds = sortedDistinctTransportIds(options.explicitTransportIds ?? []);
+  if (explicitTransportIds.length === 0) {
+    return exportFailure('Quality export transport scope is empty');
+  }
   const connection = (options.clientFactory ?? defaultClientFactory)(databaseUrl, {
     max: 1,
     ssl: getPostgresSslOptions(databaseUrl),
@@ -469,7 +484,7 @@ export function createTriageQualityPostgresReader(
       try {
         return await connection.begin(READ_ONLY_REPEATABLE_SNAPSHOT, async (transaction) => {
           const asOf = await resolveSnapshotAsOf(transaction);
-          return await load(qualitySnapshotSession(transaction, asOf));
+          return await load(qualitySnapshotSession(transaction, asOf, explicitTransportIds));
         });
       } finally {
         activeSnapshots -= 1;
@@ -762,7 +777,10 @@ export function createTriageQualityExporter(
     await dependencies.preflightInputRoot(inputConfig);
     const inputReader = dependencies.createPrivateInputReader(inputConfig);
     const outputWriter = dependencies.createPrivateOutputWriter(outputConfig);
-    const reader = dependencies.createReader({ databaseUrl: dependencies.databaseUrl() });
+    const reader = dependencies.createReader({
+      databaseUrl: dependencies.databaseUrl(),
+      explicitTransportIds: args.transportIds,
+    });
     const modelId = dependencies.modelId();
     const promptVersion = dependencies.promptVersion();
 

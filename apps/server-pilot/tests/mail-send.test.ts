@@ -3,7 +3,14 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { eq, and } from 'drizzle-orm';
-import { mailThread, message, outboundSendQueue } from '../src/db/schema/mail.js';
+import {
+  mailThread,
+  message,
+  outboundSendQueue,
+  mailboxTransport,
+  mailboxAccess,
+} from '../src/db/schema/mail.js';
+import { user as userAuthTable } from '../src/db/schema/auth.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -65,6 +72,40 @@ async function seedCenturionThread(db: import('../src/db/client.js').DB) {
     .onConflictDoNothing({ target: message.id });
 }
 
+async function seedFrontdeskUser(db: import('../src/db/client.js').DB) {
+  await db
+    .insert(userAuthTable)
+    .values({
+      id: 'user-frontdesk',
+      name: 'Frontdesk',
+      email: 'frontdesk@legacyhotel.com',
+      emailVerified: true,
+    })
+    .onConflictDoNothing({ target: userAuthTable.email });
+
+  await db
+    .insert(mailboxTransport)
+    .values({
+      id: 'transport-frontdesk',
+      email: 'frontdesk@legacyhotel.com',
+      ownerHeaderValue: 'frontdesk@legacyhotel.com',
+      mailboxType: 'personal',
+      displayName: 'Frontdesk Transport',
+      isActive: true,
+    })
+    .onConflictDoNothing({ target: mailboxTransport.id });
+
+  await db
+    .insert(mailboxAccess)
+    .values({
+      id: 'access-frontdesk-frontdesk',
+      userId: 'user-frontdesk',
+      transportId: 'transport-frontdesk',
+      role: 'owner',
+    })
+    .onConflictDoNothing({ target: mailboxAccess.id });
+}
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
   const prevUndo = process.env.UNDO_SEND_SECONDS;
 
@@ -89,6 +130,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
           fromEmail: 'frontdesk@legacyhotel.com',
         }),
       ).rejects.toThrow(/FORBIDDEN/);
+    });
+  }, 30000);
+
+  it('rejects spoofed active transport before mail.send persists rows', async () => {
+    await withSeededTestDb(async (db) => {
+      await seedCenturionThread(db);
+      await seedFrontdeskUser(db);
+      const centurionMessagesBefore = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(eq(message.transportId, 'transport-centurion'));
+      const centurionQueueBefore = await db
+        .select({ id: outboundSendQueue.id })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.transportId, 'transport-centurion'));
+
+      await expect(
+        callerFor('user-frontdesk', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        }),
+      ).rejects.toThrow(/FORBIDDEN/);
+
+      const centurionMessagesAfter = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(eq(message.transportId, 'transport-centurion'));
+      const centurionQueueAfter = await db
+        .select({ id: outboundSendQueue.id })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.transportId, 'transport-centurion'));
+      expect(centurionMessagesAfter).toHaveLength(centurionMessagesBefore.length);
+      expect(centurionQueueAfter).toHaveLength(centurionQueueBefore.length);
     });
   }, 30000);
 

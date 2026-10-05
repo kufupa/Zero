@@ -32,6 +32,7 @@ import {
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
+import { refreshThreadSearchVector } from '../src/mail/search/search-vector.js';
 
 const reachable = await probeTestDb();
 
@@ -92,6 +93,70 @@ async function seedFrontdeskFixture(db: import('../src/db/client.js').DB) {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mail router isolation (seeded, transaction-rollback)',
   () => {
+    it(
+      'user without Centurion access cannot search Centurion threads',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          await refreshThreadSearchVector(db, 'thread-centurion-1');
+          await refreshThreadSearchVector(db, 'thread-frontdesk-1');
+          const caller = await callerFor('user-frontdesk', { db });
+          for (const q of ['4471', 'Centurion', 'centurion secret']) {
+            const result = await caller.mail.listThreads({ folder: 'inbox', q });
+            expect(
+              result.threads.every((t) => t.transportId !== 'transport-centurion'),
+            ).toBe(true);
+            expect(result.threads.some((t) => t.id === 'thread-centurion-1')).toBe(
+              false,
+            );
+          }
+        });
+      },
+      30000,
+    );
+
+    it(
+      'admin with Centurion and Nava grants lists one transport per active mailbox',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          await seedInboxThread(db, {
+            threadId: 'thread-nava-iso-1',
+            transportId: 'transport-nava',
+            transportEmail: 'navaai@legacyhotels.co.za',
+            subject: 'Nava ops thread',
+            snippet: 'Nava-only inbox row',
+            messageId: 'msg-nava-iso-1',
+          });
+          const centurionCaller = await callerFor('user-navaai', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
+          const navaCaller = await callerFor('user-navaai', {
+            db,
+            requestedTransportId: 'transport-nava',
+          });
+          const centurionList = await centurionCaller.mail.listThreads({
+            folder: 'inbox',
+          });
+          const navaList = await navaCaller.mail.listThreads({ folder: 'inbox' });
+          expect(
+            centurionList.threads.every((t) => t.transportId === 'transport-centurion'),
+          ).toBe(true);
+          expect(
+            centurionList.threads.some((t) => t.id === 'thread-centurion-1'),
+          ).toBe(true);
+          expect(centurionList.threads.some((t) => t.transportId === 'transport-nava')).toBe(
+            false,
+          );
+          expect(navaList.threads.every((t) => t.transportId === 'transport-nava')).toBe(true);
+          expect(navaList.threads.some((t) => t.id === 'thread-nava-iso-1')).toBe(true);
+          expect(navaList.threads.some((t) => t.id === 'thread-centurion-1')).toBe(false);
+        });
+      },
+      30000,
+    );
+
     it(
       'user without Centurion access cannot list Centurion threads',
       async () => {
