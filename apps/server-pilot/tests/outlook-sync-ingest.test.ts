@@ -1,8 +1,11 @@
 import {
   aiWorkflowRun,
   attachment,
+  mailCategory,
+  mailLabel,
   mailLiveAdmission,
   mailThread,
+  mailThreadCategory,
   message,
 } from '../src/db/schema/mail.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
@@ -264,6 +267,17 @@ it.each(['inbound', 'outbound'] as const)(
           .select({ id: mailThread.id })
           .from(mailThread)
           .where(and(...buildMailFolderConditions(db, 'transport-centurion', folder)));
+      await db.insert(mailCategory).values({
+        id: 'existing-category',
+        transportId: 'transport-centurion',
+        name: 'Existing category',
+        slug: 'existing-category',
+      });
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        categoryId: 'existing-category',
+        transportId: 'transport-centurion',
+      });
       const beforeThread = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
       const beforeCounts = await loadUnreadCounts(db, 'transport-centurion');
       expect(await list(originalFolder)).toEqual([{ id: threadId }]);
@@ -296,6 +310,7 @@ it.each(['inbound', 'outbound'] as const)(
       expect(await list('all')).toEqual([{ id: threadId }]);
       const afterCounts = await loadUnreadCounts(db, 'transport-centurion');
       expect(afterCounts.folders).toEqual(beforeCounts.folders);
+      expect(afterCounts.categories).toEqual(beforeCounts.categories);
       expect(afterCounts.folders.find((f) => f.id === originalFolder)).toMatchObject({
         unreadCount: 1,
         totalCount: 1,
@@ -319,3 +334,79 @@ it.each(['inbound', 'outbound'] as const)(
     }),
   20_000,
 );
+
+it('counts staff-archived historical threads consistently without unread or active work', async () =>
+  withIngestionDb(async ({ db }) => {
+    const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+    const { buildMailFolderConditions } = await import('../src/mail/folder-semantics.js');
+    const { loadUnreadCounts } = await import('../src/mail/folder-unread-counts.js');
+    const saved = await persistOutlookHistory(db, input('staff-archived-history'));
+    await db.insert(mailCategory).values({
+      id: 'historical-category',
+      transportId: 'transport-centurion',
+      name: 'Historical category',
+      slug: 'historical-category',
+    });
+    await db.insert(mailThreadCategory).values({
+      threadId: saved.threadId,
+      categoryId: 'historical-category',
+      transportId: 'transport-centurion',
+    });
+    expect((await loadUnreadCounts(db, 'transport-centurion')).categories).toEqual([
+      { categoryId: 'historical-category', unreadCount: 0, totalCount: 0 },
+    ]);
+    await db.update(mailThread).set({ isArchived: true }).where(eq(mailThread.id, saved.threadId));
+    const archived = await db
+      .select({ id: mailThread.id })
+      .from(mailThread)
+      .where(and(...buildMailFolderConditions(db, 'transport-centurion', 'archive')));
+    expect(archived).toEqual([{ id: saved.threadId }]);
+    const counts = await loadUnreadCounts(db, 'transport-centurion');
+    expect(counts.folders.find((folder) => folder.id === 'archive')).toMatchObject({
+      totalCount: archived.length,
+      unreadCount: 0,
+    });
+    expect(counts.folders.find((folder) => folder.id === 'inbox')).toMatchObject({
+      totalCount: 0,
+      unreadCount: 0,
+    });
+    expect(await db.select().from(mailLiveAdmission)).toHaveLength(0);
+    expect(await db.select().from(aiWorkflowRun)).toHaveLength(0);
+  }));
+
+it('keeps staff-moved historical mail out of Bin, Spam and Quarantine list totals', async () =>
+  withIngestionDb(async ({ db }) => {
+    const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+    const { buildMailFolderConditions } = await import('../src/mail/folder-semantics.js');
+    const { loadUnreadCounts } = await import('../src/mail/folder-unread-counts.js');
+    await db.insert(mailLabel).values({
+      id: 'quarantine-label',
+      transportId: 'transport-centurion',
+      name: 'Quarantine',
+    });
+    for (const folder of ['bin', 'spam'] as const) {
+      const saved = await persistOutlookHistory(db, input(`staff-moved-history-${folder}`));
+      await db
+        .update(mailThread)
+        .set({
+          trashedAt: folder === 'bin' ? new Date() : null,
+          spamAt: folder === 'spam' ? new Date() : null,
+          labelIds: folder === 'spam' ? ['quarantine-label'] : [],
+        })
+        .where(eq(mailThread.id, saved.threadId));
+      const visible = await db
+        .select({ id: mailThread.id })
+        .from(mailThread)
+        .where(and(...buildMailFolderConditions(db, 'transport-centurion', folder)));
+      expect(visible).toEqual([]);
+      const counts = await loadUnreadCounts(db, 'transport-centurion');
+      expect.soft(counts.folders.find((item) => item.id === folder)).toMatchObject({
+        totalCount: visible.length,
+        unreadCount: 0,
+      });
+      expect.soft(counts.labels.find((item) => item.labelId === 'quarantine-label')).toMatchObject({
+        totalCount: 0,
+        unreadCount: 0,
+      });
+    }
+  }));

@@ -1,5 +1,3 @@
-import { and, asc, eq, exists, inArray, isNull, lte, or, sql } from 'drizzle-orm';
-import type { DB } from '../db/client.js';
 import {
   mailCategory,
   mailDraft,
@@ -8,7 +6,9 @@ import {
   mailThreadCategory,
   message,
 } from '../db/schema/mail.js';
+import { and, asc, eq, exists, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { clearExpiredSnoozes } from './folder-semantics.js';
+import type { DB } from '../db/client.js';
 
 export type MailUnreadFolderId = 'inbox' | 'sent' | 'archive' | 'snoozed' | 'bin' | 'spam';
 
@@ -110,8 +110,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           AND "mail_thread"."is_archived" = true
       )`,
       archiveTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."history_only" = false
-          AND "mail_thread"."trashed_at" IS NULL
+        WHERE "mail_thread"."trashed_at" IS NULL
           AND "mail_thread"."spam_at" IS NULL
           AND "mail_thread"."is_archived" = true
       )`,
@@ -135,7 +134,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           AND "mail_thread"."spam_at" IS NULL
       )`,
       binTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."trashed_at" IS NOT NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."trashed_at" IS NOT NULL
           AND "mail_thread"."spam_at" IS NULL
       )`,
       spamUnread: sql<number>`count(*) FILTER (
@@ -145,7 +145,8 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
           AND "mail_thread"."trashed_at" IS NULL
       )`,
       spamTotal: sql<number>`count(*) FILTER (
-        WHERE "mail_thread"."spam_at" IS NOT NULL
+        WHERE "mail_thread"."history_only" = false
+          AND "mail_thread"."spam_at" IS NOT NULL
           AND "mail_thread"."trashed_at" IS NULL
       )`,
     })
@@ -207,6 +208,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
         and(
           eq(mailThreadCategory.transportId, transportId),
           eq(mailThread.transportId, transportId),
+          eq(mailThread.historyOnly, false),
           isNull(mailThread.trashedAt),
           isNull(mailThread.spamAt),
           eq(mailThread.isArchived, false),
@@ -220,6 +222,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
                   eq(message.threadId, mailThread.id),
                   eq(message.transportId, transportId),
                   eq(message.direction, 'inbound'),
+                  eq(message.historyOnly, false),
                 ),
               ),
           ),
@@ -263,7 +266,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
       ? sql`(
           (${mailThread.isArchived} = true AND ${mailThread.spamAt} IS NULL AND lbl.label_id <> ${quarantineLabelId})
           OR
-          (${mailThread.spamAt} IS NOT NULL AND lbl.label_id = ${quarantineLabelId})
+          (${mailThread.historyOnly} = false AND ${mailThread.spamAt} IS NOT NULL AND lbl.label_id = ${quarantineLabelId})
         )`
       : sql`(${mailThread.isArchived} = true AND ${mailThread.spamAt} IS NULL)`;
 
