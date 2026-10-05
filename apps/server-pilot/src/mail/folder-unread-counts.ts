@@ -60,6 +60,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
             WHERE "message"."thread_id" = "mail_thread"."id"
               AND "message"."transport_id" = ${transportId}
               AND "message"."direction" = 'inbound'
+              AND "message"."history_only" = false
           )
       )`,
       inboxTotal: sql<number>`count(*) FILTER (
@@ -73,6 +74,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
             WHERE "message"."thread_id" = "mail_thread"."id"
               AND "message"."transport_id" = ${transportId}
               AND "message"."direction" = 'inbound'
+              AND "message"."history_only" = false
           )
       )`,
       sentUnread: sql<number>`count(*) FILTER (
@@ -85,6 +87,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
             WHERE "message"."thread_id" = "mail_thread"."id"
               AND "message"."transport_id" = ${transportId}
               AND "message"."direction" = 'outbound'
+              AND "message"."history_only" = false
           )
       )`,
       sentTotal: sql<number>`count(*) FILTER (
@@ -96,6 +99,7 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
             WHERE "message"."thread_id" = "mail_thread"."id"
               AND "message"."transport_id" = ${transportId}
               AND "message"."direction" = 'outbound'
+              AND "message"."history_only" = false
           )
       )`,
       archiveUnread: sql<number>`count(*) FILTER (

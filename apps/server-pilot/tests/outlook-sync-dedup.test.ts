@@ -206,8 +206,15 @@ it(
         contentId: null,
         isInline: false,
       };
-      const store = (uidl: string) =>
-        persistInboundMessage(
+      const storage = new FakeS3Storage();
+      const store = async (uidl: string) => {
+        for (const index of [0, 1])
+          await storage.putObject({
+            key: `attachments/candidate-${uidl}/${index}.pdf`,
+            body: Buffer.from('pdf'),
+            contentType: 'application/pdf',
+          });
+        return persistInboundMessage(
           {
             ...parsed,
             attachments: [0, 1].map((index) => ({
@@ -217,10 +224,14 @@ it(
           },
           Buffer.from(`raw ${uidl}`),
           { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: uidl, messageId: `candidate-${uidl}` },
-          { db, storage: new FakeS3Storage(), skipAiEnqueue: true },
+          { db, storage, skipAiEnqueue: true },
         );
+      };
       await store('one');
       await store('two');
+      expect(storage.listKeys('attachments/candidate-one/')).toHaveLength(2);
+      expect(storage.listKeys('attachments/candidate-two/')).toEqual([]);
+      expect(storage.listKeys('raw-mime/')).toHaveLength(2);
       expect((await store('two')).kind).toBe('duplicate');
       expect(await db.select().from(schema.mailIngestSourceReceipt)).toHaveLength(2);
       expect(await db.select().from(schema.message)).toHaveLength(1);

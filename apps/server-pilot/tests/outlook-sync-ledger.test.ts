@@ -93,6 +93,101 @@ describe('persisted sync foundation', () => {
   });
 });
 
+it('rejects SQL-unsafe observation instants while preserving native precision and valid offsets', async () => {
+  const { syncObservationV1 } = await import('../src/outlook-sync/contracts.js');
+  const instant = syncObservationV1.shape.timestamps.shape.receivedAt;
+  for (const value of [
+    '0000-01-01T12:00:00Z',
+    '2026-10-05T12:00:00+99:99',
+    '2026-10-05T12:00:00+16:00',
+    '2026-10-05T12:00:00-16:00',
+    '2026-10-05T12:00:00+02:60',
+    '2026-02-30T12:00:00Z',
+  ])
+    expect.soft(instant.safeParse(value).success, value).toBe(false);
+  for (const value of [
+    '0001-01-01T12:00:00Z',
+    '2024-02-29T12:00:00Z',
+    '2026-10-05T12:00:00.0000000Z',
+    '2026-10-05T12:00:00+02:00',
+    '2026-10-05T12:00:00+15:59',
+    '2026-10-05T12:00:00-15:59',
+  ])
+    expect(instant.parse(value)).toBe(value);
+});
+
+it('rejects SQL-unsafe inventory before persistence so other pending observations stay available', async () =>
+  withIngestionDb(async ({ db }) => {
+    const ledger = await import('../src/outlook-sync/ledger.js');
+    const service = await import('../src/outlook-sync/service.js');
+    const { outlookSyncObservation } = await import('../src/db/schema/outlook-sync.js');
+    const f = await outlookSyncFixture(db);
+    const activated = await service.activateSource(
+      db,
+      f.auth,
+      new Headers(),
+      f.transportId,
+      f.activation,
+      f.key,
+    );
+    const redeemed = await service.redeemActivation(
+      db,
+      f.deviceId,
+      {
+        version: 1,
+        sourceId: activated.sourceId,
+        activationTicket: activated.activationTicket,
+        idempotencyKey: f.activation.idempotencyKey,
+        storeId: f.storeId,
+        rootEntryId: f.rootEntryId,
+      },
+      f.key,
+    );
+    const scope = {
+      version: 1 as const,
+      sourceId: activated.sourceId,
+      sourceHandle: redeemed.sourceHandle,
+      storeId: f.storeId,
+      rootEntryId: f.rootEntryId,
+    };
+    const claim = await service.claimSource(db, f.deviceId, { ...scope, workerId: randomUUID() });
+    const fenced = { ...scope, claimFence: claim.claimFence };
+    const observation = f.observation('valid-pending');
+    observation.semanticReady = true;
+    observation.timestamps.receivedAt = new Date(
+      Date.parse(redeemed.historyTo) - 60000,
+    ).toISOString();
+    const page = {
+      ...fenced,
+      scan: { mode: 'history' as const, from: redeemed.historyFrom, to: redeemed.historyTo },
+      partitionId: 'inbox',
+      pageId: 'unsafe-offset',
+      checkpoint: { cursor: null, generation: '1', complete: true, gapCode: null },
+      discoveryComplete: true,
+      observations: [
+        {
+          ...observation,
+          sourceObservationId: 'unsafe-offset',
+          timestamps: {
+            ...observation.timestamps,
+            receivedAt: observation.timestamps.receivedAt.replace(/Z$/, '+16:00'),
+          },
+        },
+      ],
+    };
+    await expect(ledger.recordInventory(db, f.deviceId, page)).rejects.toBeInstanceOf(z.ZodError);
+    expect(await db.select().from(outlookSyncObservation)).toHaveLength(0);
+    await ledger.recordInventory(db, f.deviceId, {
+      ...page,
+      pageId: 'valid',
+      observations: [observation],
+    });
+    const pending = await ledger.pendingObservations(db, f.deviceId, fenced);
+    expect(pending.items.map((item) => item.observation.sourceObservationId)).toEqual([
+      'valid-pending',
+    ]);
+  }));
+
 it('reuses only same-source retained originals for corroborated unchanged content across metadata versions', async () =>
   withIngestionDb(async ({ db }) => {
     const ledger = await import('../src/outlook-sync/ledger.js');

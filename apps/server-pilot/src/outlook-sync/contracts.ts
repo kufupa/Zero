@@ -1,7 +1,18 @@
 import { z } from 'zod';
 
 const id = z.string().min(1).max(512);
-const instant = z.string().datetime({ offset: true });
+const instant = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => {
+    // PostgreSQL has no year zero and limits numeric timezone offsets to 15:59.
+    const offset = /[+-](\d{2}):?(\d{2})$/.exec(value);
+    return (
+      Number(value.slice(0, 4)) > 0 &&
+      Number.isFinite(Date.parse(value)) &&
+      (!offset || (Number(offset[1]) <= 15 && Number(offset[2]) <= 59))
+    );
+  }, 'Invalid persisted timestamp');
 export const safeBytes = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const version = z.literal(1);
 export const availability = z.enum([

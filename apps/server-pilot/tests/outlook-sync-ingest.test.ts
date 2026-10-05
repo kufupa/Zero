@@ -1,7 +1,13 @@
-import { aiWorkflowRun, attachment, mailThread, message } from '../src/db/schema/mail.js';
+import {
+  aiWorkflowRun,
+  attachment,
+  mailLiveAdmission,
+  mailThread,
+  message,
+} from '../src/db/schema/mail.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 const input = (id = 'source-one') => ({
   transportId: 'transport-centurion',
@@ -209,4 +215,107 @@ it(
       expect(await db.select().from(aiWorkflowRun)).toHaveLength(0);
     }),
   20000,
+);
+
+it.each(['inbound', 'outbound'] as const)(
+  'historical %s references preserve operational opposite-direction folder membership and counts',
+  async (historicalDirection) =>
+    withIngestionDb(async ({ db }) => {
+      const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+      const { buildMailFolderConditions } = await import('../src/mail/folder-semantics.js');
+      const { loadUnreadCounts } = await import('../src/mail/folder-unread-counts.js');
+      const operationalDirection = historicalDirection === 'inbound' ? 'outbound' : 'inbound';
+      const originalFolder = operationalDirection === 'inbound' ? 'inbox' : 'sent';
+      const historicalFolder = historicalDirection === 'inbound' ? 'inbox' : 'sent';
+      const threadId = `operational-${operationalDirection}`;
+      const parentId = `parent-${operationalDirection}@example.test`;
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: 'transport-centurion',
+        threadRootId: parentId,
+        historyOnly: false,
+        isRead: false,
+        isArchived: false,
+        latestMessageAt: new Date('2026-10-04T10:00:00Z'),
+      });
+      await db.insert(message).values({
+        id: `operational-${operationalDirection}`,
+        transportId: 'transport-centurion',
+        threadId,
+        direction: operationalDirection,
+        historyOnly: false,
+        isRead: false,
+        messageIdHeader: parentId,
+        fromAddress:
+          operationalDirection === 'inbound'
+            ? 'guest@example.test'
+            : 'centurion@legacyhotels.co.za',
+        toAddresses:
+          operationalDirection === 'inbound'
+            ? ['centurion@legacyhotels.co.za']
+            : ['guest@example.test'],
+        subject: 'Existing operational thread',
+        textBody: 'Operational parent',
+        receivedAt: new Date('2026-10-04T10:00:00Z'),
+        sentAt: operationalDirection === 'outbound' ? new Date('2026-10-04T10:00:00Z') : null,
+      });
+      const list = (folder: 'inbox' | 'sent' | 'all') =>
+        db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(and(...buildMailFolderConditions(db, 'transport-centurion', folder)));
+      const beforeThread = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      const beforeCounts = await loadUnreadCounts(db, 'transport-centurion');
+      expect(await list(originalFolder)).toEqual([{ id: threadId }]);
+      expect(await list(historicalFolder)).toEqual([]);
+      const saved = await persistOutlookHistory(db, {
+        ...input(`history-${historicalDirection}`),
+        direction: historicalDirection,
+        fromAddress:
+          historicalDirection === 'inbound' ? 'guest@example.test' : 'centurion@legacyhotels.co.za',
+        toAddresses:
+          historicalDirection === 'inbound'
+            ? ['centurion@legacyhotels.co.za']
+            : ['guest@example.test'],
+        sentAt: historicalDirection === 'outbound' ? input().authoredAt : null,
+        inReplyTo: parentId,
+        references: [parentId],
+      });
+      expect(saved.threadId).toBe(threadId);
+      expect(
+        (await db.select().from(message).where(eq(message.id, saved.messageId)))[0],
+      ).toMatchObject({
+        threadId,
+        direction: historicalDirection,
+        historyOnly: true,
+        isRead: true,
+        textBody: 'Historical searchable body',
+      });
+      expect(await list(originalFolder)).toEqual([{ id: threadId }]);
+      expect.soft(await list(historicalFolder)).toEqual([]);
+      expect(await list('all')).toEqual([{ id: threadId }]);
+      const afterCounts = await loadUnreadCounts(db, 'transport-centurion');
+      expect(afterCounts.folders).toEqual(beforeCounts.folders);
+      expect(afterCounts.folders.find((f) => f.id === originalFolder)).toMatchObject({
+        unreadCount: 1,
+        totalCount: 1,
+      });
+      expect(afterCounts.folders.find((f) => f.id === historicalFolder)).toMatchObject({
+        unreadCount: 0,
+        totalCount: 0,
+      });
+      const afterThread = (
+        await db.select().from(mailThread).where(eq(mailThread.id, threadId))
+      )[0]!;
+      expect(afterThread).toMatchObject({
+        isRead: beforeThread[0]!.isRead,
+        historyOnly: false,
+        latestMessageAt: beforeThread[0]!.latestMessageAt,
+        labelIds: beforeThread[0]!.labelIds,
+        spamAt: beforeThread[0]!.spamAt,
+      });
+      expect(await db.select().from(mailLiveAdmission)).toHaveLength(0);
+      expect(await db.select().from(aiWorkflowRun)).toHaveLength(0);
+    }),
+  20_000,
 );

@@ -836,7 +836,19 @@ export async function persistInboundMessage(
       activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
   }
-  if (reconciliation) return reconciliation;
+  const reconciledResult = reconciliation as PersistReconciledResult | null;
+  if (reconciledResult) {
+    if (parsed.attachments.length)
+      await cleanupCandidateAttachmentTasks({
+        db,
+        storage,
+        attachments: parsed.attachments,
+        meta,
+        canonicalMessageId: reconciledResult.messageId,
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+    return reconciledResult;
+  }
 
   return {
     kind: 'stored',
