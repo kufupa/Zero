@@ -126,6 +126,14 @@ describe('required Outlook sync verification gate', () => {
     const job = ci.split('  outlook-sync:')[1];
     expect(job).toBeDefined();
     expect(job).toContain('image: postgres:16');
+    expect(job).toContain('Require read-only private Outlook source access');
+    expect(job).toContain('ref: ${{ steps.native.outputs.gitlink_sha }}');
+    expect(job).toContain('path: apps/server-pilot/vsto');
+    expect(job).toContain('persist-credentials: false');
+    expect(job).toContain('Verify the native checkout matches the gitlink');
+    expect(job.indexOf('Checkout exact private Outlook add-in gitlink')).toBeLessThan(
+      job.indexOf('run test:outlook-sync'),
+    );
     expect(job).toContain('run test:outlook-sync');
     expect(job).toContain('CONFIRM_DISPOSABLE_TEST_DB=1');
     expect(job).toContain('unset DATABASE_URL');

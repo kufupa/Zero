@@ -238,6 +238,43 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - name: Require read-only private Outlook source access
+        id: native
+        shell: bash
+        env:
+          NAVA_OUTLOOK_READ_SSH_KEY: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if test -z "$NAVA_OUTLOOK_READ_SSH_KEY"; then
+            echo '::error::Set NAVA_OUTLOOK_READ_SSH_KEY for required Outlook sync DTO verification.'
+            exit 1
+          fi
+          gitlink_sha=$(git rev-parse HEAD:apps/server-pilot/vsto)
+          if [[ ! "$gitlink_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Missing exact private Outlook add-in gitlink'
+            exit 1
+          fi
+          echo "gitlink_sha=$gitlink_sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact private Outlook add-in gitlink
+        uses: actions/checkout@v4
+        with:
+          repository: kufupa/nava-outlook-addin
+          ref: ${{ steps.native.outputs.gitlink_sha }}
+          path: apps/server-pilot/vsto
+          ssh-key: ${{ secrets.NAVA_OUTLOOK_READ_SSH_KEY }}
+          persist-credentials: false
+      - name: Verify the native checkout matches the gitlink
+        shell: bash
+        env:
+          EXPECTED_GITLINK: ${{ steps.native.outputs.gitlink_sha }}
+        run: |
+          set -euo pipefail
+          actual=$(git -C apps/server-pilot/vsto rev-parse HEAD)
+          if test "$actual" != "$EXPECTED_GITLINK" || \
+             ! test -f apps/server-pilot/vsto/tests/fixtures/outlook-sync-v1.json; then
+            echo '::error::Private Outlook source unavailable or does not match the exact gitlink.'
+            exit 1
+          fi
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
       - name: Install dependencies
