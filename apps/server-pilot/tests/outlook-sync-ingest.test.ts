@@ -86,6 +86,7 @@ describe('side-effect-free Outlook history on PostgreSQL', () => {
             ...input('twin').attachments[0]!,
             sourceAttachmentId: '1',
             s3Key: 'outlook-sync-originals/v1/source/twin/1',
+            contentId: 'richer-inline-variant',
           },
         ],
       });
@@ -96,7 +97,12 @@ describe('side-effect-free Outlook history on PostgreSQL', () => {
         rawMimeS3Key: 'raw-mime/original.eml',
       });
       expect(await db.select().from(aiWorkflowRun)).toHaveLength(0);
-      expect(await db.select().from(attachment)).toHaveLength(3);
+      const retained = await db.select().from(attachment);
+      expect(retained).toHaveLength(2);
+      expect(retained.map((item) => item.contentId).sort()).toEqual([
+        'image',
+        'richer-inline-variant',
+      ]);
     }));
   it('repairs child-before-parent reference links only among history-only threads', async () =>
     withIngestionDb(async ({ db }) => {

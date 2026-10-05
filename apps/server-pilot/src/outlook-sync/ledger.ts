@@ -636,6 +636,7 @@ export async function prepareArtifacts(
       .for('update');
     if (
       !obs ||
+      obs.artifactOrigin ||
       obs.evidence.semanticReady === false ||
       obs.semanticVersion !== manifest.semanticVersion
     )
@@ -1093,5 +1094,31 @@ export async function enrichObservation(
       semanticVersion: full.semanticVersion,
       exportEligible: isExportEligible(s, { evidence: full }),
     };
+  });
+}
+
+/** Keep only a still-live already-owned finalize fence alive; this never acquires or rotates a claim. */
+export async function renewFinalizationClaim(
+  db: DB,
+  deviceId: string,
+  scope: NativeSyncScope,
+  owner: string,
+) {
+  return db.transaction(async (tx) => {
+    const t = tx as DB,
+      {
+        source: s,
+        staff,
+        now,
+      } = await authorizedSource(t, deviceId, scope, {
+        requireFence: true,
+        allowQuota: true,
+      });
+    if (!owner || s.claimOwner !== owner) throw new SyncDeniedError();
+    const expiresAt = new Date(
+      Math.min(now.getTime() + 60_000, staff.expiresAt.getTime(), s.authorityExpiresAt.getTime()),
+    );
+    await t.update(sourceTable).set({ claimExpiresAt: expiresAt }).where(eq(sourceTable.id, s.id));
+    return expiresAt;
   });
 }

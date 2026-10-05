@@ -8,6 +8,7 @@ import {
   recordLiveHint,
   reportObservationGap,
   enrichObservation,
+  renewFinalizationClaim,
 } from '../outlook-sync/ledger.js';
 import {
   nativeActivateInput,
@@ -20,12 +21,16 @@ import {
   syncObservationV1,
 } from '../outlook-sync/contracts.js';
 import {
+  OutlookSyncStorage,
+  type SyncUploadSession,
+  type SyncSealedArtifact,
+} from '../outlook-sync/storage.js';
+import {
   authorizedSource,
   SyncDeniedError,
   SyncClaimBusyError,
 } from '../outlook-sync/authorization.js';
 import { claimSource, issueReadLease, redeemActivation } from '../outlook-sync/service.js';
-import { OutlookSyncStorage, type SyncUploadSession } from '../outlook-sync/storage.js';
 import { outlookSyncSource, outlookSyncScan } from '../db/schema/outlook-sync.js';
 import { verifyDeviceRequest, wrappingKey } from '../outlook-security/device.js';
 import { reclaimExpiredReservations } from '../outlook-sync/quota.js';
@@ -34,6 +39,8 @@ import type { DB } from '../db/client.js';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
+// Handler factories are per request in main; coalescing must survive across those factories.
+const finalizations = new WeakMap<DB, Map<string, Promise<unknown>>>();
 const eventInput = nativeFenced.extend({
   eventOnly: z.literal(true),
   observations: z.array(syncObservationV1).max(100),
@@ -99,7 +106,7 @@ async function boundedBody(request: Request, max: number) {
 export function createOutlookSyncNativeHandler(
   db: DB,
   key: string,
-  options: { storage?: OutlookSyncStorage } = {},
+  options: { storage?: OutlookSyncStorage; finalizeRenewalMs?: number } = {},
 ) {
   wrappingKey(key);
   return async (request: Request): Promise<Response> => {
@@ -339,7 +346,7 @@ export function createOutlookSyncNativeHandler(
         }
       } else {
         const input = finalizeInput.parse(raw);
-        await db.transaction((tx) =>
+        const authority = await db.transaction((tx) =>
           authorizedSource(tx as DB, verified.deviceId, input, {
             requireFence: true,
             allowQuota: true,
@@ -347,12 +354,75 @@ export function createOutlookSyncNativeHandler(
         );
         const a = await ownedArtifact(db, input.sourceId, input.artifactId);
         if (!a.uploadSession) throw new SyncDeniedError();
-        const storage = options.storage ?? new OutlookSyncStorage(),
-          sealed = await storage.seal(
-            a.uploadSession as unknown as SyncUploadSession,
-            input.completedParts,
+        const storage = options.storage ?? new OutlookSyncStorage();
+        const session = a.uploadSession as unknown as SyncUploadSession;
+        if (a.acceptedAt && a.verifiedReceipt) {
+          const receipt = await storage.verifyAcceptedReceipt(
+            session,
+            a.verifiedReceipt as unknown as SyncSealedArtifact,
           );
-        result = await acceptArtifact(db, verified.deviceId, input, a.id, sealed);
+          result = await acceptArtifact(db, verified.deviceId, input, a.id, receipt);
+        } else {
+          let pending = finalizations.get(db);
+          if (!pending) {
+            pending = new Map();
+            finalizations.set(db, pending);
+          }
+          const id = JSON.stringify([input.sourceId, a.id, session.attemptId, input.claimFence]);
+          let work = pending.get(id);
+          if (!work) {
+            if (pending.size >= 100) throw new Error('Finalize capacity busy');
+            work = (async () => {
+              const controller = new AbortController();
+              const expiresAt = Math.min(
+                authority.source.authorityExpiresAt.getTime(),
+                authority.staff.expiresAt.getTime(),
+              );
+              const expiry = setTimeout(
+                () => controller.abort(new SyncDeniedError()),
+                Math.max(0, expiresAt - Date.now()),
+              );
+              expiry.unref();
+              let renewal: Promise<void> | undefined;
+              const timer = setInterval(() => {
+                if (renewal || controller.signal.aborted) return;
+                renewal = renewFinalizationClaim(
+                  db,
+                  verified.deviceId,
+                  input,
+                  authority.source.claimOwner!,
+                )
+                  .then(() => undefined)
+                  .catch((error) => {
+                    controller.abort(error);
+                  })
+                  .finally(() => {
+                    renewal = undefined;
+                  });
+              }, options.finalizeRenewalMs ?? 20_000);
+              timer.unref();
+              try {
+                const sealed = await storage.seal(session, input.completedParts, controller.signal);
+                controller.signal.throwIfAborted();
+                return await acceptArtifact(db, verified.deviceId, input, a.id, sealed);
+              } finally {
+                clearInterval(timer);
+                clearTimeout(expiry);
+                await renewal;
+              }
+            })();
+            pending.set(id, work);
+            void work.finally(() => pending!.delete(id)).catch(() => undefined);
+          }
+          result = await work;
+          // Every retry/joiner remains independently authorized, even if authority changed during shared work.
+          await db.transaction((tx) =>
+            authorizedSource(tx as DB, verified.deviceId, input, {
+              requireFence: true,
+              allowQuota: true,
+            }),
+          );
+        }
       }
       return Response.json(result, { headers: { 'cache-control': 'no-store' } });
     } catch (error) {

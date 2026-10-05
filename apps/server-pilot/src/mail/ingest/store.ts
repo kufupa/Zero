@@ -47,13 +47,17 @@ import {
   normalizeRocketseedMailbox,
 } from './rocketseed-returned-copy.js';
 import {
+  findCanonicalCandidate,
+  lockCanonicalMailbox,
+  newCanonicalAttachments,
+} from './canonical-identity.js';
+import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
-import { findCanonicalCandidate, lockCanonicalMailbox } from './canonical-identity.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { buildReferenceChain, canonicalMessageId } from './message-id.js';
@@ -582,10 +586,17 @@ export async function persistInboundMessage(
           htmlBody: found.htmlBody ?? sanitizeHtmlBodyForStorage(parsed.htmlBody),
         })
         .where(eq(message.id, found.id));
-      if (parsed.attachments.length)
-        await tx
-          .insert(attachment)
-          .values(parsed.attachments.map((a) => ({ id: randomUUID(), messageId: found.id, ...a })));
+      if (parsed.attachments.length) {
+        const existing = await tx
+          .select()
+          .from(attachment)
+          .where(eq(attachment.messageId, found.id));
+        const additions = newCanonicalAttachments(existing, parsed.attachments);
+        if (additions.length)
+          await tx
+            .insert(attachment)
+            .values(additions.map((a) => ({ id: randomUUID(), messageId: found.id, ...a })));
+      }
       if (!opts.skipAiEnqueue && opts.ingestSource === 'live-pop3')
         await admitLiveMessage(transactionDb, {
           transportId: transport.id,
@@ -608,17 +619,15 @@ export async function persistInboundMessage(
 
     if (ambiguousSource) {
       threadId = randomUUID();
-      await tx
-        .insert(mailThread)
-        .values({
-          id: threadId,
-          transportId: transport.id,
-          threadRootId: `ambiguous:${messageId}`,
-          historyOnly: true,
-          isRead: true,
-          subject: parsed.subject,
-          latestMessageAt: parsed.receivedAt,
-        });
+      await tx.insert(mailThread).values({
+        id: threadId,
+        transportId: transport.id,
+        threadRootId: `ambiguous:${messageId}`,
+        historyOnly: true,
+        isRead: true,
+        subject: parsed.subject,
+        latestMessageAt: parsed.receivedAt,
+      });
     } else
       threadId = await resolveThreadId({
         tx: tx as unknown as DB,

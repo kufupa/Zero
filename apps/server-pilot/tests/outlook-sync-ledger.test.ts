@@ -198,7 +198,7 @@ it('reuses only same-source retained originals for corroborated unchanged conten
         prior.observationId,
       ),
     ).toEqual({ reused: true });
-    const { outlookSyncObservation, outlookSyncArtifact } = await import(
+    const { outlookSyncObservation, outlookSyncArtifact, outlookSyncSource } = await import(
       '../src/db/schema/outlook-sync.js'
     );
     const [row] = await db
@@ -216,6 +216,70 @@ it('reuses only same-source retained originals for corroborated unchanged conten
       sourceId: a.sourceId,
       observationId: prior.observationId,
     });
+    const originalManifest = {
+      version: 1 as const,
+      observationId: prior.observationId,
+      semanticVersion: 1,
+      artifacts: [
+        {
+          role: 'original-msg',
+          version: 1,
+          sizeBytes: 1,
+          sha256: 'a'.repeat(64),
+          contentType: 'application/vnd.ms-outlook',
+          availability: 'available' as const,
+        },
+      ],
+    };
+    const acceptedOriginal = await db
+      .select()
+      .from(outlookSyncArtifact)
+      .where(eq(outlookSyncArtifact.id, artifact.id));
+    const [quotaBefore] = await db
+      .select()
+      .from(outlookSyncSource)
+      .where(eq(outlookSyncSource.id, a.sourceId));
+    expect(quotaBefore).toMatchObject({ pendingBytes: 0, pendingArtifactCount: 0 });
+    expect((await ledger.prepareArtifacts(db, f.deviceId, scope, originalManifest))[0].id).toBe(
+      artifact.id,
+    );
+    await expect(
+      ledger.prepareArtifacts(db, f.deviceId, scope, {
+        ...originalManifest,
+        observationId: next.observationId,
+        semanticVersion: 2,
+      }),
+    ).rejects.toThrow('Outlook sync denied');
+    expect(
+      await db
+        .select()
+        .from(outlookSyncArtifact)
+        .where(eq(outlookSyncArtifact.observationId, next.observationId)),
+    ).toEqual([]);
+    const [quotaAfter] = await db
+      .select()
+      .from(outlookSyncSource)
+      .where(eq(outlookSyncSource.id, a.sourceId));
+    expect(quotaAfter.pendingBytes).toBe(quotaBefore.pendingBytes);
+    expect(quotaAfter.pendingArtifactCount).toBe(quotaBefore.pendingArtifactCount);
+    expect(
+      await db.select().from(outlookSyncArtifact).where(eq(outlookSyncArtifact.id, artifact.id)),
+    ).toEqual(acceptedOriginal);
+    expect(
+      await db
+        .select()
+        .from(outlookSyncObservation)
+        .where(eq(outlookSyncObservation.id, next.observationId)),
+    ).toEqual([row]);
+    expect(
+      await ledger.reuseObservationArtifacts(
+        db,
+        f.deviceId,
+        scope,
+        next.observationId,
+        prior.observationId,
+      ),
+    ).toEqual({ reused: true });
     const partial = await ledger.recordLiveHint(db, f.deviceId, scope, {
       ...old,
       sourceObservationId: 'partial-protected',

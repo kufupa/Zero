@@ -26,6 +26,38 @@ const address = (v: string) => (/<([^<>]+)>/.exec(v)?.[1] ?? v).trim().toLowerCa
 const participants = (v: string[]) => [...new Set(v.map(address))].sort().join('\n');
 const body = (v: CanonicalEvidence) =>
   (v.textBody || v.htmlBody?.replace(/<[^>]*>/g, ' ') || '').replace(/\s+/g, ' ').trim();
+type AttachmentIdentity = {
+  s3Key: string;
+  sha256?: string | null;
+  sizeBytes: number;
+  filename: string;
+  mimeType: string;
+  contentId: string | null;
+  isInline: boolean;
+};
+/** Preserve source multiplicity and richer presentation without repeating identical display rows. */
+export function newCanonicalAttachments<T extends AttachmentIdentity>(
+  existing: AttachmentIdentity[],
+  candidates: T[],
+): T[] {
+  const remaining = [...existing];
+  return candidates.filter((candidate) => {
+    const index = remaining.findIndex(
+      (current) =>
+        current.s3Key === candidate.s3Key ||
+        (candidate.sha256 != null &&
+          current.sha256 === candidate.sha256 &&
+          current.sizeBytes === candidate.sizeBytes &&
+          current.filename === candidate.filename &&
+          current.mimeType === candidate.mimeType &&
+          current.contentId === candidate.contentId &&
+          current.isInline === candidate.isInline),
+    );
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+    return false;
+  });
+}
 /** Mailbox lock precedes every fresh candidate read, insertion and admission snapshot. */
 export async function lockCanonicalMailbox(db: DB, transportId: string): Promise<void> {
   await db.execute(

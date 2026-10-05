@@ -152,8 +152,14 @@ export class OutlookSyncStorage {
       | CompleteMultipartUploadCommand
       | AbortMultipartUploadCommand
       | ListPartsCommand,
+    signal?: AbortSignal,
   ): Promise<any> {
-    return this.client.send(command as any, { abortSignal: AbortSignal.timeout(120_000) });
+    signal?.throwIfAborted();
+    return this.client.send(command as any, {
+      abortSignal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+        : AbortSignal.timeout(120_000),
+    });
   }
   async beginUpload(
     binding: SyncUploadBinding,
@@ -275,9 +281,9 @@ export class OutlookSyncStorage {
       throw new Error('Unsafe storage URL');
     return { url, headers, expiresAt, partNumber };
   }
-  private async head(key: string): Promise<HeadObjectCommandOutput | null> {
+  private async head(key: string, signal?: AbortSignal): Promise<HeadObjectCommandOutput | null> {
     try {
-      return await this.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return await this.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }), signal);
     } catch (err) {
       if (absent(err)) return null;
       throw err;
@@ -290,7 +296,7 @@ export class OutlookSyncStorage {
     if (head.ContentLength !== session.expectedBytes || !head.ETag)
       throw new Error('Artifact size/identity mismatch');
   }
-  private async read(key: string, head: HeadObjectCommandOutput) {
+  private async read(key: string, head: HeadObjectCommandOutput, signal?: AbortSignal) {
     const result = await this.send(
       new GetObjectCommand({
         Bucket: this.bucket,
@@ -298,9 +304,16 @@ export class OutlookSyncStorage {
         IfMatch: head.ETag,
         ...(head.VersionId ? { VersionId: head.VersionId } : {}),
       }),
+      signal,
     );
     if (!result.Body) throw new Error('Artifact bytes unavailable');
     const body = result.Body as Readable;
+    const abort = () =>
+      body.destroy(
+        signal?.reason instanceof Error ? signal.reason : new Error('Sealing authority cancelled'),
+      );
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     // Bound stalls while keeping upstream paused until the consumer asks for another chunk.
     return Readable.from(
       (async function* () {
@@ -327,6 +340,7 @@ export class OutlookSyncStorage {
           }
         } finally {
           clearTimeout(watchdog);
+          signal?.removeEventListener('abort', abort);
           body.destroy();
         }
       })(),
@@ -335,11 +349,12 @@ export class OutlookSyncStorage {
   private async receipt(
     key: string,
     session: SyncUploadSession,
+    signal?: AbortSignal,
   ): Promise<SyncSealedArtifact | null> {
-    const head = await this.head(key);
+    const head = await this.head(key, signal);
     if (!head) return null;
     this.verifyHead(head, session);
-    const actual = await sha256Stream(await this.read(key, head), session.expectedBytes);
+    const actual = await sha256Stream(await this.read(key, head, signal), session.expectedBytes);
     if (actual.sha256 !== session.sha256 || actual.bytes !== session.expectedBytes)
       throw new Error('Sealed artifact checksum mismatch');
     return {
@@ -393,6 +408,25 @@ export class OutlookSyncStorage {
       body.destroy();
     }
   }
+  /** A server-persisted full hash receipt is trusted only while the immutable object identity still matches. */
+  async verifyAcceptedReceipt(
+    session: SyncUploadSession,
+    receipt: SyncSealedArtifact,
+  ): Promise<SyncSealedArtifact> {
+    this.assertSession(session);
+    if (
+      receipt.key !== sealedKey(session) ||
+      receipt.sha256 !== session.sha256 ||
+      receipt.bytes !== session.expectedBytes
+    )
+      throw new Error('Invalid accepted scope');
+    const head = await this.head(receipt.key);
+    if (!head) throw new Error('Accepted artifact unavailable');
+    this.verifyHead(head, session);
+    if (head.ETag !== receipt.eTag || head.VersionId !== receipt.versionId)
+      throw new Error('Accepted receipt identity mismatch');
+    return receipt;
+  }
   async verifyReceipt(
     session: SyncUploadSession,
     supplied: SyncSealedArtifact,
@@ -413,10 +447,12 @@ export class OutlookSyncStorage {
   async seal(
     session: SyncUploadSession,
     completedParts?: SyncCompletedPart[],
+    signal?: AbortSignal,
   ): Promise<SyncSealedArtifact> {
+    signal?.throwIfAborted();
     this.assertSession(session);
     const key = sealedKey(session);
-    const existing = await this.receipt(key, session);
+    const existing = await this.receipt(key, session, signal);
     if (existing) return existing;
     if (session.mode === 'multipart') {
       if (
@@ -445,6 +481,7 @@ export class OutlookSyncStorage {
               PartNumberMarker: marker,
               MaxParts: 1000,
             }),
+            signal,
           );
           for (const part of page.Parts ?? []) {
             const expected = completedParts[listed.length];
@@ -486,15 +523,16 @@ export class OutlookSyncStorage {
             MpuObjectSize: session.expectedBytes,
             MultipartUpload: { Parts: listed },
           }),
+          signal,
         );
       } catch (err) {
         if (code(err) !== 'NoSuchUpload' && !conditionalConflict(err)) throw err;
       }
     }
-    const stagedHead = await this.head(session.stagingKey);
+    const stagedHead = await this.head(session.stagingKey, signal);
     if (!stagedHead) throw new Error('Staged artifact unavailable');
     this.verifyHead(stagedHead, session);
-    const body = await this.read(session.stagingKey, stagedHead);
+    const body = await this.read(session.stagingKey, stagedHead, signal);
     let sealedUploadId: string | undefined;
     try {
       if (session.expectedBytes === 0) {
@@ -512,6 +550,7 @@ export class OutlookSyncStorage {
             ServerSideEncryption: 'AES256',
             Metadata: this.metadataFor(session),
           }),
+          signal,
         );
       } else {
         const created = await this.send(
@@ -523,6 +562,7 @@ export class OutlookSyncStorage {
             Metadata: this.metadataFor(session),
             ChecksumAlgorithm: 'SHA256',
           }),
+          signal,
         );
         if (!created.UploadId) throw new Error('Missing seal multipart identity');
         sealedUploadId = created.UploadId;
@@ -547,6 +587,7 @@ export class OutlookSyncStorage {
               ContentLength: part.length,
               ChecksumSHA256: partHash,
             }),
+            signal,
           );
           if (!uploaded.ETag) throw new Error('Missing sealed part receipt');
           parts.push({
@@ -566,6 +607,7 @@ export class OutlookSyncStorage {
             MpuObjectSize: bytes,
             IfNoneMatch: '*',
           }),
+          signal,
         );
         sealedUploadId = undefined;
       }
@@ -582,7 +624,7 @@ export class OutlookSyncStorage {
           }),
         ).catch(() => undefined);
     }
-    const accepted = await this.receipt(key, session);
+    const accepted = await this.receipt(key, session, signal);
     if (!accepted) throw new Error('Sealed artifact receipt unavailable');
     return accepted;
   }

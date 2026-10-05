@@ -61,16 +61,29 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
   const current = useRef(input);
   current.current = input;
   const owner = useRef(key);
+  const scopeRevision = useRef(0);
+  const statusRevision = useRef(0);
+  const controlFlight = useRef<{ key: string; revision: number } | null>(null);
+  if (owner.current !== key) {
+    scopeRevision.current++;
+    statusRevision.current++;
+    controlFlight.current = null;
+  }
   owner.current = key;
+  const [pendingControl, setPendingControl] = useState<{
+    key: string;
+    revision: number;
+  } | null>(null);
   const [snapshot, setSnapshot] = useState<{
     key: string | null;
     status: SyncStatusV1 | null;
     error: string | null;
-    busy: boolean;
-  }>({ key: null, status: null, error: null, busy: false });
+  }>({ key: null, status: null, error: null });
   const readStatus = useCallback(async (k: string, id: string) => {
+    const revision = ++statusRevision.current;
     const result = await trpcClient.workstation.outlookSync.status.query({ sourceId: id });
-    if (owner.current === k) setSnapshot({ key: k, status: result, error: null, busy: false });
+    if (owner.current === k && statusRevision.current === revision)
+      setSnapshot({ key: k, status: result, error: null });
     return result;
   }, []);
   useEffect(() => {
@@ -92,6 +105,7 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
     const local = entry;
     async function tick() {
       if (!mounted || owner.current !== k) return;
+      let requestRevision: number | null = null;
       try {
         if (!local.sourceId) {
           if (!local.flight) {
@@ -127,17 +141,30 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
           await local.flight;
         }
         if (!mounted || owner.current !== k) return;
+        if (controlFlight.current) {
+          timer = setTimeout(tick, 5000);
+          return;
+        }
+        requestRevision = statusRevision.current + 1;
         const status = await readStatus(k, local.sourceId!);
+        if (!mounted || owner.current !== k) return;
+        if (statusRevision.current !== requestRevision) {
+          timer = setTimeout(tick, 5000);
+          return;
+        }
         const busy = status.discovered > status.committed && !status.userPaused;
         timer = setTimeout(tick, busy ? 5000 : 30000);
       } catch (error) {
         if (!mounted || owner.current !== k) return;
+        if (requestRevision !== null && statusRevision.current !== requestRevision) {
+          timer = setTimeout(tick, 5000);
+          return;
+        }
         const code = (error as { data?: { code?: string } })?.data?.code;
         setSnapshot((previous) => ({
           key: k,
           status: previous.key === k ? previous.status : null,
           error: code === 'FORBIDDEN' ? 'access-removed' : 'offline',
-          busy: false,
         }));
         if (code !== 'FORBIDDEN') timer = setTimeout(tick, 5000);
       }
@@ -145,6 +172,9 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
     void tick();
     return () => {
       mounted = false;
+      scopeRevision.current++;
+      statusRevision.current++;
+      controlFlight.current = null;
       if (timer) clearTimeout(timer);
     };
   }, [key, readStatus]);
@@ -154,7 +184,12 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
         s = snapshot.key === k ? snapshot.status : null;
       if (!k || !s || (s.userPaused && operation !== 'resume'))
         throw new Error('Sync paused or unavailable');
-      setSnapshot((previous) => ({ ...previous, busy: true }));
+      if (controlFlight.current) throw new Error('Sync control already in progress');
+      const flight = { key: k, revision: scopeRevision.current };
+      const isCurrent = () => owner.current === k && scopeRevision.current === flight.revision;
+      controlFlight.current = flight;
+      statusRevision.current++;
+      setPendingControl(flight);
       try {
         const native = current.current;
         const root = native.readRoots.find((r) => r.policyVersion === 1)!;
@@ -171,12 +206,13 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
             capabilityVersion: 1,
             idempotencyKey: resumeKey,
           });
+        if (!isCurrent()) return;
         await trpcClient.workstation.outlookSync.control.mutate({
           sourceId: s.sourceId,
           operation,
           idempotencyKey: crypto.randomUUID(),
         });
-        if (owner.current === k && resumeActivation)
+        if (isCurrent() && resumeActivation)
           await native.activateNative({
             version: 1,
             sourceId: s.sourceId,
@@ -185,11 +221,15 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
             activationTicket: resumeActivation.activationTicket,
             idempotencyKey: resumeKey,
           });
-        if (owner.current === k) await readStatus(k, s.sourceId);
+        if (isCurrent()) await readStatus(k, s.sourceId);
       } catch (error) {
-        if (owner.current === k)
-          setSnapshot((previous) => ({ ...previous, error: 'offline', busy: false }));
+        if (isCurrent()) setSnapshot((previous) => ({ ...previous, error: 'offline' }));
         throw error;
+      } finally {
+        if (controlFlight.current === flight) {
+          controlFlight.current = null;
+          setPendingControl(null);
+        }
       }
     },
     [snapshot, readStatus],
@@ -197,7 +237,7 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
   return {
     status: snapshot.key === key ? snapshot.status : null,
     error: snapshot.key === key ? snapshot.error : null,
-    busy: snapshot.key === key ? snapshot.busy : false,
+    busy: pendingControl?.key === key && pendingControl.revision === scopeRevision.current,
     eligible,
     control,
   };

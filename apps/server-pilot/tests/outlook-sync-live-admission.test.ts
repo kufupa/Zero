@@ -199,14 +199,15 @@ it('snapshot membership replaces creation cutoff while preserving the original b
 });
 
 it(
-  'verified POP3 delivery atomically admits a previously copied canonical message',
+  'verified POP3 delivery supplies independent live authority without rewriting the authored clock',
   async () =>
     withIngestionDb(async ({ db }) => {
       const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
       const { persistInboundMessage } = await import('../src/mail/ingest/store.js');
       const { FakeS3Storage } = await import('../src/storage/s3.js');
-      const original = history('pop3-first-live');
+      const original = history('pop3-first-live', '2026-09-01T10:00:00Z');
       const saved = await persistOutlookHistory(db, original);
+      expect(await db.select().from(aiWorkflowRun)).toHaveLength(0);
       await persistInboundMessage(
         {
           ownerHeaderValue: 'centurion@legacyhotels.co.za',
@@ -235,6 +236,8 @@ it(
         triggerMessageId: saved.messageId,
         admissionSnapshotId: expect.any(String),
       });
+      const [stored] = await db.select().from(message).where(eq(message.id, saved.messageId));
+      expect(stored.receivedAt).toEqual(original.authoredAt);
     }),
   20_000,
 );

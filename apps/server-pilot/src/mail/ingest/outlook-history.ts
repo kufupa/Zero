@@ -3,6 +3,7 @@ import {
   lockCanonicalMailbox,
   type CanonicalEvidence,
   corroboratedMessageId,
+  newCanonicalAttachments,
 } from './canonical-identity.js';
 import { attachment, mailboxTransport, mailThread, message } from '../../db/schema/mail.js';
 import { canonicalMessageId, buildReferenceChain } from './message-id.js';
@@ -176,20 +177,14 @@ export async function persistOutlookHistory(
         },
       });
     }
-    const existing = await tx
-      .select({ s3Key: attachment.s3Key })
-      .from(attachment)
-      .where(eq(attachment.messageId, messageId));
-    const keys = new Set(existing.map((a) => a.s3Key));
-    for (let start = 0; start < input.attachments.length; start += 100) {
-      const additions = input.attachments
-        .slice(start, start + 100)
-        .filter((a) => !keys.has(a.s3Key));
-      if (additions.length)
-        await tx
-          .insert(attachment)
-          .values(additions.map((a) => ({ id: randomUUID(), messageId, ...a })));
-      for (const a of additions) keys.add(a.s3Key);
+    const existing = await tx.select().from(attachment).where(eq(attachment.messageId, messageId));
+    const additions = newCanonicalAttachments(existing, input.attachments);
+    for (let start = 0; start < additions.length; start += 100) {
+      await tx
+        .insert(attachment)
+        .values(
+          additions.slice(start, start + 100).map((a) => ({ id: randomUUID(), messageId, ...a })),
+        );
     }
     // Late parent arrival may repair only wholly historical child threads.
     const header = corroboratedMessageId(input.internetMessageId);

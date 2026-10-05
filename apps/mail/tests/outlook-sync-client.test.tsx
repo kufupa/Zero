@@ -144,3 +144,160 @@ it('explicit Resume refreshes pane authorization and sends only the new activati
   expect(mocks.control).toHaveBeenCalledWith(expect.objectContaining({ operation: 'resume' }));
   expect(baseline.activateNative).toHaveBeenCalledTimes(2);
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+const running = { ...paused, state: 'copying', userPaused: false };
+async function flushAsync() {
+  await act(async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  });
+}
+
+it('keeps Pause after an older running poll resolves last', async () => {
+  vi.useFakeTimers();
+  try {
+    const oldPoll = deferred<typeof running>();
+    mocks.status
+      .mockResolvedValueOnce(running)
+      .mockImplementationOnce(() => oldPoll.promise)
+      .mockResolvedValueOnce(paused);
+    const hook = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'poll-after-pause' }));
+    await flushAsync();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(mocks.status).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await hook.result.current.control('pause');
+    });
+    expect(hook.result.current.status?.userPaused).toBe(true);
+    await act(async () => {
+      oldPoll.resolve(running);
+    });
+    expect(hook.result.current.status?.userPaused).toBe(true);
+    hook.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps Resume busy while polling and rejects a second Resume', async () => {
+  vi.useFakeTimers();
+  try {
+    const pendingControl = deferred<{ accepted: boolean }>();
+    const oldPoll = deferred<typeof paused>();
+    mocks.control.mockImplementationOnce(() => pendingControl.promise);
+    mocks.status
+      .mockResolvedValueOnce(paused)
+      .mockImplementationOnce(() => oldPoll.promise)
+      .mockResolvedValueOnce(running);
+    const hook = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'poll-during-resume' }));
+    await flushAsync();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    let first!: Promise<void>;
+    await act(async () => {
+      first = hook.result.current.control('resume');
+    });
+    expect(hook.result.current.busy).toBe(true);
+    await act(async () => {
+      oldPoll.resolve(paused);
+    });
+    expect(hook.result.current.busy).toBe(true);
+    await expect(hook.result.current.control('resume')).rejects.toThrow(/progress|busy/i);
+    expect(mocks.activate).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      pendingControl.resolve({ accepted: true });
+      await first;
+    });
+    expect(hook.result.current.busy).toBe(false);
+    expect(hook.result.current.status?.userPaused).toBe(false);
+    hook.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('rejects overlapping controls synchronously before a disabled-button render', async () => {
+  const pendingControl = deferred<{ accepted: boolean }>();
+  mocks.status.mockResolvedValue(running);
+  mocks.control.mockImplementationOnce(() => pendingControl.promise);
+  const hook = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'rapid-controls' }));
+  await waitFor(() => expect(hook.result.current.status).not.toBeNull());
+  let first!: Promise<void>;
+  let second!: Promise<void>;
+  await act(async () => {
+    first = hook.result.current.control('syncNow');
+    second = hook.result.current.control('pause');
+    await expect(second).rejects.toThrow(/progress|busy/i);
+  });
+  expect(mocks.control).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    pendingControl.resolve({ accepted: true });
+    await first;
+  });
+});
+
+it('ignores an older poll failure after a successful Pause', async () => {
+  vi.useFakeTimers();
+  try {
+    const oldPoll = deferred<typeof running>();
+    mocks.status
+      .mockResolvedValueOnce(running)
+      .mockImplementationOnce(() => oldPoll.promise)
+      .mockResolvedValueOnce(paused);
+    const hook = renderHook(() =>
+      useOutlookSync({ ...baseline, sessionId: 'failed-poll-after-pause' }),
+    );
+    await flushAsync();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    await act(async () => {
+      await hook.result.current.control('pause');
+    });
+    await act(async () => {
+      oldPoll.reject(new Error('old request offline'));
+    });
+    expect(hook.result.current.status?.userPaused).toBe(true);
+    expect(hook.result.current.error).toBeNull();
+    hook.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('does not send an old Resume control when returning to the same account', async () => {
+  const oldActivation = deferred<typeof response>();
+  mocks.activate
+    .mockResolvedValueOnce(response)
+    .mockImplementationOnce(() => oldActivation.promise);
+  const hook = renderHook(
+    ({ userId }) => useOutlookSync({ ...baseline, userId, sessionId: 'control-scope-return' }),
+    { initialProps: { userId: 'first-staff' } },
+  );
+  await waitFor(() => expect(hook.result.current.status).not.toBeNull());
+  let first!: Promise<void>;
+  await act(async () => {
+    first = hook.result.current.control('resume');
+  });
+  hook.rerender({ userId: 'other-staff' });
+  await waitFor(() => expect(hook.result.current.status).not.toBeNull());
+  hook.rerender({ userId: 'first-staff' });
+  await waitFor(() => expect(hook.result.current.status).not.toBeNull());
+  await act(async () => {
+    oldActivation.resolve(response);
+    await first;
+  });
+  expect(mocks.control).not.toHaveBeenCalled();
+  expect(hook.result.current.busy).toBe(false);
+});

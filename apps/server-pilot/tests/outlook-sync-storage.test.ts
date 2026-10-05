@@ -3,10 +3,10 @@ import {
   SYNC_PART_BYTES,
   SYNC_SINGLE_PUT_LIMIT,
 } from '../src/outlook-sync/storage.js';
+import { Readable, PassThrough } from 'node:stream';
 import { S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { Readable } from 'node:stream';
 
 const digest = (body: Buffer | string) => createHash('sha256').update(body).digest('hex');
 const missing = () => Object.assign(new Error('missing'), { name: 'NoSuchKey' });
@@ -182,6 +182,64 @@ describe('private Outlook sync originals', () => {
     ).toBe(true);
     commands.objects.delete(session.stagingKey);
     expect(await storage.seal(session)).toEqual(receipt);
+  });
+  it('verifies a persisted accepted receipt by immutable HEAD identity without rereading large bytes', async () => {
+    const { storage, staged, commands } = setup();
+    const upload = await staged(),
+      receipt = await storage.seal(upload);
+    commands.calls.length = 0;
+    expect(await storage.verifyAcceptedReceipt(upload, receipt)).toEqual(receipt);
+    expect(commands.calls.map((c) => c.name)).toEqual(['HeadObjectCommand']);
+    const object = commands.objects.get(receipt.key)!;
+    const metadata = object.metadata;
+    object.metadata = { ...metadata, 'sync-scope': 'foreign' };
+    await expect(storage.verifyAcceptedReceipt(upload, receipt)).rejects.toThrow('ownership');
+    object.metadata = metadata;
+    await expect(
+      storage.verifyAcceptedReceipt(upload, { ...receipt, versionId: 'wrong-version' }),
+    ).rejects.toThrow('identity');
+    object.etag = '"replacement"';
+    await expect(storage.verifyAcceptedReceipt(upload, receipt)).rejects.toThrow('identity');
+    expect(commands.calls.every((c) => c.name === 'HeadObjectCommand')).toBe(true);
+    await expect(
+      storage.verifyAcceptedReceipt({ ...upload, sourceId: 'foreign' }, receipt),
+    ).rejects.toThrow('scope');
+  });
+  it('aborts deferred sealing I/O when source authority cancellation arrives', async () => {
+    const { storage, staged, commands } = setup();
+    const upload = await staged();
+    const controller = new AbortController();
+    controller.abort();
+    const before = commands.calls.length;
+    await expect(storage.seal(upload, undefined, controller.signal)).rejects.toThrow();
+    expect(commands.calls).toHaveLength(before);
+  });
+  it('destroys an active stalled source stream and cleans its unfinished seal on authority abort', async () => {
+    const { storage, staged, commands } = setup();
+    const upload = await staged();
+    const stream = new PassThrough();
+    let started!: () => void;
+    const ready = new Promise<void>((r) => (started = r));
+    const send = commands.send.bind(commands);
+    commands.send = async (command: any) => {
+      if (command.constructor.name === 'GetObjectCommand') {
+        started();
+        return { Body: stream };
+      }
+      return send(command);
+    };
+    const controller = new AbortController();
+    const result = storage.seal(upload, undefined, controller.signal);
+    const rejected = expect(result).rejects.toThrow('authority revoked');
+    await ready;
+    await new Promise<void>((r) => setImmediate(r));
+    controller.abort(new Error('authority revoked'));
+    await rejected;
+    expect(stream.destroyed).toBe(true);
+    expect(commands.uploads.size).toBe(0);
+    expect([...commands.objects.keys()].some((k) => k.startsWith('outlook-sync-originals/'))).toBe(
+      false,
+    );
   });
   it('rejects mismatched bytes, ownership metadata, unsafe sizes and foreign session paths', async () => {
     const { storage, staged, commands, binding } = setup();

@@ -139,6 +139,25 @@ it('attachment corroboration compares checksum multiplicity', async () => {
   ).toBe(false);
 });
 
+it('display attachment identity preserves richer variants and source multiplicity', async () => {
+  const { newCanonicalAttachments } = await import('../src/mail/ingest/canonical-identity.js');
+  const item = {
+    filename: 'image.png',
+    mimeType: 'image/png',
+    sizeBytes: 3,
+    sha256: 'a'.repeat(64),
+    s3Key: 'first',
+    contentId: 'one',
+    isInline: true,
+  };
+  const twin = { ...item, s3Key: 'second' };
+  expect(newCanonicalAttachments([item], [twin])).toEqual([]);
+  expect(newCanonicalAttachments([item], [twin, { ...twin, s3Key: 'third' }])).toHaveLength(1);
+  expect(newCanonicalAttachments([item], [{ ...twin, contentId: 'two' }])).toHaveLength(1);
+  expect(newCanonicalAttachments([item], [{ ...twin, filename: 'other.png' }])).toHaveLength(1);
+  expect(newCanonicalAttachments([item], [{ ...twin, sha256: null }])).toHaveLength(1);
+});
+
 it(
   'independent POP3 receipts survive reconciliation and each repeated UIDL is idempotent',
   async () =>
@@ -179,9 +198,23 @@ it(
         attachments: [],
         rawHeaderLines: [],
       };
+      const binary = {
+        filename: 'request.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 3,
+        sha256: 'a'.repeat(64),
+        contentId: null,
+        isInline: false,
+      };
       const store = (uidl: string) =>
         persistInboundMessage(
-          parsed,
+          {
+            ...parsed,
+            attachments: [0, 1].map((index) => ({
+              ...binary,
+              s3Key: `attachments/candidate-${uidl}/${index}.pdf`,
+            })),
+          },
           Buffer.from(`raw ${uidl}`),
           { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: uidl, messageId: `candidate-${uidl}` },
           { db, storage: new FakeS3Storage(), skipAiEnqueue: true },
@@ -191,6 +224,30 @@ it(
       expect((await store('two')).kind).toBe('duplicate');
       expect(await db.select().from(schema.mailIngestSourceReceipt)).toHaveLength(2);
       expect(await db.select().from(schema.message)).toHaveLength(1);
+      // Two identical attachments in one source remain two; a second delivery adds no UI copies.
+      expect(await db.select().from(schema.attachment)).toHaveLength(2);
+      const [canonical] = await db.select().from(schema.message);
+      await persistOutlookHistory(db, {
+        transportId: 'transport-centurion',
+        sourceId: 'source-two',
+        sourceObservationId: 'native-twin',
+        semanticVersion: '1',
+        ...data(),
+        subject: 'Request',
+        inReplyTo: null,
+        references: [],
+        bccAddresses: [],
+        sentAt: null,
+        originalMsgKey: 'outlook-sync-originals/v1/source/native-twin.msg',
+        sourceProvenance: {},
+        attachments: [0, 1].map((index) => ({
+          ...binary,
+          sourceAttachmentId: `native-${index}`,
+          s3Key: `outlook-sync-originals/v1/source/native-twin/${index}.pdf`,
+        })),
+      });
+      expect(await db.select().from(schema.attachment)).toHaveLength(2);
+      expect((await db.select().from(schema.message))[0]?.id).toBe(canonical.id);
     }),
   20_000,
 );
