@@ -657,6 +657,7 @@ describe('quote session', () => {
       coversGroupIds: ['g-double'],
       quantity: 1,
       adults: 2,
+      childrenAges: [],
     };
     const mixB: QuoteOffer = {
       ...mixA,
@@ -692,13 +693,13 @@ describe('quote session', () => {
     expect(nextSelectedOfferIds(s, 'mix-c')).toEqual(['mix-a', 'mix-c']);
   });
 
-  it('refuses PDF when dates are unknown unless the selected allocation covers the group', () => {
+  it('refuses PDF when dates are missing even if a group id is covered', () => {
     const undated = {
       ...quoteAnalysis,
       groups: [{ ...quoteAnalysis.groups[0]!, arrivalDate: undefined, departureDate: undefined }],
     };
-    const uncovered: QuoteOffer = {
-      id: 'o1',
+    const covered: QuoteOffer = {
+      id: 'o2',
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
@@ -712,22 +713,13 @@ describe('quote session', () => {
       restrictions: [],
       combinable: true,
       quoteRequestKey: 'unknown:unknown',
-      coversGroupIds: [],
+      coversGroupIds: ['g1'],
       quantity: 1,
       adults: 1,
+      childrenAges: [],
     };
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: undated });
-    s = reduceQuoteSession(s, {
-      type: 'results_ready',
-      offers: [uncovered],
-      selectionEpoch: 1,
-      inputRevision: 1,
-      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
-    });
-    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
-    expect(canCreatePdf(s)).toBe(false);
-    const covered: QuoteOffer = { ...uncovered, id: 'o2', coversGroupIds: ['g1'] };
     s = reduceQuoteSession(s, {
       type: 'results_ready',
       offers: [covered],
@@ -736,7 +728,75 @@ describe('quote session', () => {
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o2'] });
-    expect(canCreatePdf(s)).toBe(true);
+    expect(canCreatePdf(s)).toBe(false);
+  });
+
+  it('rejects over-quantity, board mismatch, and child-age mismatch as incomplete coverage', () => {
+    const extraQty: QuoteOffer = {
+      id: 'o1',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+      stayTotalMinor: 272000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'src-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 2,
+      adults: 1,
+      childrenAges: [],
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [extraQty],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(false);
+
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [{ ...extraQty, quantity: 1, board: 'dinner_bb' }],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    expect(canCreatePdf(s)).toBe(false);
+
+    const withKids = {
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, childrenAges: [8] }],
+    };
+    let kids = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    kids = reduceQuoteSession(kids, { type: 'analysis_ready', analysis: withKids });
+    kids = reduceQuoteSession(kids, {
+      type: 'results_ready',
+      offers: [{ ...extraQty, quantity: 1, childrenAges: [] }],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    kids = reduceQuoteSession(kids, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(kids)).toBe(false);
+    kids = reduceQuoteSession(kids, {
+      type: 'results_ready',
+      offers: [{ ...extraQty, quantity: 1, childrenAges: [8] }],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    kids = reduceQuoteSession(kids, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(kids)).toBe(true);
   });
 
   it('promotes quote_stay after lookup without inventing offers and does not rerun lookup', () => {
@@ -756,10 +816,13 @@ describe('quote session', () => {
       stepId: lookup.id,
       selectionEpoch: 1,
       inputRevision: 1,
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
     expect(s.offers).toEqual([]);
     expect(s.phase).toBe('tools');
+    expect(s.partyLookup).toEqual({ organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' });
     expect(s.steps.find((step) => step.id === lookup.id)?.status).toBe('succeeded');
+    expect(s.steps.find((step) => step.id === lookup.id)?.resultSummary).toMatch(/party-treasury-1/);
     expect(s.steps.find((step) => step.id === stay.id)?.status).toBe('ready');
     expect(canRunQuoteStep(s.steps.find((step) => step.id === lookup.id)!, s.steps, null)).toBe(false);
     expect(pickNextRunnableStep(s.steps, null)?.id).toBe(stay.id);
@@ -814,6 +877,7 @@ describe('quote session', () => {
       stepId: lookup.id,
       selectionEpoch: 1,
       inputRevision: 1,
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
     const stay = s.steps.find((step) => step.kind === 'quote_stay')!;
     expect(buildQuoteStepInputs(s, stay)).toEqual({
@@ -841,6 +905,7 @@ describe('quote session', () => {
           specialRequests: ['late arrival'],
         },
       ],
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
   });
 });

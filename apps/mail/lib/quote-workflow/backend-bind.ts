@@ -1,4 +1,4 @@
-import type { QuoteAnalysis, QuoteOffer } from './types';
+import type { PartyLookupRef, QuoteAnalysis, QuoteOffer } from './types';
 
 /**
  * Existing backend APIs this quoting UI must bind to (this branch / origin/main).
@@ -90,6 +90,31 @@ export function quoteWorkflowFromTrpc(trpc: unknown): QuoteWorkflowClient {
   return quoteWorkflow ?? {};
 }
 
+function rejectionReason(error: unknown, label: string): string {
+  return error instanceof Error && error.message.trim() ? error.message : `${label} rejected`;
+}
+
+function readPartyLookup(result: unknown): PartyLookupRef | null {
+  if (!result || typeof result !== 'object') return null;
+  const row = result as Record<string, unknown>;
+  const nested = row.party && typeof row.party === 'object' ? (row.party as Record<string, unknown>) : row;
+  const partyRef = typeof nested.partyRef === 'string' ? nested.partyRef.trim() : '';
+  const organisation = typeof nested.organisation === 'string' ? nested.organisation.trim() : '';
+  if (!partyRef) return null;
+  return { organisation, partyRef };
+}
+
+function isQualifiedPdf(value: unknown): value is QualifiedProposalPdfResult {
+  if (!value || typeof value !== 'object') return false;
+  const pdf = value as Record<string, unknown>;
+  return (
+    pdf.centsReconciled === true &&
+    typeof pdf.fileName === 'string' &&
+    pdf.fileName.trim() !== '' &&
+    typeof pdf.pdfBase64 === 'string' &&
+    pdf.pdfBase64.trim() !== ''
+  );
+}
 export type BoundAnalyse =
   | { kind: 'unavailable'; reason: string }
   | { kind: 'unsynced' }
@@ -107,25 +132,29 @@ export async function bindAnalyseSelection(args: {
         'Client has no quoteWorkflow.analyseSelection. Bind to mailboxProcedure analyseSelection (getDb message/attachment).',
     };
   }
-  const result = await args.mutate(args.input);
-  if (result.status === 'unsynced') return { kind: 'unsynced' };
-  if (result.status === 'missing_source') return { kind: 'missing_source', missing: result.missing };
-  return {
-    kind: 'ready',
-    sourceRevision: result.sourceRevision,
-    analysis: {
-      intent: result.intent,
-      groups: result.groups,
-      secondaryAsks: result.secondaryAsks,
-      alternatives: result.alternatives,
-    },
-  };
+  try {
+    const result = await args.mutate(args.input);
+    if (result.status === 'unsynced') return { kind: 'unsynced' };
+    if (result.status === 'missing_source') return { kind: 'missing_source', missing: result.missing };
+    return {
+      kind: 'ready',
+      sourceRevision: result.sourceRevision,
+      analysis: {
+        intent: result.intent,
+        groups: result.groups,
+        secondaryAsks: result.secondaryAsks,
+        alternatives: result.alternatives,
+      },
+    };
+  } catch (error) {
+    return { kind: 'unavailable', reason: rejectionReason(error, 'analyseSelection') };
+  }
 }
 
 export type BoundRunStep =
   | { status: 'unavailable'; reason: string }
   | { status: 'integration_unavailable'; reason: string }
-  | { status: 'ok'; kind: 'party_lookup' }
+  | { status: 'ok'; kind: 'party_lookup'; party: PartyLookupRef }
   | { status: 'ok'; kind: 'quote_stay'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
 
 export async function bindRunStep(args: {
@@ -142,26 +171,37 @@ export async function bindRunStep(args: {
         'Client has no quoteWorkflow.runStep. Server must later bind to ai.enqueueHmsRead(hms_quote_stay). Overnight this UI must not start a second PMS owner.',
     };
   }
-  const result = await args.mutate({
-    stepId: args.stepId,
-    selectionEpoch: args.selectionEpoch,
-    inputRevision: args.inputRevision,
-    inputs: args.inputs,
-  });
-  if (result.status === 'integration_unavailable') {
-    return { status: 'integration_unavailable', reason: result.reason };
+  try {
+    const result = await args.mutate({
+      stepId: args.stepId,
+      selectionEpoch: args.selectionEpoch,
+      inputRevision: args.inputRevision,
+      inputs: args.inputs,
+    });
+    if (result.status === 'integration_unavailable') {
+      return { status: 'integration_unavailable', reason: result.reason };
+    }
+    if (args.inputs.stepKind === 'party_lookup') {
+      const party = readPartyLookup(result);
+      if (!party) {
+        return {
+          status: 'unavailable',
+          reason: 'runStep returned party lookup without partyRef. Do not invent entitlement.',
+        };
+      }
+      return { status: 'ok', kind: 'party_lookup', party };
+    }
+    const offers = 'offers' in result ? result.offers : undefined;
+    if (!Array.isArray(offers) || offers.length === 0) {
+      return {
+        status: 'unavailable',
+        reason: 'runStep returned ok without offers. Do not synthesize inventory.',
+      };
+    }
+    return { status: 'ok', kind: 'quote_stay', offers, reviewedReplyHtml: result.reviewedReplyHtml };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error, 'runStep') };
   }
-  if (args.inputs.stepKind === 'party_lookup') {
-    return { status: 'ok', kind: 'party_lookup' };
-  }
-  const offers = 'offers' in result ? result.offers : undefined;
-  if (!Array.isArray(offers) || offers.length === 0) {
-    return {
-      status: 'unavailable',
-      reason: 'runStep returned ok without offers. Do not synthesize inventory.',
-    };
-  }
-  return { status: 'ok', kind: 'quote_stay', offers, reviewedReplyHtml: result.reviewedReplyHtml };
 }
 
 export type BoundQualifiedPdf =
@@ -179,6 +219,24 @@ export async function bindQualifiedProposalPdf(args: {
         'qualifiedQuoteProposalPdf / qualifiedProposalChoices are not on origin/main. Do not invent a second PDF engine. Do not substitute fixture PDF bytes.',
     };
   }
-  const pdf = await args.mutate(args.input);
-  return { status: 'ok', pdf };
+  try {
+    const pdf = await args.mutate(args.input);
+    if (!isQualifiedPdf(pdf)) {
+      return {
+        status: 'unavailable',
+        reason:
+          'qualifiedProposalPdf returned unqualified bytes. centsReconciled must be true with nonempty filename and pdfBase64.',
+      };
+    }
+    return {
+      status: 'ok',
+      pdf: {
+        fileName: pdf.fileName.trim(),
+        pdfBase64: pdf.pdfBase64,
+        centsReconciled: true,
+      },
+    };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error, 'qualifiedProposalPdf') };
+  }
 }

@@ -122,6 +122,12 @@ export type QuoteStepInputs = {
   stepKind: QuoteToolStep['kind'];
   binding: QuoteStepBinding;
   groups: ApprovedStayGroup[];
+  party?: PartyLookupRef;
+};
+
+export type PartyLookupRef = {
+  organisation: string;
+  partyRef: string;
 };
 
 export type QuoteToolStepStatus = 'queued' | 'ready' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -154,6 +160,7 @@ export type QuoteSession = {
   runningStepId: string | null;
   mailboxStatus: QuoteMailboxStatus | null;
   evidence: QuoteEvidenceProvenance | null;
+  partyLookup: PartyLookupRef | null;
 };
 
 export type QuoteSessionAction =
@@ -185,6 +192,7 @@ export type QuoteSessionAction =
       stepId: string;
       selectionEpoch: number;
       inputRevision: number;
+      party: PartyLookupRef;
     }
   | { type: 'step_running'; stepId: string }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }

@@ -128,7 +128,7 @@ describe('quote workflow backend bind', () => {
     }
   });
 
-  it('accepts party_lookup ok without offers and does not invent quote offers', async () => {
+  it('accepts party_lookup only when the backend returns a party reference, not invented entitlement', async () => {
     const mutate = vi.fn(async () => ({ status: 'ok' as const }));
     const inputs = {
       stepKind: 'party_lookup' as const,
@@ -155,19 +155,109 @@ describe('quote workflow backend bind', () => {
         },
       ],
     };
-    const result = await bindRunStep({
+    const missing = await bindRunStep({
       mutate,
       stepId: 'party-lookup',
       selectionEpoch: 1,
       inputRevision: 1,
       inputs,
     });
-    expect(result).toEqual({ status: 'ok', kind: 'party_lookup' });
-    expect(mutate).toHaveBeenCalledWith({
+    expect(missing.status).toBe('unavailable');
+    if (missing.status === 'unavailable') {
+      expect(missing.reason).toMatch(/party|entitlement|invent/i);
+    }
+
+    const withRef = vi.fn(async () => ({
+      status: 'ok' as const,
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
+    }));
+    const found = await bindRunStep({
+      mutate: withRef,
       stepId: 'party-lookup',
       selectionEpoch: 1,
       inputRevision: 1,
       inputs,
+    });
+    expect(found).toEqual({
+      status: 'ok',
+      kind: 'party_lookup',
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
+    });
+  });
+
+  it('returns typed unavailable when analyseSelection, runStep, or PDF mutate reject', async () => {
+    const analyse = await bindAnalyseSelection({
+      mutate: async () => {
+        throw new Error('analyseSelection network down');
+      },
+      input: {
+        storeId: 'store-1',
+        entryId: '001',
+        folderEntryId: 'folder-inbox',
+        selectionEpoch: 1,
+      },
+    });
+    expect(analyse.kind).toBe('unavailable');
+    if (analyse.kind === 'unavailable') {
+      expect(analyse.reason).toMatch(/analyseSelection network down/);
+    }
+
+    const run = await bindRunStep({
+      mutate: async () => {
+        throw new Error('runStep network down');
+      },
+      stepId: 'quote-stay',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputs: { stepKind: 'quote_stay' },
+    });
+    expect(run.status).toBe('unavailable');
+    if (run.status === 'unavailable') {
+      expect(run.reason).toMatch(/runStep network down/);
+    }
+
+    const pdf = await bindQualifiedProposalPdf({
+      mutate: async () => {
+        throw new Error('pdf network down');
+      },
+      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
+    });
+    expect(pdf.status).toBe('unavailable');
+    if (pdf.status === 'unavailable') {
+      expect(pdf.reason).toMatch(/pdf network down/);
+    }
+  });
+
+  it('rejects unqualified PDF payloads even when the client mutate resolves', async () => {
+    const missingCents = await bindQualifiedProposalPdf({
+      mutate: async () =>
+        ({ fileName: 'Quote.pdf', pdfBase64: 'JVBERi0xLjQK' }) as never,
+      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
+    });
+    expect(missingCents.status).toBe('unavailable');
+
+    const emptyBytes = await bindQualifiedProposalPdf({
+      mutate: async () =>
+        ({ fileName: 'Quote.pdf', pdfBase64: '  ', centsReconciled: true }) as never,
+      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
+    });
+    expect(emptyBytes.status).toBe('unavailable');
+
+    const ok = await bindQualifiedProposalPdf({
+      mutate: async () => ({
+        fileName: 'Quote-authorised.pdf',
+        pdfBase64: 'JVBERi0xLjQK',
+        centsReconciled: true as const,
+      }),
+      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
+    });
+    expect(ok).toEqual({
+      status: 'ok',
+      pdf: {
+        fileName: 'Quote-authorised.pdf',
+        pdfBase64: 'JVBERi0xLjQK',
+        centsReconciled: true,
+      },
     });
   });
 

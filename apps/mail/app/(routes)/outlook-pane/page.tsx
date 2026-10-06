@@ -705,8 +705,9 @@ export default function OutlookPanePage() {
     if (isQuoteFixturePreview()) {
       if (step.kind === 'party_lookup') {
         dispatchQuote({
-          type: 'lookup_ready',
+          type: 'results_unavailable',
           stepId: step.id,
+          reason: 'Fixture preview cannot invent a party reference.',
           selectionEpoch,
           inputRevision,
         });
@@ -753,6 +754,7 @@ export default function OutlookPanePage() {
           stepId: step.id,
           selectionEpoch,
           inputRevision,
+          party: remote.party,
         });
         return;
       }

@@ -9,6 +9,7 @@ import {
   AUTHORISED_QUOTE_PDF,
   AUTHORISED_REPLY_HTML,
 } from './helpers/authorised-quote-evidence';
+import { fillStayFactsMatchingAuthorisedOffer } from './helpers/prepare-reviewed-quote';
 
 const SECOND_OFFER = {
   ...AUTHORISED_QUOTE_OFFERS[0]!,
@@ -118,6 +119,7 @@ async function waitForAllocation(label: string) {
 
 async function startPendingPdf() {
   render(<OutlookPanePage />);
+  await fillStayFactsMatchingAuthorisedOffer();
   fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
   fireEvent.click(await waitForAllocation('Standard King'));
   fireEvent.click(screen.getByRole('button', { name: /Prepare quotation PDF/i }));

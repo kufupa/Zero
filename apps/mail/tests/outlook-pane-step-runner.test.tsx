@@ -150,8 +150,11 @@ describe('mounted pane step runner and current inputs', () => {
     ]);
   });
 
-  it('runs party lookup without offers then enables quote stay', async () => {
-    runStepMutateMock.mockResolvedValueOnce({ status: 'ok' });
+  it('runs party lookup with a backend party ref then enables quote stay', async () => {
+    runStepMutateMock.mockResolvedValueOnce({
+      status: 'ok',
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
+    });
     render(<OutlookPanePage />);
     const organisation = await screen.findByLabelText('Organisation / agency');
     fireEvent.change(organisation, { target: { value: 'Provincial Treasury' } });
@@ -174,8 +177,27 @@ describe('mounted pane step runner and current inputs', () => {
     expect((stay as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(stay);
     await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(2));
-    const stayPayload = runStepMutateMock.mock.calls[1]?.[0] as { stepId: string; inputs: { stepKind?: string } };
+    const stayPayload = runStepMutateMock.mock.calls[1]?.[0] as {
+      stepId: string;
+      inputs: { stepKind?: string; party?: { partyRef?: string } };
+    };
     expect(stayPayload.stepId).toMatch(/^quote-stay-/);
     expect(stayPayload.inputs.stepKind).toBe('quote_stay');
+    expect(stayPayload.inputs.party).toEqual({
+      organisation: 'Provincial Treasury',
+      partyRef: 'party-treasury-1',
+    });
+  });
+
+  it('releases a running step when runStep mutate rejects so retry works', async () => {
+    runStepMutateMock.mockRejectedValueOnce(new Error('runStep network down'));
+    render(<OutlookPanePage />);
+    const perStep = await screen.findByRole('button', { name: /^Run Search availability/i });
+    fireEvent.click(perStep);
+    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(1));
+    const retry = await screen.findByRole('button', { name: /^Run Search availability/i });
+    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(retry);
+    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(2));
   });
 });

@@ -1,7 +1,14 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 
+export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
+  fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: '2026-11-12' } });
+  fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-14' } });
+  fireEvent.change(screen.getByLabelText('Board'), { target: { value: 'bb' } });
+}
+
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
 export async function prepareReviewedQuote(): Promise<void> {
+  await fillStayFactsMatchingAuthorisedOffer();
   fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
   const allocation = await waitFor(() => {
     const match = screen.getAllByRole('button').find((element) => {

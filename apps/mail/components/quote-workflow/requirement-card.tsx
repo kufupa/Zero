@@ -103,6 +103,7 @@ export function RequirementCard({
         Board
         <select
           className={fieldClass}
+          aria-label="Board"
           value={group.board}
           onChange={(event) =>
             onPatch?.(group.id, { board: event.target.value as StayGroupRequirement['board'] })

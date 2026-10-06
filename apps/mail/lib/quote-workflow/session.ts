@@ -1,5 +1,6 @@
 import type {
   ApprovedStayGroup,
+  PartyLookupRef,
   QuoteEvidenceProvenance,
   QuoteOffer,
   QuoteSession,
@@ -48,6 +49,7 @@ export function buildQuoteStepInputs(session: QuoteSession, step: QuoteToolStep)
       selectionEpoch: binding?.selectionEpoch ?? 0,
     },
     groups: groupsForQuoteStep(session, step).map(toApprovedStayGroup),
+    ...(session.partyLookup ? { party: session.partyLookup } : {}),
   };
 }
 
@@ -198,6 +200,7 @@ export function initialQuoteSession(): QuoteSession {
     runningStepId: null,
     mailboxStatus: null,
     evidence: null,
+    partyLookup: null,
   };
 }
 
@@ -232,22 +235,20 @@ function agesMatch(left: readonly number[], right: readonly number[]): boolean {
 
 function occupancySatisfied(group: StayGroupRequirement, covering: readonly QuoteOffer[]): boolean {
   if (covering.length === 0) return false;
-  const needQty = group.quantity ?? 1;
-  const haveQty = covering.reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
-  if (haveQty < needQty) return false;
-  if (group.adults != null) {
-    const matching = covering
-      .filter((offer) => offer.adults === group.adults)
-      .reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
-    if (matching < needQty) return false;
+  if (!group.arrivalDate || !group.departureDate) return false;
+  if (group.board === 'unknown') return false;
+  if (typeof group.quantity !== 'number') return false;
+  const dateKey = `${group.arrivalDate}:${group.departureDate}`;
+  let haveQty = 0;
+  for (const offer of covering) {
+    if (typeof offer.quantity !== 'number') return false;
+    if (offer.quoteRequestKey !== dateKey) return false;
+    if (offer.board !== group.board) return false;
+    if (!agesMatch(offer.childrenAges ?? [], group.childrenAges)) return false;
+    if (group.adults != null && offer.adults !== group.adults) return false;
+    haveQty += offer.quantity;
   }
-  if (group.childrenAges.length > 0) {
-    const matching = covering
-      .filter((offer) => agesMatch(offer.childrenAges ?? [], group.childrenAges))
-      .reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
-    if (matching < needQty) return false;
-  }
-  return true;
+  return haveQty === group.quantity;
 }
 
 export function canCreatePdf(session: QuoteSession): boolean {
@@ -274,6 +275,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     evidence: null,
     reviewedReplyHtml: '',
     errorMessage: null,
+    partyLookup: null,
   };
 }
 
@@ -408,6 +410,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
+      const partyRef = action.party.partyRef.trim();
+      if (!partyRef) return session;
+      const party: PartyLookupRef = {
+        organisation: action.party.organisation.trim(),
+        partyRef,
+      };
       const succeededIds = new Set(
         session.steps
           .filter((step) => step.status === 'succeeded' || step.id === action.stepId)
@@ -418,9 +426,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         phase: 'tools',
         runningStepId: null,
         errorMessage: null,
+        partyLookup: party,
         steps: session.steps.map((step) => {
           if (step.id === action.stepId) {
-            return { ...step, status: 'succeeded' as const, resultSummary: 'Organisation lookup completed.' };
+            return {
+              ...step,
+              status: 'succeeded' as const,
+              resultSummary: `Party ${party.partyRef}`,
+            };
           }
           if (step.status === 'queued' && step.dependsOn.every((dep) => succeededIds.has(dep))) {
             return { ...step, status: 'ready' as const };

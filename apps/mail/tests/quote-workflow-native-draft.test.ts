@@ -29,7 +29,7 @@ describe('native draft payload', () => {
     ).toBeNull();
   });
 
-  it('returns reviewed HTML and exact PDF bytes only for authorised provenance', () => {
+  it('returns reviewed HTML and exact PDF bytes only for authorised provenance that still passes canCreatePdf', () => {
     const payload = requireReviewedNativeDraft({
       ...initialQuoteSession(),
       binding: {
@@ -42,6 +42,43 @@ describe('native draft payload', () => {
         scopeEpoch: 1,
       },
       inputRevision: 1,
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 1,
+          roomPreference: 'standard king',
+          adults: 1,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
+        },
+      ],
+      offers: [
+        {
+          id: 'auth-1',
+          kind: 'allocation',
+          roomCode: 'SKNG',
+          roomLabel: 'Standard King',
+          board: 'bb',
+          rateCode: 'BAR',
+          currency: 'ZAR',
+          nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+          stayTotalMinor: 272000,
+          observedAt: '2026-10-05T12:00:00Z',
+          sourceRef: 'auth-src-1',
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: '2026-11-12:2026-11-14',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
+          childrenAges: [],
+        },
+      ],
+      selectedOfferIds: ['auth-1'],
       reviewedReplyHtml: '<p>Parking is available on site.</p>',
       pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
       evidence: {
@@ -54,6 +91,31 @@ describe('native draft payload', () => {
     expect(payload?.html).not.toContain('Thank you for Choosing The Centurion Hotel.');
     expect(payload?.pdf.fileName).toBe('Quote-authorised.pdf');
     expect(payload?.pdf.pdfBase64).toBe('JVBERi0xLjQK');
+  });
+
+  it('refuses native insert when canCreatePdf is false even with authorised html and pdf bytes', () => {
+    expect(
+      requireReviewedNativeDraft({
+        ...initialQuoteSession(),
+        binding: {
+          transportId: 't1',
+          mailboxEmail: 'centurion@legacyhotels.co.za',
+          storeId: 'store',
+          folderEntryId: 'inbox',
+          entryId: 'e1',
+          selectionEpoch: 1,
+          scopeEpoch: 1,
+        },
+        inputRevision: 1,
+        reviewedReplyHtml: '<p>Parking is available on site.</p>',
+        pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
+        evidence: {
+          kind: 'authorised',
+          selectionEpoch: 1,
+          inputRevision: 1,
+        },
+      }),
+    ).toBeNull();
   });
 });
 
