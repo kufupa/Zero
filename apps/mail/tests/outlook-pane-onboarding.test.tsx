@@ -225,28 +225,14 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.getByText(/Welcome to Nava AI/i)).toBeDefined();
   });
 
-  it('correctly updates arrival and departure based on activeDateTab and clamps stay within September', () => {
+  it('correctly opens the quote tool without a September RATE_TABLE calendar', () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-
-    // Open calendar
-    fireEvent.click(screen.getByText(/Change Dates/i));
-
-    // By default activeDateTab is arrival (15)
-    // Click day 20 -> arrival becomes 20, departure becomes at least 21
-    fireEvent.click(screen.getByRole('button', { name: '20' }));
-    expect(screen.getByText('2026-09-20')).toBeDefined();
-
-    // Switch to departure tab
-    fireEvent.click(screen.getByText(/Departure Date/i));
-    // Click day 25 -> departure becomes 25, nights count is 5
-    fireEvent.click(screen.getByRole('button', { name: '25' }));
-    expect(screen.getByText('2026-09-25')).toBeDefined();
-    expect(screen.getAllByText(/5 Nights/i).length).toBeGreaterThan(0);
-
-    // Quick nights 7 when arrival is 20 -> should clamp departure to 27 or month-end (not 31)
-    fireEvent.click(screen.getByRole('button', { name: /7 Nights/i }));
-    expect(screen.getByText('2026-09-27')).toBeDefined();
+    expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
+    expect(screen.queryByText(/September 2026/i)).toBeNull();
+    expect(screen.queryByText(/Change Dates/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^Run next$/i })).toBeDefined();
   });
 
   it('displays Sample badge when no active email is present from bridge', () => {

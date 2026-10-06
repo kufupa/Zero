@@ -12,8 +12,9 @@ import {
 } from '../db/schema/mail.js';
 import { and, desc, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
 import { computeThreadStateVersion } from './thread-context.js';
+import { getS3Storage, type S3Storage } from '../storage/s3.js';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DB } from '../db/client.js';
-import { randomUUID } from 'node:crypto';
 
 export class ThreadStateStaleError extends Error {
   constructor(message = 'thread state version stale') {
@@ -131,6 +132,69 @@ export async function loadLiveThreadStateVersion(
   });
 }
 
+export type GeneratedDraftArtifact = {
+  artifactRef: string;
+  filename: string;
+  mimeType: 'application/pdf';
+  body: Buffer;
+  sha256: string;
+};
+export type PersistedGeneratedArtifact = {
+  artifactRef: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  s3Key: string;
+  sourceHash: string;
+  generationId: string;
+};
+export type DraftArtifactStorage = {
+  stage: (key: string, body: Buffer, mimeType: string) => Promise<void>;
+  read: (key: string) => Promise<Buffer | null>;
+};
+export function createDraftArtifactStorage(
+  storage: S3Storage = getS3Storage(),
+): DraftArtifactStorage {
+  return {
+    stage: async (key, body, mimeType) => {
+      await storage.putObject({ key, body, contentType: mimeType });
+    },
+    read: async (key) =>
+      (await storage.getObjectBounded(key, 20 * 1024 * 1024, new AbortController().signal))?.body ??
+      null,
+  };
+}
+export type ReservationistPersistedResult = {
+  version: 1;
+  readiness: string;
+  tasks: unknown[];
+  quoteRevisionIds: string[];
+  artifactRefs: string[];
+  actionDigest: string;
+  quoteRevisions?: unknown[];
+  proposalFacts?: { ref: string; facts: unknown }[];
+  importedOffers?: unknown[];
+  approvedOverrides?: unknown[];
+  rateComparisons?: unknown[];
+  packets?: unknown[];
+  readReceipts?: unknown[];
+  existingDocumentReceipts?: unknown[];
+  readRecoveries?: unknown[];
+  preparedFacts?: import('./prepared-draft-input.js').PreparedFact[];
+  recipientPreparations?: import('./reservationist-recipient-preparation.js').RecipientPreparationReceipt[];
+  currentNativeObservations?: import('./reservationist-execution.js').CurrentNativeObservationReceipt[];
+  sourceRecoveries?: import('./reservationist-runtime.js').RuntimeWorkResult['sourceRecoveries'];
+  paymentComparisons?: unknown[];
+};
+export function typedResultDigest(
+  result: ReservationistPersistedResult,
+  artifacts: readonly PersistedGeneratedArtifact[],
+): string {
+  return createHash('sha256')
+    .update(canonicalJson({ result, artifacts: artifacts.map(({ s3Key: _s3Key, ...safe }) => safe) }))
+    .digest('hex');
+}
+
 export interface PersistAiCandidateDraftInput {
   db: DB;
   transportId: string;
@@ -163,6 +227,15 @@ export interface PersistAiCandidateDraftInput {
   persistDraft?: boolean;
   /** Complete trusted route/release provenance for a normal candidate run. */
   routeBinding?: DraftApprovalRouteBinding;
+  workflowRunId?: string;
+  runFence?: { claimOwner: string; claimToken: string; deadlineAt: Date };
+  reservationistResult?: ReservationistPersistedResult;
+  generatedArtifacts?: GeneratedDraftArtifact[];
+  artifactStorage?: DraftArtifactStorage;
+  signal?: AbortSignal;
+  revalidateSources?: () => Promise<boolean>;
+  /** Track only objects staged by this invocation; no deletion of reused files. */
+  onGeneratedOrphans?: (keys: readonly string[]) => void;
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
@@ -170,6 +243,12 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
   const outcome = input.outcome ?? 'candidate';
   const evidence = input.evidence ?? [];
 
+  if (
+    input.reservationistResult &&
+    persistDraft &&
+    (!input.revalidateSources || !(await input.revalidateSources()))
+  )
+    throw new Error('draft_source_revalidation_failed');
   const existingGeneration = await input.db
     .select({ id: aiDraftGeneration.id })
     .from(aiDraftGeneration)
@@ -188,6 +267,75 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
       )
       .limit(1);
     if (existingDraft[0]) {
+      if (input.reservationistResult && persistDraft) {
+        await input.db.transaction(async (tx) => {
+          const fence = input.runFence;
+          if (!fence) throw new Error('draft_claim_fence_required');
+          const [run] = await tx
+            .select()
+            .from(aiWorkflowRun)
+            .where(
+              and(
+                eq(aiWorkflowRun.id, input.workflowRunId!),
+                eq(aiWorkflowRun.transportId, input.transportId),
+                eq(aiWorkflowRun.threadId, input.threadId),
+                eq(aiWorkflowRun.triggerMessageId, input.replyToMessageId),
+                eq(aiWorkflowRun.state, 'running'),
+                eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+                eq(aiWorkflowRun.claimToken, fence.claimToken),
+              ),
+            )
+            .limit(1)
+            .for('update');
+          if (
+            !run ||
+            !run.deadlineAt ||
+            run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+            run.deadlineAt.getTime() <= Date.now()
+          )
+            throw new Error('draft_claim_fence_stale');
+          const [generation] = await tx
+            .select()
+            .from(aiDraftGeneration)
+            .where(eq(aiDraftGeneration.id, input.generationId))
+            .limit(1);
+          if (
+            !generation ||
+            generation.transportId !== input.transportId ||
+            generation.threadId !== input.threadId ||
+            generation.requestedByUserId !== input.createdByUserId ||
+            existingDraft[0].threadId !== input.threadId
+          )
+            throw new Error('draft_retry_scope_mismatch');
+          if (
+            canonicalJson(run.metrics?.reservationistResult) !==
+              canonicalJson(input.reservationistResult) ||
+            run.metrics?.resultDigest !==
+              typedResultDigest(
+                input.reservationistResult!,
+                existingDraft[0].attachments as PersistedGeneratedArtifact[],
+              )
+          )
+            throw new Error('draft_retry_result_mismatch');
+          if (!input.revalidateSources || !(await input.revalidateSources()))
+            throw new Error('draft_source_revalidation_failed');
+        });
+      }
+
+      if (persistDraft && existingDraft[0].attachments.length) {
+        if (!input.artifactStorage) throw new Error('artifact_storage_unavailable');
+        for (const raw of existingDraft[0].attachments) {
+          const artifact = raw as typeof raw & { sourceHash?: string };
+          const current = await input.artifactStorage.read(artifact.s3Key);
+          if (
+            !current ||
+            current.length !== artifact.sizeBytes ||
+            createHash('sha256').update(current).digest('hex') !== artifact.sourceHash
+          )
+            throw new Error('artifact_identity_changed');
+        }
+      }
+
       if (persistDraft && input.routeBinding && existingDraft[0].origin === 'ai') {
         const [previousRun] = await input.db
           .select({ metrics: aiWorkflowRun.metrics })
@@ -241,100 +389,235 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
     }
   }
 
+  const artifacts: PersistedGeneratedArtifact[] = [];
+  const stagedKeys: string[] = [];
+  if (input.signal?.aborted) throw new Error('draft_cancelled');
+  if (persistDraft && (input.generatedArtifacts?.length || input.reservationistResult)) {
+    if (
+      !input.reservationistResult ||
+      !input.workflowRunId ||
+      !input.artifactStorage ||
+      input.reservationistResult.version !== 1 ||
+      Buffer.byteLength(canonicalJson(input.reservationistResult), 'utf8') > 256 * 1024 ||
+      input.reservationistResult.tasks.length > 32 ||
+      input.reservationistResult.artifactRefs.length > 16 ||
+      !/^[a-f0-9]{64}$/.test(input.reservationistResult.actionDigest)
+    )
+      throw new Error('artifact_result_contract_invalid');
+    if ((input.generatedArtifacts?.length ?? 0) > 16) throw new Error('artifact_limit');
+    const refs = new Set<string>();
+    try {
+      for (const artifact of input.generatedArtifacts ?? []) {
+        if (
+          refs.has(artifact.artifactRef) ||
+          !/^generated:[a-zA-Z0-9_-]{1,128}$/.test(artifact.artifactRef) ||
+          artifact.mimeType !== 'application/pdf' ||
+          !artifact.filename ||
+          artifact.filename.length > 160 ||
+          /[\\/\r\n]/.test(artifact.filename) ||
+          artifact.body.length < 5 ||
+          artifact.body.length > 20 * 1024 * 1024 ||
+          artifact.body.subarray(0, 5).toString() !== '%PDF-' ||
+          createHash('sha256').update(artifact.body).digest('hex') !== artifact.sha256
+        )
+          throw new Error('artifact_invalid');
+        refs.add(artifact.artifactRef);
+        const key = `generated-drafts/${input.transportId}/${input.generationId}/${randomUUID()}.pdf`;
+        await input.artifactStorage.stage(key, artifact.body, artifact.mimeType);
+        stagedKeys.push(key);
+        const verified = await input.artifactStorage.read(key);
+        if (
+          !verified ||
+          verified.length !== artifact.body.length ||
+          createHash('sha256').update(verified).digest('hex') !== artifact.sha256
+        )
+          throw new Error('artifact_verification_failed');
+        artifacts.push({
+          artifactRef: artifact.artifactRef,
+          filename: artifact.filename,
+          mimeType: artifact.mimeType,
+          sizeBytes: verified.length,
+          s3Key: key,
+          sourceHash: artifact.sha256,
+          generationId: input.generationId,
+        });
+      }
+      if (
+        input.reservationistResult.artifactRefs.some((ref) => !refs.has(ref)) ||
+        refs.size !== input.reservationistResult.artifactRefs.length
+      )
+        throw new Error('artifact_result_refs_mismatch');
+    } catch (error) {
+      input.onGeneratedOrphans?.(stagedKeys);
+      throw error;
+    }
+  }
   const draftId = randomUUID();
   const revisionId = randomUUID();
   const now = new Date();
 
-  await input.db.transaction(async (tx) => {
-    if (input.threadStateVersion) {
-      // Live messages + thread-affecting revision (not pinned to context snapshot).
-      const live = await loadLiveThreadStateVersion(tx as unknown as DB, {
-        transportId: input.transportId,
-        threadId: input.threadId,
-      });
-      assertThreadStateVersionFresh(input.threadStateVersion, live);
-    }
+  try {
+    await input.db.transaction(async (tx) => {
+      if (input.signal?.aborted) throw new Error('draft_cancelled');
+      if (input.reservationistResult && persistDraft) {
+        const fence = input.runFence;
+        if (
+          !fence ||
+          !fence.claimOwner ||
+          !fence.claimToken ||
+          !Number.isFinite(fence.deadlineAt.getTime())
+        )
+          throw new Error('draft_claim_fence_required');
+        const [claimed] = await tx
+          .select()
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.id, input.workflowRunId!),
+              eq(aiWorkflowRun.transportId, input.transportId),
+              eq(aiWorkflowRun.threadId, input.threadId),
+              eq(aiWorkflowRun.triggerMessageId, input.replyToMessageId),
+              eq(aiWorkflowRun.state, 'running'),
+              eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+              eq(aiWorkflowRun.claimToken, fence.claimToken),
+            ),
+          )
+          .limit(1)
+          .for('update');
+        if (
+          !claimed ||
+          !claimed.deadlineAt ||
+          claimed.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+          claimed.deadlineAt.getTime() <= Date.now()
+        )
+          throw new Error('draft_claim_fence_stale');
+        if (!input.revalidateSources || !(await input.revalidateSources()))
+          throw new Error('draft_source_revalidation_failed');
+      }
 
-    await tx
-      .insert(aiDraftGeneration)
-      .values({
-        id: input.generationId,
-        transportId: input.transportId,
-        threadId: input.threadId,
-        requestedByUserId: input.createdByUserId,
-        contextMessageIds: input.contextMessageIds,
-        model: input.model,
-        promptVersion: input.promptVersion,
-        status: 'succeeded',
-        outcome,
-        threadStateVersion: input.threadStateVersion ?? null,
-        evidence,
-        createdAt: now,
-      })
-      .onConflictDoNothing();
+      if (input.threadStateVersion) {
+        // Live messages + thread-affecting revision (not pinned to context snapshot).
+        const live = await loadLiveThreadStateVersion(tx as unknown as DB, {
+          transportId: input.transportId,
+          threadId: input.threadId,
+        });
+        assertThreadStateVersionFresh(input.threadStateVersion, live);
+      }
 
-    if (existingGeneration.length > 0) {
       await tx
-        .update(aiDraftGeneration)
-        .set({
+        .insert(aiDraftGeneration)
+        .values({
+          id: input.generationId,
+          transportId: input.transportId,
+          threadId: input.threadId,
+          requestedByUserId: input.createdByUserId,
+          contextMessageIds: input.contextMessageIds,
+          model: input.model,
+          promptVersion: input.promptVersion,
+          status: 'succeeded',
           outcome,
           threadStateVersion: input.threadStateVersion ?? null,
           evidence,
-          status: 'succeeded',
+          createdAt: now,
         })
-        .where(eq(aiDraftGeneration.id, input.generationId));
-    }
+        .onConflictDoNothing();
 
-    if (!persistDraft) return;
+      if (existingGeneration.length > 0) {
+        await tx
+          .update(aiDraftGeneration)
+          .set({
+            outcome,
+            threadStateVersion: input.threadStateVersion ?? null,
+            evidence,
+            status: 'succeeded',
+          })
+          .where(eq(aiDraftGeneration.id, input.generationId));
+      }
 
-    // Atomic replace: supersede older visible AI candidates for this thread.
-    await tx
-      .update(mailDraft)
-      .set({ status: 'discarded', updatedAt: now })
-      .where(
-        and(
-          eq(mailDraft.transportId, input.transportId),
-          eq(mailDraft.threadId, input.threadId),
-          eq(mailDraft.isSent, false),
-          eq(mailDraft.status, 'candidate'),
-          eq(mailDraft.origin, 'ai'),
-        ),
-      );
+      if (input.reservationistResult && persistDraft) {
+        const [run] = await tx
+          .select()
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.id, input.workflowRunId!),
+              eq(aiWorkflowRun.transportId, input.transportId),
+              eq(aiWorkflowRun.threadId, input.threadId),
+              eq(aiWorkflowRun.triggerMessageId, input.replyToMessageId),
+              eq(aiWorkflowRun.runKind, 'candidate_draft'),
+            ),
+          )
+          .limit(1);
+        if (!run) throw new Error('artifact_run_scope_invalid');
+        await tx
+          .update(aiWorkflowRun)
+          .set({
+            generationId: input.generationId,
+            metrics: {
+              ...run.metrics,
+              reservationistResult: input.reservationistResult,
+              resultDigest: typedResultDigest(input.reservationistResult, artifacts),
+            },
+          })
+          .where(eq(aiWorkflowRun.id, run.id));
+      }
+      if (input.signal?.aborted) throw new Error('draft_cancelled');
+      if (!persistDraft) return;
 
-    await tx.insert(mailDraft).values({
-      id: draftId,
-      transportId: input.transportId,
-      threadId: input.threadId,
-      createdByUserId: input.createdByUserId,
-      status: 'candidate',
-      origin: 'ai',
-      replyToMessageId: input.replyToMessageId,
-      generationId: input.generationId,
-      toAddresses: input.toAddresses,
-      ccAddresses: input.ccAddresses ?? [],
-      bccAddresses: input.bccAddresses ?? [],
-      subject: input.subject,
-      textBody: input.textBody,
-      htmlBody: input.htmlBody,
-      createdAt: now,
-      updatedAt: now,
+      // Atomic replace: supersede older visible AI candidates for this thread.
+      await tx
+        .update(mailDraft)
+        .set({ status: 'discarded', updatedAt: now })
+        .where(
+          and(
+            eq(mailDraft.transportId, input.transportId),
+            eq(mailDraft.threadId, input.threadId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'candidate'),
+            eq(mailDraft.origin, 'ai'),
+          ),
+        );
+
+      await tx.insert(mailDraft).values({
+        id: draftId,
+        transportId: input.transportId,
+        threadId: input.threadId,
+        createdByUserId: input.createdByUserId,
+        status: 'candidate',
+        origin: 'ai',
+        replyToMessageId: input.replyToMessageId,
+        generationId: input.generationId,
+        toAddresses: input.toAddresses,
+        ccAddresses: input.ccAddresses ?? [],
+        bccAddresses: input.bccAddresses ?? [],
+        subject: input.subject,
+        textBody: input.textBody,
+        htmlBody: input.htmlBody,
+        attachments: artifacts,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await tx.insert(mailDraftRevision).values({
+        id: revisionId,
+        draftId,
+        generationId: input.generationId,
+        kind: 'ai_generated',
+        toAddresses: input.toAddresses,
+        ccAddresses: input.ccAddresses ?? [],
+        bccAddresses: input.bccAddresses ?? [],
+        subject: input.subject,
+        textBody: input.textBody,
+        htmlBody: input.htmlBody,
+        attachments: artifacts,
+        createdAt: now,
+      });
+      if (input.signal?.aborted) throw new Error('draft_cancelled');
     });
-
-    await tx.insert(mailDraftRevision).values({
-      id: revisionId,
-      draftId,
-      generationId: input.generationId,
-      kind: 'ai_generated',
-      toAddresses: input.toAddresses,
-      ccAddresses: input.ccAddresses ?? [],
-      bccAddresses: input.bccAddresses ?? [],
-      subject: input.subject,
-      textBody: input.textBody,
-      htmlBody: input.htmlBody,
-      attachments: [],
-      createdAt: now,
-    });
-  });
+  } catch (error) {
+    input.onGeneratedOrphans?.(stagedKeys);
+    throw error;
+  }
 
   if (!persistDraft) {
     return {

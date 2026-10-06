@@ -254,7 +254,7 @@ export async function runPreparedWorkerCandidateReply(
       input.adapter ??
       createApprovedLocalModelAdapter({
         purpose: 'draft',
-        route: input.route?.route,
+        route: input.route?.route.protocol === 'in_process' ? input.route.route : undefined,
         transport: input.route?.transport,
       });
   } catch (error) {

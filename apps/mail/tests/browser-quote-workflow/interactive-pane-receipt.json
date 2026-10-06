@@ -1,0 +1,498 @@
+{
+  "at": "2026-10-06T04:14:03.916Z",
+  "chrome": "/home/orca/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  "note": "Browser UI with mocked integrations, not Outlook. Production QuoteWorkflowPanel hydrated in Chromium. Adapter/bridge labelled MOCK. No DB/Windows/PMS.",
+  "styledPaneHtml": "untracked generated dump; gitignored non-destructively; not this proof",
+  "diagnostics": [
+    {
+      "at": "2026-10-06T04:13:59.897Z",
+      "label": "vite",
+      "detail": "ready"
+    },
+    {
+      "at": "2026-10-06T04:13:59.897Z",
+      "label": "attempt",
+      "detail": 1
+    }
+  ],
+  "usedAttempt": 1,
+  "result": {
+    "attempt": 1,
+    "engine": "vite+chromium-1243 url-argv",
+    "origin": "http://127.0.0.1:4181",
+    "banner": "MOCKED adapter/bridge — browser UI with mocked integrations, not Outlook, not live HMS, no native draft.",
+    "edit": {
+      "ok": true,
+      "value": "4",
+      "count": 2
+    },
+    "run": {
+      "ok": true,
+      "text": "Run Search availability 2026-10-16 → 2026-10-18"
+    },
+    "selectClick": {
+      "twin": {
+        "ok": true
+      },
+      "queen": {
+        "ok": true,
+        "pressed": "false"
+      }
+    },
+    "png": {
+      "unavailable": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/interactive-pane-unavailable-380.png",
+      "select": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/interactive-pane-select-380.png"
+    },
+    "before": {
+      "reactHydrated": true,
+      "mockedIntegrations": true,
+      "notOutlook": true,
+      "adapterLabel": "MOCK adapter/bridge",
+      "scenario": "unavailable",
+      "phase": "requirements",
+      "inputRevision": 1,
+      "groupIds": [
+        "g-double",
+        "g-single"
+      ],
+      "groups": [
+        {
+          "id": "g-double",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 2,
+          "quantity": 1
+        },
+        {
+          "id": "g-single",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 1,
+          "quantity": 2
+        }
+      ],
+      "steps": [
+        {
+          "id": "quote-stay-2026-10-16:2026-10-18",
+          "title": "Search availability 2026-10-16 → 2026-10-18",
+          "status": "ready",
+          "displayedInputs": "Dates 2026-10-16 → 2026-10-18 · Stay groups g-double, g-single · g-double: 1 × twin, 2 adults · g-single: 2 × single, 1 adults",
+          "wouldSend": {
+            "stepKind": "quote_stay",
+            "binding": {
+              "transportId": "mock-transport",
+              "mailboxEmail": "mock@example.test",
+              "storeId": "mock-store",
+              "folderEntryId": "mock-inbox",
+              "entryId": "mock-entry",
+              "selectionEpoch": 1
+            },
+            "groups": [
+              {
+                "id": "g-double",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 1,
+                "roomPreference": "twin",
+                "adults": 2,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              },
+              {
+                "id": "g-single",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 2,
+                "roomPreference": "single",
+                "adults": 1,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              }
+            ]
+          },
+          "retryGuidance": null
+        }
+      ],
+      "offerIds": [],
+      "selectedOfferIds": [],
+      "offerCount": 0,
+      "errorMessage": null,
+      "pdf": null,
+      "canCreatePdf": false,
+      "canCreateNativeDraft": false,
+      "hasAllocationCopy": false,
+      "adapterCalls": [],
+      "pdfClicks": 0,
+      "nativeCalls": []
+    },
+    "afterEdit": {
+      "reactHydrated": true,
+      "mockedIntegrations": true,
+      "notOutlook": true,
+      "adapterLabel": "MOCK adapter/bridge",
+      "scenario": "unavailable",
+      "phase": "requirements",
+      "inputRevision": 2,
+      "groupIds": [
+        "g-double",
+        "g-single"
+      ],
+      "groups": [
+        {
+          "id": "g-double",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 4,
+          "quantity": 1
+        },
+        {
+          "id": "g-single",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 1,
+          "quantity": 2
+        }
+      ],
+      "steps": [
+        {
+          "id": "quote-stay-2026-10-16:2026-10-18",
+          "title": "Search availability 2026-10-16 → 2026-10-18",
+          "status": "ready",
+          "displayedInputs": "Dates 2026-10-16 → 2026-10-18 · Stay groups g-double, g-single · g-double: 1 × twin, 4 adults · g-single: 2 × single, 1 adults",
+          "wouldSend": {
+            "stepKind": "quote_stay",
+            "binding": {
+              "transportId": "mock-transport",
+              "mailboxEmail": "mock@example.test",
+              "storeId": "mock-store",
+              "folderEntryId": "mock-inbox",
+              "entryId": "mock-entry",
+              "selectionEpoch": 1
+            },
+            "groups": [
+              {
+                "id": "g-double",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 1,
+                "roomPreference": "twin",
+                "adults": 4,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              },
+              {
+                "id": "g-single",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 2,
+                "roomPreference": "single",
+                "adults": 1,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              }
+            ]
+          },
+          "retryGuidance": null
+        }
+      ],
+      "offerIds": [],
+      "selectedOfferIds": [],
+      "offerCount": 0,
+      "errorMessage": null,
+      "pdf": null,
+      "canCreatePdf": false,
+      "canCreateNativeDraft": false,
+      "hasAllocationCopy": false,
+      "adapterCalls": [],
+      "pdfClicks": 0,
+      "nativeCalls": []
+    },
+    "afterRun": {
+      "reactHydrated": true,
+      "mockedIntegrations": true,
+      "notOutlook": true,
+      "adapterLabel": "MOCK adapter/bridge",
+      "scenario": "unavailable",
+      "phase": "tools",
+      "inputRevision": 2,
+      "groupIds": [
+        "g-double",
+        "g-single"
+      ],
+      "groups": [
+        {
+          "id": "g-double",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 4,
+          "quantity": 1
+        },
+        {
+          "id": "g-single",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 1,
+          "quantity": 2
+        }
+      ],
+      "steps": [
+        {
+          "id": "quote-stay-2026-10-16:2026-10-18",
+          "title": "Search availability 2026-10-16 → 2026-10-18",
+          "status": "failed",
+          "displayedInputs": "Dates 2026-10-16 → 2026-10-18 · Stay groups g-double, g-single · g-double: 1 × twin, 4 adults · g-single: 2 × single, 1 adults",
+          "wouldSend": {
+            "stepKind": "quote_stay",
+            "binding": {
+              "transportId": "mock-transport",
+              "mailboxEmail": "mock@example.test",
+              "storeId": "mock-store",
+              "folderEntryId": "mock-inbox",
+              "entryId": "mock-entry",
+              "selectionEpoch": 1
+            },
+            "groups": [
+              {
+                "id": "g-double",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 1,
+                "roomPreference": "twin",
+                "adults": 4,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              },
+              {
+                "id": "g-single",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 2,
+                "roomPreference": "single",
+                "adults": 1,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              }
+            ]
+          },
+          "retryGuidance": "MOCK adapter: integration_unavailable — labelled mock, not HMS, not Outlook, no native call"
+        }
+      ],
+      "offerIds": [],
+      "selectedOfferIds": [],
+      "offerCount": 0,
+      "errorMessage": "MOCK adapter: integration_unavailable — labelled mock, not HMS, not Outlook, no native call",
+      "pdf": null,
+      "canCreatePdf": false,
+      "canCreateNativeDraft": false,
+      "hasAllocationCopy": false,
+      "adapterCalls": [
+        "runStep:quote-stay-2026-10-16:2026-10-18"
+      ],
+      "pdfClicks": 0,
+      "nativeCalls": []
+    },
+    "selectBefore": {
+      "reactHydrated": true,
+      "mockedIntegrations": true,
+      "notOutlook": true,
+      "adapterLabel": "MOCK adapter/bridge",
+      "scenario": "select",
+      "phase": "results",
+      "inputRevision": 1,
+      "groupIds": [
+        "g-double",
+        "g-single"
+      ],
+      "groups": [
+        {
+          "id": "g-double",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 2,
+          "quantity": 1
+        },
+        {
+          "id": "g-single",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 1,
+          "quantity": 2
+        }
+      ],
+      "steps": [
+        {
+          "id": "quote-stay-2026-10-16:2026-10-18",
+          "title": "Search availability 2026-10-16 → 2026-10-18",
+          "status": "ready",
+          "displayedInputs": "Dates 2026-10-16 → 2026-10-18 · Stay groups g-double, g-single · g-double: 1 × twin, 2 adults · g-single: 2 × single, 1 adults",
+          "wouldSend": {
+            "stepKind": "quote_stay",
+            "binding": {
+              "transportId": "mock-transport",
+              "mailboxEmail": "mock@example.test",
+              "storeId": "mock-store",
+              "folderEntryId": "mock-inbox",
+              "entryId": "mock-entry",
+              "selectionEpoch": 1
+            },
+            "groups": [
+              {
+                "id": "g-double",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 1,
+                "roomPreference": "twin",
+                "adults": 2,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              },
+              {
+                "id": "g-single",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 2,
+                "roomPreference": "single",
+                "adults": 1,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              }
+            ]
+          },
+          "retryGuidance": null
+        }
+      ],
+      "offerIds": [
+        "mix-a",
+        "mix-b",
+        "mix-c"
+      ],
+      "selectedOfferIds": [],
+      "offerCount": 3,
+      "errorMessage": null,
+      "pdf": null,
+      "canCreatePdf": false,
+      "canCreateNativeDraft": false,
+      "hasAllocationCopy": true,
+      "adapterCalls": [],
+      "pdfClicks": 0,
+      "nativeCalls": []
+    },
+    "selectAfter": {
+      "reactHydrated": true,
+      "mockedIntegrations": true,
+      "notOutlook": true,
+      "adapterLabel": "MOCK adapter/bridge",
+      "scenario": "select",
+      "phase": "results",
+      "inputRevision": 1,
+      "groupIds": [
+        "g-double",
+        "g-single"
+      ],
+      "groups": [
+        {
+          "id": "g-double",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 2,
+          "quantity": 1
+        },
+        {
+          "id": "g-single",
+          "arrivalDate": "2026-10-16",
+          "departureDate": "2026-10-18",
+          "adults": 1,
+          "quantity": 2
+        }
+      ],
+      "steps": [
+        {
+          "id": "quote-stay-2026-10-16:2026-10-18",
+          "title": "Search availability 2026-10-16 → 2026-10-18",
+          "status": "ready",
+          "displayedInputs": "Dates 2026-10-16 → 2026-10-18 · Stay groups g-double, g-single · g-double: 1 × twin, 2 adults · g-single: 2 × single, 1 adults",
+          "wouldSend": {
+            "stepKind": "quote_stay",
+            "binding": {
+              "transportId": "mock-transport",
+              "mailboxEmail": "mock@example.test",
+              "storeId": "mock-store",
+              "folderEntryId": "mock-inbox",
+              "entryId": "mock-entry",
+              "selectionEpoch": 1
+            },
+            "groups": [
+              {
+                "id": "g-double",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 1,
+                "roomPreference": "twin",
+                "adults": 2,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              },
+              {
+                "id": "g-single",
+                "arrivalDate": "2026-10-16",
+                "departureDate": "2026-10-18",
+                "quantity": 2,
+                "roomPreference": "single",
+                "adults": 1,
+                "childrenAges": [],
+                "board": "bb",
+                "specialRequests": []
+              }
+            ]
+          },
+          "retryGuidance": null
+        }
+      ],
+      "offerIds": [
+        "mix-a",
+        "mix-b",
+        "mix-c"
+      ],
+      "selectedOfferIds": [
+        "mix-a",
+        "mix-b"
+      ],
+      "offerCount": 3,
+      "errorMessage": null,
+      "pdf": null,
+      "canCreatePdf": false,
+      "canCreateNativeDraft": false,
+      "hasAllocationCopy": true,
+      "adapterCalls": [],
+      "pdfClicks": 0,
+      "nativeCalls": []
+    }
+  },
+  "judged": {
+    "checks": {
+      "reactHydrated": true,
+      "mockedBanner": true,
+      "twoGroups": true,
+      "adultsEdited": true,
+      "payloadUpdated": true,
+      "perStepRun": true,
+      "unavailableNoOffers": true,
+      "unavailableNoPdf": true,
+      "unavailableNoNative": true,
+      "twoGroupSelect": true,
+      "selectDidNotCallNative": true,
+      "notOutlook": true
+    },
+    "failed": [],
+    "ok": true
+  }
+}

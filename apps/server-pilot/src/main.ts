@@ -13,11 +13,16 @@ import { OutlookSyncStorage } from './outlook-sync/storage.js';
 import { mailboxTransport } from './db/schema/mail.js';
 import { closeDb, getDb } from './db/client.js';
 import { appRouter } from './trpc/router.js';
+import { initializeDraftArtifactServices } from './trpc/routes/drafts.js';
 import { createAuth } from './lib/auth.js';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 
 const app = new Hono();
+// Production requires real storage; missing configuration keeps attachment routes closed.
+if (process.env.NODE_ENV !== 'production' || (process.env.S3_BUCKET && process.env.AWS_REGION)) {
+  initializeDraftArtifactServices();
+}
 
 app.get('/health', (c) => c.json({ ok: true, service: 'server-pilot' }));
 

@@ -1,4 +1,9 @@
-import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import type { AttachmentAdmission } from './reservationist-attachment-input.js';
+import type { DB } from '../db/client.js';
+import type { AiRunFence } from './run-ledger.js';
+import type { DraftArtifactStorage, GeneratedDraftArtifact } from './drafts.js';
+import type { ReservationistRuntimeInput, runReservationistRuntime } from './reservationist-runtime.js';
+import type { LocalModelAdapterConfig, LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
 import { createRequire } from 'node:module';
 
 /** Server-owned release identity for the configured draft-purpose route. */
@@ -18,11 +23,28 @@ export type DraftRouteAuthority = {
   route: DraftModelRouteConfig['route'];
   release: DraftRouteReleaseDescriptor;
 };
+/** Explicit installed hosted route; this does not confer a release or source grant. */
+export type AzureDraftModelRouteEvidence = Omit<LocalModelRouteEvidence,'purpose'|'protocol'|'egress'> & {purpose:'draft';protocol:'azure-foundry-responses';egress:'azure-foundry'};
+
+export type ReservationistProviderContext = {
+  db: DB; transportId: string; threadId: string; requestedByUserId: string;
+  generationId: string; admissions: readonly AttachmentAdmission[]; input: ReservationistRuntimeInput; signal: AbortSignal; fence: AiRunFence;
+};
+export type ReservationistProvider = (context: ReservationistProviderContext) => Promise<{
+  dependencies: Parameters<typeof runReservationistRuntime>[1];
+  collectGeneratedArtifacts: () => GeneratedDraftArtifact[];
+  collectUsage?: () => {known:boolean;inputTokens:number|null;outputTokens:number|null;estimatedCostUsd:number|null;rateTableVersions:string[]};
+  artifactStorage?: DraftArtifactStorage;
+}>;
 
 /** Explicitly configured lower edge for the normal draft-purpose route. */
 export type DraftModelRouteConfig = {
-  route: LocalModelRouteEvidence & { purpose: 'draft' };
+  route: (LocalModelRouteEvidence & { purpose: 'draft' }) | AzureDraftModelRouteEvidence;
   transport: LocalModelTransport;
+  /** Optional real call-budget seam; required by task-first reservationist extraction. */
+  reserveCalls?: LocalModelAdapterConfig['reserveCalls'];
+  /** Trusted installed services; enabled only by matching release capability. */
+  reservationist?: ReservationistProvider;
   /** Present on the normal configured factory; test-only injected routes may omit it. */
   release?: DraftRouteReleaseDescriptor;
 };
@@ -100,16 +122,15 @@ function sameDraftRouteRelease(
   );
 }
 
-function isDraftRouteEvidence(value: unknown): value is DraftModelRouteConfig['route'] {
+export function isDraftRouteEvidence(value: unknown): value is DraftModelRouteConfig['route'] {
   if (typeof value !== 'object' || value === null) return false;
-  const route = value as Partial<LocalModelRouteEvidence>;
+  const route = value as Partial<DraftModelRouteConfig['route']>;
   return (
     typeof route.routeId === 'string' &&
     route.routeId.trim().length > 0 &&
     route.purpose === 'draft' &&
-    route.protocol === 'in_process' &&
+    (route.protocol === 'in_process' && route.egress === 'none' || route.protocol === 'azure-foundry-responses' && route.egress === 'azure-foundry') &&
     route.access === 'current_app' &&
-    route.egress === 'none' &&
     route.retention === 'bounded' &&
     route.usage === 'reported' &&
     typeof route.modelId === 'string' &&
@@ -120,7 +141,7 @@ function isDraftRouteEvidence(value: unknown): value is DraftModelRouteConfig['r
 function isDraftRouteConfig(value: unknown): value is DraftModelRouteConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<DraftModelRouteConfig>;
-  return isDraftRouteEvidence(config.route) && typeof config.transport === 'function';
+  return isDraftRouteEvidence(config.route) && typeof config.transport === 'function' && (config.reserveCalls === undefined || typeof config.reserveCalls === 'function') && (config.reservationist === undefined || typeof config.reservationist === 'function');
 }
 
 function sameRouteEvidence(

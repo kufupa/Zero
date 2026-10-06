@@ -412,6 +412,18 @@ const restrictionKeys = ['combClosed','combClosedToArrival','combClosedToDepartu
   'combMinLOSToDeparture','combMaxLOSToArrival','combMinLOSToThrough','combMaxLOSToThrough'];
 const pick = (object,keys) => Object.fromEntries(keys.filter(k=>Object.hasOwn(object??{},k)).map(k=>[k,object[k]]));
 
+// Preserve bounded native labels as observations only, never package/tax/child entitlement.
+export function nativeBundleLabels(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0,32).flatMap(value=>{
+    if (!value || typeof value!=='object') return [];
+    const code=typeof value.code==='string'?value.code.trim().slice(0,64):null;
+    const label=typeof value.label==='string'?value.label:typeof value.desc==='string'?value.desc:null;
+    if (!label?.trim()) return [];
+    return [{...(code?{code}:{}),label:label.trim().slice(0,256)}];
+  });
+}
+
 export function projectWindow({criteria,data,calendar}) {
   const columns=raw=>Object.fromEntries(Object.entries(raw??{}).filter(([k])=>/^col\d+$/.test(k)).map(([k,v])=>[k,
     pick(v,['value','groupValue','overbookingLimitCount','israteavailable','restricted',...restrictionKeys])]));
@@ -419,7 +431,7 @@ export function projectWindow({criteria,data,calendar}) {
     children:(data.children??[]).filter(p=>p.isprop&&!p.issummary).map(p=>({...pick(p,['code','desc','currency','isprop','issummary']),
       children:(p.children??[]).map(r=>({...pick(r,['code','desc','buildingCode','roomTypeCategoryCode','isroomtype']),columns:columns(r.columns),
         children:(r.children??[]).map(t=>({...pick(t,['code','desc','currency','currencysymbol','isNegotiatedRate','restricted','haspolicies',
-          'ismealplan','ispkg','minLOS','maxLOS','minLeadTime','maxLeadTime','limitedRatePlanRestriction','maxNights','availableLimitNightCount']),columns:columns(t.columns)}))}))}))}:null};
+          'ismealplan','ispkg','minLOS','maxLOS','minLeadTime','maxLeadTime','limitedRatePlanRestriction','maxNights','availableLimitNightCount']),nonroombundleslist:nativeBundleLabels(t.nonroombundleslist),columns:columns(t.columns)}))}))}))}:null};
 }
 
 export function sourceFacts(option, roomInformation='') {
@@ -428,7 +440,7 @@ export function sourceFacts(option, roomInformation='') {
     ['Two Single Beds','twin'],['One Single Bed','single'],['One Double Bed','double']]);
   const lines=new Set(roomInformation.split('\n').map(x=>x.trim()));
   const bedType=[...bedLabels].find(([label])=>lines.has(label))?.[1];
-  const boardBase=({'Bed & Breakfast R':'breakfast','Room Only R':'room_only'})[option.board];
+  const boardBase=({'Bed & Breakfast R':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
   return {roomCode:option.room.code,rateCode:option.rate.code,bedType,boardBase,
     features:[{name:'room_description',value:option.room.label}]};
 }
@@ -471,7 +483,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       let option=candidates.get(id);
       if (!option) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
-          rate:{code:rate.code,label:rate.desc},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
+          rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
           sourceCurrency:property.currency,rateScope:['BAR','BARRO'].includes(rate.code)?'public':rate.isNegotiatedRate===true?'contextual':'unknown'};
         candidates.set(id,option);
@@ -479,7 +491,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       if(windowIds.has(id))option.issues.push(issue('AMBIGUOUS_NATIVE_ID',id,'Multiple native rows share this identity.'));
       windowIds.add(id);
       const identityKeys=['desc','currency','isNegotiatedRate','restricted','minLOS','maxLOS','minLeadTime','maxLeadTime','ismealplan','ispkg','maxNights','availableLimitNightCount'];
-      if(JSON.stringify(pick(option._rate,identityKeys))!==JSON.stringify(pick(rate,identityKeys))||option._nativeRoom.buildingCode!==nativeRoom.buildingCode)
+      if(JSON.stringify(pick(option._rate,identityKeys))!==JSON.stringify(pick(rate,identityKeys))||JSON.stringify(nativeBundleLabels(option._rate.nonroombundleslist))!==JSON.stringify(nativeBundleLabels(rate.nonroombundleslist))||option._nativeRoom.buildingCode!==nativeRoom.buildingCode)
         option.issues.push(issue('RATE_IDENTITY_CHANGED',id,'Rate eligibility, terms or pool identity changed across observations.'));
       // The grid label can differ from native desc for the same code; nightly
       // price/inventory agreement below is the binding proof.
@@ -487,7 +499,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       if (dom.length!==1) {option.issues.push(issue('RATE_NOT_BOUND_TO_VISIBLE_GRID',id,'Native row is hidden, missing or ambiguous.'));continue;}
       option.board=dom[0].board;
       const shown=dom[0].rate.slice(rate.code.length+2).trim();
-      option.rate=shown&&shown!==rate.desc?{code:rate.code,label:shown,nativeLabel:rate.desc}:{code:rate.code,label:rate.desc};
+      option.rate={...(shown&&shown!==rate.desc?{code:rate.code,label:shown,nativeLabel:rate.desc}:{code:rate.code,label:rate.desc}),...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})};
       for (const date of wanted) {
         const idx=dates.indexOf(date);
         if (idx<0||idx>=headers.length) continue;
@@ -527,7 +539,8 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     option.nightly=invalid?[]:wanted.slice(0,-1).map(d=>option.observations.get(d).fact);
     option.departure=option.observations.get(request.departureDate)?.fact.restrictions??null;
     option.availability=invalid?'unknown':rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
-    option.eligibility=invalid?'unknown':option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
+    const governmentFamily=request.search?.salesStrategy==='Government'&&!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&option._rate.isNegotiatedRate===false&&/^Local Government Rate (?:Breakfast|Dinner|Room Only)$/.test(option.rate.label);
+    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {

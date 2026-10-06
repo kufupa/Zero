@@ -34,13 +34,16 @@
     "seed:prod": "tsx scripts/seed-prod.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "4.0.80",
     "@aws-sdk/client-bedrock-runtime": "3.1080.0",
     "@aws-sdk/client-s3": "^3.1077.0",
     "@aws-sdk/client-secrets-manager": "^3.1077.0",
+    "@aws-sdk/credential-provider-node": "3.972.63",
     "@aws-sdk/s3-request-presigner": "^3.1077.0",
     "@hono/node-server": "^1.14.1",
-    "@mastra/core": "1.50.0",
-    "@mastra/libsql": "1.15.1",
+    "@mastra/core": "1.70.0",
+    "@mastra/libsql": "1.23.2",
+    "@smithy/signature-v4": "5.6.2",
     "@trpc/server": "catalog:",
     "better-auth": "catalog:",
     "cheerio": "1.1.0",

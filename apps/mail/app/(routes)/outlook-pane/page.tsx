@@ -3,30 +3,17 @@ import {
   AlertCircle,
   RefreshCw,
   Send,
-  ChevronLeft,
-  ChevronRight,
-  Moon,
-  Plus,
-  Minus,
-  Search,
-  ShieldCheck,
-  ExternalLink,
-  X,
   Mail,
   Check,
-  SlidersHorizontal,
-  ChevronDown,
-  Utensils,
-  Ban,
   Building2,
+  ChevronLeft,
+  ChevronRight,
   Network,
   Sparkles,
   ArrowRight,
   Clock,
 } from 'lucide-react';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
-import { occupancyRoomCode } from '@/lib/quote-proposal/description';
-import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
 
@@ -89,7 +76,38 @@ const TOUR_SLIDES: TourSlide[] = [
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { analyseLocalEmail } from '@/lib/quote-workflow/analyse-local';
+import {
+  fixtureReplyHtml,
+  loadQuoteFixture,
+  pickFixtureForSession,
+} from '@/lib/quote-workflow/fixtures';
+import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
+import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
+import {
+  bindAnalyseSelection,
+  quoteWorkflowFromTrpc,
+} from '@/lib/quote-workflow/backend-bind';
+import {
+  bindExecuteStaffQuote,
+  bindQualifiedStaffProposalPdf,
+  bindStaffActions,
+  bindStaffQuoteSource,
+  staffQuoteFromTrpc,
+} from '@/lib/quote-workflow/staff-quote-bind';
+import {
+  admissionKey,
+  canCreatePdf,
+  canRunQuoteStep,
+  groupsForQuoteStep,
+  initialQuoteSession,
+  nextSelectedOfferIds,
+  pickNextRunnableStep,
+  reduceQuoteSession,
+  staffQuoteForStay,
+} from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
@@ -132,6 +150,7 @@ type PendingReplyOperation = {
   operationId: string;
   startedAt: number;
   pdf?: { fileName: string; pdfBase64: string };
+  reviewedHtml?: string;
   replyPayload?: {
     operationId: string;
     entryId: string;
@@ -151,77 +170,6 @@ type PendingReplyOperation = {
     base64Data: string;
   };
 };
-
-type RatePlan = {
-  code: string;
-  name: string;
-  subtext: string;
-  singleNightly: number;
-  twinNightly: number;
-  avgNightly: number;
-  mealPlanText: string;
-  restricted?: boolean;
-  restrictionReason?: string;
-};
-
-const HOTEL_PROPERTIES: Record<string, { name: string; shortName: string }> = {
-  HRCEN: { name: 'The Centurion Hotel', shortName: 'Centurion Reservations Team' },
-  HRBAK: { name: 'The Bakubung Bush Lodge', shortName: 'Bakubung Reservations Team' },
-  HRKWA: { name: 'Kwa Maritane Bush Lodge', shortName: 'Kwa Maritane Reservations Team' },
-};
-
-const RATE_TABLE: Record<string, RatePlan> = {
-  NCOR: {
-    code: 'NCOR1B',
-    name: 'NCOR1B: Corporate Negotiated',
-    subtext: 'CIDB Corporate Agreement · 2x EXKNG, 7x STWN',
-    singleNightly: 2150.0,
-    twinNightly: 2480.0,
-    avgNightly: 2150.0,
-    mealPlanText: 'Bed & Breakfast (CIDB Agreement)',
-  },
-  BAR: {
-    code: 'BAR',
-    name: 'BAR: Best Available Rate',
-    subtext: 'Bed & Breakfast Included · Standard Rate',
-    singleNightly: 2700.0,
-    twinNightly: 2850.0,
-    avgNightly: 2700.0,
-    mealPlanText: 'Bed & Breakfast Included',
-  },
-  BARRO: {
-    code: 'BARRO',
-    name: 'BARRO: BAR Room Only',
-    subtext: 'Room Only · No Meals Included',
-    singleNightly: 2430.0,
-    twinNightly: 2580.0,
-    avgNightly: 2430.0,
-    mealPlanText: 'Room Only (No Meals)',
-  },
-  BWKPB: {
-    code: 'BWKPB',
-    name: 'BWKPB: Weekend Promo Rate',
-    subtext: 'Weekend promo rate only',
-    singleNightly: 2430.0,
-    twinNightly: 2430.0,
-    avgNightly: 2430.0,
-    mealPlanText: 'Room Only',
-    restricted: true,
-    restrictionReason: 'Closed to Arrival (Weekday)',
-  },
-};
-
-const fmtZAR = (val: number) =>
-  'R' +
-  val
-    .toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    .replace(/\s/g, ',');
-
-function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'room_only' {
-  if (planCode === 'BARRO') return 'room_only';
-  if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
-  return 'bb';
-}
 
 export default function OutlookPanePage() {
   const {
@@ -247,6 +195,7 @@ export default function OutlookPanePage() {
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
+  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
@@ -273,6 +222,7 @@ export default function OutlookPanePage() {
   useLayoutEffect(() => {
     if (previousScope.current === currentScope) return;
     previousScope.current = currentScope;
+    dispatchQuote({ type: 'reset' });
     replyRetries.current.clear();
     expiredReplyOutcomes.current.clear();
     hasUntrackedExpiredReplyOutcomes.current = false;
@@ -286,57 +236,111 @@ export default function OutlookPanePage() {
     setTestResults({ bridge: null, activeEmail: null, folderTable: null, serverPing: null });
   }, [currentScope]);
 
-  // Quote Tool State
-  const [propertyCode, setPropertyCode] = useState('HRCEN');
-  const [arrivalDay, setArrivalDay] = useState(15);
-  const [departureDay, setDepartureDay] = useState(17);
-  const [nightsCount, setNightsCount] = useState(2);
-  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [activeDateTab, setActiveDateTab] = useState<'arrival' | 'departure'>('arrival');
-  const [mealPlan, setMealPlan] = useState('breakfast');
-  const [salesStrategy, setSalesStrategy] = useState('Negotiated Contracted');
-  const [singleRoomsCount, setSingleRoomsCount] = useState(2);
-  const [twinRoomsCount, setTwinRoomsCount] = useState(7);
-  const [orgAccount, setOrgAccount] = useState('CIDB');
-  const [showUnavailable, setShowUnavailable] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [hasSearched, setHasSearched] = useState(true);
-  const [selectedRateCode, setSelectedRateCode] = useState('NCOR');
-  const [proofTab, setProofTab] = useState<'results' | 'criteria'>('results');
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [draftedDetails, setDraftedDetails] = useState<{
     entryId: string;
     subject: string;
     sender: string;
     senderEmail: string;
-    agreementText: string;
-    mealText: string;
-    hotelName: string;
-    hotelTeam: string;
-    singleNightly: number;
-    twinNightly: number;
-    singleCount: number;
-    twinCount: number;
     planName: string;
-    singleSubtotal: number;
-    twinSubtotal: number;
-    grandTotal: number;
-    arrivalDay: number;
-    departureDay: number;
-    nightsCount: number;
   } | null>(null);
 
   const showDraftPreview = Boolean(
     draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
   );
 
-  // Automatically sync detected corporate account or room parameters when active email changes
   useEffect(() => {
-    if (!activeEmail) return;
-    const text = `${activeEmail.subject || ''} ${activeEmail.bodyText || ''}`;
-    const orgMatch = text.match(/\b(CIDB|SARS|Gauteng|Eskom|Standard Bank|Nedbank)\b/i);
-    setOrgAccount(orgMatch ? orgMatch[1].toUpperCase() : '');
-  }, [activeEmail?.entryId, activeEmail?.subject, activeEmail?.bodyText]);
+    if (!currentScope || !activeEmail?.entryId || !activeConnection?.id || !activeConnection.email) return;
+    dispatchQuote({
+      type: 'selection',
+      binding: {
+        transportId: activeConnection.id,
+        mailboxEmail: activeConnection.email,
+        storeId: activeEmail.storeId ?? '',
+        folderEntryId: activeEmail.folderEntryId ?? '',
+        entryId: activeEmail.entryId,
+        internetMessageId: activeEmail.internetMessageId,
+        selectionEpoch: contextRevision.current.selectionEpoch,
+        scopeEpoch: contextRevision.current.scopeEpoch,
+      },
+    });
+  }, [
+    activeConnection?.email,
+    activeConnection?.id,
+    activeEmail?.entryId,
+    activeEmail?.folderEntryId,
+    activeEmail?.internetMessageId,
+    activeEmail?.storeId,
+    selectedIdentity,
+    currentScope,
+  ]);
+
+  const quoteAdmissionKey = quoteSession.binding ? admissionKey(quoteSession.binding) : '';
+  useEffect(() => {
+    if (!quoteSession.binding || !quoteAdmissionKey) return;
+    dispatchQuote({ type: 'analysis_started' });
+    const analysis = analyseLocalEmail({
+      subject: activeEmail?.subject ?? '',
+      bodyText: activeEmail?.bodyText ?? '',
+    });
+    dispatchQuote({ type: 'analysis_ready', analysis });
+    const binding = quoteSession.binding;
+    const workflow = quoteWorkflowFromTrpc(trpcClient);
+    const selectionEpoch = binding.selectionEpoch;
+    let cancelled = false;
+    void bindAnalyseSelection({
+      mutate: workflow.analyseSelection?.mutate,
+      input: {
+        internetMessageId: binding.internetMessageId,
+        storeId: binding.storeId,
+        entryId: binding.entryId,
+        folderEntryId: binding.folderEntryId,
+        selectionEpoch,
+      },
+    }).then((remote) => {
+      if (cancelled) return;
+      if (remote.kind === 'ready') {
+        dispatchQuote({ type: 'mailbox_status', status: 'ready' });
+        dispatchQuote({ type: 'analysis_ready', analysis: remote.analysis });
+        return;
+      }
+      if (remote.kind === 'unsynced') {
+        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+        return;
+      }
+      if (remote.kind === 'missing_source') {
+        dispatchQuote({ type: 'mailbox_status', status: 'missing_source' });
+        if (remote.documents.length) {
+          dispatchQuote({ type: 'review_documents_failed', documents: remote.documents });
+        }
+        return;
+      }
+      dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
+    });
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindStaffQuoteSource({
+      query: staff.workstation.staffQuoteSource?.query,
+      internetMessageId: binding.internetMessageId,
+    }).then((source) => {
+      if (cancelled) return;
+      if (source.kind === 'message_not_synced') {
+        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+        return;
+      }
+      if (source.kind !== 'ready') return;
+      dispatchQuote({ type: 'staff_source_ready', source: source.source });
+      void bindStaffActions({
+        list: staff.drafts.list?.query,
+        get: staff.drafts.get?.query,
+        threadId: source.source.threadId,
+      }).then((actions) => {
+        if (cancelled || actions.kind !== 'ready') return;
+        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeEmail?.bodyText, activeEmail?.subject, quoteAdmissionKey]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);
@@ -395,16 +399,6 @@ export default function OutlookPanePage() {
       setPingErrorMessage(err instanceof Error ? err.message : 'Connection failed');
     }
   };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsModalOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   if (isLoading) {
     return (
@@ -477,59 +471,6 @@ export default function OutlookPanePage() {
       setTesting(false);
     }
   };
-
-  const handleDayClick = (day: number) => {
-    if (activeDateTab === 'arrival') {
-      const newArrival = Math.max(1, Math.min(29, day));
-      const newDeparture =
-        departureDay <= newArrival ? Math.min(30, newArrival + 1) : Math.min(30, departureDay);
-      setArrivalDay(newArrival);
-      setDepartureDay(newDeparture);
-      setNightsCount(newDeparture - newArrival);
-    } else {
-      const newDeparture = Math.max(2, Math.min(30, day));
-      const newArrival =
-        arrivalDay >= newDeparture ? Math.max(1, newDeparture - 1) : Math.max(1, arrivalDay);
-      setArrivalDay(newArrival);
-      setDepartureDay(newDeparture);
-      setNightsCount(newDeparture - newArrival);
-    }
-  };
-
-  const handleQuickNights = (n: number) => {
-    const newDeparture = Math.min(30, arrivalDay + n);
-    if (newDeparture - arrivalDay < n) {
-      const newArrival = Math.max(1, 30 - n);
-      setArrivalDay(newArrival);
-      setDepartureDay(30);
-      setNightsCount(30 - newArrival);
-    } else {
-      setDepartureDay(newDeparture);
-      setNightsCount(n);
-    }
-  };
-
-  const handleExecuteSearch = () => {
-    setIsSearching(true);
-    setTimeout(() => {
-      setIsSearching(false);
-      setHasSearched(true);
-      const plan = RATE_TABLE[selectedRateCode];
-      if (plan && !plan.restricted) {
-        toast.success(`Verified rate schedule: ${plan.name} (${orgAccount})`);
-      } else if (plan?.restricted) {
-        toast.warning(`Rate restriction: ${plan.name} (${plan.restrictionReason})`);
-      } else {
-        toast.error('Selected rate plan is not verified for this organization account');
-      }
-    }, 400);
-  };
-
-  const activePlan = RATE_TABLE[selectedRateCode] || RATE_TABLE.NCOR;
-  const singleSubtotal = singleRoomsCount * activePlan.singleNightly * nightsCount;
-  const twinSubtotal = twinRoomsCount * activePlan.twinNightly * nightsCount;
-  const grandTotal = singleSubtotal + twinSubtotal;
-  const totalGuests = singleRoomsCount * 1 + twinRoomsCount * 2;
 
   const currentSubject = activeEmail?.subject || 'Suite Availability Request';
   const currentSender = activeEmail?.senderName || 'David Miller';
@@ -618,13 +559,6 @@ export default function OutlookPanePage() {
       return;
     }
 
-    if (activePlan.restricted) {
-      toast.error(
-        `Cannot insert draft: ${activePlan.name} is restricted (${activePlan.restrictionReason}).`,
-      );
-      return;
-    }
-
     if (!startedScope || transportLoading || !activeConnection?.email) {
       toast.error('Sign in and select an authorized mailbox before attaching a quotation.');
       return;
@@ -641,73 +575,30 @@ export default function OutlookPanePage() {
       return;
     }
 
+    const reviewedDraft = requireReviewedNativeDraft(quoteSession);
+    if (!reviewedDraft) {
+      toast.error(
+        'Review the quotation PDF and complete reply before creating an unsent Outlook draft. Sample pane rates are not used.',
+      );
+      return;
+    }
+
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
     const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
     replyRetries.current.set(key, attempt);
 
-    const guestFirstName = (currentSender.split(' ')[0] || 'Guest').trim();
-    const selectedHotelMeta = HOTEL_PROPERTIES[propertyCode] ?? HOTEL_PROPERTIES.HRCEN;
-    const agreementDescription = activePlan.code.startsWith('NCOR')
-      ? orgAccount.trim()
-        ? `under the ${orgAccount.trim()} corporate agreement`
-        : 'under your corporate agreement'
-      : 'at our standard rates';
-    const mealDescription =
-      mealPlan === 'room_only' || activePlan.code === 'BARRO'
-        ? 'room only (no meals included)'
-        : mealPlan === 'dinner_bed_breakfast'
-          ? 'dinner, bed & breakfast'
-          : 'breakfast included';
-    const dateLabel = `${arrivalDay}-${departureDay} Sep`;
-    const lineDateLabel = `${arrivalDay}-${departureDay} September 2026`;
-    const meal = paneMeal(mealPlan, activePlan.code);
-    const lines = [
-      ...(singleRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: singleRoomsCount,
-              roomCode: occupancyRoomCode('single'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.singleNightly,
-            },
-          ]
-        : []),
-      ...(twinRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: twinRoomsCount,
-              roomCode: occupancyRoomCode('twin'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.twinNightly,
-            },
-          ]
-        : []),
-    ];
-    const quotationHtml = quoteWrapperHtml(guestFirstName);
+    // Freeze the reviewed reply/PDF pair before any native request can fail.
+    attempt.reviewedHtml ??= reviewedDraft.html;
+    attempt.pdf ??= { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
+    const quotationHtml = attempt.reviewedHtml;
     let draftCreated = false;
 
     try {
-      if (lines.length === 0) {
-        throw new Error('Add at least one room before attaching a quotation.');
-      }
       const pdf =
         attempt.pdf ??
-        (await trpcClient.workstation.quoteProposalPdf.mutate({
-          outlookEmail: activeConnection.email,
-          attention: currentSender,
-          company: orgAccount.trim(),
-          clientEmail: currentSenderEmail,
-          clientTelephone: '',
-          agency: orgAccount.trim() || 'Quote',
-          dateLabel,
-          lines,
-        }));
+        { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
       if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
         // No new Outlook command has started for this click. A delayed quotation
         // cannot create or retry a reply for a selection that changed away
@@ -786,21 +677,7 @@ export default function OutlookPanePage() {
         subject: currentSubject,
         sender: currentSender,
         senderEmail: currentSenderEmail,
-        agreementText: agreementDescription,
-        mealText: mealDescription,
-        hotelName: selectedHotelMeta.name,
-        hotelTeam: selectedHotelMeta.shortName,
-        singleNightly: activePlan.singleNightly,
-        twinNightly: activePlan.twinNightly,
-        singleCount: singleRoomsCount,
-        twinCount: twinRoomsCount,
-        planName: activePlan.name,
-        singleSubtotal,
-        twinSubtotal,
-        grandTotal,
-        arrivalDay,
-        departureDay,
-        nightsCount,
+        planName: pdf.fileName,
       });
       const opened = replyResult.displayed === true;
       const details = [
@@ -854,6 +731,82 @@ export default function OutlookPanePage() {
         setIsDraftPending(false);
       }
     }
+  };
+
+  const runQuoteStep = (stepId: string) => {
+    const step = quoteSession.steps.find((item) => item.id === stepId);
+    if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    dispatchQuote({ type: 'step_running', stepId: step.id });
+    const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
+    const inputRevision = quoteSession.inputRevision;
+    if (isQuoteFixturePreview()) {
+      const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
+      dispatchQuote({
+        type: 'results_ready',
+        offers: fixture.offers,
+        selectionEpoch,
+        inputRevision,
+        provenance: { kind: 'fixture', selectionEpoch, inputRevision },
+        reviewedReplyHtml: fixtureReplyHtml(
+          fixture,
+          (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
+        ),
+      });
+      toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
+      return;
+    }
+    if (step.kind === 'party_lookup') {
+      dispatchQuote({
+        type: 'results_unavailable',
+        stepId: step.id,
+        reason: 'executeStaffQuote resolves party internally. Do not execute party twice.',
+        selectionEpoch,
+        inputRevision,
+      });
+      toast.warning('executeStaffQuote resolves party internally. Do not execute party twice.');
+      return;
+    }
+    const source = quoteSession.staffSource;
+    if (!source) {
+      dispatchQuote({
+        type: 'results_unavailable',
+        stepId: step.id,
+        reason: 'staffQuoteSource has not resolved messageId/threadId/sourceHash.',
+        selectionEpoch,
+        inputRevision,
+      });
+      toast.warning('staffQuoteSource has not resolved messageId/threadId/sourceHash.');
+      return;
+    }
+    const stayGroups = groupsForQuoteStep(quoteSession, step);
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindExecuteStaffQuote({
+      mutate: staff.workstation.executeStaffQuote?.mutate,
+      source,
+      selectionEpoch,
+      inputRevision,
+      groups: stayGroups,
+      header: quoteSession.staffHeader,
+    }).then((remote) => {
+      if (remote.status !== 'ok') {
+        dispatchQuote({
+          type: 'results_unavailable',
+          stepId: step.id,
+          reason: remote.reason,
+          selectionEpoch,
+          inputRevision,
+        });
+        toast.warning(remote.reason);
+        return;
+      }
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: remote.offer,
+        staffQuote: remote.staffQuote,
+        selectionEpoch,
+        inputRevision,
+      });
+    });
   };
 
   return (
@@ -1184,7 +1137,7 @@ export default function OutlookPanePage() {
         {currentScreen === 'tool' && (
           <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email Context Bar */}
-            <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
+            <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
               <div className="flex min-w-0 items-center gap-2">
                 <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
                 <div className="flex min-w-0 flex-col">
@@ -1207,556 +1160,104 @@ export default function OutlookPanePage() {
               )}
             </div>
 
-            {/* Search Criteria Card */}
-            <div className="shadow-xs overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
-              <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-2">
-                <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
-                  <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
-                  Search Criteria
-                </span>
-              </div>
+            {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+              {activeEmail ? 'Extracted suggestions — review and correct before running' : 'Sample placeholder — not live AI output'}
+            </p>}
 
-              <div className="flex flex-col gap-3 p-3">
-                {/* 1. Property */}
-                <div className="flex flex-col gap-1">
-                  <label
-                    htmlFor="propertySelect"
-                    className="text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    Property<span className="ml-0.5 text-rose-600">*</span>
-                  </label>
-                  <select
-                    id="propertySelect"
-                    value={propertyCode}
-                    onChange={(e) => setPropertyCode(e.target.value)}
-                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-                  >
-                    <option value="HRCEN">The Centurion Hotel (HRCEN)</option>
-                    <option value="HRBAK" disabled>
-                      The Bakubung Bush Lodge (HRBAK — Centurion pilot only)
-                    </option>
-                    <option value="HRKWA" disabled>
-                      Kwa Maritane Bush Lodge (HRKWA — Centurion pilot only)
-                    </option>
-                  </select>
-                </div>
+            <QuoteWorkflowPanel
+              session={quoteSession}
+              onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
+              onRunNext={() => {
+                const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);
+                if (nextStep) runQuoteStep(nextStep.id);
+              }}
+              onRunStep={runQuoteStep}
+              onSelectOffer={(offerId) =>
+                dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
+              }
+              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
+              onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
+              onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
+              onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
+              onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
+              onViewSource={(item) => {
+                document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
+                toast.message(
+                  item.filename
+                    ? `Source guidance: selected message lists ${item.filename}. Filenames are not document bytes. This does not open the attachment.`
+                    : 'Source guidance: selected Outlook message above. This does not open a separate source viewer.',
+                );
+              }}
+              onPreparePdf={() => {
+                if (!canCreatePdf(quoteSession)) {
+                  toast.warning('Select an authorised allocation with source evidence before generating a PDF.');
+                  return;
+                }
+                if (isQuoteFixturePreview() || quoteSession.evidence?.kind !== 'authorised') {
+                  toast.warning('Fixture preview cannot prepare an insertable PDF.');
+                  return;
+                }
+                const source = quoteSession.staffSource;
+                const staffQuote = staffQuoteForStay(quoteSession);
+                if (!source || !staffQuote || staffQuote.totalMinor <= 0) {
+                  toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
+                  return;
+                }
+                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
+                const inputRevision = quoteSession.inputRevision;
+                const selectedOfferIds = [...quoteSession.selectedOfferIds];
+                const staff = staffQuoteFromTrpc(trpcClient);
+                const header = staffQuote.approvedHeader;
+                if (!header) {
+                  toast.warning('qualifiedQuoteProposalPdf needs the approved executeStaffQuote company/agency header.');
+                  return;
+                }
+                void bindQualifiedStaffProposalPdf({
+                  mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
+                  input: {
+                    workflowRunId: staffQuote.workflowRunId,
+                    revisionRef: staffQuote.revisionRef,
+                    messageId: source.messageId,
+                    outlookEmail: quoteSession.binding?.mailboxEmail ?? '',
+                    factRefs: staffQuote.factRefs,
+                    company: header.company,
+                    agency: header.agency,
+                    attention: header.attention,
+                    clientEmail: header.clientEmail,
+                    clientTelephone: header.clientTelephone,
+                  },
+                  expectedTotalMinor: staffQuote.totalMinor,
+                }).then((remote) => {
+                  if (remote.status === 'unavailable') {
+                    toast.warning(remote.reason);
+                    return;
+                  }
+                  dispatchQuote({
+                    type: 'pdf_ready',
+                    pdf: {
+                      fileName: remote.pdf.fileName,
+                      bytesBase64: remote.pdf.pdfBase64,
+                      pdfHash: remote.pdf.pdfHash,
+                      revisionId: remote.pdf.revisionId,
+                      totalMinor: remote.pdf.totalMinor,
+                    },
+                    selectionEpoch,
+                    inputRevision,
+                    selectedOfferIds,
+                  });
+                });
+              }}
+            />
 
-                {/* 2. Dates of Stay */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11.5px] font-semibold text-[#475569]">
-                    Dates of Stay<span className="ml-0.5 text-rose-600">*</span>
-                  </label>
-                  <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
-                    <div className="grid grid-cols-2 border-b border-[#e2e8f0] bg-white">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveDateTab('arrival');
-                          setIsCalendarOpen(true);
-                        }}
-                        className={`flex flex-col gap-0.5 border-r border-[#e2e8f0] p-2 text-left transition-colors ${
-                          activeDateTab === 'arrival' && isCalendarOpen
-                            ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
-                            : 'hover:bg-[#f8fafc]'
-                        }`}
-                      >
-                        <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
-                          Arrival Date
-                        </span>
-                        <span className="text-[13px] font-bold text-[#1e293b]">
-                          2026-09-{String(arrivalDay).padStart(2, '0')}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveDateTab('departure');
-                          setIsCalendarOpen(true);
-                        }}
-                        className={`flex flex-col gap-0.5 p-2 text-left transition-colors ${
-                          activeDateTab === 'departure' && isCalendarOpen
-                            ? 'border-b-2 border-b-[#1a4332] bg-[#eaf4ee]'
-                            : 'hover:bg-[#f8fafc]'
-                        }`}
-                      >
-                        <span className="text-[9.5px] font-bold uppercase tracking-wider text-[#64748b]">
-                          Departure Date
-                        </span>
-                        <span className="text-[13px] font-bold text-[#1e293b]">
-                          2026-09-{String(departureDay).padStart(2, '0')}
-                        </span>
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] text-[#475569]">
-                      <span className="flex items-center gap-1">
-                        <Moon className="h-3 w-3 text-slate-500" /> {nightsCount} Nights
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsCalendarOpen(!isCalendarOpen)}
-                        className="font-semibold text-[#0066cc] hover:underline"
-                      >
-                        {isCalendarOpen ? 'Hide Calendar ▲' : 'Change Dates ▼'}
-                      </button>
-                    </div>
-
-                    {/* In-Pane Calendar Widget */}
-                    {isCalendarOpen && (
-                      <div className="animate-in fade-in border-t border-[#e2e8f0] bg-white p-2.5 duration-150">
-                        <div className="mb-2 flex items-center justify-between">
-                          <button
-                            type="button"
-                            className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
-                          >
-                            <ChevronLeft className="h-3 w-3" />
-                          </button>
-                          <span className="text-xs font-bold text-[#1e293b]">September 2026</span>
-                          <button
-                            type="button"
-                            className="flex h-6 w-6 items-center justify-center rounded-sm border border-[#e2e8f0] bg-[#f8fafc] text-slate-600 hover:bg-[#e2e8f0]"
-                          >
-                            <ChevronRight className="h-3 w-3" />
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-7 gap-0.5 text-center">
-                          {['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((dow) => (
-                            <div key={dow} className="pb-1 text-[10px] font-bold text-[#64748b]">
-                              {dow}
-                            </div>
-                          ))}
-                          <div className="h-6" /> {/* Blank */}
-                          {Array.from({ length: 30 }, (_, i) => i + 1).map((day) => {
-                            const isArr = day === arrivalDay;
-                            const isDep = day === departureDay;
-                            const inStay = day > arrivalDay && day < departureDay;
-                            return (
-                              <button
-                                key={day}
-                                type="button"
-                                onClick={() => handleDayClick(day)}
-                                className={`flex h-6 items-center justify-center rounded-[2px] text-[11px] transition-colors ${
-                                  isArr || isDep
-                                    ? 'bg-[#1a4332] font-bold text-white'
-                                    : inStay
-                                      ? 'bg-[#eaf4ee] font-semibold text-[#1a4332]'
-                                      : 'text-[#1e293b] hover:bg-slate-100'
-                                }`}
-                              >
-                                {day}
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        <div className="mt-2 flex gap-1 border-t border-[#e2e8f0] pt-2">
-                          {[1, 2, 3, 7].map((n) => (
-                            <button
-                              key={n}
-                              type="button"
-                              onClick={() => handleQuickNights(n)}
-                              className={`flex-1 rounded-sm border py-1 text-center text-[10.5px] transition-colors ${
-                                nightsCount === n
-                                  ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
-                                  : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-slate-100'
-                              }`}
-                            >
-                              {n} {n === 1 ? 'Night' : 'Nights'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 3. Meal Plan */}
-                <div className="flex flex-col gap-1">
-                  <label
-                    htmlFor="mealPlanSelect"
-                    className="text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    Meal Plan<span className="ml-0.5 text-rose-600">*</span>
-                  </label>
-                  <select
-                    id="mealPlanSelect"
-                    value={mealPlan}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setMealPlan(next);
-                      if (next === 'room_only') setSelectedRateCode('BARRO');
-                      else setSelectedRateCode('NCOR');
-                    }}
-                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-                  >
-                    <option value="breakfast">Bed & Breakfast (BAR)</option>
-                    <option value="room_only">Room Only (BARRO)</option>
-                    <option value="dinner_bed_breakfast">Dinner, Bed & Breakfast (DBB)</option>
-                  </select>
-                </div>
-
-                {/* 4. Room Types & Occupancy */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]">
-                    <span>
-                      Room Types & Occupancy<span className="ml-0.5 text-rose-600">*</span>
-                    </span>
-                    <span className="text-[11px] font-normal text-[#64748b]">
-                      {totalGuests} Guests Total
-                    </span>
-                  </div>
-
-                  <div className="overflow-hidden rounded-sm border border-[#cbd5e1]">
-                    <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11px] font-semibold text-[#64748b]">
-                      <span>Room Type & Guest Count</span>
-                      <span>Rooms</span>
-                    </div>
-
-                    <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-white px-2.5 py-2">
-                      <div className="flex flex-col">
-                        <strong className="text-xs text-[#1e293b]">EXKNG — Executive King</strong>
-                        <span className="text-[11px] text-[#64748b]">1 Adult per room</span>
-                      </div>
-                      <div className="flex items-center rounded-sm border border-[#cbd5e1]">
-                        <button
-                          type="button"
-                          onClick={() => setSingleRoomsCount(Math.max(1, singleRoomsCount - 1))}
-                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                        >
-                          <Minus className="h-3 w-3" />
-                        </button>
-                        <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
-                          {singleRoomsCount}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setSingleRoomsCount(singleRoomsCount + 1)}
-                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                        >
-                          <Plus className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between bg-white px-2.5 py-2">
-                      <div className="flex flex-col">
-                        <strong className="text-xs text-[#1e293b]">STWN — Standard Twin</strong>
-                        <span className="text-[11px] text-[#64748b]">2 Adults per room</span>
-                      </div>
-                      <div className="flex items-center rounded-sm border border-[#cbd5e1]">
-                        <button
-                          type="button"
-                          onClick={() => setTwinRoomsCount(Math.max(1, twinRoomsCount - 1))}
-                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                        >
-                          <Minus className="h-3 w-3" />
-                        </button>
-                        <span className="w-8 text-center text-xs font-bold text-[#1e293b]">
-                          {twinRoomsCount}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setTwinRoomsCount(twinRoomsCount + 1)}
-                          className="flex h-6 w-6 items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-700 hover:bg-slate-200"
-                        >
-                          <Plus className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 5. Sales Strategy */}
-                <div className="flex flex-col gap-1">
-                  <label
-                    htmlFor="salesStrategySelect"
-                    className="text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    Sales Strategy<span className="ml-0.5 text-rose-600">*</span>
-                  </label>
-                  <select
-                    id="salesStrategySelect"
-                    value={salesStrategy}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setSalesStrategy(next);
-                      if (next === 'BAR') setSelectedRateCode('BAR');
-                      else setSelectedRateCode('NCOR');
-                    }}
-                    className="outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-                  >
-                    <option value="Negotiated Contracted">
-                      Negotiated Contracted (Corporate NCOR1B)
-                    </option>
-                    <option value="BAR">BAR — Best Available Rate</option>
-                    <option value="Preset">Preset Corporate Rates</option>
-                  </select>
-                </div>
-
-                {/* Organization & Advanced Details */}
-                <details className="rounded-sm border border-[#e2e8f0]">
-                  <summary className="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] font-semibold text-[#475569]">
-                    <span>Organization & Advanced Search</span>
-                    <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
-                  </summary>
-                  <div className="flex flex-col gap-2 border-t border-[#e2e8f0] bg-white p-2.5">
-                    <div className="flex flex-col gap-1">
-                      <label
-                        htmlFor="orgAccountInput"
-                        className="text-[11px] font-medium text-[#475569]"
-                      >
-                        Organization / Account
-                      </label>
-                      <input
-                        id="orgAccountInput"
-                        type="text"
-                        value={orgAccount}
-                        onChange={(e) => setOrgAccount(e.target.value)}
-                        placeholder="e.g. CIDB"
-                        className="outline-hidden h-7 w-full rounded-sm border border-[#cbd5e1] px-2 text-xs text-[#1e293b] focus:border-[#0066cc]"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <input
-                        type="checkbox"
-                        id="chkIncludeRestricted"
-                        checked={showUnavailable}
-                        onChange={(e) => setShowUnavailable(e.target.checked)}
-                        className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#0066cc] focus:ring-0"
-                      />
-                      <label
-                        htmlFor="chkIncludeRestricted"
-                        className="cursor-pointer text-[11.5px] text-[#475569]"
-                      >
-                        Show Unavailable / Restricted Rates
-                      </label>
-                    </div>
-                  </div>
-                </details>
-
-                {/* Search Availability Button */}
-                {isSearching ? (
-                  <div className="flex h-9 w-full items-center justify-center gap-2 rounded-sm border border-blue-200 bg-[#eff6ff] text-xs font-semibold text-[#0066cc]">
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                    <span>Querying Infor HMS availability grid...</span>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleExecuteSearch}
-                    className="shadow-xs flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-[#0066cc] text-xs font-bold text-white transition-colors hover:bg-[#0052a3]"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                    <span>Search Availability</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Results Section (Room Rates) */}
-            {hasSearched && (
-              <div className="animate-in fade-in flex flex-col gap-2.5 duration-200">
-                {/* Header Bar */}
-                <div className="shadow-xs flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-white px-3 py-2">
-                  <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
-                    <Utensils className="h-3.5 w-3.5 text-slate-500" />
-                    Room Rates
-                  </span>
-                  <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Available
-                  </span>
-                </div>
-
-                {/* Sample placeholder caption for test compatibility */}
-                <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-                  Sample placeholder — not live AI output
-                </p>
-
-                {/* Rate Cards */}
-                <div className="flex flex-col gap-1.5">
-                  {/* 1. NCOR1B */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('NCOR');
-                      if (mealPlan === 'room_only') setMealPlan('breakfast');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'NCOR'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                        <span>NCOR1B: Corporate Negotiated</span>
-                        <Check className="h-3 w-3 text-emerald-600" />
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        {orgAccount.trim()
-                          ? `${orgAccount.trim()} Corporate Agreement`
-                          : 'Corporate Agreement'}{' '}
-                        · {singleRoomsCount}x EXKNG, {twinRoomsCount}x STWN
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,150.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 2. BAR */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('BAR');
-                      if (mealPlan === 'room_only') setMealPlan('breakfast');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'BAR'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                        <span>BAR: Best Available Rate</span>
-                        <Utensils className="h-3 w-3 text-slate-500" />
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        Bed & Breakfast Included · Standard Rate
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,700.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 3. BARRO */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('BARRO');
-                      setMealPlan('room_only');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'BARRO'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="text-[12.5px] font-bold text-[#1e293b]">
-                        BARRO: BAR Room Only
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        Room Only · No Meals Included
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,430.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 4. BWKPB (Restricted) */}
-                  <div className="flex cursor-not-allowed items-center justify-between rounded-sm border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80">
-                    <div className="flex flex-col gap-0.5">
-                      <div className="text-[12.5px] font-bold text-[#1e293b]">
-                        BWKPB: Weekend Promo Rate
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">Weekend promo rate only</span>
-                      <span className="flex w-fit items-center gap-1 rounded-sm bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
-                        <Ban className="h-2.5 w-2.5" /> Closed to Arrival (Weekday)
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-bold text-rose-600 line-through">
-                        R2,430.00
-                      </span>
-                      <span className="text-[10px] font-semibold text-rose-600">Restricted</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Grand Total Breakdown Card */}
-                <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
-                  <div className="flex justify-between">
-                    <span>
-                      {singleRoomsCount}x Executive King (Single · {nightsCount} nights):
-                    </span>
-                    <span className="font-semibold text-[#1e293b]">{fmtZAR(singleSubtotal)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>
-                      {twinRoomsCount}x Standard Twin (Twin Beds · {nightsCount} nights):
-                    </span>
-                    <span className="font-semibold text-[#1e293b]">{fmtZAR(twinSubtotal)}</span>
-                  </div>
-                  <div className="mt-1 flex items-baseline justify-between border-t border-[#cbd5e1] pt-2 text-[12.5px] font-bold text-[#1e293b]">
-                    <span>Quotation Total:</span>
-                    <span className="text-[15px] font-extrabold text-[#1a4332]">
-                      {fmtZAR(grandTotal)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[10.5px] leading-tight text-[#64748b]">
-                    * Rates subject to Infor HMS taxes and fees upon reservation booking.
+            <div className="flex flex-col gap-2.5">
+                <div className="overflow-hidden rounded-sm border border-amber-200 bg-amber-50 px-2.5 py-2">
+                  <p className="text-[11px] font-semibold text-amber-900">
+                    Authorised HMS screenshot unavailable
                   </p>
-                </div>
-
-                {/* Infor HMS Audit Proof Tabs */}
-                <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
-                  <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setProofTab('results')}
-                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                          proofTab === 'results'
-                            ? 'shadow-xs bg-white text-[#1e293b]'
-                            : 'text-[#64748b] hover:text-[#1e293b]'
-                        }`}
-                      >
-                        Availability Results
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProofTab('criteria')}
-                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                          proofTab === 'criteria'
-                            ? 'shadow-xs bg-white text-[#1e293b]'
-                            : 'text-[#64748b] hover:text-[#1e293b]'
-                        }`}
-                      >
-                        Search Criteria
-                      </button>
-                    </div>
-                    <span className="flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
-                      <ShieldCheck className="h-3.5 w-3.5" /> Audit Saved
-                    </span>
-                  </div>
-
-                  <div
-                    onClick={() => setIsModalOpen(true)}
-                    className="group relative h-28 w-full cursor-pointer overflow-hidden bg-slate-900"
-                  >
-                    <img
-                      src="/quote-rate-proof.png"
-                      alt="Infor HMS Availability Screen Proof"
-                      className="group-hover:scale-102 h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:opacity-100"
-                    />
-                    <div className="backdrop-blur-xs absolute bottom-2 right-2 flex items-center gap-1 rounded-sm bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                      <Search className="h-2.5 w-2.5" /> Inspect Full 1000×800
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(true)}
-                    className="flex w-full items-center justify-center gap-1.5 border-t border-[#e2e8f0] bg-white py-1.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#f8fafc]"
-                  >
-                    <ExternalLink className="h-3 w-3" /> Open Full-Screen (1000×800)
-                  </button>
+                  <p className="text-[11px] text-amber-800">
+                    No screenshot is attached to this quote result. Review the quoted details and PDF.
+                  </p>
                 </div>
 
                 {/* Draft Quotation into Outlook Reply Button */}
@@ -1800,23 +1301,17 @@ export default function OutlookPanePage() {
                         Dismiss
                       </button>
                     </div>
-                    <p>Good day {draftedDetails.sender.split(' ')[0] || 'Guest'},</p>
-                    <p className="mt-1">Thank you for Choosing The Centurion Hotel.</p>
-                    <p className="mt-1">Please see attached quotation.</p>
-                    <p className="mt-1">
-                      Should you wish to proceed, please sign and return the attached quotation so
-                      that we can confirm and secure your reservation. Please note that no rooms are
-                      currently being held, and bookings will only be confirmed once we have
-                      received the signed quotation.
-                    </p>
-                    <p className="mt-1">
-                      Please feel free to contact me should you require any further information
-                    </p>
-                    <p className="mt-2 text-[#475569]">Kind regards,</p>
+                    {quoteSession.reviewedReplyHtml ? (
+                      <div dangerouslySetInnerHTML={{ __html: quoteSession.reviewedReplyHtml }} />
+                    ) : (
+                      <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>
+                    )}
+                    {draftedDetails.planName ? (
+                      <p className="mt-2 text-[11px] text-[#64748b]">Attached: {draftedDetails.planName}</p>
+                    ) : null}
                   </div>
                 )}
-              </div>
-            )}
+            </div>
 
             {/* System Diagnostics Drawer */}
             <div className="pt-2">
@@ -1898,59 +1393,6 @@ export default function OutlookPanePage() {
           </div>
         </footer>
       </div>
-
-      {/* 1000×800 Desktop Full-Screen Inspection Modal */}
-      {isModalOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setIsModalOpen(false);
-          }}
-          className="backdrop-blur-xs animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 duration-150"
-        >
-          <div className="flex h-[800px] max-h-[92vh] w-[1000px] max-w-[95vw] flex-col overflow-hidden rounded-md bg-white shadow-2xl">
-            <div className="flex h-9 shrink-0 items-center justify-between bg-slate-900 px-3 text-xs font-semibold text-white">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                <span>
-                  Infor HMS —{' '}
-                  {proofTab === 'criteria' ? 'Search Criteria' : 'Hotel Availability Grid'}{' '}
-                  [Centurion · Native 100% DPI]
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-[11px] text-slate-400">1000 × 800 Window</span>
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="rounded-sm p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-1 items-start justify-center overflow-auto bg-[#0b0f19] p-3">
-              <img
-                src="/quote-rate-proof.png"
-                alt="Infor HMS Full Resolution Availability Grid"
-                className="max-w-full rounded-sm shadow-md"
-              />
-            </div>
-
-            <div className="flex h-8 shrink-0 items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-3 text-[11px] text-[#475569]">
-              <span>
-                Green / White: Open Availability · ⊘ Red Circle: Stay Restriction / Closed to
-                Arrival (BWKPB)
-              </span>
-              <span>
-                Press <strong>Esc</strong> to close
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

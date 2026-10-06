@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-06T01:10:00.335Z",
+  "chrome": "/home/orca/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  "status": 0,
+  "stderr": "dbus noise omitted",
+  "png": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/narrow-pane-380.png",
+  "html": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/narrow-pane.html",
+  "viewport": {
+    "width": 380,
+    "height": 900
+  },
+  "note": "Chromium screenshot of production QuoteWorkflowPanel markup at 380px. Playwright 1.52 wanted chromium_headless_shell-1169; used cached chromium-1243 instead. Not a live Outlook/Windows pane."
+}

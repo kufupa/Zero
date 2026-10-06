@@ -27,6 +27,7 @@ import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
 import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { publicBackendTrpcUrl } from '@/lib/public-backend-url';
+import { trpcRequestTimeoutMs } from '@/lib/trpc-request-timeout';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -270,8 +271,7 @@ const getUrl = () => publicBackendTrpcUrl();
 
 const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
   const controller = new AbortController();
-  const body = typeof options?.body === 'string' ? options.body : '';
-  const timeoutMs = body.includes('quoteProposalPdf') ? 60_000 : 5_000;
+  const timeoutMs = trpcRequestTimeoutMs(url);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   if (options?.signal) {
     options.signal.addEventListener(

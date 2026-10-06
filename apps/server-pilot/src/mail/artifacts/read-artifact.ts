@@ -78,6 +78,16 @@ export type SandboxRunner = (
   signal?: AbortSignal,
 ) => Promise<SandboxResult>;
 
+function pdfFailureReason(result: SandboxResult): 'encrypted' | 'malformed' {
+  // Poppler reports a password-required PDF with exit 1, not its permissions exit 3.
+  // Match only its exact diagnostic; never expose parser stderr as artifact text.
+  return result.exitCode === 3 ||
+    (result.exitCode === 1 &&
+      /^Command Line Error: Incorrect password$/m.test(result.stderr.toString('utf8')))
+    ? 'encrypted'
+    : 'malformed';
+}
+
 export type ToolLedger = {
   record(result: ArtifactReadResult): void;
   entries(): readonly ArtifactReadResult[];
@@ -415,7 +425,7 @@ export async function extractEmbeddedPdfText(
       return manualResult({
         attachmentId,
         mimeType,
-        reason: info.exitCode === 3 ? 'encrypted' : 'malformed',
+        reason: pdfFailureReason(info),
         sourceHash,
         now,
       });
@@ -482,7 +492,7 @@ export async function extractEmbeddedPdfText(
       return manualResult({
         attachmentId,
         mimeType,
-        reason: textResult.exitCode === 3 ? 'encrypted' : 'malformed',
+        reason: pdfFailureReason(textResult),
         sourceHash,
         pageCount,
         now,
@@ -823,6 +833,10 @@ export async function readAuthorizedArtifactBytes(input: {
   resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
   expectedLocator?: AttachmentLocator;
   expectedSha256?: string;
+  /** Trusted worker acquisition only; visual admission remains a separate boundary. */
+  allowRaster?: boolean;
+  /** Explicit trusted Office acquisition; only original DOCX bytes, no conversion here. */
+  allowOffice?: boolean;
   /** Revalidate current DB grant/source immediately before object bytes. */
   revalidate?: () => Promise<boolean>;
 }): Promise<AuthorizedArtifactBytes | null> {
@@ -842,7 +856,15 @@ export async function readAuthorizedArtifactBytes(input: {
   ) {
     return null;
   }
-  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
+  const raster = input.allowRaster === true &&
+    ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(locator.mimeType);
+  const office = input.allowOffice === true && locator.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if ((raster || office) && (!input.expectedLocator || !input.revalidate ||
+    locator.s3Key.includes('\\') ||
+    locator.s3Key.split('/').some(part => !part || part === '.' || part === '..'))) {
+    return null;
+  }
+  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf' && !raster && !office) {
     return null;
   }
 

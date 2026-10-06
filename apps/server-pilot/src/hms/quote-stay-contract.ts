@@ -8,7 +8,7 @@ const refSchema = z
 
 export const normalizedQuoteRoomSchema = z
   .object({
-    quantity: z.number().int().positive().max(4),
+    quantity: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     adultsPerRoom: z.number().int().positive().max(16),
     childAges: z.array(z.number().int().min(0).max(17)).max(16),
     roomTypeRef: z.string().min(1).nullable(),
@@ -51,11 +51,11 @@ export type QuoteNightObservation = z.infer<typeof quoteNightObservationSchema>;
 
 export const quoteStayReadDataSchema = z
   .object({
-    nightlyObservations: z.array(quoteNightObservationSchema).max(120),
+    nightlyObservations: z.array(quoteNightObservationSchema).max(240),
     requestRef: refSchema.optional(),
     arrival: isoDateSchema.optional(),
     departure: isoDateSchema.optional(),
-    rooms: z.array(normalizedQuoteRoomSchema).max(4).optional(),
+    rooms: z.array(normalizedQuoteRoomSchema).max(8).optional(),
     currency: z
       .string()
       .regex(/^[A-Z]{3}$/)
