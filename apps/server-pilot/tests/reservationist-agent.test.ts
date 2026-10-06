@@ -6,7 +6,6 @@ import {
   createDefaultRunners,
   createReservationistAgent,
   createReservationistTools,
-  QUOTE_UNAVAILABLE,
   type ReservationistRunners,
 } from '../src/ai/reservationist-agent.js';
 

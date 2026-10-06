@@ -26,7 +26,7 @@ export async function prepareReservationistPendingAction(input:ReservationistPen
   const requestBinding={requestId:e.requestId,ownerRef:e.ownerRef,threadId:e.threadId,taskId:request.taskId,sourceRef:request.sourceRef,sourceHash:request.sourceHash,observedAt:request.observedAt,...(request.changes?{changes:structuredClone(request.changes)}:{})};
   const result:ReservationistPendingAction={...blocked,status:'pending_pms_action',businessRulesValidated:true,sourceRefs:[...new Set([e.sourceRef,request.sourceRef])],authorizationId:e.authorizationId,propertyCode:e.propertyCode,sourceProofs,requestBinding,errors:[],current:structuredClone(e.current),...(input.changes?{requested:structuredClone(input.changes)}:{})};
   return {...result,digest:quoteDigest(result)};
- }catch(error){deps.signal.throwIfAborted();return blocked;}
+ }catch{deps.signal.throwIfAborted();return blocked;}
 }
 
 import {createHash} from 'node:crypto';
@@ -54,7 +54,7 @@ export function prepareReservationistChannelBookingSync(input:ChannelBookingSync
  try{
   if(Object.keys(input).some(key=>!['taskId','requestId','propertyCode','ownerRef','threadId','taskSource','facts','sources','clock'].includes(key))||![input.taskId,input.requestId,input.propertyCode,input.ownerRef,input.threadId].every(v=>typeof v==='string'&&v.length>0&&v.length<=128)||!Number.isFinite(Date.parse(input.clock.causalAt))||!Number.isFinite(Date.parse(input.clock.sourceAt))||input.clock.sourceMode!=='current_read'&&Date.parse(input.clock.sourceAt)>Date.parse(input.clock.causalAt))throw new Error('invalid_channel_scope');
   for(const source of input.sources)if(!source.pages||source.pages.length!==source.pageCount||source.pageCount!==1||source.attachmentId.startsWith('message:')&&createHash('sha256').update(source.pages[0]!).digest('hex')!==source.sourceHash||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.parse(input.clock.causalAt))throw new Error('invalid_channel_original_source');
-  const candidateFacts=input.facts.map(({verification,authority,amountCents,...fact})=>fact),plan=validateDocumentPlan({facts:candidateFacts,tasks:[{id:input.taskId,kind:'channel_booking_sync',factIds:candidateFacts.map(f=>f.id),source:input.taskSource}],unresolvedAsks:[]},input.sources);
+  const candidateFacts=input.facts.map(({verification: _verification,authority: _authority,amountCents: _amountCents,...fact})=>fact),plan=validateDocumentPlan({facts:candidateFacts,tasks:[{id:input.taskId,kind:'channel_booking_sync',factIds:candidateFacts.map(f=>f.id),source:input.taskSource}],unresolvedAsks:[]},input.sources);
   for(const fact of plan.facts){
    if(fact.kind==='reservation_reference'){const original=input.sources.find(s=>s.attachmentId===fact.source.attachmentId)?.pages?.[fact.source.page-1]??'';if(/\bno\s+(?:booking|reservation)\s+exists[.!]?\s*$/i.test(original.slice(0,fact.source.start)))throw new Error('channel_fact_not_current_affirmative');}
    if(fact.kind==='dates'){const original=input.sources.find(s=>s.attachmentId===fact.source.attachmentId)?.pages?.[fact.source.page-1]??'',before=original.slice(0,fact.source.start);if(/(?:^|[\n;.!?])\s*(?:if|unless|without|no|not|never|cannot|previous|cancelled|canceled|for another (?:booking|reservation))\b[^.;!?]{0,120}$/i.test(before))throw new Error('channel_fact_not_current_affirmative');}

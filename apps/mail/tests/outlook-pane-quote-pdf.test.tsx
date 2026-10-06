@@ -13,6 +13,7 @@ const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => (
   quotePdfMutateMock: vi.fn(),
   sessionState: {
     userId: 'staff-1',
+    sessionId: 'session-1',
     email: 'ropperman@legacyhotels.co.za',
     outlookEmail: 'ropperman@legacyhotels.co.za',
     transportId: 'transport-shared',
@@ -82,7 +83,7 @@ vi.mock('../lib/auth-client', () => ({
     data: sessionState.userId
       ? {
           user: { id: sessionState.userId, email: sessionState.email, name: 'R Opperman' },
-          session: { id: 'session-1' },
+          session: { id: sessionState.sessionId },
         }
       : null,
     isLoading: false,
@@ -148,9 +149,21 @@ vi.mock('../providers/query-provider', () => ({
 }));
 
 describe('Outlook pane quote proposal PDF', () => {
+  it('requires a fresh quote after the staff session changes on the same selected message', async () => {
+    const view = render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled')).toBe(false);
+    sessionState.sessionId = 'session-2';
+    view.rerender(<OutlookPanePage />);
+    await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Review the quotation PDF')));
+    expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
+  });
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionState.userId = 'staff-1';
+    sessionState.sessionId = 'session-1';
     sessionState.email = 'ropperman@legacyhotels.co.za';
     sessionState.outlookEmail = 'ropperman@legacyhotels.co.za';
     sessionState.transportId = 'transport-shared';

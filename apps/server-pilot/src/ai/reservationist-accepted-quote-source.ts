@@ -17,7 +17,7 @@ export type ReservationistAcceptedQuoteSource={
 };
 const missing=(code:string,topic:string):never=>{throw new ReservationistTaskEvidenceUnavailable(code,[topic]);};
 export async function resolveReservationistAcceptedQuoteSource(ctx:Context,source:ReservationistAcceptedQuoteSource,authorizeContext:()=>Promise<void>){
- const contextDigest=()=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},originalContext=contextDigest(),originalSource=quoteDigest(source),authorize=source.authorizeSource;
+ const contextDigest=()=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},originalContext=contextDigest(),originalSource=quoteDigest(source),authorize=source.authorizeSource;
  const bound=async()=>{ctx.signal.throwIfAborted();await authorizeContext();if(contextDigest()!==originalContext||quoteDigest(source)!==originalSource||source.authorizeSource!==authorize)throw new Error('accepted_quote_source_changed');};
  await bound();
  const {document,originalOffer,revision,sentProof,attestation}=source;

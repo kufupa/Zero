@@ -410,7 +410,6 @@ function provenanceMatches(
 }
 
 function hasStaffStayEdits(session: QuoteSession): boolean {
-  if (session.inputRevision > 1) return true;
   return session.groups.some((group) =>
     Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
   );
@@ -430,9 +429,11 @@ function applyGroupPatch(
 
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
   switch (action.type) {
+    case 'reset':
+      return initialQuoteSession();
     case 'selection': {
-      const current = session.binding ? selectionDigest(session.binding) : null;
-      const next = selectionDigest(action.binding);
+      const current = session.binding ? admissionKey(session.binding) : null;
+      const next = admissionKey(action.binding);
       if (current === next) {
         return { ...session, binding: action.binding };
       }
@@ -460,7 +461,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       }
       if (action.analysis.intent !== 'quote') {
         return {
-          ...session,
+          ...clearDownstream(session),
           phase: 'non_quote',
           analysis: action.analysis,
           groups: [],
@@ -478,12 +479,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       );
       const sourceKey = reviewSourceKey({ ...session, analysis: action.analysis });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
+      const requirementsChanged = session.analysis !== null && JSON.stringify(session.groups) !== JSON.stringify(action.analysis.groups);
       return {
-        ...session,
+        ...(requirementsChanged ? clearDownstream(session) : session),
         phase: 'requirements',
         analysis: action.analysis,
         groups: action.analysis.groups,
-        inputRevision: 1,
+        inputRevision: session.inputRevision + (requirementsChanged ? 1 : 0),
         selectedStayKey,
         steps: planQuoteSteps(action.analysis.groups, selectedStayKey),
         staffActions: action.analysis.staffActions ?? session.staffActions,

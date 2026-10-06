@@ -90,7 +90,7 @@ function decodeStaffAttachments(files: z.infer<typeof serializedAttachmentInput>
   if (files.length > 32) throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
   let total = 0;
   return files.map(file => {
-    if (!file.name || file.name.length > 255 || /[\x00-\x1f/\\]/.test(file.name) ||
+    if (!file.name || file.name.length > 255 || /[/\\]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32) ||
         !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(file.type) ||
         !Number.isSafeInteger(file.size) || file.size < 0 || file.size > DEFAULT_MAX_ATTACHMENT_BYTES ||
         file.base64.length > Math.ceil(DEFAULT_MAX_ATTACHMENT_BYTES / 3) * 4 ||

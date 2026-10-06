@@ -191,7 +191,7 @@ export function typedResultDigest(
   artifacts: readonly PersistedGeneratedArtifact[],
 ): string {
   return createHash('sha256')
-    .update(canonicalJson({ result, artifacts: artifacts.map(({ s3Key, ...safe }) => safe) }))
+    .update(canonicalJson({ result, artifacts: artifacts.map(({ s3Key: _s3Key, ...safe }) => safe) }))
     .digest('hex');
 }
 
@@ -554,7 +554,7 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
           .set({
             generationId: input.generationId,
             metrics: {
-              ...(run.metrics ?? {}),
+              ...run.metrics,
               reservationistResult: input.reservationistResult,
               resultDigest: typedResultDigest(input.reservationistResult, artifacts),
             },

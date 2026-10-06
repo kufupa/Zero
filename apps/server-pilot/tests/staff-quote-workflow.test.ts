@@ -5,7 +5,7 @@ import {
   attestStaffQuote,
 } from '../src/ai/staff-quote-workflow.js';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
-import { quoteDigest, occupiedDates } from '../src/quote-proposal/quote-revision.js';
+import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
 import { resolveLedgerProposal } from '../src/trpc/routes/workstation.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 

@@ -63,6 +63,25 @@ const quoteAnalysis: QuoteAnalysis = {
 };
 
 describe('quote session', () => {
+  it('clears authorised artifacts when the same message is rebound to a new staff scope', () => {
+    const session = { ...initialQuoteSession(), binding: bind(), pdf: { fileName: 'old.pdf', bytesBase64: 'JVBERi0=' }, reviewedReplyHtml: '<p>Old staff reply</p>' };
+    const changed = reduceQuoteSession(session, { type: 'selection', binding: bind({ scopeEpoch: 2 }) });
+    expect(changed.pdf).toBeNull();
+    expect(changed.reviewedReplyHtml).toBe('');
+    expect(changed.staffQuote).toBeNull();
+    expect(reduceQuoteSession(session, { type: 'reset' })).toEqual(initialQuoteSession());
+  });
+  it('invalidates quote evidence and advances revision when late analysis changes requirements', () => {
+    const ready = reduceQuoteSession({ ...initialQuoteSession(), binding: bind() }, { type: 'analysis_ready', analysis: quoteAnalysis });
+    const quoted = { ...ready, pdf: { fileName: 'old.pdf', bytesBase64: 'JVBERi0=' }, selectedOfferIds: ['old'], offers: [authorisedOffer] };
+    const changed = reduceQuoteSession(quoted, { type: 'analysis_ready', analysis: { ...quoteAnalysis, groups: [{ ...quoteAnalysis.groups[0]!, adults: 2 }] } });
+    expect(changed.groups[0]?.adults).toBe(2);
+    expect(changed.inputRevision).toBe(quoted.inputRevision + 1);
+    expect(changed.pdf).toBeNull();
+    expect(changed.offers).toEqual([]);
+    expect(changed.selectedOfferIds).toEqual([]);
+    expect(canCreateNativeDraft(changed)).toBe(false);
+  });
   it('reuses analysis for an unchanged selection digest', () => {
     const a = reduceQuoteSession(initialQuoteSession(), {
       type: 'selection',

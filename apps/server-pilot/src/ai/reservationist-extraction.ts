@@ -173,9 +173,6 @@ function coordinatedGuestName(row:string,quote:string,firstName:string,lastName:
 function labeled(quote: string, label: string, value: string | number): boolean {
   return new RegExp(`\\b(?:${label})\\s*(?:ref(?:erence)?|index|id)?\\s*[:#-]?\\s*${escaped(String(value))}(?![\\p{L}\\p{N}_-])`, 'iu').test(quote);
 }
-function sourceRows(quote: string): string[] {
-  return quote.split(/\n|;|[.!?](?=\s|$)|,\s*(?=group\s)/i);
-}
 function originalSemanticRows(fact: ValidatedDocumentFact, sources: readonly { attachmentId: string; pages: readonly string[] | null }[]): string[] {
   const page = sources.find(source => source.attachmentId === fact.source.attachmentId)?.pages?.[fact.source.page - 1];
   if (!page || fact.source.start === undefined || fact.source.end === undefined) return [];
@@ -420,7 +417,7 @@ function unreadSourcesIndependentOfNoAction(input:{messages:readonly {id:string;
   if(m.inline!==true||!message||message.at!==m.messageAt||Date.parse(message.at)>Date.parse(input.causalAt))return false;
   if(message.id!==triggerMessageId)return true;
   const cid=m.contentId?.replace(/^<|>$/g,'');
-  return history>=0&&typeof cid==='string'&&cid.length>0&&cid.length<=1024&&!/[\s<>]/.test(cid)&&[...trigger.text.slice(history).matchAll(/\bcid:([^\s\[\]<>"')]+)/g)].some(match=>match[1]===cid)&&!current.includes(`cid:${cid}`);
+  return history>=0&&typeof cid==='string'&&cid.length>0&&cid.length<=1024&&!/[\s<>]/.test(cid)&&[...trigger.text.slice(history).matchAll(/\bcid:([^\s[\]<>"')]+)/g)].some(match=>match[1]===cid)&&!current.includes(`cid:${cid}`);
  });
 }
 export type ExtractionUnresolvedDiagnostic={phase:'task_selection';reason:string}|({phase:'fact_enrichment'}&import('./reservationist-runtime.js').FactRecoveryProvenance);
@@ -481,7 +478,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
   const sources = [...admitted.map(a => a.source!),...messageSources,...subjectSources];
   const triggerMessageId=input.triggerMessageId??input.messages.at(-1)?.id;
   if(triggerMessageId!==undefined&&!input.messages.some(message=>message.id===triggerMessageId))throw new Error('Extraction trigger not in causal input');
-  const messageMetadata=input.messages.map(({text,subject,...message})=>({...message,sourceRef:`message:${message.id}`,...(subjectSources.some(s=>s.attachmentId===`message-subject:${message.id}`)?{subjectSourceRef:`message-subject:${message.id}`}:{})}));
+  const messageMetadata=input.messages.map(({text: _text,subject: _subject,...message})=>({...message,sourceRef:`message:${message.id}`,...(subjectSources.some(s=>s.attachmentId===`message-subject:${message.id}`)?{subjectSourceRef:`message-subject:${message.id}`}:{})}));
   const sourceBatches=input.factEnrichmentMode==='source_batches',originalSignal=input.signal,originalAdapter=input.adapter;
   const requestSpans=originalRequestCandidates(input.messages,triggerMessageId),identity=JSON.stringify({...(sourceBatches?{mode:input.mode,factEnrichmentMode:input.factEnrichmentMode,messageBatching:input.messageBatching??null,triggerMessageId:input.triggerMessageId,causalAt:input.causalAt,deadlineAt:input.deadlineAt}:{}),requiredTaskKinds:input.requiredTaskKinds??null,requiredAskSpans:input.requiredAskSpans??null,messages:input.messages,admissions:input.admissions.map(a=>({metadata:a.metadata,status:a.status,...(sourceBatches?{reason:a.reason}:{}),source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null}))});
   const unchanged=()=>{
@@ -491,7 +488,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     if(sourceBatches&&input.deadlineAt!==undefined&&(!Number.isFinite(input.deadlineAt)||input.deadlineAt<=Date.now()))throw new Error('source_batches_deadline_expired');
   };
   if(sourceBatches){unchanged();validateDocumentPlan({facts:[],tasks:[],unresolvedAsks:[]},sources);if(admitted.some(a=>!Number.isFinite(Date.parse(a.metadata.messageAt))||Date.parse(a.metadata.messageAt)>causal||!a.bytes||a.metadata.attachmentId!==a.source!.attachmentId||a.metadata.sourceHash!==a.source!.sourceHash||a.metadata.disclosure!==a.source!.disclosure||a.metadata.sizeBytes!==a.bytes.body.length||a.bytes.sha256!==a.source!.sourceHash||createHash('sha256').update(a.bytes.body).digest('hex')!==a.source!.sourceHash))throw new Error('source_batches_inventory_identity_invalid');}
-  const prompt={version:RESERVATIONIST_EXTRACTION_VERSION,causalAt:input.causalAt,triggerMessageId,...(input.requiredTaskKinds?{requiredTaskKinds:input.requiredTaskKinds}:{}),...(input.requiredAskSpans?{requiredAskSpans:input.requiredAskSpans}:{}),messages:messageMetadata,sources,requestSpans:requestSpans.map(({allowedKinds,...candidate})=>candidate),unsupportedMonetaryRows:unsupportedMonetaryRows(sources)};
+  const prompt={version:RESERVATIONIST_EXTRACTION_VERSION,causalAt:input.causalAt,triggerMessageId,...(input.requiredTaskKinds?{requiredTaskKinds:input.requiredTaskKinds}:{}),...(input.requiredAskSpans?{requiredAskSpans:input.requiredAskSpans}:{}),messages:messageMetadata,sources,requestSpans:requestSpans.map(({allowedKinds: _allowedKinds,...candidate})=>candidate),unsupportedMonetaryRows:unsupportedMonetaryRows(sources)};
   const invoke=async(systemPrompt:string,responseSchema:Record<string,unknown>,extra:Record<string,unknown>={},media={files,images})=>{
     unchanged();
     const factProjection=input.factEnrichmentMode==='source_batches'&&Object.hasOwn(extra,'selectedTasks');

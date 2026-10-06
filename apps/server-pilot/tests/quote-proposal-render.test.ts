@@ -52,7 +52,7 @@ it('preserves an imported source currency on every line and final total without 
 });
 it('retains selected currency on native and approved totals', async () => {
   const r=structuredClone(await syntheticRevision());r.currency='USD';for(const group of r.groups)group.currency='USD';
-  const { quoteDigest }=await import('../src/quote-proposal/quote-revision.js');const {id,...data}=r;r.id=`quote:${quoteDigest(data)}`;
+  const { quoteDigest }=await import('../src/quote-proposal/quote-revision.js');const {id: _id,...data}=r;r.id=`quote:${quoteDigest(data)}`;
   const html=renderRevisionProposalHtml(r,header);expect(html.includes('USD 100.01')).toBe(true);expect(html.includes('R100.01')).toBe(false);
   const override=await resolveApprovedOverride({revision:r,ref:'usd-approval',evaluationAt:'2026-10-05T10:00:00Z',resolveApproval:async()=>({ref:'usd-approval',authorizationId:r.authorizationId,revisionId:r.id,sourceHash:'a'.repeat(64),actorRef:'staff',reason:'Approved USD replacement',approvedAt:'2026-10-04T11:00:00Z',amount:'2000.00',currency:'USD'}),authorizeActor:async()=>true});
   expect(renderApprovedOverrideHtml(override,header).replace(/\s/g,'').includes('USD2000.00')).toBe(true);

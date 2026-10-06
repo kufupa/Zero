@@ -24,7 +24,7 @@ export type LocalEvaluationAuthorization={version:typeof LOCAL_EVALUATION_VERSIO
 export type {LocalEvaluationAnswerSource} from './reservationist-mail-answer-source.js';
 type ExecutionContext=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 type FactoryOptions=Parameters<typeof createReservationistDependencies>[0];
-export function localEvaluationInputHash(input:ReservationistRuntimeInput){const{deadlineAt,...clock}=input.clock;return quoteDigest({...input,clock});}
+export function localEvaluationInputHash(input:ReservationistRuntimeInput){const{deadlineAt: _deadlineAt,...clock}=input.clock;return quoteDigest({...input,clock});}
 function authorizeLocal(a:LocalEvaluationAuthorization,input:ReservationistRuntimeInput){
  if(a.version!==LOCAL_EVALUATION_VERSION||a.kind!=='user_authorized_local_evaluation'||a.authorizationSource!=='reservationist-recovery-user-20261004'||a.scope!=='local_disposable_evaluation'||a.pmsWrite!==false||a.emailSend!==false||a.productionDraftWrite!==false||!Number.isFinite(Date.parse(a.issuedAt))||Date.parse(a.issuedAt)>Date.now()||a.inputHash!==localEvaluationInputHash(input)||input.capabilities.pmsWrite!==false||input.capabilities.emailSend!==false||!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId)throw new Error('local_evaluation_authorization_invalid');
 }
@@ -114,17 +114,17 @@ export function createReservationistCurrentReadResolver(options:{resolve:(reques
   const candidates=filterExactReservationCandidates(extractLookupCandidates(referenceText)).filter(c=>c.value===fact.value);
   if(candidates.length!==1)throw new ReservationistTaskEvidenceUnavailable('current_read_reference_kind_unavailable',['the original reference explicitly identified as a confirmation number or external reference']);
   const candidate=candidates[0]!;
-  const identity=()=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},before=identity(),request={context:ctx,candidate,originalFact:structuredClone(fact),fields:[...fields]},requestHash=quoteDigest({candidate:request.candidate,originalFact:request.originalFact,fields:request.fields});
+  const identity=()=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},before=identity(),request={context:ctx,candidate,originalFact:structuredClone(fact),fields:[...fields]},requestHash=quoteDigest({candidate:request.candidate,originalFact:request.originalFact,fields:request.fields});
   if(options.resolve!==resolveSource||options.admissions!==admissions||admissionIdentity()!==admissionHash)throw new Error('current_read_resolver_changed');
   const found=await resolveSource(request);ctx.signal.throwIfAborted();ctx.evaluateSourceAt?.();
   if(options.resolve!==resolveSource||options.admissions!==admissions||admissionIdentity()!==admissionHash||identity()!==before||requestHash!==quoteDigest({candidate:request.candidate,originalFact:request.originalFact,fields:request.fields})||!found||found.candidateId!==candidate.id)throw new Error('current_read_source_binding_changed');
   if(found.dependencies.lookupTarget&&(quoteDigest(found.dependencies.lookupTarget.receipt.originalFact)!==quoteDigest(fact)||found.dependencies.lookupTarget.receipt.referenceKind!==candidate.kind))throw new Error('current_read_source_fact_unbound');
-  if(!/^resref_/.test(found.reservationRef)||!found.dependencies.lookupTarget)throw new Error('current_read_native_target_unavailable');
+  if(!found.reservationRef.startsWith('resref_')||!found.dependencies.lookupTarget)throw new Error('current_read_native_target_unavailable');
   return createReservationistEvaluationReadResolver({resolve:async()=>found})(ctx);
  };
 }
 /** Current sources retain their own strict qualification and never become historical truth. */
-export async function runReservationistEvaluationCurrentRead(options:Parameters<typeof runQualifiedReservationistCurrentRead>[0]&{authorization:LocalEvaluationAuthorization}){authorizeLocal(options.authorization,options.input);const{authorization,...current}=options;return runQualifiedReservationistCurrentRead(current);}
+export async function runReservationistEvaluationCurrentRead(options:Parameters<typeof runQualifiedReservationistCurrentRead>[0]&{authorization:LocalEvaluationAuthorization}){authorizeLocal(options.authorization,options.input);const{authorization: _authorization,...current}=options;return runQualifiedReservationistCurrentRead(current);}
 
 /** Intact summary observations may narrow a full read or prove no available option; never quote authority. */
 export function isReservationistAuditedSummaryPartial(source:unknown,expectedRequest:QuoteSourceRecord['request'],composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string}):boolean{
@@ -134,8 +134,8 @@ export function isReservationistAuditedSummaryPartial(source:unknown,expectedReq
   if(group.outcome!=='partial')return false;
   const nights=(Date.parse(expectedRequest.departureDate+'T00:00:00Z')-Date.parse(expectedRequest.arrivalDate+'T00:00:00Z'))/86400000;
   if(!Number.isSafeInteger(nights)||nights<1||nights>366)return false;
-  const dates=Array.from({length:nights},(_,i)=>new Date(Date.parse(expectedRequest.arrivalDate+'T00:00:00Z')+i*86400000).toISOString().slice(0,10));
-  return group.options.every(option=>option.availability==='unavailable'&&Array.isArray(option.nightly)&&option.nightly.length===nights&&new Set(option.nightly.map(n=>n.date)).size===nights&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory!>=0)&&option.nightly.some(n=>n.inventory!<group.request.quantity));
+  const dates=new Set(Array.from({length:nights},(_,i)=>new Date(Date.parse(expectedRequest.arrivalDate+'T00:00:00Z')+i*86400000).toISOString().slice(0,10)));
+  return group.options.every(option=>option.availability==='unavailable'&&Array.isArray(option.nightly)&&option.nightly.length===nights&&new Set(option.nightly.map(n=>n.date)).size===nights&&option.nightly.every(n=>dates.has(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory!>=0)&&option.nightly.some(n=>n.inventory!<group.request.quantity));
  };
  try{return capture.schemaVersion===2&&capture.audit?.status==='complete'&&(capture.propertyCode===undefined||capture.propertyCode===expectedRequest.propertyCode)&&capture.requested?.propertyCode===expectedRequest.propertyCode&&quoteDigest(capture.requested)===quoteDigest(expectedRequest)&&capture.outcome==='partial'&&(expectedRequest as {details?:string}).details==='summary'&&capture.searchCompleteness?.status==='complete'&&Array.isArray(capture.issues)&&capture.issues.length===0&&Array.isArray(capture.groups)&&capture.groups.length===expectedRequest.rooms.length&&new Set(capture.groups.map(group=>group.id)).size===capture.groups.length&&capture.groups.every(group=>(group.outcome==='quote'||negativeGroup(group))&&group.completeness?.search==='complete'&&group.completeness?.requiredFacts==='complete'&&Array.isArray(group.issues)&&group.issues.length===0&&expectedRequest.rooms.some(room=>room.id===group.id&&quoteDigest(room)===quoteDigest(group.request))&&Array.isArray(group.options)&&group.options.length>0&&group.options.every(option=>Array.isArray(option.issues)&&option.issues.length===0))&&['not_selected','unknown'].includes(capture.allocation?.status)&&quoteDigest(capture.allocation)===quoteDigest(composeAllocation(capture.groups,expectedRequest.propertyCode))&&(capture.allocation.status!=='unknown'||capture.groups.every(group=>group.options.every(option=>option.room.buildingCode===null)));}catch{return false;}
 }

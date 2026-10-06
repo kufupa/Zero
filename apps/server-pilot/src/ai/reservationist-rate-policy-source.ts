@@ -32,7 +32,7 @@ export function createReservationistQuoteTermsAnswerResolver(options:{
  const cancellation=/^8\. A No-show fee equal to one night’s stay will be charged for guaranteed reservations who do not adhere to the following cancellation policy: \(a\)\. Cancellation - Seven or less rooms - within 48 hours prior to arrival will be subject to a full cancellation fee of the value of one night’s accommodation booked\. \(b\)\. Cancellation - Eight rooms or more – Legacy Hotels & Resort group cancellation policy will apply\.$/;
  return{
   resolveTaskAnswer:async ctx=>{
-   const identity=()=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},original=identity();
+   const identity=()=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},original=identity();
    const guard=async()=>{ctx.signal.throwIfAborted();if(options.authorizeContext!==authorize||options.readDocuments!==read||ctx.input.clock.sourceMode!=='current_read'||!Number.isFinite(Date.parse(ctx.input.clock.causalAt))||ctx.input.capabilities.pmsWrite!==false||ctx.input.capabilities.emailSend!==false||!ctx.input.authorizationScope?.ownerRef||!ctx.input.authorizationScope.threadId||identity()!==original||!await authorize(ctx))throw new Error('quote_terms_source_unauthorized');ctx.signal.throwIfAborted();if(identity()!==original||options.authorizeContext!==authorize||options.readDocuments!==read)throw new Error('quote_terms_source_unauthorized');};
    await guard();
    const ask=ctx.task.source.quote??'',tax=/\b(?:tax(?:es)?|VAT|lev(?:y|ies))\b/i.test(ask),cancel=/\bcancellation\b/i.test(ask);
@@ -77,7 +77,7 @@ export function createReservationistSelectedRatePolicyResolver(options:{
  if(typeof options.authorizeContext!=='function'||typeof options.readDocuments!=='function')throw new Error('rate_policy_source_configuration_invalid');
  const authorize=options.authorizeContext,read=options.readDocuments;
  return async(ctx:Context,source:QuoteSourceRecord,selections:readonly Selection[],propertyCode:string,rateCode:string,board:Board):Promise<InclusionPolicy|null>=>{
-  const identity=()=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts,source,selections});},original=identity();
+  const identity=()=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts,source,selections});},original=identity();
   const guard=async()=>{ctx.signal.throwIfAborted();if(options.authorizeContext!==authorize||options.readDocuments!==read||ctx.input.clock.sourceMode!=='current_read'||ctx.input.capabilities.pmsWrite!==false||ctx.input.capabilities.emailSend!==false||!ctx.input.authorizationScope?.ownerRef||!ctx.input.authorizationScope.threadId||identity()!==original||!await authorize(ctx))throw new Error('rate_policy_source_unauthorized');ctx.signal.throwIfAborted();};
   await guard();
   if(propertyCode!==ctx.input.propertyCode||source.request.propertyCode!==propertyCode||source.result.propertyCode!==propertyCode||source.result.outcome!=='quote'||!source.ref||!/^[a-f0-9]{64}$/.test(source.sha256)||!rateCode||!['room_only','breakfast','dinner_bed_breakfast'].includes(board))throw new Error('rate_policy_selected_scope_invalid');

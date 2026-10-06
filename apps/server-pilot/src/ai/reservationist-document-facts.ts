@@ -314,7 +314,7 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
     const sharedRanges=[...context.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:[-–]|to)\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})\\s+(\\d{4})(?![\\p{L}\\p{N}/-])`,'giu'))];
     if(sharedRanges.length>1)throw new Error('Ambiguous shared month stay dates');
     if(sharedRanges.length===1){const range=sharedRanges[0]!;
-      if(/\b(?:not|never|no|do not|don[’\']t|without|cancelled|canceled|previous|old)\b[^.!?;\n]{0,100}$/i.test(context.slice(0,range.index)))throw new Error('Excluded shared month stay dates');
+      if(/\b(?:not|never|no|do not|don[’']t|without|cancelled|canceled|previous|old)\b[^.!?;\n]{0,100}$/i.test(context.slice(0,range.index)))throw new Error('Excluded shared month stay dates');
       const start=normalizedDate(`${range[1]} ${range[3]} ${range[4]}`),end=normalizedDate(`${range[2]} ${range[3]} ${range[4]}`);
       if(start>=end)throw new Error('Invalid shared month stay dates');
       const subgroupPattern=new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})\\s+\\d{4})(?![\\p{L}\\p{N}/-])`,'giu');

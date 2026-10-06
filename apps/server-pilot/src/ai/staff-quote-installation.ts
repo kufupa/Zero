@@ -187,8 +187,11 @@ const pdfRunner: SandboxRunner = async (tool, inputPath, signal) => {
     `/usr/bin/${tool}`,
     ...toolArgs,
   ];
+  let result: SandboxResult | undefined;
+  let failed = false;
+  let failure: unknown;
   try {
-    return await new Promise<SandboxResult>((accept, reject) => {
+    result = await new Promise<SandboxResult>((accept, reject) => {
       const child = spawn('/usr/bin/sudo', args, {
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -224,14 +227,19 @@ const pdfRunner: SandboxRunner = async (tool, inputPath, signal) => {
         }),
       );
     });
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
     await run('/usr/bin/sudo', ['-n', '/usr/bin/docker', 'rm', '-f', name], {
       timeout: 5000,
       maxBuffer: 65536,
     }).catch(() => undefined);
-    if (sha(await readFile(inputPath)) !== originalHash)
-      throw new Error('staff_quote_pdf_source_changed');
   }
+  if (sha(await readFile(inputPath)) !== originalHash)
+    throw new Error('staff_quote_pdf_source_changed');
+  if (failed) throw failure;
+  return result!;
 };
 
 const documentSchema = z

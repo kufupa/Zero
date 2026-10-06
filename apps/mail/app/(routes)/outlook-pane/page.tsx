@@ -221,6 +221,7 @@ export default function OutlookPanePage() {
   useLayoutEffect(() => {
     if (previousScope.current === currentScope) return;
     previousScope.current = currentScope;
+    dispatchQuote({ type: 'reset' });
     replyRetries.current.clear();
     expiredReplyOutcomes.current.clear();
     hasUntrackedExpiredReplyOutcomes.current = false;
@@ -247,7 +248,7 @@ export default function OutlookPanePage() {
   );
 
   useEffect(() => {
-    if (!activeEmail?.entryId || !activeConnection?.id || !activeConnection.email) return;
+    if (!currentScope || !activeEmail?.entryId || !activeConnection?.id || !activeConnection.email) return;
     dispatchQuote({
       type: 'selection',
       binding: {
@@ -269,6 +270,7 @@ export default function OutlookPanePage() {
     activeEmail?.internetMessageId,
     activeEmail?.storeId,
     selectedIdentity,
+    currentScope,
   ]);
 
   const quoteAdmissionKey = quoteSession.binding ? admissionKey(quoteSession.binding) : '';

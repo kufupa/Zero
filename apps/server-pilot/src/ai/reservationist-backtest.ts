@@ -9,7 +9,7 @@ import {
   stripQuotedHistory,
 } from '../ops/centurion-eval-lab.js';
 import type { CenturionCorpusMessageRow } from '../ops/centurion-thread-corpus-postgres-reader.js';
-import { QUOTE_UNAVAILABLE, type ReservationistDecision } from './reservationist-agent.js';
+import { type ReservationistDecision } from './reservationist-agent.js';
 
 export const STRATA = ['quote_party', 'quote_fit', 'create', 'no_tool', 'other'] as const;
 export type Stratum = (typeof STRATA)[number];
@@ -101,7 +101,7 @@ function validPacket(value: unknown, schema: any = createSchema.$defs.request): 
   return true;
 }
 
-function classify(triggerText: string, goldText: string) {
+function classify(triggerText: string, _goldText: string) {
   const { floor } = parseNeededTools(triggerText);
   const group = floor.hms_group_block_read;
   const quote = floor.hms_quote_stay && !group;

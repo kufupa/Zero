@@ -41,7 +41,7 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  // other reference and any separately stated attachment dependency.
  const withoutDateReference=(text:string)=>text.replace(/\bdates\s+below\b/gi,'dates');
  if(dependency.test(withoutDateReference(authored.slice(0,signoffAt)))||dependency.test(withoutDateReference(currentRequest))||/\b(?:please|kindly|can you|could you|request|attached|enclosed)\b[^.!?;\r\n]{0,120}\b(?:quote|quotation|rooms?|stay|booking|reservation|invoice|voucher|payment|allocation|attachment|document|image)\b/i.test(authored.slice(signoffAt)))return false;
- const refs=[...messageText.matchAll(/\bcid:([^\s\[\]<>"')]+)/gi)].filter(ref=>normalizeContentId(ref[1]!)===cid);
+ const refs=[...messageText.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)].filter(ref=>normalizeContentId(ref[1]!)===cid);
  return refs.length>0&&refs.every(ref=>ref.index!>signoffAt&&(historyAt<0||ref.index!<historyAt));
 }
 export type AttachmentAdmission = {

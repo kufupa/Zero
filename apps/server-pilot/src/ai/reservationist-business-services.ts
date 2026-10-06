@@ -101,7 +101,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const internallyScopedRateExamples=new WeakSet<object>();
  const revisions=new Map<string,Set<string>>(),observations=new Map<string,QuoteSourceRecord>(),claimSources=new Map<string,{contextDigest:string;source:QuoteSourceRecord}>(),maxAge=options.maxSourceAgeMs??15*60000;
  const observationContextDigest=(ctx:Context)=>quoteDigest({requestId:ctx.input.requestId,scope:ctx.input.authorizationScope,propertyCode:ctx.input.propertyCode,trigger:ctx.input.trigger,messages:ctx.input.messages,causalAt:ctx.input.clock.causalAt});
- const claimContextDigest=(ctx:Context)=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});};
+ const claimContextDigest=(ctx:Context)=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});};
  const guard=async(ctx:Context)=>{ctx.signal.throwIfAborted();if(staffApproval)approved(ctx);if(ctx.input.clock.sourceMode!=='current_read'||!ctx.input.authorizationScope?.ownerRef||!ctx.input.authorizationScope.threadId||!await options.authorizeContext(ctx))throw new Error('business_context_unauthorized');ctx.signal.throwIfAborted();if(staffApproval)approved(ctx);};
  const services:ReservationistExecutionServices={
  resolveQuoteTask:async ctx=>{await guard(ctx);
@@ -184,7 +184,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
   return{claimFactId:claim.id,claimDigest:quoteDigest(claim),sourceDigest:quoteDigest(claim.source),revisionId:revision.id,authorizationId:revision.authorizationId,scopeDigest:revision.scopeDigest,requestId:ctx.input.requestId,ownerRef:ctx.input.authorizationScope!.ownerRef,threadId:ctx.input.authorizationScope!.threadId,evaluatedAt:ctx.input.clock.sourceAt,groupIds:groups.map(g=>g.id),taxBasis:inclusive?'gross_included':'exclusive',evidenceRefs:[claim.source.attachmentId,...new Set(groups.map(g=>g.sourceRef))]};
  };
  services.resolveBookingTask=async ctx=>{
-  const contextDigest=()=>{const{sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},originalContext=contextDigest();
+  const contextDigest=()=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});},originalContext=contextDigest();
   await guard(ctx);
   if(contextDigest()!==originalContext)throw new Error('booking_context_changed');
   if(!['new_booking','acceptance'].includes(ctx.task.kind)||ctx.task.kind==='acceptance'&&!options.readAcceptedQuoteSource)missing('booking_acceptance_source_unavailable',['the original sent offer and unchanged acceptance proof']);

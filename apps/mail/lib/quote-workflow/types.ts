@@ -280,6 +280,7 @@ export type QuoteSession = {
 };
 
 export type QuoteSessionAction =
+  | { type: 'reset' }
   | { type: 'selection'; binding: QuoteSelectionBinding }
   | { type: 'analysis_started' }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }

@@ -1,7 +1,6 @@
 import {vi} from 'vitest';
 import {createReservationContextFacade} from '../../src/hms/reservation-context-facade.js';
 const at='2026-10-04T10:00:00.000Z',expiry='2026-10-04T10:05:00.000Z';
-function fact(value:unknown){return{state:'known',value,data:value,evidenceRef:'source',observedAt:at,expiresAt:expiry,sourceUpdatedAt:null};}
 export const syntheticUnavailableReadSection={state:'unavailable',data:null,reasonCode:'SOURCE_UNAVAILABLE',issues:[]};
 export async function syntheticReservationistRead(options:{fields?:string[];folio?:boolean;grant?:Record<string,unknown>|null;proof?:Record<string,unknown>|null;receipt?:Record<string,unknown>;data?:Record<string,unknown>;context?:Record<string,unknown>;input?:Record<string,unknown>;status?:string;mutateBinding?:boolean}={}){
  const fields=options.fields??(options.folio?['folio_balance','deposit_due','deposit_recorded']:['reservation_status','arrival']);

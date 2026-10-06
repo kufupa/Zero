@@ -57,7 +57,7 @@ export async function prepareReservationistReadTask(rawInput:ReservationistReadT
   if(readInputDigest([...request.sections].sort())!==readInputDigest(expectedSections.sort())||input.fields.some(field=>!fieldAsks[field].test(input.taskSource.quote))||input.taskSource.end-input.taskSource.start!==input.taskSource.quote.length)throw new ReadTaskError('blocked','read_request_fields_mismatch');
   const binding:ReservationistReadBinding={inputDigest:readInputDigest(input),requestDigest:readInputDigest(request),taskId:input.taskId,requestId:input.requestId,ownerRef:input.ownerRef,threadId:input.threadId,triggerMessageId:input.triggerMessageId,propertyCode:input.propertyCode,candidateId:input.candidateId,reservationRef:input.reservationRef};
   const lookup=deps.lookupTarget;
-  if(/^resref_/.test(input.reservationRef)&&!lookup)throw new ReadTaskError('blocked','current_lookup_target_unavailable');
+  if(input.reservationRef.startsWith('resref_')&&!lookup)throw new ReadTaskError('blocked','current_lookup_target_unavailable');
   if(input.lookupTargetDigest||lookup){
    if(!lookup||input.lookupTargetDigest!==lookup.receipt.digest||input.clock.sourceMode!=='current_read')throw new ReadTaskError('blocked','current_lookup_target_unavailable');
    const identity=()=>readInputDigest({input:rawInput,request:deps.request,context:{transportId:context.transportId,threadId:context.threadId,triggerMessageId:context.triggerMessageId,propertyCode:context.propertyCode,parentRef:context.parentRef,branchId:context.branchId,releaseId:context.releaseId,requester:context.requester},receipt:lookup.receipt});const before=identity();

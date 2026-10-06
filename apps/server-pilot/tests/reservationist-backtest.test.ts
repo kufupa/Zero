@@ -278,7 +278,7 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  const packet=await prepareReservationistPendingAction(input,{signal:new AbortController().signal,resolveEvidence:async()=>evidence,authorizeSource:async()=>true});
  const action={kind:packet.kind,taskId:packet.taskId,reservationRef:packet.reservationRef,current:packet.current,requested:packet.requested,sourceRefs:packet.sourceRefs,digest:packet.digest};
  const tasks=[{id:'change',kind:'change',status:'pending_pms_action',evidenceRefs:packet.sourceRefs}],body='Your amendment request is prepared for staff review.';
- const approved:any={tasks:tasks.map(({kind,...task})=>task),bodyClauses:[body],moneyCents:[],artifacts:[],quoteRefs:[],packetRequired:false,pendingActions:[action]};
+ const approved:any={tasks:tasks.map(({kind: _kind,...task})=>task),bodyClauses:[body],moneyCents:[],artifacts:[],quoteRefs:[],packetRequired:false,pendingActions:[action]};
  const runtime:any={tasks,textBody:body,artifacts:[],quoteRefs:[],packets:[packet],errors:[],assessment:{ok:true},readiness:'pending_pms_action'};
  expect(scoreRuntimeReplay(runtime,approved,'authoritative_source_replay').pass).toBe(true);
  for(const change of [{reservationRef:'reservation:other'},{requested:{...requested,arrivalDate:'2026-10-16'}},{sourceRefs:['other']},{kind:'arbitrary'},{saved:true},{status:'complete'},{digest:'bad'},{errors:['unsafe']},{current:{arrivalDate:'2026-02-31',departureDate:'2026-03-02'}}])expect(scoreRuntimeReplay({...runtime,packets:[{...packet,...change}]},approved,'authoritative_source_replay').pass).toBe(false);
@@ -290,7 +290,7 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  const cancel=await prepareReservationistPendingAction(cancelInput,{signal:new AbortController().signal,resolveEvidence:async()=>({...evidence,requestSource:{...evidence.requestSource,taskId:'cancel',changes:undefined}}),authorizeSource:async()=>true});
  const cancelAction={kind:cancel.kind,taskId:cancel.taskId,reservationRef:cancel.reservationRef,current:cancel.current,sourceRefs:cancel.sourceRefs};
  const cancelTasks=[{id:'cancel',kind:'cancel_request',status:'pending_pms_action',evidenceRefs:cancel.sourceRefs}];
- const cancelApproved={...approved,tasks:cancelTasks.map(({kind,...task})=>task),pendingActions:[cancelAction]};
+ const cancelApproved={...approved,tasks:cancelTasks.map(({kind: _kind,...task})=>task),pendingActions:[cancelAction]};
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[cancel]},cancelApproved,'authoritative_source_replay').pass).toBe(true);
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[{...cancel,requested}]},cancelApproved,'authoritative_source_replay').pass).toBe(false);
 });

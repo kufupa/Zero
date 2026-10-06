@@ -28,9 +28,21 @@ that the full autonomous reservationist has shipped.
 - Initial borrowed legacy-DB test attempt failed on missing schema columns; it
   was not credited. The replacement database is
   `reservationist_quote_landing_20261006` on the local test PostgreSQL container.
-- Full current-main sync/security gate and actual frontend build are separate
-  running checks; append their terminal outcomes and Greptile review IDs before
-  merge. No production or PMS mutations have occurred during landing preparation.
+- Actual production frontend and server builds passed. CI run 37467040118 passed
+  the complete disposable-DB Outlook sync/security gate and server build, plus
+  transactional Rocketseed regressions. Its autofix job failed at imported-code
+  lint; the exact CI oxlint 1.6.0 command now passes locally without suppressions.
+- Greptile CLI round 1: `8a25299a-a9e6-4bd4-a4dc-a53210fc5543`, reviewing
+  `0a924c0c`. Four verified findings fixed: reset quote state on staff-session
+  changes; invalidate late-analysis quote/PDF evidence with advancing revision;
+  initialize draft artifact services before routes (production without real S3
+  remains closed); update converter test for full Chromium/LibreOffice image.
+- Focused review regressions: 55 UI tests passed (including same-message session
+  changes and late analysis); server source/execution/draft/startup tests all
+  passed (536 tests across eight files); updated converter assertion passed.
+  A wider 150-test deployment run had 14 failures in inherited subprocess/AWS
+  perimeter fixtures; these are not counted as passing or silently removed.
+- No production or PMS mutations occurred during landing preparation.
 
 ## P0 release checklist after landing
 
