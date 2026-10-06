@@ -13,7 +13,8 @@ Same paths exist on **both** trees. Do not cherry-pick or copy sibling files.
 
 | Path | This UI branch | Sibling (`feat/reservationist-backtest`) |
 | --- | --- | --- |
-| `apps/mail/app/(routes)/outlook-pane/page.tsx` | **Conflict.** RATE_TABLE UI removed. HITL panel. `onRunNext` / `onPreparePdf` never dispatch fixture money/PDF. Native insert requires authorised provenance. | Dirty reservationist/dashboard quoting work. Independent edits. |
+| `apps/mail/app/(routes)/outlook-pane/page.tsx` | **Conflict.** RATE_TABLE UI removed. HITL panel. Shared `runQuoteStep` for Run next / per-step Run. Native insert requires authorised provenance. | Dirty reservationist/dashboard quoting work. Independent edits. |
+| `apps/server-pilot/src/trpc/routes/workstation.ts` | Unchanged from main (old `quoteProposalPdf` unused by quoting path). | Dirty. |
 | `apps/server-pilot/src/trpc/routes/quote-workflow.ts` | `runStep` accepts `inputRevision` + `inputs`, still returns `integration_unavailable`. Does **not** enqueue HMS. | Unchanged / independent. |
 | `apps/server-pilot/src/trpc/routes/drafts.ts` | Unchanged from main. | Dirty. |
 | `apps/server-pilot/src/quote-proposal/*` | Unchanged from main. | Dirty (`description`, `gotenberg`, `patch-sheet`, `proposal-pdf`, plus untracked `quote-lines` / `quote-revision` / `rate-check`). |
