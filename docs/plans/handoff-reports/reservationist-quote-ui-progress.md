@@ -9,13 +9,13 @@
 | Start | 2026-10-05T23:12:03Z |
 | Deadline | 2026-10-06T07:12:03Z |
 | Stop launching long tasks | 2026-10-06T06:57:03Z |
-| Last update | 2026-10-06T02:13:38Z |
+| Last update | 2026-10-06T02:16:00Z |
 
 Do not treat the 23:42 ledger “94 green” as current. That run is **earlier green** at 23:40:57Z, before RATE_TABLE native-PDF removal.
 
 ## Current task
 
-Sample RATE_TABLE/calendar/screenshot UI stripped from quoting path. Focused mail **95 PASS** + server **13 PASS / 2 skip**. Mail `react-router build` + `@zero/server` `tsc` green. Next: mounted-pane Chromium of HITL HTML, then original handoff sections. Not live-ready.
+Handoff sections written. Mounted-pane 380px Chromium captured after HITL. Independently achievable overnight UI scope complete. **Not live-ready.**
 
 ## Completed evidence
 
@@ -43,13 +43,11 @@ Missing backend is an honest gap, not a reason to add another quote engine.
 
 ## Remaining
 
-- Mounted-pane Chromium of `mounted-pane.html` after HITL (happy-dom dump exists; 380px screenshot of *that* HTML still due).
-- Original handoff sections (conflicts, landing order, unverified integrations).
-- `analyseSelection` default unsynced until live mailbox `internetMessageId` + disposable DB. S3 attachment bytes not read.
-- `runStep` unavailable until the authorised PMS owner binds `enqueueHmsRead`.
-- Pane still uses local `analyseLocalEmail` for HITL groups when tRPC is unsynced/unavailable (labelled).
-- Narrow-pane screenshot is production component markup, not a logged-in Outlook add-in session.
-- Windows Classic Outlook + production mailbox still required before staff use.
+- Live mailbox `internetMessageId` + disposable DB for `analyseSelection` (default unsynced).
+- S3 attachment bytes; filenames are not content.
+- `runStep` → single-owner `enqueueHmsRead(hms_quote_stay)` after sibling/PMS owner.
+- `qualifiedQuoteProposalPdf` after sibling merge; no second engine.
+- Windows Classic Outlook native insert. Local `analyseLocalEmail` still fills HITL when mailbox is unsynced (labelled, not the reservationist).
 - No merge/deploy.
 
 ## Blockers
@@ -66,4 +64,4 @@ None.
 
 ## Next highest-value action
 
-Commit this tree, then Chromium 380px of `mounted-pane.html` after HITL, then write `reservationist-quote-ui-handoff.md`. No merge/deploy.
+Stop. Independently achievable UI scope done. Do not merge/deploy/PMS. Human integrates after sibling quote-revision lands.

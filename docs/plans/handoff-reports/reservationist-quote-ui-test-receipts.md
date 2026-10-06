@@ -21,5 +21,6 @@ Distinguish **earlier green** from **latest** fail/green. Do not treat a prior p
 | 2026-10-06T02:09:50Z | mail 10 files (include narrow-quoting + backend-bind) | **PASS 95** — *latest mail green after sample-UI strip; not live-ready* |
 | 2026-10-06T02:09:17Z | `@zero/server` quote-workflow-router + synced-selection + workstation-router-contract | **PASS 13 / 2 skipped (15)** |
 | 2026-10-06T02:13:38Z | `pnpm --filter @zero/mail build` then `pnpm --filter @zero/server build` (`tsc`) | **exit 0**. Mail `✓ built in 1m 5s`. Server tsc silent. |
+| 2026-10-06T02:15:44Z | Chromium-1243 `mounted-pane-380.png` | **captured** production `OutlookPanePage` after HITL at 380×900. Tailwind CSS not loaded in dump (unstyled). No September/NCOR/`quote-rate-proof` image. Not Windows Outlook. |
 
 All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.

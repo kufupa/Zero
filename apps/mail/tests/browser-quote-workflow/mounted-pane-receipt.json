@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-06T02:15:44Z",
+  "chrome": "/home/orca/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  "status": 0,
+  "stderr": "dbus noise omitted",
+  "png": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/mounted-pane-380.png",
+  "html": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/mounted-pane.html",
+  "viewport": { "width": 380, "height": 900 },
+  "note": "Chromium screenshot of production OutlookPanePage after happy-dom HITL (Run next, allocation, Prepare PDF) at 380x900. Tailwind classes are present without the built CSS, so layout is unstyled; DOM is the post-interaction pane. No September calendar, NCOR cards, or quote-rate-proof.png. Playwright 1.52 chromium_headless_shell-1169 missing. Not a live Outlook/Windows pane."
+}
