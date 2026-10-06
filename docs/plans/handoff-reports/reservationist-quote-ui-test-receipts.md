@@ -1,0 +1,20 @@
+# Quote UI test receipts
+
+Distinguish **earlier green** from **latest** fail/green. Do not treat a prior pass as current status.
+
+| When (UTC) | What | Result |
+| --- | --- | --- |
+| 2026-10-05T23:38:36Z | `quote-workflow-scenarios` + pane tests (cached transform) | **FAIL** 1/60 — `getByText(/Selected allocation total R2,140.00/i)` vs en-ZA `R2 140,00` / stale cache showing old assertion |
+| 2026-10-05T23:40:02Z | focused `does not sum RO` (stale vitest cache) | **FAIL** — stack still pointed at `getByText` after source change |
+| 2026-10-05T23:40:38Z | `quote-workflow-scenarios.test.tsx --no-cache` | **PASS** 19 |
+| 2026-10-05T23:40:57Z | 10 mail files (workflow + outlook-pane render/pdf/onboarding/auth) | **PASS 94** — *earlier green; RATE_TABLE native PDF fallback still present; not proof of later HEAD* |
+| 2026-10-05T23:40:05Z | `@zero/server` `quote-workflow-router.test.ts` | **PASS** 6 (then 7 after default-loader test) |
+| 2026-10-06T00:07Z | lucide import briefly broken (`Building2` cut mid-import) during interrupt | page.tsx syntax risk; restored before this receipt |
+| 2026-10-06T00:23:04Z | mail pane+workflow after RATE_TABLE cut | **FAIL 4 / 81 passed (85)** in 8 files — `refuses convert…mailbox` missing `Run next`; three render tests expected extra `CREATE_REPLY_DRAFT` after selection change without HITL. **This is the latest visible fail the 23:42 ledger did not record.** |
+| 2026-10-06T00:55:09Z | same set + backend-bind + narrow-html | **FAIL 4 then 1** (bounds expired 259 vs 258) — untracked-outcome confirm cleared then reviewed-draft gate; then in-flight click after 258th timeout |
+| 2026-10-06T01:02:45Z | `outlook-pane-render` bounds expired | **PASS** 1 (29 skipped) after wait for Insert enabled + HITL before 999 confirm |
+| 2026-10-06T01:04:06Z | 10 mail files (include backend-bind + narrow-html) | **PASS 94** — *latest green on this HEAD; same count as 23:40:57 but different tests/HEAD* |
+| 2026-10-06T01:04:07Z | `@zero/server` `quote-workflow-router.test.ts` | **PASS 7** |
+| 2026-10-06T01:10:00Z | Chromium-1243 `narrow-pane-380.png` | **captured** production `QuoteWorkflowPanel` markup at 380×900. Playwright 1.52 `chromium_headless_shell-1169` missing. Not Windows Outlook. |
+
+All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.

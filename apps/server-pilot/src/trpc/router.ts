@@ -19,6 +19,7 @@ import { categoriesRouter } from './routes/categories.js';
 import { adminDashboardRouter } from './routes/admin-dashboard.js';
 import { catchupRouter } from './routes/catchup.js';
 import { workstationRouter } from './routes/workstation.js';
+import { quoteWorkflowRouter } from './routes/quote-workflow.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -36,6 +37,7 @@ export const appRouter = router({
   adminDashboard: adminDashboardRouter,
   catchup: catchupRouter,
   workstation: workstationRouter,
+  quoteWorkflow: quoteWorkflowRouter,
 });
 
 export type AppRouter = typeof appRouter;

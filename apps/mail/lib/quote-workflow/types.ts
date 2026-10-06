@@ -79,6 +79,8 @@ export type QuoteOffer = {
   screenshot?: QuoteScreenshot;
 };
 
+export type QuoteMailboxStatus = 'unsynced' | 'missing_source' | 'ready' | 'unavailable';
+
 export type QuotePdf = { fileName: string; bytesBase64: string };
 
 export type QuoteToolStepStatus = 'queued' | 'ready' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -109,6 +111,7 @@ export type QuoteSession = {
   missing: string[];
   errorMessage: string | null;
   runningStepId: string | null;
+  mailboxStatus: QuoteMailboxStatus | null;
 };
 
 export type QuoteSessionAction =
@@ -120,8 +123,10 @@ export type QuoteSessionAction =
   | { type: 'analysis_failed'; message: string }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
-  | { type: 'results_ready'; offers: QuoteOffer[]; selectionEpoch?: number }
+  | { type: 'results_ready'; offers: QuoteOffer[]; selectionEpoch?: number; reviewedReplyHtml?: string }
   | { type: 'step_running'; stepId: string }
+  | { type: 'step_failed'; stepId: string; retryGuidance: string }
   | { type: 'pdf_ready'; pdf: QuotePdf }
   | { type: 'set_reviewed_reply'; html: string }
-  | { type: 'select_offers'; offerIds: string[] };
+  | { type: 'select_offers'; offerIds: string[] }
+  | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };

@@ -9,7 +9,6 @@ import {
   Plus,
   Minus,
   Search,
-  ShieldCheck,
   ExternalLink,
   X,
   Mail,
@@ -25,8 +24,6 @@ import {
   Clock,
 } from 'lucide-react';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
-import { occupancyRoomCode } from '@/lib/quote-proposal/description';
-import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
 
@@ -89,7 +86,26 @@ const TOUR_SLIDES: TourSlide[] = [
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { analyseLocalEmail } from '@/lib/quote-workflow/analyse-local';
+import {
+  fixtureReplyHtml,
+  FIXTURE_PDF,
+  loadQuoteFixture,
+  pickFixtureForSession,
+} from '@/lib/quote-workflow/fixtures';
+import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
+import {
+  bindAnalyseSelection,
+  bindRunStep,
+  quoteWorkflowFromTrpc,
+} from '@/lib/quote-workflow/backend-bind';
+import {
+  canCreatePdf,
+  initialQuoteSession,
+  reduceQuoteSession,
+} from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
@@ -217,12 +233,6 @@ const fmtZAR = (val: number) =>
     .toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     .replace(/\s/g, ',');
 
-function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'room_only' {
-  if (planCode === 'BARRO') return 'room_only';
-  if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
-  return 'bb';
-}
-
 export default function OutlookPanePage() {
   const {
     isConnected,
@@ -247,6 +257,7 @@ export default function OutlookPanePage() {
   const replyInFlight = useRef(false);
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
+  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
@@ -299,8 +310,8 @@ export default function OutlookPanePage() {
   const [twinRoomsCount, setTwinRoomsCount] = useState(7);
   const [orgAccount, setOrgAccount] = useState('CIDB');
   const [showUnavailable, setShowUnavailable] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [hasSearched, setHasSearched] = useState(true);
+  const [isSearching] = useState(false);
+  const [hasSearched] = useState(false);
   const [selectedRateCode, setSelectedRateCode] = useState('NCOR');
   const [proofTab, setProofTab] = useState<'results' | 'criteria'>('results');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -329,6 +340,73 @@ export default function OutlookPanePage() {
   const showDraftPreview = Boolean(
     draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
   );
+
+  useEffect(() => {
+    if (!activeEmail?.entryId || !activeConnection?.id || !activeConnection.email) return;
+    dispatchQuote({
+      type: 'selection',
+      binding: {
+        transportId: activeConnection.id,
+        mailboxEmail: activeConnection.email,
+        storeId: activeEmail.storeId ?? '',
+        folderEntryId: activeEmail.folderEntryId ?? '',
+        entryId: activeEmail.entryId,
+        internetMessageId: activeEmail.internetMessageId,
+        selectionEpoch: contextRevision.current.selectionEpoch,
+        scopeEpoch: contextRevision.current.scopeEpoch,
+      },
+    });
+  }, [
+    activeConnection?.email,
+    activeConnection?.id,
+    activeEmail?.entryId,
+    activeEmail?.folderEntryId,
+    activeEmail?.internetMessageId,
+    activeEmail?.storeId,
+    selectedIdentity,
+  ]);
+
+  useEffect(() => {
+    if (!quoteSession.binding || quoteSession.phase !== 'idle' || quoteSession.analysis) return;
+    dispatchQuote({ type: 'analysis_started' });
+    const analysis = analyseLocalEmail({
+      subject: activeEmail?.subject ?? '',
+      bodyText: activeEmail?.bodyText ?? '',
+    });
+    dispatchQuote({ type: 'analysis_ready', analysis });
+    const binding = quoteSession.binding;
+    const workflow = quoteWorkflowFromTrpc(trpcClient);
+    const selectionEpoch = binding.selectionEpoch;
+    let cancelled = false;
+    void bindAnalyseSelection({
+      mutate: workflow.analyseSelection?.mutate,
+      input: {
+        internetMessageId: binding.internetMessageId,
+        storeId: binding.storeId,
+        entryId: binding.entryId,
+        folderEntryId: binding.folderEntryId,
+        selectionEpoch,
+      },
+    }).then((remote) => {
+      if (cancelled) return;
+      if (remote.kind === 'ready') {
+        dispatchQuote({ type: 'mailbox_status', status: 'ready' });
+        return;
+      }
+      if (remote.kind === 'unsynced') {
+        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+        return;
+      }
+      if (remote.kind === 'missing_source') {
+        dispatchQuote({ type: 'mailbox_status', status: 'missing_source' });
+        return;
+      }
+      dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeEmail?.bodyText, activeEmail?.subject, quoteSession.analysis, quoteSession.binding, quoteSession.phase]);
 
   // Automatically sync detected corporate account or room parameters when active email changes
   useEffect(() => {
@@ -510,19 +588,9 @@ export default function OutlookPanePage() {
   };
 
   const handleExecuteSearch = () => {
-    setIsSearching(true);
-    setTimeout(() => {
-      setIsSearching(false);
-      setHasSearched(true);
-      const plan = RATE_TABLE[selectedRateCode];
-      if (plan && !plan.restricted) {
-        toast.success(`Verified rate schedule: ${plan.name} (${orgAccount})`);
-      } else if (plan?.restricted) {
-        toast.warning(`Rate restriction: ${plan.name} (${plan.restrictionReason})`);
-      } else {
-        toast.error('Selected rate plan is not verified for this organization account');
-      }
-    }, 400);
+    toast.warning(
+      'Sample rates are visual reference only and are not pricing authority. Use the quoting workflow above.',
+    );
   };
 
   const activePlan = RATE_TABLE[selectedRateCode] || RATE_TABLE.NCOR;
@@ -618,13 +686,6 @@ export default function OutlookPanePage() {
       return;
     }
 
-    if (activePlan.restricted) {
-      toast.error(
-        `Cannot insert draft: ${activePlan.name} is restricted (${activePlan.restrictionReason}).`,
-      );
-      return;
-    }
-
     if (!startedScope || transportLoading || !activeConnection?.email) {
       toast.error('Sign in and select an authorized mailbox before attaching a quotation.');
       return;
@@ -641,73 +702,28 @@ export default function OutlookPanePage() {
       return;
     }
 
+    const reviewedDraft = requireReviewedNativeDraft(quoteSession);
+    if (!reviewedDraft) {
+      toast.error(
+        'Review the quotation PDF and complete reply before creating an unsent Outlook draft. Sample pane rates are not used.',
+      );
+      return;
+    }
+
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
     const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
     replyRetries.current.set(key, attempt);
 
-    const guestFirstName = (currentSender.split(' ')[0] || 'Guest').trim();
     const selectedHotelMeta = HOTEL_PROPERTIES[propertyCode] ?? HOTEL_PROPERTIES.HRCEN;
-    const agreementDescription = activePlan.code.startsWith('NCOR')
-      ? orgAccount.trim()
-        ? `under the ${orgAccount.trim()} corporate agreement`
-        : 'under your corporate agreement'
-      : 'at our standard rates';
-    const mealDescription =
-      mealPlan === 'room_only' || activePlan.code === 'BARRO'
-        ? 'room only (no meals included)'
-        : mealPlan === 'dinner_bed_breakfast'
-          ? 'dinner, bed & breakfast'
-          : 'breakfast included';
-    const dateLabel = `${arrivalDay}-${departureDay} Sep`;
-    const lineDateLabel = `${arrivalDay}-${departureDay} September 2026`;
-    const meal = paneMeal(mealPlan, activePlan.code);
-    const lines = [
-      ...(singleRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: singleRoomsCount,
-              roomCode: occupancyRoomCode('single'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.singleNightly,
-            },
-          ]
-        : []),
-      ...(twinRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: twinRoomsCount,
-              roomCode: occupancyRoomCode('twin'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.twinNightly,
-            },
-          ]
-        : []),
-    ];
-    const quotationHtml = quoteWrapperHtml(guestFirstName);
+    const quotationHtml = reviewedDraft.html;
     let draftCreated = false;
 
     try {
-      if (lines.length === 0) {
-        throw new Error('Add at least one room before attaching a quotation.');
-      }
       const pdf =
         attempt.pdf ??
-        (await trpcClient.workstation.quoteProposalPdf.mutate({
-          outlookEmail: activeConnection.email,
-          attention: currentSender,
-          company: orgAccount.trim(),
-          clientEmail: currentSenderEmail,
-          clientTelephone: '',
-          agency: orgAccount.trim() || 'Quote',
-          dateLabel,
-          lines,
-        }));
+        { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
       if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
         // No new Outlook command has started for this click. A delayed quotation
         // cannot create or retry a reply for a selection that changed away
@@ -786,18 +802,18 @@ export default function OutlookPanePage() {
         subject: currentSubject,
         sender: currentSender,
         senderEmail: currentSenderEmail,
-        agreementText: agreementDescription,
-        mealText: mealDescription,
+        agreementText: 'Selected allocation only. Alternatives are not booked.',
+        mealText: 'See the reviewed reply.',
         hotelName: selectedHotelMeta.name,
         hotelTeam: selectedHotelMeta.shortName,
-        singleNightly: activePlan.singleNightly,
-        twinNightly: activePlan.twinNightly,
-        singleCount: singleRoomsCount,
-        twinCount: twinRoomsCount,
-        planName: activePlan.name,
-        singleSubtotal,
-        twinSubtotal,
-        grandTotal,
+        singleNightly: 0,
+        twinNightly: 0,
+        singleCount: 0,
+        twinCount: 0,
+        planName: pdf.fileName,
+        singleSubtotal: 0,
+        twinSubtotal: 0,
+        grandTotal: 0,
         arrivalDay,
         departureDay,
         nightsCount,
@@ -1206,6 +1222,53 @@ export default function OutlookPanePage() {
                 </span>
               )}
             </div>
+
+            <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+              Sample placeholder — not live AI output
+            </p>
+
+            <QuoteWorkflowPanel
+              session={quoteSession}
+              onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
+              onRunNext={() => {
+                toast.warning(
+                  'Live PMS search is not run from this pane overnight. Fixture results below are not live inventory.',
+                );
+                const nextStep =
+                  quoteSession.steps.find((step) => step.status === 'ready' || step.status === 'queued' || step.status === 'failed') ??
+                  quoteSession.steps[0];
+                if (nextStep) dispatchQuote({ type: 'step_running', stepId: nextStep.id });
+                const workflow = quoteWorkflowFromTrpc(trpcClient);
+                void bindRunStep({
+                  mutate: workflow.runStep?.mutate,
+                  stepId: nextStep?.id ?? 'quote-stay',
+                  selectionEpoch: quoteSession.binding?.selectionEpoch ?? 0,
+                }).then((remote) => {
+                  if (remote.status === 'integration_unavailable' || remote.status === 'unavailable') {
+                    toast.warning(remote.reason);
+                  }
+                });
+                const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
+                dispatchQuote({
+                  type: 'results_ready',
+                  offers: fixture.offers,
+                  selectionEpoch: quoteSession.binding?.selectionEpoch,
+                  reviewedReplyHtml: fixtureReplyHtml(
+                    fixture,
+                    (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
+                  ),
+                });
+              }}
+              onSelectOffer={(offerId) => dispatchQuote({ type: 'select_offers', offerIds: [offerId] })}
+              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
+              onPreparePdf={() => {
+                if (!canCreatePdf(quoteSession)) {
+                  toast.warning('Select an allocation with source evidence before generating a PDF.');
+                  return;
+                }
+                dispatchQuote({ type: 'pdf_ready', pdf: FIXTURE_PDF });
+              }}
+            />
 
             {/* Search Criteria Card */}
             <div className="shadow-xs overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
@@ -1700,11 +1763,14 @@ export default function OutlookPanePage() {
                     </span>
                   </div>
                   <p className="mt-1 text-[10.5px] leading-tight text-[#64748b]">
-                    * Rates subject to Infor HMS taxes and fees upon reservation booking.
+                    * Sample totals only — not Infor HMS pricing authority.
                   </p>
                 </div>
+              </div>
+            )}
 
-                {/* Infor HMS Audit Proof Tabs */}
+            <div className="flex flex-col gap-2.5">
+                {/* Screenshot is visual language only — never authorised tool-run proof */}
                 <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
                   <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
                     <div className="flex gap-1">
@@ -1731,8 +1797,8 @@ export default function OutlookPanePage() {
                         Search Criteria
                       </button>
                     </div>
-                    <span className="flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
-                      <ShieldCheck className="h-3.5 w-3.5" /> Audit Saved
+                    <span className="flex items-center gap-1 text-[10.5px] font-semibold text-amber-800">
+                      Demo screenshot — not authorised tool-run proof
                     </span>
                   </div>
 
@@ -1815,8 +1881,7 @@ export default function OutlookPanePage() {
                     <p className="mt-2 text-[#475569]">Kind regards,</p>
                   </div>
                 )}
-              </div>
-            )}
+            </div>
 
             {/* System Diagnostics Drawer */}
             <div className="pt-2">

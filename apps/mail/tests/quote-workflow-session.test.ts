@@ -4,6 +4,7 @@ import {
   canCreateNativeDraft,
   canCreatePdf,
   initialQuoteSession,
+  planQuoteSteps,
   reduceQuoteSession,
   selectionDigest,
 } from '../lib/quote-workflow/session';
@@ -201,5 +202,31 @@ describe('quote session', () => {
     expect(stale.phase).toBe('results');
     expect(ignored.offers).toEqual([]);
     expect(ignored.phase).toBe('idle');
+  });
+
+  it('plans one quote request for same-date groups and distinct requests for staggered dates', () => {
+    const same = planQuoteSteps([
+      { ...quoteAnalysis.groups[0]!, id: 'a', arrivalDate: '2026-10-16', departureDate: '2026-10-18' },
+      { ...quoteAnalysis.groups[0]!, id: 'b', arrivalDate: '2026-10-16', departureDate: '2026-10-18', adults: 1 },
+    ]);
+    expect(same.filter((step) => step.kind === 'quote_stay')).toHaveLength(1);
+    const org = planQuoteSteps([
+      { ...quoteAnalysis.groups[0]!, organisation: 'Provincial Treasury' },
+    ]);
+    expect(org.some((step) => step.kind === 'party_lookup')).toBe(true);
+    const staggered = planQuoteSteps([
+      { ...quoteAnalysis.groups[0]!, id: 'a', arrivalDate: '2026-11-02', departureDate: '2026-11-04' },
+      { ...quoteAnalysis.groups[0]!, id: 'b', arrivalDate: '2026-11-10', departureDate: '2026-11-12' },
+    ]);
+    expect(staggered.filter((step) => step.kind === 'quote_stay')).toHaveLength(2);
+  });
+
+  it('records mailbox analyseSelection status without wiping local groups', () => {
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: quoteAnalysis });
+    session = reduceQuoteSession(session, { type: 'mailbox_status', status: 'unsynced' });
+    expect(session.mailboxStatus).toBe('unsynced');
+    expect(session.groups).toHaveLength(1);
+    expect(session.phase).toBe('requirements');
   });
 });

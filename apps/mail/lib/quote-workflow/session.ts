@@ -3,8 +3,44 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteSelectionBinding,
+  QuoteToolStep,
   StayGroupRequirement,
 } from './types';
+
+export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] {
+  const steps: QuoteToolStep[] = [];
+  const organisation = groups.map((group) => group.organisation).find((value) => Boolean(value?.trim()));
+  if (organisation) {
+    steps.push({
+      id: 'party-lookup',
+      kind: 'party_lookup',
+      title: `Look up organisation ${organisation}`,
+      inputs: { organisation },
+      dependsOn: [],
+      status: 'ready',
+      shareKey: organisation.trim().toLowerCase(),
+    });
+  }
+  const byDates = new Map<string, StayGroupRequirement[]>();
+  for (const group of groups) {
+    const key = `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`;
+    const list = byDates.get(key) ?? [];
+    list.push(group);
+    byDates.set(key, list);
+  }
+  for (const [key, grouped] of byDates) {
+    steps.push({
+      id: `quote-stay-${key}`,
+      kind: 'quote_stay',
+      title: `Search availability ${key.replace(':', ' → ')}`,
+      inputs: { quoteRequestKey: key, groupIds: grouped.map((group) => group.id) },
+      dependsOn: organisation ? ['party-lookup'] : [],
+      status: organisation ? 'queued' : 'ready',
+      shareKey: key,
+    });
+  }
+  return steps;
+}
 
 export function selectionDigest(binding: QuoteSelectionBinding): string {
   return [
@@ -32,6 +68,7 @@ export function initialQuoteSession(): QuoteSession {
     missing: [],
     errorMessage: null,
     runningStepId: null,
+    mailboxStatus: null,
   };
 }
 
@@ -103,6 +140,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         analysis: action.analysis,
         groups: action.analysis.groups,
         inputRevision: 1,
+        steps: planQuoteSteps(action.analysis.groups),
       };
     }
     case 'analysis_unsynced':
@@ -132,16 +170,47 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       ) {
         return session;
       }
-      return { ...session, phase: 'results', offers: action.offers, runningStepId: null };
+      return {
+        ...session,
+        phase: 'results',
+        offers: action.offers,
+        runningStepId: null,
+        reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        steps: session.steps.map((step) =>
+          step.status === 'running' || step.id === session.runningStepId
+            ? { ...step, status: 'succeeded' as const }
+            : step,
+        ),
+      };
     }
     case 'step_running':
-      return { ...session, phase: 'tools', runningStepId: action.stepId };
+      return {
+        ...session,
+        phase: 'tools',
+        runningStepId: action.stepId,
+        steps: session.steps.map((step) =>
+          step.id === action.stepId ? { ...step, status: 'running' as const } : step,
+        ),
+      };
+    case 'step_failed':
+      return {
+        ...session,
+        phase: 'tools',
+        runningStepId: null,
+        steps: session.steps.map((step) =>
+          step.id === action.stepId
+            ? { ...step, status: 'failed' as const, retryGuidance: action.retryGuidance }
+            : step,
+        ),
+      };
     case 'pdf_ready':
       return { ...session, pdf: action.pdf, phase: 'review' };
     case 'set_reviewed_reply':
       return { ...session, reviewedReplyHtml: action.html };
     case 'select_offers':
       return { ...session, selectedOfferIds: action.offerIds, pdf: null };
+    case 'mailbox_status':
+      return { ...session, mailboxStatus: action.status };
     default:
       return session;
   }

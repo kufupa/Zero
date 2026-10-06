@@ -316,6 +316,35 @@ const FIXTURES: Record<QuoteFixtureId, QuoteFixture> = {
   },
 };
 
+export const FIXTURE_PDF = {
+  fileName: 'Quote-fixture-not-live-hms.pdf',
+  bytesBase64: 'JVBERi0xLjQK',
+};
+
+export function pickFixtureForSession(groups: StayGroupRequirement[]): QuoteFixtureId {
+  if (groups.some((group) => group.organisation?.trim())) return 'agency-contract';
+  if (groups.length > 1) {
+    const first = `${groups[0]?.arrivalDate ?? ''}:${groups[0]?.departureDate ?? ''}`;
+    const same = groups.every((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}` === first);
+    return same ? 'mixed-same-dates' : 'staggered-dates';
+  }
+  if (groups.some((group) => group.board === 'room_only') || groups.some((group) => group.board === 'bb')) {
+    if (groups.length === 1 && groups[0]?.board === 'room_only') return 'ro-vs-bb';
+  }
+  return 'public-single';
+}
+
+export function fixtureReplyHtml(fixture: QuoteFixture, guestFirstName = 'Guest'): string {
+  if (fixture.reviewedReplyHtml) return fixture.reviewedReplyHtml;
+  const secondary = fixture.secondaryAsks.length
+    ? `<p>${fixture.secondaryAsks.join(' ')}</p>`
+    : '';
+  const alternatives = fixture.alternatives.length
+    ? `<p>Requested alternatives remain available in this email and are not booked: ${fixture.alternatives.join(', ')}.</p>`
+    : '';
+  return `<div><p>Good day ${guestFirstName},</p><p>Please see attached quotation for the selected allocation only.</p>${secondary}${alternatives}<p>Kind regards,</p></div>`;
+}
+
 export function loadQuoteFixture(id: QuoteFixtureId): QuoteFixture {
   const fixture = FIXTURES[id];
   if (!fixture) throw new Error(`unknown quote fixture: ${id}`);
