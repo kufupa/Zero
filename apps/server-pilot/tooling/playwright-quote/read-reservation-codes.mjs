@@ -104,25 +104,57 @@ async function widenDateRange(page) {
 
 async function openTarget(page, confirmation) {
   const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
-  await search.click();
-  await search.fill(confirmation);
-  await page.waitForTimeout(400);
+  if (await search.count()) {
+    await search.click();
+    await search.fill(confirmation);
+  }
+  await page.evaluate((conf) => {
+    const Ext = window.Ext;
+    const fields = Ext?.ComponentQuery?.query('textfield, field') ?? [];
+    for (const field of fields) {
+      const blob = String(field.name ?? field.itemId ?? field.fieldLabel ?? '');
+      if (/^(ff_confirmationnumber|search)$/i.test(blob) && field.setValue) field.setValue(conf);
+    }
+  }, confirmation);
   const searchWait = page.waitForResponse(
     (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
     { timeout: 20000 },
   ).catch(() => null);
-  await search.press('Enter');
+  if (await search.count()) await search.press('Enter');
+  const run = page.getByRole('button', { name: 'Run', exact: true });
+  if (await run.count()) await run.click().catch(() => {});
   await searchWait;
-  await page.waitForTimeout(800);
-  let rows = page.locator('.x-grid-row, .x-grid3-row').filter({ hasText: confirmation });
-  if (!(await rows.count())) {
-    const run = page.getByRole('button', { name: 'Run', exact: true });
-    if (await run.count()) await run.click();
-    await page.waitForTimeout(1500);
-    rows = page.locator('.x-grid-row, .x-grid3-row').filter({ hasText: confirmation });
-  }
+  await page.waitForTimeout(1200);
+  const opened = await page.evaluate((conf) => {
+    const Ext = window.Ext;
+    const grids = Ext?.ComponentQuery?.query('grid, gridpanel') ?? [];
+    const summary = { grids: grids.length, stores: [] };
+    for (const grid of grids) {
+      const store = grid.getStore?.();
+      const count = store?.getCount?.() ?? 0;
+      const sample = store?.getAt?.(0);
+      const keys = sample ? Object.keys(sample.data || {}).filter((key) => !/name|first|last|guest|email|phone|address/i.test(key)).slice(0, 20) : [];
+      summary.stores.push({ count, keys });
+      if (!store?.getCount) continue;
+      const records = store.getRange?.() ?? [];
+      const hits = records
+        .map((record, index) => ({
+          index,
+          confirmation: String(record.get?.('confirmationnumber') ?? record.data?.confirmationnumber ?? ''),
+        }))
+        .filter((row) => row.confirmation === conf);
+      if (hits.length !== 1) continue;
+      const node = grid.getView?.()?.getNode?.(hits[0].index);
+      if (!node) continue;
+      node.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return { opened: 'search-hit', summary };
+    }
+    return { opened: 'not-found', summary };
+  }, confirmation);
+  if (opened.opened === 'search-hit') return 'search-hit';
+  const rows = page.locator('.x-grid-row, .x-grid3-row').filter({ hasText: confirmation });
   const n = await rows.count();
-  if (n === 0) return 'not-found';
+  if (n === 0) return `not-found:${JSON.stringify(opened.summary)}`;
   if (n !== 1) return `ambiguous:${n}`;
   await rows.first().dblclick();
   return 'search-hit';
@@ -231,7 +263,7 @@ function installReadOnlyGuard(context) {
 async function readOne(page, confirmation) {
   const opened = await openTarget(page, confirmation);
   if (String(opened).startsWith('not-found')) {
-    return { confirmation, outcome: 'not_found' };
+    return { confirmation, outcome: 'not_found', detail: String(opened).slice(0, 300) };
   }
   if (String(opened).startsWith('ambiguous')) {
     return { confirmation, outcome: 'ambiguous' };
@@ -316,6 +348,7 @@ async function main() {
   try {
     await login(page, secret);
     await menu(page, ['Front Desk', 'Guest Stay']);
+    await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
     await widenDateRange(page);
     for (const confirmation of pending) {
