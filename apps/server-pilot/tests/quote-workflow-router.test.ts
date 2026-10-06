@@ -118,6 +118,21 @@ describe('quoteWorkflow.analyseSelection', () => {
     expect(enqueueHmsRead).not.toHaveBeenCalled();
   });
 
+  it('passes mailboxProcedure transportId into the loader', async () => {
+    const seen: string[] = [];
+    quoteWorkflowLoaders.loadSyncedSelection = async (input) => {
+      seen.push(input.transportId);
+      return null;
+    };
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+    expect(seen).toEqual(['transport-1']);
+  });
+
   it('runStep reports integration unavailable and does not enqueue HMS', async () => {
     const result = await mailboxCaller().quoteWorkflow.runStep({
       stepId: 'quote-stay',

@@ -124,10 +124,10 @@ export function QuoteWorkflowPanel({
       {session.mailboxStatus && session.mailboxStatus !== 'ready' ? (
         <StatusNote>
           {session.mailboxStatus === 'unsynced'
-            ? 'Mailbox quoteWorkflow.analyseSelection: unsynced. Local classification below is not mailbox-synced.'
+            ? 'Mailbox quoteWorkflow.analyseSelection: unsynced. Local regex preview below is not the AI reservationist and is not mailbox-synced.'
             : session.mailboxStatus === 'missing_source'
-              ? 'Mailbox quoteWorkflow.analyseSelection: authorised attachment bytes are missing.'
-              : 'Mailbox quoteWorkflow.analyseSelection client is not bound on this pane session.'}
+              ? 'Mailbox quoteWorkflow.analyseSelection: authorised attachment bytes are missing. Filenames are not document content.'
+              : 'Mailbox quoteWorkflow.analyseSelection client is not bound. Local regex preview below is not the AI reservationist.'}
         </StatusNote>
       ) : null}
       {session.analysis?.secondaryAsks.length ? (

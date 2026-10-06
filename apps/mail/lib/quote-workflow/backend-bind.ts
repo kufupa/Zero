@@ -25,6 +25,7 @@ export const QUOTE_WORKFLOW_BIND_TARGETS = {
   analyseSelection: 'quoteWorkflow.analyseSelection',
   runStep: 'quoteWorkflow.runStep',
   runStepServerLater: 'ai.enqueueHmsRead({ toolId: "hms_quote_stay" })',
+  qualifiedPdf: 'qualifiedQuoteProposalPdf (not on this branch)',
   nativeReply: 'CREATE_REPLY_DRAFT',
   nativeAttach: 'ADD_ATTACHMENT_TO_DRAFT',
 } as const;
@@ -53,10 +54,26 @@ export type RunStepResult =
   | { status: 'integration_unavailable'; reason: string }
   | { status: 'ok' };
 
+/** Minimal typed bind for live PDF. Not implemented on this branch. */
+export type QualifiedProposalPdfInput = {
+  selectedOfferIds: string[];
+  sourceRevision: number;
+  mailboxTransportId: string;
+};
+
+export type QualifiedProposalPdfResult = {
+  fileName: string;
+  pdfBase64: string;
+  centsReconciled: true;
+};
+
 type QuoteWorkflowClient = {
   analyseSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
   runStep?: {
     mutate: (input: { stepId: string; selectionEpoch: number }) => Promise<RunStepResult>;
+  };
+  qualifiedProposalPdf?: {
+    mutate: (input: QualifiedProposalPdfInput) => Promise<QualifiedProposalPdfResult>;
   };
 };
 
@@ -123,4 +140,23 @@ export async function bindRunStep(args: {
     return { status: 'integration_unavailable', reason: result.reason };
   }
   return { status: 'ok' };
+}
+
+export type BoundQualifiedPdf =
+  | { status: 'unavailable'; reason: string }
+  | { status: 'ok'; pdf: QualifiedProposalPdfResult };
+
+export async function bindQualifiedProposalPdf(args: {
+  mutate?: (input: QualifiedProposalPdfInput) => Promise<QualifiedProposalPdfResult>;
+  input: QualifiedProposalPdfInput;
+}): Promise<BoundQualifiedPdf> {
+  if (!args.mutate) {
+    return {
+      status: 'unavailable',
+      reason:
+        'qualifiedQuoteProposalPdf / qualifiedProposalChoices are not on origin/main. Do not invent a second PDF engine. Overnight Prepare PDF stays fixture-labelled.',
+    };
+  }
+  const pdf = await args.mutate(args.input);
+  return { status: 'ok', pdf };
 }

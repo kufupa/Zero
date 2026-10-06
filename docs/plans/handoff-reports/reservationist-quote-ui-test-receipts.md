@@ -16,5 +16,10 @@ Distinguish **earlier green** from **latest** fail/green. Do not treat a prior p
 | 2026-10-06T01:04:06Z | 10 mail files (include backend-bind + narrow-html) | **PASS 94** — *latest green on this HEAD; same count as 23:40:57 but different tests/HEAD* |
 | 2026-10-06T01:04:07Z | `@zero/server` `quote-workflow-router.test.ts` | **PASS 7** |
 | 2026-10-06T01:10:00Z | Chromium-1243 `narrow-pane-380.png` | **captured** production `QuoteWorkflowPanel` markup at 380×900. Playwright 1.52 `chromium_headless_shell-1169` missing. Not Windows Outlook. |
+| 2026-10-06T02:07:31Z | mail 10 files after leftover screenshot still present / preview generic wrapper gone | **FAIL 1 / 94 passed (95)** — `outlook-pane-quote-pdf` waited for generic `Please see attached quotation.` |
+| 2026-10-06T02:08:47Z | same set after regex preview text | **FAIL 1 / 94** — reviewed HTML also lives in DocumentReview, so preview-clear assertion stayed true. Switched sentinel to `Attached: Quote-fixture-not-live-hms.pdf` |
+| 2026-10-06T02:09:50Z | mail 10 files (include narrow-quoting + backend-bind) | **PASS 95** — *latest mail green after sample-UI strip; not live-ready* |
+| 2026-10-06T02:09:17Z | `@zero/server` quote-workflow-router + synced-selection + workstation-router-contract | **PASS 13 / 2 skipped (15)** |
+| 2026-10-06T02:13:38Z | `pnpm --filter @zero/mail build` then `pnpm --filter @zero/server build` (`tsc`) | **exit 0**. Mail `✓ built in 1m 5s`. Server tsc silent. |
 
 All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.

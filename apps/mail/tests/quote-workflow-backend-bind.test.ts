@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindAnalyseSelection,
+  bindQualifiedProposalPdf,
   bindRunStep,
   quoteWorkflowFromTrpc,
   QUOTE_WORKFLOW_BIND_TARGETS,
@@ -73,5 +74,15 @@ describe('quote workflow backend bind', () => {
       reason: 'Live PMS search is not owned by this quoting UI.',
     });
     expect(mutate).not.toHaveBeenCalledWith(expect.objectContaining({ toolId: 'hms_quote_stay' }));
+  });
+
+  it('does not invent a second PDF engine when qualifiedQuoteProposalPdf is absent', async () => {
+    const result = await bindQualifiedProposalPdf({
+      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
+    });
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toMatch(/not invent a second PDF engine/i);
+    }
   });
 });

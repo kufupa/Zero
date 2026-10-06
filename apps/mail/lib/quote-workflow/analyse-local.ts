@@ -38,7 +38,7 @@ function looksLikeQuote(text: string): boolean {
 }
 
 /**
- * Mailbox-side, PMS-free classification for a stable Outlook selection.
+ * Mailbox-side regex preview only. Not the reservationist agent.
  * Attachment filenames never count as document content.
  */
 export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {

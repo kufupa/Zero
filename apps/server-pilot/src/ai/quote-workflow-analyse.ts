@@ -71,7 +71,8 @@ function looksLikeQuote(text: string): boolean {
 }
 
 /**
- * Mailbox-side, PMS-free classification. Filenames never count as document bytes.
+ * Mailbox-side regex classifier. Filenames never count as document bytes.
+ * This is not the reservationist agent.
  */
 export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWorkflowAnalysis {
   const admittedText = [

@@ -440,7 +440,9 @@ describe('Outlook pane quote proposal PDF', () => {
     prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
-    await waitFor(() => expect(screen.getByText('Please see attached quotation.')).toBeDefined());
+    await waitFor(() =>
+      expect(screen.getByText(/Attached: Quote-fixture-not-live-hms\.pdf/)).toBeDefined(),
+    );
     let rejectMutation!: (error: Error) => void;
     sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(
@@ -463,7 +465,7 @@ describe('Outlook pane quote proposal PDF', () => {
     );
     sessionState.requiresRelogin = false;
     pane.rerender(<OutlookPanePage />);
-    expect(screen.queryByText('Please see attached quotation.')).toBeNull();
+    expect(screen.queryByText(/Attached: Quote-fixture-not-live-hms\.pdf/)).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));

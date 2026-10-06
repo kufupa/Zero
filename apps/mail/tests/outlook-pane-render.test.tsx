@@ -187,10 +187,11 @@ describe('OutlookPanePage', () => {
     expect(screen.getByText(/David Miller/i)).toBeDefined();
   });
 
-  it('keeps manual Outlook Send instructions and the screenshot inspection control', () => {
+  it('keeps manual Outlook Send instructions and does not show the sample RATE_TABLE screenshot', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Send manually in Outlook/i)).toBeDefined();
-    expect(screen.getByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeNull();
+    expect(screen.getByText(/Authorised HMS screenshot unavailable/i)).toBeDefined();
   });
 
   it('opens only the native pairing dialog when the installer is unpaired', () => {

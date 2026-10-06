@@ -16,17 +16,43 @@ export type SyncedQuoteSelection = {
 };
 
 /**
+ * Causal preceding: same authorised mailbox thread, received at or before
+ * the selected message, oldest first. Later replies are excluded. Missing
+ * receivedAt is not treated as earlier.
+ */
+export function orderCausalPreceding(
+  selected: { id: string; receivedAt: Date | null },
+  threadRows: Array<{ id: string; textBody: string | null; receivedAt: Date | null }>,
+): Array<{ bodyText: string }> {
+  const selectedAt = selected.receivedAt?.getTime();
+  if (selectedAt === undefined) return [];
+  return threadRows
+    .filter((candidate) => candidate.id !== selected.id)
+    .filter((candidate) => {
+      if (!candidate.receivedAt) return false;
+      return candidate.receivedAt.getTime() <= selectedAt;
+    })
+    .sort((left, right) => {
+      const delta = (left.receivedAt?.getTime() ?? 0) - (right.receivedAt?.getTime() ?? 0);
+      if (delta !== 0) return delta;
+      return left.id.localeCompare(right.id);
+    })
+    .map((candidate) => ({ bodyText: candidate.textBody ?? '' }));
+}
+
+/**
  * Mailbox-scoped, PMS-free selection load for `quoteWorkflow.analyseSelection`.
  *
  * Bind targets on this branch (`origin/main`):
  * - `message` rows for `ctx.activeTransportId` + `messageIdHeader`
- * - preceding same-thread messages with `receivedAt <= selected.receivedAt`
+ * - preceding same-thread messages with `receivedAt <= selected.receivedAt`, oldest first
  * - `attachment` identity (id, filename, size). S3 bodies are not fetched here:
  *   production-bucket reads are out of overnight scope; missing bytes stay missing.
  *
  * Not bound (must not be faked as analysis-only):
  * - `ai.enqueueHmsRead` / `hms_quote_stay`
  * - sibling `qualifiedProposalChoices` / `qualifiedQuoteProposalPdf` (not on main)
+ * This loader is not the reservationist agent.
  */
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
@@ -65,13 +91,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
 
-  const preceding = threadRows
-    .filter((candidate) => candidate.id !== row.id)
-    .filter((candidate) => {
-      if (!row.receivedAt || !candidate.receivedAt) return false;
-      return candidate.receivedAt.getTime() <= row.receivedAt.getTime();
-    })
-    .map((candidate) => ({ bodyText: candidate.textBody ?? '' }));
+  const preceding = orderCausalPreceding(row, threadRows);
 
   const attachments = await db
     .select({
