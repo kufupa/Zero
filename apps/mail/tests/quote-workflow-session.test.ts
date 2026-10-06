@@ -245,7 +245,8 @@ describe('quote session', () => {
     const org = planQuoteSteps([
       { ...quoteAnalysis.groups[0]!, organisation: 'Provincial Treasury' },
     ]);
-    expect(org.some((step) => step.kind === 'party_lookup')).toBe(true);
+    expect(org.some((step) => step.kind === 'party_lookup')).toBe(false);
+    expect(org.find((step) => step.kind === 'quote_stay')?.status).toBe('ready');
     const staggered = planQuoteSteps([
       { ...quoteAnalysis.groups[0]!, id: 'a', arrivalDate: '2026-11-02', departureDate: '2026-11-04' },
       { ...quoteAnalysis.groups[0]!, id: 'b', arrivalDate: '2026-11-10', departureDate: '2026-11-12' },
@@ -503,31 +504,11 @@ describe('quote session', () => {
       groupId: 'g1',
       patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03', organisation: 'Provincial Treasury' },
     });
-    expect(s.steps.map((step) => step.id)).toEqual([
-      'party-lookup',
-      'quote-stay-2026-12-01:2026-12-03',
-    ]);
-    expect(s.steps[0]?.inputs).toEqual({
-      organisation: 'Provincial Treasury',
-      groups: [
-        expect.objectContaining({
-          id: 'g1',
-          arrivalDate: '2026-12-01',
-          departureDate: '2026-12-03',
-          quantity: 1,
-          roomPreference: 'standard king',
-          adults: 1,
-          childrenAges: [],
-          board: 'bb',
-          organisation: 'Provincial Treasury',
-          specialRequests: [],
-        }),
-      ],
-    });
-    expect(s.steps[1]?.dependsOn).toEqual(['party-lookup']);
-    expect(s.steps[1]?.status).toBe('queued');
-    expect(canRunQuoteStep(s.steps[1]!, s.steps, null)).toBe(false);
-    expect(pickNextRunnableStep(s.steps, null)?.id).toBe('party-lookup');
+    expect(s.steps.map((step) => step.id)).toEqual(['quote-stay-2026-12-01:2026-12-03']);
+    expect(s.steps[0]?.status).toBe('ready');
+    expect(s.steps[0]?.dependsOn).toEqual([]);
+    expect(canRunQuoteStep(s.steps[0]!, s.steps, null)).toBe(true);
+    expect(pickNextRunnableStep(s.steps, null)?.id).toBe('quote-stay-2026-12-01:2026-12-03');
   });
 
   it('lets staff keep allocations across date groups and blocks a partial PDF', () => {
@@ -800,36 +781,20 @@ describe('quote session', () => {
     expect(canCreatePdf(kids)).toBe(true);
   });
 
-  it('promotes quote_stay after lookup without inventing offers and does not rerun lookup', () => {
+  it('makes quote_stay runnable without a separate party execute', () => {
     const withOrg = {
       ...quoteAnalysis,
       groups: [{ ...quoteAnalysis.groups[0]!, organisation: 'Provincial Treasury' }],
     };
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: withOrg });
-    const lookup = s.steps.find((step) => step.kind === 'party_lookup')!;
     const stay = s.steps.find((step) => step.kind === 'quote_stay')!;
-    expect(stay.status).toBe('queued');
-    expect(pickNextRunnableStep(s.steps, null)?.id).toBe(lookup.id);
-    s = reduceQuoteSession(s, { type: 'step_running', stepId: lookup.id });
-    s = reduceQuoteSession(s, {
-      type: 'lookup_ready',
-      stepId: lookup.id,
-      selectionEpoch: 1,
-      inputRevision: 1,
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
-    });
-    expect(s.offers).toEqual([]);
-    expect(s.phase).toBe('tools');
-    expect(s.partyLookup).toEqual({ organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' });
-    expect(s.steps.find((step) => step.id === lookup.id)?.status).toBe('succeeded');
-    expect(s.steps.find((step) => step.id === lookup.id)?.resultSummary).toMatch(/party-treasury-1/);
-    expect(s.steps.find((step) => step.id === stay.id)?.status).toBe('ready');
-    expect(canRunQuoteStep(s.steps.find((step) => step.id === lookup.id)!, s.steps, null)).toBe(false);
+    expect(s.steps.some((step) => step.kind === 'party_lookup')).toBe(false);
+    expect(stay.status).toBe('ready');
     expect(pickNextRunnableStep(s.steps, null)?.id).toBe(stay.id);
   });
 
-  it('sends the full approved grouped requirements as the runStep DTO', () => {
+  it('sends the full approved grouped requirements as the stay DTO', () => {
     const withOrg = {
       ...quoteAnalysis,
       groups: [
@@ -846,40 +811,6 @@ describe('quote session', () => {
     };
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: withOrg });
-    const lookup = s.steps.find((step) => step.kind === 'party_lookup')!;
-    expect(buildQuoteStepInputs(s, lookup)).toEqual({
-      stepKind: 'party_lookup',
-      binding: {
-        transportId: 't1',
-        mailboxEmail: 'centurion@legacyhotels.co.za',
-        storeId: 'store',
-        folderEntryId: 'inbox',
-        entryId: 'e1',
-        internetMessageId: '<a@x>',
-        selectionEpoch: 1,
-      },
-      groups: [
-        {
-          id: 'g1',
-          arrivalDate: '2026-11-12',
-          departureDate: '2026-11-14',
-          quantity: 2,
-          roomPreference: 'suite',
-          adults: 1,
-          childrenAges: [8],
-          board: 'dinner_bb',
-          organisation: 'Provincial Treasury',
-          specialRequests: ['late arrival'],
-        },
-      ],
-    });
-    s = reduceQuoteSession(s, {
-      type: 'lookup_ready',
-      stepId: lookup.id,
-      selectionEpoch: 1,
-      inputRevision: 1,
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
-    });
     const stay = s.steps.find((step) => step.kind === 'quote_stay')!;
     expect(buildQuoteStepInputs(s, stay)).toEqual({
       stepKind: 'quote_stay',
@@ -906,7 +837,6 @@ describe('quote session', () => {
           specialRequests: ['late arrival'],
         },
       ],
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
   });
 });

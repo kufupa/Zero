@@ -69,10 +69,26 @@ export type QuoteReviewItem = {
   text: string;
   sourceLabel: string;
   sourceRef?: string;
+  sourceHash?: string;
   filename?: string;
   reason?: string;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
+};
+
+/** U1 drafts/toDraftWire staffActions. Copied from the published handoff; not imported from the sibling tree. */
+export type ReservationistStaffAction = {
+  id: string;
+  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
+  text: string;
+  sourceRef: string;
+  sourceHash: string;
+  sourceKind?: 'message' | 'attachment';
+  messageId?: string;
+  filename?: string;
+  reason?: string;
+  blockingQuote: boolean;
+  status: 'open';
 };
 
 export type QuoteAnalysis = {
@@ -81,7 +97,49 @@ export type QuoteAnalysis = {
   secondaryAsks: string[];
   alternatives: string[];
   reviewItems?: QuoteReviewItem[];
+  staffActions?: ReservationistStaffAction[];
 };
+
+export type StaffQuoteSource = {
+  messageId: string;
+  threadId: string;
+  sourceHash: string;
+};
+
+export type StaffQuoteAllocation = {
+  workflowRunId: string;
+  revisionRef: string;
+  factRefs: string[];
+  messageId: string;
+  threadId: string;
+  sourceHash: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  inputDigest: string;
+  totalMinor: number;
+  currency: string;
+  quoteRequestKey: string;
+};
+
+export type StaffQuoteHeader = {
+  salesStrategy: 'BAR' | 'Government';
+  company: string;
+  agency: string;
+  attention: string;
+  clientEmail: string;
+  clientTelephone: string;
+};
+
+export function emptyStaffQuoteHeader(): StaffQuoteHeader {
+  return {
+    salesStrategy: 'BAR',
+    company: '',
+    agency: '',
+    attention: '',
+    clientEmail: '',
+    clientTelephone: '',
+  };
+}
 
 export type QuoteOfferKind = 'allocation' | 'alternative';
 
@@ -123,7 +181,13 @@ export type QuoteEvidenceProvenance = {
   inputRevision: number;
 };
 
-export type QuotePdf = { fileName: string; bytesBase64: string };
+export type QuotePdf = {
+  fileName: string;
+  bytesBase64: string;
+  pdfHash?: string;
+  revisionId?: string;
+  totalMinor?: number;
+};
 
 export type ApprovedStayGroup = {
   id: string;
@@ -191,6 +255,12 @@ export type QuoteSession = {
   mailboxStatus: QuoteMailboxStatus | null;
   evidence: QuoteEvidenceProvenance | null;
   partyLookup: PartyLookupRef | null;
+  staffSource: StaffQuoteSource | null;
+  staffQuote: StaffQuoteAllocation | null;
+  staffHeader: StaffQuoteHeader;
+  staffActions: ReservationistStaffAction[];
+  selectedStayKey: string | null;
+  handledSourceKey: string | null;
   reviewItems: QuoteReviewItem[];
   handledReviewItemIds: string[];
 };
@@ -205,6 +275,18 @@ export type QuoteSessionAction =
   | { type: 'handle_review_item'; itemId: string }
   | { type: 'unhandle_review_item'; itemId: string }
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
+  | { type: 'staff_source_ready'; source: StaffQuoteSource }
+  | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
+  | { type: 'select_stay_key'; stayKey: string }
+  | {
+      type: 'staff_quote_ready';
+      offer: QuoteOffer;
+      staffQuote: StaffQuoteAllocation;
+      selectionEpoch: number;
+      inputRevision: number;
+      reviewedReplyHtml?: string;
+    }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
   | {

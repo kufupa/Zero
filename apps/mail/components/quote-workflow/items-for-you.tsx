@@ -49,14 +49,16 @@ export function ItemsForYou({
                 Edit reply
               </button>
             ) : null}
-            <button
-              type="button"
-              className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-              aria-label={`Mark handled: ${item.text}`}
-              onClick={() => onHandle?.(item.id)}
-            >
-              Mark handled
-            </button>
+            {!item.blocking && item.kind !== 'pricing_fact' ? (
+              <button
+                type="button"
+                className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                aria-label={`Mark handled: ${item.text}`}
+                onClick={() => onHandle?.(item.id)}
+              >
+                Mark handled
+              </button>
+            ) : null}
           </div>
         </div>
       ))}

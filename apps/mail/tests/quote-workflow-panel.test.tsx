@@ -149,7 +149,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
   });
 
-  it('disables stay search until party lookup succeeds and parses blank children ages as empty', () => {
+  it('runs stay search without a separate party execute and parses blank children ages as empty', () => {
     const onRunStep = vi.fn();
     const onPatchGroup = vi.fn();
     let session = sessionFromFixture('agency-contract');
@@ -165,12 +165,11 @@ describe('QuoteWorkflowPanel', () => {
         onPatchGroup={onPatchGroup}
       />,
     );
-    const party = screen.getByRole('button', { name: /Run Look up organisation Provincial Treasury/i });
+    expect(screen.queryByRole('button', { name: /Run Look up organisation/i })).toBeNull();
     const stay = screen.getByRole('button', { name: /Run Search availability/i });
-    expect((party as HTMLButtonElement).disabled).toBe(false);
-    expect((stay as HTMLButtonElement).disabled).toBe(true);
+    expect((stay as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(stay);
-    expect(onRunStep).not.toHaveBeenCalled();
+    expect(onRunStep).toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Children ages'), { target: { value: ' , ' } });
     expect(onPatchGroup).toHaveBeenCalledWith('g1', { childrenAges: [] });
   });

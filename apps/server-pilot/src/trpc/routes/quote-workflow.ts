@@ -67,14 +67,10 @@ export const quoteWorkflowRouter = router({
     };
   }),
   runStep: mailboxProcedure.input(runStepInput).mutation(async () => {
-    // Approved current inputs/inputRevision are accepted on the contract.
-    // Bind target on main: ai.enqueueHmsRead({ toolId: 'hms_quote_stay' }).
-    // Overnight this UI must not call it (single PMS owner). Sibling
-    // qualifiedProposalChoices is not on this branch.
     return {
       status: 'integration_unavailable' as const,
       reason:
-        'Live PMS search is not owned by this quoting UI. A single authorised PMS owner must execute the read. Bind later to ai.enqueueHmsRead(hms_quote_stay) without a second browser owner.',
+        'Live staff quote execution is workstation.executeStaffQuote. Do not call ai.enqueueHmsRead from this UI route.',
     };
   }),
 });

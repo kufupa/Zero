@@ -88,18 +88,24 @@ import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import {
   bindAnalyseSelection,
-  bindQualifiedProposalPdf,
-  bindRunStep,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import {
+  bindExecuteStaffQuote,
+  bindQualifiedStaffProposalPdf,
+  bindStaffActions,
+  bindStaffQuoteSource,
+  staffQuoteFromTrpc,
+} from '@/lib/quote-workflow/staff-quote-bind';
+import {
   canCreatePdf,
   canRunQuoteStep,
+  groupsForQuoteStep,
   initialQuoteSession,
   nextSelectedOfferIds,
   pickNextRunnableStep,
   reduceQuoteSession,
-  buildQuoteStepInputs,
+  selectionDigest,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
@@ -264,8 +270,9 @@ export default function OutlookPanePage() {
     selectedIdentity,
   ]);
 
+  const bindingDigest = quoteSession.binding ? selectionDigest(quoteSession.binding) : '';
   useEffect(() => {
-    if (!quoteSession.binding || quoteSession.phase !== 'idle' || quoteSession.analysis) return;
+    if (!quoteSession.binding || !bindingDigest) return;
     dispatchQuote({ type: 'analysis_started' });
     const analysis = analyseLocalEmail({
       subject: activeEmail?.subject ?? '',
@@ -305,10 +312,31 @@ export default function OutlookPanePage() {
       }
       dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
     });
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindStaffQuoteSource({
+      query: staff.workstation.staffQuoteSource?.query,
+      internetMessageId: binding.internetMessageId,
+    }).then((source) => {
+      if (cancelled) return;
+      if (source.kind === 'message_not_synced') {
+        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+        return;
+      }
+      if (source.kind !== 'ready') return;
+      dispatchQuote({ type: 'staff_source_ready', source: source.source });
+      void bindStaffActions({
+        list: staff.drafts.list?.query,
+        get: staff.drafts.get?.query,
+        threadId: source.source.threadId,
+      }).then((actions) => {
+        if (cancelled || actions.kind !== 'ready') return;
+        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
+      });
+    });
     return () => {
       cancelled = true;
     };
-  }, [activeEmail?.bodyText, activeEmail?.subject, quoteSession.analysis, quoteSession.binding, quoteSession.phase]);
+  }, [activeEmail?.bodyText, activeEmail?.subject, bindingDigest]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);
@@ -704,19 +732,7 @@ export default function OutlookPanePage() {
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
-    const inputs = buildQuoteStepInputs(quoteSession, step);
     if (isQuoteFixturePreview()) {
-      if (step.kind === 'party_lookup') {
-        dispatchQuote({
-          type: 'results_unavailable',
-          stepId: step.id,
-          reason: 'Fixture preview cannot invent a party reference.',
-          selectionEpoch,
-          inputRevision,
-        });
-        toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
-        return;
-      }
       const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
       dispatchQuote({
         type: 'results_ready',
@@ -732,13 +748,38 @@ export default function OutlookPanePage() {
       toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
       return;
     }
-    const workflow = quoteWorkflowFromTrpc(trpcClient);
-    void bindRunStep({
-      mutate: workflow.runStep?.mutate,
-      stepId: step.id,
+    if (step.kind === 'party_lookup') {
+      dispatchQuote({
+        type: 'results_unavailable',
+        stepId: step.id,
+        reason: 'executeStaffQuote resolves party internally. Do not execute party twice.',
+        selectionEpoch,
+        inputRevision,
+      });
+      toast.warning('executeStaffQuote resolves party internally. Do not execute party twice.');
+      return;
+    }
+    const source = quoteSession.staffSource;
+    if (!source) {
+      dispatchQuote({
+        type: 'results_unavailable',
+        stepId: step.id,
+        reason: 'staffQuoteSource has not resolved messageId/threadId/sourceHash.',
+        selectionEpoch,
+        inputRevision,
+      });
+      toast.warning('staffQuoteSource has not resolved messageId/threadId/sourceHash.');
+      return;
+    }
+    const stayGroups = groupsForQuoteStep(quoteSession, step);
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindExecuteStaffQuote({
+      mutate: staff.workstation.executeStaffQuote?.mutate,
+      source,
       selectionEpoch,
       inputRevision,
-      inputs,
+      groups: stayGroups,
+      header: quoteSession.staffHeader,
     }).then((remote) => {
       if (remote.status !== 'ok') {
         dispatchQuote({
@@ -751,23 +792,12 @@ export default function OutlookPanePage() {
         toast.warning(remote.reason);
         return;
       }
-      if (remote.kind === 'party_lookup') {
-        dispatchQuote({
-          type: 'lookup_ready',
-          stepId: step.id,
-          selectionEpoch,
-          inputRevision,
-          party: remote.party,
-        });
-        return;
-      }
       dispatchQuote({
-        type: 'results_ready',
-        offers: remote.offers,
+        type: 'staff_quote_ready',
+        offer: remote.offer,
+        staffQuote: remote.staffQuote,
         selectionEpoch,
         inputRevision,
-        provenance: { kind: 'authorised', selectionEpoch, inputRevision },
-        reviewedReplyHtml: remote.reviewedReplyHtml,
       });
     });
   };
@@ -1141,6 +1171,8 @@ export default function OutlookPanePage() {
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
+              onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
               onViewSource={(item) => {
                 toast.message(
@@ -1158,17 +1190,32 @@ export default function OutlookPanePage() {
                   toast.warning('Fixture preview cannot prepare an insertable PDF.');
                   return;
                 }
-                const workflow = quoteWorkflowFromTrpc(trpcClient);
+                const source = quoteSession.staffSource;
+                const staffQuote = quoteSession.staffQuote;
+                if (!source || !staffQuote) {
+                  toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
+                  return;
+                }
                 const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
                 const inputRevision = quoteSession.inputRevision;
                 const selectedOfferIds = [...quoteSession.selectedOfferIds];
-                void bindQualifiedProposalPdf({
-                  mutate: workflow.qualifiedProposalPdf?.mutate,
+                const staff = staffQuoteFromTrpc(trpcClient);
+                const header = quoteSession.staffHeader;
+                void bindQualifiedStaffProposalPdf({
+                  mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
                   input: {
-                    selectedOfferIds,
-                    sourceRevision: inputRevision,
-                    mailboxTransportId: quoteSession.binding?.transportId ?? '',
+                    workflowRunId: staffQuote.workflowRunId,
+                    revisionRef: staffQuote.revisionRef,
+                    messageId: source.messageId,
+                    outlookEmail: quoteSession.binding?.mailboxEmail ?? '',
+                    factRefs: staffQuote.factRefs,
+                    company: header.company,
+                    agency: header.agency,
+                    attention: header.attention,
+                    clientEmail: header.clientEmail,
+                    clientTelephone: header.clientTelephone,
                   },
+                  expectedTotalMinor: staffQuote.totalMinor,
                 }).then((remote) => {
                   if (remote.status === 'unavailable') {
                     toast.warning(remote.reason);
@@ -1179,6 +1226,9 @@ export default function OutlookPanePage() {
                     pdf: {
                       fileName: remote.pdf.fileName,
                       bytesBase64: remote.pdf.pdfBase64,
+                      pdfHash: remote.pdf.pdfHash,
+                      revisionId: remote.pdf.revisionId,
+                      totalMinor: remote.pdf.totalMinor,
                     },
                     selectionEpoch,
                     inputRevision,

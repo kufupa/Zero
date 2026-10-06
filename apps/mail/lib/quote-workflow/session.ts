@@ -10,6 +10,7 @@ import type {
   QuoteToolStep,
   StayGroupRequirement,
 } from './types';
+import { emptyStaffQuoteHeader } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
@@ -54,28 +55,27 @@ export function buildQuoteStepInputs(session: QuoteSession, step: QuoteToolStep)
   };
 }
 
-export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] {
+export function stayKeyForGroup(group: StayGroupRequirement): string {
+  return `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`;
+}
+
+export function planQuoteSteps(groups: StayGroupRequirement[], selectedStayKey: string | null = null): QuoteToolStep[] {
   const steps: QuoteToolStep[] = [];
-  const organisation = groups.map((group) => group.organisation).find((value) => Boolean(value?.trim()));
-  if (organisation) {
-    steps.push({
-      id: 'party-lookup',
-      kind: 'party_lookup',
-      title: `Look up organisation ${organisation}`,
-      inputs: { organisation, groups: groups.map(toApprovedStayGroup) },
-      dependsOn: [],
-      status: 'ready',
-      shareKey: organisation.trim().toLowerCase(),
-    });
-  }
   const byDates = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
-    const key = `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`;
+    const key = stayKeyForGroup(group);
     const list = byDates.get(key) ?? [];
     list.push(group);
     byDates.set(key, list);
   }
+  const keys = [...byDates.keys()];
+  const selected = selectedStayKey && byDates.has(selectedStayKey)
+    ? selectedStayKey
+    : keys.length === 1
+      ? keys[0]!
+      : null;
   for (const [key, grouped] of byDates) {
+    const active = selected === key;
     steps.push({
       id: `quote-stay-${key}`,
       kind: 'quote_stay',
@@ -85,9 +85,12 @@ export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] 
         groupIds: grouped.map((group) => group.id),
         groups: grouped.map(toApprovedStayGroup),
       },
-      dependsOn: organisation ? ['party-lookup'] : [],
-      status: organisation ? 'queued' : 'ready',
+      dependsOn: [],
+      status: active ? 'ready' : 'queued',
       shareKey: key,
+      retryGuidance: active
+        ? undefined
+        : 'Select this date scope to quote. Other stays stay unfinished.',
     });
   }
   return steps;
@@ -141,7 +144,7 @@ export function canRunQuoteStep(
   runningStepId: string | null,
 ): boolean {
   if (runningStepId) return false;
-  if (step.status === 'succeeded' || step.status === 'running' || step.status === 'cancelled') return false;
+  if (step.status !== 'ready' && step.status !== 'failed') return false;
   return step.dependsOn.every((dep) => steps.find((item) => item.id === dep)?.status === 'succeeded');
 }
 
@@ -202,6 +205,12 @@ export function initialQuoteSession(): QuoteSession {
     mailboxStatus: null,
     evidence: null,
     partyLookup: null,
+    staffSource: null,
+    staffQuote: null,
+    staffHeader: emptyStaffQuoteHeader(),
+    staffActions: [],
+    selectedStayKey: null,
+    handledSourceKey: null,
     reviewItems: [],
     handledReviewItemIds: [],
   };
@@ -254,14 +263,43 @@ function occupancySatisfied(group: StayGroupRequirement, covering: readonly Quot
   return haveQty === group.quantity;
 }
 
+export function reviewSourceKey(session: QuoteSession): string {
+  if (session.staffSource?.sourceHash) return session.staffSource.sourceHash;
+  if (session.binding) return selectionDigest(session.binding);
+  return '';
+}
+
+export function staffQuoteMatchesSession(session: QuoteSession): boolean {
+  const quote = session.staffQuote;
+  const source = session.staffSource;
+  if (!quote || !source || !session.binding) return false;
+  if (quote.selectionEpoch !== session.binding.selectionEpoch) return false;
+  if (quote.inputRevision !== session.inputRevision) return false;
+  if (quote.sourceHash !== source.sourceHash) return false;
+  if (quote.messageId !== source.messageId) return false;
+  if (!session.selectedStayKey || quote.quoteRequestKey !== session.selectedStayKey) return false;
+  if (session.selectedOfferIds.length !== 1 || session.selectedOfferIds[0] !== quote.revisionRef) return false;
+  const offer = session.offers.find((item) => item.id === quote.revisionRef);
+  if (!offer || offer.kind !== 'allocation' || offer.stayTotalMinor !== quote.totalMinor) return false;
+  if (offer.nightly.length) return false;
+  return true;
+}
+
 export function canCreatePdf(session: QuoteSession): boolean {
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
+  if (staffQuoteMatchesSession(session)) {
+    const scoped = session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey);
+    return scoped.length > 0;
+  }
   const selected = session.selectedOfferIds
     .map((id) => session.offers.find((offer) => offer.id === id))
     .filter((offer): offer is QuoteOffer => Boolean(offer && offer.kind === 'allocation' && offer.sourceRef));
   if (selected.length === 0 || selected.length !== session.selectedOfferIds.length) return false;
-  if (session.groups.length === 0) return false;
-  return session.groups.every((group) => occupancySatisfied(group, coveringAllocations(selected, group.id)));
+  const scoped = session.selectedStayKey
+    ? session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey)
+    : session.groups;
+  if (scoped.length === 0) return false;
+  return scoped.every((group) => occupancySatisfied(group, coveringAllocations(selected, group.id)));
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
@@ -279,6 +317,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     reviewedReplyHtml: '',
     errorMessage: null,
     partyLookup: null,
+    staffQuote: null,
   };
 }
 
@@ -357,18 +396,30 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           handledReviewItemIds: [],
         };
       }
-      const reviewItems = projectQuoteReviewItems(action.analysis, action.analysis.groups);
+      const keys = requestedQuoteKeys(action.analysis.groups);
+      const selectedStayKey = keys.length === 1 ? keys[0]! : session.selectedStayKey && keys.includes(session.selectedStayKey) ? session.selectedStayKey : null;
+      const reviewItems = projectQuoteReviewItems(
+        action.analysis,
+        action.analysis.groups,
+        [],
+        action.analysis.staffActions ?? session.staffActions,
+      );
+      const sourceKey = reviewSourceKey({ ...session, analysis: action.analysis });
+      const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
+      const company = action.analysis.groups.map((group) => group.organisation?.trim() ?? '').find(Boolean) ?? session.staffHeader.company;
       return {
         ...session,
         phase: 'requirements',
         analysis: action.analysis,
         groups: action.analysis.groups,
         inputRevision: 1,
-        steps: planQuoteSteps(action.analysis.groups),
+        selectedStayKey,
+        steps: planQuoteSteps(action.analysis.groups, selectedStayKey),
+        staffHeader: { ...session.staffHeader, company: session.staffHeader.company || company },
+        staffActions: action.analysis.staffActions ?? session.staffActions,
         reviewItems,
-        handledReviewItemIds: session.handledReviewItemIds.filter((id) =>
-          reviewItems.some((item) => item.id === id),
-        ),
+        handledSourceKey: sourceKey || null,
+        handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
       };
     }
     case 'analysis_unsynced':
@@ -379,7 +430,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         phase: 'missing_source',
         missing: action.missing,
-        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents),
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents, session.staffActions),
       };
     }
     case 'analysis_failed': {
@@ -395,23 +446,129 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         phase: 'failed',
         errorMessage: action.message,
-        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, [failed]),
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, [failed], session.staffActions),
       };
     }
     case 'review_documents_failed': {
       const documents = documentFailureItems(action.documents);
       return {
         ...session,
-        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents),
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents, session.staffActions),
       };
     }
-    case 'handle_review_item':
-      if (!session.reviewItems.some((item) => item.id === action.itemId)) return session;
-      if (session.handledReviewItemIds.includes(action.itemId)) return session;
+    case 'staff_source_ready': {
+      if (!/^[a-f0-9]{64}$/.test(action.source.sourceHash)) return session;
+      const next = { ...session, staffSource: action.source };
+      const previousKey = reviewSourceKey(session);
+      const nextKey = reviewSourceKey(next);
+      return {
+        ...next,
+        handledSourceKey:
+          session.handledSourceKey && session.handledSourceKey === previousKey
+            ? nextKey || session.handledSourceKey
+            : session.handledSourceKey,
+      };
+    }
+    case 'staff_actions_ready': {
+      const analysis = session.analysis
+        ? { ...session.analysis, staffActions: action.actions }
+        : session.analysis;
+      const extras = session.reviewItems.filter(
+        (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
+      );
+      const reviewItems = projectQuoteReviewItems(analysis, session.groups, extras, action.actions);
+      const sourceKey = reviewSourceKey({ ...session, staffActions: action.actions, analysis });
+      const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
       return {
         ...session,
-        handledReviewItemIds: [...session.handledReviewItemIds, action.itemId],
+        analysis,
+        staffActions: action.actions,
+        reviewItems,
+        handledSourceKey: sourceKey || session.handledSourceKey,
+        handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
       };
+    }
+    case 'patch_staff_header': {
+      const staffHeader = { ...session.staffHeader, ...action.header };
+      if (action.header.agency !== undefined && !action.header.agency.trim()) {
+        staffHeader.agency = '';
+      }
+      return clearDownstream({
+        ...session,
+        staffHeader,
+        inputRevision: session.inputRevision + 1,
+      });
+    }
+    case 'select_stay_key': {
+      if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
+      if (session.selectedStayKey === action.stayKey) return session;
+      const quotedKeys = new Set(
+        session.offers.filter((offer) => offer.kind === 'allocation').map((offer) => offer.quoteRequestKey),
+      );
+      const match = session.offers.find(
+        (offer) => offer.kind === 'allocation' && offer.quoteRequestKey === action.stayKey,
+      );
+      const staffQuote = session.staffQuote?.quoteRequestKey === action.stayKey ? session.staffQuote : null;
+      return {
+        ...session,
+        selectedStayKey: action.stayKey,
+        selectedOfferIds: match ? [match.id] : [],
+        pdf: staffQuote ? session.pdf : null,
+        staffQuote,
+        evidence: staffQuote ? session.evidence : null,
+        steps: planQuoteSteps(session.groups, action.stayKey).map((step) =>
+          quotedKeys.has(step.shareKey ?? '') ? { ...step, status: 'succeeded' as const } : step,
+        ),
+        runningStepId: null,
+      };
+    }
+    case 'staff_quote_ready': {
+      if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) return session;
+      const source = session.staffSource;
+      if (!source || source.sourceHash !== action.staffQuote.sourceHash) return session;
+      if (source.messageId !== action.staffQuote.messageId) return session;
+      if (action.offer.kind !== 'allocation') return session;
+      if (action.offer.id !== action.staffQuote.revisionRef) return session;
+      if (action.offer.stayTotalMinor !== action.staffQuote.totalMinor) return session;
+      if (action.offer.nightly.length) return session;
+      const stayKey = action.offer.quoteRequestKey;
+      const kept = session.offers.filter((offer) => offer.quoteRequestKey !== stayKey);
+      return {
+        ...session,
+        phase: 'results',
+        offers: [...kept, action.offer],
+        selectedOfferIds: [action.offer.id],
+        selectedStayKey: stayKey,
+        staffQuote: { ...action.staffQuote, quoteRequestKey: stayKey },
+        pdf: null,
+        evidence: {
+          kind: 'authorised',
+          selectionEpoch: action.selectionEpoch,
+          inputRevision: action.inputRevision,
+        },
+        errorMessage: null,
+        runningStepId: null,
+        reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        steps: planQuoteSteps(session.groups, stayKey).map((step) =>
+          step.shareKey === stayKey ||
+          session.offers.some((offer) => offer.kind === 'allocation' && offer.quoteRequestKey === step.shareKey)
+            ? { ...step, status: 'succeeded' as const }
+            : step,
+        ),
+      };
+    }
+    case 'handle_review_item': {
+      const item = session.reviewItems.find((row) => row.id === action.itemId);
+      if (!item || item.blocking || item.kind === 'pricing_fact') return session;
+      const sourceKey = reviewSourceKey(session);
+      const existing = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
+      if (existing.includes(action.itemId)) return session;
+      return {
+        ...session,
+        handledSourceKey: sourceKey || null,
+        handledReviewItemIds: [...existing, action.itemId],
+      };
+    }
     case 'unhandle_review_item':
       return {
         ...session,
@@ -428,13 +585,19 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         groups,
         inputRevision: session.inputRevision + 1,
         phase: 'requirements',
-        steps: planQuoteSteps(groups),
+        steps: planQuoteSteps(groups, session.selectedStayKey),
+        selectedStayKey: session.selectedStayKey && groups.some((group) => stayKeyForGroup(group) === session.selectedStayKey)
+          ? session.selectedStayKey
+          : requestedQuoteKeys(groups).length === 1
+            ? requestedQuoteKeys(groups)[0]!
+            : session.selectedStayKey,
         reviewItems: projectQuoteReviewItems(
           session.analysis,
           groups,
           session.reviewItems.filter(
             (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
           ),
+          session.staffActions,
         ),
       });
     }
@@ -499,18 +662,27 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         }),
       };
     }
-    case 'results_unavailable':
+    case 'results_unavailable': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
+      const failedKey = session.steps.find((step) => step.id === action.stepId)?.shareKey ?? session.selectedStayKey;
+      const keptOffers = failedKey
+        ? session.offers.filter((offer) => offer.quoteRequestKey !== failedKey)
+        : session.offers;
+      const keptQuote =
+        session.staffQuote && session.staffQuote.quoteRequestKey !== failedKey ? session.staffQuote : null;
       return {
         ...session,
         phase: 'tools',
         runningStepId: null,
-        offers: [],
-        selectedOfferIds: [],
-        pdf: null,
-        evidence: null,
+        offers: keptOffers,
+        selectedOfferIds: keptOffers
+          .filter((offer) => offer.kind === 'allocation' && offer.quoteRequestKey === session.selectedStayKey)
+          .map((offer) => offer.id),
+        pdf: keptQuote ? session.pdf : null,
+        staffQuote: keptQuote,
+        evidence: keptQuote ? session.evidence : null,
         errorMessage: action.reason,
         steps: session.steps.map((step) =>
           step.id === action.stepId
@@ -518,6 +690,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             : step,
         ),
       };
+    }
     case 'step_running':
       return {
         ...session,

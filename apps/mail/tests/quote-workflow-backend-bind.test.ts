@@ -9,10 +9,13 @@ import {
 } from '../lib/quote-workflow/backend-bind';
 
 describe('quote workflow backend bind', () => {
-  it('names the existing tRPC procedures rather than a second engine', () => {
+  it('names the published staff-quote procedures rather than a second engine', () => {
     expect(QUOTE_WORKFLOW_BIND_TARGETS.analyseSelection).toBe('quoteWorkflow.analyseSelection');
-    expect(QUOTE_WORKFLOW_BIND_TARGETS.runStep).toBe('quoteWorkflow.runStep');
-    expect(QUOTE_WORKFLOW_BIND_TARGETS.runStepServerLater).toContain('hms_quote_stay');
+    expect(QUOTE_WORKFLOW_BIND_TARGETS.staffQuoteSource).toBe('workstation.staffQuoteSource');
+    expect(QUOTE_WORKFLOW_BIND_TARGETS.executeStaffQuote).toBe('workstation.executeStaffQuote');
+    expect(QUOTE_WORKFLOW_BIND_TARGETS.qualifiedPdf).toBe('workstation.qualifiedQuoteProposalPdf');
+    expect(QUOTE_WORKFLOW_BIND_TARGETS.staffActions).toMatch(/staffActions/);
+    expect(QUOTE_WORKFLOW_BIND_TARGETS).not.toHaveProperty('runStepServerLater');
   });
 
   it('reads quoteWorkflow off a partial tRPC client without throwing', () => {
@@ -129,61 +132,23 @@ describe('quote workflow backend bind', () => {
     }
   });
 
-  it('accepts party_lookup only when the backend returns a party reference, not invented entitlement', async () => {
-    const mutate = vi.fn(async () => ({ status: 'ok' as const }));
-    const inputs = {
-      stepKind: 'party_lookup' as const,
-      binding: {
-        transportId: 't1',
-        mailboxEmail: 'centurion@legacyhotels.co.za',
-        storeId: 'store',
-        folderEntryId: 'inbox',
-        entryId: 'e1',
-        selectionEpoch: 1,
-      },
-      groups: [
-        {
-          id: 'g1',
-          arrivalDate: '2026-11-12',
-          departureDate: '2026-11-14',
-          quantity: 2,
-          roomPreference: 'suite',
-          adults: 2,
-          childrenAges: [8, 11],
-          board: 'dinner_bb' as const,
-          organisation: 'Provincial Treasury',
-          specialRequests: ['late arrival'],
-        },
-      ],
-    };
-    const missing = await bindRunStep({
+  it('refuses a separate party execute even when a party mutate is present', async () => {
+    const mutate = vi.fn(async () => ({
+      status: 'ok' as const,
+      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
+    }));
+    const result = await bindRunStep({
       mutate,
       stepId: 'party-lookup',
       selectionEpoch: 1,
       inputRevision: 1,
-      inputs,
+      inputs: { stepKind: 'party_lookup' },
     });
-    expect(missing.status).toBe('unavailable');
-    if (missing.status === 'unavailable') {
-      expect(missing.reason).toMatch(/party|entitlement|invent/i);
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toMatch(/not execute party twice/i);
     }
-
-    const withRef = vi.fn(async () => ({
-      status: 'ok' as const,
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
-    }));
-    const found = await bindRunStep({
-      mutate: withRef,
-      stepId: 'party-lookup',
-      selectionEpoch: 1,
-      inputRevision: 1,
-      inputs,
-    });
-    expect(found).toEqual({
-      status: 'ok',
-      kind: 'party_lookup',
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
-    });
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('returns typed unavailable when analyseSelection, runStep, or PDF mutate reject', async () => {
@@ -225,26 +190,12 @@ describe('quote workflow backend bind', () => {
     });
     expect(pdf.status).toBe('unavailable');
     if (pdf.status === 'unavailable') {
-      expect(pdf.reason).toMatch(/pdf network down/);
+      expect(pdf.reason).toMatch(/mint centsReconciled:true/i);
     }
   });
 
-  it('rejects unqualified PDF payloads even when the client mutate resolves', async () => {
-    const missingCents = await bindQualifiedProposalPdf({
-      mutate: async () =>
-        ({ fileName: 'Quote.pdf', pdfBase64: 'JVBERi0xLjQK' }) as never,
-      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
-    });
-    expect(missingCents.status).toBe('unavailable');
-
-    const emptyBytes = await bindQualifiedProposalPdf({
-      mutate: async () =>
-        ({ fileName: 'Quote.pdf', pdfBase64: '  ', centsReconciled: true }) as never,
-      input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
-    });
-    expect(emptyBytes.status).toBe('unavailable');
-
-    const ok = await bindQualifiedProposalPdf({
+  it('does not mint centsReconciled:true from the old PDF bind', async () => {
+    const minted = await bindQualifiedProposalPdf({
       mutate: async () => ({
         fileName: 'Quote-authorised.pdf',
         pdfBase64: 'JVBERi0xLjQK',
@@ -252,23 +203,18 @@ describe('quote workflow backend bind', () => {
       }),
       input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },
     });
-    expect(ok).toEqual({
-      status: 'ok',
-      pdf: {
-        fileName: 'Quote-authorised.pdf',
-        pdfBase64: 'JVBERi0xLjQK',
-        centsReconciled: true,
-      },
-    });
+    expect(minted.status).toBe('unavailable');
+    if (minted.status === 'unavailable') {
+      expect(minted.reason).toMatch(/mint centsReconciled:true/i);
+    }
   });
 
-  it('names the unpublished U1/U2 contract instead of guessing enqueueHmsRead or minting centsReconciled', () => {
+  it('names remaining connected dependencies instead of unpublished placeholders', () => {
     expect(STAFF_QUOTE_PILOT_MISSING.handoffFile).toBe(
       'docs/plans/handoff-reports/2026-10-06-staff-quote-pilot-backend-handoff.md',
     );
-    expect(STAFF_QUOTE_PILOT_MISSING.reviewProjection).toMatch(/source-bound review-item DTO/);
-    expect(STAFF_QUOTE_PILOT_MISSING.approvedInputExecution).toMatch(/not enqueueHmsRead/);
-    expect(STAFF_QUOTE_PILOT_MISSING.qualifiedArtifactRefs).toMatch(/must not mint centsReconciled:true/);
+    expect(STAFF_QUOTE_PILOT_MISSING.snapshot).toMatch(/snapshot/);
+    expect(STAFF_QUOTE_PILOT_MISSING.connectedIntegration).toMatch(/qualifiedQuoteProposalPdf/);
   });
 
   it('passes through published reviewItems and named documentFailures only', async () => {
@@ -345,7 +291,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.reason).toMatch(/not invent a second PDF engine/i);
+      expect(result.reason).toMatch(/mint centsReconciled:true/i);
     }
   });
 });
