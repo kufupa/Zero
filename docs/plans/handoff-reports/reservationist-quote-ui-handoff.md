@@ -2,7 +2,7 @@
 
 **Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`  
 **Branch:** `feat/reservationist-quote-ui`  
-**HEAD:** 03:50 reliability pass (rejected binds, qualified PDF check, exact coverage, party refs)  
+**HEAD:** 04:14 interactive Chromium proof (hydrated QuoteWorkflowPanel, labelled mocks, not Outlook)  
 **Base:** `origin/main` `2e3f1b3f` (PR #28 mailbox history/live-sync)  
 **Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — **not edited by this executor**  
 **Verdict:** Bounded HITL quoting UI. Production does **not** synthesize offers/PDF or execute PMS. **Not live-ready.** No merge, deploy, send, or PMS in this window.
@@ -52,11 +52,21 @@ Same paths exist on **both** trees. Do not cherry-pick or copy sibling files.
 
 ## 5. What this branch did / did not do
 
-**Did:** Isolated worktree. Removed RATE_TABLE UI. No fixture synthesis on production. Request-bound PDF/unavailable. HITL per-step Run; patch dates/party replans steps. Group-ID coverage; typed `QuoteStepInputs`; party lookup separate; succeeded steps not rerun. **03:50:** rejected binds caught; PDF `centsReconciled` runtime check; exact qty/date/board/child-age coverage; `partyRef` preserved. Styled 380px Chromium dump **is not hydrated React**. **Not live-ready.**
+**Did:** Isolated worktree. Removed RATE_TABLE UI. No fixture synthesis on production. Request-bound PDF/unavailable. HITL per-step Run; patch dates/party replans steps. Group-ID coverage; typed `QuoteStepInputs`; party lookup separate; succeeded steps not rerun. **03:50:** rejected binds caught; PDF `centsReconciled` runtime check; exact coverage; `partyRef` preserved. **04:14:** production `QuoteWorkflowPanel` hydrated in cached Chromium-1243 via Vite test entry, labelled MOCK adapter/bridge, built CSS. **Not live-ready.**
 
-**Did not:** Live PMS, S3 bytes, qualified PDF engine, Windows Outlook, disposable-DB analysis, merge, deploy, send. **No server-pilot edits this round.** Screenshot dump does **not** prove React state/step buttons.
+**Did not:** Live PMS, S3 bytes, qualified PDF engine, Windows Outlook, disposable-DB analysis, merge, deploy, send. **No server-pilot edits this round.** `styled-pane.html` dump remains generated/gitignored — not the React proof.
 
 ## 6. Original-scope checklist (final)
+
+### A–E product scope (not blanket complete)
+
+| Scope | Delivered | Safe-unavailable | Deferred |
+| --- | --- | --- | --- |
+| **A. Selected-email analysis** | Binding + selection epochs; pane states; mailbox `analyseSelection` bound; analysis never enqueues HMS; local regex fills cards only and is labelled | Live mailbox **ready** path (default unsynced without `internetMessageId` + matching row); S3 attachment **bytes** (`bytesPresent: false`) | Reservationist extraction in place of regex |
+| **B. Editable requirements** | One card per stay group; Y-M-D dates, qty, room, adults, children ages, board, org, special requests; staff edit mints `inputRevision` and replans steps. **Chromium:** Adults 2→4 on group 1, React state, readable payload `g-double: 1 × twin, 4 adults` | — | — |
+| **C. Human-approved tool steps** | Readable inputs/status; same-date groups share one `quote_stay`; per-step **Run** + Run next; `canRunQuoteStep` skips succeeded; no PDF before authorised coverage. **Chromium:** per-step Run on shared 2026-10-16→18 step | Live `runStep` / `enqueueHmsRead(hms_quote_stay)` — labelled MOCK returns `integration_unavailable` | Live party identity |
+| **D. Results and evidence** | Offer cards; alternatives not summed; joint-availability copy; screenshots only if authorised else honest unavailable. **Chromium:** same-date two-group select `mix-a` + `mix-b` (third Queen unselected) | Production inventory / authorised screenshots | `qualifiedProposalChoices` after sibling lands |
+| **E. PDF, reply, native Outlook draft** | PDF gated on authorised evidence + exact group coverage; native `CREATE_REPLY_DRAFT` / `ADD_ATTACHMENT_TO_DRAFT` bound, blocked without that; `requireReviewedNativeDraft` calls `canCreatePdf`. **Chromium:** unavailable → 0 offers, PDF false, nativeCalls `[]`; fixture-select PDF button **disabled** (fixture ≠ authorised) | `qualifiedQuoteProposalPdf` not on origin/main; Windows Classic Outlook insert | Live Gotenberg from authorised offers after single PMS owner |
 
 ### Real vs mocked
 
@@ -65,10 +75,11 @@ Same paths exist on **both** trees. Do not cherry-pick or copy sibling files.
 | Requirement cards | Local `analyseLocalEmail` regex (labelled, not the reservationist) | Pane tests mock Outlook selection body | Mailbox `analyseSelection` ready path |
 | Tool Run / next | Client `runQuoteStep` + `bindRunStep` | `runStep.mutate` returns `integration_unavailable` or test doubles | Live HMS / `enqueueHmsRead` |
 | Party lookup | Typed `partyRef` preserved when backend returns it | Test doubles supply `party: { organisation, partyRef }` | Server party identity |
-| Quote offers / money | Only if `runStep` returns authorised offers | `AUTHORISED_QUOTE_OFFERS` test doubles | Production inventory |
+| Quote offers / money | Only if `runStep` returns authorised offers | `AUTHORISED_QUOTE_OFFERS` test doubles; 04:14 select scenario uses **labelled fixture** offers | Production inventory |
 | PDF | Only if `qualifiedProposalPdf` returns `centsReconciled===true` + nonempty filename/bytes | `AUTHORISED_QUOTE_PDF` test double | `qualifiedQuoteProposalPdf` on origin/main |
-| Native unsent draft | Outlook `CREATE_REPLY_DRAFT` / `ADD_ATTACHMENT_TO_DRAFT` commands | `sendCommand` mock in Vitest | Windows Classic Outlook |
-| Styled 380px PNG | Real Chromium screenshot of static HTML dump + built CSS | DOM `input`/`change` events, **not** React | Hydrated pane interaction |
+| Native unsent draft | Outlook `CREATE_REPLY_DRAFT` / `ADD_ATTACHMENT_TO_DRAFT` commands | `sendCommand` mock in Vitest; Chromium harness never calls native | Windows Classic Outlook |
+| Styled 380px PNG | Real Chromium of **static HTML dump** + built CSS | DOM events, `reactHydrated: false` | Does **not** prove React |
+| Interactive 380px PNG | Real Chromium of **hydrated** production `QuoteWorkflowPanel` + built CSS | Labelled MOCK adapter/bridge. **Browser UI, not Outlook** | Live HMS / Windows native |
 
 ### Remaining blockers (exact)
 
@@ -83,7 +94,9 @@ Same paths exist on **both** trees. Do not cherry-pick or copy sibling files.
 ### Screenshots: static vs React
 
 - `styled-pane-380.png` / `styled-pane-receipt.json`: **static dump**. Built CSS inlined. Keyboard via raw DOM events. `reactHydrated: false`. Does **not** prove step Run, reducer, or React state.
-- Interactive UI proof: happy-dom `OutlookPanePage` / `QuoteWorkflowPanel` tests (step Run, rejected mutate retry, party lookup → quote stay, PDF admission).
+- `styled-pane.html`: generated dump, **gitignored** in-place (kept on disk, not committed).
+- `interactive-pane-unavailable-380.png` / `interactive-pane-select-380.png` / `interactive-pane-receipt.json` (2026-10-06T04:14:03Z): **hydrated React** in Chromium-1243 via Vite test entry `tests/browser-quote-workflow`. Built `server-build-*.css`. Labelled MOCK adapter. Adults edit → payload; per-step Run → unavailable; two-group select `mix-a`+`mix-b`; no native. **Not Outlook.**
+- happy-dom `OutlookPanePage` / `QuoteWorkflowPanel` tests remain the unit coverage for rejected mutate, party lookup, PDF admission.
 
 ### Integration DTO mapping (client → existing `inputs: z.record(z.unknown())`)
 
@@ -108,5 +121,9 @@ Rejected `analyseSelection` / `runStep` / `qualifiedProposalPdf` mutate → type
 - `apps/mail/tests/browser-quote-workflow/styled-pane-380.png`
 - `apps/mail/tests/browser-quote-workflow/styled-pane-receipt.json`
 - `apps/mail/tests/browser-quote-workflow/capture-styled-pane.mjs`
+- `apps/mail/tests/browser-quote-workflow/interactive-pane-unavailable-380.png`
+- `apps/mail/tests/browser-quote-workflow/interactive-pane-select-380.png`
+- `apps/mail/tests/browser-quote-workflow/interactive-pane-receipt.json`
+- `apps/mail/tests/browser-quote-workflow/capture-interactive-pane.mjs`
 
 Earlier 23:40:57Z “94 green” and 02:09:50Z “95 green” are **not** this HEAD (those still synthesized fixtures).

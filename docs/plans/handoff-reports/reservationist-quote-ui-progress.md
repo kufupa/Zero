@@ -9,13 +9,13 @@
 | Start | 2026-10-05T23:12:03Z |
 | Deadline | 2026-10-06T07:12:03Z |
 | Stop launching long tasks | 2026-10-06T06:57:03Z |
-| Last update | 2026-10-06T03:58:00Z |
+| Last update | 2026-10-06T04:14:04Z |
 
 Do not treat the 23:42 ledger “94 green” as current. That run is **earlier green** at 23:40:57Z, before RATE_TABLE native-PDF removal.
 
 ## Current task
 
-03:50 reliability pass closed: rejected binds caught; PDF DTO verified; exact group coverage; partyRef preserved. Backend still unavailable. **Not live-ready.** No further feature work unless safety regression.
+04:03 interactive browser proof **closed**. Vite + cached Chromium-1243 hydrated production `QuoteWorkflowPanel` with labelled MOCK adapter. Adults edit → React payload; per-step Run → unavailable (no offers/PDF/native); same-date two-group select `mix-a`+`mix-b`. **Browser UI, not Outlook.** `styled-pane.html` gitignored in place. No further feature work. **Not live-ready.**
 
 ## Completed evidence
 
@@ -23,7 +23,8 @@ Do not treat the 23:42 ledger “94 green” as current. That run is **earlier g
 - Plan + session reducer + fixtures already committed (`3bd1c547`, `139f3c51`, `9389d510`).
 - HITL panel: editable groups, tool steps. Production Run next does not emit fixture offers. `?quotePreview=fixture` is explicit non-production and cannot native-insert.
 - HITL: per-step Run shares `runQuoteStep`. Rejected mutate → typed unavailable, running released. Coverage is **exact** qty/date/board/child ages + `coversGroupIds`. `party_lookup` requires backend `partyRef`. PDF bind requires `centsReconciled===true`. `requireReviewedNativeDraft` calls `canCreatePdf`. Blank children ages → `[]`.
-- Styled pane PNG is a **static dump + DOM events**, not hydrated React. Interactive UI: happy-dom `OutlookPanePage` tests. Prior 03:13 mail green is **not** this HEAD.
+- Styled pane PNG is a **static dump + DOM events**, not hydrated React.
+- Interactive pane PNG is **hydrated React** in Chromium (`interactive-pane-*-380.png`, receipt 04:14:03Z). Labelled mocks. Not Outlook.
 
 ## Backend integration seams (existing APIs only)
 
@@ -43,7 +44,7 @@ Missing backend is an honest gap, not a reason to add another quote engine.
 - `runStep` → single-owner `enqueueHmsRead(hms_quote_stay)` after sibling/PMS owner.
 - `qualifiedQuoteProposalPdf` after sibling merge; no second engine.
 - Windows Classic Outlook native insert. Local `analyseLocalEmail` still fills HITL when mailbox is unsynced (labelled, not the reservationist).
-- Recapture styled 380px pane only as a CSS/layout dump; do **not** claim it proves React interaction.
+- Recapture styled 380px pane only as a CSS/layout dump; do **not** claim it proves React interaction. Interactive React proof is `interactive-pane-*-380.png`.
 - No merge/deploy. **Stop feature work.**
 
 ## Blockers
