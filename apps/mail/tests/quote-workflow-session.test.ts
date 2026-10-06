@@ -13,8 +13,9 @@ import {
   reduceQuoteSession,
   selectionDigest,
   buildQuoteStepInputs,
+  staffSourceReady,
 } from '../lib/quote-workflow/session';
-import { openReviewItems } from '../lib/quote-workflow/review-items';
+import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type { QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
@@ -28,6 +29,18 @@ const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding 
   scopeEpoch: 1,
   ...over,
 });
+
+const STAFF_HASH = 'ab'.repeat(32);
+const staffSource = (over: { messageId?: string; threadId?: string; sourceHash?: string } = {}) => ({
+  messageId: 'mail-1',
+  threadId: 'thread-1',
+  sourceHash: STAFF_HASH,
+  ...over,
+});
+
+function withStaffSource(session: ReturnType<typeof initialQuoteSession>) {
+  return reduceQuoteSession(session, { type: 'staff_source_ready', source: staffSource() });
+}
 
 const quoteAnalysis = {
   intent: 'quote' as const,
@@ -321,6 +334,7 @@ describe('quote session', () => {
     });
     expect(s.evidence).toEqual({ kind: 'authorised', selectionEpoch: 1, inputRevision: 1 });
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    s = withStaffSource(s);
     expect(canCreatePdf(s)).toBe(true);
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
     expect(s.evidence).toBeNull();
@@ -394,6 +408,7 @@ describe('quote session', () => {
       reviewedReplyHtml: '<p>Authorised reply</p>',
     });
     ready = reduceQuoteSession(ready, { type: 'select_offers', offerIds: ['o1'] });
+    ready = withStaffSource(ready);
 
     const afterEdit = reduceQuoteSession(ready, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
     const lateAfterEdit = reduceQuoteSession(afterEdit, {
@@ -583,6 +598,7 @@ describe('quote session', () => {
     expect(canCreatePdf(s)).toBe(false);
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'st-b') });
     expect(s.selectedOfferIds).toEqual(['st-a', 'st-b']);
+    s = withStaffSource(s);
     expect(canCreatePdf(s)).toBe(true);
     expect(nextSelectedOfferIds(s, 'alt-ro')).toEqual(['st-a', 'st-b']);
   });
@@ -671,6 +687,7 @@ describe('quote session', () => {
     expect(canCreatePdf(s)).toBe(false);
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'mix-b') });
     expect(s.selectedOfferIds).toEqual(['mix-a', 'mix-b']);
+    s = withStaffSource(s);
     expect(canCreatePdf(s)).toBe(true);
     expect(nextSelectedOfferIds(s, 'mix-c')).toEqual(['mix-a', 'mix-c']);
   });
@@ -778,6 +795,7 @@ describe('quote session', () => {
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     kids = reduceQuoteSession(kids, { type: 'select_offers', offerIds: ['o1'] });
+    kids = withStaffSource(kids);
     expect(canCreatePdf(kids)).toBe(true);
   });
 
@@ -951,6 +969,7 @@ describe('quote session staff review items', () => {
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    s = withStaffSource(s);
     expect(canCreatePdf(s)).toBe(true);
     s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: questionId });
     expect(openReviewItems(s)).toEqual([]);
@@ -1004,6 +1023,7 @@ describe('quote session staff review items', () => {
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    s = withStaffSource(s);
     s = reduceQuoteSession(s, {
       type: 'pdf_ready',
       pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
@@ -1040,5 +1060,218 @@ describe('quote session staff review items', () => {
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
     expect(canCreatePdf(s)).toBe(false);
     expect(canCreateNativeDraft(s)).toBe(false);
+  });
+
+  it('keeps staffAction sourceHash, messageId, and sourceRef on the projected item', () => {
+    let s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
+    s = withStaffSource(s);
+    s = reduceQuoteSession(s, {
+      type: 'staff_actions_ready',
+      actions: [
+        {
+          id: 'sa-park',
+          kind: 'unanswered_question',
+          text: 'Is parking included?',
+          sourceRef: 'message:mail-1:12-40',
+          sourceHash: STAFF_HASH,
+          sourceKind: 'message',
+          messageId: 'mail-1',
+          blockingQuote: false,
+          status: 'open',
+        },
+      ],
+    });
+    expect(s.reviewItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'sa-park',
+          sourceHash: STAFF_HASH,
+          sourceRef: 'message:mail-1:12-40',
+          messageId: 'mail-1',
+        }),
+      ]),
+    );
+  });
+
+  it('uses source identity for document failures so the same filename does not collide', () => {
+    const documents = [
+      {
+        filename: 'rooming-list.pdf',
+        reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+        sourceKind: 'attachment' as const,
+        sourceRef: 'att-1',
+      },
+      {
+        filename: 'rooming-list.pdf',
+        reason: 'Second copy was not authorised.',
+        sourceKind: 'attachment' as const,
+        sourceRef: 'att-2',
+      },
+    ];
+    const items = documentFailureItems(documents);
+    expect(items.map((item) => item.id)).toEqual([
+      'document:attachment:att-1:rooming-list.pdf',
+      'document:attachment:att-2:rooming-list.pdf',
+    ]);
+    expect(new Set(items.map((item) => item.id)).size).toBe(2);
+  });
+
+  it('merges extra document failures with explicit review items instead of dropping them', () => {
+    const explicit = {
+      id: 'q-shuttle',
+      kind: 'question' as const,
+      rank: 'secondary' as const,
+      text: 'Is an airport shuttle available?',
+      sourceLabel: 'Selected message',
+      blocking: false,
+    };
+    const extra = documentFailureItems([
+      {
+        filename: 'rooming-list.pdf',
+        reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+        sourceKind: 'attachment',
+        sourceRef: 'att-1',
+      },
+    ]);
+    const merged = projectQuoteReviewItems(
+      { intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [], reviewItems: [explicit] },
+      quoteAnalysis.groups,
+      extra,
+    );
+    expect(merged.map((item) => item.id).sort()).toEqual(
+      ['document:attachment:att-1:rooming-list.pdf', 'q-shuttle'].sort(),
+    );
+  });
+
+  it('does not hide pricing blocks or treat Mark handled as satisfying missing pricing facts', () => {
+    let s = analysisReady({
+      intent: 'quote',
+      groups: [
+        {
+          ...quoteAnalysis.groups[0]!,
+          arrivalDate: undefined,
+          fields: { ...quoteAnalysis.groups[0]!.fields, arrivalDate: 'missing' },
+        },
+      ],
+      secondaryAsks: ['Is parking included?'],
+      alternatives: [],
+    });
+    const pricingId = s.reviewItems.find((item) => item.kind === 'pricing_fact')!.id;
+    s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: pricingId });
+    expect(s.handledReviewItemIds).toEqual([]);
+    expect(openReviewItems(s).some((item) => item.id === pricingId)).toBe(true);
+    s = {
+      ...s,
+      handledReviewItemIds: [pricingId],
+    };
+    expect(openReviewItems(s).some((item) => item.id === pricingId)).toBe(true);
+    s = withStaffSource(s);
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(false);
+  });
+
+  it('resets handled state when staffQuoteSource hash changes and keeps it for the same hash', () => {
+    let s = withStaffSource(analysisReady());
+    const questionId = s.reviewItems.find((item) => item.kind === 'question')!.id;
+    s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: questionId });
+    expect(s.handledReviewItemIds).toEqual([questionId]);
+    expect(s.handledSourceKey).toBe(STAFF_HASH);
+    s = reduceQuoteSession(s, { type: 'staff_source_ready', source: staffSource() });
+    expect(s.handledReviewItemIds).toEqual([questionId]);
+    s = reduceQuoteSession(s, {
+      type: 'staff_source_ready',
+      source: staffSource({ sourceHash: 'cd'.repeat(32) }),
+    });
+    expect(s.handledReviewItemIds).toEqual([]);
+    expect(s.handledSourceKey).toBe('cd'.repeat(32));
+  });
+
+  it('does not treat Outlook selection binding as quote authorisation without staffQuoteSource', () => {
+    let s = analysisReady();
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(Boolean(s.binding)).toBe(true);
+    expect(staffSourceReady(s)).toBe(false);
+    expect(canCreatePdf(s)).toBe(false);
+    s = withStaffSource(s);
+    expect(staffSourceReady(s)).toBe(true);
+    expect(canCreatePdf(s)).toBe(true);
+  });
+
+  it('keeps approved execute company/agency on the quote and invalidates PDF if they change', () => {
+    const approvedHeader = {
+      salesStrategy: 'BAR' as const,
+      company: 'Provincial Treasury',
+      agency: '',
+      attention: '',
+      clientEmail: '',
+      clientTelephone: '',
+    };
+    const offer: QuoteOffer = {
+      id: 'rev-1',
+      kind: 'allocation',
+      roomCode: '',
+      roomLabel: 'Selected allocation',
+      board: 'bb',
+      rateCode: '',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '',
+      sourceRef: 'rev-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 1,
+    };
+    let s = analysisReady();
+    s = {
+      ...s,
+      staffHeader: { ...s.staffHeader, ...approvedHeader },
+    };
+    s = withStaffSource(s);
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader,
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    expect(s.staffQuote?.approvedHeader).toEqual(approvedHeader);
+    expect(s.staffQuote?.approvedHeader.agency).toBe('');
+    expect(canCreatePdf(s)).toBe(true);
+    const aliased = { ...s, staffHeader: { ...s.staffHeader, company: s.groups[0]?.organisation || 'Display alias' } };
+    expect(canCreatePdf(aliased)).toBe(false);
+    const changed = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Other company' } });
+    expect(changed.staffQuote).toBeNull();
+    expect(canCreatePdf(changed)).toBe(false);
   });
 });

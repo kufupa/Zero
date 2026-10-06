@@ -1,4 +1,4 @@
-import { allocationTotal, canCreatePdf, requestedQuoteKeys } from '@/lib/quote-workflow/session';
+import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
@@ -242,9 +242,15 @@ export function QuoteWorkflowPanel({
 
   const openItems = openReviewItems(session);
   const handledItems = (session.reviewItems ?? []).filter(
-    (item) => notNoise(item) && (session.handledReviewItemIds ?? []).includes(item.id),
+    (item) =>
+      notNoise(item) &&
+      item.kind !== 'pricing_fact' &&
+      !item.blocking &&
+      (session.handledReviewItemIds ?? []).includes(item.id),
   );
-  const authorizedPartial = Boolean(session.binding) && (session.phase === 'failed' || session.phase === 'missing_source' || session.phase === 'analysing');
+  const authorizedPartial =
+    staffSourceReady(session) &&
+    (session.phase === 'failed' || session.phase === 'missing_source' || session.phase === 'analysing');
   const showWorkspace = !hideQuoteWorkspace(session.phase);
   const showReply =
     Boolean(session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) || authorizedPartial || openItems.length);

@@ -179,6 +179,7 @@ describe('QuoteWorkflowPanel', () => {
     let session = sessionFromFixture('staggered-dates');
     session = {
       ...session,
+      staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
       evidence: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
       reviewedReplyHtml: '<p>Authorised</p>',
     };
@@ -201,6 +202,7 @@ describe('QuoteWorkflowPanel', () => {
     let session = sessionFromFixture('mixed-same-dates');
     session = {
       ...session,
+      staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
       evidence: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
       reviewedReplyHtml: '<p>Authorised</p>',
     };
@@ -250,7 +252,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Mark handled: How many children, and what ages?' }));
     expect(onHandle).toHaveBeenCalledWith('question:how many children, and what ages?');
-    fireEvent.click(screen.getByRole('button', { name: 'View source for How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Source guidance for How many children, and what ages?' }));
     expect(onViewSource).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Edit reply for How many children, and what ages?' }));
     expect(onEditReply).toHaveBeenCalled();
@@ -305,6 +307,11 @@ describe('QuoteWorkflowPanel', () => {
     cleanup();
     const ready = {
       ...sessionFromFixture('public-single'),
+      staffSource: {
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: 'ab'.repeat(32),
+      },
       evidence: { kind: 'authorised' as const, selectionEpoch: 1, inputRevision: 1 },
       selectedOfferIds: ['pub-1'],
       reviewedReplyHtml: '<p>Full staff-edited reply</p>',

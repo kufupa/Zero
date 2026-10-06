@@ -70,6 +70,8 @@ export type QuoteReviewItem = {
   sourceLabel: string;
   sourceRef?: string;
   sourceHash?: string;
+  sourceKind?: 'message' | 'attachment' | 'email';
+  messageId?: string;
   filename?: string;
   reason?: string;
   blocking: boolean;
@@ -119,6 +121,14 @@ export type StaffQuoteAllocation = {
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;
+  approvedHeader: {
+    salesStrategy: 'BAR' | 'Government';
+    company: string;
+    agency: string;
+    attention: string;
+    clientEmail: string;
+    clientTelephone: string;
+  };
 };
 
 export type StaffQuoteHeader = {

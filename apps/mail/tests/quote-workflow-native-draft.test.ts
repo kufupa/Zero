@@ -79,6 +79,11 @@ describe('native draft payload', () => {
         },
       ],
       selectedOfferIds: ['auth-1'],
+      staffSource: {
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: 'ab'.repeat(32),
+      },
       reviewedReplyHtml: '<p>Parking is available on site.</p>',
       pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
       evidence: {

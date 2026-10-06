@@ -52,9 +52,22 @@ export function pricingReviewItems(groups: StayGroupRequirement[]): QuoteReviewI
   return items;
 }
 
+export function documentFailureIdentity(document: Pick<QuoteDocumentFailure, 'sourceKind' | 'sourceRef' | 'filename'>): string {
+  return `document:${document.sourceKind}:${document.sourceRef?.trim() || ''}:${document.filename}`;
+}
+
+export function reviewItemSourceIdentity(item: QuoteReviewItem): string {
+  if (item.sourceHash && item.sourceRef) return `${item.kind}:${item.sourceHash}:${item.sourceRef}`;
+  if (item.sourceRef) return `${item.kind}:${item.sourceRef}:${item.filename ?? item.text}`;
+  if (item.kind === 'document_failure' && item.filename) {
+    return `document:${item.sourceKind ?? 'attachment'}:${item.sourceRef?.trim() || ''}:${item.filename}`;
+  }
+  return item.id;
+}
+
 export function documentFailureItems(documents: QuoteDocumentFailure[]): QuoteReviewItem[] {
   return documents.map((document) => ({
-    id: `document:${document.filename}`,
+    id: documentFailureIdentity(document),
     kind: 'document_failure',
     rank: 'unread_source',
     text: document.filename,
@@ -62,6 +75,7 @@ export function documentFailureItems(documents: QuoteDocumentFailure[]): QuoteRe
     filename: document.filename,
     reason: document.reason,
     sourceRef: document.sourceRef,
+    sourceKind: document.sourceKind,
     blocking: false,
   }));
 }
@@ -109,6 +123,8 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       sourceLabel,
       sourceRef: action.sourceRef,
       sourceHash: action.sourceHash,
+      sourceKind: action.sourceKind,
+      messageId: action.messageId,
       filename: action.filename,
       reason: action.reason,
       blocking: action.blockingQuote,
@@ -122,6 +138,22 @@ export function sortReviewItems(items: QuoteReviewItem[]): QuoteReviewItem[] {
   return [...items].sort((left, right) => rank[left.rank] - rank[right.rank] || left.id.localeCompare(right.id));
 }
 
+function mergeReviewItems(lists: readonly (readonly QuoteReviewItem[])[]): QuoteReviewItem[] {
+  const seen = new Set<string>();
+  const out: QuoteReviewItem[] = [];
+  for (const list of lists) {
+    for (const item of list) {
+      if (!notNoise(item)) continue;
+      const identity = reviewItemSourceIdentity(item);
+      if (seen.has(item.id) || seen.has(identity)) continue;
+      seen.add(item.id);
+      seen.add(identity);
+      out.push(item);
+    }
+  }
+  return sortReviewItems(out);
+}
+
 export function projectQuoteReviewItems(
   analysis: QuoteAnalysis | null,
   groups: StayGroupRequirement[],
@@ -133,24 +165,11 @@ export function projectQuoteReviewItems(
   const kept = extra.filter(
     (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
   );
-  if (staffActions && staffActions.length) {
-    const seen = new Set(fromStaff.map((item) => item.id));
-    return sortReviewItems([
-      ...pricing,
-      ...fromStaff.filter((item) => item.kind !== 'pricing_fact'),
-      ...fromStaff.filter((item) => item.kind === 'pricing_fact'),
-      ...kept.filter((item) => !seen.has(item.id)),
-    ]);
-  }
-  const explicit = (analysis?.reviewItems ?? []).filter(notNoise);
-  if (explicit.length) {
-    return sortReviewItems([
-      ...pricing,
-      ...explicit.filter((item) => item.kind !== 'pricing_fact'),
-      ...kept,
-    ]);
-  }
-  return sortReviewItems([...pricing, ...kept, ...questionReviewItems(analysis)]);
+  const explicit = (analysis?.reviewItems ?? [])
+    .filter(notNoise)
+    .filter((item) => item.kind !== 'pricing_fact');
+  const questions = fromStaff.length || explicit.length ? [] : questionReviewItems(analysis);
+  return mergeReviewItems([pricing, fromStaff, explicit, kept, questions]);
 }
 
 export function openReviewItems(session: {
@@ -158,5 +177,9 @@ export function openReviewItems(session: {
   handledReviewItemIds?: string[];
 }): QuoteReviewItem[] {
   const handled = new Set(session.handledReviewItemIds ?? []);
-  return (session.reviewItems ?? []).filter((item) => notNoise(item) && !handled.has(item.id));
+  return (session.reviewItems ?? []).filter((item) => {
+    if (!notNoise(item)) return false;
+    if (item.kind === 'pricing_fact' || item.blocking) return true;
+    return !handled.has(item.id);
+  });
 }

@@ -7,6 +7,13 @@ import {
   QUOTE_WORKFLOW_BIND_TARGETS,
   STAFF_QUOTE_PILOT_MISSING,
 } from '../lib/quote-workflow/backend-bind';
+import {
+  approvedExecuteHeader,
+  bindExecuteStaffQuote,
+  bindQualifiedStaffProposalPdf,
+  nativeRoomCodes,
+} from '../lib/quote-workflow/staff-quote-bind';
+import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
 
 describe('quote workflow backend bind', () => {
   it('names the published staff-quote procedures rather than a second engine', () => {
@@ -293,5 +300,129 @@ describe('quote workflow backend bind', () => {
     if (result.status === 'unavailable') {
       expect(result.reason).toMatch(/mint centsReconciled:true/i);
     }
+  });
+});
+
+describe('staff quote execute/PDF header bind', () => {
+  const source = {
+    messageId: 'mail-1',
+    threadId: 'thread-1',
+    sourceHash: 'ab'.repeat(32),
+  };
+  const stay = {
+    id: 'g1',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    quantity: 1,
+    adults: 1,
+    childrenAges: [] as number[],
+    board: 'bb' as const,
+    specialRequests: [] as string[],
+    fields: {},
+  };
+
+  it('sends native room codes only and keeps blank agency as empty string', async () => {
+    expect(nativeRoomCodes('STWN')).toEqual(['STWN']);
+    expect(nativeRoomCodes('SKNG')).toEqual(['SKNG']);
+    expect(nativeRoomCodes('SUITE')).toBeUndefined();
+    expect(nativeRoomCodes('standard king')).toBeUndefined();
+    expect(approvedExecuteHeader(emptyStaffQuoteHeader()).agency).toBe('');
+    const mutate = vi.fn(async (_input) => ({
+      status: 'ready' as const,
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      messageId: source.messageId,
+      threadId: source.threadId,
+      factRefs: [],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: 'digest',
+      totalMinor: 850000,
+      currency: 'ZAR',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      description: 'STWN NGOVDB',
+    }));
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'suite' }],
+      header: { ...emptyStaffQuoteHeader(), company: 'Provincial Treasury', agency: '' },
+    });
+    expect(result.status).toBe('ok');
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      company: 'Provincial Treasury',
+      agency: '',
+      salesStrategy: 'BAR',
+    });
+    expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('roomCodes');
+    if (result.status === 'ok') {
+      expect(result.staffQuote.approvedHeader).toEqual({
+        salesStrategy: 'BAR',
+        company: 'Provincial Treasury',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      });
+    }
+    const native = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(native.status).toBe('ok');
+    expect(mutate.mock.calls[1]?.[0].groups[0].roomCodes).toEqual(['STWN']);
+  });
+
+  it('passes approved execute company/agency into PDF, including empty agency', async () => {
+    const mutate = vi.fn(async () => ({
+      revisionId: 'rev-1',
+      pdfHash: 'hash-1',
+      fileName: 'Quote.pdf',
+      pdfBase64: 'JVBERi0xLjQK',
+      totalMinor: 850000,
+    }));
+    const pdf = await bindQualifiedStaffProposalPdf({
+      mutate,
+      input: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        messageId: 'mail-1',
+        outlookEmail: 'centurion@legacyhotels.co.za',
+        factRefs: [],
+        company: 'Provincial Treasury',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      expectedTotalMinor: 850000,
+    });
+    expect(pdf.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ company: 'Provincial Treasury', agency: '' }),
+    );
+    const missingAgency = await bindQualifiedStaffProposalPdf({
+      mutate,
+      input: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        messageId: 'mail-1',
+        outlookEmail: 'centurion@legacyhotels.co.za',
+        factRefs: [],
+        company: 'Provincial Treasury',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      } as never,
+      expectedTotalMinor: 850000,
+    });
+    expect(missingAgency.status).toBe('unavailable');
   });
 });

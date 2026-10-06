@@ -12,6 +12,7 @@ import type {
 } from './types';
 import { emptyStaffQuoteHeader } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
+import { approvedExecuteHeader } from './staff-quote-bind';
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
   return {
@@ -263,10 +264,18 @@ function occupancySatisfied(group: StayGroupRequirement, covering: readonly Quot
   return haveQty === group.quantity;
 }
 
+export function staffSourceReady(session: Pick<QuoteSession, 'staffSource'>): boolean {
+  const source = session.staffSource;
+  return Boolean(
+    source &&
+      /^[a-f0-9]{64}$/.test(source.sourceHash) &&
+      source.messageId.trim() &&
+      source.threadId.trim(),
+  );
+}
+
 export function reviewSourceKey(session: QuoteSession): string {
-  if (session.staffSource?.sourceHash) return session.staffSource.sourceHash;
-  if (session.binding) return selectionDigest(session.binding);
-  return '';
+  return session.staffSource?.sourceHash ?? '';
 }
 
 export function staffQuoteMatchesSession(session: QuoteSession): boolean {
@@ -282,12 +291,19 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
   const offer = session.offers.find((item) => item.id === quote.revisionRef);
   if (!offer || offer.kind !== 'allocation' || offer.stayTotalMinor !== quote.totalMinor) return false;
   if (offer.nightly.length) return false;
+  const current = approvedExecuteHeader(session.staffHeader);
+  const approved = quote.approvedHeader;
+  if (!approved) return false;
+  if (current.company !== approved.company || current.agency !== approved.agency) return false;
+  if (current.salesStrategy !== approved.salesStrategy) return false;
   return true;
 }
 
 export function canCreatePdf(session: QuoteSession): boolean {
+  if (!staffSourceReady(session)) return false;
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
-  if (staffQuoteMatchesSession(session)) {
+  if (session.staffQuote) {
+    if (!staffQuoteMatchesSession(session)) return false;
     const scoped = session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey);
     return scoped.length > 0;
   }
@@ -406,7 +422,6 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       );
       const sourceKey = reviewSourceKey({ ...session, analysis: action.analysis });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
-      const company = action.analysis.groups.map((group) => group.organisation?.trim() ?? '').find(Boolean) ?? session.staffHeader.company;
       return {
         ...session,
         phase: 'requirements',
@@ -415,7 +430,6 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         inputRevision: 1,
         selectedStayKey,
         steps: planQuoteSteps(action.analysis.groups, selectedStayKey),
-        staffHeader: { ...session.staffHeader, company: session.staffHeader.company || company },
         staffActions: action.analysis.staffActions ?? session.staffActions,
         reviewItems,
         handledSourceKey: sourceKey || null,
@@ -457,16 +471,15 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     }
     case 'staff_source_ready': {
-      if (!/^[a-f0-9]{64}$/.test(action.source.sourceHash)) return session;
-      const next = { ...session, staffSource: action.source };
-      const previousKey = reviewSourceKey(session);
-      const nextKey = reviewSourceKey(next);
+      if (!/^[a-f0-9]{64}$/.test(action.source.sourceHash) || !action.source.messageId.trim()) {
+        return session;
+      }
+      const keepHandled = session.handledSourceKey === action.source.sourceHash;
       return {
-        ...next,
-        handledSourceKey:
-          session.handledSourceKey && session.handledSourceKey === previousKey
-            ? nextKey || session.handledSourceKey
-            : session.handledSourceKey,
+        ...session,
+        staffSource: action.source,
+        handledSourceKey: action.source.sourceHash,
+        handledReviewItemIds: keepHandled ? session.handledReviewItemIds : [],
       };
     }
     case 'staff_actions_ready': {

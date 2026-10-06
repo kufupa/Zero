@@ -34,10 +34,10 @@ export function ItemsForYou({
             <button
               type="button"
               className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-              aria-label={`View source for ${item.text}`}
+              aria-label={`Source guidance for ${item.text}`}
               onClick={() => onViewSource?.(item)}
             >
-              View source
+              Source guidance
             </button>
             {item.kind === 'question' || item.kind === 'analysis_failure' ? (
               <button

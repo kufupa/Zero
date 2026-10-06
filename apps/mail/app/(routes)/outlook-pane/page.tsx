@@ -1130,7 +1130,7 @@ export default function OutlookPanePage() {
         {currentScreen === 'tool' && (
           <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email Context Bar */}
-            <div className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
+            <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
               <div className="flex min-w-0 items-center gap-2">
                 <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
                 <div className="flex min-w-0 flex-col">
@@ -1175,10 +1175,11 @@ export default function OutlookPanePage() {
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
               onViewSource={(item) => {
+                document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
                 toast.message(
                   item.filename
-                    ? `See selected Outlook message attachment ${item.filename}. Filenames are not document bytes.`
-                    : 'See the selected Outlook message for the source clause.',
+                    ? `Source guidance: selected message lists ${item.filename}. Filenames are not document bytes. This does not open the attachment.`
+                    : 'Source guidance: selected Outlook message above. This does not open a separate source viewer.',
                 );
               }}
               onPreparePdf={() => {
@@ -1200,7 +1201,11 @@ export default function OutlookPanePage() {
                 const inputRevision = quoteSession.inputRevision;
                 const selectedOfferIds = [...quoteSession.selectedOfferIds];
                 const staff = staffQuoteFromTrpc(trpcClient);
-                const header = quoteSession.staffHeader;
+                const header = staffQuote.approvedHeader;
+                if (!header) {
+                  toast.warning('qualifiedQuoteProposalPdf needs the approved executeStaffQuote company/agency header.');
+                  return;
+                }
                 void bindQualifiedStaffProposalPdf({
                   mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
                   input: {

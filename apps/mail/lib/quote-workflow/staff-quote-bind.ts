@@ -317,7 +317,7 @@ export function allocationFromStaffQuote(
   };
 }
 
-function headerFields(header: StaffQuoteHeader): Pick<
+export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   ExecuteStaffQuoteInput,
   'salesStrategy' | 'company' | 'agency' | 'attention' | 'clientEmail' | 'clientTelephone'
 > {
@@ -349,7 +349,7 @@ export async function bindExecuteStaffQuote(args: {
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
-    const header = headerFields(args.header);
+    const header = approvedExecuteHeader(args.header);
     const result = await args.mutate({
       messageId: args.source.messageId,
       sourceHash: args.source.sourceHash,
@@ -395,6 +395,14 @@ export async function bindExecuteStaffQuote(args: {
       totalMinor: result.totalMinor,
       currency: result.currency,
       quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+      approvedHeader: {
+        salesStrategy: header.salesStrategy,
+        company: header.company,
+        agency: header.agency,
+        attention: header.attention,
+        clientEmail: header.clientEmail,
+        clientTelephone: header.clientTelephone,
+      },
     };
     return {
       status: 'ok',
@@ -420,6 +428,12 @@ export async function bindQualifiedStaffProposalPdf(args: {
       status: 'unavailable',
       reason:
         'Client has no workstation.qualifiedQuoteProposalPdf. Do not invent a second PDF engine or mint centsReconciled:true.',
+    };
+  }
+  if (typeof args.input.company !== 'string' || typeof args.input.agency !== 'string') {
+    return {
+      status: 'unavailable',
+      reason: 'qualifiedQuoteProposalPdf company/agency must equal approved executeStaffQuote input.',
     };
   }
   try {
