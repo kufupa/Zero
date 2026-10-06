@@ -26,7 +26,7 @@ const FIELD_NAMES = [
   'bookingagencyname',
 ];
 
-const MUTATE_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
+const MUTATE_PATH = /\/(save|delete|cancel|duplicate)|checkin|checkout|crs/i;
 const GOV_RE = /dep(t|artment)|ministry|municipal|government|province|sapo|sars|saps/i;
 const CAP = 40;
 const PAUSE_MS = 2000;
@@ -85,21 +85,6 @@ function classifyPartyClass(fields) {
   if (GOV_RE.test(companyBlob)) return 'government';
   if (String(fields.company || '').trim()) return 'organization';
   return 'private';
-}
-
-async function widenDateRange(page) {
-  const range = page.getByText(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/).first();
-  if (!(await range.count())) return;
-  await range.click();
-  const dates = page.locator('input:visible');
-  const count = await dates.count();
-  if (count >= 2) {
-    await dates.nth(count - 2).fill('01-JAN-2026');
-    await dates.nth(count - 1).fill('31-DEC-2027');
-  }
-  const run = page.getByRole('button', { name: 'Run', exact: true });
-  if (await run.count()) await run.click();
-  await page.waitForTimeout(1500);
 }
 
 async function openTarget(page, confirmation) {
@@ -253,6 +238,7 @@ function installReadOnlyGuard(context) {
   return context.route('**/*', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (MUTATE_PATH.test(path)) {
+      process.stdout.write(`abort_path=${path}\n`);
       await route.abort();
       return;
     }
@@ -349,8 +335,11 @@ async function main() {
     await login(page, secret);
     await menu(page, ['Front Desk', 'Guest Stay']);
     await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
+    await page.waitForResponse(
+      (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
+      { timeout: 20000 },
+    ).catch(() => {});
     await page.waitForTimeout(1500);
-    await widenDateRange(page);
     for (const confirmation of pending) {
       let row;
       try {
