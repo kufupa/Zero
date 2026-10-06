@@ -20,6 +20,9 @@ export const AUTHORISED_QUOTE_OFFERS: QuoteOffer[] = [
     restrictions: [],
     combinable: true,
     quoteRequestKey: '2026-11-12:2026-11-14',
+    coversGroupIds: ['g1'],
+    quantity: 1,
+    adults: 1,
   },
 ];
 

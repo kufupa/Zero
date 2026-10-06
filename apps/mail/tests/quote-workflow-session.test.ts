@@ -12,6 +12,7 @@ import {
   planQuoteSteps,
   reduceQuoteSession,
   selectionDigest,
+  buildQuoteStepInputs,
 } from '../lib/quote-workflow/session';
 import type { QuoteOffer, QuoteSelectionBinding } from '../lib/quote-workflow/types';
 
@@ -116,6 +117,9 @@ describe('quote session', () => {
           restrictions: [],
           combinable: true,
           quoteRequestKey: '2026-11-12:2026-11-14',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
         },
       ],
       selectionEpoch: 1,
@@ -160,6 +164,9 @@ describe('quote session', () => {
         restrictions: [],
         combinable: true,
         quoteRequestKey: 'k1',
+        coversGroupIds: ['g1'],
+        quantity: 1,
+        adults: 1,
       },
       {
         id: 'alt',
@@ -176,6 +183,9 @@ describe('quote session', () => {
         restrictions: [],
         combinable: false,
         quoteRequestKey: 'k1',
+        coversGroupIds: ['g1'],
+        quantity: 1,
+        adults: 1,
       },
     ];
     expect(allocationTotal(offers)).toBe(214000);
@@ -211,6 +221,9 @@ describe('quote session', () => {
           restrictions: [],
           combinable: true,
           quoteRequestKey: 'k',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
         },
       ],
       selectionEpoch: 1,
@@ -261,6 +274,9 @@ describe('quote session', () => {
           restrictions: [],
           combinable: true,
           quoteRequestKey: 'k',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
         },
       ],
       selectionEpoch: 1,
@@ -292,6 +308,9 @@ describe('quote session', () => {
           restrictions: [],
           combinable: true,
           quoteRequestKey: '2026-11-12:2026-11-14',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
         },
       ],
       selectionEpoch: 1,
@@ -327,6 +346,9 @@ describe('quote session', () => {
           restrictions: [],
           combinable: true,
           quoteRequestKey: '2026-11-12:2026-11-14',
+          coversGroupIds: ['g1'],
+          quantity: 1,
+          adults: 1,
         },
       ],
       selectionEpoch: 1,
@@ -354,6 +376,9 @@ describe('quote session', () => {
       restrictions: [],
       combinable: true,
       quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 1,
+      adults: 1,
     };
     const pdf = { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' };
     let ready = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
@@ -481,7 +506,23 @@ describe('quote session', () => {
       'party-lookup',
       'quote-stay-2026-12-01:2026-12-03',
     ]);
-    expect(s.steps[0]?.inputs).toEqual({ organisation: 'Provincial Treasury' });
+    expect(s.steps[0]?.inputs).toEqual({
+      organisation: 'Provincial Treasury',
+      groups: [
+        expect.objectContaining({
+          id: 'g1',
+          arrivalDate: '2026-12-01',
+          departureDate: '2026-12-03',
+          quantity: 1,
+          roomPreference: 'standard king',
+          adults: 1,
+          childrenAges: [],
+          board: 'bb',
+          organisation: 'Provincial Treasury',
+          specialRequests: [],
+        }),
+      ],
+    });
     expect(s.steps[1]?.dependsOn).toEqual(['party-lookup']);
     expect(s.steps[1]?.status).toBe('queued');
     expect(canRunQuoteStep(s.steps[1]!, s.steps, null)).toBe(false);
@@ -511,12 +552,16 @@ describe('quote session', () => {
       restrictions: [],
       combinable: true,
       quoteRequestKey: '2026-11-02:2026-11-04',
+      coversGroupIds: ['stay-a'],
+      quantity: 1,
+      adults: 1,
     };
     const offerB: QuoteOffer = {
       ...offerA,
       id: 'st-b',
       sourceRef: 'src-b',
       quoteRequestKey: '2026-11-10:2026-11-12',
+      coversGroupIds: ['stay-b'],
     };
     const alternative: QuoteOffer = {
       ...offerA,
@@ -525,6 +570,7 @@ describe('quote session', () => {
       combinable: false,
       sourceRef: 'src-ro',
       quoteRequestKey: '2026-11-02:2026-11-04',
+      coversGroupIds: [],
     };
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: twoGroups });
@@ -567,5 +613,234 @@ describe('quote session', () => {
     expect(formatQuoteStepInputs({ organisation: 'Treasury', quoteRequestKey: '2026-12-01:2026-12-03' })).toMatch(
       /Organisation Treasury/,
     );
+  });
+
+  it('keeps mixed same-date groups selected and rejects a partial PDF', () => {
+    const mixed = {
+      ...quoteAnalysis,
+      groups: [
+        {
+          ...quoteAnalysis.groups[0]!,
+          id: 'g-double',
+          arrivalDate: '2026-10-16',
+          departureDate: '2026-10-18',
+          adults: 2,
+          quantity: 1,
+          roomPreference: 'twin',
+        },
+        {
+          ...quoteAnalysis.groups[0]!,
+          id: 'g-single',
+          arrivalDate: '2026-10-16',
+          departureDate: '2026-10-18',
+          adults: 1,
+          quantity: 2,
+          roomPreference: 'single',
+        },
+      ],
+    };
+    const mixA: QuoteOffer = {
+      id: 'mix-a',
+      kind: 'allocation',
+      roomCode: 'STWN',
+      roomLabel: 'Standard Twin',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [{ date: '2026-10-16', amountMinor: 313000 }],
+      stayTotalMinor: 626000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'src-a',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-10-16:2026-10-18',
+      coversGroupIds: ['g-double'],
+      quantity: 1,
+      adults: 2,
+    };
+    const mixB: QuoteOffer = {
+      ...mixA,
+      id: 'mix-b',
+      roomCode: 'SQUE',
+      roomLabel: 'Standard Queen',
+      sourceRef: 'src-b',
+      coversGroupIds: ['g-single'],
+      quantity: 2,
+      adults: 1,
+      stayTotalMinor: 566000,
+    };
+    const mixC: QuoteOffer = {
+      ...mixB,
+      id: 'mix-c',
+      sourceRef: 'src-c',
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: mixed });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [mixA, mixB, mixC],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'mix-a') });
+    expect(s.selectedOfferIds).toEqual(['mix-a']);
+    expect(canCreatePdf(s)).toBe(false);
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'mix-b') });
+    expect(s.selectedOfferIds).toEqual(['mix-a', 'mix-b']);
+    expect(canCreatePdf(s)).toBe(true);
+    expect(nextSelectedOfferIds(s, 'mix-c')).toEqual(['mix-a', 'mix-c']);
+  });
+
+  it('refuses PDF when dates are unknown unless the selected allocation covers the group', () => {
+    const undated = {
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, arrivalDate: undefined, departureDate: undefined }],
+    };
+    const uncovered: QuoteOffer = {
+      id: 'o1',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 1,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'src-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: 'unknown:unknown',
+      coversGroupIds: [],
+      quantity: 1,
+      adults: 1,
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: undated });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [uncovered],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(false);
+    const covered: QuoteOffer = { ...uncovered, id: 'o2', coversGroupIds: ['g1'] };
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [covered],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o2'] });
+    expect(canCreatePdf(s)).toBe(true);
+  });
+
+  it('promotes quote_stay after lookup without inventing offers and does not rerun lookup', () => {
+    const withOrg = {
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, organisation: 'Provincial Treasury' }],
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: withOrg });
+    const lookup = s.steps.find((step) => step.kind === 'party_lookup')!;
+    const stay = s.steps.find((step) => step.kind === 'quote_stay')!;
+    expect(stay.status).toBe('queued');
+    expect(pickNextRunnableStep(s.steps, null)?.id).toBe(lookup.id);
+    s = reduceQuoteSession(s, { type: 'step_running', stepId: lookup.id });
+    s = reduceQuoteSession(s, {
+      type: 'lookup_ready',
+      stepId: lookup.id,
+      selectionEpoch: 1,
+      inputRevision: 1,
+    });
+    expect(s.offers).toEqual([]);
+    expect(s.phase).toBe('tools');
+    expect(s.steps.find((step) => step.id === lookup.id)?.status).toBe('succeeded');
+    expect(s.steps.find((step) => step.id === stay.id)?.status).toBe('ready');
+    expect(canRunQuoteStep(s.steps.find((step) => step.id === lookup.id)!, s.steps, null)).toBe(false);
+    expect(pickNextRunnableStep(s.steps, null)?.id).toBe(stay.id);
+  });
+
+  it('sends the full approved grouped requirements as the runStep DTO', () => {
+    const withOrg = {
+      ...quoteAnalysis,
+      groups: [
+        {
+          ...quoteAnalysis.groups[0]!,
+          organisation: 'Provincial Treasury',
+          childrenAges: [8],
+          board: 'dinner_bb' as const,
+          specialRequests: ['late arrival'],
+          quantity: 2,
+          roomPreference: 'suite',
+        },
+      ],
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: withOrg });
+    const lookup = s.steps.find((step) => step.kind === 'party_lookup')!;
+    expect(buildQuoteStepInputs(s, lookup)).toEqual({
+      stepKind: 'party_lookup',
+      binding: {
+        transportId: 't1',
+        mailboxEmail: 'centurion@legacyhotels.co.za',
+        storeId: 'store',
+        folderEntryId: 'inbox',
+        entryId: 'e1',
+        internetMessageId: '<a@x>',
+        selectionEpoch: 1,
+      },
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 2,
+          roomPreference: 'suite',
+          adults: 1,
+          childrenAges: [8],
+          board: 'dinner_bb',
+          organisation: 'Provincial Treasury',
+          specialRequests: ['late arrival'],
+        },
+      ],
+    });
+    s = reduceQuoteSession(s, {
+      type: 'lookup_ready',
+      stepId: lookup.id,
+      selectionEpoch: 1,
+      inputRevision: 1,
+    });
+    const stay = s.steps.find((step) => step.kind === 'quote_stay')!;
+    expect(buildQuoteStepInputs(s, stay)).toEqual({
+      stepKind: 'quote_stay',
+      binding: {
+        transportId: 't1',
+        mailboxEmail: 'centurion@legacyhotels.co.za',
+        storeId: 'store',
+        folderEntryId: 'inbox',
+        entryId: 'e1',
+        internetMessageId: '<a@x>',
+        selectionEpoch: 1,
+      },
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 2,
+          roomPreference: 'suite',
+          adults: 1,
+          childrenAges: [8],
+          board: 'dinner_bb',
+          organisation: 'Provincial Treasury',
+          specialRequests: ['late arrival'],
+        },
+      ],
+    });
   });
 });

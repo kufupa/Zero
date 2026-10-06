@@ -17,7 +17,8 @@
     "hasVerticalScroll": false,
     "hasAllocation": false,
     "hasFixturePdf": false,
-    "hasUnavailable": true
+    "hasUnavailable": true,
+    "reactHydrated": false
   },
-  "note": "Built CSS inlined into post-HITL production dump. Keyboard/input via DOM events on Arrival/Adults. Not Windows Outlook. Playwright 1.52 browser missing."
+  "note": "Static HTML dump of production pane markup with built CSS inlined. Keyboard/input via raw DOM events — NOT hydrated React (no React state, no step Run). Does not prove interactive UI. React proof is happy-dom OutlookPanePage tests. Not Windows Outlook. Playwright 1.52 browser missing."
 }

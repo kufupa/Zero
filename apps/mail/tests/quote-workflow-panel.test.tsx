@@ -191,4 +191,24 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
     expect(screen.getByText(/Separate date searches do not prove joint availability/i)).toBeDefined();
   });
+
+  it('keeps mixed same-date groups selected and blocks a partial PDF', () => {
+    const onSelectOffer = vi.fn();
+    let session = sessionFromFixture('mixed-same-dates');
+    session = {
+      ...session,
+      evidence: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+      reviewedReplyHtml: '<p>Authorised</p>',
+    };
+    render(<QuoteWorkflowPanel session={{ ...session, selectedOfferIds: ['mix-a'] }} onSelectOffer={onSelectOffer} />);
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    cleanup();
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...session, selectedOfferIds: ['mix-a', 'mix-b'] }}
+        onSelectOffer={onSelectOffer}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+  });
 });

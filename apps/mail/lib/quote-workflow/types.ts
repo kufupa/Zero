@@ -76,6 +76,10 @@ export type QuoteOffer = {
   restrictions: string[];
   combinable: boolean;
   quoteRequestKey: string;
+  coversGroupIds: string[];
+  quantity?: number;
+  adults?: number;
+  childrenAges?: number[];
   screenshot?: QuoteScreenshot;
 };
 
@@ -90,6 +94,35 @@ export type QuoteEvidenceProvenance = {
 };
 
 export type QuotePdf = { fileName: string; bytesBase64: string };
+
+export type ApprovedStayGroup = {
+  id: string;
+  arrivalDate?: string;
+  departureDate?: string;
+  quantity?: number;
+  roomPreference?: string;
+  adults?: number;
+  childrenAges: number[];
+  board: QuoteBoard;
+  organisation?: string;
+  specialRequests: string[];
+};
+
+export type QuoteStepBinding = {
+  transportId: string;
+  mailboxEmail: string;
+  storeId: string;
+  folderEntryId: string;
+  entryId: string;
+  internetMessageId?: string;
+  selectionEpoch: number;
+};
+
+export type QuoteStepInputs = {
+  stepKind: QuoteToolStep['kind'];
+  binding: QuoteStepBinding;
+  groups: ApprovedStayGroup[];
+};
 
 export type QuoteToolStepStatus = 'queued' | 'ready' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
@@ -144,6 +177,12 @@ export type QuoteSessionAction =
       type: 'results_unavailable';
       stepId: string;
       reason: string;
+      selectionEpoch: number;
+      inputRevision: number;
+    }
+  | {
+      type: 'lookup_ready';
+      stepId: string;
       selectionEpoch: number;
       inputRevision: number;
     }

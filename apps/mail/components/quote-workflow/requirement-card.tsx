@@ -118,6 +118,7 @@ export function RequirementCard({
         Organisation / agency
         <input
           className={fieldClass}
+          aria-label="Organisation / agency"
           value={group.organisation ?? ''}
           onChange={(event) => onPatch?.(group.id, { organisation: event.target.value })}
         />

@@ -125,7 +125,8 @@ export async function bindAnalyseSelection(args: {
 export type BoundRunStep =
   | { status: 'unavailable'; reason: string }
   | { status: 'integration_unavailable'; reason: string }
-  | { status: 'ok'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
+  | { status: 'ok'; kind: 'party_lookup' }
+  | { status: 'ok'; kind: 'quote_stay'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
 
 export async function bindRunStep(args: {
   mutate?: (input: RunStepRequest) => Promise<RunStepResult>;
@@ -150,6 +151,9 @@ export async function bindRunStep(args: {
   if (result.status === 'integration_unavailable') {
     return { status: 'integration_unavailable', reason: result.reason };
   }
+  if (args.inputs.stepKind === 'party_lookup') {
+    return { status: 'ok', kind: 'party_lookup' };
+  }
   const offers = 'offers' in result ? result.offers : undefined;
   if (!Array.isArray(offers) || offers.length === 0) {
     return {
@@ -157,7 +161,7 @@ export async function bindRunStep(args: {
       reason: 'runStep returned ok without offers. Do not synthesize inventory.',
     };
   }
-  return { status: 'ok', offers, reviewedReplyHtml: result.reviewedReplyHtml };
+  return { status: 'ok', kind: 'quote_stay', offers, reviewedReplyHtml: result.reviewedReplyHtml };
 }
 
 export type BoundQualifiedPdf =

@@ -1,12 +1,55 @@
 import type {
+  ApprovedStayGroup,
   QuoteEvidenceProvenance,
   QuoteOffer,
   QuoteSession,
   QuoteSessionAction,
   QuoteSelectionBinding,
+  QuoteStepInputs,
   QuoteToolStep,
   StayGroupRequirement,
 } from './types';
+
+export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
+  return {
+    id: group.id,
+    arrivalDate: group.arrivalDate,
+    departureDate: group.departureDate,
+    quantity: group.quantity,
+    roomPreference: group.roomPreference,
+    adults: group.adults,
+    childrenAges: [...group.childrenAges],
+    board: group.board,
+    organisation: group.organisation,
+    specialRequests: [...group.specialRequests],
+  };
+}
+
+export function groupsForQuoteStep(session: QuoteSession, step: QuoteToolStep): StayGroupRequirement[] {
+  if (step.kind === 'quote_stay' && step.shareKey) {
+    return session.groups.filter(
+      (group) => `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}` === step.shareKey,
+    );
+  }
+  return session.groups;
+}
+
+export function buildQuoteStepInputs(session: QuoteSession, step: QuoteToolStep): QuoteStepInputs {
+  const binding = session.binding;
+  return {
+    stepKind: step.kind,
+    binding: {
+      transportId: binding?.transportId ?? '',
+      mailboxEmail: binding?.mailboxEmail ?? '',
+      storeId: binding?.storeId ?? '',
+      folderEntryId: binding?.folderEntryId ?? '',
+      entryId: binding?.entryId ?? '',
+      internetMessageId: binding?.internetMessageId,
+      selectionEpoch: binding?.selectionEpoch ?? 0,
+    },
+    groups: groupsForQuoteStep(session, step).map(toApprovedStayGroup),
+  };
+}
 
 export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] {
   const steps: QuoteToolStep[] = [];
@@ -16,7 +59,7 @@ export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] 
       id: 'party-lookup',
       kind: 'party_lookup',
       title: `Look up organisation ${organisation}`,
-      inputs: { organisation },
+      inputs: { organisation, groups: groups.map(toApprovedStayGroup) },
       dependsOn: [],
       status: 'ready',
       shareKey: organisation.trim().toLowerCase(),
@@ -34,7 +77,11 @@ export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] 
       id: `quote-stay-${key}`,
       kind: 'quote_stay',
       title: `Search availability ${key.replace(':', ' → ')}`,
-      inputs: { quoteRequestKey: key, groupIds: grouped.map((group) => group.id) },
+      inputs: {
+        quoteRequestKey: key,
+        groupIds: grouped.map((group) => group.id),
+        groups: grouped.map(toApprovedStayGroup),
+      },
       dependsOn: organisation ? ['party-lookup'] : [],
       status: organisation ? 'queued' : 'ready',
       shareKey: key,
@@ -69,6 +116,19 @@ export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
   if (Array.isArray(inputs.groupIds) && inputs.groupIds.length) {
     bits.push(`Stay groups ${inputs.groupIds.map(String).join(', ')}`);
   }
+  if (Array.isArray(inputs.groups)) {
+    for (const raw of inputs.groups) {
+      if (!raw || typeof raw !== 'object') continue;
+      const group = raw as Record<string, unknown>;
+      const id = typeof group.id === 'string' ? group.id : '?';
+      const qty = typeof group.quantity === 'number' ? group.quantity : 1;
+      const room = typeof group.roomPreference === 'string' && group.roomPreference.trim()
+        ? group.roomPreference
+        : 'room';
+      const adults = typeof group.adults === 'number' ? `${group.adults} adults` : 'occupancy unset';
+      bits.push(`${id}: ${qty} × ${room}, ${adults}`);
+    }
+  }
   return bits.length ? bits.join(' · ') : 'No current inputs';
 }
 
@@ -78,7 +138,7 @@ export function canRunQuoteStep(
   runningStepId: string | null,
 ): boolean {
   if (runningStepId) return false;
-  if (step.status === 'running' || step.status === 'cancelled') return false;
+  if (step.status === 'succeeded' || step.status === 'running' || step.status === 'cancelled') return false;
   return step.dependsOn.every((dep) => steps.find((item) => item.id === dep)?.status === 'succeeded');
 }
 
@@ -105,7 +165,7 @@ export function nextSelectedOfferIds(session: QuoteSession, offerId: string): st
   const kept = session.selectedOfferIds.filter((id) => {
     const other = session.offers.find((item) => item.id === id);
     if (!other || other.kind !== 'allocation') return false;
-    return other.quoteRequestKey !== offer.quoteRequestKey;
+    return !coversGroupOverlap(other, offer);
   });
   return [...kept, offerId];
 }
@@ -155,17 +215,49 @@ export function evidenceMatchesSession(session: QuoteSession): boolean {
   return true;
 }
 
+function coversGroupOverlap(left: QuoteOffer, right: QuoteOffer): boolean {
+  return left.coversGroupIds.some((id) => right.coversGroupIds.includes(id));
+}
+
+function coveringAllocations(selected: readonly QuoteOffer[], groupId: string): QuoteOffer[] {
+  return selected.filter((offer) => offer.coversGroupIds.includes(groupId));
+}
+
+function agesMatch(left: readonly number[], right: readonly number[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort((x, y) => x - y);
+  const b = [...right].sort((x, y) => x - y);
+  return a.every((age, i) => age === b[i]);
+}
+
+function occupancySatisfied(group: StayGroupRequirement, covering: readonly QuoteOffer[]): boolean {
+  if (covering.length === 0) return false;
+  const needQty = group.quantity ?? 1;
+  const haveQty = covering.reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
+  if (haveQty < needQty) return false;
+  if (group.adults != null) {
+    const matching = covering
+      .filter((offer) => offer.adults === group.adults)
+      .reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
+    if (matching < needQty) return false;
+  }
+  if (group.childrenAges.length > 0) {
+    const matching = covering
+      .filter((offer) => agesMatch(offer.childrenAges ?? [], group.childrenAges))
+      .reduce((sum, offer) => sum + (offer.quantity ?? 1), 0);
+    if (matching < needQty) return false;
+  }
+  return true;
+}
+
 export function canCreatePdf(session: QuoteSession): boolean {
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
   const selected = session.selectedOfferIds
     .map((id) => session.offers.find((offer) => offer.id === id))
     .filter((offer): offer is QuoteOffer => Boolean(offer && offer.kind === 'allocation' && offer.sourceRef));
   if (selected.length === 0 || selected.length !== session.selectedOfferIds.length) return false;
-  const keys = requestedQuoteKeys(session.groups);
-  if (keys.length === 0) return false;
-  const covered = new Set(selected.map((offer) => offer.quoteRequestKey));
-  if (keys.length === 1 && keys[0] === 'unknown:unknown') return true;
-  return keys.every((key) => covered.has(key));
+  if (session.groups.length === 0) return false;
+  return session.groups.every((group) => occupancySatisfied(group, coveringAllocations(selected, group.id)));
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
@@ -292,8 +384,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!provenanceMatches(session, action.provenance, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
+      const incomingGroups = new Set(action.offers.flatMap((offer) => offer.coversGroupIds));
       const incomingKeys = new Set(action.offers.map((offer) => offer.quoteRequestKey));
-      const kept = session.offers.filter((offer) => !incomingKeys.has(offer.quoteRequestKey));
+      const kept = incomingGroups.size
+        ? session.offers.filter((offer) => !offer.coversGroupIds.some((id) => incomingGroups.has(id)))
+        : session.offers.filter((offer) => !incomingKeys.has(offer.quoteRequestKey));
       return {
         ...session,
         phase: 'results',
@@ -307,6 +402,31 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             ? { ...step, status: 'succeeded' as const }
             : step,
         ),
+      };
+    }
+    case 'lookup_ready': {
+      if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
+        return session;
+      }
+      const succeededIds = new Set(
+        session.steps
+          .filter((step) => step.status === 'succeeded' || step.id === action.stepId)
+          .map((step) => step.id),
+      );
+      return {
+        ...session,
+        phase: 'tools',
+        runningStepId: null,
+        errorMessage: null,
+        steps: session.steps.map((step) => {
+          if (step.id === action.stepId) {
+            return { ...step, status: 'succeeded' as const, resultSummary: 'Organisation lookup completed.' };
+          }
+          if (step.status === 'queued' && step.dependsOn.every((dep) => succeededIds.has(dep))) {
+            return { ...step, status: 'ready' as const };
+          }
+          return step;
+        }),
       };
     }
     case 'results_unavailable':

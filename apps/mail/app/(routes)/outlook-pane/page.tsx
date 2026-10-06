@@ -99,6 +99,7 @@ import {
   nextSelectedOfferIds,
   pickNextRunnableStep,
   reduceQuoteSession,
+  buildQuoteStepInputs,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
@@ -700,8 +701,18 @@ export default function OutlookPanePage() {
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
-    const inputs = { ...step.inputs };
+    const inputs = buildQuoteStepInputs(quoteSession, step);
     if (isQuoteFixturePreview()) {
+      if (step.kind === 'party_lookup') {
+        dispatchQuote({
+          type: 'lookup_ready',
+          stepId: step.id,
+          selectionEpoch,
+          inputRevision,
+        });
+        toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
+        return;
+      }
       const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
       dispatchQuote({
         type: 'results_ready',
@@ -734,6 +745,15 @@ export default function OutlookPanePage() {
           inputRevision,
         });
         toast.warning(remote.reason);
+        return;
+      }
+      if (remote.kind === 'party_lookup') {
+        dispatchQuote({
+          type: 'lookup_ready',
+          stepId: step.id,
+          selectionEpoch,
+          inputRevision,
+        });
         return;
       }
       dispatchQuote({

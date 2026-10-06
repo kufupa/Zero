@@ -104,7 +104,23 @@ describe('mounted pane step runner and current inputs', () => {
     };
     expect(payload.stepId).toMatch(/^quote-stay-/);
     expect(payload.inputRevision).toBe(1);
-    expect(payload.inputs).toEqual(expect.objectContaining({ quoteRequestKey: expect.any(String) }));
+    expect(payload.inputs).toEqual({
+      stepKind: 'quote_stay',
+      binding: expect.objectContaining({
+        storeId: 'store-1',
+        entryId: '001',
+        folderEntryId: 'folder-inbox',
+      }),
+      groups: [
+        expect.objectContaining({
+          id: 'g1',
+          quantity: 1,
+          childrenAges: [],
+          board: 'unknown',
+        }),
+      ],
+    });
+    expect((payload.inputs.groups as Array<{ arrivalDate?: string }>)[0]?.arrivalDate).toBe('2026-11-14');
   });
 
   it('replans the stay search after staff edit dates then sends the new request key', async () => {
@@ -119,10 +135,47 @@ describe('mounted pane step runner and current inputs', () => {
     const payload = runStepMutateMock.mock.calls.at(-1)?.[0] as {
       stepId: string;
       inputRevision: number;
-      inputs: { quoteRequestKey?: string };
+      inputs: { stepKind?: string; groups?: Array<{ arrivalDate?: string; departureDate?: string; adults?: number }> };
     };
     expect(payload.stepId).toBe('quote-stay-2026-12-01:2026-12-03');
     expect(payload.inputRevision).toBeGreaterThan(1);
-    expect(payload.inputs.quoteRequestKey).toBe('2026-12-01:2026-12-03');
+    expect(payload.inputs.stepKind).toBe('quote_stay');
+    expect(payload.inputs.groups).toEqual([
+      expect.objectContaining({
+        id: 'g1',
+        arrivalDate: '2026-12-01',
+        departureDate: '2026-12-03',
+        quantity: 1,
+      }),
+    ]);
+  });
+
+  it('runs party lookup without offers then enables quote stay', async () => {
+    runStepMutateMock.mockResolvedValueOnce({ status: 'ok' });
+    render(<OutlookPanePage />);
+    const organisation = await screen.findByLabelText('Organisation / agency');
+    fireEvent.change(organisation, { target: { value: 'Provincial Treasury' } });
+    const party = await screen.findByRole('button', { name: /Run Look up organisation Provincial Treasury/i });
+    expect((party as HTMLButtonElement).disabled).toBe(false);
+    const stayBefore = screen.getByRole('button', { name: /Run Search availability/i });
+    expect((stayBefore as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(party);
+    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(1));
+    const lookupPayload = runStepMutateMock.mock.calls[0]?.[0] as {
+      stepId: string;
+      inputs: { stepKind?: string; groups?: Array<{ organisation?: string }> };
+    };
+    expect(lookupPayload.stepId).toBe('party-lookup');
+    expect(lookupPayload.inputs.stepKind).toBe('party_lookup');
+    expect(lookupPayload.inputs.groups).toEqual([
+      expect.objectContaining({ organisation: 'Provincial Treasury' }),
+    ]);
+    const stay = await screen.findByRole('button', { name: /Run Search availability/i });
+    expect((stay as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stay);
+    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(2));
+    const stayPayload = runStepMutateMock.mock.calls[1]?.[0] as { stepId: string; inputs: { stepKind?: string } };
+    expect(stayPayload.stepId).toMatch(/^quote-stay-/);
+    expect(stayPayload.inputs.stepKind).toBe('quote_stay');
   });
 });

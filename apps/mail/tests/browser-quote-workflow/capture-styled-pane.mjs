@@ -1,5 +1,6 @@
 /**
  * Styled 380px production-pane capture. Uses built mail CSS + Chromium-1243 CDP.
+ * Static dump + DOM events — not hydrated React. Interactive UI is not verified here.
  * Not a live Outlook session.
  */
 import { spawn } from 'node:child_process';
@@ -138,7 +139,7 @@ try {
     png: pngPath,
     viewport: { width: 380, height: 900 },
     interaction: interaction.result.value,
-    note: 'Built CSS inlined into post-HITL production dump. Keyboard/input via DOM events on Arrival/Adults. Not Windows Outlook. Playwright 1.52 browser missing.',
+    note: 'Static HTML dump of production pane markup with built CSS inlined. Keyboard/input via raw DOM events — NOT hydrated React (no React state, no step Run). Does not prove interactive UI. React proof is happy-dom OutlookPanePage tests. Not Windows Outlook. Playwright 1.52 browser missing.',
   };
   writeFileSync(path.join(outDir, 'styled-pane-receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt, null, 2));

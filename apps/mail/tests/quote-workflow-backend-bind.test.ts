@@ -69,39 +69,106 @@ describe('quote workflow backend bind', () => {
       status: 'integration_unavailable' as const,
       reason: 'Live PMS search is not owned by this quoting UI.',
     }));
+    const inputs = {
+      stepKind: 'quote_stay' as const,
+      binding: {
+        transportId: 't1',
+        mailboxEmail: 'centurion@legacyhotels.co.za',
+        storeId: 'store',
+        folderEntryId: 'inbox',
+        entryId: 'e1',
+        selectionEpoch: 1,
+      },
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 1,
+          roomPreference: 'standard king',
+          adults: 1,
+          childrenAges: [] as number[],
+          board: 'bb' as const,
+          specialRequests: [] as string[],
+        },
+      ],
+    };
     const result = await bindRunStep({
       mutate,
-      stepId: 'quote-stay-unknown:unknown',
+      stepId: 'quote-stay-2026-11-12:2026-11-14',
       selectionEpoch: 1,
       inputRevision: 3,
-      inputs: { quoteRequestKey: 'unknown:unknown', groupIds: ['g1'] },
+      inputs,
     });
     expect(result).toEqual({
       status: 'integration_unavailable',
       reason: 'Live PMS search is not owned by this quoting UI.',
     });
     expect(mutate).toHaveBeenCalledWith({
-      stepId: 'quote-stay-unknown:unknown',
+      stepId: 'quote-stay-2026-11-12:2026-11-14',
       selectionEpoch: 1,
       inputRevision: 3,
-      inputs: { quoteRequestKey: 'unknown:unknown', groupIds: ['g1'] },
+      inputs,
     });
     expect(mutate).not.toHaveBeenCalledWith(expect.objectContaining({ toolId: 'hms_quote_stay' }));
   });
 
-  it('does not treat runStep ok without offers as authorised inventory', async () => {
+  it('does not treat quote_stay ok without offers as authorised inventory', async () => {
     const mutate = vi.fn(async () => ({ status: 'ok' as const }));
     const result = await bindRunStep({
       mutate,
       stepId: 'quote-stay',
       selectionEpoch: 1,
       inputRevision: 1,
-      inputs: {},
+      inputs: { stepKind: 'quote_stay', binding: { selectionEpoch: 1 }, groups: [] },
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
       expect(result.reason).toMatch(/without offers|do not synthesize/i);
     }
+  });
+
+  it('accepts party_lookup ok without offers and does not invent quote offers', async () => {
+    const mutate = vi.fn(async () => ({ status: 'ok' as const }));
+    const inputs = {
+      stepKind: 'party_lookup' as const,
+      binding: {
+        transportId: 't1',
+        mailboxEmail: 'centurion@legacyhotels.co.za',
+        storeId: 'store',
+        folderEntryId: 'inbox',
+        entryId: 'e1',
+        selectionEpoch: 1,
+      },
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 2,
+          roomPreference: 'suite',
+          adults: 2,
+          childrenAges: [8, 11],
+          board: 'dinner_bb' as const,
+          organisation: 'Provincial Treasury',
+          specialRequests: ['late arrival'],
+        },
+      ],
+    };
+    const result = await bindRunStep({
+      mutate,
+      stepId: 'party-lookup',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputs,
+    });
+    expect(result).toEqual({ status: 'ok', kind: 'party_lookup' });
+    expect(mutate).toHaveBeenCalledWith({
+      stepId: 'party-lookup',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputs,
+    });
   });
 
   it('does not invent a second PDF engine when qualifiedQuoteProposalPdf is absent', async () => {
