@@ -98,6 +98,7 @@ import {
   staffQuoteFromTrpc,
 } from '@/lib/quote-workflow/staff-quote-bind';
 import {
+  admissionKey,
   canCreatePdf,
   canRunQuoteStep,
   groupsForQuoteStep,
@@ -105,7 +106,7 @@ import {
   nextSelectedOfferIds,
   pickNextRunnableStep,
   reduceQuoteSession,
-  selectionDigest,
+  staffQuoteForStay,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
@@ -270,9 +271,9 @@ export default function OutlookPanePage() {
     selectedIdentity,
   ]);
 
-  const bindingDigest = quoteSession.binding ? selectionDigest(quoteSession.binding) : '';
+  const quoteAdmissionKey = quoteSession.binding ? admissionKey(quoteSession.binding) : '';
   useEffect(() => {
-    if (!quoteSession.binding || !bindingDigest) return;
+    if (!quoteSession.binding || !quoteAdmissionKey) return;
     dispatchQuote({ type: 'analysis_started' });
     const analysis = analyseLocalEmail({
       subject: activeEmail?.subject ?? '',
@@ -336,7 +337,7 @@ export default function OutlookPanePage() {
     return () => {
       cancelled = true;
     };
-  }, [activeEmail?.bodyText, activeEmail?.subject, bindingDigest]);
+  }, [activeEmail?.bodyText, activeEmail?.subject, quoteAdmissionKey]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);
@@ -1153,9 +1154,9 @@ export default function OutlookPanePage() {
               )}
             </div>
 
-            <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-              Sample placeholder — not live AI output
-            </p>
+            {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+              {activeEmail ? 'Extracted suggestions — review and correct before running' : 'Sample placeholder — not live AI output'}
+            </p>}
 
             <QuoteWorkflowPanel
               session={quoteSession}
@@ -1192,8 +1193,8 @@ export default function OutlookPanePage() {
                   return;
                 }
                 const source = quoteSession.staffSource;
-                const staffQuote = quoteSession.staffQuote;
-                if (!source || !staffQuote) {
+                const staffQuote = staffQuoteForStay(quoteSession);
+                if (!source || !staffQuote || staffQuote.totalMinor <= 0) {
                   toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
                   return;
                 }
@@ -1249,9 +1250,7 @@ export default function OutlookPanePage() {
                     Authorised HMS screenshot unavailable
                   </p>
                   <p className="text-[11px] text-amber-800">
-                    Overnight this pane does not capture live inventory. Demo
-                    quote-rate-proof.png is not tool-run evidence and is not shown
-                    on the quoting path.
+                    No screenshot is attached to this quote result. Review the quoted details and PDF.
                   </p>
                 </div>
 

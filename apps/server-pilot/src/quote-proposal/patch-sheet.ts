@@ -15,6 +15,7 @@ export type ProposalPatchInput = {
   signerEmail: string;
   signerTelephone: string;
   lines: ProposalLine[];
+  breakfastIncluded?: boolean;
 };
 
 function xmlText(value: string): string {
@@ -51,10 +52,34 @@ function setNumber(sheet: string, ref: string, value: number): string {
 }
 
 export function patchSheetXml(sheetXml: string, input: ProposalPatchInput): string {
-  if (input.lines.length === 0 || input.lines.length > 7) {
-    throw new Error('proposal supports 1–7 line items');
+  if (input.lines.length === 0 || input.lines.length > 6) {
+    throw new Error('proposal overflow: supports 1–6 line items until continuation pages are available');
   }
+  const totals = input.lines.map((line) => {
+    if (!Number.isSafeInteger(line.qty) || line.qty < 1 || !Number.isSafeInteger(line.nights) || line.nights < 1) {
+      throw new Error('proposal quantity and nights must be positive safe integers');
+    }
+    const cents = Math.round(line.rate * 100);
+    if (!Number.isFinite(line.rate) || line.rate < 0 || !Number.isSafeInteger(cents) || Math.abs(line.rate * 100 - cents) > 1e-7) {
+      throw new Error('proposal rate must be nonnegative exact cents');
+    }
+    const total = cents * line.qty * line.nights;
+    if (!Number.isSafeInteger(total)) throw new Error('proposal money exceeds safe cents');
+    return total;
+  });
+  const subtotal = totals.reduce((sum, total) => sum + total, 0);
+  if (!Number.isSafeInteger(subtotal)) throw new Error('proposal money exceeds safe cents');
   let sheet = sheetXml;
+  // Remove every stale input and formula cache, including the broken seventh row.
+  for (let row = 24; row <= 30; row++) {
+    for (const col of ['A', 'B', 'C', 'F', 'G', 'H']) sheet = setInlineStr(sheet, `${col}${row}`, '');
+  }
+  sheet = setNumber(sheet, 'H31', subtotal / 100);
+  sheet = setNumber(sheet, 'H33', subtotal / 100);
+  if (input.breakfastIncluded !== true) {
+    sheet = setInlineStr(sheet, 'A38', 'Meals are included only where stated in the line description.');
+    sheet = setInlineStr(sheet, 'F39', '');
+  }
   sheet = setInlineStr(sheet, 'B12', input.attention);
   sheet = setInlineStr(sheet, 'B13', input.company);
   sheet = setInlineStr(sheet, 'B14', input.clientEmail);
@@ -66,6 +91,7 @@ export function patchSheetXml(sheetXml: string, input: ProposalPatchInput): stri
     sheet = setInlineStr(sheet, `C${row}`, line.description);
     sheet = setNumber(sheet, `F${row}`, line.nights);
     sheet = setNumber(sheet, `G${row}`, line.rate);
+    sheet = setNumber(sheet, `H${row}`, totals[index]! / 100);
   });
   sheet = setInlineStr(sheet, 'B61', input.signerName);
   sheet = setInlineStr(sheet, 'B62', input.signerEmail);

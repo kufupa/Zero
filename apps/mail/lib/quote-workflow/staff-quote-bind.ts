@@ -8,29 +8,23 @@ import type {
 } from './types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
-const NATIVE_ROOM_CODE = /^[A-Z0-9_-]{1,16}$/;
-const ROOM_LABELS = new Set([
+/** Exact Centurion native room-type codes. Labels such as SINGLE are not codes. */
+export const KNOWN_NATIVE_ROOM_CODES = new Set([
+  'DLXKNG',
+  'DLXQN',
+  'DLXTWN',
+  'LUXKNG',
   'SUITE',
-  'TWIN',
-  'KING',
-  'STANDARD',
-  'DELUXE',
-  'DOUBLE',
-  'SINGLE',
-  'FAMILY',
-  'STUDIO',
-  'ROOM',
-  'EXECUTIVE',
-  'PREMIUM',
-  'CLASSIC',
-  'SUPERIOR',
-  'QUEEN',
-  'JUNIOR',
-  'APARTMENT',
-  'STANDARDKING',
-  'STANDARDTWIN',
-  'STANDARDDOUBLE',
+  'SKNG',
+  'EXKNG',
+  'STQN',
+  'STWN',
 ]);
+
+export type NativeRoomCodeResolution =
+  | { status: 'omitted' }
+  | { status: 'codes'; codes: string[] }
+  | { status: 'unresolved'; label: string };
 
 export const STAFF_QUOTE_BIND_TARGETS = {
   staffActions: 'drafts.toDraftWire reviewSummary.staffActions',
@@ -107,17 +101,56 @@ export type QualifiedStaffPdfResult = {
   totalMinor: number;
 };
 
+function bytesFromBase64(value: string): Uint8Array | null {
+  try {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+export async function sha256HexOfBytes(bytes: Uint8Array): Promise<string | null> {
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((n) => n.toString(16).padStart(2, '0')).join('');
+}
+
 function rejectionReason(error: unknown, label: string): string {
   return error instanceof Error && error.message.trim() ? error.message : `${label} rejected`;
 }
 
+function knownNativeCode(raw: string): string | null {
+  const code = raw.trim().toUpperCase();
+  return KNOWN_NATIVE_ROOM_CODES.has(code) ? code : null;
+}
+
+export function resolveNativeRoomCodes(input: {
+  roomPreference?: string;
+  roomCodes?: string[];
+}): NativeRoomCodeResolution {
+  if (input.roomCodes?.length) {
+    const codes: string[] = [];
+    for (const raw of input.roomCodes) {
+      const code = knownNativeCode(raw);
+      if (!code) return { status: 'unresolved', label: raw.trim() || '(empty code)' };
+      codes.push(code);
+    }
+    return { status: 'codes', codes };
+  }
+  const raw = input.roomPreference?.trim() ?? '';
+  if (!raw) return { status: 'omitted' };
+  const code = knownNativeCode(raw);
+  if (code) return { status: 'codes', codes: [code] };
+  return { status: 'unresolved', label: raw };
+}
+
+/** @deprecated Use resolveNativeRoomCodes. Returns codes only for known native types. */
 export function nativeRoomCodes(preference: string | undefined): string[] | undefined {
-  const raw = preference?.trim() ?? '';
-  if (!raw) return undefined;
-  const code = raw.toUpperCase();
-  if (!NATIVE_ROOM_CODE.test(code)) return undefined;
-  if (ROOM_LABELS.has(code.replace(/[-_]/g, ''))) return undefined;
-  return [code];
+  const resolved = resolveNativeRoomCodes({ roomPreference: preference });
+  return resolved.status === 'codes' ? resolved.codes : undefined;
 }
 
 export function splitStayGroups(groups: readonly StayGroupRequirement[]): StayGroupRequirement[][] {
@@ -145,7 +178,15 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Quantity and adult occupancy are required before executeStaffQuote.' };
     }
-    const roomCodes = nativeRoomCodes(group.roomPreference);
+    const rooms = resolveNativeRoomCodes({
+      roomPreference: group.roomPreference,
+      roomCodes: group.roomCodes,
+    });
+    if (rooms.status === 'unresolved') {
+      return {
+        error: `Room preference "${rooms.label}" is not a native room code. Correct it to one of ${[...KNOWN_NATIVE_ROOM_CODES].join(', ')}.`,
+      };
+    }
     out.push({
       id: group.id,
       arrivalDate: group.arrivalDate,
@@ -154,7 +195,7 @@ export function staffQuoteGroupsFromStay(
       adults: group.adults,
       childrenAges: [...group.childrenAges],
       board: group.board,
-      ...(roomCodes ? { roomCodes } : {}),
+      ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
     });
   }
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
@@ -321,8 +362,12 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   ExecuteStaffQuoteInput,
   'salesStrategy' | 'company' | 'agency' | 'attention' | 'clientEmail' | 'clientTelephone'
 > {
+  const salesStrategy = header.salesStrategy === 'Government' ? 'Government' : header.salesStrategy === 'BAR' ? 'BAR' : null;
+  if (!salesStrategy) {
+    throw new Error('executeStaffQuote needs an explicit staff-approved BAR or Government salesStrategy.');
+  }
   return {
-    salesStrategy: header.salesStrategy === 'Government' ? 'Government' : 'BAR',
+    salesStrategy,
     company: header.company.trim(),
     agency: header.agency.trim(),
     attention: header.attention.trim(),
@@ -364,7 +409,7 @@ export async function bindExecuteStaffQuote(args: {
     if ('alternatives' in result && Array.isArray(result.alternatives) && result.alternatives.length) {
       return { status: 'unavailable', reason: 'executeStaffQuote returned alternatives. One selected allocation is required.' };
     }
-    if (result.status !== 'ready') {
+    if (result.status !== 'ready' || !('workflowRunId' in result)) {
       return { status: 'unavailable', reason: 'executeStaffQuote did not return a ready selected allocation.' };
     }
     if (result.selectionEpoch !== args.selectionEpoch || result.inputRevision !== args.inputRevision) {
@@ -379,8 +424,8 @@ export async function bindExecuteStaffQuote(args: {
     if (typeof result.revisionRef !== 'string' || !result.revisionRef.trim()) {
       return { status: 'unavailable', reason: 'executeStaffQuote omitted revisionRef.' };
     }
-    if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor < 0) {
-      return { status: 'unavailable', reason: 'executeStaffQuote total is not an authentic ZAR minor amount.' };
+    if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor <= 0) {
+      return { status: 'unavailable', reason: 'executeStaffQuote total is not an authentic ZAR minor amount greater than 0.' };
     }
     const staffQuote: StaffQuoteAllocation = {
       workflowRunId: result.workflowRunId,
@@ -456,15 +501,24 @@ export async function bindQualifiedStaffProposalPdf(args: {
       typeof pdf.pdfBase64 !== 'string' ||
       !pdf.pdfBase64.trim() ||
       typeof pdf.pdfHash !== 'string' ||
-      !pdf.pdfHash.trim() ||
+      !/^[a-f0-9]{64}$/.test(pdf.pdfHash) ||
       typeof pdf.revisionId !== 'string' ||
       pdf.revisionId !== args.input.revisionRef ||
       !Number.isSafeInteger(pdf.totalMinor) ||
+      pdf.totalMinor <= 0 ||
       pdf.totalMinor !== args.expectedTotalMinor
     ) {
       return {
         status: 'unavailable',
         reason: 'qualifiedQuoteProposalPdf omitted real bytes/hash/revision identity or total does not match the selected revision.',
+      };
+    }
+    const bytes = bytesFromBase64(pdf.pdfBase64);
+    const actualHash = bytes ? await sha256HexOfBytes(bytes) : null;
+    if (!bytes?.length || actualHash !== pdf.pdfHash) {
+      return {
+        status: 'unavailable',
+        reason: 'qualifiedQuoteProposalPdf hash does not match the actual PDF bytes.',
       };
     }
     return {

@@ -1,16 +1,76 @@
 import { outlookSyncRouter } from './outlook-sync.js';
+import {
+  staffQuoteInput,
+  staffQuoteSourceHash,
+  prepareStaffQuote,
+  executeStaffQuote,
+  attestStaffQuote,
+  type StaffQuoteAttestation,
+} from '../../ai/staff-quote-workflow.js';
+import {
+  buildRevisionProposalPdf,
+  renderImportedProposalHtml,
+  renderApprovedOverrideHtml,
+  convertProposalHtml,
+} from '../../quote-proposal/proposal-pdf.js';
+import {
+  deriveQuoteLines,
+  deriveAuthorizedExtraLines,
+  type AuthorizedProposalFacts,
+} from '../../quote-proposal/quote-lines.js';
+import {
+  getInstalledStaffQuoteServices,
+  readInstalledStaffQuoteConfiguration,
+} from '../../ai/staff-quote-installation.js';
+import {
+  BridgeTicketDeniedError,
+  issueBridgeTicket,
+} from '../../outlook-security/authorization.js';
+import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
+import type { QuoteRevision, ImportedOffer } from '../../quote-proposal/quote-revision.js';
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
-import { TRPCError } from '@trpc/server';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
-import { proposalDescription, QUOTE_MEALS } from '../../quote-proposal/description.js';
-import { HOTEL_TELEPHONE, quotePdfFileName } from '../../quote-proposal/filename.js';
-import { convertXlsxWithGotenberg } from '../../quote-proposal/gotenberg.js';
+import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
+import { aiWorkflowRun, aiDraftGeneration, message } from '../../db/schema/mail.js';
+import { createPostgresPropertyReadLock } from '../../hms/property-read-lock.js';
+import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
-import { patchProposalWorkbook } from '../../quote-proposal/patch-template.js';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
-import { BridgeTicketDeniedError, issueBridgeTicket } from '../../outlook-security/authorization.js';
+import { TRPCError } from '@trpc/server';
+import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+
+function staffQuoteFailureMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String(error.code)
+      : error instanceof Error
+        ? error.message
+        : '';
+  const actions: Record<string, string> = {
+    business_quote_policy_unavailable:
+      'Verify VAT and tourism levy inclusion for the selected rate.',
+    business_party_identity_unavailable:
+      'Confirm the exact organisation or travel agency for this rate.',
+    business_party_lookup_unavailable:
+      'Organisation or agency lookup is unavailable; retry the quote.',
+    staff_quote_party_unavailable: 'Organisation or agency lookup failed; retry the quote.',
+    business_selected_joint_inventory_unavailable:
+      'Verify combined availability for the requested rooms and dates.',
+    business_selected_price_unavailable:
+      'No qualified available rate covers every requested room-night; review the room and meal choices.',
+    business_quote_source_expired: 'The price observation expired; rerun the quote.',
+    native_quote_business_evidence_unavailable:
+      'Verify rate eligibility and combined availability for these rooms.',
+    staff_quote_source_changed:
+      'The selected email or approved inputs changed; rerun the current quote.',
+  };
+  return (
+    actions[code] ??
+    'The requested allocation or rate could not be qualified; review stay inputs and party/rate evidence'
+  );
+}
 
 export const workstationPingInput = z.object({
   workstationUser: z.string().default('unknown'),
@@ -35,36 +95,399 @@ export const quoteProposalPdfInput = z.object({
   clientTelephone: z.string().default(''),
   agency: z.string().min(1),
   dateLabel: z.string().min(1),
-  lines: z.array(quoteProposalLineInput).min(1).max(7),
+  lines: z.array(quoteProposalLineInput).min(1).max(6),
 });
 
-const TEMPLATE_PATH = fileURLToPath(
-  new URL('../../../fixtures/centurion-quotation-template.xlsx', import.meta.url),
-);
+type rQualifiedChoice = {
+  kind?: 'native' | 'imported_offer' | 'approved_override';
+  workflowRunId: string;
+  messageId: string;
+  threadId: string;
+  revisionRef: string;
+  factRefs: string[];
+  totalMinor: number;
+  currency: string;
+  arrivalDate: string;
+  departureDate: string;
+  description: string;
+};
+export const qualifiedProposalInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    messageId: z.string().min(1),
+    outlookEmail: z.string().min(1),
+    factRefs: z.array(z.string().min(1)).max(32).default([]),
+    attention: z.string().max(256).default(''),
+    company: z.string().max(256).default(''),
+    clientEmail: z.string().max(256).default(''),
+    clientTelephone: z.string().max(128).default(''),
+    agency: z.string().max(256).default('Quote'),
+  })
+  .strict();
+export function resolveLedgerProposal(
+  run: {
+    transportId: string;
+    triggerMessageId: string;
+    state: string;
+    metrics: Record<string, unknown> | null;
+  },
+  scope: { transportId: string; messageId: string; revisionRef: string; factRefs: string[] },
+): { revision: QuoteRevision; facts?: AuthorizedProposalFacts } {
+  if (run.transportId !== scope.transportId || run.triggerMessageId !== scope.messageId)
+    throw new Error('proposal_scope');
+  const result = run.metrics?.reservationistResult as
+    | {
+        readiness?: string;
+        superseded?: boolean;
+        expired?: boolean;
+        quoteRevisionIds?: string[];
+        quoteRevisions?: QuoteRevision[];
+        proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }>;
+      }
+    | undefined;
+  const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+  const qualifiedStaff =
+    staff?.version === 1 &&
+    staff.kind === 'staff_approved_quote' &&
+    staff.transportId === scope.transportId &&
+    staff.messageId === scope.messageId &&
+    !!staff.inputDigest &&
+    !!staff.sourceHash &&
+    staff.revisionIds?.includes(scope.revisionRef) &&
+    result?.quoteRevisions?.find((r) => r.id === scope.revisionRef)?.authorizationId ===
+      staff.authorizationId;
+  if (
+    run.state !== 'succeeded' ||
+    (!qualifiedStaff && result?.readiness !== 'ready_for_staff_review') ||
+    result?.superseded === true ||
+    result?.expired === true
+  )
+    throw new Error('proposal_not_ready');
+  const matches = result.quoteRevisions?.filter((r) => r.id === scope.revisionRef) ?? [];
+  if (matches.length !== 1 || !result.quoteRevisionIds?.includes(scope.revisionRef))
+    throw new Error('revision_missing');
+  const revision = matches[0];
+  deriveQuoteLines(revision);
+  assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, new Date());
+  const selectedBundles =
+    result.proposalFacts?.filter((bundle) => bundle.facts?.revisionId === revision.id) ?? [];
+  if (selectedBundles.length > 1) throw new Error('proposal_fact_bundle_required');
+  if (
+    new Set(scope.factRefs).size !== scope.factRefs.length ||
+    scope.factRefs.length !== selectedBundles.length ||
+    selectedBundles.some((bundle) => !scope.factRefs.includes(bundle.ref))
+  )
+    throw new Error('proposal_fact_selection_mismatch');
+  const facts = scope.factRefs.map((ref) => {
+    const matches = result.proposalFacts?.filter((f) => f.ref === ref) ?? [];
+    if (matches.length !== 1) throw new Error('proposal_fact_missing');
+    return matches[0].facts;
+  });
+  if (facts.length > 1) throw new Error('proposal_fact_bundle_required');
+  if (facts[0]) deriveAuthorizedExtraLines(revision, facts[0]);
+  return { revision, facts: facts[0] };
+}
+
+/** Select and revalidate only the exact persisted source packet; readiness is never a freshness proof. */
+export function resolveLedgerSourceProposal(
+  run: {
+    transportId: string;
+    triggerMessageId: string;
+    state: string;
+    metrics: Record<string, unknown> | null;
+  },
+  scope: {
+    transportId: string;
+    messageId: string;
+    revisionRef: string;
+    factRefs: string[];
+    kind: 'imported_offer' | 'approved_override';
+  },
+):
+  | ImportedOffer
+  | Awaited<
+      ReturnType<typeof import('../../quote-proposal/quote-revision.js').resolveApprovedOverride>
+    > {
+  if (run.transportId !== scope.transportId || run.triggerMessageId !== scope.messageId)
+    throw new Error('proposal_scope');
+  const result = run.metrics?.reservationistResult as
+    | {
+        readiness?: string;
+        superseded?: boolean;
+        expired?: boolean;
+        importedOffers?: ImportedOffer[];
+        approvedOverrides?: Awaited<
+          ReturnType<
+            typeof import('../../quote-proposal/quote-revision.js').resolveApprovedOverride
+          >
+        >[];
+      }
+    | undefined;
+  if (
+    run.state !== 'succeeded' ||
+    result?.readiness !== 'ready_for_staff_review' ||
+    result.superseded === true ||
+    result.expired === true ||
+    scope.factRefs.length
+  )
+    throw new Error('proposal_not_ready');
+  const matches =
+    (scope.kind === 'imported_offer' ? result.importedOffers : result.approvedOverrides)?.filter(
+      (offer) => offer.id === scope.revisionRef,
+    ) ?? [];
+  if (matches.length !== 1) throw new Error('proposal_source_missing');
+  const selected = matches[0];
+  assertReservationistResultFreshForAction(
+    {
+      version: 1,
+      ...(scope.kind === 'imported_offer'
+        ? { importedOffers: [selected] }
+        : { approvedOverrides: [selected] }),
+    },
+    new Date(),
+  );
+  return selected;
+}
 
 export const workstationRouter = router({
   outlookSync: outlookSyncRouter,
-  bridgeTicket: publicProcedure.input(z.object({
-    deviceId: z.string().uuid(), paneChallenge: z.string().length(43), action: z.string().min(1).max(64),
-    storeId: z.string().min(1).max(512).optional(), operationId: z.string().min(1).max(128).optional(),
-    resources: z.array(z.string().min(1).max(512)).max(25).optional(),
-    sourceFolderId: z.string().min(1).max(512).optional(), destinationFolderId: z.string().min(1).max(512).optional(),
-  }).strict()).mutation(async ({ input, ctx }) => {
-    // Public procedure deliberately skips the test-only injected sessionUser shortcut.
-    // A real Better Auth cookie and original live DB session are mandatory.
-    const transportId = ctx.reqHeaders.get('x-zero-active-transport');
-    if (!transportId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+  staffQuoteSource: mailboxProcedure
+    .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
+    .query(async ({ input, ctx }) => {
+      const [mail] = await getDb()
+        .select()
+        .from(message)
+        .where(
+          and(
+            eq(message.transportId, ctx.activeTransportId),
+            eq(message.messageIdHeader, input.internetMessageId),
+          ),
+        )
+        .limit(1);
+      if (!mail) return { status: 'message_not_synced' as const };
+      return {
+        status: 'ready' as const,
+        messageId: mail.id,
+        threadId: mail.threadId,
+        sourceHash: staffQuoteSourceHash(mail),
+      };
+    }),
+  executeStaffQuote: mailboxProcedure.input(staffQuoteInput).mutation(async ({ input, ctx }) => {
+    const db = getDb(),
+      [mail] = await db
+        .select()
+        .from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+    if (!mail || mail.direction !== 'inbound')
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+    let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
     try {
-      return await issueBridgeTicket(getDb(), ctx.auth, ctx.reqHeaders, { ...input, transportId });
-    } catch (error) {
-      if (error instanceof BridgeTicketDeniedError) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
-      }
-      // Main's onError logger sees this category, not the underlying database
-      // error (which may contain a connection string or request parameters).
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Bridge ticket unavailable' });
+      config = readInstalledStaffQuoteConfiguration();
+    } catch {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Staff quotation installation unavailable',
+      });
     }
+    const scope = {
+      transportId: ctx.activeTransportId,
+      userId: ctx.sessionUser.id,
+      threadId: mail.threadId,
+      messageId: mail.id,
+      sourceHash: staffQuoteSourceHash(mail),
+      messageAt: (mail.receivedAt ?? mail.sentAt ?? mail.createdAt).toISOString(),
+      messageText: mail.textBody ?? '',
+      propertyCode: config.owner.propertyCode,
+    };
+    const signal = AbortSignal.timeout(20 * 60000);
+    let prepared: ReturnType<typeof prepareStaffQuote>;
+    try {
+      prepared = prepareStaffQuote(
+        input,
+        scope,
+        { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+        signal,
+      );
+    } catch {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Selected email changed or stay inputs are incomplete; review and retry',
+      });
+    }
+    const generationId = randomUUID(),
+      workflowRunId = randomUUID();
+    // Existing generation ledger is the approval token; a new approval revokes older outputs.
+    await db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId: scope.transportId,
+      threadId: scope.threadId,
+      requestedByUserId: scope.userId,
+      contextMessageIds: [mail.id],
+      model: 'staff-approved-native',
+      promptVersion: 'staff-quote-v1',
+      promptHash: prepared.inputDigest,
+      status: 'running',
+      createdAt: sql`clock_timestamp()`,
+    });
+    const stillCurrent = async () => {
+      const [current] = await db
+        .select()
+        .from(message)
+        .where(and(eq(message.id, mail.id), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+      const [latest] = await db
+        .select({ id: aiDraftGeneration.id })
+        .from(aiDraftGeneration)
+        .where(
+          and(
+            eq(aiDraftGeneration.transportId, scope.transportId),
+            eq(aiDraftGeneration.threadId, scope.threadId),
+            eq(aiDraftGeneration.requestedByUserId, scope.userId),
+            eq(aiDraftGeneration.model, 'staff-approved-native'),
+            sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
+          ),
+        )
+        .orderBy(desc(aiDraftGeneration.createdAt))
+        .limit(1);
+      return (
+        latest?.id === generationId &&
+        !!current &&
+        current.threadId === scope.threadId &&
+        staffQuoteSourceHash(current) === input.sourceHash
+      );
+    };
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl)
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Staff quotation database unavailable',
+      });
+    const lock = createPostgresPropertyReadLock({
+      tenantId: config.tenantId,
+      propertyCode: scope.propertyCode,
+      databaseUrl,
+    });
+    let revision: QuoteRevision;
+    try {
+      revision = await lock.withLock(
+        async () => {
+          const services = getInstalledStaffQuoteServices(
+            {
+              authorizationId: prepared.authorizationId,
+              authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
+              signer: {
+                signerName: ctx.sessionUser.name ?? '',
+                signerEmail: ctx.sessionUser.email,
+              },
+            },
+            prepared.approval,
+          );
+          return executeStaffQuote(prepared, services, stillCurrent);
+        },
+        { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
+      );
+    } catch (error) {
+      await db
+        .update(aiDraftGeneration)
+        .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
+        .where(eq(aiDraftGeneration.id, generationId));
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: staffQuoteFailureMessage(error),
+      });
+    }
+    const attestation = attestStaffQuote(input, scope, prepared, revision);
+    if (!(await stillCurrent()))
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Selected email changed while pricing',
+      });
+    await db.transaction(async (tx) => {
+      await tx
+        .update(aiDraftGeneration)
+        .set({ status: 'succeeded' })
+        .where(eq(aiDraftGeneration.id, generationId));
+      await tx.insert(aiWorkflowRun).values({
+        id: workflowRunId,
+        transportId: scope.transportId,
+        threadId: scope.threadId,
+        triggerMessageId: mail.id,
+        runKind: 'candidate_draft',
+        idempotencyKey: prepared.authorizationId,
+        modelId: 'staff-approved-native',
+        promptVersion: 'staff-quote-v1',
+        state: 'succeeded',
+        executorLane: 'hms',
+        generationId,
+        metrics: {
+          staffQuoteAttestation: attestation,
+          reservationistResult: {
+            readiness: 'ready_for_staff_review',
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+            proposalFacts: [],
+          },
+        },
+      });
+    });
+    return {
+      status: 'ready' as const,
+      workflowRunId,
+      revisionRef: revision.id,
+      messageId: mail.id,
+      threadId: mail.threadId,
+      factRefs: [],
+      selectionEpoch: input.selectionEpoch,
+      inputRevision: input.inputRevision,
+      inputDigest: prepared.inputDigest,
+      totalMinor: revision.totalMinor,
+      currency: revision.currency,
+      arrivalDate: revision.groups[0].arrivalDate,
+      departureDate: revision.groups.at(-1)!.departureDate,
+      description: deriveQuoteLines(revision)
+        .map((l) => l.description)
+        .join('; '),
+    };
   }),
+  bridgeTicket: publicProcedure
+    .input(
+      z
+        .object({
+          deviceId: z.string().uuid(),
+          paneChallenge: z.string().length(43),
+          action: z.string().min(1).max(64),
+          storeId: z.string().min(1).max(512).optional(),
+          operationId: z.string().min(1).max(128).optional(),
+          resources: z.array(z.string().min(1).max(512)).max(25).optional(),
+          sourceFolderId: z.string().min(1).max(512).optional(),
+          destinationFolderId: z.string().min(1).max(512).optional(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // Public procedure deliberately skips the test-only injected sessionUser shortcut.
+      // A real Better Auth cookie and original live DB session are mandatory.
+      const transportId = ctx.reqHeaders.get('x-zero-active-transport');
+      if (!transportId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+      try {
+        return await issueBridgeTicket(getDb(), ctx.auth, ctx.reqHeaders, {
+          ...input,
+          transportId,
+        });
+      } catch (error) {
+        if (error instanceof BridgeTicketDeniedError) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Bridge ticket denied' });
+        }
+        // Main's onError logger sees this category, not the underlying database
+        // error (which may contain a connection string or request parameters).
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Bridge ticket unavailable',
+        });
+      }
+    }),
   ping: privateProcedure.input(workstationPingInput).mutation(async ({ input }) => {
     return {
       status: 'ok' as const,
@@ -73,6 +496,351 @@ export const workstationRouter = router({
       serverTime: new Date().toISOString(),
     };
   }),
+  qualifiedProposalChoices: mailboxProcedure
+    .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
+    .query(async ({ input, ctx }) => {
+      const [mail] = await getDb()
+        .select()
+        .from(message)
+        .where(
+          and(
+            eq(message.transportId, ctx.activeTransportId),
+            eq(message.messageIdHeader, input.internetMessageId),
+          ),
+        )
+        .limit(1);
+      if (!mail) return { status: 'message_not_synced' as const, choices: [] };
+      const runs = await getDb()
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, mail.id),
+            eq(aiWorkflowRun.state, 'succeeded'),
+          ),
+        )
+        .orderBy(desc(aiWorkflowRun.createdAt))
+        .limit(10);
+      const choices: rQualifiedChoice[] = [];
+      const [latestStaff] = await getDb()
+        .select({ id: aiDraftGeneration.id })
+        .from(aiDraftGeneration)
+        .where(
+          and(
+            eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+            eq(aiDraftGeneration.threadId, mail.threadId),
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiDraftGeneration.model, 'staff-approved-native'),
+            sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([mail.id])}::jsonb`,
+          ),
+        )
+        .orderBy(desc(aiDraftGeneration.createdAt))
+        .limit(1);
+      for (const { run } of runs) {
+        const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+        if (
+          staff &&
+          (run.generationId !== latestStaff?.id || staff.sourceHash !== staffQuoteSourceHash(mail))
+        )
+          continue;
+        const result = run.metrics?.reservationistResult as
+          | {
+              quoteRevisionIds?: string[];
+              proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }>;
+            }
+          | undefined;
+        for (const ref of result?.quoteRevisionIds ?? []) {
+          try {
+            const bundles = (result?.proposalFacts ?? []).filter((f) => f.facts.revisionId === ref);
+            if (bundles.length > 1) continue;
+            const factRefs = bundles.map((f) => f.ref);
+            const { revision, facts } = resolveLedgerProposal(run, {
+              transportId: ctx.activeTransportId,
+              messageId: mail.id,
+              revisionRef: ref,
+              factRefs,
+            });
+            choices.push({
+              workflowRunId: run.id,
+              messageId: mail.id,
+              threadId: mail.threadId,
+              revisionRef: revision.id,
+              factRefs,
+              totalMinor:
+                revision.totalMinor +
+                (facts
+                  ? deriveAuthorizedExtraLines(revision, facts).reduce(
+                      (sum, line) => sum + line.totalMinor,
+                      0,
+                    )
+                  : 0),
+              currency: revision.currency,
+              arrivalDate: revision.groups[0].arrivalDate,
+              departureDate: revision.groups.at(-1)!.departureDate,
+              description: deriveQuoteLines(revision)
+                .map((l) => l.description)
+                .join('; '),
+            });
+          } catch {}
+        }
+      }
+      for (const { run } of runs) {
+        const result = run.metrics?.reservationistResult as
+          | {
+              readiness?: string;
+              importedOffers?: ImportedOffer[];
+              approvedOverrides?: Awaited<
+                ReturnType<
+                  typeof import('../../quote-proposal/quote-revision.js').resolveApprovedOverride
+                >
+              >[];
+            }
+          | undefined;
+        if (result?.readiness !== 'ready_for_staff_review') continue;
+        for (const offer of result.importedOffers ?? []) {
+          try {
+            resolveLedgerSourceProposal(run, {
+              transportId: ctx.activeTransportId,
+              messageId: mail.id,
+              revisionRef: offer.id,
+              factRefs: [],
+              kind: 'imported_offer',
+            });
+            renderImportedProposalHtml(offer, {
+              attention: '',
+              company: '',
+              clientEmail: '',
+              clientTelephone: '',
+              agency: '',
+              signerName: '',
+              signerEmail: '',
+            });
+            choices.push({
+              kind: 'imported_offer',
+              workflowRunId: run.id,
+              messageId: mail.id,
+              threadId: mail.threadId,
+              revisionRef: offer.id,
+              factRefs: [],
+              totalMinor: offer.totalMinor,
+              currency: offer.currency,
+              arrivalDate: offer.printedDate,
+              departureDate: offer.validUntil,
+              description: 'Original agreed offer; availability unproven',
+            });
+          } catch {}
+        }
+        for (const offer of result.approvedOverrides ?? []) {
+          try {
+            resolveLedgerSourceProposal(run, {
+              transportId: ctx.activeTransportId,
+              messageId: mail.id,
+              revisionRef: offer.id,
+              factRefs: [],
+              kind: 'approved_override',
+            });
+            renderApprovedOverrideHtml(offer, {
+              attention: '',
+              company: '',
+              clientEmail: '',
+              clientTelephone: '',
+              agency: '',
+              signerName: '',
+              signerEmail: '',
+            });
+            choices.push({
+              kind: 'approved_override',
+              workflowRunId: run.id,
+              messageId: mail.id,
+              threadId: mail.threadId,
+              revisionRef: offer.id,
+              factRefs: [],
+              totalMinor: offer.approvedTotalMinor,
+              currency: offer.currency,
+              arrivalDate: offer.sourceRevision.groups[0].arrivalDate,
+              departureDate: offer.sourceRevision.groups.at(-1)!.departureDate,
+              description: 'Approved staff adjustment; ' + offer.reason,
+            });
+          } catch {}
+        }
+      }
+      return {
+        status: choices.length ? ('ready' as const) : ('awaiting_qualified_quote' as const),
+        threadId: mail.threadId,
+        messageId: mail.id,
+        choices,
+      };
+    }),
+  qualifiedQuoteProposalPdf: mailboxProcedure
+    .input(qualifiedProposalInput)
+    .mutation(async ({ input, ctx }) => {
+      if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const [bound] = await getDb()
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      const staff = bound.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+      const assertCurrentStaffQuote = async () => {
+        if (!staff) return;
+        const [latest] = await getDb()
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+              eq(aiDraftGeneration.threadId, bound.run.threadId),
+              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1);
+        if (latest?.id !== bound.run.generationId)
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Newer stay inputs were approved; use the current quote',
+          });
+        const [current] = await getDb()
+          .select()
+          .from(message)
+          .where(
+            and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)),
+          )
+          .limit(1);
+        if (
+          !current ||
+          staff.userId !== ctx.sessionUser.id ||
+          staff.threadId !== current.threadId ||
+          staff.sourceHash !== staffQuoteSourceHash(current)
+        )
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Selected email changed; rerun the approved quote',
+          });
+        if (
+          !staff.header ||
+          input.company !== staff.header.company ||
+          input.agency !== staff.header.agency
+        )
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Party identity changed; rerun the approved quote',
+          });
+      };
+      await assertCurrentStaffQuote();
+      let resolved: ReturnType<typeof resolveLedgerProposal>;
+      try {
+        resolved = resolveLedgerProposal(bound.run, {
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          revisionRef: input.revisionRef,
+          factRefs: input.factRefs,
+        });
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Proposal evidence is not ready',
+        });
+      }
+      const url = process.env.GOTENBERG_URL?.trim();
+      if (!url)
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
+      const result = await buildRevisionProposalPdf(
+        resolved.revision,
+        { ...input, signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+        { url, facts: resolved.facts },
+      );
+      await assertCurrentStaffQuote();
+      return {
+        ...result,
+        pdf: undefined,
+        pdfBase64: Buffer.from(result.pdf).toString('base64'),
+        totalMinor:
+          resolved.revision.totalMinor +
+          (resolved.facts
+            ? deriveAuthorizedExtraLines(resolved.revision, resolved.facts).reduce(
+                (sum, line) => sum + line.totalMinor,
+                0,
+              )
+            : 0),
+      };
+    }),
+  sourceQuoteProposalPdf: mailboxProcedure
+    .input(
+      qualifiedProposalInput
+        .extend({ kind: z.enum(['imported_offer', 'approved_override']) })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const [bound] = await getDb()
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      let selected: ReturnType<typeof resolveLedgerSourceProposal>;
+      try {
+        selected = resolveLedgerSourceProposal(bound.run, {
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          revisionRef: input.revisionRef,
+          factRefs: input.factRefs,
+          kind: input.kind,
+        });
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Proposal evidence is not ready',
+        });
+      }
+      const header = {
+        ...input,
+        signerName: ctx.sessionUser.name ?? '',
+        signerEmail: ctx.sessionUser.email,
+      };
+      const html =
+          selected.kind === 'imported_offer'
+            ? renderImportedProposalHtml(selected, header)
+            : renderApprovedOverrideHtml(selected, header),
+        totalMinor =
+          selected.kind === 'imported_offer' ? selected.totalMinor : selected.approvedTotalMinor;
+      const url = process.env.GOTENBERG_URL?.trim();
+      if (!url)
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
+      const pdf = await convertProposalHtml(html, { url });
+      return {
+        revisionId: input.revisionRef,
+        pdfHash: createHash('sha256').update(pdf).digest('hex'),
+        totalMinor,
+        fileName: 'Quote - Source offer.pdf',
+        pdfBase64: Buffer.from(pdf).toString('base64'),
+      };
+    }),
   quoteProposalPdf: mailboxProcedure
     .input(quoteProposalPdfInput)
     .mutation(async ({ input, ctx }) => {
@@ -92,44 +860,18 @@ export const workstationRouter = router({
           message: 'GOTENBERG_URL missing',
         });
       }
-      let descriptions: string[];
       try {
-        descriptions = input.lines.map((line) => proposalDescription(line.roomCode, line.meal));
+        const { fileName, pdf } = await buildQuoteProposalPdf(
+          input,
+          { name: ctx.sessionUser.name?.trim() || '', email: ctx.sessionUser.email },
+          gotenbergUrl,
+        );
+        return { fileName, pdfBase64: Buffer.from(pdf).toString('base64') };
       } catch (err) {
         throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: err instanceof Error ? err.message : 'unknown room code',
-        });
-      }
-      const template = readFileSync(TEMPLATE_PATH);
-      const xlsx = patchProposalWorkbook(template, {
-        attention: input.attention,
-        company: input.company,
-        clientEmail: input.clientEmail,
-        clientTelephone: input.clientTelephone,
-        signerName: ctx.sessionUser.name?.trim() || '',
-        signerEmail: ctx.sessionUser.email,
-        signerTelephone: HOTEL_TELEPHONE,
-        lines: input.lines.map((line, index) => ({
-          dateLabel: line.dateLabel,
-          qty: line.qty,
-          description: descriptions[index]!,
-          nights: line.nights,
-          rate: line.rate,
-        })),
-      });
-      let pdf: Uint8Array;
-      try {
-        pdf = await convertXlsxWithGotenberg(xlsx, { url: gotenbergUrl });
-      } catch (err) {
-        throw new TRPCError({
-          code: 'BAD_GATEWAY',
+          code: err instanceof ProposalInputError ? 'BAD_REQUEST' : 'BAD_GATEWAY',
           message: err instanceof Error ? err.message : 'gotenberg convert failed',
         });
       }
-      return {
-        fileName: quotePdfFileName(input.agency, input.dateLabel),
-        pdfBase64: Buffer.from(pdf).toString('base64'),
-      };
     }),
 });

@@ -193,8 +193,8 @@ describe('QuoteWorkflowPanel', () => {
     session = { ...session, selectedOfferIds: ['st-a', 'st-b'] };
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
-    expect(screen.getByText(/Separate date searches do not prove joint availability/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/Combined PDF is blocked/i)).toBeDefined();
   });
 
   it('keeps mixed same-date groups selected and blocks a partial PDF', () => {
@@ -262,7 +262,7 @@ describe('QuoteWorkflowPanel', () => {
 
     const missing = sessionFromFixture('attachment-dependent');
     render(<QuoteWorkflowPanel session={missing} />);
-    expect(screen.getByText('rooming-list.pdf')).toBeDefined();
+    expect(screen.getByText('Unread: rooming-list.pdf')).toBeDefined();
     expect(screen.getAllByText(/Authorised attachment content is missing/i).length).toBeGreaterThan(0);
     expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
     cleanup();

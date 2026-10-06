@@ -1,8 +1,9 @@
 import { resolveModelRoute, type ModelRoutePurpose } from '../local-model-routing.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './local.js';
 import { LocalModelRouteUnavailableError } from './local.js';
-import type { AiModelRoute, MailEnv } from '../../env.js';
+import { parseAiTriageModelProfile, type AiModelRoute, type MailEnv } from '../../env.js';
 import { createBedrockModelAdapter } from './bedrock.js';
+import { LunaModelAdapter } from './luna.js';
 import { createFakeModelAdapter } from './fake.js';
 import type { ModelAdapter } from './adapter.js';
 import { createRequire } from 'node:module';
@@ -20,8 +21,9 @@ export function resolveModelAdapter(
     | 'BEDROCK_REGION'
     | 'BEDROCK_GUARDRAIL_ID'
     | 'BEDROCK_GUARDRAIL_VERSION'
-  >,
+  > & { AI_TRIAGE_MODEL_PROFILE?: MailEnv['AI_TRIAGE_MODEL_PROFILE'] },
 ): ModelAdapter {
+  const profile = parseAiTriageModelProfile(env.AI_TRIAGE_MODEL_PROFILE);
   if (env.NODE_ENV === 'test') {
     return createFakeModelAdapter();
   }
@@ -33,6 +35,10 @@ export function resolveModelAdapter(
       );
     }
     return createFakeModelAdapter();
+  }
+
+  if (profile === 'gpt6_luna_max') {
+    return new LunaModelAdapter();
   }
 
   return createBedrockModelAdapter({
@@ -75,6 +81,7 @@ export function createModelAdapter(): ModelAdapter {
     NODE_ENV: (process.env.NODE_ENV as MailEnv['NODE_ENV']) ?? 'development',
     AI_ENABLED: isAiEnabled(process.env.AI_ENABLED),
     AI_MODEL_ID: process.env.AI_MODEL_ID,
+    AI_TRIAGE_MODEL_PROFILE: process.env.AI_TRIAGE_MODEL_PROFILE as MailEnv['AI_TRIAGE_MODEL_PROFILE'],
     BEDROCK_REGION: process.env.BEDROCK_REGION,
     BEDROCK_GUARDRAIL_ID: process.env.BEDROCK_GUARDRAIL_ID,
     BEDROCK_GUARDRAIL_VERSION: process.env.BEDROCK_GUARDRAIL_VERSION,

@@ -19,6 +19,19 @@ export type HmsDraftEnrichmentMode = 'off' | 'shadow';
 const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
 const AI_WORKER_LANES: readonly AiExecutorLane[] = ['default', 'hms'];
 const AI_MODEL_ROUTES: readonly AiModelRoute[] = ['unavailable', 'approved-local'];
+export type AiTriageModelProfile = 'nova_lite' | 'gpt6_luna_max';
+export const AI_TRIAGE_MODEL_PROFILES: readonly AiTriageModelProfile[] = ['nova_lite', 'gpt6_luna_max'];
+
+/** Missing means Nova; anything else unknown throws so no silent fallback. */
+export function parseAiTriageModelProfile(raw: string | undefined): AiTriageModelProfile {
+  const value = raw ?? 'nova_lite';
+  if (!AI_TRIAGE_MODEL_PROFILES.includes(value as AiTriageModelProfile)) {
+    throw new Error(
+      `env AI_TRIAGE_MODEL_PROFILE must be one of ${AI_TRIAGE_MODEL_PROFILES.join(', ')}, got: ${value}`,
+    );
+  }
+  return value as AiTriageModelProfile;
+}
 const HMS_DRAFT_ENRICHMENT_MODES: readonly HmsDraftEnrichmentMode[] = ['off', 'shadow'];
 const DEFAULT_HMS_HEALTH_PATH = '/tmp/nava-zero-hms-health.json';
 
@@ -87,6 +100,7 @@ export interface MailEnv {
   INGEST_MAX_ATTACHMENT_BYTES?: number;
   AI_ENABLED: boolean;
   AI_MODEL_ROUTE: AiModelRoute;
+  AI_TRIAGE_MODEL_PROFILE: AiTriageModelProfile;
   AI_WRITE_GATE_ENABLED: boolean;
   AI_DRAFTS_ENABLED: boolean;
   /** Centurion catch-up manual upload (.pst/.zip/.msg) capability gate. */
@@ -332,6 +346,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     ),
     AI_ENABLED: false,
     AI_MODEL_ROUTE: 'unavailable',
+    AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
     CATCHUP_UPLOAD_ENABLED: isCatchupUploadEnabled(input),
@@ -389,6 +404,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     );
   }
   env.AI_MODEL_ROUTE = rawModelRoute as AiModelRoute;
+  env.AI_TRIAGE_MODEL_PROFILE = parseAiTriageModelProfile(input.AI_TRIAGE_MODEL_PROFILE);
 
   env.AI_WRITE_GATE_ENABLED = input.AI_WRITE_GATE_ENABLED
     ? toBool('AI_WRITE_GATE_ENABLED', input.AI_WRITE_GATE_ENABLED)

@@ -45,6 +45,7 @@ function known(fact: PreparedFact, audience: PreparedDraftAudience = 'guest'): b
 
 function supports(fact: PreparedFact, ask: PreparedAsk, audience: PreparedDraftAudience): boolean {
   if (!known(fact, audience)) return false;
+  if (ask.code.startsWith('quote_total_')) return fact.key === ask.code;
   const key = normalize(fact.key);
   const code = normalize(ask.code);
   if (code === 'child_ages') return key.includes('child') && key.includes('age');
@@ -107,7 +108,7 @@ function factValuesForAsk(fact: PreparedFact, ask: PreparedAsk): string[] {
       ? ['reservationStatus', 'bookingStatus', 'confirmationStatus', 'status']
       : code === 'stay_dates'
         ? ['arrivalDate', 'departureDate', 'checkIn', 'checkOut', 'stayDates']
-        : code === 'price' || code === 'rate' || code === 'quote'
+        : code === 'price' || code === 'rate' || code === 'quote' || ask.code.startsWith('quote_total_')
           ? ['amount', 'currency', 'total', 'displayedAmount', 'rate']
           : code === 'payment_status' || code === 'payment' || code === 'deposit'
             ? ['paymentStatus', 'depositStatus', 'status', 'amount', 'currency']
@@ -140,7 +141,7 @@ function replyAnswersFact(
     return /\b(?:stay|arrival|departure|check[- ]?in|check[- ]?out|\d{4}[-/]\d{1,2})\b/i.test(
       lower,
     );
-  if (code === 'price' || code === 'rate' || code === 'quote') {
+  if (code === 'price' || code === 'rate' || code === 'quote' || ask.code.startsWith('quote_total_')) {
     return /\b(?:price|rate|quote|total|usd|zar|eur|gbp|r)\b/i.test(lower);
   }
   if (code === 'payment_status' || code === 'payment' || code === 'deposit') {
@@ -154,10 +155,10 @@ function replyAnswersFact(
 
 function extractMoney(text: string): Array<{ currency: string; amount: number }> {
   const out: Array<{ currency: string; amount: number }> = [];
-  const expression = /\b(USD|ZAR|EUR|GBP|R)\s*([0-9][0-9,.]*)\b/gi;
+  const expression = /\b(USD|ZAR|EUR|GBP|R)\s*((?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9][0-9,]*)(?:\.[0-9]{1,2})?)\b/gi;
   for (const match of text.matchAll(expression)) {
-    const amount = Number(match[2]!.replace(/,/g, ''));
-    if (Number.isFinite(amount)) out.push({ currency: match[1]!.toUpperCase(), amount });
+    const amount = Number(match[2]!.replace(/[, \u00a0]/g, ''));
+    if (Number.isFinite(amount)) out.push({ currency: match[1]!.toUpperCase() === 'R' ? 'ZAR' : match[1]!.toUpperCase(), amount });
   }
   return out;
 }
@@ -232,7 +233,7 @@ function knownDateValues(
     .filter(
       (fact) =>
         known(fact, audience) &&
-        (/(?:date|arrival|departure|check.?in|check.?out|stay)/i.test(fact.key) ||
+        ((/(?:date|arrival|departure|check.?in|check.?out|stay)/i.test(fact.key) || fact.key === 'breakfast_time') ||
           (/(?:reservation|booking)/i.test(fact.key) && /summary/i.test(fact.key))),
     )
     .flatMap((fact) => {
@@ -300,8 +301,7 @@ export function assessReply(input: ReplyAssessmentInput): ReplyAssessment {
     mentionedDates.some(
       (literal) => !knownDates.some((knownDate) => knownDate.includes(literal)),
     ) ||
-    (mentionedTimes.length > 0 &&
-      !knownDates.some((knownDate) => mentionedTimes.some((time) => knownDate.includes(time))));
+    mentionedTimes.some(time => !knownDates.some(knownDate => timeLiterals(knownDate).includes(time)));
   if (unsupportedDate) {
     addIssue(issues, { code: 'UNSUPPORTED_DATE_CLAIM', severity: 'critical' });
   }

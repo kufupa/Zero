@@ -1,4 +1,4 @@
-import type { QuoteOffer } from '../lib/quote-workflow/types';
+import type { QuoteOffer } from '../../lib/quote-workflow/types';
 
 /** Test double for a later authorised bind. Not fixture money and not a second engine. */
 export const AUTHORISED_QUOTE_OFFERS: QuoteOffer[] = [
@@ -29,6 +29,9 @@ export const AUTHORISED_QUOTE_OFFERS: QuoteOffer[] = [
 export const AUTHORISED_QUOTE_PDF = {
   fileName: 'Quote-authorised.pdf',
   pdfBase64: 'JVBERi0xLjQK',
+  pdfHash: 'e5c62df5dab5c87b6a015ef3d43597074d1eec433b15f51aec63b8582d0e4ab4',
+  revisionId: 'rev-auth',
+  totalMinor: 272000,
   centsReconciled: true as const,
 };
 

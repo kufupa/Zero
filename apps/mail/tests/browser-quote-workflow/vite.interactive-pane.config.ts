@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { createReadStream, readdirSync } from 'node:fs';
+import { createReadStream, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +23,13 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           const pathname = (req.url ?? '').split('?')[0];
+          if (pathname === '/recorded-proof' && process.env.QUOTE_UI_RECORDED_PROOF) {
+            const proof = JSON.parse(readFileSync(process.env.QUOTE_UI_RECORDED_PROOF, 'utf8'));
+            const pdfBase64 = readFileSync(proof.pdfPath).toString('base64');
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ...proof, pdfBase64 }));
+            return;
+          }
           if (pathname !== '/built-mail.css') {
             next();
             return;

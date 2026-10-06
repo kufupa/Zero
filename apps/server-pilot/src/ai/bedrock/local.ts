@@ -18,6 +18,10 @@ export type LocalModelTransportRequest = {
   modelId: string;
   systemPrompt: string;
   userPrompt: string;
+  files?: ModelInvokeInput['files'];
+  images?: ModelInvokeInput['images'];
+  maxOutputTokens?: number;
+  maxInputBytes?: number;
   responseSchema?: Record<string, unknown>;
   signal?: AbortSignal;
 };
@@ -40,6 +44,8 @@ export type LocalModelAdapterConfig = {
   route?: LocalModelRouteEvidence;
   transport: LocalModelTransport;
   defaultModelId?: string;
+  /** Real admission/budget reservation supplied by the installed transport owner. */
+  reserveCalls?: ModelAdapter['reserveCalls'];
 };
 
 export class LocalModelRouteUnavailableError extends Error {
@@ -55,11 +61,15 @@ export class LocalModelAdapter implements ModelAdapter {
   private readonly route: LocalModelRouteEvidence;
   private readonly transport: LocalModelTransport;
   private readonly defaultModelId: string;
+  readonly reserveCalls?: ModelAdapter['reserveCalls'];
 
   constructor(config: LocalModelAdapterConfig) {
     if (!config.route) throw new LocalModelRouteUnavailableError();
     if (typeof config.transport !== 'function') {
       throw new LocalModelRouteUnavailableError('approved local model transport is unavailable');
+    }
+    if (config.reserveCalls !== undefined && typeof config.reserveCalls !== 'function') {
+      throw new LocalModelRouteUnavailableError('approved local model reservation is unavailable');
     }
     if (
       !config.route.routeId ||
@@ -83,6 +93,15 @@ export class LocalModelAdapter implements ModelAdapter {
     this.route = config.route;
     this.transport = config.transport;
     this.defaultModelId = config.defaultModelId ?? config.route.modelId;
+    if (config.reserveCalls) {
+      const reserveCalls = config.reserveCalls;
+      this.reserveCalls = async (count, signal) => {
+        signal.throwIfAborted();
+        if (!Number.isSafeInteger(count) || count < 1) throw new Error('local model reservation count invalid');
+        await reserveCalls(count, signal);
+        signal.throwIfAborted();
+      };
+    }
   }
 
   async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
@@ -116,6 +135,10 @@ export class LocalModelAdapter implements ModelAdapter {
         modelId,
         systemPrompt: input.systemPrompt,
         userPrompt: input.userPrompt,
+        ...(input.files?.length ? { files: input.files } : {}),
+        ...(input.images?.length ? { images: input.images } : {}),
+        ...(input.maxOutputTokens ? {maxOutputTokens:input.maxOutputTokens} : {}),
+        ...(input.maxInputBytes ? {maxInputBytes:input.maxInputBytes} : {}),
         responseSchema: input.responseSchema,
         // Preserve the caller signal identity when there is no deadline;
         // deadline-bound calls use the merged controller signal so either

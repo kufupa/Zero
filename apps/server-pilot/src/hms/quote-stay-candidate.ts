@@ -8,6 +8,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const QUOTE_STAY_MAX_NIGHTS = 30;
+export const QUOTE_STAY_MAX_GROUPS = 8;
+/** Legacy direct-search adapter bound; native v2 groups support independent quantities. */
 export const QUOTE_STAY_MAX_ROOMS = 4;
 export const QUOTE_STAY_MAX_GUESTS = 16;
 
@@ -34,7 +36,7 @@ export const quoteStayCandidateSchema = z
       .string()
       .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/)
       .optional(),
-    normalizedRooms: z.array(normalizedQuoteRoomSchema).max(QUOTE_STAY_MAX_ROOMS).optional(),
+    normalizedRooms: z.array(normalizedQuoteRoomSchema).max(QUOTE_STAY_MAX_GROUPS).optional(),
   })
   .strict()
   .superRefine((candidate, context) => {

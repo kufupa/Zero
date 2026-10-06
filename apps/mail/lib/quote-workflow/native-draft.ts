@@ -1,5 +1,5 @@
 import { FIXTURE_PDF } from './fixtures';
-import { canCreatePdf } from './session';
+import { canCreateNativeDraft } from './session';
 import type { QuotePdf, QuoteSession } from './types';
 
 export function requireReviewedNativeDraft(session: QuoteSession): {
@@ -8,7 +8,7 @@ export function requireReviewedNativeDraft(session: QuoteSession): {
 } | null {
   const html = session.reviewedReplyHtml.trim();
   if (!session.pdf || !html) return null;
-  if (!canCreatePdf(session)) return null;
+  if (!canCreateNativeDraft(session)) return null;
   if (session.pdf.fileName === FIXTURE_PDF.fileName) return null;
   return {
     html,
