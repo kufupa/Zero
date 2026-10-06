@@ -34,6 +34,7 @@ Distinguish **earlier green** from **latest** fail/green. Do not treat a prior p
 | 2026-10-06T03:14:07Z | `@zero/server` `quote-workflow-router.test.ts` | **PASS 8** — runStep accepts inputRevision+inputs, still unavailable, no HMS |
 | 2026-10-06T03:15:08Z | `quote-workflow-scenarios.test.tsx` | **PASS 19** |
 | 2026-10-06T03:17:50Z | `pnpm --filter @zero/mail build` | **exit 0**. CSS `server-build-Bzu3NXo3.css` |
-| 2026-10-06T03:18:06Z | styled pane Chromium-1243 + `server-build-Bzu3NXo3.css` | overflowX 0, paneWidth 380, Arrival 2026-11-12, Adults 2, no Allocation, unavailable copy present |
+| 2026-10-06T03:18:06Z | styled pane Chromium-1243 + `server-build-Bzu3NXo3.css` | overflowX 0, paneWidth 380, Arrival 2026-11-12, Adults 2, no Allocation, unavailable copy present. **Dump + DOM events, not hydrated React.** |
+| 2026-10-06T03:40:07Z | session/panel/bind/step-runner/scenarios/stale-pdf/no-fake/quote-pdf/fixtures/render/narrow | **PASS 114 / 11 files** — group coverage + typed DTO + lookup≠offers. Screenshot still dump, not React. No server-pilot edits. |
 
 All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.
