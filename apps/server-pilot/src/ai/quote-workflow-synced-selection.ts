@@ -78,9 +78,9 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     .where(
       and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)),
     )
-    .limit(1);
+    .limit(2);
   const row = selected[0];
-  if (!row) return null;
+  if (!row || selected.length !== 1) return null;
 
   const threadRows = await db
     .select({

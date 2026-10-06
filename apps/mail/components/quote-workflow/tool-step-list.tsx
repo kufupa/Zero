@@ -15,7 +15,7 @@ export function ToolStepList({
   if (steps.length === 0 && !onRunNext) return null;
   const running = Boolean(runningStepId);
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3">
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Approved tool steps</h3>
       <p className="text-[11px] text-[#64748b]">
         Read-only hotel searches stay serial. This pane will not start a second PMS owner.
@@ -32,7 +32,7 @@ export function ToolStepList({
           <p className="text-[11px] text-[#64748b]">{formatQuoteStepInputs(step.inputs)}</p>
           <button
             type="button"
-            className="h-7 self-start rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b] disabled:opacity-40"
+            className="h-7 self-start rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b] disabled:opacity-40"
             onClick={() => onRunStep?.(step.id)}
             disabled={!onRunStep || !canRunQuoteStep(step, steps, runningStepId ?? null)}
           >
@@ -44,7 +44,7 @@ export function ToolStepList({
         type="button"
         onClick={onRunNext}
         disabled={running}
-        className="flex h-9 w-full items-center justify-center rounded-sm bg-[#0066cc] text-xs font-bold text-white hover:bg-[#0052a3] disabled:bg-slate-300"
+        className="flex h-9 w-full items-center justify-center rounded-xs bg-[#0066cc] text-xs font-bold text-white hover:bg-[#0052a3] disabled:bg-slate-300"
       >
         Run next
       </button>

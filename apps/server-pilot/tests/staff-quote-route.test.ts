@@ -7,6 +7,7 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
@@ -181,6 +182,43 @@ afterEach(() => {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'staff quote route approval ledger (disposable DB, no HMS)',
   () => {
+    it('rejects ambiguous Message-IDs instead of loading another selected request', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db), api = caller();
+        await db.insert(message).values({
+          ...request.mail, id: randomUUID(), textBody: 'Different request with a repeated Message-ID',
+        });
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
+        await expect(api.workstation.qualifiedProposalChoices({ internetMessageId: request.internetMessageId }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
+        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId, internetMessageId: request.internetMessageId })).toBeNull();
+        expect(nativeRead).not.toHaveBeenCalled();
+      });
+    });
+
+    it('rejects evidence that expires during PDF conversion', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db), api = caller();
+        const quote = await api.workstation.executeStaffQuote(request.input);
+        vi.mocked(fetch).mockImplementationOnce(async () => {
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
+          return new Response('%PDF-1.4 converted expired fixture', { headers: { 'content-type': 'application/pdf' } });
+        });
+        try {
+          await expect(api.workstation.qualifiedQuoteProposalPdf(pdfInput({
+            workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef, messageId: quote.messageId,
+          })))
+            .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence expired during conversion' });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
     it('uses staff corrections through the real route and qualifies accommodation despite a secondary ask', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
@@ -302,6 +340,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             }),
           ),
         ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(
+          api.workstation.sourceQuoteProposalPdf({
+            ...pdfInput({
+              workflowRunId: first.workflowRunId,
+              revisionRef: first.revisionRef,
+              messageId: first.messageId,
+            }),
+            kind: 'imported_offer',
+          }),
+        ).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'Newer stay inputs were approved; use the current quote',
+        });
         expect(fetch).not.toHaveBeenCalled();
         const choices = await api.workstation.qualifiedProposalChoices({
           internetMessageId: request.internetMessageId,

@@ -255,7 +255,7 @@ export const workstationRouter = router({
   staffQuoteSource: mailboxProcedure
     .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
     .query(async ({ input, ctx }) => {
-      const [mail] = await getDb()
+      const matches = await getDb()
         .select()
         .from(message)
         .where(
@@ -264,7 +264,10 @@ export const workstationRouter = router({
             eq(message.messageIdHeader, input.internetMessageId),
           ),
         )
-        .limit(1);
+        .limit(2);
+      if (matches.length > 1)
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
+      const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const };
       return {
         status: 'ready' as const,
@@ -499,7 +502,7 @@ export const workstationRouter = router({
   qualifiedProposalChoices: mailboxProcedure
     .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
     .query(async ({ input, ctx }) => {
-      const [mail] = await getDb()
+      const matches = await getDb()
         .select()
         .from(message)
         .where(
@@ -508,7 +511,10 @@ export const workstationRouter = router({
             eq(message.messageIdHeader, input.internetMessageId),
           ),
         )
-        .limit(1);
+        .limit(2);
+      if (matches.length > 1)
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
+      const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const, choices: [] };
       const runs = await getDb()
         .select({ run: aiWorkflowRun })
@@ -588,6 +594,7 @@ export const workstationRouter = router({
         }
       }
       for (const { run } of runs) {
+        if (latestStaff && run.generationId !== latestStaff.id) continue;
         const result = run.metrics?.reservationistResult as
           | {
               readiness?: string;
@@ -766,6 +773,16 @@ export const workstationRouter = router({
         { url, facts: resolved.facts },
       );
       await assertCurrentStaffQuote();
+      try {
+        resolveLedgerProposal(bound.run, {
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          revisionRef: input.revisionRef,
+          factRefs: input.factRefs,
+        });
+      } catch {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence expired during conversion' });
+      }
       return {
         ...result,
         pdf: undefined,
@@ -804,6 +821,16 @@ export const workstationRouter = router({
         .limit(1);
       if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
       let selected: ReturnType<typeof resolveLedgerSourceProposal>;
+      const assertNoNewerApproval = async () => {
+        const [latest] = await getDb().select({ id: aiDraftGeneration.id }).from(aiDraftGeneration)
+          .where(and(eq(aiDraftGeneration.transportId, ctx.activeTransportId), eq(aiDraftGeneration.threadId, bound.run.threadId),
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id), eq(aiDraftGeneration.model, 'staff-approved-native'),
+            sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`))
+          .orderBy(desc(aiDraftGeneration.createdAt)).limit(1);
+        if (latest && latest.id !== bound.run.generationId)
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Newer stay inputs were approved; use the current quote' });
+      };
+      await assertNoNewerApproval();
       try {
         selected = resolveLedgerSourceProposal(bound.run, {
           transportId: ctx.activeTransportId,
@@ -833,6 +860,15 @@ export const workstationRouter = router({
       if (!url)
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
       const pdf = await convertProposalHtml(html, { url });
+      await assertNoNewerApproval();
+      try {
+        resolveLedgerSourceProposal(bound.run, {
+          transportId: ctx.activeTransportId, messageId: input.messageId,
+          revisionRef: input.revisionRef, factRefs: input.factRefs, kind: input.kind,
+        });
+      } catch {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence expired during conversion' });
+      }
       return {
         revisionId: input.revisionRef,
         pdfHash: createHash('sha256').update(pdf).digest('hex'),

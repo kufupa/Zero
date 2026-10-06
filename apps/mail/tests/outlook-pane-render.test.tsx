@@ -94,6 +94,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
+      internetMessageId: '<quote-request@example.invalid>',
       bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
@@ -125,6 +126,17 @@ vi.mock('../providers/query-provider', () => ({
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: quotePdfMutate },
+      staffQuoteSource: {
+        query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
+      },
+      executeStaffQuote: {
+        mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => ({
+          status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
+          selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
+          arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
+        }),
+      },
+      qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
     quoteWorkflow: {
       runStep: {
@@ -223,7 +235,7 @@ describe('OutlookPanePage', () => {
 
   it('labels the AI draft card as a sample placeholder', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/not live AI output/i)).toBeDefined();
+    expect(screen.getByText(/Extracted suggestions.*review and correct/i)).toBeDefined();
   });
 
   it('passes the selected store ID when creating a reply draft', async () => {
@@ -583,7 +595,9 @@ describe('OutlookPanePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
     vi.spyOn(Date, 'now').mockRestore();
-  }, 90_000);
+  // Each of 257 admissions now drives the approved-input/PDF workflow, not a
+  // demo quote. Retain the real overflow boundary without a shortened cap.
+  }, 180_000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;

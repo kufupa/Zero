@@ -17,7 +17,7 @@ export function ItemsForYou({
 }) {
   if (!openItems.length && !handledItems.length) return null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3" aria-label="Items for you">
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3" aria-label="Items for you">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Items for you</h3>
       {openItems.map((item) => (
         <div key={item.id} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
@@ -33,7 +33,7 @@ export function ItemsForYou({
           <div className="flex flex-wrap gap-1">
             <button
               type="button"
-              className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+              className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
               aria-label={`Source guidance for ${item.text}`}
               onClick={() => onViewSource?.(item)}
             >
@@ -42,7 +42,7 @@ export function ItemsForYou({
             {item.kind === 'question' || item.kind === 'analysis_failure' ? (
               <button
                 type="button"
-                className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
                 aria-label={`Edit reply for ${item.text}`}
                 onClick={() => onEditReply?.()}
               >
@@ -52,7 +52,7 @@ export function ItemsForYou({
             {!item.blocking && item.kind !== 'pricing_fact' ? (
               <button
                 type="button"
-                className="h-7 rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
                 aria-label={`Mark handled: ${item.text}`}
                 onClick={() => onHandle?.(item.id)}
               >
@@ -67,7 +67,7 @@ export function ItemsForYou({
           <p className="text-[11px] text-[#64748b]">Handled: {item.text}</p>
           <button
             type="button"
-            className="h-7 self-start rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+            className="h-7 self-start rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
             aria-label={`Undo mark handled: ${item.text}`}
             onClick={() => onUndo?.(item.id)}
           >

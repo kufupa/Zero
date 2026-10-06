@@ -2,13 +2,13 @@ import { parseChildrenAges } from '@/lib/quote-workflow/session';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 
 const fieldClass =
-  'outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+  'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 function Provenance({ value }: { value?: string }) {
   if (!value) return null;
   const label = value === 'staff_corrected' ? 'Staff' : value === 'missing' ? 'Missing' : 'Extracted';
   return (
-    <span className="ml-1 rounded-sm bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
+    <span className="ml-1 rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
       {label}
     </span>
   );
@@ -24,7 +24,7 @@ export function RequirementCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
 }) {
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3">
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">
         Stay group {index + 1}
       </h3>

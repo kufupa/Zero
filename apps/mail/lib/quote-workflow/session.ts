@@ -487,7 +487,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         groups: action.analysis.groups,
         inputRevision: session.inputRevision + (requirementsChanged ? 1 : 0),
         selectedStayKey,
-        steps: planQuoteSteps(action.analysis.groups, selectedStayKey),
+        steps: session.runningStepId && !requirementsChanged
+          ? session.steps
+          : planQuoteSteps(action.analysis.groups, selectedStayKey),
         staffActions: action.analysis.staffActions ?? session.staffActions,
         reviewItems,
         handledSourceKey: sourceKey || null,

@@ -1310,6 +1310,16 @@ describe('quote session staff review items', () => {
     expect(canCreatePdf(changed)).toBe(false);
   });
 
+  it('preserves a running quote when delayed analysis has unchanged requirements', () => {
+    let s = analysisReady();
+    const stepId = s.steps[0]!.id;
+    s = reduceQuoteSession(s, { type: 'step_running', stepId });
+    const next = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(next.runningStepId).toBe(stepId);
+    expect(next.steps).toEqual(s.steps);
+    expect(next.inputRevision).toBe(s.inputRevision);
+  });
+
   it('does not let delayed analysis overwrite staff stay edits', () => {
     let s = analysisReady();
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 4 } });

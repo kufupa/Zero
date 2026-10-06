@@ -9,7 +9,7 @@ import { ToolStepList } from './tool-step-list';
 
 
 const fieldClass =
-  'outline-hidden h-8 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+  'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 function StaffHeaderFields({
   header,
@@ -19,7 +19,7 @@ function StaffHeaderFields({
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
 }) {
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3">
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
       <p className="text-[11px] text-[#64748b]">
         PDF uses these exact values. Blank agency stays empty.
@@ -98,7 +98,7 @@ function StayScopePicker({
 }) {
   if (stayKeys.length <= 1) return null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3">
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Date scope</h3>
       <p className="text-[11px] text-[#64748b]">
         Quote one date range. Other stays stay visible and unfinished. Results are not aggregated.
@@ -109,7 +109,7 @@ function StayScopePicker({
           type="button"
           aria-pressed={selectedStayKey === key}
           aria-label={`Select date scope ${key.replace(':', ' to ')}`}
-          className={`h-8 rounded-sm border px-2 text-left text-[12px] font-semibold ${
+          className={`h-8 rounded-xs border px-2 text-left text-[12px] font-semibold ${
             selectedStayKey === key ? 'border-[#1a4332] bg-[#eaf4ee] text-[#1e293b]' : 'border-[#cbd5e1] bg-white text-[#1e293b]'
           }`}
           onClick={() => onSelect?.(key)}
@@ -124,7 +124,7 @@ function StayScopePicker({
 
 function StatusNote({ children }: { children: React.ReactNode }) {
   return (
-    <p aria-live="polite" className="rounded-sm border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
+    <p aria-live="polite" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
       {children}
     </p>
   );
@@ -155,7 +155,7 @@ function OfferCard({
       type="button"
       onClick={() => onSelect?.(offer.id)}
       aria-pressed={selected}
-      className={`flex flex-col gap-1 rounded-sm border p-2.5 text-left ${
+      className={`flex flex-col gap-1 rounded-xs border p-2.5 text-left ${
         selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
       }`}
     >

@@ -44,6 +44,28 @@ that the full autonomous reservationist has shipped.
   perimeter fixtures; these are not counted as passing or silently removed.
 - No production or PMS mutations occurred during landing preparation.
 
+## Final review corrections
+
+- Greptile CLI round 2: `3e83b03f-d809-4d72-8189-8bb398492380`, reviewing
+  `4f49324a`. Fixed uncertain native retries to freeze the reviewed reply and PDF
+  together before revalidation; rejected imported/override offers from older
+  staff approvals before and after conversion; normalized new controls to the
+  repository's Tailwind v4 small-radius rule.
+- Evaluated the GitHub review as well: reject ambiguous duplicate Message-IDs
+  in analysis, source and choices lookups; revalidate pricing freshness after
+  conversion; retain unchanged running steps during delayed analysis. Changed
+  analysis explicitly invalidates downstream state instead.
+- Fresh final focused UI verification: 69 passed across session/panel/PDF files,
+  plus all 30 pane regressions. The genuine 257-admission overflow scenario now
+  uses the approved quote/PDF path; its measured 174-second test needs a
+  180-second bound rather than the obsolete 90-second demo-path bound. Its
+  production limits and assertions are unchanged.
+- Fresh real-route disposable-DB verification: nine passed, including repeated
+  Message-ID rejection and expiry during conversion; no live PMS calls.
+- Fresh exact CI lint: zero warnings/errors. Server typecheck passed before the
+  last small test/revalidation updates; final CI and follow-up typecheck govern
+  merge readiness. No blanket lint suppressions or skipped failing tests.
+
 ## P0 release checklist after landing
 
 1. Generate normal mail artifacts and obtain a passing actual application build;
