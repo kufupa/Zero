@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
@@ -106,6 +107,12 @@ function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
+    // Linux retains a killed orphan as a zombie until PID 1 reaps it. It
+    // cannot run or write the marker; kill(pid, 0) alone reports it as alive.
+    if (process.platform === 'linux') {
+      const state = readFileSync(`/proc/${pid}/stat`, 'utf8').match(/\) ([A-Z]) /)?.[1];
+      if (state === 'Z' || state === 'X') return false;
+    }
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
@@ -814,6 +821,9 @@ async function readLaunchReadiness(): Promise<string> {
 
 function validReportShellEnv(): Record<string, string> {
   return {
+    REMOTE_ADMIN_FACTS: '{}',
+    REMOTE_ADMIN_MODE: '0',
+    REMOTE_TARGET_HEALTH_REQUIRED: '0',
     REMOTE_JSON: JSON.stringify({
       health: { http: true, https: true, tls: true },
       pm2: {
@@ -4025,7 +4035,7 @@ if (!realMailGate) {
     );
     expect(
       readiness.includes(
-        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh',
+        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"',
       ),
     ).toBe(true);
     expect(runbook.includes('Gate A')).toBe(true);
@@ -5571,6 +5581,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(writer).toContain('AI_ENABLED');
       const allowlist = writer.match(/REMOTE_COMMON_ALLOWLIST=\(\r?\n([\s\S]*?)\r?\n\)/)?.[1];
       expect(allowlist).toBeTruthy();
+      const keys = allowlist!.trim().split(/\s+/);
+      expect(new Set(keys).size).toBe(keys.length);
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
       expect(allowlist).not.toContain('HMS_');

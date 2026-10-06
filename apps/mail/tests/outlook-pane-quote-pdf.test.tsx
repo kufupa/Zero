@@ -149,7 +149,7 @@ vi.mock('../providers/query-provider', () => ({
 }));
 
 describe('Outlook pane quote proposal PDF', () => {
-  it('freezes the reviewed reply/PDF pair even when native revalidation fails before reply creation', async () => {
+  it('uses the current reviewed reply when revalidation failed before any native create was submitted', async () => {
     let reads = 0;
     sendCommandMock.mockImplementation(async (action: string) => {
       if (action === 'GET_ACTIVE_EMAIL') {
@@ -164,7 +164,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText('Reviewed reply'), { target: { value: '<p>Different quotation reply</p>' } });
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: AUTHORISED_REPLY_HTML })));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' })));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 })));
   });
   it('requires a fresh quote after the staff session changes on the same selected message', async () => {

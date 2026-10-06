@@ -589,10 +589,13 @@ export default function OutlookPanePage() {
     const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
     replyRetries.current.set(key, attempt);
 
-    // Freeze the reviewed reply/PDF pair before any native request can fail.
-    attempt.reviewedHtml ??= reviewedDraft.html;
-    attempt.pdf ??= { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
-    const quotationHtml = attempt.reviewedHtml;
+    // Before CREATE is submitted, staff may update the review. Once it may
+    // have reached Outlook, retries must replay the exact original pair.
+    if (!attempt.replyPayload) {
+      attempt.reviewedHtml = reviewedDraft.html;
+      attempt.pdf = { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
+    }
+    const quotationHtml = attempt.reviewedHtml ?? reviewedDraft.html;
     let draftCreated = false;
 
     try {

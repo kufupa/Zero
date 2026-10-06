@@ -29,7 +29,7 @@ It invokes:
 
 ```bash
 cd /home/ubuntu/repos/zero && \
-  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto \
   bash apps/server-pilot/deploy/launch-readiness.sh
 ```
 

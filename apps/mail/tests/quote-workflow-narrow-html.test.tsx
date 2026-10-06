@@ -76,7 +76,7 @@ describe('quote workflow narrow-pane HTML dump', () => {
     .py-1 { padding-top: 4px; padding-bottom: 4px; }
     .py-2 { padding-top: 8px; padding-bottom: 8px; }
     .pt-2 { padding-top: 8px; }
-    .rounded-sm { border-radius: 2px; }
+    .rounded-xs { border-radius: 2px; }
     .border { border: 1px solid #cbd5e1; }
     .border-t { border-top: 1px solid #e2e8f0; }
     .bg-white { background: #fff; }
