@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import { loadQuoteFixture } from '../lib/quote-workflow/fixtures';
+import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 
 describe('quote workflow narrow-pane HTML dump', () => {
@@ -37,11 +37,9 @@ describe('quote workflow narrow-pane HTML dump', () => {
       },
     });
     session = reduceQuoteSession(session, { type: 'mailbox_status', status: 'unsynced' });
-    session = reduceQuoteSession(session, {
-      type: 'results_ready',
-      offers: fixture.offers,
+    session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers, {
       reviewedReplyHtml: fixture.reviewedReplyHtml,
-    });
+    }));
     const { container } = render(
       <div id="quote-workflow-narrow" style={{ width: 380, maxWidth: 380 }}>
         <QuoteWorkflowPanel session={session} />

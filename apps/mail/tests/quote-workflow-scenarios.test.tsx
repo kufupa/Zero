@@ -4,7 +4,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import { loadQuoteFixture } from '../lib/quote-workflow/fixtures';
+import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteFixtureId } from '../lib/quote-workflow/fixtures';
 import type { QuoteSession } from '../lib/quote-workflow/types';
@@ -45,11 +45,9 @@ function sessionFromFixture(id: QuoteFixtureId): QuoteSession {
     },
   });
   if (fixture.offers.length) {
-    session = reduceQuoteSession(session, {
-      type: 'results_ready',
-      offers: fixture.offers,
+    session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers, {
       reviewedReplyHtml: fixture.reviewedReplyHtml,
-    });
+    }));
   }
   return session;
 }

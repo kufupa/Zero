@@ -81,6 +81,14 @@ export type QuoteOffer = {
 
 export type QuoteMailboxStatus = 'unsynced' | 'missing_source' | 'ready' | 'unavailable';
 
+export type QuoteEvidenceKind = 'authorised' | 'fixture';
+
+export type QuoteEvidenceProvenance = {
+  kind: QuoteEvidenceKind;
+  selectionEpoch: number;
+  inputRevision: number;
+};
+
 export type QuotePdf = { fileName: string; bytesBase64: string };
 
 export type QuoteToolStepStatus = 'queued' | 'ready' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -112,6 +120,7 @@ export type QuoteSession = {
   errorMessage: string | null;
   runningStepId: string | null;
   mailboxStatus: QuoteMailboxStatus | null;
+  evidence: QuoteEvidenceProvenance | null;
 };
 
 export type QuoteSessionAction =
@@ -123,7 +132,15 @@ export type QuoteSessionAction =
   | { type: 'analysis_failed'; message: string }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
-  | { type: 'results_ready'; offers: QuoteOffer[]; selectionEpoch?: number; reviewedReplyHtml?: string }
+  | {
+      type: 'results_ready';
+      offers: QuoteOffer[];
+      selectionEpoch?: number;
+      inputRevision?: number;
+      reviewedReplyHtml?: string;
+      provenance: QuoteEvidenceProvenance;
+    }
+  | { type: 'results_unavailable'; stepId: string; reason: string }
   | { type: 'step_running'; stepId: string }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }
   | { type: 'pdf_ready'; pdf: QuotePdf }

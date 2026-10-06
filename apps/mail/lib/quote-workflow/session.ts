@@ -1,4 +1,5 @@
 import type {
+  QuoteEvidenceProvenance,
   QuoteOffer,
   QuoteSession,
   QuoteSessionAction,
@@ -69,6 +70,7 @@ export function initialQuoteSession(): QuoteSession {
     errorMessage: null,
     runningStepId: null,
     mailboxStatus: null,
+    evidence: null,
   };
 }
 
@@ -78,7 +80,16 @@ export function allocationTotal(offers: readonly QuoteOffer[]): number {
     .reduce((sum, offer) => sum + offer.stayTotalMinor, 0);
 }
 
+export function evidenceMatchesSession(session: QuoteSession): boolean {
+  const evidence = session.evidence;
+  if (!evidence) return false;
+  if (evidence.inputRevision !== session.inputRevision) return false;
+  if (session.binding && evidence.selectionEpoch !== session.binding.selectionEpoch) return false;
+  return true;
+}
+
 export function canCreatePdf(session: QuoteSession): boolean {
+  if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
   return session.selectedOfferIds.some((id) =>
     session.offers.some((offer) => offer.id === id && offer.kind === 'allocation' && offer.sourceRef),
   );
@@ -95,7 +106,29 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     selectedOfferIds: [],
     pdf: null,
     runningStepId: null,
+    evidence: null,
+    reviewedReplyHtml: '',
+    errorMessage: null,
   };
+}
+
+function provenanceMatches(
+  session: QuoteSession,
+  provenance: QuoteEvidenceProvenance,
+  selectionEpoch?: number,
+  inputRevision?: number,
+): boolean {
+  if (provenance.inputRevision !== session.inputRevision) return false;
+  if (inputRevision !== undefined && inputRevision !== session.inputRevision) return false;
+  if (session.binding && provenance.selectionEpoch !== session.binding.selectionEpoch) return false;
+  if (
+    selectionEpoch !== undefined &&
+    session.binding &&
+    selectionEpoch !== session.binding.selectionEpoch
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function applyGroupPatch(
@@ -163,17 +196,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       });
     }
     case 'results_ready': {
-      if (
-        action.selectionEpoch !== undefined &&
-        session.binding &&
-        action.selectionEpoch !== session.binding.selectionEpoch
-      ) {
+      if (!action.provenance) return session;
+      if (!provenanceMatches(session, action.provenance, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
       return {
         ...session,
         phase: 'results',
         offers: action.offers,
+        evidence: action.provenance,
+        errorMessage: null,
         runningStepId: null,
         reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
         steps: session.steps.map((step) =>
@@ -183,6 +215,22 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ),
       };
     }
+    case 'results_unavailable':
+      return {
+        ...session,
+        phase: 'tools',
+        runningStepId: null,
+        offers: [],
+        selectedOfferIds: [],
+        pdf: null,
+        evidence: null,
+        errorMessage: action.reason,
+        steps: session.steps.map((step) =>
+          step.id === action.stepId
+            ? { ...step, status: 'failed' as const, retryGuidance: action.reason }
+            : step,
+        ),
+      };
     case 'step_running':
       return {
         ...session,

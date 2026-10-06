@@ -14,15 +14,46 @@ describe('native draft payload', () => {
     ).toBeNull();
   });
 
-  it('returns the reviewed HTML and exact PDF bytes', () => {
+  it('refuses fixture PDF bytes even when html is present', () => {
+    expect(
+      requireReviewedNativeDraft({
+        ...initialQuoteSession(),
+        reviewedReplyHtml: '<p>Parking is available on site.</p>',
+        pdf: { fileName: 'Quote-fixture-not-live-hms.pdf', bytesBase64: 'JVBERi0xLjQK' },
+        evidence: {
+          kind: 'fixture',
+          selectionEpoch: 1,
+          inputRevision: 1,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns reviewed HTML and exact PDF bytes only for authorised provenance', () => {
     const payload = requireReviewedNativeDraft({
       ...initialQuoteSession(),
+      binding: {
+        transportId: 't1',
+        mailboxEmail: 'centurion@legacyhotels.co.za',
+        storeId: 'store',
+        folderEntryId: 'inbox',
+        entryId: 'e1',
+        selectionEpoch: 1,
+        scopeEpoch: 1,
+      },
+      inputRevision: 1,
       reviewedReplyHtml: '<p>Parking is available on site.</p>',
-      pdf: { fileName: 'Quote-fixture-not-live-hms.pdf', bytesBase64: 'JVBERi0xLjQK' },
+      pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
+      evidence: {
+        kind: 'authorised',
+        selectionEpoch: 1,
+        inputRevision: 1,
+      },
     });
     expect(payload?.html).toContain('Parking is available on site.');
     expect(payload?.html).not.toContain('Thank you for Choosing The Centurion Hotel.');
-    expect(payload?.pdf.fileName).toBe('Quote-fixture-not-live-hms.pdf');
+    expect(payload?.pdf.fileName).toBe('Quote-authorised.pdf');
     expect(payload?.pdf.pdfBase64).toBe('JVBERi0xLjQK');
   });
 });
+

@@ -1,5 +1,6 @@
 import type {
   QuoteOffer,
+  QuoteSessionAction,
   QuoteWorkflowPhase,
   StayGroupRequirement,
 } from './types';
@@ -320,6 +321,22 @@ export const FIXTURE_PDF = {
   fileName: 'Quote-fixture-not-live-hms.pdf',
   bytesBase64: 'JVBERi0xLjQK',
 };
+
+export function fixtureResultsReady(
+  offers: QuoteOffer[],
+  extra: { reviewedReplyHtml?: string; selectionEpoch?: number; inputRevision?: number } = {},
+): QuoteSessionAction {
+  const selectionEpoch = extra.selectionEpoch ?? 1;
+  const inputRevision = extra.inputRevision ?? 1;
+  return {
+    type: 'results_ready',
+    offers,
+    selectionEpoch,
+    inputRevision,
+    reviewedReplyHtml: extra.reviewedReplyHtml,
+    provenance: { kind: 'fixture', selectionEpoch, inputRevision },
+  };
+}
 
 export function pickFixtureForSession(groups: StayGroupRequirement[]): QuoteFixtureId {
   if (groups.some((group) => group.organisation?.trim())) return 'agency-contract';

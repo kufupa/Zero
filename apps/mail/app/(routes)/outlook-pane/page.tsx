@@ -81,10 +81,10 @@ import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-p
 import { analyseLocalEmail } from '@/lib/quote-workflow/analyse-local';
 import {
   fixtureReplyHtml,
-  FIXTURE_PDF,
   loadQuoteFixture,
   pickFixtureForSession,
 } from '@/lib/quote-workflow/fixtures';
+import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import {
   bindAnalyseSelection,
@@ -1050,62 +1050,78 @@ export default function OutlookPanePage() {
               session={quoteSession}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
-                toast.warning(
-                  'Live PMS search is not run from this pane overnight. Fixture results below are not live inventory.',
-                );
                 const nextStep =
                   quoteSession.steps.find((step) => step.status === 'ready' || step.status === 'queued' || step.status === 'failed') ??
                   quoteSession.steps[0];
                 if (nextStep) dispatchQuote({ type: 'step_running', stepId: nextStep.id });
+                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
+                const inputRevision = quoteSession.inputRevision;
+                const stepId = nextStep?.id ?? 'quote-stay';
+                if (isQuoteFixturePreview()) {
+                  const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
+                  dispatchQuote({
+                    type: 'results_ready',
+                    offers: fixture.offers,
+                    selectionEpoch,
+                    inputRevision,
+                    provenance: { kind: 'fixture', selectionEpoch, inputRevision },
+                    reviewedReplyHtml: fixtureReplyHtml(
+                      fixture,
+                      (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
+                    ),
+                  });
+                  toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
+                  return;
+                }
                 const workflow = quoteWorkflowFromTrpc(trpcClient);
                 void bindRunStep({
                   mutate: workflow.runStep?.mutate,
-                  stepId: nextStep?.id ?? 'quote-stay',
-                  selectionEpoch: quoteSession.binding?.selectionEpoch ?? 0,
+                  stepId,
+                  selectionEpoch,
                 }).then((remote) => {
-                  if (remote.status === 'integration_unavailable' || remote.status === 'unavailable') {
+                  if (remote.status !== 'ok') {
+                    dispatchQuote({ type: 'results_unavailable', stepId, reason: remote.reason });
                     toast.warning(remote.reason);
+                    return;
                   }
-                });
-                const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
-                dispatchQuote({
-                  type: 'results_ready',
-                  offers: fixture.offers,
-                  selectionEpoch: quoteSession.binding?.selectionEpoch,
-                  reviewedReplyHtml: fixtureReplyHtml(
-                    fixture,
-                    (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
-                  ),
+                  dispatchQuote({
+                    type: 'results_ready',
+                    offers: remote.offers,
+                    selectionEpoch,
+                    inputRevision,
+                    provenance: { kind: 'authorised', selectionEpoch, inputRevision },
+                    reviewedReplyHtml: remote.reviewedReplyHtml,
+                  });
                 });
               }}
               onSelectOffer={(offerId) => dispatchQuote({ type: 'select_offers', offerIds: [offerId] })}
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
               onPreparePdf={() => {
                 if (!canCreatePdf(quoteSession)) {
-                  toast.warning('Select an allocation with source evidence before generating a PDF.');
+                  toast.warning('Select an authorised allocation with source evidence before generating a PDF.');
+                  return;
+                }
+                if (isQuoteFixturePreview() || quoteSession.evidence?.kind !== 'authorised') {
+                  toast.warning('Fixture preview cannot prepare an insertable PDF.');
                   return;
                 }
                 const workflow = quoteWorkflowFromTrpc(trpcClient);
-                if (!workflow.qualifiedProposalPdf?.mutate) {
-                  toast.warning(
-                    'qualifiedQuoteProposalPdf is not on this branch. Fixture PDF is not live HMS.',
-                  );
-                  dispatchQuote({ type: 'pdf_ready', pdf: FIXTURE_PDF });
-                  return;
-                }
+                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
+                const inputRevision = quoteSession.inputRevision;
                 void bindQualifiedProposalPdf({
-                  mutate: workflow.qualifiedProposalPdf.mutate,
+                  mutate: workflow.qualifiedProposalPdf?.mutate,
                   input: {
                     selectedOfferIds: quoteSession.selectedOfferIds,
-                    sourceRevision: quoteSession.binding?.selectionEpoch ?? 0,
+                    sourceRevision: inputRevision,
                     mailboxTransportId: quoteSession.binding?.transportId ?? '',
                   },
                 }).then((remote) => {
                   if (remote.status === 'unavailable') {
                     toast.warning(remote.reason);
-                    dispatchQuote({ type: 'pdf_ready', pdf: FIXTURE_PDF });
                     return;
                   }
+                  if (quoteSession.inputRevision !== inputRevision) return;
+                  if (quoteSession.binding?.selectionEpoch !== selectionEpoch) return;
                   dispatchQuote({
                     type: 'pdf_ready',
                     pdf: {

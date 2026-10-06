@@ -1,10 +1,9 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -76,7 +75,7 @@ describe('mounted Outlook pane quoting path at 380px', () => {
   });
   afterEach(() => cleanup());
 
-  it('has no September RATE_TABLE search UI and still runs HITL on the production page', () => {
+  it('has no September RATE_TABLE search UI and does not synthesize HITL money', async () => {
     const { container } = render(
       <div id="mounted-outlook-pane" style={{ width: 380, maxWidth: 380 }}>
         <OutlookPanePage />
@@ -90,7 +89,11 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
     expect(screen.getByRole('button', { name: /^Run next$/i })).toBeDefined();
 
-    prepareReviewedQuote();
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/enqueueHmsRead|without offers|not owned by this quoting UI|no quoteWorkflow.runStep/i)).toBeDefined();
+    });
+    expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i })).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();

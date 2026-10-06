@@ -1,0 +1,23 @@
+{
+  "at": "2026-10-06T02:42:42.982Z",
+  "chrome": "/home/orca/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  "css": "server-build-E6_kdtzl.css",
+  "html": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/styled-pane.html",
+  "png": "/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui/apps/mail/tests/browser-quote-workflow/styled-pane-380.png",
+  "viewport": {
+    "width": 380,
+    "height": 900
+  },
+  "interaction": {
+    "ok": true,
+    "arrival": "2026-11-12",
+    "adults": "2",
+    "paneWidth": 380,
+    "overflowX": 0,
+    "hasVerticalScroll": false,
+    "hasAllocation": false,
+    "hasFixturePdf": false,
+    "hasUnavailable": true
+  },
+  "note": "Built CSS inlined into post-HITL production dump. Keyboard/input via DOM events on Arrival/Adults. Not Windows Outlook. Playwright 1.52 browser missing."
+}

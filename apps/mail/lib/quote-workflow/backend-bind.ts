@@ -1,4 +1,4 @@
-import type { QuoteAnalysis } from './types';
+import type { QuoteAnalysis, QuoteOffer } from './types';
 
 /**
  * Existing backend APIs this quoting UI must bind to (this branch / origin/main).
@@ -52,7 +52,7 @@ export type AnalyseSelectionResult =
 
 export type RunStepResult =
   | { status: 'integration_unavailable'; reason: string }
-  | { status: 'ok' };
+  | { status: 'ok'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
 
 /** Minimal typed bind for live PDF. Not implemented on this branch. */
 export type QualifiedProposalPdfInput = {
@@ -118,7 +118,7 @@ export async function bindAnalyseSelection(args: {
 export type BoundRunStep =
   | { status: 'unavailable'; reason: string }
   | { status: 'integration_unavailable'; reason: string }
-  | { status: 'ok' };
+  | { status: 'ok'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
 
 export async function bindRunStep(args: {
   mutate?: (input: { stepId: string; selectionEpoch: number }) => Promise<RunStepResult>;
@@ -139,7 +139,14 @@ export async function bindRunStep(args: {
   if (result.status === 'integration_unavailable') {
     return { status: 'integration_unavailable', reason: result.reason };
   }
-  return { status: 'ok' };
+  const offers = 'offers' in result ? result.offers : undefined;
+  if (!Array.isArray(offers) || offers.length === 0) {
+    return {
+      status: 'unavailable',
+      reason: 'runStep returned ok without offers. Do not synthesize inventory.',
+    };
+  }
+  return { status: 'ok', offers, reviewedReplyHtml: result.reviewedReplyHtml };
 }
 
 export type BoundQualifiedPdf =
@@ -154,7 +161,7 @@ export async function bindQualifiedProposalPdf(args: {
     return {
       status: 'unavailable',
       reason:
-        'qualifiedQuoteProposalPdf / qualifiedProposalChoices are not on origin/main. Do not invent a second PDF engine. Overnight Prepare PDF stays fixture-labelled.',
+        'qualifiedQuoteProposalPdf / qualifiedProposalChoices are not on origin/main. Do not invent a second PDF engine. Do not substitute fixture PDF bytes.',
     };
   }
   const pdf = await args.mutate(args.input);

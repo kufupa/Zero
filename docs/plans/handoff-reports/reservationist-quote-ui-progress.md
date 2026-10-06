@@ -9,26 +9,22 @@
 | Start | 2026-10-05T23:12:03Z |
 | Deadline | 2026-10-06T07:12:03Z |
 | Stop launching long tasks | 2026-10-06T06:57:03Z |
-| Last update | 2026-10-06T02:16:00Z |
+| Last update | 2026-10-06T02:42:42Z |
 
 Do not treat the 23:42 ledger “94 green” as current. That run is **earlier green** at 23:40:57Z, before RATE_TABLE native-PDF removal.
 
 ## Current task
 
-Handoff sections written. Mounted-pane 380px Chromium captured after HITL. Independently achievable overnight UI scope complete. **Not live-ready.**
+Production path no longer synthesizes offers/PDF. Styled 380px pane captured with built CSS. Independently achievable UI+safety scope complete. **Not live-ready.**
 
 ## Completed evidence
 
 - Isolated linked worktree from `origin/main`. Sibling tree not modified by this agent.
 - Plan + session reducer + fixtures already committed (`3bd1c547`, `139f3c51`, `9389d510`).
-- HITL panel: editable groups, tool steps, document review. Insert Draft visible (`hasSearched` default false). Screenshot control labelled demo not authorised.
-- Native insert: `requireReviewedNativeDraft` only. No `workstation.quoteProposalPdf`, no generic wrapper HTML, no RATE_TABLE bytes on the quoting path. RATE_TABLE still exists for leftover gated Search Criteria visuals.
-- Pane calls `quoteWorkflow.analyseSelection` / `runStep` via `backend-bind.ts` when the tRPC client has them. Tests mock a partial client → `unavailable`. Local classification still fills HITL so staff can walk fixture PDF; banner says mailbox analysis is unsynced/unbound.
-- **Earlier green (not this HEAD):** 2026-10-05T23:40:57Z — 94 mail tests PASS (RATE_TABLE fallback still present).
-- **Latest visible fail (preserve):** 2026-10-06T00:23:04Z — 4 failed / 81 passed (85) after RATE_TABLE cut (`Run next` missing without mailbox; selection-switch inserts blocked without HITL). 00:55:09Z rerun 4 failed then 1 failed (259 vs 258) until in-flight wait.
-- **Latest green (this HEAD):** 2026-10-06T01:04:06Z — mail **94 passed / 10 files**; server `quote-workflow-router` **7 passed**. `DATABASE_URL` unset.
-- **After sample-UI strip (this dirty tree, pre-commit):** 2026-10-06T02:09:50Z mail **95 passed / 10 files**; 2026-10-06T02:09:17Z `@zero/server` quote-workflow **13 passed / 2 skipped / 3 files**. 2026-10-06T02:13:38Z mail build + server `tsc` exit 0. `DATABASE_URL` unset.
-- Narrow pane: `apps/mail/tests/browser-quote-workflow/narrow-pane-380.png` Chromium-1243, viewport 380×900, production panel markup. Playwright 1.52 wanted missing `chromium_headless_shell-1169`. Not live Outlook/Windows.
+- HITL panel: editable groups, tool steps. Production Run next does not emit fixture offers. `?quotePreview=fixture` is explicit non-production and cannot native-insert.
+- Native insert: `requireReviewedNativeDraft` requires authorised evidence matching selection + inputRevision. Fixture filename rejected.
+- **Latest mail green:** 2026-10-06T02:35:30Z — **102 passed / 12 files**. Server 02:37:38Z **13 passed / 2 skipped**. `DATABASE_URL` unset.
+- Styled pane: `styled-pane-380.png` 02:42:42Z, built CSS `server-build-E6_kdtzl.css`, overflowX 0, Arrival=2026-11-12 Adults=2, no Allocation.
 
 ## Backend integration seams (existing APIs only)
 
@@ -36,8 +32,8 @@ Handoff sections written. Mounted-pane 380px Chromium captured after HITL. Indep
 | --- | --- | --- |
 | Mailbox analysis | `trpc.quoteWorkflow.analyseSelection` (`mailboxProcedure`) → `loadSyncedQuoteSelectionFromMailbox` (`getDb` + `message.messageIdHeader` + preceding `receivedAt` + `attachment` identity) | Default **unsynced** without `internetMessageId` or matching row. No S3 bodies. No PMS. |
 | Live inventory | `trpc.quoteWorkflow.runStep` → later `ai.enqueueHmsRead({ toolId: 'hms_quote_stay' })` | **`integration_unavailable`**. Not called into HMS. No second PMS owner. |
-| Native unsent draft | Classic Outlook `CREATE_REPLY_DRAFT` then `ADD_ATTACHMENT_TO_DRAFT` | Bound. Bytes = reviewed session PDF. |
-| Qualified PDF | sibling `qualifiedQuoteProposalPdf` / `qualifiedProposalChoices` | **Not on this branch.** Honest gap. Fixture PDF labelled not live HMS. |
+| Native unsent draft | Classic Outlook `CREATE_REPLY_DRAFT` then `ADD_ATTACHMENT_TO_DRAFT` | Bound. Blocked without authorised evidence. |
+| Qualified PDF | sibling `qualifiedQuoteProposalPdf` / `qualifiedProposalChoices` | **Not on this branch.** No fixture PDF substitute. |
 
 Missing backend is an honest gap, not a reason to add another quote engine.
 

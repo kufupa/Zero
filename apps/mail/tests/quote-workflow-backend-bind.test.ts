@@ -76,6 +76,19 @@ describe('quote workflow backend bind', () => {
     expect(mutate).not.toHaveBeenCalledWith(expect.objectContaining({ toolId: 'hms_quote_stay' }));
   });
 
+  it('does not treat runStep ok without offers as authorised inventory', async () => {
+    const mutate = vi.fn(async () => ({ status: 'ok' as const }));
+    const result = await bindRunStep({
+      mutate,
+      stepId: 'quote-stay',
+      selectionEpoch: 1,
+    });
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toMatch(/without offers|do not synthesize/i);
+    }
+  });
+
   it('does not invent a second PDF engine when qualifiedQuoteProposalPdf is absent', async () => {
     const result = await bindQualifiedProposalPdf({
       input: { selectedOfferIds: ['a'], sourceRevision: 1, mailboxTransportId: 't1' },

@@ -121,6 +121,7 @@ export function QuoteWorkflowPanel({
 
   return (
     <div className="flex flex-col gap-3">
+      {session.errorMessage ? <StatusNote>{session.errorMessage}</StatusNote> : null}
       {session.mailboxStatus && session.mailboxStatus !== 'ready' ? (
         <StatusNote>
           {session.mailboxStatus === 'unsynced'

@@ -113,6 +113,9 @@ describe('quote session', () => {
           quoteRequestKey: '2026-11-12:2026-11-14',
         },
       ],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     s = reduceQuoteSession(s, { type: 'pdf_ready', pdf: { fileName: 'Quote.pdf', bytesBase64: 'JVBERw==' } });
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
@@ -175,6 +178,8 @@ describe('quote session', () => {
       type: 'results_ready',
       offers: [],
       selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     const changed = reduceQuoteSession(s, { type: 'selection', binding: bind({ entryId: 'e2', selectionEpoch: 2 }) });
     const ignored = reduceQuoteSession(changed, {
@@ -198,6 +203,8 @@ describe('quote session', () => {
         },
       ],
       selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
     expect(stale.phase).toBe('results');
     expect(ignored.offers).toEqual([]);
@@ -219,6 +226,105 @@ describe('quote session', () => {
       { ...quoteAnalysis.groups[0]!, id: 'b', arrivalDate: '2026-11-10', departureDate: '2026-11-12' },
     ]);
     expect(staggered.filter((step) => step.kind === 'quote_stay')).toHaveLength(2);
+  });
+
+  it('ignores results whose inputRevision or selection no longer match', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    const ignored = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [
+        {
+          id: 'stale-money',
+          kind: 'allocation',
+          roomCode: 'SKNG',
+          roomLabel: 'Standard King',
+          board: 'bb',
+          rateCode: 'BAR',
+          currency: 'ZAR',
+          nightly: [{ date: '2026-11-12', amountMinor: 99999 }],
+          stayTotalMinor: 99999,
+          observedAt: '2026-10-05T12:00:00Z',
+          sourceRef: 'stale',
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: 'k',
+        },
+      ],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    expect(ignored.offers).toEqual([]);
+    expect(ignored.evidence).toBeNull();
+  });
+
+  it('records authorised evidence on results and clears it after staff edits', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [
+        {
+          id: 'o1',
+          kind: 'allocation',
+          roomCode: 'SKNG',
+          roomLabel: 'Standard King',
+          board: 'bb',
+          rateCode: 'BAR',
+          currency: 'ZAR',
+          nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+          stayTotalMinor: 272000,
+          observedAt: '2026-10-05T12:00:00Z',
+          sourceRef: 'src-1',
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: '2026-11-12:2026-11-14',
+        },
+      ],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    expect(s.evidence).toEqual({ kind: 'authorised', selectionEpoch: 1, inputRevision: 1 });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(true);
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    expect(s.evidence).toBeNull();
+    expect(canCreatePdf(s)).toBe(false);
+  });
+
+  it('does not treat fixture evidence as PDF-eligible', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [
+        {
+          id: 'fix-1',
+          kind: 'allocation',
+          roomCode: 'SKNG',
+          roomLabel: 'Standard King',
+          board: 'bb',
+          rateCode: 'BAR',
+          currency: 'ZAR',
+          nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+          stayTotalMinor: 272000,
+          observedAt: '2026-10-05T12:00:00Z',
+          sourceRef: 'src-1',
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: '2026-11-12:2026-11-14',
+        },
+      ],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'fixture', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['fix-1'] });
+    expect(canCreatePdf(s)).toBe(false);
+    expect(canCreateNativeDraft(s)).toBe(false);
   });
 
   it('records mailbox analyseSelection status without wiping local groups', () => {
