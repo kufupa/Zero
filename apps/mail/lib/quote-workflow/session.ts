@@ -410,6 +410,7 @@ function provenanceMatches(
 }
 
 function hasStaffStayEdits(session: QuoteSession): boolean {
+  if (session.inputRevision > 1) return true;
   return session.groups.some((group) =>
     Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
   );
