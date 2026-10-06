@@ -1,10 +1,10 @@
 # Reservationist Outlook quoting UI — handoff
 
-**Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`  
-**Branch:** `feat/reservationist-quote-ui`  
-**HEAD:** `dac83c1d` + closeout ledger (04:21 harness stopped)  
-**Base:** `origin/main` `2e3f1b3f` (PR #28 mailbox history/live-sync)  
-**Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — **not edited by this executor**  
+**Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`
+**Branch:** `feat/reservationist-quote-ui`
+**HEAD:** `dac83c1d` + closeout ledger (04:21 harness stopped)
+**Base:** `origin/main` `2e3f1b3f` (PR #28 mailbox history/live-sync)
+**Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — **not edited by this executor**
 **Verdict:** Independent **UI checkpoint complete**. Live AI / S3 / PMS / qualified PDF / Windows Outlook still **unavailable**. **Not product-ready.** Do **not** mark the original overnight product goal complete. No merge, deploy, send, or PMS in this window.
 
 ## 1. Overlapping paths vs sibling

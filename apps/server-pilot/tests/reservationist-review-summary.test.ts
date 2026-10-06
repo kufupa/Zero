@@ -73,7 +73,6 @@ it('shows retained selected scope board, party and inclusion terms with source t
  const detail=summary({tasks:[{id:'book',kind:'acceptance',status:'pending_pms_action'}],packets:[packet]}).tasks[0].details.join('\n');
  expect(detail).toContain('Standard Queen');expect(detail).toContain('Best Available Rate');expect(detail).toContain('Breakfast');expect(detail).toContain('VAT included');expect(detail).toContain('Tourism levy included');expect(detail).toContain('Adult breakfast');expect(detail).toContain('Organization: Synthetic Org');expect(detail).toContain('Party evidence observed 2026-10-04T09:00:00Z');expect(detail).toContain('Quote authored 2026-10-03');expect(detail).toContain('3 days');expect(detail).toContain('Accepted 2026-10-04T08:00:00Z');expect(detail).not.toContain('secret-hash');expect(detail).not.toContain('org1');
 });
-
 it('retains approval provenance only in authorized staff pricing review while guest totals remain separate',async()=>{
  const {syntheticRevision}=await import('./helpers/synthetic-quote-revision.js');const {resolveApprovedOverride}=await import('../src/quote-proposal/quote-revision.js');
  const revision=await syntheticRevision();const override=await resolveApprovedOverride({revision,ref:'approval',evaluationAt:'2026-10-04T09:30:00Z',resolveApproval:async()=>({ref:'approval',authorizationId:revision.authorizationId,revisionId:revision.id,sourceHash:'a'.repeat(64),actorRef:'Staff Reviewer',reason:'Authorized account adjustment',approvedAt:'2026-10-04T09:00:00Z',amount:'2000.00',currency:'ZAR'}),authorizeActor:async()=>true});
@@ -195,4 +194,3 @@ it('changes action identity with the selected source and retains long request me
  const second=summary({tasks:[{id:'ask',kind:'question',status:'blocked',requestSource:requestSource(text,'message:other')}]}).staffActions[0];
  expect(first.text).toBe(text);expect(first.text).toContain('including the late arrival?');expect(second.id).not.toBe(first.id);
 });
-

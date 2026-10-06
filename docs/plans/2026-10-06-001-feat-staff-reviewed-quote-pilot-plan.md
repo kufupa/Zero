@@ -235,4 +235,3 @@ No full interactive seven-pass design-review completion or mockup approval is cl
 - A 45-minute end-to-end delivery is not supported by current missing route/approved-input composition. Faster completion is welcome when reuse proves easier; do not occupy a time budget with extra tests.
 - If installed composition cannot be reused quickly, report the exact missing production adapter/export and finish independent UI work. Do not spend hours expanding replay, building a framework or producing more mock demonstrations.
 - Deploy the scoped quote pilot only after explicit rollout authorization and the relevant host acceptance; keep further corpus/agent improvements out of this release path.
-

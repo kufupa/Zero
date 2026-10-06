@@ -35,7 +35,6 @@ it.each(['recorded_quote_request_unavailable','recorded_party_request_unavailabl
  const result=await runReservationistRuntime({...input,messages:[{...input.messages[0],text}]},factory.dependencies);
  expect(result.tasks[0].status).toBe('needs_clarification');expect(result.textBody).toContain('Our reservations team needs to check');expect(result.textBody).not.toContain('Staff must verify');expect(result.textBody).not.toMatch(/Please confirm.*native/i);expect(result.readRecoveries).toContainEqual({taskId:'quote',codes:[code]});expect(result.artifacts).toEqual([]);expect(result.quoteRevisions).toEqual([]);expect(result.preparedFacts).toEqual([]);expect(result.packets).toEqual([]);
 });
-
 it.each([
  ['recorded_quote_request_unavailable','availability and rates'],
  ['business_selected_price_unavailable','availability and rates'],
@@ -724,4 +723,3 @@ it('recognizes multiline requested value-added quote benefits as unapproved comm
  const {deriveStaffAnswerTopics}=await import('../src/ai/reservationist-execution.js');
  expect(deriveStaffAnswerTopics('We would appreciate your best competitive rates for our procurement and any\nvalue-added inclusions or benefits you may be able to extend for the above\nrequirement.')).toContain('rate_benefits');
 });
-

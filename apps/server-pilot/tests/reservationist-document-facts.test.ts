@@ -152,7 +152,6 @@ it('normalizes sourced ZAR ceiling as customer claim and rejects impossible date
     ),
   ).toThrow();
 });
-
 it('requires exact unique task request spans for quote plus two questions',()=>{
  const text='Please quote. Is breakfast included? Is parking available?';const original={...source,pages:[text]};
  const task=(id:string,kind:string,quote:string)=>({id,kind,factIds:[],source:{attachmentId:'a',sourceHash:source.sourceHash,page:1,quote,start:text.indexOf(quote),end:text.indexOf(quote)+quote.length}});
@@ -358,4 +357,3 @@ it.each(['Not 25 guests arriving on 11 October 2026','25 guests arriving on 17 O
  const text=lead+'\nAccommodation required from 10 to 16 October 2026',source={attachmentId:'a',sourceHash:'a'.repeat(64),page:1,quote:text,start:0,end:text.length};
  expect(()=>validateDocumentPlan({facts:[{id:'stay',kind:'dates',disclosure:'guest',source,value:{arrival:'11 October 2026',departure:'16 October 2026'}}],tasks:[{id:'q',kind:'quote',source,factIds:['stay']}],unresolvedAsks:[]},[{attachmentId:'a',sourceHash:'a'.repeat(64),pages:[text],pageCount:1,disclosure:'guest'}])).toThrow();
 });
-

@@ -96,4 +96,3 @@ This is the remaining acceptance procedure, not a completed deployment receipt:
 5. Edit the complete reply, explicitly insert the unsent reply, then inspect Outlook: every edited paragraph present, the exact selected PDF attached, correct recipient/thread, no send. If the native result is uncertain, inspect Outlook before retrying; do not create blind duplicate drafts.
 
 The immediate pilot permits staff-confirmed/manual facts and consumes available backend review output. This work does not by itself prove new automatic PDF-agent extraction, exhaustive question inventory or broad-corpus AI accuracy. Source-linked action acknowledgments use the existing UI session; any persistence limitation belongs in the UI owner's final handoff.
-

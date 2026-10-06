@@ -82,7 +82,6 @@ describe('reservationist tools', () => {
     expect(src).not.toMatch(/^import[^;]*(playwright|stagehand|fetch-quote|create-lab)/m);
   });
 });
-
 describe('reservationist agent', () => {
   it('exposes exactly the four tools and hotel rules from request context', async () => {
     const agent = createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners() });
@@ -98,4 +97,3 @@ describe('reservationist agent', () => {
     expect(String(instructions)).toContain(CENTURION_HOTEL_RULES);
   });
 });
-

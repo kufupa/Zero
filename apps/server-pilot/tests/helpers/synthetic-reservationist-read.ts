@@ -20,4 +20,3 @@ export async function syntheticReservationistRead(options:{fields?:string[];foli
  const authorizeEvidence=vi.fn(async({binding,grant}:any)=>options.proof===null?null:[{authorizationId:grant.authorizationId,inputDigest:binding.inputDigest,requestDigest:binding.requestDigest,evidenceRef:'source',sourceHash:'a'.repeat(64),observedAt:at,expiresAt:expiry,disclosure:'guest' as const,...options.proof}]);
  return{input,context,request,authorizeRead,authorizeEvidence,handler,readContext,deps:{context,request,signal:context.signal,authorizeRead,authorizeEvidence}};
 }
-

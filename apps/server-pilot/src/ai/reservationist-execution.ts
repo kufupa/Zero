@@ -58,7 +58,7 @@ function documentRequestLabel(task:Task):string{
 }
 function staffClarificationLabels(topics:readonly StaffAnswerTopic[],text:string):string[]{
  const labels=topics.map(topic=>topic==='check_in'&&/\bearly\b/i.test(text)?'early check-in permission':topic==='check_out'&&/\blate\b/i.test(text)?'late check-out permission':topic==='payment_evidence'?'proof of payment and payment confirmation':staffAnswerLabels[topic]);
- if(topics.some(topic=>topic==='check_in'||topic==='check_out')&&/\b(?:fee|fees|charge|charges|cost|costs)\b/i.test(text))labels.push(...topics.filter(topic=>topic==='check_in'||topic==='check_out').map(topic=>topic==='check_in'&&/\bearly\b/i.test(text)?'early check-in charge':topic==='check_out'&&/\blate\b/i.test(text)?'late check-out charge':'fees for the requested timing')); 
+ if(topics.some(topic=>topic==='check_in'||topic==='check_out')&&/\b(?:fee|fees|charge|charges|cost|costs)\b/i.test(text))labels.push(...topics.filter(topic=>topic==='check_in'||topic==='check_out').map(topic=>topic==='check_in'&&/\bearly\b/i.test(text)?'early check-in charge':topic==='check_out'&&/\blate\b/i.test(text)?'late check-out charge':'fees for the requested timing'));
  return labels;
 }
 function sourceIncompleteReply(task:Task):string{

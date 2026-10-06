@@ -68,4 +68,3 @@ it('keeps adjustment actor, approval time, private reason and original revision 
 });
 
 it('keeps internal revision identifiers and evidence explanations out of guest quotations',async()=>{const r=await syntheticRevision(),html=renderRevisionProposalHtml(r,header);expect(html).not.toContain(r.id);expect(html).not.toContain('commercial evidence');expect(html).toContain('VAT and tourism levy included');expect(html).toContain('no rooms are currently being held');});
-

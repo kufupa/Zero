@@ -230,4 +230,3 @@ describe('staff-approved quotation beneath native guards', () => {
     ).rejects.toThrow('selected_price');
   });
 });
-

@@ -21,4 +21,3 @@ export function syntheticReservationistPriorQuoteFixture(text='Please resend quo
  f.document.sourceProof={...f.document.sourceProof,purpose:'existing_quote',reservationRef:null,priorQuoteRef,documentRef:'opaque-original-document',pageText:page,pageHash:hash(page)};
  return f;
 }
-

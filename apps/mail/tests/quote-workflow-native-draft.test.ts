@@ -123,4 +123,3 @@ describe('native draft payload', () => {
     ).toBeNull();
   });
 });
-

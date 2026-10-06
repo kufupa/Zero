@@ -114,7 +114,6 @@ it('refuses multiplication overflow and rounding-bound overflow while retaining 
     ...target, nightlyMinor: [Number.MAX_SAFE_INTEGER - 1, 1], totalMinor: Number.MAX_SAFE_INTEGER,
   })).toMatchObject({ status: 'match', differenceMinor: 0 });
 });
-
 const totalTarget={currency:'ZAR',basis:'total' as const,scopeDigest:'scope',taxBasis:'gross_included' as const,totalMinor:312000};
 const totalClaim={...claim,kind:'total' as const,basis:'total' as const,amount:'3120.00',source:{ref:'source-letter',page:1,quote:'Total ZAR 3120.00'}};
 describe('sourced total-only comparison targets',()=>{
@@ -144,4 +143,3 @@ describe('sourced total-only comparison targets',()=>{
   expect(compareRateClaim(totalClaim,{...totalTarget,nightlyMinor:[312000],quantity:1} as any)).toMatchObject({status:'cannot_check',reason:'invalid_contract'});
  });
 });
-

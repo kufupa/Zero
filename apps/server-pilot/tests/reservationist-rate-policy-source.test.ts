@@ -25,7 +25,6 @@ describe('source-owned selected rate-family policy',()=>{
  it('guards source mutation during authorized original read',async()=>{const s=setup();s.read.mockImplementationOnce(async()=>{s.source.sha256='b'.repeat(64);return s.documents;});await expect(s.invoke()).rejects.toThrow('rate_policy_source_unauthorized');});
  it('denies context authorization without reading original policy sources',async()=>{const s=setup();s.authorize.mockResolvedValueOnce(false);await expect(s.invoke()).rejects.toThrow('rate_policy_source_unauthorized');expect(s.read).not.toHaveBeenCalled();});
 });
-
 function hotelTermsSetup(){
  const s=setup();s.source.result.groups[0].options[0].rate={code:'BAR',label:'Best Available Rate'};s.source.result.groups[0].options[0].board='Bed & Breakfast R';s.source.result.groups[0].options[0].nightly[0].price={currency:'ZAR'};
  delete s.d.authoredDate;delete s.d.rateCode;delete s.d.board;
@@ -39,4 +38,3 @@ describe('explicit original hotel rate terms',()=>{
  it('does not borrow general taxes to infer a dinner package',async()=>{const s=hotelTermsSetup();s.source.result.groups[0].options[0].board='Dinner Bed & Breakfast R';expect(await s.resolver(s.ctx,s.source,s.selections,'HRCEN','BAR','dinner_bed_breakfast')).toBeNull();});
  it('does not promote native conditional loyalty eligibility',async()=>{const s=hotelTermsSetup();s.source.result.groups[0].options[0].rate.code='BLRB';s.source.result.groups[0].options[0].eligibility='conditional';await expect(s.resolver(s.ctx,s.source,s.selections,'HRCEN','BLRB','breakfast')).rejects.toThrow('rate_policy_selected_scope_invalid');expect(s.read).not.toHaveBeenCalled();});
 });
-

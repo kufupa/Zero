@@ -23,7 +23,6 @@ describe('revision display runs', () => {
   expect(() => deriveQuoteLines({...r,overrides:[]} as any)).toThrow(/unsupported/);
  });
 });
-
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
 it('only suppresses proven same-person same-date meal entitlement; chargeable child breakfast remains',async()=>{
  const r=await syntheticRevision();
@@ -35,4 +34,3 @@ it('only suppresses proven same-person same-date meal entitlement; chargeable ch
  expect(deriveAuthorizedExtraLines(r,facts)[0]).toMatchObject({units:1,totalMinor:12550});
  expect(()=>deriveAuthorizedExtraLines(r,{...facts,revisionId:'foreign'})).toThrow(/scope/);
 });
-

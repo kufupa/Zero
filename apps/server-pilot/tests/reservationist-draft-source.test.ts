@@ -19,4 +19,3 @@ it('binds a genuine canonical channel receipt to the exact original draft source
  expect(packet.status).toBe('pending_pms_action');expect(()=>assertChannelPacketDraftSource(packet,bound,new Date(at))).not.toThrow();
  for(const changed of [{...bound,propertyCode:'FOREIGN'},{...bound,transportId:'foreign'},{...bound,threadId:'foreign'},{...bound,triggerMessageId:'foreign'},{...bound,causalAt:'2026-10-05T01:01:00.000Z'},{...bound,messages:[{...bound.messages[0]!,sourceHash:'c'.repeat(64)}]}])expect(()=>assertChannelPacketDraftSource(packet,changed,new Date(at))).toThrow();
 });
-

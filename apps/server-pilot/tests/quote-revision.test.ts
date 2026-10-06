@@ -399,7 +399,6 @@ it('rejects altered revision totals before acceptance or approval', async () => 
     }),
   ).toMatchObject({ status: 'invalid_revision' });
 });
-
 it('persists source freshness using the admitted source age bound without renewing the observation',async()=>{
  const value=await revision();
  expect((value as any).sourceFreshness).toEqual({authorizationId:'auth-1',sourceRefs:['source-1'],observedAt:'2026-10-04T09:00:00.000Z',expiresAt:'2026-10-05T09:00:00.000Z',purpose:'offer_source'});
@@ -433,4 +432,3 @@ it.each(['missing','invalid_date','foreign_hash','future','unbound_additional_ha
  const record=source(),termsPolicy={...policy,authoredDates:[],sourcePublications:[{sourceHash:policy.sourceHashes[0]!,publishedAt:'2026-09-11T07:43:58.000Z'}]};if(key==='missing')termsPolicy.sourcePublications=[];if(key==='invalid_date')termsPolicy.sourcePublications[0]!.publishedAt='not-a-date';if(key==='foreign_hash')termsPolicy.sourcePublications[0]!.sourceHash='c'.repeat(64);if(key==='future')termsPolicy.sourcePublications[0]!.publishedAt='2026-10-05T00:00:00Z';if(key==='unbound_additional_hash')termsPolicy.sourceHashes=[...termsPolicy.sourceHashes,'c'.repeat(64)];
  await expect(resolveQuoteRevision({admission:admission([record]),propertyCode:'HRCEN',selections:[{sourceRef:record.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],authoredDate:'2026-10-04',resolveSource:async()=>record,resolvePolicy:async()=>termsPolicy})).rejects.toThrow('unqualified_inclusions');
 });
-

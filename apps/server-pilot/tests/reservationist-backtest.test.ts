@@ -91,7 +91,6 @@ describe('buildCases', () => {
     expect(agent?.stratum).toBe('quote_party');
   });
 });
-
 describe('pickPhaseA', () => {
   it('is deterministic, prefers the latest day, and caps quotes at 1 party + 3 fit', () => {
     const rows = [];
@@ -295,4 +294,3 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[cancel]},cancelApproved,'authoritative_source_replay').pass).toBe(true);
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[{...cancel,requested}]},cancelApproved,'authoritative_source_replay').pass).toBe(false);
 });
-

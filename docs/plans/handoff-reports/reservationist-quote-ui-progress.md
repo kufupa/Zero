@@ -1,7 +1,7 @@
 # Reservationist Outlook quoting UI — progress
 
-**Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`  
-**Branch:** `feat/reservationist-quote-ui` (tracks `origin/main` at start `2e3f1b3f`)  
+**Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`
+**Branch:** `feat/reservationist-quote-ui` (tracks `origin/main` at start `2e3f1b3f`)
 **Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — read-only
 
 | Clock | UTC |
