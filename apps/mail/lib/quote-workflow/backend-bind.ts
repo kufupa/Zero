@@ -50,6 +50,13 @@ export type AnalyseSelectionResult =
       sourceRevision: number;
     };
 
+export type RunStepRequest = {
+  stepId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  inputs: Record<string, unknown>;
+};
+
 export type RunStepResult =
   | { status: 'integration_unavailable'; reason: string }
   | { status: 'ok'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
@@ -70,7 +77,7 @@ export type QualifiedProposalPdfResult = {
 type QuoteWorkflowClient = {
   analyseSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
   runStep?: {
-    mutate: (input: { stepId: string; selectionEpoch: number }) => Promise<RunStepResult>;
+    mutate: (input: RunStepRequest) => Promise<RunStepResult>;
   };
   qualifiedProposalPdf?: {
     mutate: (input: QualifiedProposalPdfInput) => Promise<QualifiedProposalPdfResult>;
@@ -121,9 +128,11 @@ export type BoundRunStep =
   | { status: 'ok'; offers: QuoteOffer[]; reviewedReplyHtml?: string };
 
 export async function bindRunStep(args: {
-  mutate?: (input: { stepId: string; selectionEpoch: number }) => Promise<RunStepResult>;
+  mutate?: (input: RunStepRequest) => Promise<RunStepResult>;
   stepId: string;
   selectionEpoch: number;
+  inputRevision: number;
+  inputs: Record<string, unknown>;
 }): Promise<BoundRunStep> {
   if (!args.mutate) {
     return {
@@ -135,6 +144,8 @@ export async function bindRunStep(args: {
   const result = await args.mutate({
     stepId: args.stepId,
     selectionEpoch: args.selectionEpoch,
+    inputRevision: args.inputRevision,
+    inputs: args.inputs,
   });
   if (result.status === 'integration_unavailable') {
     return { status: 'integration_unavailable', reason: result.reason };

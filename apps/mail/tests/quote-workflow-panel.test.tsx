@@ -110,21 +110,25 @@ describe('QuoteWorkflowPanel', () => {
 
   it('runs next only when not already running, and shows retry guidance on failure', () => {
     const onRunNext = vi.fn();
+    const onRunStep = vi.fn();
     let session = sessionFromFixture('failed-run');
     session = { ...session, steps: [{
       id: 'quote-1',
       kind: 'quote_stay',
       title: 'Search availability for 12–14 Nov',
-      inputs: {},
+      inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
       dependsOn: [],
       status: 'failed',
       retryGuidance: sessionFromFixture('failed-run').errorMessage ??
         'The read failed before a quote result was stored. Approve the same step again; do not assume inventory is held.',
     }], phase: 'tools' };
-    render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} />);
+    render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
     expect(screen.getByText(/do not assume inventory is held/i)).toBeDefined();
+    expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: /Run next/i }));
     expect(onRunNext).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i }));
+    expect(onRunStep).toHaveBeenCalledWith('quote-1');
   });
 
   it('does not sum alternatives and shows honest missing screenshots', () => {
@@ -138,5 +142,53 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText(/Mailbox quoteWorkflow.analyseSelection: unsynced/i)).toBeDefined();
     expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
+  });
+
+  it('disables stay search until party lookup succeeds and parses blank children ages as empty', () => {
+    const onRunStep = vi.fn();
+    const onPatchGroup = vi.fn();
+    let session = sessionFromFixture('agency-contract');
+    session = {
+      ...session,
+      offers: [],
+      phase: 'requirements',
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={session}
+        onRunStep={onRunStep}
+        onPatchGroup={onPatchGroup}
+      />,
+    );
+    const party = screen.getByRole('button', { name: /Run Look up organisation Provincial Treasury/i });
+    const stay = screen.getByRole('button', { name: /Run Search availability/i });
+    expect((party as HTMLButtonElement).disabled).toBe(false);
+    expect((stay as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(stay);
+    expect(onRunStep).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Children ages'), { target: { value: ' , ' } });
+    expect(onPatchGroup).toHaveBeenCalledWith('g1', { childrenAges: [] });
+  });
+
+  it('keeps two date-group allocations selected and blocks a partial PDF', () => {
+    const onSelectOffer = vi.fn();
+    let session = sessionFromFixture('staggered-dates');
+    session = {
+      ...session,
+      evidence: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+      reviewedReplyHtml: '<p>Authorised</p>',
+    };
+    const first = render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
+    fireEvent.click(screen.getAllByRole('button').find((el) => (el.textContent ?? '').includes('Allocation'))!);
+    expect(onSelectOffer).toHaveBeenCalled();
+    first.unmount();
+    session = { ...session, selectedOfferIds: ['st-a'] };
+    render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    session = { ...session, selectedOfferIds: ['st-a', 'st-b'] };
+    cleanup();
+    render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByText(/Separate date searches do not prove joint availability/i)).toBeDefined();
   });
 });

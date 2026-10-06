@@ -30,5 +30,10 @@ Distinguish **earlier green** from **latest** fail/green. Do not treat a prior p
 | 2026-10-06T02:54:41Z | 10 mail files (workflow + pane render/pdf/narrow/native/bind + stale admission) | **PASS 97** — *latest mail green on this HEAD; includes 2 new session + 3 deferred pane tests. Not the 02:35 102-file set.* |
 | 2026-10-06T02:56:27Z | `apps/mail` `tsc --noEmit` | **pre-existing errors** (react-router `+types`, unrelated threads/admin). Not used as this branch’s type gate. |
 | 2026-10-06T02:58:52Z | `pnpm --filter @zero/mail build` | **exit 0**. Client `✓ built in 1m 3s`. SSR `✓ built in 47.80s`. Oxlint 0. CSS hash `server-build-z2y6fotO.css` (screenshot still `E6_kdtzl` from 02:42). |
+| 2026-10-06T03:13:35Z | session/panel/bind/step-runner/stale-pdf/no-fake/quote-pdf | **PASS 51 / 7 files** |
+| 2026-10-06T03:14:07Z | `@zero/server` `quote-workflow-router.test.ts` | **PASS 8** — runStep accepts inputRevision+inputs, still unavailable, no HMS |
+| 2026-10-06T03:15:08Z | `quote-workflow-scenarios.test.tsx` | **PASS 19** |
+| 2026-10-06T03:17:50Z | `pnpm --filter @zero/mail build` | **exit 0**. CSS `server-build-Bzu3NXo3.css` |
+| 2026-10-06T03:18:06Z | styled pane Chromium-1243 + `server-build-Bzu3NXo3.css` | overflowX 0, paneWidth 380, Arrival 2026-11-12, Adults 2, no Allocation, unavailable copy present |
 
 All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.

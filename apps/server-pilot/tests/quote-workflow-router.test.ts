@@ -137,6 +137,8 @@ describe('quoteWorkflow.analyseSelection', () => {
     const result = await mailboxCaller().quoteWorkflow.runStep({
       stepId: 'quote-stay',
       selectionEpoch: 1,
+      inputRevision: 2,
+      inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
     });
     expect(result.status).toBe('integration_unavailable');
     expect(enqueueHmsRead).not.toHaveBeenCalled();

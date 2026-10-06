@@ -92,7 +92,7 @@ describe('quote workflow scenario matrix', () => {
     const session = sessionFromFixture('staggered-dates');
     session.selectedOfferIds = session.offers.map((offer) => offer.id);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText(/do not prove joint availability/i)).toBeDefined();
+    expect(screen.getAllByText(/do not prove joint availability/i).length).toBeGreaterThan(0);
   });
 
   it('expands varying nightly prices', () => {

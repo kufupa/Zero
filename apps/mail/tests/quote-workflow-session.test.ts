@@ -3,7 +3,12 @@ import {
   allocationTotal,
   canCreateNativeDraft,
   canCreatePdf,
+  canRunQuoteStep,
+  formatQuoteStepInputs,
   initialQuoteSession,
+  nextSelectedOfferIds,
+  parseChildrenAges,
+  pickNextRunnableStep,
   planQuoteSteps,
   reduceQuoteSession,
   selectionDigest,
@@ -461,5 +466,106 @@ describe('quote session', () => {
     expect(session.mailboxStatus).toBe('unsynced');
     expect(session.groups).toHaveLength(1);
     expect(session.phase).toBe('requirements');
+  });
+
+  it('replans tool steps from edited dates and party', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(s.steps.map((step) => step.id)).toEqual(['quote-stay-2026-11-12:2026-11-14']);
+    s = reduceQuoteSession(s, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03', organisation: 'Provincial Treasury' },
+    });
+    expect(s.steps.map((step) => step.id)).toEqual([
+      'party-lookup',
+      'quote-stay-2026-12-01:2026-12-03',
+    ]);
+    expect(s.steps[0]?.inputs).toEqual({ organisation: 'Provincial Treasury' });
+    expect(s.steps[1]?.dependsOn).toEqual(['party-lookup']);
+    expect(s.steps[1]?.status).toBe('queued');
+    expect(canRunQuoteStep(s.steps[1]!, s.steps, null)).toBe(false);
+    expect(pickNextRunnableStep(s.steps, null)?.id).toBe('party-lookup');
+  });
+
+  it('lets staff keep allocations across date groups and blocks a partial PDF', () => {
+    const twoGroups = {
+      ...quoteAnalysis,
+      groups: [
+        { ...quoteAnalysis.groups[0]!, id: 'stay-a', arrivalDate: '2026-11-02', departureDate: '2026-11-04' },
+        { ...quoteAnalysis.groups[0]!, id: 'stay-b', arrivalDate: '2026-11-10', departureDate: '2026-11-12' },
+      ],
+    };
+    const offerA: QuoteOffer = {
+      id: 'st-a',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [{ date: '2026-11-02', amountMinor: 136000 }],
+      stayTotalMinor: 272000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'src-a',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-02:2026-11-04',
+    };
+    const offerB: QuoteOffer = {
+      ...offerA,
+      id: 'st-b',
+      sourceRef: 'src-b',
+      quoteRequestKey: '2026-11-10:2026-11-12',
+    };
+    const alternative: QuoteOffer = {
+      ...offerA,
+      id: 'alt-ro',
+      kind: 'alternative',
+      combinable: false,
+      sourceRef: 'src-ro',
+      quoteRequestKey: '2026-11-02:2026-11-04',
+    };
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: twoGroups });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [offerA],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [offerB],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    expect(s.offers.map((offer) => offer.id).sort()).toEqual(['st-a', 'st-b']);
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [offerA, offerB, alternative],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    expect(s.offers.map((offer) => offer.id).sort()).toEqual(['alt-ro', 'st-a', 'st-b']);
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'st-a') });
+    expect(canCreatePdf(s)).toBe(false);
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'st-b') });
+    expect(s.selectedOfferIds).toEqual(['st-a', 'st-b']);
+    expect(canCreatePdf(s)).toBe(true);
+    expect(nextSelectedOfferIds(s, 'alt-ro')).toEqual(['st-a', 'st-b']);
+  });
+
+  it('does not invent a child aged 0 from a blank ages field', () => {
+    expect(parseChildrenAges('')).toEqual([]);
+    expect(parseChildrenAges('  , ')).toEqual([]);
+    expect(parseChildrenAges('5,')).toEqual([5]);
+    expect(parseChildrenAges('0')).toEqual([0]);
+    expect(formatQuoteStepInputs({ organisation: 'Treasury', quoteRequestKey: '2026-12-01:2026-12-03' })).toMatch(
+      /Organisation Treasury/,
+    );
   });
 });

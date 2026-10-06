@@ -1,17 +1,19 @@
+import { canRunQuoteStep, formatQuoteStepInputs } from '@/lib/quote-workflow/session';
 import type { QuoteToolStep } from '@/lib/quote-workflow/types';
 
 export function ToolStepList({
   steps,
-  running,
+  runningStepId,
   onRunNext,
   onRunStep,
 }: {
   steps: QuoteToolStep[];
-  running?: boolean;
+  runningStepId?: string | null;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
 }) {
   if (steps.length === 0 && !onRunNext) return null;
+  const running = Boolean(runningStepId);
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Approved tool steps</h3>
@@ -27,11 +29,12 @@ export function ToolStepList({
           {step.retryGuidance ? (
             <p className="text-[11px] text-amber-800">{step.retryGuidance}</p>
           ) : null}
+          <p className="text-[11px] text-[#64748b]">{formatQuoteStepInputs(step.inputs)}</p>
           <button
             type="button"
-            className="h-7 self-start rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+            className="h-7 self-start rounded-sm border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b] disabled:opacity-40"
             onClick={() => onRunStep?.(step.id)}
-            disabled={running || step.status === 'running'}
+            disabled={!onRunStep || !canRunQuoteStep(step, steps, runningStepId ?? null)}
           >
             Run {step.title}
           </button>

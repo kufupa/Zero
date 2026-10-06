@@ -1,3 +1,4 @@
+import { parseChildrenAges } from '@/lib/quote-workflow/session';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 
 const fieldClass =
@@ -89,13 +90,11 @@ export function RequirementCard({
         Children ages (comma separated)
         <input
           className={fieldClass}
+          aria-label="Children ages"
           value={group.childrenAges.join(', ')}
           onChange={(event) =>
             onPatch?.(group.id, {
-              childrenAges: event.target.value
-                .split(',')
-                .map((part) => Number(part.trim()))
-                .filter((age) => Number.isFinite(age)),
+              childrenAges: parseChildrenAges(event.target.value),
             })
           }
         />

@@ -142,7 +142,7 @@ export function QuoteWorkflowPanel({
       ))}
       <ToolStepList
         steps={session.steps}
-        running={Boolean(session.runningStepId)}
+        runningStepId={session.runningStepId}
         onRunNext={onRunNext}
         onRunStep={onRunStep}
       />

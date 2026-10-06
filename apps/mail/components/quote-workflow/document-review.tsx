@@ -40,8 +40,8 @@ export function DocumentReview({
       </button>
       {!pdfReady ? (
         <p className="text-[11px] text-[#64748b]">
-          Select an allocation with source evidence before generating a PDF. Sample pane rates are
-          not used.
+          Select an authorised allocation for every stay group before generating a PDF. Separate date
+          searches do not prove joint availability.
         </p>
       ) : null}
       {session.pdf ? (

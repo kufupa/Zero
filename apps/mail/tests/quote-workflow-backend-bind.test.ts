@@ -52,7 +52,12 @@ describe('quote workflow backend bind', () => {
   });
 
   it('does not treat runStep unavailable as a license to enqueue HMS from the pane', async () => {
-    const result = await bindRunStep({ stepId: 'quote-stay', selectionEpoch: 1 });
+    const result = await bindRunStep({
+      stepId: 'quote-stay',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputs: {},
+    });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
       expect(result.reason).toMatch(/enqueueHmsRead/);
@@ -68,10 +73,18 @@ describe('quote workflow backend bind', () => {
       mutate,
       stepId: 'quote-stay-unknown:unknown',
       selectionEpoch: 1,
+      inputRevision: 3,
+      inputs: { quoteRequestKey: 'unknown:unknown', groupIds: ['g1'] },
     });
     expect(result).toEqual({
       status: 'integration_unavailable',
       reason: 'Live PMS search is not owned by this quoting UI.',
+    });
+    expect(mutate).toHaveBeenCalledWith({
+      stepId: 'quote-stay-unknown:unknown',
+      selectionEpoch: 1,
+      inputRevision: 3,
+      inputs: { quoteRequestKey: 'unknown:unknown', groupIds: ['g1'] },
     });
     expect(mutate).not.toHaveBeenCalledWith(expect.objectContaining({ toolId: 'hms_quote_stay' }));
   });
@@ -82,6 +95,8 @@ describe('quote workflow backend bind', () => {
       mutate,
       stepId: 'quote-stay',
       selectionEpoch: 1,
+      inputRevision: 1,
+      inputs: {},
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {

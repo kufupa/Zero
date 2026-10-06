@@ -94,7 +94,10 @@ import {
 } from '@/lib/quote-workflow/backend-bind';
 import {
   canCreatePdf,
+  canRunQuoteStep,
   initialQuoteSession,
+  nextSelectedOfferIds,
+  pickNextRunnableStep,
   reduceQuoteSession,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -691,6 +694,59 @@ export default function OutlookPanePage() {
     }
   };
 
+  const runQuoteStep = (stepId: string) => {
+    const step = quoteSession.steps.find((item) => item.id === stepId);
+    if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    dispatchQuote({ type: 'step_running', stepId: step.id });
+    const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
+    const inputRevision = quoteSession.inputRevision;
+    const inputs = { ...step.inputs };
+    if (isQuoteFixturePreview()) {
+      const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
+      dispatchQuote({
+        type: 'results_ready',
+        offers: fixture.offers,
+        selectionEpoch,
+        inputRevision,
+        provenance: { kind: 'fixture', selectionEpoch, inputRevision },
+        reviewedReplyHtml: fixtureReplyHtml(
+          fixture,
+          (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
+        ),
+      });
+      toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
+      return;
+    }
+    const workflow = quoteWorkflowFromTrpc(trpcClient);
+    void bindRunStep({
+      mutate: workflow.runStep?.mutate,
+      stepId: step.id,
+      selectionEpoch,
+      inputRevision,
+      inputs,
+    }).then((remote) => {
+      if (remote.status !== 'ok') {
+        dispatchQuote({
+          type: 'results_unavailable',
+          stepId: step.id,
+          reason: remote.reason,
+          selectionEpoch,
+          inputRevision,
+        });
+        toast.warning(remote.reason);
+        return;
+      }
+      dispatchQuote({
+        type: 'results_ready',
+        offers: remote.offers,
+        selectionEpoch,
+        inputRevision,
+        provenance: { kind: 'authorised', selectionEpoch, inputRevision },
+        reviewedReplyHtml: remote.reviewedReplyHtml,
+      });
+    });
+  };
+
   return (
     <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
       {/* Strict 380px pane container */}
@@ -1050,57 +1106,13 @@ export default function OutlookPanePage() {
               session={quoteSession}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
-                const nextStep =
-                  quoteSession.steps.find((step) => step.status === 'ready' || step.status === 'queued' || step.status === 'failed') ??
-                  quoteSession.steps[0];
-                if (nextStep) dispatchQuote({ type: 'step_running', stepId: nextStep.id });
-                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
-                const inputRevision = quoteSession.inputRevision;
-                const stepId = nextStep?.id ?? 'quote-stay';
-                if (isQuoteFixturePreview()) {
-                  const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
-                  dispatchQuote({
-                    type: 'results_ready',
-                    offers: fixture.offers,
-                    selectionEpoch,
-                    inputRevision,
-                    provenance: { kind: 'fixture', selectionEpoch, inputRevision },
-                    reviewedReplyHtml: fixtureReplyHtml(
-                      fixture,
-                      (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
-                    ),
-                  });
-                  toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
-                  return;
-                }
-                const workflow = quoteWorkflowFromTrpc(trpcClient);
-                void bindRunStep({
-                  mutate: workflow.runStep?.mutate,
-                  stepId,
-                  selectionEpoch,
-                }).then((remote) => {
-                  if (remote.status !== 'ok') {
-                    dispatchQuote({
-                      type: 'results_unavailable',
-                      stepId,
-                      reason: remote.reason,
-                      selectionEpoch,
-                      inputRevision,
-                    });
-                    toast.warning(remote.reason);
-                    return;
-                  }
-                  dispatchQuote({
-                    type: 'results_ready',
-                    offers: remote.offers,
-                    selectionEpoch,
-                    inputRevision,
-                    provenance: { kind: 'authorised', selectionEpoch, inputRevision },
-                    reviewedReplyHtml: remote.reviewedReplyHtml,
-                  });
-                });
+                const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);
+                if (nextStep) runQuoteStep(nextStep.id);
               }}
-              onSelectOffer={(offerId) => dispatchQuote({ type: 'select_offers', offerIds: [offerId] })}
+              onRunStep={runQuoteStep}
+              onSelectOffer={(offerId) =>
+                dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
+              }
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
               onPreparePdf={() => {
                 if (!canCreatePdf(quoteSession)) {

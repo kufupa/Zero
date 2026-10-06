@@ -32,6 +32,8 @@ export const analyseSelectionInput = z.object({
 export const runStepInput = z.object({
   stepId: z.string().min(1),
   selectionEpoch: z.number().int(),
+  inputRevision: z.number().int(),
+  inputs: z.record(z.unknown()),
 });
 
 export const quoteWorkflowRouter = router({
@@ -65,6 +67,7 @@ export const quoteWorkflowRouter = router({
     };
   }),
   runStep: mailboxProcedure.input(runStepInput).mutation(async () => {
+    // Approved current inputs/inputRevision are accepted on the contract.
     // Bind target on main: ai.enqueueHmsRead({ toolId: 'hms_quote_stay' }).
     // Overnight this UI must not call it (single PMS owner). Sibling
     // qualifiedProposalChoices is not on this branch.

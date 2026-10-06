@@ -43,6 +43,73 @@ export function planQuoteSteps(groups: StayGroupRequirement[]): QuoteToolStep[] 
   return steps;
 }
 
+export function requestedQuoteKeys(groups: StayGroupRequirement[]): string[] {
+  return [
+    ...new Set(groups.map((group) => `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`)),
+  ];
+}
+
+export function parseChildrenAges(raw: string): number[] {
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '')
+    .map((part) => Number(part))
+    .filter((age) => Number.isFinite(age) && age >= 0);
+}
+
+export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
+  const bits: string[] = [];
+  if (typeof inputs.organisation === 'string' && inputs.organisation.trim()) {
+    bits.push(`Organisation ${inputs.organisation.trim()}`);
+  }
+  if (typeof inputs.quoteRequestKey === 'string') {
+    bits.push(`Dates ${inputs.quoteRequestKey.replace(':', ' → ')}`);
+  }
+  if (Array.isArray(inputs.groupIds) && inputs.groupIds.length) {
+    bits.push(`Stay groups ${inputs.groupIds.map(String).join(', ')}`);
+  }
+  return bits.length ? bits.join(' · ') : 'No current inputs';
+}
+
+export function canRunQuoteStep(
+  step: QuoteToolStep,
+  steps: readonly QuoteToolStep[],
+  runningStepId: string | null,
+): boolean {
+  if (runningStepId) return false;
+  if (step.status === 'running' || step.status === 'cancelled') return false;
+  return step.dependsOn.every((dep) => steps.find((item) => item.id === dep)?.status === 'succeeded');
+}
+
+export function pickNextRunnableStep(
+  steps: readonly QuoteToolStep[],
+  runningStepId: string | null,
+): QuoteToolStep | undefined {
+  return steps.find((step) => canRunQuoteStep(step, steps, runningStepId));
+}
+
+export function nextSelectedOfferIds(session: QuoteSession, offerId: string): string[] {
+  const offer = session.offers.find((item) => item.id === offerId);
+  if (!offer) return session.selectedOfferIds;
+  if (session.selectedOfferIds.includes(offerId)) {
+    return session.selectedOfferIds.filter((id) => id !== offerId);
+  }
+  if (offer.kind === 'alternative') {
+    const hasAllocation = session.selectedOfferIds.some(
+      (id) => session.offers.find((item) => item.id === id)?.kind === 'allocation',
+    );
+    if (hasAllocation) return session.selectedOfferIds;
+    return [offerId];
+  }
+  const kept = session.selectedOfferIds.filter((id) => {
+    const other = session.offers.find((item) => item.id === id);
+    if (!other || other.kind !== 'allocation') return false;
+    return other.quoteRequestKey !== offer.quoteRequestKey;
+  });
+  return [...kept, offerId];
+}
+
 export function selectionDigest(binding: QuoteSelectionBinding): string {
   return [
     binding.transportId,
@@ -90,9 +157,15 @@ export function evidenceMatchesSession(session: QuoteSession): boolean {
 
 export function canCreatePdf(session: QuoteSession): boolean {
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
-  return session.selectedOfferIds.some((id) =>
-    session.offers.some((offer) => offer.id === id && offer.kind === 'allocation' && offer.sourceRef),
-  );
+  const selected = session.selectedOfferIds
+    .map((id) => session.offers.find((offer) => offer.id === id))
+    .filter((offer): offer is QuoteOffer => Boolean(offer && offer.kind === 'allocation' && offer.sourceRef));
+  if (selected.length === 0 || selected.length !== session.selectedOfferIds.length) return false;
+  const keys = requestedQuoteKeys(session.groups);
+  if (keys.length === 0) return false;
+  const covered = new Set(selected.map((offer) => offer.quoteRequestKey));
+  if (keys.length === 1 && keys[0] === 'unknown:unknown') return true;
+  return keys.every((key) => covered.has(key));
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
@@ -211,6 +284,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         groups,
         inputRevision: session.inputRevision + 1,
         phase: 'requirements',
+        steps: planQuoteSteps(groups),
       });
     }
     case 'results_ready': {
@@ -218,10 +292,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!provenanceMatches(session, action.provenance, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
+      const incomingKeys = new Set(action.offers.map((offer) => offer.quoteRequestKey));
+      const kept = session.offers.filter((offer) => !incomingKeys.has(offer.quoteRequestKey));
       return {
         ...session,
         phase: 'results',
-        offers: action.offers,
+        offers: [...kept, ...action.offers],
         evidence: action.provenance,
         errorMessage: null,
         runningStepId: null,
@@ -283,6 +359,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'set_reviewed_reply':
       return { ...session, reviewedReplyHtml: action.html };
     case 'select_offers':
+      if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;
       return { ...session, selectedOfferIds: action.offerIds, pdf: null };
     case 'mailbox_status':
       return { ...session, mailboxStatus: action.status };
