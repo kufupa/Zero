@@ -26,7 +26,7 @@ const FIELD_NAMES = [
   'bookingagencyname',
 ];
 
-const MUTATE_PATH = /\/(save|delete|cancel|duplicate)|checkin|checkout|crs/i;
+const MUTATE_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
 const GOV_RE = /dep(t|artment)|ministry|municipal|government|province|sapo|sars|saps/i;
 const CAP = 40;
 const PAUSE_MS = 2000;
@@ -112,7 +112,7 @@ async function openTarget(page, confirmation) {
   await page.waitForTimeout(1200);
   const opened = await page.evaluate((conf) => {
     const Ext = window.Ext;
-    const grids = Ext?.ComponentQuery?.query('grid, gridpanel') ?? [];
+    const grids = Ext?.ComponentQuery?.query('grid, gridpanel, readonlygrid') ?? [];
     const summary = { grids: grids.length, stores: [] };
     for (const grid of grids) {
       const store = grid.getStore?.();
@@ -237,7 +237,8 @@ async function loadCandidates(path, cap) {
 function installReadOnlyGuard(context) {
   return context.route('**/*', async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (MUTATE_PATH.test(path)) {
+    const type = route.request().resourceType();
+    if ((type === 'xhr' || type === 'fetch') && MUTATE_PATH.test(path)) {
       process.stdout.write(`abort_path=${path}\n`);
       await route.abort();
       return;
@@ -333,12 +334,13 @@ async function main() {
   let failures = 0;
   try {
     await login(page, secret);
+    const listSearch = page.waitForResponse(
+      (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
+      { timeout: 25000 },
+    ).catch(() => null);
     await menu(page, ['Front Desk', 'Guest Stay']);
     await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
-    await page.waitForResponse(
-      (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
-      { timeout: 20000 },
-    ).catch(() => {});
+    await listSearch;
     await page.waitForTimeout(1500);
     for (const confirmation of pending) {
       let row;
