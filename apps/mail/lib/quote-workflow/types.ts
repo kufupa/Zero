@@ -140,10 +140,22 @@ export type QuoteSessionAction =
       reviewedReplyHtml?: string;
       provenance: QuoteEvidenceProvenance;
     }
-  | { type: 'results_unavailable'; stepId: string; reason: string }
+  | {
+      type: 'results_unavailable';
+      stepId: string;
+      reason: string;
+      selectionEpoch: number;
+      inputRevision: number;
+    }
   | { type: 'step_running'; stepId: string }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }
-  | { type: 'pdf_ready'; pdf: QuotePdf }
+  | {
+      type: 'pdf_ready';
+      pdf: QuotePdf;
+      selectionEpoch: number;
+      inputRevision: number;
+      selectedOfferIds: string[];
+    }
   | { type: 'set_reviewed_reply'; html: string }
   | { type: 'select_offers'; offerIds: string[] }
   | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };

@@ -117,7 +117,13 @@ describe('quote session', () => {
       inputRevision: 1,
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
     });
-    s = reduceQuoteSession(s, { type: 'pdf_ready', pdf: { fileName: 'Quote.pdf', bytesBase64: 'JVBERw==' } });
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: { fileName: 'Quote.pdf', bytesBase64: 'JVBERw==' },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: [],
+    });
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
     expect(s.inputRevision).toBe(2);
     expect(s.offers).toEqual([]);
@@ -325,6 +331,127 @@ describe('quote session', () => {
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['fix-1'] });
     expect(canCreatePdf(s)).toBe(false);
     expect(canCreateNativeDraft(s)).toBe(false);
+  });
+
+  it('rejects a late PDF after group edit, selection switch, or offer change', () => {
+    const offer: QuoteOffer = {
+      id: 'o1',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+      stayTotalMinor: 272000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'src-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+    };
+    const pdf = { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' };
+    let ready = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    ready = reduceQuoteSession(ready, { type: 'analysis_ready', analysis: quoteAnalysis });
+    ready = reduceQuoteSession(ready, {
+      type: 'results_ready',
+      offers: [offer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+      reviewedReplyHtml: '<p>Authorised reply</p>',
+    });
+    ready = reduceQuoteSession(ready, { type: 'select_offers', offerIds: ['o1'] });
+
+    const afterEdit = reduceQuoteSession(ready, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    const lateAfterEdit = reduceQuoteSession(afterEdit, {
+      type: 'pdf_ready',
+      pdf,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(lateAfterEdit.pdf).toBeNull();
+    expect(canCreateNativeDraft(lateAfterEdit)).toBe(false);
+
+    const switched = reduceQuoteSession(ready, {
+      type: 'selection',
+      binding: bind({ entryId: 'e2', selectionEpoch: 2 }),
+    });
+    const lateAfterSwitch = reduceQuoteSession(switched, {
+      type: 'pdf_ready',
+      pdf,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(lateAfterSwitch.pdf).toBeNull();
+    expect(canCreateNativeDraft(lateAfterSwitch)).toBe(false);
+
+    const offerChanged = reduceQuoteSession(ready, { type: 'select_offers', offerIds: [] });
+    const lateAfterOfferChange = reduceQuoteSession(offerChanged, {
+      type: 'pdf_ready',
+      pdf,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(lateAfterOfferChange.pdf).toBeNull();
+    expect(canCreateNativeDraft(lateAfterOfferChange)).toBe(false);
+
+    const admitted = reduceQuoteSession(ready, {
+      type: 'pdf_ready',
+      pdf,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(admitted.pdf).toEqual(pdf);
+    expect(canCreateNativeDraft(admitted)).toBe(true);
+  });
+
+  it('ignores a late results_unavailable for a superseded selection or input revision', () => {
+    const stepId = 'quote-stay-2026-11-12:2026-11-14';
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: quoteAnalysis });
+    s = reduceQuoteSession(s, { type: 'step_running', stepId });
+    const current = reduceQuoteSession(s, {
+      type: 'results_unavailable',
+      stepId,
+      reason: 'live bind unavailable',
+      selectionEpoch: 1,
+      inputRevision: 1,
+    });
+    expect(current.errorMessage).toBe('live bind unavailable');
+    expect(current.phase).toBe('tools');
+
+    const switched = reduceQuoteSession(s, {
+      type: 'selection',
+      binding: bind({ entryId: 'e2', selectionEpoch: 2 }),
+    });
+    const late = reduceQuoteSession(switched, {
+      type: 'results_unavailable',
+      stepId,
+      reason: 'stale unavailable',
+      selectionEpoch: 1,
+      inputRevision: 1,
+    });
+    expect(late.errorMessage).toBeNull();
+    expect(late.phase).toBe('idle');
+
+    const patched = reduceQuoteSession(
+      s,
+      { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } },
+    );
+    const lateAfterPatch = reduceQuoteSession(patched, {
+      type: 'results_unavailable',
+      stepId,
+      reason: 'stale unavailable',
+      selectionEpoch: 1,
+      inputRevision: 1,
+    });
+    expect(lateAfterPatch.errorMessage).toBeNull();
+    expect(lateAfterPatch.inputRevision).toBe(2);
   });
 
   it('records mailbox analyseSelection status without wiping local groups', () => {

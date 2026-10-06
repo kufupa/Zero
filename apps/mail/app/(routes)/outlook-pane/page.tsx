@@ -1080,7 +1080,13 @@ export default function OutlookPanePage() {
                   selectionEpoch,
                 }).then((remote) => {
                   if (remote.status !== 'ok') {
-                    dispatchQuote({ type: 'results_unavailable', stepId, reason: remote.reason });
+                    dispatchQuote({
+                      type: 'results_unavailable',
+                      stepId,
+                      reason: remote.reason,
+                      selectionEpoch,
+                      inputRevision,
+                    });
                     toast.warning(remote.reason);
                     return;
                   }
@@ -1108,10 +1114,11 @@ export default function OutlookPanePage() {
                 const workflow = quoteWorkflowFromTrpc(trpcClient);
                 const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
                 const inputRevision = quoteSession.inputRevision;
+                const selectedOfferIds = [...quoteSession.selectedOfferIds];
                 void bindQualifiedProposalPdf({
                   mutate: workflow.qualifiedProposalPdf?.mutate,
                   input: {
-                    selectedOfferIds: quoteSession.selectedOfferIds,
+                    selectedOfferIds,
                     sourceRevision: inputRevision,
                     mailboxTransportId: quoteSession.binding?.transportId ?? '',
                   },
@@ -1120,14 +1127,15 @@ export default function OutlookPanePage() {
                     toast.warning(remote.reason);
                     return;
                   }
-                  if (quoteSession.inputRevision !== inputRevision) return;
-                  if (quoteSession.binding?.selectionEpoch !== selectionEpoch) return;
                   dispatchQuote({
                     type: 'pdf_ready',
                     pdf: {
                       fileName: remote.pdf.fileName,
                       bytesBase64: remote.pdf.pdfBase64,
                     },
+                    selectionEpoch,
+                    inputRevision,
+                    selectedOfferIds,
                   });
                 });
               }}

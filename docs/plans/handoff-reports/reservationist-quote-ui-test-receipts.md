@@ -26,5 +26,9 @@ Distinguish **earlier green** from **latest** fail/green. Do not treat a prior p
 | 2026-10-06T02:35:30Z | mail 12 files after no-synthesize | **PASS 102** |
 | 2026-10-06T02:37:38Z | `@zero/server` quote-workflow + workstation-contract | **PASS 13 / 2 skipped (15)** |
 | 2026-10-06T02:42:42Z | styled pane Chromium-1243 + built `server-build-E6_kdtzl.css` | overflowX 0, paneWidth 380, Arrival 2026-11-12, Adults 2, no Allocation, unavailable copy present |
+| 2026-10-06T02:52:40Z | session + stale-pdf-admission + no-fake-evidence + quote-pdf | **PASS 30 / 4 files** — late PDF after edit/offer-change rejected; late unavailable after edit rejected |
+| 2026-10-06T02:54:41Z | 10 mail files (workflow + pane render/pdf/narrow/native/bind + stale admission) | **PASS 97** — *latest mail green on this HEAD; includes 2 new session + 3 deferred pane tests. Not the 02:35 102-file set.* |
+| 2026-10-06T02:56:27Z | `apps/mail` `tsc --noEmit` | **pre-existing errors** (react-router `+types`, unrelated threads/admin). Not used as this branch’s type gate. |
+| 2026-10-06T02:58:52Z | `pnpm --filter @zero/mail build` | **exit 0**. Client `✓ built in 1m 3s`. SSR `✓ built in 47.80s`. Oxlint 0. CSS hash `server-build-z2y6fotO.css` (screenshot still `E6_kdtzl` from 02:42). |
 
 All Vitest runs: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`. Failure artifacts: `/tmp/quote-ui-vitest-latest.txt` (overwritten by later green) and this table. No silent rewrite of failing logs.

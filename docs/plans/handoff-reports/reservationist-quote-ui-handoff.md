@@ -2,10 +2,10 @@
 
 **Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`  
 **Branch:** `feat/reservationist-quote-ui`  
-**HEAD:** post no-fake-evidence fix (commit after this file)  
+**HEAD:** post stale-PDF/unavailable admission fix (commit after this file)  
 **Base:** `origin/main` `2e3f1b3f` (PR #28 mailbox history/live-sync)  
 **Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — **not edited by this executor**  
-**Verdict:** UI contracts exist. Production path does **not** synthesize offers/PDF. **Not live-ready.** No merge, deploy, send, or PMS in this window.
+**Verdict:** UI contracts exist. Production path does **not** synthesize offers/PDF. Stale async PDF/unavailable cannot mutate a newer session. **Not live-ready.** No merge, deploy, send, or PMS in this window.
 
 ## 1. Overlapping paths vs sibling
 
@@ -47,11 +47,11 @@ Same paths exist on **both** trees. Do not cherry-pick or copy sibling files.
 - **Causal order:** oldest first, drop later replies, drop null `receivedAt`.
 - **Attachments:** metadata ≠ bytes.
 - **Regex ≠ reservationist.**
-- **Provenance:** `results_ready` requires `{ kind, selectionEpoch, inputRevision }`. Staff edits increment `inputRevision` and clear offers/PDF/evidence. Stale results ignored. `canCreatePdf` / native insert require `kind: 'authorised'` matching current selection + revision.
+- **Provenance:** `results_ready` requires `{ kind, selectionEpoch, inputRevision }`. Staff edits increment `inputRevision` and clear offers/PDF/evidence. Stale results ignored. `pdf_ready` carries `selectionEpoch` + `inputRevision` + `selectedOfferIds`; reducer compares **current** session, not the React render closure. `results_unavailable` carries the same request selection/revision so a late unavailable cannot mutate a newer session. `canCreatePdf` / native insert require `kind: 'authorised'` matching current selection + revision.
 
 ## 5. What this branch did / did not do
 
-**Did:** Isolated worktree. Removed RATE_TABLE UI. **Stopped fixture synthesis on production Run next / Prepare PDF.** Native insert cannot use fixture PDF. Focused mail **102 PASS** (2026-10-06T02:35:30Z). Server quote-workflow **13 PASS / 2 skip** (02:37:38Z). Styled 380px Chromium with built `server-build-E6_kdtzl.css`: overflowX 0, Arrival/Adults filled, no Allocation, unavailable copy visible (02:42:42Z).
+**Did:** Isolated worktree. Removed RATE_TABLE UI. **Stopped fixture synthesis on production Run next / Prepare PDF.** Native insert cannot use fixture PDF. **PDF/unavailable admission is request-bound:** edit group, switch selection, or change selected offer while a PDF is pending rejects the old result; no native draft. Focused mail **97 PASS / 10 files** including new deferred tests (2026-10-06T02:54:41Z). Mail `pnpm --filter @zero/mail build` **exit 0** (02:58:52Z). Styled 380px Chromium with built `server-build-E6_kdtzl.css` is **prior** receipt (02:42:42Z); this rebuild emitted `server-build-z2y6fotO.css` and was **not** recaptured.
 
 **Did not:** Live PMS, S3 bytes, qualified PDF, Windows Outlook, disposable-DB analysis, merge, deploy, send. **Not live-ready.**
 

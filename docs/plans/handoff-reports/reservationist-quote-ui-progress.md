@@ -9,22 +9,22 @@
 | Start | 2026-10-05T23:12:03Z |
 | Deadline | 2026-10-06T07:12:03Z |
 | Stop launching long tasks | 2026-10-06T06:57:03Z |
-| Last update | 2026-10-06T02:42:42Z |
+| Last update | 2026-10-06T02:58:52Z |
 
 Do not treat the 23:42 ledger “94 green” as current. That run is **earlier green** at 23:40:57Z, before RATE_TABLE native-PDF removal.
 
 ## Current task
 
-Production path no longer synthesizes offers/PDF. Styled 380px pane captured with built CSS. Independently achievable UI+safety scope complete. **Not live-ready.**
+Stale async PDF/unavailable admission fixed (request tokens on `pdf_ready` / `results_unavailable`; reducer compares current session). Production still does not synthesize offers/PDF. **Not live-ready.** Remaining work is real backend integration, not more UI framework.
 
 ## Completed evidence
 
 - Isolated linked worktree from `origin/main`. Sibling tree not modified by this agent.
 - Plan + session reducer + fixtures already committed (`3bd1c547`, `139f3c51`, `9389d510`).
 - HITL panel: editable groups, tool steps. Production Run next does not emit fixture offers. `?quotePreview=fixture` is explicit non-production and cannot native-insert.
-- Native insert: `requireReviewedNativeDraft` requires authorised evidence matching selection + inputRevision. Fixture filename rejected.
-- **Latest mail green:** 2026-10-06T02:35:30Z — **102 passed / 12 files**. Server 02:37:38Z **13 passed / 2 skipped**. `DATABASE_URL` unset.
-- Styled pane: `styled-pane-380.png` 02:42:42Z, built CSS `server-build-E6_kdtzl.css`, overflowX 0, Arrival=2026-11-12 Adults=2, no Allocation.
+- Native insert: `requireReviewedNativeDraft` requires authorised evidence matching selection + inputRevision. Fixture filename rejected. Late PDF after edit/selection/offer change cannot create a native draft.
+- **Latest mail green:** 2026-10-06T02:54:41Z — **97 passed / 10 files** (includes deferred admission). Mail build 02:58:52Z **exit 0**. `DATABASE_URL` unset. Prior 02:35:30Z **102 / 12 files** is earlier HEAD (no deferred gate).
+- Styled pane: `styled-pane-380.png` 02:42:42Z, built CSS `server-build-E6_kdtzl.css` — **not recaptured** after this admission fix.
 
 ## Backend integration seams (existing APIs only)
 
@@ -44,6 +44,7 @@ Missing backend is an honest gap, not a reason to add another quote engine.
 - `runStep` → single-owner `enqueueHmsRead(hms_quote_stay)` after sibling/PMS owner.
 - `qualifiedQuoteProposalPdf` after sibling merge; no second engine.
 - Windows Classic Outlook native insert. Local `analyseLocalEmail` still fills HITL when mailbox is unsynced (labelled, not the reservationist).
+- Recapture styled 380px pane if visual CSS must match `server-build-z2y6fotO.css`.
 - No merge/deploy.
 
 ## Blockers
@@ -60,4 +61,4 @@ None.
 
 ## Next highest-value action
 
-Stop. Independently achievable UI scope done. Do not merge/deploy/PMS. Human integrates after sibling quote-revision lands.
+Stop independently achievable UI+correctness. Do not merge/deploy/PMS. Human binds `runStep` / `qualifiedProposalPdf` after sibling quote-revision lands on main, then re-verify against this request-bound reducer.

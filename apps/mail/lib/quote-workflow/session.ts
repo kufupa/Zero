@@ -112,6 +112,24 @@ function clearDownstream(session: QuoteSession): QuoteSession {
   };
 }
 
+function requestMatchesCurrent(
+  session: QuoteSession,
+  selectionEpoch: number,
+  inputRevision: number,
+): boolean {
+  if (!session.binding) return false;
+  return (
+    session.binding.selectionEpoch === selectionEpoch && session.inputRevision === inputRevision
+  );
+}
+
+function sameSelectedOfferIds(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((id, i) => id === b[i]);
+}
+
 function provenanceMatches(
   session: QuoteSession,
   provenance: QuoteEvidenceProvenance,
@@ -216,6 +234,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     }
     case 'results_unavailable':
+      if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
+        return session;
+      }
       return {
         ...session,
         phase: 'tools',
@@ -252,6 +273,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ),
       };
     case 'pdf_ready':
+      if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
+        return session;
+      }
+      if (!sameSelectedOfferIds(action.selectedOfferIds, session.selectedOfferIds)) {
+        return session;
+      }
       return { ...session, pdf: action.pdf, phase: 'review' };
     case 'set_reviewed_reply':
       return { ...session, reviewedReplyHtml: action.html };
