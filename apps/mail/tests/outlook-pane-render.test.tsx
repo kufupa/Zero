@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
-
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
   quotePdfMutate: vi.fn().mockResolvedValue({
@@ -82,6 +81,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
         ? v4Capabilities.supportedActions.includes(action)
         : false,
     activeEmail: {
+      internetMessageId: '<synthetic@example.invalid>',
       entryId: bridgeMockState.selectedEntryId,
       storeId: 'store-1',
       folderEntryId: 'folder-inbox',
@@ -121,6 +121,8 @@ vi.mock('../hooks/use-connections', () => ({
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
+      qualifiedProposalChoices: { query: vi.fn(async()=>({status:'ready',choices:[{workflowRunId:'run',messageId:'message',threadId:'thread',revisionRef:'quote:test',factRefs:[],totalMinor:220002,currency:'ZAR',arrivalDate:'2026-10-12',departureDate:'2026-10-15',description:'Qualified synthetic offer'}]})) },
+      qualifiedQuoteProposalPdf: { mutate: quotePdfMutate },
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: quotePdfMutate },
     },
@@ -128,6 +130,7 @@ vi.mock('../providers/query-provider', () => ({
 }));
 
 describe('OutlookPanePage', () => {
+  const loadOffer=async()=>{await act(async()=>{fireEvent.click(screen.getByRole('button',{name:/Load qualified proposals/i}));await Promise.resolve();});fireEvent.click(screen.getByRole('button',{name:/Qualified synthetic offer/i}));};
   const createReplyCalls = () =>
     sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
 
@@ -172,6 +175,23 @@ describe('OutlookPanePage', () => {
     bridgeMockState.legacyReplySupported = undefined;
   });
 
+  it('blocks demo quote generation and Outlook draft writes at admission', async () => {
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(button);
+    expect(quotePdfMutate).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/Select a synced email and load its qualified proposals/i)).toBeDefined();
+  });
+
+  it('does not claim simulated search verifies rates', () => {
+    render(<OutlookPanePage />);
+    fireEvent.click(screen.getByRole('button', { name: /Search Availability/i }));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/demo.*not verified/i));
+  });
+
   it('renders Nava AI Reservationist title and connection status', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
@@ -212,6 +232,7 @@ describe('OutlookPanePage', () => {
 
   it('passes the selected store ID when creating a reply draft', async () => {
     render(<OutlookPanePage />);
+    await loadOffer();
 
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
@@ -231,6 +252,7 @@ describe('OutlookPanePage', () => {
     let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
     quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
 
@@ -253,6 +275,7 @@ describe('OutlookPanePage', () => {
     let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
     quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutate).toHaveBeenCalledTimes(1));
 
@@ -272,6 +295,7 @@ describe('OutlookPanePage', () => {
       .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1' });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
@@ -296,6 +320,7 @@ describe('OutlookPanePage', () => {
       .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-1', displayed: true });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
@@ -315,6 +340,7 @@ describe('OutlookPanePage', () => {
       .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-001', displayed: true });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
@@ -339,6 +365,7 @@ describe('OutlookPanePage', () => {
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-002', displayed: true })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-for-001', displayed: true });
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
@@ -347,12 +374,14 @@ describe('OutlookPanePage', () => {
 
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(3));
 
@@ -372,6 +401,7 @@ describe('OutlookPanePage', () => {
       .mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' })
       .mockResolvedValueOnce({ ...draftFolder, entryId: 'draft-after-expiry', displayed: true });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button);
@@ -405,6 +435,7 @@ describe('OutlookPanePage', () => {
     let finishPdf!: (value: { fileName: string; pdfBase64: string }) => void;
     quotePdfMutate.mockImplementationOnce(() => new Promise((resolve) => { finishPdf = resolve; }));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     fireEvent.click(button); // warn about the prior uncertain outcome
@@ -417,6 +448,7 @@ describe('OutlookPanePage', () => {
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
     expect(quotePdfMutate).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
@@ -427,6 +459,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
@@ -435,6 +468,7 @@ describe('OutlookPanePage', () => {
     vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
@@ -443,6 +477,7 @@ describe('OutlookPanePage', () => {
     pane.unmount();
     bridgeMockState.selectedEntryId = '001';
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(createReplyCalls()).toHaveLength(2);
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
@@ -459,6 +494,7 @@ describe('OutlookPanePage', () => {
       throw new Error('Bridge command CREATE_REPLY_DRAFT timed out');
     });
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     const operationIds = new Map<string, string>();
 
@@ -466,6 +502,7 @@ describe('OutlookPanePage', () => {
       const entryId = `message-${index}`;
       bridgeMockState.selectedEntryId = entryId;
       pane.rerender(<OutlookPanePage />);
+      await loadOffer();
 
       await act(async () => {
         fireEvent.click(button);
@@ -480,6 +517,7 @@ describe('OutlookPanePage', () => {
 
     bridgeMockState.selectedEntryId = 'message-0';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
 
     expect(createReplyCalls()).toHaveLength(257);
@@ -498,6 +536,7 @@ describe('OutlookPanePage', () => {
 
     bridgeMockState.selectedEntryId = 'message-999';
     pane.rerender(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(button);
 
     expect(createReplyCalls()).toHaveLength(258);
@@ -510,7 +549,7 @@ describe('OutlookPanePage', () => {
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(259));
     vi.spyOn(Date, 'now').mockRestore();
-  }, 20000);
+  }, 60000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;
@@ -522,6 +561,7 @@ describe('OutlookPanePage', () => {
         }),
     );
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
     act(() => {
@@ -547,6 +587,7 @@ describe('OutlookPanePage', () => {
       locationUnverified: true,
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() => {
@@ -587,6 +628,7 @@ describe('OutlookPanePage', () => {
       folderPlacementWarning: 'Outlook placed the reply outside the requested folder',
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() =>
@@ -609,6 +651,7 @@ describe('OutlookPanePage', () => {
         }),
     );
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
@@ -623,6 +666,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
@@ -644,6 +688,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';
@@ -672,6 +717,7 @@ describe('OutlookPanePage', () => {
     queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     bridgeMockState.selectedEntryId = '002';

@@ -3,401 +3,614 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Background Gradient Gallery</title>
+  <meta name="theme-color" content="#113f3f">
+  <title>Animated Background Field</title>
   <style>
     :root {
-      --teal-edge: #113f3f;
-      --teal: #13454c;
-      --blue: #35598d;
-      --blue-lift: #41699a;
-      --indigo: #6a5bb1;
-      --violet: #986bcd;
-      --magenta: #a566d1;
-      --magenta-lift: #ac6ed7;
+      color-scheme: dark;
+      background: #113f3f;
     }
 
     * { box-sizing: border-box; }
-    html { color-scheme: dark; background: #0c252a; }
-    body { margin: 0; min-width: 0; font: 13px/1.4 system-ui, sans-serif; color: #d9e1e5; }
 
-    .gallery {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: clamp(22px, 2.2vw, 34px);
-      width: min(100%, 1720px);
-      margin: 0 auto;
-      padding: clamp(20px, 3.6vw, 58px);
-    }
-
-    figure { margin: 0; min-width: 0; }
-    figcaption { margin-top: 10px; letter-spacing: 0.015em; }
-
-    /* Every treatment inherits the same sampled field and bloom positions. */
-    .swatch {
-      position: relative;
-      isolation: isolate;
-      container-type: inline-size;
-      min-width: 0;
-      aspect-ratio: 722 / 334;
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
       overflow: hidden;
-      border-radius: 10px;
-      background:
-        radial-gradient(ellipse 78% 108% at 45% 45%, transparent 42%, color-mix(in srgb, var(--teal-edge) 76%, transparent) 100%),
-        radial-gradient(ellipse 29% 76% at 46% 8%, var(--violet) 0%, color-mix(in srgb, var(--violet) 80%, transparent) 36%, transparent 100%),
-        radial-gradient(ellipse 28% 65% at 0% 88%, var(--magenta-lift) 0%, color-mix(in srgb, var(--magenta) 90%, transparent) 30%, transparent 100%),
-        radial-gradient(ellipse 36% 73% at 48% 100%, var(--blue-lift) 0%, color-mix(in srgb, var(--blue) 70%, transparent) 55%, transparent 100%),
-        radial-gradient(ellipse 35% 56% at 45% 62%, color-mix(in srgb, var(--indigo) 68%, transparent), transparent 100%),
-        linear-gradient(135deg, var(--teal), var(--teal-edge));
+      background: #113f3f;
     }
 
-    .swatch::before,
-    .swatch::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
-
-    .arc-bands::before {
-      background: radial-gradient(ellipse 74% 150% at 50% 125%,
-        transparent 0% 26%, color-mix(in srgb, var(--violet) 35%, transparent) 26.5% 38%,
-        color-mix(in srgb, var(--blue-lift) 30%, transparent) 38.5% 50%, color-mix(in srgb, var(--magenta) 27%, transparent) 50.5% 62%,
-        color-mix(in srgb, var(--teal) 35%, transparent) 62.5% 74%, transparent 74.5%);
+    .field-stage {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+      background: #113f3f;
     }
 
-    .aurora::before {
-      background:
-        radial-gradient(ellipse 12% 90% at 34% 14%, color-mix(in srgb, var(--violet) 46%, transparent) 25%, transparent 90%),
-        radial-gradient(ellipse 13% 80% at 55% 57%, color-mix(in srgb, var(--blue-lift) 52%, transparent) 20%, transparent 90%),
-        radial-gradient(ellipse 14% 70% at 14% 90%, color-mix(in srgb, var(--magenta) 44%, transparent) 25%, transparent 90%);
-      transform: skewX(-23deg);
-      filter: blur(5px);
+    #color-field,
+    #color-field-fallback {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: auto;
     }
 
-    .cherry-petal::before {
-      inset: auto;
-      width: 5%; height: 15%; left: 12%; top: 29%;
-      border-radius: 85% 16% 76% 23%;
-      background: color-mix(in srgb, var(--violet) 38%, transparent);
-      box-shadow: 18cqw -4cqw 1px color-mix(in srgb, var(--blue-lift) 42%, transparent),
-        39cqw 5cqw 1px color-mix(in srgb, var(--violet) 40%, transparent), 63cqw 8cqw 1px color-mix(in srgb, var(--teal) 55%, transparent),
-        8cqw 17cqw 1px color-mix(in srgb, var(--magenta-lift) 45%, transparent), 31cqw 24cqw 1px color-mix(in srgb, var(--indigo) 44%, transparent),
-        54cqw 30cqw 1px color-mix(in srgb, var(--blue-lift) 42%, transparent);
-      transform: rotate(-27deg);
-    }
+    #color-field { visibility: hidden; }
+    #color-field-fallback { visibility: visible; }
 
-    .coral-glow::before {
-      background:
-        radial-gradient(ellipse 19% 39% at 33% 18%, color-mix(in srgb, var(--violet) 42%, transparent) 32%, transparent),
-        radial-gradient(ellipse 17% 35% at 59% 35%, color-mix(in srgb, var(--indigo) 45%, transparent) 32%, transparent),
-        radial-gradient(ellipse 19% 39% at 11% 82%, color-mix(in srgb, var(--magenta) 44%, transparent) 32%, transparent),
-        radial-gradient(ellipse 20% 41% at 44% 87%, color-mix(in srgb, var(--blue-lift) 48%, transparent) 32%, transparent);
-    }
-
-    .dark-arc-bands::before {
-      background: radial-gradient(ellipse 78% 164% at 50% 130%,
-        transparent 0% 28%, color-mix(in srgb, var(--teal-edge) 34%, transparent) 28.5% 39%,
-        color-mix(in srgb, var(--indigo) 23%, transparent) 39.5% 50%, color-mix(in srgb, var(--teal-edge) 32%, transparent) 50.5% 61%,
-        color-mix(in srgb, var(--blue) 25%, transparent) 61.5% 72%, transparent 72.5%);
-    }
-
-    .dark-aurora::before {
-      background:
-        radial-gradient(ellipse 10% 95% at 34% 30%, color-mix(in srgb, var(--teal-edge) 54%, transparent) 35%, transparent 90%),
-        radial-gradient(ellipse 12% 88% at 54% 52%, color-mix(in srgb, var(--indigo) 34%, transparent) 30%, transparent 95%),
-        radial-gradient(ellipse 10% 85% at 18% 85%, color-mix(in srgb, var(--magenta) 27%, transparent) 20%, transparent 90%);
-      transform: skewX(25deg);
-      filter: blur(13px);
-    }
-
-    .dark-carbon-spotlight::before {
-      background:
-        radial-gradient(ellipse 30% 115% at 46% -22%, color-mix(in srgb, var(--violet) 44%, transparent) 30%, transparent 90%),
-        radial-gradient(ellipse 50% 76% at 46% 25%, transparent 18%, color-mix(in srgb, var(--teal-edge) 72%, transparent) 100%);
-    }
-
-    .dark-ember::before {
-      background:
-        radial-gradient(ellipse 10% 21% at 47% 16%, color-mix(in srgb, var(--violet) 40%, transparent) 34%, transparent),
-        radial-gradient(ellipse 11% 23% at 9% 79%, color-mix(in srgb, var(--magenta) 36%, transparent) 34%, transparent),
-        radial-gradient(ellipse 12% 25% at 41% 88%, color-mix(in srgb, var(--blue-lift) 42%, transparent) 34%, transparent),
-        radial-gradient(ellipse 16% 33% at 77% 74%, color-mix(in srgb, var(--teal-edge) 62%, transparent) 34%, transparent);
-    }
-
-    .dark-ink-field::before {
-      inset: 9% 39% 16% 20%;
-      border-radius: 41% 59% 28% 72% / 65% 31% 69% 35%;
-      background: color-mix(in srgb, var(--teal-edge) 35%, transparent);
-      filter: blur(12px);
-      transform: rotate(-19deg);
-      box-shadow: -29cqw 25cqw 15px color-mix(in srgb, var(--magenta) 23%, transparent), 23cqw 20cqw 17px color-mix(in srgb, var(--blue) 25%, transparent);
-    }
-
-    .dark-midnight-mesh::before {
-      background:
-        repeating-linear-gradient(0deg, color-mix(in srgb, var(--teal-edge) 27%, transparent) 0 1px, transparent 1px 15px),
-        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 22%, transparent) 0 1px, transparent 1px 15px),
-        radial-gradient(ellipse at 50% 45%, transparent 28%, color-mix(in srgb, var(--teal-edge) 40%, transparent) 100%);
-    }
-
-    .dark-rose-noir::before {
-      background:
-        radial-gradient(ellipse 21% 43% at 39% 13%, color-mix(in srgb, var(--magenta) 43%, transparent) 40%, transparent),
-        radial-gradient(ellipse 25% 55% at 5% 87%, color-mix(in srgb, var(--magenta-lift) 46%, transparent) 38%, transparent),
-        radial-gradient(ellipse at 42% 43%, transparent 30%, color-mix(in srgb, var(--teal-edge) 44%, transparent) 100%);
-    }
-
-    .dark-teal-depth::before {
-      background:
-        radial-gradient(ellipse 44% 76% at 105% 17%, color-mix(in srgb, var(--teal) 72%, transparent) 55%, transparent 95%),
-        radial-gradient(ellipse 35% 58% at 79% 114%, color-mix(in srgb, var(--teal-edge) 64%, transparent) 50%, transparent 95%),
-        radial-gradient(ellipse 19% 45% at 15% 15%, color-mix(in srgb, var(--teal) 42%, transparent) 35%, transparent 95%);
-    }
-
-    .frost-mesh::before {
-      background:
-        repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 23%, transparent) 0 1px, transparent 1px 12px),
-        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 28%, transparent) 0 1px, transparent 1px 12px),
-        radial-gradient(ellipse at 0% 100%, color-mix(in srgb, var(--magenta-lift) 18%, transparent), transparent 50%);
-    }
-
-    .halftone-pop::before {
-      background:
-        radial-gradient(ellipse at 43% 12%, var(--violet), transparent 70%),
-        radial-gradient(ellipse at 6% 88%, var(--magenta-lift), transparent 65%),
-        radial-gradient(ellipse at 48% 95%, var(--blue-lift), transparent 65%);
-      mask-image: radial-gradient(circle, var(--teal-edge) 0 1px, transparent 1.3px);
-      mask-size: 7px 7px;
-      opacity: 0.42;
-    }
-
-    .honey-ember::before {
-      background:
-        radial-gradient(ellipse 13% 27% at 31% 9%, color-mix(in srgb, var(--violet) 46%, transparent) 35%, transparent),
-        radial-gradient(ellipse 15% 31% at 54% 31%, color-mix(in srgb, var(--indigo) 48%, transparent) 35%, transparent),
-        radial-gradient(ellipse 17% 35% at 10% 70%, color-mix(in srgb, var(--magenta-lift) 48%, transparent) 35%, transparent),
-        radial-gradient(ellipse 17% 35% at 29% 100%, color-mix(in srgb, var(--magenta) 42%, transparent) 35%, transparent),
-        radial-gradient(ellipse 20% 41% at 58% 89%, color-mix(in srgb, var(--blue-lift) 48%, transparent) 35%, transparent);
-    }
-
-    .ink-wash::before {
-      inset: -10% 34% 32% 23%;
-      border-radius: 37% 63% 71% 29% / 64% 29% 71% 36%;
-      background: color-mix(in srgb, var(--violet) 25%, transparent);
-      filter: blur(8px);
-      transform: rotate(-16deg);
-      box-shadow: -35cqw 28cqw 12px color-mix(in srgb, var(--magenta) 35%, transparent);
-    }
-    .ink-wash::after {
-      inset: 58% 36% -23% 24%;
-      border-radius: 65% 35% 27% 73% / 26% 63% 37% 74%;
-      background: color-mix(in srgb, var(--blue-lift) 28%, transparent);
-      filter: blur(10px);
-      transform: rotate(12deg);
-    }
-
-    .linen-weave::before {
-      background:
-        repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 13%, transparent) 0 1px, color-mix(in srgb, var(--teal-edge) 12%, transparent) 1px 2px, transparent 2px 5px),
-        repeating-linear-gradient(90deg, color-mix(in srgb, var(--blue-lift) 15%, transparent) 0 1px, transparent 1px 5px);
-    }
-
-    .mint-lagoon::before {
-      inset: -30% -10%;
-      background:
-        radial-gradient(ellipse 64% 10% at 45% 25%, color-mix(in srgb, var(--violet) 42%, transparent) 35%, transparent 95%),
-        radial-gradient(ellipse 58% 11% at 24% 63%, color-mix(in srgb, var(--magenta) 44%, transparent) 35%, transparent 95%),
-        radial-gradient(ellipse 55% 10% at 51% 82%, color-mix(in srgb, var(--blue-lift) 46%, transparent) 35%, transparent 95%);
-      transform: rotate(-19deg);
-      filter: blur(4px);
-    }
-
-    .paper-fold::before {
-      background:
-        linear-gradient(146deg, transparent 46%, color-mix(in srgb, var(--violet) 30%, transparent) 49.5%, color-mix(in srgb, var(--teal-edge) 52%, transparent) 50%, transparent 54%),
-        repeating-linear-gradient(0deg, color-mix(in srgb, var(--blue-lift) 13%, transparent) 0 1px, transparent 1px 16px),
-        repeating-linear-gradient(90deg, color-mix(in srgb, var(--violet) 13%, transparent) 0 1px, transparent 1px 16px);
-    }
-
-    .rain-prism::before {
-      background:
-        repeating-linear-gradient(114deg, color-mix(in srgb, var(--blue-lift) 34%, transparent) 0 1px, transparent 1px 11px),
-        linear-gradient(180deg, transparent 38%, color-mix(in srgb, var(--violet) 26%, transparent) 48%, color-mix(in srgb, var(--blue-lift) 30%, transparent) 58%, transparent 68%);
-    }
-
-    .sand-drift::before {
-      background:
-        radial-gradient(ellipse 82% 110% at 64% 159%, color-mix(in srgb, var(--blue) 32%, transparent) 0% 72%, transparent 72.5%),
-        radial-gradient(ellipse 102% 110% at 17% 161%, color-mix(in srgb, var(--magenta) 25%, transparent) 0% 80%, transparent 80.5%),
-        radial-gradient(ellipse 88% 120% at 52% 150%, color-mix(in srgb, var(--indigo) 27%, transparent) 0% 75%, transparent 75.5%);
-    }
-    .sand-drift::after {
-      background:
-        repeating-linear-gradient(23deg, color-mix(in srgb, var(--teal-edge) 24%, transparent) 0 0.5px, transparent 0.5px 3px),
-        repeating-linear-gradient(113deg, color-mix(in srgb, var(--blue-lift) 18%, transparent) 0 0.5px, transparent 0.5px 4px);
-      opacity: 0.6;
-    }
-
-    .soft-spotlight::before {
-      background:
-        radial-gradient(ellipse 61% 75% at 46% -18%, color-mix(in srgb, var(--violet) 36%, transparent) 28%, transparent 95%),
-        radial-gradient(ellipse at 45% 43%, transparent 42%, color-mix(in srgb, var(--teal-edge) 24%, transparent) 100%);
-    }
-
-    .sunrise-horizon::before {
-      background:
-        radial-gradient(ellipse 31% 19% at 45% 79%, color-mix(in srgb, var(--blue-lift) 40%, transparent), transparent 95%),
-        linear-gradient(180deg, transparent 52%, color-mix(in srgb, var(--indigo) 22%, transparent) 52.5% 63%, color-mix(in srgb, var(--blue) 24%, transparent) 63.5% 75%, transparent 75.5%);
-    }
-    .sunrise-horizon::after {
-      background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--violet) 20%, transparent) 0 1px, transparent 1px 14px);
-      mask-image: linear-gradient(transparent 34%, var(--teal-edge) 76%, transparent);
-    }
-
-    .sunset-bloom::before {
-      background:
-        radial-gradient(ellipse 36% 65% at 39% -8%, color-mix(in srgb, var(--magenta) 42%, transparent) 35%, transparent 85%),
-        radial-gradient(ellipse 26% 62% at 55% 29%, color-mix(in srgb, var(--violet) 40%, transparent) 35%, transparent 90%),
-        radial-gradient(ellipse 29% 58% at 12% 100%, color-mix(in srgb, var(--magenta-lift) 44%, transparent) 35%, transparent 85%),
-        radial-gradient(ellipse 36% 49% at 46% 97%, color-mix(in srgb, var(--blue-lift) 42%, transparent) 35%, transparent 85%);
-    }
-
-    .terrazzo-fragment::before {
-      inset: auto;
-      width: 4.5%; height: 12%; left: 13%; top: 23%;
-      border-radius: 25% 64% 32% 18%;
-      background: color-mix(in srgb, var(--violet) 35%, transparent);
-      box-shadow: 20cqw -2cqw 0 color-mix(in srgb, var(--magenta) 35%, transparent), 41cqw 5cqw 0 color-mix(in srgb, var(--blue-lift) 42%, transparent),
-        16cqw 18cqw 0 color-mix(in srgb, var(--indigo) 44%, transparent), 56cqw 25cqw 0 color-mix(in srgb, var(--teal) 48%, transparent);
-      transform: rotate(-19deg);
-    }
-    .terrazzo-fragment::after {
-      inset: auto;
-      width: 3%; height: 9%; left: 27%; top: 65%;
-      border-radius: 55% 18% 42% 30%;
-      background: color-mix(in srgb, var(--magenta-lift) 40%, transparent);
-      box-shadow: -17cqw -11cqw 0 color-mix(in srgb, var(--violet) 38%, transparent), 22cqw -22cqw 0 color-mix(in srgb, var(--blue-lift) 38%, transparent),
-        37cqw -7cqw 0 color-mix(in srgb, var(--indigo) 45%, transparent), 52cqw -28cqw 0 color-mix(in srgb, var(--teal) 45%, transparent);
-      transform: rotate(23deg);
-    }
-
-    .tropical-tide::before {
-      background:
-        radial-gradient(ellipse 54% 31% at 26% 117%, color-mix(in srgb, var(--magenta) 42%, transparent) 48%, transparent 85%),
-        radial-gradient(ellipse 46% 26% at 52% 88%, color-mix(in srgb, var(--blue-lift) 46%, transparent) 46%, transparent 90%),
-        radial-gradient(ellipse 45% 23% at 58% 44%, color-mix(in srgb, var(--teal) 42%, transparent) 43%, transparent 95%);
-      transform: rotate(-8deg) scale(1.1);
-    }
-
-    @media (max-width: 920px) {
-      .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 620px) {
-      .gallery { grid-template-columns: 1fr; }
-    }
+    .field-stage.is-webgl-ready #color-field { visibility: visible; }
+    .field-stage.is-webgl-ready #color-field-fallback { visibility: hidden; }
   </style>
 </head>
 <body>
-  <main class="gallery" aria-label="Background gradient gallery">
-    <figure>
-      <div class="swatch arc-bands" data-gradient="arc-bands-background" role="img" aria-label="Arc Bands"></div>
-      <figcaption>Arc Bands</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch aurora" data-gradient="aurora-background" role="img" aria-label="Aurora Background"></div>
-      <figcaption>Aurora Background</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch cherry-petal" data-gradient="cherry-petal-background" role="img" aria-label="Cherry Petal"></div>
-      <figcaption>Cherry Petal</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch coral-glow" data-gradient="coral-glow-background" role="img" aria-label="Coral Glow"></div>
-      <figcaption>Coral Glow</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-arc-bands" data-gradient="dark-arc-bands-background" role="img" aria-label="Dark Arc Bands"></div>
-      <figcaption>Dark Arc Bands</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-aurora" data-gradient="dark-aurora-background" role="img" aria-label="Dark Aurora"></div>
-      <figcaption>Dark Aurora</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-carbon-spotlight" data-gradient="dark-carbon-spotlight-background" role="img" aria-label="Dark Carbon Spotlight"></div>
-      <figcaption>Dark Carbon Spotlight</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-ember" data-gradient="dark-ember-background" role="img" aria-label="Dark Ember"></div>
-      <figcaption>Dark Ember</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-ink-field" data-gradient="dark-ink-field-background" role="img" aria-label="Dark Ink Field"></div>
-      <figcaption>Dark Ink Field</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-midnight-mesh" data-gradient="dark-midnight-mesh-background" role="img" aria-label="Dark Midnight Mesh"></div>
-      <figcaption>Dark Midnight Mesh</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-rose-noir" data-gradient="dark-rose-noir-background" role="img" aria-label="Dark Rose Noir"></div>
-      <figcaption>Dark Rose Noir</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch dark-teal-depth" data-gradient="dark-teal-depth-background" role="img" aria-label="Dark Teal Depth"></div>
-      <figcaption>Dark Teal Depth</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch frost-mesh" data-gradient="frost-mesh-background" role="img" aria-label="Frost Mesh"></div>
-      <figcaption>Frost Mesh</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch halftone-pop" data-gradient="halftone-pop-background" role="img" aria-label="Halftone Pop"></div>
-      <figcaption>Halftone Pop</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch honey-ember" data-gradient="honey-ember-background" role="img" aria-label="Honey Ember"></div>
-      <figcaption>Honey Ember</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch ink-wash" data-gradient="ink-wash-background" role="img" aria-label="Ink Wash"></div>
-      <figcaption>Ink Wash</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch linen-weave" data-gradient="linen-weave-background" role="img" aria-label="Linen Weave"></div>
-      <figcaption>Linen Weave</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch mint-lagoon" data-gradient="mint-lagoon-background" role="img" aria-label="Mint Lagoon"></div>
-      <figcaption>Mint Lagoon</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch paper-fold" data-gradient="paper-fold-background" role="img" aria-label="Paper Fold"></div>
-      <figcaption>Paper Fold</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch rain-prism" data-gradient="rain-prism-background" role="img" aria-label="Rain Prism"></div>
-      <figcaption>Rain Prism</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch sand-drift" data-gradient="sand-drift-background" role="img" aria-label="Sand Drift"></div>
-      <figcaption>Sand Drift</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch soft-spotlight" data-gradient="soft-spotlight-background" role="img" aria-label="Soft Spotlight"></div>
-      <figcaption>Soft Spotlight</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch sunrise-horizon" data-gradient="sunrise-horizon-background" role="img" aria-label="Sunrise Horizon"></div>
-      <figcaption>Sunrise Horizon</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch sunset-bloom" data-gradient="sunset-bloom-background" role="img" aria-label="Sunset Bloom"></div>
-      <figcaption>Sunset Bloom</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch terrazzo-fragment" data-gradient="terrazzo-fragment-background" role="img" aria-label="Terrazzo Fragment"></div>
-      <figcaption>Terrazzo Fragment</figcaption>
-    </figure>
-    <figure>
-      <div class="swatch tropical-tide" data-gradient="tropical-tide-background" role="img" aria-label="Tropical Tide"></div>
-      <figcaption>Tropical Tide</figcaption>
-    </figure>
+  <main
+    class="field-stage"
+    role="img"
+    aria-label="Animated color field: deep teal edges, violet across the upper center, magenta-violet at lower left, and blue through the lower middle."
+  >
+    <canvas id="color-field" aria-hidden="true"></canvas>
+    <canvas id="color-field-fallback" aria-hidden="true"></canvas>
   </main>
+  <script>
+    (() => {
+      const FIELD_GRID = [
+        ['#0f3a3c', '#104143', '#184e5a', '#35588b', '#6c61ba', '#9e6ed2', '#a371d4', '#846cc6', '#5162a8', '#34678d', '#16545b', '#103e3c', '#0f3b39'],
+        ['#174b5a', '#13464e', '#134751', '#28567b', '#565dab', '#8e68ca', '#a16ed2', '#906acb', '#6465b5', '#3d6598', '#1b5b69', '#0f3e3d', '#0e3936'],
+        ['#2e5983', '#1e5267', '#154a54', '#1d5268', '#435d9b', '#7a65c0', '#9b6acf', '#9b6cd0', '#7466be', '#45649f', '#206073', '#104141', '#0e3734'],
+        ['#495da2', '#315a88', '#1b5266', '#194f60', '#305985', '#6161b2', '#8f68ca', '#9d6cd0', '#7e69c3', '#4c66a6', '#246177', '#104243', '#0e3634'],
+        ['#9b6ad0', '#7762bf', '#485da2', '#2a597e', '#1c5266', '#29587e', '#475ca0', '#5f62b1', '#5863ac', '#385d90', '#18505f', '#0f3d3c', '#0f3d3b'],
+        ['#a36ad3', '#8b66c8', '#5a5dae', '#375b8d', '#1e5269', '#20546f', '#3a5d93', '#495da3', '#435e9e', '#2d5a81', '#134a54', '#0f3d3c', '#0e3b39'],
+        ['#a76cd5', '#986acd', '#7163bc', '#40599a', '#265978', '#1e536a', '#305a86', '#415f99', '#3a5d92', '#215771', '#114346', '#0e3936', '#0f3a38'],
+        ['#af73d8', '#9867ce', '#7866bf', '#475ea0', '#295b7e', '#1e546b', '#2c577f', '#3e5e96', '#36598c', '#1d5269', '#114447', '#0e3734', '#0f3c39'],
+      ];
+      const FIELD_Y = [0, 40 / 333, 80 / 333, 120 / 333, 240 / 333, 280 / 333, 320 / 333, 1];
+      const FIELD_COLUMNS = FIELD_GRID[0].length;
+      const FIELD_ROWS = FIELD_GRID.length;
+      const MAX_DEVICE_PIXEL_RATIO = 1.5;
+      const MAX_FRAMEBUFFER_PIXELS = 524288;
+      const FALLBACK_MAX_WIDTH = 640;
+      const MOTION_SEED = Math.floor(Math.random() * 0x100000000) >>> 0;
+      const RGB_GRID = FIELD_GRID.map((row) => row.map((hex) => {
+        const value = Number.parseInt(hex.slice(1), 16);
+        return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+      }));
+      const stage = document.querySelector('.field-stage');
+      const canvas = document.getElementById('color-field');
+      const fallbackCanvas = document.getElementById('color-field-fallback');
+      const fallbackContext = fallbackCanvas.getContext('2d', { alpha: false });
+      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+      const color = [0, 0, 0];
+      const FIELD_TEXTURE_DATA = createFieldTextureData();
+
+      let gl = null;
+      let program = null;
+      let vertexArray = null;
+      let fieldTexture = null;
+      let locations = null;
+      let bitmapWidth = 0;
+      let bitmapHeight = 0;
+      let animationFrame = 0;
+      let elapsedBeforeResume = 0;
+      let resumedAt = null;
+      let resizeQueued = false;
+
+      function clamp01(value) {
+        return Math.min(1, Math.max(0, value));
+      }
+
+      function mix(start, end, amount) {
+        return start + (end - start) * amount;
+      }
+
+      function smoothstep(edge0, edge1, value) {
+        const amount = clamp01((value - edge0) / (edge1 - edge0));
+        return amount * amount * (3 - 2 * amount);
+      }
+
+      function createFieldTextureData() {
+        const data = new Uint8Array(FIELD_COLUMNS * FIELD_ROWS * 4);
+        for (let textureRow = 0; textureRow < FIELD_ROWS; textureRow += 1) {
+          const sourceRow = FIELD_ROWS - 1 - textureRow;
+          for (let x = 0; x < FIELD_COLUMNS; x += 1) {
+            const rgb = RGB_GRID[sourceRow][x];
+            const offset = (textureRow * FIELD_COLUMNS + x) * 4;
+            data[offset] = rgb[0];
+            data[offset + 1] = rgb[1];
+            data[offset + 2] = rgb[2];
+            data[offset + 3] = 255;
+          }
+        }
+        return data;
+      }
+
+      function sampleFieldAt(u, v, output) {
+        const xPosition = clamp01(u) * (FIELD_COLUMNS - 1);
+        const x0 = Math.min(FIELD_COLUMNS - 2, Math.floor(xPosition));
+        const xAmount = xPosition - x0;
+        const safeV = clamp01(v);
+        let y0 = 0;
+
+        while (y0 < FIELD_ROWS - 2 && safeV > FIELD_Y[y0 + 1]) y0 += 1;
+        const yAmount = (safeV - FIELD_Y[y0]) / (FIELD_Y[y0 + 1] - FIELD_Y[y0]);
+        const topLeft = RGB_GRID[y0][x0];
+        const topRight = RGB_GRID[y0][x0 + 1];
+        const bottomLeft = RGB_GRID[y0 + 1][x0];
+        const bottomRight = RGB_GRID[y0 + 1][x0 + 1];
+
+        for (let channel = 0; channel < 3; channel += 1) {
+          const top = mix(topLeft[channel], topRight[channel], xAmount);
+          const bottom = mix(bottomLeft[channel], bottomRight[channel], xAmount);
+          output[channel] = Math.round(mix(top, bottom, yAmount));
+        }
+      }
+
+      function tealEdgeBlueBias(u, output) {
+        const red = output[0] / 255;
+        const green = output[1] / 255;
+        const blue = output[2] / 255;
+        const tealMask = smoothstep(0.035, 0.12, Math.min(green, blue) - red)
+          * (1 - smoothstep(0.10, 0.30, Math.abs(green - blue)));
+        const edgeMask = 1 - smoothstep(0.08, 0.42, Math.min(u, 1 - u));
+        const bias = tealMask * edgeMask;
+        output[1] = Math.round(output[1] - 3 * bias);
+        output[2] = Math.round(output[2] + 7 * bias);
+      }
+
+      function logicalTimeAt(now) {
+        return elapsedBeforeResume + (resumedAt === null ? 0 : now - resumedAt);
+      }
+
+      function pauseClock(now) {
+        if (resumedAt === null) return;
+        elapsedBeforeResume += now - resumedAt;
+        resumedAt = null;
+      }
+
+      function resumeClock(now) {
+        if (resumedAt !== null) return;
+        resumedAt = now;
+      }
+
+      function renderFallback() {
+        if (!fallbackContext) return;
+        const aspect = bitmapWidth / bitmapHeight;
+        const fallbackWidth = Math.max(1, Math.min(bitmapWidth, FALLBACK_MAX_WIDTH));
+        const fallbackHeight = Math.max(1, Math.round(fallbackWidth / aspect));
+        fallbackCanvas.width = fallbackWidth;
+        fallbackCanvas.height = fallbackHeight;
+        const image = fallbackContext.createImageData(fallbackWidth, fallbackHeight);
+        const pixels = image.data;
+        let offset = 0;
+
+        for (let y = 0; y < fallbackHeight; y += 1) {
+          const v = (y + 0.5) / fallbackHeight;
+          for (let x = 0; x < fallbackWidth; x += 1) {
+            const u = (x + 0.5) / fallbackWidth;
+            sampleFieldAt(u, v, color);
+            tealEdgeBlueBias(u, color);
+            pixels[offset] = color[0];
+            pixels[offset + 1] = color[1];
+            pixels[offset + 2] = color[2];
+            pixels[offset + 3] = 255;
+            offset += 4;
+          }
+        }
+        fallbackContext.putImageData(image, 0, 0);
+      }
+
+      function compileShader(context, type, source) {
+        const shader = context.createShader(type);
+        context.shaderSource(shader, source);
+        context.compileShader(shader);
+        if (!context.getShaderParameter(shader, context.COMPILE_STATUS)) {
+          const message = context.getShaderInfoLog(shader) || 'Unknown shader compilation error';
+          context.deleteShader(shader);
+          throw new Error(message);
+        }
+        return shader;
+      }
+
+      function buildProgram(context) {
+        const vertexSource = `#version 300 es
+          in vec2 a_position;
+          out vec2 v_uv;
+          void main() {
+            v_uv = a_position * 0.5 + 0.5;
+            gl_Position = vec4(a_position, 0.0, 1.0);
+          }
+        `;
+        const fragmentSource = `#version 300 es
+          precision highp float;
+          in vec2 v_uv;
+          out vec4 outColor;
+          uniform sampler2D u_field;
+          uniform float u_fieldY[8];
+          uniform float u_time;
+          uniform float u_seed;
+          uniform float u_aspect;
+
+          const float TAU = 6.28318530718;
+
+          float fieldRowForY(float y) {
+            float rowCoordinate = 7.0;
+            for (int row = 0; row < 7; row += 1) {
+              float rowTop = u_fieldY[row];
+              float rowBottom = u_fieldY[row + 1];
+              if (y >= rowTop && y <= rowBottom) {
+                rowCoordinate = float(row) + (y - rowTop) / (rowBottom - rowTop);
+              }
+            }
+            return rowCoordinate;
+          }
+
+          float hash21(vec2 p) {
+            p = fract(p * vec2(123.34, 456.21) + u_seed * vec2(17.13, 41.73));
+            p += dot(p, p + 45.32);
+            return fract(p.x * p.y);
+          }
+
+          vec2 gradientAt(vec2 cell) {
+            const vec2 gradients[8] = vec2[8](
+              vec2(1.0, 0.0),
+              vec2(0.70710678, 0.70710678),
+              vec2(0.0, 1.0),
+              vec2(-0.70710678, 0.70710678),
+              vec2(-1.0, 0.0),
+              vec2(-0.70710678, -0.70710678),
+              vec2(0.0, -1.0),
+              vec2(0.70710678, -0.70710678)
+            );
+            int index = int(floor(hash21(cell) * 8.0));
+            return gradients[index];
+          }
+
+          float gradientNoise(vec2 p) {
+            vec2 cell = floor(p);
+            vec2 local = fract(p);
+            vec2 fade = local * local * local * (local * (local * 6.0 - 15.0) + 10.0);
+            float lowerLeft = dot(gradientAt(cell), local);
+            float lowerRight = dot(gradientAt(cell + vec2(1.0, 0.0)), local - vec2(1.0, 0.0));
+            float upperLeft = dot(gradientAt(cell + vec2(0.0, 1.0)), local - vec2(0.0, 1.0));
+            float upperRight = dot(gradientAt(cell + vec2(1.0, 1.0)), local - vec2(1.0, 1.0));
+            float blended = mix(
+              mix(lowerLeft, lowerRight, fade.x),
+              mix(upperLeft, upperRight, fade.x),
+              fade.y
+            );
+            return clamp(0.5 + blended * 0.70710678, 0.0, 1.0);
+          }
+
+          float fbm(vec2 p) {
+            mat2 turn = mat2(0.80, 0.60, -0.60, 0.80);
+            float total = 0.0;
+            float weight = 0.0;
+            float amplitude = 0.5;
+            for (int octave = 0; octave < 3; octave += 1) {
+              total += gradientNoise(p) * amplitude;
+              weight += amplitude;
+              p = turn * p * 2.03 + vec2(13.7, 9.2);
+              amplitude *= 0.5;
+            }
+            return total / weight;
+          }
+
+          vec2 curlFlow(vec2 p, float timeSeconds) {
+            float seedPhase = u_seed * TAU;
+            float a = dot(p, vec2(1.17, 0.44)) + timeSeconds * 0.31 + seedPhase;
+            float b = dot(p, vec2(-0.83, 1.29)) - timeSeconds * 0.23 + seedPhase * 1.31;
+            float c = dot(p, vec2(1.61, -0.72)) + timeSeconds * 0.17 + seedPhase * 2.13;
+            float d = dot(p, vec2(-1.13, -1.41)) - timeSeconds * 0.11 + seedPhase * 3.17;
+            float slopeX = 0.42 * cos(a) * 1.17
+              - 0.27 * sin(b) * -0.83
+              + 0.16 * cos(c) * 1.61
+              - 0.10 * sin(d) * -1.13;
+            float slopeY = 0.42 * cos(a) * 0.44
+              - 0.27 * sin(b) * 1.29
+              + 0.16 * cos(c) * -0.72
+              - 0.10 * sin(d) * -1.41;
+            return vec2(slopeY, -slopeX) * 0.22;
+          }
+
+          vec2 vortexFlow(vec2 p, float timeSeconds) {
+            float seedPhase = u_seed * TAU;
+            vec2 centerA = vec2(-0.15, 0.94)
+              + vec2(cos(timeSeconds * 0.18 + seedPhase), sin(timeSeconds * 0.18 + seedPhase)) * 0.14;
+            vec2 centerB = vec2(-2.72, -1.12)
+              + vec2(cos(timeSeconds * 0.13 + seedPhase * 1.3), sin(timeSeconds * 0.13 + seedPhase * 1.3)) * 0.18;
+            vec2 centerC = vec2(2.35, 0.24)
+              + vec2(cos(timeSeconds * 0.15 + seedPhase * 2.1), sin(timeSeconds * 0.15 + seedPhase * 2.1)) * 0.16;
+            vec2 deltaA = p - centerA;
+            vec2 deltaB = p - centerB;
+            vec2 deltaC = p - centerC;
+            float influenceA = exp(-dot(deltaA, deltaA) * 0.68);
+            float influenceB = exp(-dot(deltaB, deltaB) * 0.82);
+            float influenceC = exp(-dot(deltaC, deltaC) * 0.60);
+            vec2 swirlA = vec2(-deltaA.y, deltaA.x) * influenceA * 0.58;
+            vec2 swirlB = vec2(-deltaB.y, deltaB.x) * influenceB * 0.43;
+            vec2 swirlC = vec2(-deltaC.y, deltaC.x) * influenceC * 0.37;
+            return (swirlA + swirlB + swirlC) * 0.34;
+          }
+
+          float starDust(vec2 uv, float timeSeconds) {
+            vec2 grid = uv * vec2(76.0 * max(u_aspect, 0.7), 76.0);
+            vec2 cell = floor(grid);
+            vec2 local = fract(grid);
+            float chance = hash21(cell + vec2(37.0, 19.0));
+            vec2 point = vec2(
+              hash21(cell + vec2(3.1, 7.7)),
+              hash21(cell + vec2(13.7, 31.1))
+            );
+            vec2 delta = local - point;
+            float radius = mix(0.08, 0.18, hash21(cell + vec2(21.0, 11.0)));
+            float core = pow(max(0.0, 1.0 - length(delta) / radius), 2.0);
+            float halo = exp(-dot(delta, delta) * 110.0) * 0.16;
+            float visible = smoothstep(0.992, 0.9995, chance);
+            float twinkle = 0.84 + 0.16 * sin(timeSeconds * (0.7 + chance) + chance * TAU);
+            return (core + halo) * visible * twinkle;
+          }
+
+          vec3 tealEdgeBlueBias(vec3 color, float x) {
+            float tealMask = smoothstep(0.035, 0.12, min(color.g, color.b) - color.r)
+              * (1.0 - smoothstep(0.10, 0.30, abs(color.g - color.b)));
+            float edgeMask = 1.0 - smoothstep(0.08, 0.42, min(x, 1.0 - x));
+            float bias = tealMask * edgeMask;
+            color.g -= 0.012 * bias;
+            color.b += 0.027 * bias;
+            return color;
+          }
+
+          void main() {
+            vec2 uv = v_uv;
+            float timeSeconds = u_time * 1.6;
+            vec2 p = (uv - vec2(0.5)) * vec2(max(u_aspect, 0.7), 1.0) * 3.1;
+            vec2 broadFlow = curlFlow(p, timeSeconds);
+            vec2 eddyFlow = curlFlow(p * 1.73 + vec2(3.1, -5.4), timeSeconds * 0.79);
+            vec2 vortices = vortexFlow(p, timeSeconds);
+            vec2 flowDomain = p + broadFlow * 0.34 + eddyFlow * 0.17 + vortices * 0.55;
+            vec2 firstDrift = vec2(timeSeconds * 0.13, -timeSeconds * 0.075);
+            vec2 secondDrift = vec2(-timeSeconds * 0.09, timeSeconds * 0.11);
+            float warpX = fbm(flowDomain * 1.12 + firstDrift + vec2(u_seed * 11.0, 4.3));
+            float warpY = gradientNoise(flowDomain * 1.36 + secondDrift + vec2(8.7, u_seed * 17.0));
+            vec2 domainWarp = flowDomain + (vec2(warpX, warpY) - vec2(0.5)) * 1.5;
+
+            float cloudBody = fbm(domainWarp * 1.28 + vec2(timeSeconds * 0.055, -timeSeconds * 0.08));
+            float cloudMid = fbm(domainWarp * 3.12 + vec2(-timeSeconds * 0.16, timeSeconds * 0.12));
+            float cloudFine = mix(
+              gradientNoise(domainWarp * 4.2 + vec2(timeSeconds * 0.27, timeSeconds * 0.22)),
+              gradientNoise(domainWarp * 7.4 + vec2(-timeSeconds * 0.19, timeSeconds * 0.31)),
+              0.38
+            );
+            float density = cloudBody * 0.52 + cloudMid * 0.33 + cloudFine * 0.15;
+            float cloudMass = smoothstep(0.24, 0.78, density);
+            float ridges = 1.0 - abs(cloudFine * 2.0 - 1.0);
+            float filament = smoothstep(0.58, 0.92, ridges)
+              * smoothstep(0.38, 0.75, cloudMid * 0.68 + cloudBody * 0.32);
+
+            vec2 colorUv = uv
+              + (vec2(warpX, warpY) - vec2(0.5)) * vec2(0.055, 0.045)
+              + broadFlow * 0.008
+              + eddyFlow * 0.004
+              + vortices * 0.012;
+            float fieldY = 1.0 - clamp(colorUv.y, 0.0, 1.0);
+            float row = fieldRowForY(fieldY);
+            float textureY = 1.0 - (row + 0.5) / 8.0;
+            float textureX = (0.5 + clamp(colorUv.x, 0.0, 1.0) * 12.0) / 13.0;
+            vec3 sourceColor = texture(u_field, vec2(textureX, textureY)).rgb;
+            sourceColor = tealEdgeBlueBias(sourceColor, uv.x);
+
+            float cloudLight = 0.78 + cloudBody * 0.24 + cloudMid * 0.18
+              + cloudMass * 0.08 + filament * 0.09;
+            vec3 nebulaColor = sourceColor * cloudLight;
+            nebulaColor += sourceColor * starDust(uv, timeSeconds) * 0.8;
+            outColor = vec4(clamp(nebulaColor, 0.0, 1.0), 1.0);
+          }
+        `;
+        const vertexShader = compileShader(context, context.VERTEX_SHADER, vertexSource);
+        const fragmentShader = compileShader(context, context.FRAGMENT_SHADER, fragmentSource);
+        const nextProgram = context.createProgram();
+        context.attachShader(nextProgram, vertexShader);
+        context.attachShader(nextProgram, fragmentShader);
+        context.linkProgram(nextProgram);
+        context.deleteShader(vertexShader);
+        context.deleteShader(fragmentShader);
+        if (!context.getProgramParameter(nextProgram, context.LINK_STATUS)) {
+          const message = context.getProgramInfoLog(nextProgram) || 'Unknown program link error';
+          context.deleteProgram(nextProgram);
+          throw new Error(message);
+        }
+        return nextProgram;
+      }
+
+      function initializeWebGL() {
+        const context = canvas.getContext('webgl2', {
+          alpha: false,
+          antialias: false,
+          premultipliedAlpha: false,
+          powerPreference: 'low-power',
+        });
+        if (!context) return false;
+
+        try {
+          const nextProgram = buildProgram(context);
+          const nextVertexArray = context.createVertexArray();
+          const buffer = context.createBuffer();
+          context.bindVertexArray(nextVertexArray);
+          context.bindBuffer(context.ARRAY_BUFFER, buffer);
+          context.bufferData(
+            context.ARRAY_BUFFER,
+            new Float32Array([-1, -1, 3, -1, -1, 3]),
+            context.STATIC_DRAW,
+          );
+          const positionLocation = context.getAttribLocation(nextProgram, 'a_position');
+          context.enableVertexAttribArray(positionLocation);
+          context.vertexAttribPointer(positionLocation, 2, context.FLOAT, false, 0, 0);
+
+          const nextTexture = context.createTexture();
+          context.activeTexture(context.TEXTURE0);
+          context.bindTexture(context.TEXTURE_2D, nextTexture);
+          context.pixelStorei(context.UNPACK_ALIGNMENT, 1);
+          context.texImage2D(
+            context.TEXTURE_2D,
+            0,
+            context.RGBA8,
+            FIELD_COLUMNS,
+            FIELD_ROWS,
+            0,
+            context.RGBA,
+            context.UNSIGNED_BYTE,
+            FIELD_TEXTURE_DATA,
+          );
+          context.texParameteri(context.TEXTURE_2D, context.TEXTURE_MIN_FILTER, context.LINEAR);
+          context.texParameteri(context.TEXTURE_2D, context.TEXTURE_MAG_FILTER, context.LINEAR);
+          context.texParameteri(context.TEXTURE_2D, context.TEXTURE_WRAP_S, context.CLAMP_TO_EDGE);
+          context.texParameteri(context.TEXTURE_2D, context.TEXTURE_WRAP_T, context.CLAMP_TO_EDGE);
+
+          context.useProgram(nextProgram);
+          context.uniform1i(context.getUniformLocation(nextProgram, 'u_field'), 0);
+          context.uniform1fv(
+            context.getUniformLocation(nextProgram, 'u_fieldY[0]'),
+            new Float32Array(FIELD_Y),
+          );
+
+          gl = context;
+          program = nextProgram;
+          vertexArray = nextVertexArray;
+          fieldTexture = nextTexture;
+          locations = {
+            time: context.getUniformLocation(program, 'u_time'),
+            seed: context.getUniformLocation(program, 'u_seed'),
+            aspect: context.getUniformLocation(program, 'u_aspect'),
+          };
+          context.bindVertexArray(vertexArray);
+          context.viewport(0, 0, canvas.width, canvas.height);
+          drawField(logicalTimeAt(performance.now()));
+          stage.classList.add('is-webgl-ready');
+          return true;
+        } catch {
+          gl = null;
+          program = null;
+          vertexArray = null;
+          fieldTexture = null;
+          locations = null;
+          stage.classList.remove('is-webgl-ready');
+          return false;
+        }
+      }
+
+      function drawField(timeMilliseconds) {
+        if (!gl || !program || !locations) return;
+        gl.useProgram(program);
+        gl.bindVertexArray(vertexArray);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, fieldTexture);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.uniform1f(locations.time, timeMilliseconds / 1000);
+        gl.uniform1f(locations.seed, MOTION_SEED / 0xffffffff);
+        gl.uniform1f(locations.aspect, bitmapWidth / bitmapHeight);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      function stopAnimation() {
+        if (!animationFrame) return;
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      }
+
+      function animate(now) {
+        animationFrame = 0;
+        if (!gl || document.hidden || prefersReducedMotion.matches) {
+          pauseClock(now);
+          return;
+        }
+        drawField(logicalTimeAt(now));
+        animationFrame = window.requestAnimationFrame(animate);
+      }
+
+      function startAnimation() {
+        if (!gl) return;
+        if (prefersReducedMotion.matches) {
+          pauseClock(performance.now());
+          elapsedBeforeResume = 0;
+          stopAnimation();
+          drawField(0);
+          return;
+        }
+        if (document.hidden) {
+          pauseClock(performance.now());
+          stopAnimation();
+          return;
+        }
+        resumeClock(performance.now());
+        if (!animationFrame) animationFrame = window.requestAnimationFrame(animate);
+      }
+
+      function resizeTargets() {
+        const bounds = stage.getBoundingClientRect();
+        const cssWidth = Math.max(1, bounds.width || window.innerWidth);
+        const cssHeight = Math.max(1, bounds.height || window.innerHeight);
+        const requestedRatio = Math.min(MAX_DEVICE_PIXEL_RATIO, window.devicePixelRatio || 1);
+        const pixelCapRatio = Math.sqrt(MAX_FRAMEBUFFER_PIXELS / (cssWidth * cssHeight));
+        const scale = Math.min(requestedRatio, pixelCapRatio);
+        const nextWidth = Math.max(1, Math.floor(cssWidth * scale));
+        const nextHeight = Math.max(1, Math.floor(cssHeight * scale));
+        if (nextWidth === bitmapWidth && nextHeight === bitmapHeight) return;
+
+        bitmapWidth = nextWidth;
+        bitmapHeight = nextHeight;
+        canvas.width = bitmapWidth;
+        canvas.height = bitmapHeight;
+        renderFallback();
+        if (gl) {
+          gl.viewport(0, 0, bitmapWidth, bitmapHeight);
+          drawField(logicalTimeAt(performance.now()));
+        }
+      }
+
+      function scheduleResize() {
+        if (resizeQueued) return;
+        resizeQueued = true;
+        window.requestAnimationFrame(() => {
+          resizeQueued = false;
+          resizeTargets();
+        });
+      }
+
+      function handleMotionPreferenceChange() {
+        startAnimation();
+      }
+
+      resizeTargets();
+      initializeWebGL();
+      startAnimation();
+      window.addEventListener('resize', scheduleResize, { passive: true });
+      document.addEventListener('visibilitychange', startAnimation);
+      canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        stopAnimation();
+        pauseClock(performance.now());
+        gl = null;
+        program = null;
+        vertexArray = null;
+        fieldTexture = null;
+        locations = null;
+        stage.classList.remove('is-webgl-ready');
+      });
+      canvas.addEventListener('webglcontextrestored', () => {
+        if (initializeWebGL()) startAnimation();
+      });
+      if (typeof prefersReducedMotion.addEventListener === 'function') {
+        prefersReducedMotion.addEventListener('change', handleMotionPreferenceChange);
+      } else {
+        prefersReducedMotion.addListener(handleMotionPreferenceChange);
+      }
+    })();
+  </script>
 </body>
 </html>

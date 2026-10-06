@@ -350,3 +350,9 @@ describe('hms thread context', () => {
     expect(vRevision).not.toBe(v0);
   });
 });
+
+
+describe('printed native confirmation labels',()=>{
+ it.each(['Confirmation Number: 91159776-1','Confirmation No. 91159776-1','Conf #91159776-1'])('retains the complete identifier after %s',text=>{expect(filterExactReservationCandidates(extractLookupCandidates(text))).toEqual([expect.objectContaining({kind:'confirmation',value:'91159776-1'})]);});
+ it('keeps an unlabeled hotel reference unavailable',()=>{expect(filterExactReservationCandidates(extractLookupCandidates('Hotel reference: 91159776-1'))).toEqual([]);});
+});

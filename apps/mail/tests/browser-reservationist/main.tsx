@@ -1,0 +1,12 @@
+import './fixture.css';
+import '../../components/create/prosemirror.css';
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{QueryClient,QueryClientProvider}from'@tanstack/react-query';
+import{ReservationistDraftCard}from'../../components/mail/reservationist-draft-card';
+import reviewFixture from './review-fixture.json';
+import{buildThreadDraftViewModel}from'../../lib/mail/thread-draft-view-model';
+import{EmailComposer}from'../../components/create/email-composer';
+function ComposerHarness(){const[snapshot,setSnapshot]=useState<any>();(window as any).hydrateComposer=(key='reviewed')=>setSnapshot({key,files:[new File(['%PDF-1.4 file BBB'],'Same.pdf',{type:'application/pdf'})]});return <EmailComposer initialTo={['guest@example.invalid']} initialSubject='Synthetic quote' initialMessage='<p>Initial reply</p>' initialAttachments={[new File(['%PDF-1.4 file AAA'],'Same.pdf',{type:'application/pdf'})]} hydratedAttachmentSnapshot={snapshot} onSendEmail={async(data:any)=>{(window as any).sentFixture=data;return false}} onClose={()=>{}}/>}
+function ReviewHarness(){const vm=buildThreadDraftViewModel(reviewFixture as any)!;return <><h1>Synthetic task evidence review</h1><ReservationistDraftCard draftId={vm.id} subject={vm.subject} bodyPreview={vm.bodyPreview} savedAtLabel='Now' draftBadge='Candidate' unsentNotice='Unsent' emptyPreviewLabel='Empty' editLabel='Edit' deleteLabel='Delete' moreLabel='More' readinessLabel={vm.readinessLabel} readinessReason={vm.readinessReason} tasks={vm.tasks} pricingProof={vm.pricingProof}/></>}
+function Harness(){const[draft,setDraft]=useState('A');const[hash,setHash]=useState('');(window as any).setFixture=(id:string,h:string)=>{setHash(h);setDraft(id)};
+if(location.search.includes('review'))return <ReviewHarness/>;if(location.search.includes('composer'))return <ComposerHarness/>;return <><h1>Local synthetic component proof</h1><ReservationistDraftCard draftId={draft} subject={`Draft ${draft}`} bodyPreview="Synthetic candidate reply" savedAtLabel="Now" draftBadge="Candidate" unsentNotice="Unsent" emptyPreviewLabel="Empty" editLabel="Edit" deleteLabel="Delete" moreLabel="More" readinessLabel="Staff review required" attachments={[{artifactRef:'generated:synthetic',filename:'Same.pdf',state:'loading',sizeBytes:17,sourceHash:hash} as any]}/></>}
+createRoot(document.getElementById('root')!).render(<QueryClientProvider client={new QueryClient()}><Harness/></QueryClientProvider>);

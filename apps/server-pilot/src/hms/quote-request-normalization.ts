@@ -1,7 +1,7 @@
 import {
   QUOTE_STAY_MAX_GUESTS,
   QUOTE_STAY_MAX_NIGHTS,
-  QUOTE_STAY_MAX_ROOMS,
+  QUOTE_STAY_MAX_GROUPS,
 } from './quote-stay-candidate.js';
 import { normalizedQuoteRoomSchema, type NormalizedQuoteRoom } from './quote-stay-contract.js';
 import { parseQuoteStayCandidateFromAuthoredSegment } from './quote-stay-candidate.js';
@@ -16,7 +16,7 @@ const currencySchema = z.string().regex(/^[A-Z]{3}$/, 'expected ISO currency');
 
 const quoteRoomInputSchema = z
   .object({
-    quantity: z.number().int().positive().max(QUOTE_STAY_MAX_ROOMS),
+    quantity: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     adultsPerRoom: z.number().int().positive().max(QUOTE_STAY_MAX_GUESTS),
     children: z.number().int().min(0).max(QUOTE_STAY_MAX_GUESTS).optional(),
     childAges: z.array(z.number().int().min(0).max(17)).max(16),
@@ -29,7 +29,7 @@ const quoteSegmentSchema = z
   .object({
     arrival: isoDateSchema,
     departure: isoDateSchema,
-    rooms: z.array(normalizedQuoteRoomSchema).min(1).max(QUOTE_STAY_MAX_ROOMS),
+    rooms: z.array(normalizedQuoteRoomSchema).min(1).max(QUOTE_STAY_MAX_GROUPS),
     currency: currencySchema,
   })
   .strict();
@@ -40,7 +40,7 @@ export const quoteRequestSchema = z
     propertyCode: refSchema,
     arrival: isoDateSchema,
     departure: isoDateSchema,
-    rooms: z.array(normalizedQuoteRoomSchema).min(1).max(QUOTE_STAY_MAX_ROOMS),
+    rooms: z.array(normalizedQuoteRoomSchema).min(1).max(QUOTE_STAY_MAX_GROUPS),
     currency: currencySchema,
     organizationRef: refSchema.nullable(),
     agencyRef: refSchema.nullable(),
@@ -261,7 +261,7 @@ function normalizeRooms(
   unresolved: string[],
   authority: QuoteReferenceAuthority,
 ): NormalizedQuoteRoom[] | null {
-  if (!Array.isArray(value) || value.length < 1 || value.length > QUOTE_STAY_MAX_ROOMS) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > QUOTE_STAY_MAX_GROUPS) {
     unresolved.push(`${prefix}.rooms`);
     return null;
   }
@@ -305,8 +305,8 @@ function normalizeRooms(
     0,
   );
   const roomCount = rooms.reduce((sum, room) => sum + room.quantity, 0);
-  if (roomCount > QUOTE_STAY_MAX_ROOMS) unresolved.push(`${prefix}.room_cap`);
-  if (guestCount > QUOTE_STAY_MAX_GUESTS) unresolved.push(`${prefix}.guest_cap`);
+  if (!Number.isSafeInteger(roomCount)) unresolved.push(`${prefix}.room_count_unsafe`);
+  if (!Number.isSafeInteger(guestCount)) unresolved.push(`${prefix}.guest_count_unsafe`);
   if (rooms.reduce((sum, room) => sum + room.quantity * room.adultsPerRoom, 0) < roomCount) {
     unresolved.push(`${prefix}.adult_per_room`);
   }

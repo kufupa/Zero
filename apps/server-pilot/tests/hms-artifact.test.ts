@@ -426,6 +426,40 @@ describe('readAuthorizedArtifact', () => {
     expect(JSON.stringify(result)).not.toContain('private parser stderr payload');
   });
 
+  it('retains encrypted recovery for Poppler password failures without returning stderr', async () => {
+    const body = pdfFixtureBody('password-required');
+    for (const failingTool of ['pdfinfo', 'pdftotext']) {
+      const commands: string[] = [];
+      const result = await extractEmbeddedPdfText(
+        { body, declaredSize: body.length, declaredMime: 'application/pdf', objectMime: 'application/pdf' },
+        { runner: async (tool) => {
+          commands.push(tool);
+          return tool === failingTool
+            ? { stdout: Buffer.alloc(0), stderr: Buffer.from('Command Line Error: Incorrect password\n'), exitCode: 1 }
+            : { stdout: Buffer.from('Pages: 1\nEncrypted: no\n'), stderr: Buffer.alloc(0), exitCode: 0 };
+        } },
+      );
+      expect(result).toMatchObject({ status: 'manual_required', draftReady: false, data: { reason: 'encrypted', text: null } });
+      expect(JSON.stringify(result)).not.toContain('Incorrect password');
+      expect(commands).toEqual(failingTool === 'pdfinfo' ? ['pdfinfo'] : ['pdfinfo', 'pdftotext']);
+    }
+  });
+
+  it('does not classify arbitrary parser stderr or another exit as password encryption', async () => {
+    const body = pdfFixtureBody('not-password-failure');
+    for (const [stderr, exitCode] of [
+      ['Syntax Error: Incorrect password is an untrusted document label\n', 1],
+      ['Command Line Error: Incorrect password\n', 2],
+      ['Command Line Error: Incorrect password with extra text\n', 1],
+    ] as const) {
+      const result = await extractEmbeddedPdfText(
+        { body, declaredSize: body.length, declaredMime: 'application/pdf', objectMime: 'application/pdf' },
+        { runner: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.from(stderr), exitCode }) },
+      );
+      expect(result).toMatchObject({ status: 'manual_required', draftReady: false, data: { reason: 'malformed', text: null } });
+    }
+  });
+
   it('enforces 20 MiB / 50 pages / 256 KiB / 10s limits', async () => {
     expect(ARTIFACT_MAX_INPUT_BYTES).toBe(20 * 1024 * 1024);
     expect(ARTIFACT_MAX_PAGES).toBe(50);

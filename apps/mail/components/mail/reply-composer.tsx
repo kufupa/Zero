@@ -12,13 +12,17 @@ import {
   shouldEnsureEditableDraftForReply,
 } from '@/lib/mail/draft-persistence';
 import {
+  isAssistedDraft,
+  useDraft,
+  useDraftArtifactHydration,
+  useEnsureEditableDraftForReply,
+} from '@/hooks/use-drafts';
+import {
   buildOutboundHeaderPreview,
   canShowHeaderDebug,
   isHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
-import { isAssistedDraft, useDraft, useEnsureEditableDraftForReply } from '@/hooks/use-drafts';
 import { constructReplyBody, constructForwardBody } from '@/lib/utils';
-import { useTimezone } from '@/hooks/use-timezone';
 import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -29,6 +33,7 @@ import { useHotkeysContext } from 'react-hotkeys-hook';
 import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
 import { useUndoSend } from '@/hooks/use-undo-send';
+import { useTimezone } from '@/hooks/use-timezone';
 import { useSettings } from '@/hooks/use-settings';
 import { Button } from '@/components/ui/button';
 import { useThread } from '@/hooks/use-threads';
@@ -53,6 +58,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const { data: emailData, refetch, latestDraft, aiDraftCandidates } = useThread(threadId);
   const { data: draft } = useDraft(draftId ?? null);
+  const draftArtifacts = useDraftArtifactHydration(draft as never);
   const trpc = useTRPC();
   const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
   const { mutateAsync: approveDraft } = useMutation(trpc.drafts.approve.mutationOptions());
@@ -164,6 +170,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     draftId?: string;
     excludeQuotedHistory?: boolean;
   }): Promise<boolean> => {
+    if(draftArtifacts.entries.some(a=>a.state!=='available')){toast.error('Required draft attachments are unavailable.');return false;}
     if (!replyToMessage) {
       toast.error('No message available to reply to.');
       return false;
@@ -375,6 +382,21 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   // Draft/recipient affinity only — do not use for React `key` (including `mode` there remounts the composer and wipes the body on reply/replyAll/forward switches).
   const composeSeed = `${mode ?? 'view'}:${replyToMessage?.id ?? 'latest'}`;
   const replyComposeInstanceId = replyToMessage?.id ?? threadId ?? 'latest';
+  const initializedComposeInstanceRef = useRef<string | null>(null);
+  const savedDraftId = draftId ?? latestDraft?.id;
+  const savedAttachmentCount = draft?.attachments?.length ?? 0;
+  const savedDraftReady =
+    !savedDraftId ||
+    (draft?.id === savedDraftId &&
+      draftArtifacts.entries.length === savedAttachmentCount &&
+      draftArtifacts.files.length === savedAttachmentCount &&
+      draftArtifacts.entries.every((a) => a.state === 'available'));
+  // Start with the complete saved attachment set. Once staff can edit, refetches
+  // must keep this composer mounted and preserve their attachment removals.
+  if (!mode) initializedComposeInstanceRef.current = null;
+  else if (emailData && savedDraftReady)
+    initializedComposeInstanceRef.current = replyComposeInstanceId;
+  const canEditReply = initializedComposeInstanceRef.current === replyComposeInstanceId;
   const draftRecipientSeedRef = useRef<string | null>(draftId ? composeSeed : null);
 
   useEffect(() => {
@@ -431,32 +453,63 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   if (!mode || !emailData) return null;
 
   return (
-    <div
-      ref={setReplyComposeViewportElement}
-      className="w-full overflow-visible rounded-2xl border"
-    >
-      <EmailComposer
-        key={`reply-compose-${replyComposeInstanceId}`}
-        className="max-w-none! w-full overflow-visible pb-1"
-        onSendEmail={handleSendEmail}
-        onClose={async () => {
-          setMode(null);
-          setDraftId(null);
-          setActiveReplyId(null);
-        }}
-        initialMessage={draft?.content ?? latestDraft?.content ?? undefined}
-        initialTo={initialToRecipients}
-        initialCc={initialCcRecipients}
-        initialBcc={initialBccRecipients}
-        initialSubject={replyComposeInitialSubject}
-        syncReplyHeadersFromProps
-        autofocus={true}
-        settingsLoading={settingsLoading}
-        replyToMessageId={replyToMessage?.id ?? null}
-        replyToMessage={replyToMessage}
-        headerPreview={headerPreview}
-        sendButtonLabel={isAssistedDraftForId(draftId) ? 'Review & Send' : 'Send'}
-      />
+    <div ref={setReplyComposeViewportElement} className="w-full overflow-visible rounded-2xl border">
+      {draftArtifacts.entries.length ? (
+        <div role="status" aria-live="polite" className="p-2 text-sm">
+          {draftArtifacts.entries.map((a) => (
+            <div key={a.artifactRef}>
+              {a.filename} ·{' '}
+              {a.state === 'available'
+                ? 'Available'
+                : a.state === 'loading'
+                  ? 'Loading'
+                  : a.state === 'permission_denied'
+                    ? 'Permission denied'
+                    : 'Attachment unavailable'}
+              {a.state === 'fetch_error' ? (
+                <Button type="button" variant="ghost" onClick={draftArtifacts.retry}>
+                  Retry {a.filename}
+                </Button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!canEditReply ? (
+        <div role="status" className="p-2 text-sm">
+          Saved reply attachments must be available before editing.
+        </div>
+      ) : (
+        <EmailComposer
+          key={`reply-compose-${replyComposeInstanceId}`}
+          className="max-w-none! w-full overflow-visible pb-1"
+          onSendEmail={handleSendEmail}
+          onClose={async () => {
+            setMode(null);
+            setDraftId(null);
+            setActiveReplyId(null);
+          }}
+          hydratedAttachmentSnapshot={
+            draftArtifacts.entries.every((a) => a.state === 'available') &&
+            draftArtifacts.entries.length
+              ? { key: draftArtifacts.snapshotKey, files: draftArtifacts.files }
+              : undefined
+          }
+          initialAttachments={draftArtifacts.files}
+          initialMessage={draft?.content ?? latestDraft?.content ?? undefined}
+          initialTo={initialToRecipients}
+          initialCc={initialCcRecipients}
+          initialBcc={initialBccRecipients}
+          initialSubject={replyComposeInitialSubject}
+          syncReplyHeadersFromProps
+          autofocus={true}
+          settingsLoading={settingsLoading}
+          replyToMessageId={replyToMessage?.id ?? null}
+          replyToMessage={replyToMessage}
+          headerPreview={headerPreview}
+          sendButtonLabel={isAssistedDraftForId(draftId) ? 'Review & Send' : 'Send'}
+        />
+      )}
       <Dialog open={showStaleDraftConfirmation} onOpenChange={setShowStaleDraftConfirmation}>
         <DialogContent showOverlay className="z-99999 sm:max-w-[425px]">
           <DialogHeader>

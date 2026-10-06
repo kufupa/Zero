@@ -28,7 +28,7 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('saveInFlightRef');
     expect(emailComposerSource).toContain('activeDraftIdRef');
     expect(emailComposerSource).toContain('capturedRevision');
-    expect(emailComposerSource).toContain("type: 'saved', capturedRevision");
+    expect(emailComposerSource).toMatch(/type:\s*'saved',\s*capturedRevision/);
     expect(emailComposerSource).toContain('flushDraftUntilCurrent');
     expect(emailComposerSource).toContain('autosaveSuppressedAfterFailure');
     expect(emailComposerSource).toContain('setAutosaveSuppressedAfterFailure(true)');

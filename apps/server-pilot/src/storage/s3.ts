@@ -373,7 +373,7 @@ export async function archiveQuarantineRawMime(
  *
  * Layout: `attachments/{messageId}/{index}-{filename}`
  *
- * Matches the bucket lifecycle rule `attachments/*` (90-day expiry).
+ * Matches the retained `attachments/*` prefix (Intelligent-Tiering after 30 days; no expiry).
  */
 export function attachmentKey(opts: {
   messageId: string;

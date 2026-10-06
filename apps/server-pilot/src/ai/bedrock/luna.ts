@@ -111,6 +111,11 @@ export class LunaModelAdapter implements ModelAdapter {
   }
 
   async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
+    const files = input.files ?? [];
+    if(input.maxOutputTokens!==undefined&&(!Number.isSafeInteger(input.maxOutputTokens)||input.maxOutputTokens<1||input.maxOutputTokens>32768))throw new Error('model_output_limit_invalid');
+    const requestBytes=Buffer.byteLength(input.systemPrompt)+Buffer.byteLength(input.userPrompt)+Buffer.byteLength(JSON.stringify(input.responseSchema??{}))+files.reduce((sum,file)=>sum+file.data.byteLength,0);
+    if(input.maxInputBytes!==undefined&&(!Number.isSafeInteger(input.maxInputBytes)||input.maxInputBytes<1||requestBytes>input.maxInputBytes))throw new Error('model_input_limit_exceeded');
+    if (files.length > 8 || files.some(file => file.mediaType !== 'application/pdf' || file.data.byteLength > 20 * 1024 * 1024 || file.data.byteLength <= 5 || new TextDecoder().decode(file.data.subarray(0, 5)) !== '%PDF-')) throw new Error('invalid_model_file_input');
     const started = Date.now();
     const signals = [input.signal];
     if (input.deadlineAt) signals.push(AbortSignal.timeout(Math.max(0, input.deadlineAt - started)));
@@ -118,8 +123,9 @@ export class LunaModelAdapter implements ModelAdapter {
     const result = await this.model.doGenerate({
       prompt: [
         { role: 'system', content: input.systemPrompt },
-        { role: 'user', content: [{ type: 'text', text: input.userPrompt }] },
+        { role: 'user', content: [{ type: 'text', text: input.userPrompt }, ...files.map(file => ({ type: 'file' as const, mediaType: file.mediaType, filename: file.filename, data: { type: 'data' as const, data: file.data } }))] },
       ],
+      ...(input.maxOutputTokens!==undefined?{maxOutputTokens:input.maxOutputTokens}:{}),
       responseFormat: input.responseSchema
         ? { type: 'json', schema: input.responseSchema as never, name: 'mail_ai_output' }
         : { type: 'json' },

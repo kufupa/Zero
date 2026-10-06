@@ -1,3 +1,4 @@
+import type { DraftCardAttachment } from '@/components/mail/thread-draft-card';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import { plainTextDraftPreview } from './draft-preview';
 import type { ParsedMessage } from '@/types';
@@ -58,6 +59,11 @@ export type ThreadDraftViewModel = {
   freshness?: HmsCandidateFreshness;
   refreshState?: HmsRefreshState | null;
   unresolvedFields?: string[];
+  readinessLabel?: string;
+  readinessReason?: string;
+  attachments?: DraftCardAttachment[];
+  tasks?: { label: string; state: string; details?: string[] }[];
+  pricingProof?: string[];
 };
 
 export type HmsCandidateStateInput = {
@@ -113,6 +119,18 @@ export function buildThreadDraftViewModel(
     };
   }
 
+  const extended = draft as typeof draft & {
+    attachments?: (DraftCardAttachment & { sizeBytes?: number; sourceHash?: string | null })[];
+    reviewSummary?: {
+      readinessLabel?: string;
+      reason?: string;
+      tasks?: { label: string; state: string; details?: string[] }[];
+      pricingProof?: string[];
+    };
+  };
+  const attachments = extended.attachments ?? [];
+  const summary = extended.reviewSummary;
+  const unavailable = attachments.some((a) => a.state !== 'available');
   const raw = draft.content ?? '';
   const bodyPreview = plainTextDraftPreview(raw);
   const savedAtIso = draft.updatedAt.split('.')[0] || draft.updatedAt;
@@ -121,6 +139,13 @@ export function buildThreadDraftViewModel(
 
   return {
     id: draft.id,
+    readinessLabel: unavailable ? 'Attachment unavailable' : summary?.readinessLabel,
+    readinessReason: unavailable
+      ? 'A required attachment must be available before sending.'
+      : summary?.reason,
+    attachments,
+    tasks: summary?.tasks,
+    pricingProof: summary?.pricingProof,
     subject: draft.subject?.trim() || '',
     bodyPreview,
     savedAtIso,

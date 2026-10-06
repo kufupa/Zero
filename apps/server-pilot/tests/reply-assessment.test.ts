@@ -288,3 +288,16 @@ describe('reply assessment', () => {
     });
   });
 });
+
+ it('checks canonical ZAR space-grouped cents and R currency alias without accepting mismatches',()=>{
+ const facts=[{key:'price',label:'Price',value:{amount:'2200.02',currency:'ZAR'},source:'hms' as const,authority:'authorized' as const,status:'known' as const}];
+ expect(assessReply({replyText:'Total R2 200.02.',asks:[],facts,audience:'guest'}).issues.some(i=>i.code==='AMOUNT_OR_CURRENCY_MISMATCH')).toBe(false);
+ expect(assessReply({replyText:'Total R2 201.02.',asks:[],facts,audience:'guest'}).issues.some(i=>i.code==='AMOUNT_OR_CURRENCY_MISMATCH')).toBe(true);
+ });
+
+it('validates every breakfast time against authorized time facts without admitting unsourced times',()=>{
+ const fact={key:'breakfast_time',label:'Breakfast time',value:'07:00 to 10:00',source:'hms' as const,authority:'authorized' as const,status:'known' as const};
+ expect(assessReply({replyText:'Breakfast is served from 07:00 to 10:00.',asks:[],facts:[fact]}).ok).toBe(true);
+ for(const replyText of ['Breakfast is served from 07:00 to 11:00.','Breakfast starts at 06:00.'])expect(assessReply({replyText,asks:[],facts:[fact]}).issues.map(i=>i.code)).toContain('UNSUPPORTED_DATE_CLAIM');
+ expect(assessReply({replyText:'Breakfast is served from 07:00 to 10:00.',asks:[],facts:[{...fact,authority:'unknown'}]}).ok).toBe(false);
+});

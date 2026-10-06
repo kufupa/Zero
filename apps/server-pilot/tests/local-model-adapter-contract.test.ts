@@ -2,8 +2,9 @@ import {
   LocalModelRouteUnavailableError,
   createLocalModelAdapter,
   type LocalModelRouteEvidence,
+  type LocalModelTransportRequest,
 } from '../src/ai/bedrock/local.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const evidence: LocalModelRouteEvidence = {
   routeId: 'approved-local-test',
@@ -17,6 +18,33 @@ const evidence: LocalModelRouteEvidence = {
 };
 
 describe('approved local model adapter', () => {
+  it('forwards an explicitly supplied reservation without inventing one', async () => {
+    const reserveCalls=vi.fn(async()=>{}),transport=vi.fn();
+    const adapter=createLocalModelAdapter({route:evidence,transport,reserveCalls} as never);
+    const signal=new AbortController().signal;
+    await adapter.reserveCalls!(3,signal);
+    expect(reserveCalls).toHaveBeenCalledExactlyOnceWith(3,signal);expect(transport).not.toHaveBeenCalled();
+    expect(createLocalModelAdapter({route:evidence,transport}).reserveCalls).toBeUndefined();
+  });
+  it('preserves reservation rejection and rejects invalid counts or aborts without transport', async () => {
+    const transport=vi.fn(),reserveCalls=vi.fn(async()=>{throw new Error('budget_denied');});
+    const adapter=createLocalModelAdapter({route:evidence,transport,reserveCalls} as never),controller=new AbortController();
+    await expect(adapter.reserveCalls!(2,controller.signal)).rejects.toThrow('budget_denied');
+    for(const count of [0,-1,1.5,NaN])await expect(adapter.reserveCalls!(count,controller.signal)).rejects.toThrow();
+    const reason=new Error('reservation_aborted');controller.abort(reason);await expect(adapter.reserveCalls!(2,controller.signal)).rejects.toBe(reason);
+    expect(reserveCalls).toHaveBeenCalledTimes(1);expect(transport).not.toHaveBeenCalled();
+  });
+  it('rejects an abort occurring during reservation', async () => {
+    const controller=new AbortController(),reason=new Error('during_reservation');
+    const adapter=createLocalModelAdapter({route:evidence,transport:vi.fn(),reserveCalls:async()=>{controller.abort(reason);}} as never);
+    await expect(adapter.reserveCalls!(2,controller.signal)).rejects.toBe(reason);
+  });
+  it('passes both admitted PDF and raster bytes through unchanged', async () => {
+    const files=[{filename:'original.pdf',mediaType:'application/pdf' as const,data:new Uint8Array([1,2])}],images=[{filename:'original.png',mediaType:'image/png' as const,data:new Uint8Array([3,4])}];
+    const transport=vi.fn(async(_request:LocalModelTransportRequest)=>({output:{},usage:{inputTokens:1,outputTokens:1,latencyMs:1}}));
+    await createLocalModelAdapter({route:evidence,transport}).invoke({modelId:evidence.modelId,systemPrompt:'system',userPrompt:'{}',files,images});
+    expect(transport.mock.calls[0]?.[0]).toMatchObject({files,images});
+  });
   it('refuses before transport initialization when route evidence is absent', () => {
     let transportInitialized = false;
     expect(() =>

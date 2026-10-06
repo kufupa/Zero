@@ -1,3 +1,7 @@
+import {deriveOperationalDraftSources,assertOperationalDraftSources,type OperationalDraftMessageRow} from './reservationist-operational-draft-source.js';
+import {RESERVATIONIST_DRAFT_PROPERTY_CODE,deriveArrivalDraftSources,assertArrivalDraftSources,draftSourceHash,draftSourceMessage,sealReservationistDraftSource,type ReservationistDraftSource} from './reservationist-draft-source.js';
+import { admitReservationistAttachment, isReservationistSignatureNoise, type AttachmentAdmission, type ReservationistOfficeConverter } from './reservationist-attachment-input.js';
+import { runReservationistRuntime, type ReservationistRuntimeInput } from './reservationist-runtime.js';
 import {
   claimNextAiRun,
   CLEANUP_RESERVE_MS,
@@ -97,6 +101,7 @@ import {
   readAuthorizedArtifactBytes,
   type ArtifactData,
   type AttachmentLocator,
+  type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import {
   createApprovedLocalModelAdapter,
@@ -150,7 +155,7 @@ import {
 import type { ReservationLookupResult, ReservationRow } from '../hms/reservation-context-facade.js';
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
-import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
+import { persistAiCandidateDraft, typedResultDigest, type PersistedGeneratedArtifact, loadLatestThreadAffectingDraftRevisionId, loadLiveThreadStateVersion, createDraftArtifactStorage, type ReservationistPersistedResult } from './drafts.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
@@ -182,6 +187,7 @@ import { assessReply } from './reply-assessment.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
+import {deriveReservationistReadFields} from './reservationist-read-task.js';
 
 /** Code-owned asks derived from the bounded inbound request; no model chooses scope. */
 export function deriveWorkerReplyAsks(requestText: string): PreparedAsk[] {
@@ -208,6 +214,112 @@ export function deriveWorkerReplyAsks(requestText: string): PreparedAsk[] {
   return asks;
 }
 
+/** Broad independent obligations fail closed when model planning drops an observed ask. */
+// Keep a literal prefix of the original message: offsets and its source hash are
+// still measured against the unmodified full body. Prior requests are context;
+// explicitly activated document continuations have their existing separate seam.
+function reservationistAuthoredRequest(text:string):string{
+ const boundary=text.search(/^[\t ]*(?:From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{0,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)|>|--[\t ]*(?:\r?$)|(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards[^\p{L}\p{N}\r\n]*$|regards[^\p{L}\p{N}\r\n]*$|(?:This\s+e-?mail\s+and\s+any\s+attachments|This\s+(?:e-?mail|message)\s+(?:is\s+intended\s+for|may\s+contain)|We\s+respect\s+your\s+privacy\s+and\s+acknowledge\b|CONFIDENTIALITY\s+NOTICE\b))/imu);
+ return boundary<0?text:text.slice(0,boundary);
+}
+const reservationistAccountChargeRequest=/\b(?:bill\s+back|charge)\b[^.!?;\r\n]{0,120}\b(?:corporate|company|our)\s+account\b/gi;
+const reservationistStatusInquiry=(text:string)=>deriveReservationistReadFields(text).includes('reservation_status');
+function reservationistRequestedDocuments(text:string):{start:number;end:number;text:string;requestStart:number;requestEnd:number}[]{
+ const found=[];for(const match of text.matchAll(/\b(?:resend|send|copy|attach|provide)\b[^.!?;\r\n]{0,80}?\b(tax certificate|certificate|receipt|invoice|confirmation|document|existing quote|quote|quotation|proposal)\b/gi)){
+  const noun=match[1]!,quote=/^(?:existing quote|quote|quotation|proposal)$/i.test(noun),tail=text.slice(match.index!+match[0].length).split(/[.!?;\r\n]/)[0]!;
+  if(quote&&!/\b(?:resend|copy|existing|prior|previous|our|your)\b/i.test(match[0])&&!/^\s+(?:[A-Z][A-Z0-9]*-\d+|#\s*\w+)/.test(tail))continue;
+  const start=match.index!+match[0].lastIndexOf(noun);found.push({start,end:start+noun.length,text:noun,requestStart:match.index!,requestEnd:match.index!+match[0].length});
+ }return found;
+}
+function reservationistStandaloneQuestion(text:string):boolean{
+ if(!/\?/.test(text))return false;
+ if(/\b(?:parking|transfer|shuttle|pool|wifi|policy|terms|tax(?:es)?|VAT|levy|room options|breakfast options|payment|deposit|folio|balance|check[- ]?(?:in|out)\s+(?:time|by)|early|late)\b|\band\s+(?:is|are|what|when|can|could|do|does|will|would|advise|tell)\b/i.test(text)||reservationistStatusInquiry(text))return true;
+ return !/\b(?:quote|quotation|rates?|prices?|availability|book|reserve)\b|\b(?:make|create)\s+(?:a\s+)?(?:booking|reservation)\b/i.test(text);
+}
+// A hold-policy request is independent quote work; it grants no inventory action.
+const reservationistHoldPolicyRequest=(text:string)=>
+  /\b(?:provisional|hold|held|release)\b/i.test(text) && /\b(?:rooms?|accommodation|bookings?|reservations?)\b/i.test(text) &&
+  /\b(?:please|kindly|require[sd]?|request|advise|confirm|explain|can|could|how|what|whether)\b/i.test(text) &&
+  !/\b(?:not|no|never|without|disregard|withdraw)\b/i.test(text);
+// A requested benefit answer is separate from room pricing; customer wording
+// never establishes an entitlement. Keep incidental or excluded marketing out.
+const reservationistRequestedRateBenefits=(text:string)=>
+ /\b(?:rates?|hotel|accommodation|rooms?|packages?)\b/i.test(text)&&
+ /\b(?:accommodation|hotel|rooms?|rates?|packages?)\s+(?:benefits?|entitlements?)\b|\bvalue[ -]added\s+inclusions?(?:\s+or\s+benefits?)?\b/i.test(text)&&
+ /\b(?:please|kindly|request|advise|explain|provide|include|appreciate|what|whether)\b|\b(?:can|could)\s+(?:you|we)\b/i.test(text)&&
+ !/\b(?:not|no|never|without|disregard|withdraw|previous|historical)\b/i.test(text);
+const reservationistStayDateInquiry=(text:string)=>text.split(/[.!?;\r\n]+/).some(clause=>/\breservation\b/i.test(clause)&&/\b(?:arrival|departure|stay dates?|check[- ]?in|check[- ]?out)\b/i.test(clause)&&/\b(?:confirm|verify|check(?![- ]?(?:in|out)\b)|tell|advise|what|when)\b/i.test(clause)&&!/\b(?:change|amend|revise|book|new reservation|cancel)\b/i.test(clause));
+export function deriveReservationistTaskKinds(text: string): string[] {
+  text=reservationistAuthoredRequest(text);
+  const actionText=text.split(/(?<=[.!?;])|[\r\n]+/).map(clause=>reservationistStatusInquiry(clause)&&!/\b(?:cancel|book|change|amend|revise|accept|proceed)\b/i.test(clause)?'':clause).join(' ');
+  const kinds = new Set<string>();
+  // Returning a signed commercial document requests acceptance processing. It does
+  // not request a fresh price; the execution layer still verifies original scope.
+  const submittedOfferSpans:{start:number;end:number}[]=[];
+  for(const clause of text.matchAll(/[^.!?;\r\n]+/g)){
+    const row=clause[0];if(/\b(?:not|never|no|unsigned|will|later|if|unless)\b/i.test(row))continue;
+    const submitted=/\b(?:see|find|return(?:ed)?|enclos(?:ed|e)|submit(?:ted)?)\b/i.test(row)&&/\b(?:attached?|enclos(?:ed|ure))\b/i.test(row)||/^\s*(?:attached|enclosed)\b/i.test(row);
+    if(!submitted)continue;
+    for(const offer of row.matchAll(/\bsigned\s+(?:quote|quotation|offer|proposal)\b/gi))submittedOfferSpans.push({start:clause.index!+offer.index!,end:clause.index!+offer.index!+offer[0].length});
+  }
+  const documents=reservationistRequestedDocuments(text),newQuoteText=text.split('').map((char,index)=>documents.some(doc=>/quote|quotation|proposal/i.test(doc.text)&&index>=doc.requestStart&&index<doc.requestEnd)||submittedOfferSpans.some(span=>index>=span.start&&index<span.end)?' ':char).join('');
+  const timingRequest = /\b(?:early|late)\s+check[- ]?(?:in|out)\b/i;
+  // Timing permission and its conditional fee are operational answers, rather than
+  // accommodation pricing. Keep mixed room-pricing requests independently visible.
+  const pricingText = timingRequest.test(newQuoteText) ? newQuoteText.replace(/\bsubject\s+to\s+availability\b/gi, '') : newQuoteText;
+  const pricingClauses = pricingText.split(/[.!?;]+/);
+  const deferredAcknowledgement=/\bthank\s+you\s+for\s+(?:the|your)\s+(?:quote|quotation)\b[\s\S]*\bI\s+(?:will|shall)\s+review\b[\s\S]*\b(?:revert|get back|respond)\b/i.test(text)&&!/\?|\b(?:please|kindly|can you|could you|send|provide|book|reserve|cancel|change|amend|accept|accepted|go ahead)\b/i.test(text);
+  const accommodationPricing = pricingClauses.some(clause => {
+    const directPricing=/\b(?:rates?|prices?|pricing|availability)\b/i.test(clause);
+    const requestedStayCost=/\bcosts?\b/i.test(clause)&&/\b(?:rooms?|accommodation|nights?|stay|hotel|contract)\b/i.test(clause)&&/\b(?:please|kindly|what|how much|advise|supply|provide|tell|quote)\b/i.test(clause);
+    if (!directPricing&&!requestedStayCost) return false;
+    if (!timingRequest.test(clause)) return true;
+    const pricingTargets = clause.matchAll(/\b(?:rooms?|accommodation|nights?|contract)\b[^.!?;]{0,40}?\b(?:rates?|prices?|pricing|costs?|availability)\b|\b(?:rates?|prices?|pricing|costs?|availability)\b[^.!?;]{0,40}?\b(?:rooms?|accommodation|nights?|contract)\b/gi);
+    return [...pricingTargets].some(match => !timingRequest.test(match[0]));
+  });
+  if (!deferredAcknowledgement&&(/\b(?:quote|quotation)\b/i.test(newQuoteText) || accommodationPricing)) kinds.add('quote');
+  const acceptedOffer=/\b(?:accept|accepted)\s+(?:(?:the|this|that|your|our|their|a|an|quoted|prior|previous)\s+){0,3}(?:quote|quotation|offer|booking|reservation)\b|\bconfirm\b[^.!?;]{0,80}\b(?:offer|quote|quotation)\b/i.test(actionText)||(/\b(?:I|we)\s+(?:have\s+)?(?:accept|accepted)\s*(?:[.!;]|$)|(?:^|[.!;]\s*)(?:accept|accepted)\s*(?:[.!;]|$)|\bproceed\b/i.test(actionText)&&/\b(?:quote|quoted|quotation|offer)\b/i.test(text));
+  if (!deferredAcknowledgement&&(acceptedOffer||submittedOfferSpans.length>0)) kinds.add('acceptance');
+  else if (/\b(?:book|reserve|booking request|new reservation)\b|\b(?:make|create)\s+(?:a\s+)?(?:booking|reservation)\b|\barrange\s+(?:the\s+|our\s+)?accommodation\b/i.test(actionText)) kinds.add('new_booking');
+  if (/\b(?:amend|revise)\b|\b(?:please|kindly|can\s+you|could\s+you|request(?:ing)\s+(?:to|you\s+to))\b[^.!?;]{0,60}\bchange\b|^\s*change\s+(?:the\s+|my\s+|our\s+)?(?:booking|reservation|arrival|departure|dates?|rooms?|occupancy|allocation)\b|\b(?:instead)\b/i.test(actionText)) kinds.add('change');
+  const cancellationActionText=actionText.replace(/\bcancellation\s+(?:policy|policies|terms|conditions|fees?|charges?|costs?|rules)\b/gi,'');
+  if (/\bcancel\b|\b(?:request|process|arrange|proceed with|make)\b[^.!?;]{0,60}\bcancellation\b|\bcancellation\s+(?:request|of|for)\b/i.test(cancellationActionText)) kinds.add('cancel_request');
+  if (documents.length) kinds.add('existing_document');
+  if (/\b(?:update|synchroni[sz]e|sync)\b[^.!?;]{0,120}\b(?:system|channel|booking)\b/i.test(actionText)) kinds.add('channel_booking_sync');
+  if (text.split(/[.!?;\r\n]+/).some(reservationistHoldPolicyRequest)) kinds.add('question');
+  if (text.split(/[.!?;]+/).some(reservationistRequestedRateBenefits)) kinds.add('question');
+  if (/\b(?:parking|transfer|shuttle|check[- ]?in time|check[- ]?out time|policy|cancellation (?:terms|fees?|charges?|conditions|rules)|breakfast time|payment|deposit|folio|balance|reservation status|pay on account|account payment|credit terms)\b/i.test(text) || [...text.matchAll(reservationistAccountChargeRequest)].length>0 || reservationistStatusInquiry(text) || timingRequest.test(text) || reservationistStayDateInquiry(text) || text.split(/(?<=[.!?])|[\r\n]+/).some(reservationistStandaloneQuestion)) kinds.add('question');
+  return [...kinds];
+}
+
+export function deriveReservationistAskSpans(text:string,messageId:string):NonNullable<ReservationistRuntimeInput['requiredAskSpans']>{
+ text=reservationistAuthoredRequest(text);
+ const asks:NonNullable<ReservationistRuntimeInput['requiredAskSpans']>=[];
+ const topics=/\b(?:parking|transfer|shuttle|pool|wifi|wi-fi|check[- ]?in time|check[- ]?out time|cancellation (?:policy|terms|fees?|charges?)|policy|breakfast time|room options|breakfast options|payment|deposit|folio|balance|reservation status)\b/gi;
+ for(const match of text.matchAll(topics))asks.push({sourceId:`message:${messageId}`,start:match.index!,end:match.index!+match[0].length,text:match[0]});
+ const add=(pattern:RegExp)=>{for(const match of text.matchAll(pattern)){const start=match.index!,end=start+match[0].length;if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end))asks.push({sourceId:`message:${messageId}`,start,end,text:match[0]});}};
+ add(/\b(?:company\s+can\s+)?pay\s+on\s+account\b|\baccount payment\b|\bcredit terms\b/gi);
+ add(reservationistAccountChargeRequest);
+ for(const match of text.matchAll(/[^.!?;\r\n]+[.!?;]?/g))if(reservationistStatusInquiry(match[0])){const quote=match[0].trim(),start=match.index!+match[0].indexOf(quote),end=start+quote.length;if(!asks.some(ask=>ask.start>=start&&ask.end<=end))asks.push({sourceId:`message:${messageId}`,start,end,text:quote});}
+ for(const clause of text.matchAll(/[^.!?;\r\n]+[.!?;]?/g)){
+  if(reservationistStayDateInquiry(clause[0])){const dates=/\barrival\s+(?:and\s+)?departure(?:\s+dates?)?\b|\b(?:arrival|departure|stay dates?|check[- ]?in|check[- ]?out)\b(?!\s+time)/gi;for(const match of clause[0].matchAll(dates)){const start=clause.index!+match.index!,end=start+match[0].length;if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end))asks.push({sourceId:`message:${messageId}`,start,end,text:match[0]});}}
+  if(/\b(?:include|advise|confirm|explain|what|whether)\b/i.test(clause[0]))for(const match of clause[0].matchAll(/\b(?:tax(?:es)?|VAT|levy)\b/gi)){const start=clause.index!+match.index!,end=start+match[0].length;if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end))asks.push({sourceId:`message:${messageId}`,start,end,text:match[0]});}
+ }
+ for(const clause of text.matchAll(/[^.!?;\r\n]+[.!?;]?/g)) if(reservationistHoldPolicyRequest(clause[0])) {
+  const quote=clause[0].trim(),start=clause.index!+clause[0].indexOf(quote),end=start+quote.length;
+  if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end)) asks.push({sourceId:`message:${messageId}`,start,end,text:quote});
+ }
+ for(const clause of text.matchAll(/[^.!?;]+[.!?;]?/g))if(reservationistRequestedRateBenefits(clause[0])){
+  for(const match of clause[0].matchAll(/\b(?:value[ -]added\s+inclusions?(?:\s+or\s+benefits?)?|(?:accommodation|hotel|room|rate|package)\s+(?:benefits?|entitlements?)|benefits?|entitlements?)\b/gi)){
+   const start=clause.index!+match.index!,end=start+match[0].length;
+   if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end))asks.push({sourceId:`message:${messageId}`,start,end,text:match[0]});
+  }
+ }
+ for(const {start,end,text:noun}of reservationistRequestedDocuments(text))if(!asks.some(ask=>ask.start>=start&&ask.end<=end||start>=ask.start&&end<=ask.end))asks.push({sourceId:`message:${messageId}`,start,end,text:noun});
+ for(const match of text.matchAll(/[^.!?\n]*\?/g)){const quote=match[0].trim(),start=match.index!+match[0].indexOf(quote),end=start+quote.length;if(reservationistStandaloneQuestion(quote)&&!asks.some(ask=>ask.start>=start&&ask.end<=end))asks.push({sourceId:`message:${messageId}`,start,end,text:quote});}
+ return asks.sort((a,b)=>a.start-b.start||a.end-b.end);
+}
+
 function workerReplyRequestKind(requestText: string): ReplyRequestKind {
   if (/\b(?:payment|deposit|receipt|folio)\b/i.test(requestText)) return 'finance';
   if (/\b(?:price|rate|quote|cost|how much)\b/i.test(requestText)) return 'quote';
@@ -219,6 +331,7 @@ function workerReplyRequestKind(requestText: string): ReplyRequestKind {
 }
 
 export type PreparedWorkerCandidateReplyInput = {
+  qualifiedReservationist?: { input: ReservationistRuntimeInput; dependencies: Parameters<typeof runReservationistRuntime>[1] };
   requestId: string;
   threadId?: string;
   requestText: string;
@@ -239,6 +352,15 @@ export type PreparedWorkerCandidateReplyInput = {
 export async function runPreparedWorkerCandidateReply(
   input: PreparedWorkerCandidateReplyInput,
 ): Promise<PreparedReplyWorkflowResult> {
+  if (input.qualifiedReservationist) {
+    if (input.requestId !== input.qualifiedReservationist.input.requestId) throw new Error('qualified_request_binding_mismatch');
+    if (!input.route?.release || input.route.route.purpose !== 'draft' || input.route.release.withdrawn || !Number.isFinite(Date.parse(input.route.release.expiresAt)) || Date.parse(input.route.release.expiresAt) <= Date.now()) throw new Error('qualified_route_unavailable');
+    const originalInput=input.qualifiedReservationist.input;
+    if(input.deadlineAt!==undefined&&input.deadlineAt<originalInput.clock.deadlineAt)throw new Error('qualified_deadline_binding_mismatch');
+    const runtimeInput = originalInput;
+    const result = await runReservationistRuntime(runtimeInput, { ...input.qualifiedReservationist.dependencies, signal: input.signal });
+    return { outcome: result.readiness === 'ready_for_staff_review' ? 'complete' : result.readiness === 'needs_clarification' ? 'clarification' : 'partial', textBody: result.textBody, htmlBody: result.htmlBody, assessment: result.assessment, serializedInput: JSON.stringify({ version: result.version, requestId: input.requestId }), metrics: { reservationistResult: result, resultDigest: result.digest, finalWordingModelCalls: 0 } };
+  }
   const asks = input.asks ?? deriveWorkerReplyAsks(input.requestText);
   const prepared = prepareDraftInput({
     requestId: input.requestId,
@@ -254,7 +376,7 @@ export async function runPreparedWorkerCandidateReply(
       input.adapter ??
       createApprovedLocalModelAdapter({
         purpose: 'draft',
-        route: input.route?.route,
+        route: input.route?.route.protocol==='in_process'?input.route.route:undefined,
         transport: input.route?.transport,
       });
   } catch (error) {
@@ -4071,6 +4193,15 @@ export async function executeAiRun(
     candidateReplyModelAdapter?: ModelAdapter;
     /** Explicit configured draft-purpose route; absent remains unavailable. */
     candidateDraftRoute?: DraftModelRouteConfig;
+    /** Trusted local PDF isolation edge; absent retains the default sandbox. */
+    artifactSandboxRunner?: SandboxRunner;
+    /** Explicit trusted Office converter; absent leaves Office attachments manual. */
+    artifactOfficeConverter?: ReservationistOfficeConverter;
+    /** Trusted post-runtime evidence capture; receives detached copies only. */
+    onReservationistResult?: (capture: {
+      input: Readonly<ReservationistRuntimeInput>;
+      result: Readonly<Awaited<ReturnType<typeof runReservationistRuntime>>>;
+    }) => void | Promise<void>;
     candidateReplyAsks?: readonly PreparedAsk[];
     /** Explicit purpose-bound mail extraction route; absent means unavailable. */
     mailBaselineExtractionRoute?: {
@@ -4588,7 +4719,52 @@ export async function executeAiRun(
       if (hmsMode === 'off') {
         const requestText = trigger.textBody ?? trigger.htmlBody ?? '';
         const replyAsks = options.candidateReplyAsks ?? deriveWorkerReplyAsks(requestText);
+        let qualified: Awaited<ReturnType<NonNullable<DraftModelRouteConfig['reservationist']>>> | undefined;
+        let qualifiedInput: ReservationistRuntimeInput | undefined;
+        let expectedThreadStateVersion: string | undefined;
+        const sourceRechecks: (()=>Promise<boolean>)[]=[];
+        let qualifiedSource:Omit<ReservationistDraftSource,'resultDigest'>|undefined;
+        let operationalSourceRows:OperationalDraftMessageRow[]=[];
+        let operationalSourcePlan:import('./reservationist-runtime.js').RuntimePlan|undefined;
+        if (options.candidateDraftRoute?.reservationist) {
+          const release = options.candidateDraftRoute.release;
+          if (!release || release.capabilityFamilyVersions.reservationist !== 'reservationist-runtime-v1' || release.withdrawn || Date.parse(release.issuedAt) > Date.now() || Date.parse(release.expiresAt) <= Date.now()) throw new Error('qualified_release_unavailable');
+          if (!existingGeneration?.requestedByUserId) throw new Error('qualified_requester_unavailable');
+          const at = trigger.receivedAt;
+          if (trigger.transportId !== run.transportId || trigger.threadId !== run.threadId || trigger.direction !== 'inbound' || !at) throw new Error('qualified_trigger_scope_invalid');
+          const rows = await db.select().from(message).where(and(eq(message.transportId, run.transportId), eq(message.threadId, run.threadId)));
+          const messages = rows.map(row => ({ id: row.id, at: (row.direction === 'inbound' ? row.receivedAt : row.sentAt)?.toISOString(), direction: row.direction, disclosure:row.direction==='inbound'||row.toAddresses.some(address=>address.toLowerCase()===replyTo.toLowerCase())?'guest' as const:'staff_only' as const, text: row.textBody ?? row.htmlBody ?? '', ...(row.subject!==null?{subject:row.subject}:{}) })).filter((row): row is ReservationistRuntimeInput['messages'][number]&{disclosure:'guest'|'staff_only'} => !!row.at && (row.direction === 'inbound' || row.direction === 'outbound') && Date.parse(row.at) <= at.getTime()).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+          operationalSourceRows=structuredClone(rows.filter(row=>messages.some(m=>m.id===row.id)));
+          const sourceMessages=rows.filter(row=>messages.some(m=>m.id===row.id)).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
+          qualifiedSource={version:1,runId:run.id,generationId,transportId:run.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:run.threadId,requestedByUserId:existingGeneration.requestedByUserId,triggerMessageId:trigger.id,causalAt:at.toISOString(),messages:sourceMessages,attachments:[]};
+          sourceRechecks.push(async()=>{const current=await db.select().from(message).where(and(eq(message.transportId,run.transportId),eq(message.threadId,run.threadId)));const causal=current.filter(row=>{const date=row.direction==='inbound'?row.receivedAt:row.sentAt;return date&&date.getTime()<=at.getTime();}).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));return draftSourceHash(causal)===draftSourceHash(sourceMessages);});
+          qualifiedInput = { version: 1, requestId: run.triggerMessageId, propertyCode: RESERVATIONIST_DRAFT_PROPERTY_CODE, authorizationScope:{ownerRef:run.transportId,threadId:run.threadId},requiredTaskKinds:deriveReservationistTaskKinds(requestText),requiredAskSpans:deriveReservationistAskSpans(requestText,trigger.id), trigger: {id: trigger.id, at: at.toISOString()}, messages, authorizedArtifacts: [], clock: {causalAt: at.toISOString(), sourceAt: new Date().toISOString(), sourceMode:'current_read', deadlineAt: deadlineAt.getTime()}, capabilities: {pmsWrite:false,emailSend:false} };
+          const attached = await db.select({id:attachment.id,messageId:attachment.messageId,mimeType:attachment.mimeType,sizeBytes:attachment.sizeBytes,s3Key:attachment.s3Key,isInline:attachment.isInline,contentId:attachment.contentId}).from(attachment).where(inArray(attachment.messageId,messages.map(message=>message.id)));
+          const descriptorSet=attached.map(item=>({...item})).sort((a,b)=>a.id.localeCompare(b.id));
+          sourceRechecks.push(async()=>{const current=await db.select({id:attachment.id,messageId:attachment.messageId,mimeType:attachment.mimeType,sizeBytes:attachment.sizeBytes,s3Key:attachment.s3Key,isInline:attachment.isInline,contentId:attachment.contentId}).from(attachment).where(inArray(attachment.messageId,messages.map(m=>m.id)));return draftSourceHash(current.sort((a,b)=>a.id.localeCompare(b.id)))===draftSourceHash(descriptorSet);});
+          if (attached.length > 256||attached.reduce((sum,item)=>sum+item.sizeBytes,0)>20*1024*1024) throw new Error('qualified_attachment_limit');
+          const admissions: AttachmentAdmission[] = [];
+          for (const item of attached) {
+            const load = async () => { const [current]=await db.select({s3Key:attachment.s3Key,mimeType:attachment.mimeType,sizeBytes:attachment.sizeBytes,messageId:attachment.messageId}).from(attachment).innerJoin(message,eq(message.id,attachment.messageId)).where(and(eq(attachment.id,item.id),eq(message.transportId,run.transportId),eq(message.threadId,run.threadId))).limit(1); return current ?? null; };
+            const locator = await load(); if(!locator)throw new Error('qualified_attachment_scope');
+            const read={attachmentId:item.id,authorizedAttachmentIds:new Set([item.id]),s3:getS3Storage(),signal,expectedLocator:locator,resolveLocator:load,allowRaster:true,allowOffice:true,revalidate:async()=>{const current=await load();return !!current&&current.s3Key===locator.s3Key&&current.mimeType===locator.mimeType&&current.sizeBytes===locator.sizeBytes&&current.messageId===locator.messageId;}};
+            const bytes=await readAuthorizedArtifactBytes(read);
+            if(!bytes)throw new Error('qualified_attachment_identity');
+            sourceRechecks.push(async()=>!!(await readAuthorizedArtifactBytes({...read,expectedSha256:bytes.sha256})));
+            qualifiedSource.attachments.push({attachmentId:item.id,messageId:item.messageId,s3Key:locator.s3Key,mimeType:locator.mimeType,sizeBytes:locator.sizeBytes,sourceHash:bytes.sha256,inline:item.isInline});
+            const metadata={attachmentId:item.id,messageId:item.messageId,threadId:run.threadId,ownerRef:run.transportId,messageAt:messages.find(message=>message.id===item.messageId)!.at,mimeType:item.mimeType,sizeBytes:item.sizeBytes,sourceHash:bytes.sha256,disclosure:messages.find(message=>message.id===item.messageId)!.disclosure??'staff_only',inline:item.isInline,...(item.contentId?{contentId:item.contentId}:{}),signatureNoise:isReservationistSignatureNoise({messageText:messages.find(message=>message.id===item.messageId)!.text,currentRequestText:requestText,attachment:item,attachments:attached})};
+            admissions.push(await admitReservationistAttachment({metadata,scope:{ownerRef:run.transportId,threadId:run.threadId,requestAt:at.toISOString()},read,runner:options.artifactSandboxRunner,officeConverter:options.artifactOfficeConverter}));
+          }
+          qualifiedInput.authorizedArtifacts=admissions.map(admission=>({attachmentId:admission.metadata.attachmentId,sourceHash:admission.metadata.sourceHash}));
+          expectedThreadStateVersion = await loadLiveThreadStateVersion(db,{transportId:run.transportId,threadId:run.threadId});
+          const arrivalInput=structuredClone(qualifiedInput);
+          qualified = await options.candidateDraftRoute.reservationist({db,transportId:run.transportId,threadId:run.threadId,requestedByUserId:existingGeneration.requestedByUserId,generationId,admissions,input:qualifiedInput,signal,fence});
+          const originalPlan=qualified.dependencies.plan;
+          qualified={...qualified,dependencies:{...qualified.dependencies,plan:async(input,signal)=>{const plan=await originalPlan(input,signal);operationalSourcePlan=structuredClone(plan);const arrivals=deriveArrivalDraftSources(plan,arrivalInput);if(arrivals.length)qualifiedSource!.arrivalAcknowledgements=arrivals;return plan;}}};
+          signal.throwIfAborted();
+        }
         const preparedReply = await runPreparedWorkerCandidateReply({
+          ...(qualified && qualifiedInput ? {qualifiedReservationist:{input:qualifiedInput,dependencies:qualified.dependencies}} : {}),
           requestId: run.triggerMessageId,
           threadId: run.threadId,
           requestText,
@@ -4605,7 +4781,26 @@ export async function executeAiRun(
               ? 'needs_clarification'
               : 'insufficient_evidence';
 
+        const runtimeResult = qualified ? preparedReply.metrics.reservationistResult as Awaited<ReturnType<typeof runReservationistRuntime>> : undefined;
+        if (runtimeResult && qualifiedInput && options.onReservationistResult) {
+          await options.onReservationistResult({input:structuredClone(qualifiedInput),result:structuredClone(runtimeResult)});
+          signal.throwIfAborted();
+        }
+        if(runtimeResult?.readiness==='no_action'){
+          if(runtimeResult.tasks.length||runtimeResult.artifacts.length||runtimeResult.packets.length||runtimeResult.quoteRefs.length||runtimeResult.textBody||runtimeResult.htmlBody||qualified!.collectGeneratedArtifacts().length)throw new Error('no_action_result_invalid');
+          for(const recheck of sourceRechecks){if(!await recheck())throw new Error('no_action_source_changed');signal.throwIfAborted();}
+          const marked=await markAiRunSucceeded({runId,claimOwner:owner,claimToken,expectedStates:['running'],generationId,metrics:{generationId,modelId:run.modelId,hmsMode:'off',reservationistResult:runtimeResult,resultDigest:runtimeResult.digest,preparedReplyOutcome:'no_action',businessWorkCompleted:0,draftPersisted:false,noAction:true}});
+          return{runId,state:marked?'succeeded':'retry_wait'};
+        }
+        const persistedResult: ReservationistPersistedResult | undefined = runtimeResult ? {version:1,readiness:runtimeResult.readiness,tasks:runtimeResult.tasks,quoteRevisionIds:runtimeResult.quoteRefs,artifactRefs:runtimeResult.artifacts.map(artifact=>artifact.ref),actionDigest:runtimeResult.digest,quoteRevisions:runtimeResult.quoteRevisions,proposalFacts:runtimeResult.proposalFacts,importedOffers:runtimeResult.importedOffers,approvedOverrides:runtimeResult.approvedOverrides,rateComparisons:runtimeResult.rateComparisons,packets:runtimeResult.packets,readReceipts:runtimeResult.readReceipts,existingDocumentReceipts:runtimeResult.existingDocumentReceipts,readRecoveries:runtimeResult.readRecoveries,sourceRecoveries:runtimeResult.sourceRecoveries,recipientPreparations:runtimeResult.recipientPreparations,preparedFacts:runtimeResult.preparedFacts,currentNativeObservations:runtimeResult.currentNativeObservations,paymentComparisons:runtimeResult.paymentComparisons} : undefined;
+        if(qualifiedSource&&operationalSourcePlan&&persistedResult){
+          const binding={requestId:qualifiedSource.triggerMessageId,ownerRef:qualifiedSource.transportId,threadId:qualifiedSource.threadId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,triggerMessageId:qualifiedSource.triggerMessageId,causalAt:qualifiedSource.causalAt};
+          const proofs=deriveOperationalDraftSources(operationalSourcePlan,persistedResult,binding,operationalSourceRows,signal);
+          if(proofs.length){qualifiedSource.operationalAnswers=proofs;const keys=new Set(proofs.map(p=>`${p.answer.kind}_${p.task.id}`));assertOperationalDraftSources({...persistedResult,preparedFacts:persistedResult.preparedFacts?.filter(f=>keys.has(f.key))},proofs,binding,operationalSourceRows,signal);}
+        }
+        if(qualifiedSource?.arrivalAcknowledgements?.length&&persistedResult)assertArrivalDraftSources({...persistedResult,preparedFacts:persistedResult.preparedFacts?.filter(fact=>qualifiedSource!.arrivalAcknowledgements!.some(item=>fact.key===`requested_arrival_time_${item.task.id}`))},{...qualifiedSource,resultDigest:'0'.repeat(64)},qualifiedInput!.messages);
         const draft = await persistAiCandidateDraft({
+          ...(qualified && persistedResult ? { workflowRunId: run.id, runFence: fence, reservationistResult: persistedResult, generatedArtifacts: qualified.collectGeneratedArtifacts(), artifactStorage: qualified.artifactStorage ?? createDraftArtifactStorage(), revalidateSources:async()=>{signal.throwIfAborted();for(const recheck of sourceRechecks)if(!await recheck())return false;signal.throwIfAborted();return true;}, signal, threadStateVersion: expectedThreadStateVersion } : {}),
           db,
           transportId: run.transportId,
           threadId: run.threadId,
@@ -4614,7 +4809,7 @@ export async function executeAiRun(
           generationId,
           model: run.modelId,
           promptVersion: run.promptVersion,
-          contextMessageIds: [run.triggerMessageId],
+          contextMessageIds: qualifiedInput?.messages.map(message=>message.id) ?? [run.triggerMessageId],
           toAddresses: [replyTo],
           subject,
           textBody: preparedReply.textBody,
@@ -4640,8 +4835,9 @@ export async function executeAiRun(
             draftId: draft.id,
             generationId: draft.generationId ?? generationId,
             modelId: run.modelId,
+            ...(qualifiedSource&&persistedResult?{reservationistDraftSource:sealReservationistDraftSource({...qualifiedSource,attachments:qualifiedSource.attachments.sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),resultDigest:typedResultDigest(persistedResult,('attachments' in draft?draft.attachments:[]) as PersistedGeneratedArtifact[])})}:{}),
             hmsMode: 'off',
-            ...(preparedReply.metrics as Record<string, unknown>),
+            ...Object.fromEntries(Object.entries(preparedReply.metrics).filter(([key]) => !qualified || !['reservationistResult','resultDigest'].includes(key))),
             preparedReplyOutcome: preparedReply.outcome,
             preparedReplyAssessment: preparedReply.assessment.issues.map((issue) => issue.code),
             preparedInputSerializedBytes: Buffer.byteLength(preparedReply.serializedInput, 'utf8'),
@@ -5250,6 +5446,9 @@ export type RunAiWorkerOnceOptions = {
     Parameters<typeof executeAiRun>[1]
   >['candidateReplyModelAdapter'];
   candidateDraftRouteFactory?: DraftModelRouteFactory;
+  artifactSandboxRunner?: NonNullable<Parameters<typeof executeAiRun>[1]>['artifactSandboxRunner'];
+  artifactOfficeConverter?: NonNullable<Parameters<typeof executeAiRun>[1]>['artifactOfficeConverter'];
+  onReservationistResult?: NonNullable<Parameters<typeof executeAiRun>[1]>['onReservationistResult'];
   candidateReplyAsks?: NonNullable<Parameters<typeof executeAiRun>[1]>['candidateReplyAsks'];
   shadowModelAdapter?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelAdapter'];
   shadowModelRoute?: NonNullable<Parameters<typeof executeAiRun>[1]>['shadowModelRoute'];
@@ -5269,6 +5468,9 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidateModelAdapter,
     candidateReplyModelAdapter,
     candidateDraftRouteFactory,
+    artifactSandboxRunner,
+    artifactOfficeConverter,
+    onReservationistResult,
     candidateReplyAsks,
     shadowModelAdapter,
     shadowModelRoute,
@@ -5322,6 +5524,9 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidateModelAdapter,
     candidateReplyModelAdapter,
     candidateDraftRoute: composedCandidateDraftRoute,
+    artifactSandboxRunner,
+    artifactOfficeConverter,
+    onReservationistResult,
     candidateReplyAsks,
     shadowModelAdapter,
     shadowModelRoute: shadowModelRoute ?? composedShadowModelRoute?.route,

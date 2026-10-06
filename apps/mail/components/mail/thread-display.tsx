@@ -41,14 +41,16 @@ import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section'
 import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
-import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
+import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
+import { ReservationistDraftCard } from './reservationist-draft-card';
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import type { ParsedMessage, Attachment, Sender } from '@/types';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+import MailDisplay, { ThreadAttachments } from './mail-display';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
 import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -62,6 +64,7 @@ import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
 import { useTRPC } from '@/providers/query-provider';
+import { useTimezone } from '@/hooks/use-timezone';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useLabels } from '@/hooks/use-labels';
@@ -69,9 +72,7 @@ import { useSession } from '@/lib/auth-client';
 import { cleanHtml } from '@/lib/email-utils';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
-import { useTimezone } from '@/hooks/use-timezone';
 import { m } from '@/paraglide/messages';
-import MailDisplay, { ThreadAttachments } from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
 import { format } from 'date-fns';
@@ -875,7 +876,8 @@ export function ThreadDisplay() {
               data-ai-freshness={candidateVm.freshness ?? 'unknown'}
               data-ai-refresh-state={candidateVm.refreshState ?? 'idle'}
             >
-              <ThreadDraftCard
+              <ReservationistDraftCard
+                draftId={candidateVm.id}
                 subject={candidateVm.subject}
                 bodyPreview={candidateVm.bodyPreview}
                 savedAtLabel={
@@ -893,6 +895,16 @@ export function ThreadDisplay() {
                 onRefresh={handleRefreshHmsCandidate}
                 canRefresh={canRefreshHmsCandidate(candidateVm)}
                 refreshPending={refreshPending || refreshHmsCandidate.isPending}
+                readinessLabel={candidateVm.readinessLabel}
+                readinessReason={candidateVm.readinessReason}
+                attachments={candidateVm.attachments}
+                tasks={candidateVm.tasks}
+                pricingProof={candidateVm.pricingProof}
+                onEdit={() => {
+                  setDraftId(candidateVm.id);
+                  setMode('reply');
+                  setActiveReplyId(emailData?.latest?.id ?? null);
+                }}
                 reviewRequired
               />
             </div>
@@ -1296,12 +1308,14 @@ const MessageList = ({
           </div>
         ) : null}
         {allThreadAttachments && allThreadAttachments.length > 0 ? (
-          <div className="min-w-0 w-full max-w-full px-4">
+          <div className="w-full min-w-0 max-w-full px-4">
             <ThreadAttachments attachments={allThreadAttachments} />
           </div>
         ) : null}
         {leading ? (
-          <div className={cn('duration-200', displayMessages.length > 0 && 'border-border border-b')}>
+          <div
+            className={cn('duration-200', displayMessages.length > 0 && 'border-border border-b')}
+          >
             {leading}
           </div>
         ) : null}

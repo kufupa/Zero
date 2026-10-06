@@ -9,15 +9,11 @@ import {
   Plus,
   Minus,
   Search,
-  ShieldCheck,
-  ExternalLink,
   X,
   Mail,
   Check,
   SlidersHorizontal,
   ChevronDown,
-  Utensils,
-  Ban,
   Building2,
   Network,
   Sparkles,
@@ -25,7 +21,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
-import { occupancyRoomCode } from '@/lib/quote-proposal/description';
+import { canCreatePaneProposal, type PaneProposalSelection } from '@/lib/quote-proposal/admission';
 import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
@@ -94,6 +90,52 @@ import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { toast } from 'sonner';
+import { useQueryState } from 'nuqs';
+import { EmailComposer } from '@/components/create/email-composer';
+import { ReservationistDraftCard } from '@/components/mail/reservationist-draft-card';
+import { useDraftArtifactHydration } from '@/hooks/use-drafts';
+import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
+type PaneDraft = Awaited<ReturnType<typeof trpcClient.drafts.get.query>>;
+
+/** Existing draft ownership, artifact hydration and editor; native sends stay separate. */
+function PaneSavedReply({draft,messageId,threadId}:{draft:PaneDraft;messageId:string;threadId:string}) {
+  const [draftId,setDraftId]=useQueryState('draftId');
+  const [queryThreadId,setQueryThreadId]=useQueryState('threadId');
+  const [editable,setEditable]=useState<PaneDraft|null>(null);
+  const [status,setStatus]=useState('');
+  const [opening,setOpening]=useState(false);
+  const live=useRef(true),owned=useRef<{draftId:string;threadId:string}|null>(null);
+  const queryIdentity=useRef({draftId,threadId:queryThreadId});queryIdentity.current={draftId,threadId:queryThreadId};
+  const hydrated=useDraftArtifactHydration(editable??draft);
+  const model=buildThreadDraftViewModel(draft);
+  const clearOwned=()=>{const value=owned.current;if(!value)return;owned.current=null;if(queryIdentity.current.draftId&&queryIdentity.current.draftId!==value.draftId)return;void setDraftId(current=>current===value.draftId?null:current);void setQueryThreadId(current=>current===value.threadId?null:current);};
+  useEffect(()=>{live.current=true;return()=>{live.current=false;clearOwned();};},[]);
+  const open=async()=>{
+    if(opening)return;
+    if(draftId&&draftId!==owned.current?.draftId||queryThreadId&&queryThreadId!==threadId){setStatus('Another draft is already open. Close it before reviewing this reply.');return;}
+    if((draft.attachments??[]).length!==hydrated.entries.length||hydrated.entries.some(a=>a.state!=='available')){setStatus('Review attachments after their original bytes have been verified.');return;}
+    setOpening(true);setStatus('');
+    try{
+      const promoted=await trpcClient.drafts.ensureEditableForReply.mutate({threadId,replyToMessageId:messageId});
+      if(!live.current)return;
+      if(promoted.threadId!==threadId||promoted.replyToMessageId!==messageId||promoted.status!=='active')throw Error('editable_reply_identity_changed');
+      const current=await trpcClient.drafts.get.query({id:promoted.id});
+      if(!live.current)return;
+      if(current.threadId!==threadId||current.replyToMessageId!==messageId||current.status!=='active')throw Error('editable_reply_identity_changed');
+      if(queryIdentity.current.draftId&&queryIdentity.current.draftId!==owned.current?.draftId||queryIdentity.current.threadId&&queryIdentity.current.threadId!==threadId)throw Error('another_editor_opened');
+      owned.current={draftId:current.id,threadId};
+      await setQueryThreadId(threadId);if(!live.current){clearOwned();return;}
+      await setDraftId(current.id);if(!live.current){clearOwned();return;}
+      setEditable(current);
+    }catch{if(live.current)setStatus('Unable to open this saved draft. Refresh quote evidence and review the current reply before editing.');}
+    finally{if(live.current)setOpening(false);}
+  };
+  return <section aria-label="Saved reply draft">
+    {model&&<ReservationistDraftCard {...model} draftId={draft.id} savedAtLabel="Saved draft" draftBadge="Staff review" unsentNotice="Unsent" emptyPreviewLabel="Empty draft" editLabel={opening?'Opening saved draft…':'Review saved draft'} deleteLabel="Delete" moreLabel="More" isReadOnly onEdit={editable?undefined:open}/>}
+    {status&&<p role="status">{status}</p>}
+    {editable&&draftId===editable.id&&queryThreadId===threadId&&(hydrated.entries.length===editable.attachments.length&&hydrated.entries.every(a=>a.state==='available')?<EmailComposer key={editable.id} initialTo={editable.to} initialCc={editable.cc} initialBcc={editable.bcc} initialSubject={editable.subject??''} initialMessage={editable.content??''} initialAttachments={hydrated.files} hydratedAttachmentSnapshot={{key:hydrated.snapshotKey,files:hydrated.files}} syncReplyHeadersFromProps replyToMessageId={messageId} onClose={()=>{setEditable(null);clearOwned();}} onSendEmail={async()=>{toast.warning('Review and save this local draft. Send manually in Outlook.');return false;}} sendButtonLabel="Send manually in Outlook"/>:<p role="status">Verifying saved draft attachments before editing.</p>)}
+  </section>;
+}
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
 const MAX_EXPIRED_REPLY_OUTCOMES = 256;
@@ -162,12 +204,6 @@ type RatePlan = {
   restrictionReason?: string;
 };
 
-const HOTEL_PROPERTIES: Record<string, { name: string; shortName: string }> = {
-  HRCEN: { name: 'The Centurion Hotel', shortName: 'Centurion Reservations Team' },
-  HRBAK: { name: 'The Bakubung Bush Lodge', shortName: 'Bakubung Reservations Team' },
-  HRKWA: { name: 'Kwa Maritane Bush Lodge', shortName: 'Kwa Maritane Reservations Team' },
-};
-
 const RATE_TABLE: Record<string, RatePlan> = {
   NCOR: {
     code: 'NCOR1B',
@@ -208,18 +244,6 @@ const RATE_TABLE: Record<string, RatePlan> = {
     restrictionReason: 'Closed to Arrival (Weekday)',
   },
 };
-
-const fmtZAR = (val: number) =>
-  'R' +
-  val
-    .toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    .replace(/\s/g, ',');
-
-function paneMeal(mealPlan: string, planCode: string): 'dinner_bb' | 'bb' | 'room_only' {
-  if (planCode === 'BARRO') return 'room_only';
-  if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
-  return 'bb';
-}
 
 export default function OutlookPanePage() {
   const {
@@ -295,10 +319,10 @@ export default function OutlookPanePage() {
   const [twinRoomsCount, setTwinRoomsCount] = useState(7);
   const [orgAccount, setOrgAccount] = useState('CIDB');
   const [showUnavailable, setShowUnavailable] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [hasSearched, setHasSearched] = useState(true);
+  const [isSearching] = useState(false);
+  const [hasSearched] = useState(true);
   const [selectedRateCode, setSelectedRateCode] = useState('NCOR');
-  const [proofTab, setProofTab] = useState<'results' | 'criteria'>('results');
+  const [proofTab] = useState<'results' | 'criteria'>('results');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [draftedDetails, setDraftedDetails] = useState<{
     entryId: string;
@@ -309,17 +333,6 @@ export default function OutlookPanePage() {
     mealText: string;
     hotelName: string;
     hotelTeam: string;
-    singleNightly: number;
-    twinNightly: number;
-    singleCount: number;
-    twinCount: number;
-    planName: string;
-    singleSubtotal: number;
-    twinSubtotal: number;
-    grandTotal: number;
-    arrivalDay: number;
-    departureDay: number;
-    nightsCount: number;
   } | null>(null);
 
   const showDraftPreview = Boolean(
@@ -401,6 +414,16 @@ export default function OutlookPanePage() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const [proposalChoices,setProposalChoices]=useState<PaneProposalSelection[]>([]);
+  const [selectedProposal,setSelectedProposal]=useState<PaneProposalSelection|null>(null);
+  const [proposalThreadId,setProposalThreadId]=useState<string|null>(null);
+  const [proposalReadStatus,setProposalReadStatus]=useState('Select a synced email and load its qualified proposals.');
+  const [savedReply,setSavedReply]=useState<{draft:PaneDraft;messageId:string;threadId:string;key:string}|null>(null);
+  const [savedReplyStatus,setSavedReplyStatus]=useState('');
+  const savedReplyRead=useRef(0);
+  useEffect(()=>{savedReplyRead.current++;setSavedReply(null);setSavedReplyStatus('');},[selectedIdentity,currentScope]);
+  useEffect(()=>{setProposalChoices([]);setSelectedProposal(null);},[activeEmail?.entryId,currentScope]);
 
   if (isLoading) {
     return (
@@ -505,26 +528,40 @@ export default function OutlookPanePage() {
     }
   };
 
+  const loadQualifiedProposals=async()=>{
+    if(!activeEmail?.internetMessageId){setProposalReadStatus('The selected email has no message identity. Refresh the Outlook selection.');return;}
+    const epoch=contextRevision.current.selectionEpoch,scopeEpoch=contextRevision.current.scopeEpoch,scope=currentScope;
+    try{const result=await trpcClient.workstation.qualifiedProposalChoices.query({internetMessageId:activeEmail.internetMessageId});
+      if(scopeRef.current!==scope||contextRevision.current.selectionEpoch!==epoch||contextRevision.current.scopeEpoch!==scopeEpoch)return;
+      setProposalChoices(result.choices);setSelectedProposal(null);setProposalThreadId(result.threadId??null);
+      setProposalReadStatus(result.status==='ready'?'Choose the offer to attach.':result.status==='message_not_synced'?'This email has not synced to the mailbox yet.':'No qualified quote is available yet. Refresh the quote read from this email.');
+    }catch{setProposalReadStatus('Unable to load authorized quote evidence.');}
+  };
+  const loadSavedReply=async()=>{
+    if(!activeEmail?.internetMessageId||!currentScope){setSavedReplyStatus('Select an authorized synced email before loading its draft.');return;}
+    const operation=++savedReplyRead.current,context={...contextRevision.current},scope=currentScope;
+    const current=()=>savedReplyRead.current===operation&&scopeRef.current===scope&&contextRevision.current.scopeEpoch===context.scopeEpoch&&contextRevision.current.selectionEpoch===context.selectionEpoch;
+    try{
+      const selected=await trpcClient.workstation.qualifiedProposalChoices.query({internetMessageId:activeEmail.internetMessageId});
+      if(!current())return;
+      if(!selected.threadId||!('messageId' in selected)||!selected.messageId){setSavedReplyStatus('This email has not synced to the authorized mailbox yet.');return;}
+      const drafts=await trpcClient.drafts.list.query({threadId:selected.threadId,limit:20});if(!current())return;
+      const candidate=drafts.threads.find(d=>d.threadId===selected.threadId&&d.replyToMessageId===selected.messageId&&(d.status==='active'||d.status==='candidate'));
+      if(!candidate){setSavedReplyStatus('No saved reply draft is available for this email.');return;}
+      const draft=await trpcClient.drafts.get.query({id:candidate.id});if(!current())return;
+      if(draft.threadId!==selected.threadId||draft.replyToMessageId!==selected.messageId||!['active','candidate'].includes(draft.status))throw Error('saved_reply_identity_changed');
+      setSavedReply({draft,messageId:selected.messageId,threadId:selected.threadId,key:`${scope}:${context.selectionEpoch}:${draft.id}`});setSavedReplyStatus('');
+    }catch{if(current())setSavedReplyStatus('Unable to load the authorized saved draft.');}
+  };
+  const refreshNativeQuote=async()=>{
+    if(!proposalThreadId){await loadQualifiedProposals();return;}
+    try{await trpcClient.ai.enqueueHmsRead.mutate({threadId:proposalThreadId,toolId:'hms_quote_stay',detail:'detail'});setProposalReadStatus('Quote read queued. Load qualified proposals after it completes.');}catch{setProposalReadStatus('The quote read is unavailable or the selected email lacks a qualified stay request.');}
+  };
   const handleExecuteSearch = () => {
-    setIsSearching(true);
-    setTimeout(() => {
-      setIsSearching(false);
-      setHasSearched(true);
-      const plan = RATE_TABLE[selectedRateCode];
-      if (plan && !plan.restricted) {
-        toast.success(`Verified rate schedule: ${plan.name} (${orgAccount})`);
-      } else if (plan?.restricted) {
-        toast.warning(`Rate restriction: ${plan.name} (${plan.restrictionReason})`);
-      } else {
-        toast.error('Selected rate plan is not verified for this organization account');
-      }
-    }, 400);
+    toast.warning('Demo availability and rates are not verified. Proposals unavailable until evidence-backed inputs are ready.');
   };
 
   const activePlan = RATE_TABLE[selectedRateCode] || RATE_TABLE.NCOR;
-  const singleSubtotal = singleRoomsCount * activePlan.singleNightly * nightsCount;
-  const twinSubtotal = twinRoomsCount * activePlan.twinNightly * nightsCount;
-  const grandTotal = singleSubtotal + twinSubtotal;
   const totalGuests = singleRoomsCount * 1 + twinRoomsCount * 2;
 
   const currentSubject = activeEmail?.subject || 'Suite Availability Request';
@@ -532,6 +569,10 @@ export default function OutlookPanePage() {
   const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
 
   const handleInsertAiDraft = async () => {
+    if (!canCreatePaneProposal(selectedProposal)) {
+      toast.error('Proposals unavailable until evidence-backed inputs are ready.');
+      return;
+    }
     if (replyInFlight.current || !activeEmail?.entryId) return;
     const startedScope = currentScope;
     const startedScopeEpoch = contextRevision.current.scopeEpoch;
@@ -644,66 +685,13 @@ export default function OutlookPanePage() {
     replyRetries.current.set(key, attempt);
 
     const guestFirstName = (currentSender.split(' ')[0] || 'Guest').trim();
-    const selectedHotelMeta = HOTEL_PROPERTIES[propertyCode] ?? HOTEL_PROPERTIES.HRCEN;
-    const agreementDescription = activePlan.code.startsWith('NCOR')
-      ? orgAccount.trim()
-        ? `under the ${orgAccount.trim()} corporate agreement`
-        : 'under your corporate agreement'
-      : 'at our standard rates';
-    const mealDescription =
-      mealPlan === 'room_only' || activePlan.code === 'BARRO'
-        ? 'room only (no meals included)'
-        : mealPlan === 'dinner_bed_breakfast'
-          ? 'dinner, bed & breakfast'
-          : 'breakfast included';
-    const dateLabel = `${arrivalDay}-${departureDay} Sep`;
-    const lineDateLabel = `${arrivalDay}-${departureDay} September 2026`;
-    const meal = paneMeal(mealPlan, activePlan.code);
-    const lines = [
-      ...(singleRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: singleRoomsCount,
-              roomCode: occupancyRoomCode('single'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.singleNightly,
-            },
-          ]
-        : []),
-      ...(twinRoomsCount > 0
-        ? [
-            {
-              dateLabel: lineDateLabel,
-              qty: twinRoomsCount,
-              roomCode: occupancyRoomCode('twin'),
-              meal,
-              nights: nightsCount,
-              rate: activePlan.twinNightly,
-            },
-          ]
-        : []),
-    ];
     const quotationHtml = quoteWrapperHtml(guestFirstName);
     let draftCreated = false;
 
     try {
-      if (lines.length === 0) {
-        throw new Error('Add at least one room before attaching a quotation.');
-      }
-      const pdf =
-        attempt.pdf ??
-        (await trpcClient.workstation.quoteProposalPdf.mutate({
-          outlookEmail: activeConnection.email,
-          attention: currentSender,
-          company: orgAccount.trim(),
-          clientEmail: currentSenderEmail,
-          clientTelephone: '',
-          agency: orgAccount.trim() || 'Quote',
-          dateLabel,
-          lines,
-        }));
+      if(!selectedProposal)throw new Error('Choose a qualified offer before attaching a proposal.');
+      const pdfInput={workflowRunId:selectedProposal.workflowRunId,messageId:selectedProposal.messageId,revisionRef:selectedProposal.revisionRef,factRefs:selectedProposal.factRefs,outlookEmail:activeConnection.email,attention:currentSender,company:'',clientEmail:currentSenderEmail,clientTelephone:'',agency:'Quote'};
+      const pdf=attempt.pdf??(selectedProposal.kind&&selectedProposal.kind!=='native'?await trpcClient.workstation.sourceQuoteProposalPdf.mutate({...pdfInput,kind:selectedProposal.kind}):await trpcClient.workstation.qualifiedQuoteProposalPdf.mutate(pdfInput));
       if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
         // No new Outlook command has started for this click. A delayed quotation
         // cannot create or retry a reply for a selection that changed away
@@ -782,21 +770,10 @@ export default function OutlookPanePage() {
         subject: currentSubject,
         sender: currentSender,
         senderEmail: currentSenderEmail,
-        agreementText: agreementDescription,
-        mealText: mealDescription,
-        hotelName: selectedHotelMeta.name,
-        hotelTeam: selectedHotelMeta.shortName,
-        singleNightly: activePlan.singleNightly,
-        twinNightly: activePlan.twinNightly,
-        singleCount: singleRoomsCount,
-        twinCount: twinRoomsCount,
-        planName: activePlan.name,
-        singleSubtotal,
-        twinSubtotal,
-        grandTotal,
-        arrivalDay,
-        departureDay,
-        nightsCount,
+        agreementText: selectedProposal.description,
+        mealText: 'As stated in the selected offer',
+        hotelName: 'The Centurion Hotel',
+        hotelTeam: 'Centurion',
       });
       const opened = replyResult.displayed === true;
       const details = [
@@ -1202,6 +1179,9 @@ export default function OutlookPanePage() {
               )}
             </div>
 
+            <section><button onClick={loadQualifiedProposals}>Load qualified proposals</button><button onClick={refreshNativeQuote}>Refresh quote evidence</button><p role="note">{proposalReadStatus}</p>{proposalChoices.map(choice=><button key={choice.revisionRef} onClick={()=>setSelectedProposal(choice)} aria-pressed={selectedProposal?.revisionRef===choice.revisionRef}>{choice.arrivalDate} to {choice.departureDate} · {choice.currency} {(choice.totalMinor/100).toFixed(2)} · {choice.description}</button>)}</section>
+            <section><button type="button" onClick={loadSavedReply}>Load saved reply draft</button>{savedReplyStatus&&<p role="status">{savedReplyStatus}</p>}{savedReply&&savedReply.key===`${currentScope}:${contextRevision.current.selectionEpoch}:${savedReply.draft.id}`&&<PaneSavedReply key={savedReply.key} draft={savedReply.draft} messageId={savedReply.messageId} threadId={savedReply.threadId}/>}</section>
+            <details><summary>Demo layout preview</summary><p>Demo dates and prices cannot create a proposal.</p>
             {/* Search Criteria Card */}
             <div className="shadow-xs overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
               <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-2">
@@ -1550,216 +1530,19 @@ export default function OutlookPanePage() {
               </div>
             </div>
 
+            </details>
             {/* Results Section (Room Rates) */}
             {hasSearched && (
               <div className="animate-in fade-in flex flex-col gap-2.5 duration-200">
-                {/* Header Bar */}
-                <div className="shadow-xs flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-white px-3 py-2">
-                  <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#475569]">
-                    <Utensils className="h-3.5 w-3.5 text-slate-500" />
-                    Room Rates
-                  </span>
-                  <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Available
-                  </span>
-                </div>
-
-                {/* Sample placeholder caption for test compatibility */}
-                <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-                  Sample placeholder — not live AI output
-                </p>
-
-                {/* Rate Cards */}
-                <div className="flex flex-col gap-1.5">
-                  {/* 1. NCOR1B */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('NCOR');
-                      if (mealPlan === 'room_only') setMealPlan('breakfast');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'NCOR'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                        <span>NCOR1B: Corporate Negotiated</span>
-                        <Check className="h-3 w-3 text-emerald-600" />
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        {orgAccount.trim()
-                          ? `${orgAccount.trim()} Corporate Agreement`
-                          : 'Corporate Agreement'}{' '}
-                        · {singleRoomsCount}x EXKNG, {twinRoomsCount}x STWN
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,150.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 2. BAR */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('BAR');
-                      if (mealPlan === 'room_only') setMealPlan('breakfast');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'BAR'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                        <span>BAR: Best Available Rate</span>
-                        <Utensils className="h-3 w-3 text-slate-500" />
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        Bed & Breakfast Included · Standard Rate
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,700.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 3. BARRO */}
-                  <div
-                    onClick={() => {
-                      setSelectedRateCode('BARRO');
-                      setMealPlan('room_only');
-                    }}
-                    className={`flex cursor-pointer items-center justify-between rounded-sm border p-2.5 transition-all ${
-                      selectedRateCode === 'BARRO'
-                        ? 'shadow-xs border-[#1a4332] bg-[#eaf4ee] ring-1 ring-[#1a4332]'
-                        : 'border-[#cbd5e1] bg-white hover:border-[#0066cc] hover:bg-[#f8fafc]'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <div className="text-[12.5px] font-bold text-[#1e293b]">
-                        BARRO: BAR Room Only
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">
-                        Room Only · No Meals Included
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-extrabold text-[#1e293b]">R2,430.00</span>
-                      <span className="text-[10px] text-[#64748b]">Avg / room / night</span>
-                    </div>
-                  </div>
-
-                  {/* 4. BWKPB (Restricted) */}
-                  <div className="flex cursor-not-allowed items-center justify-between rounded-sm border border-[#fecaca] bg-[#fffafa] p-2.5 opacity-80">
-                    <div className="flex flex-col gap-0.5">
-                      <div className="text-[12.5px] font-bold text-[#1e293b]">
-                        BWKPB: Weekend Promo Rate
-                      </div>
-                      <span className="text-[11px] text-[#64748b]">Weekend promo rate only</span>
-                      <span className="flex w-fit items-center gap-1 rounded-sm bg-[#fef2f2] px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
-                        <Ban className="h-2.5 w-2.5" /> Closed to Arrival (Weekday)
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <span className="text-[13.5px] font-bold text-rose-600 line-through">
-                        R2,430.00
-                      </span>
-                      <span className="text-[10px] font-semibold text-rose-600">Restricted</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Grand Total Breakdown Card */}
-                <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-[11.5px] text-[#475569]">
-                  <div className="flex justify-between">
-                    <span>
-                      {singleRoomsCount}x Executive King (Single · {nightsCount} nights):
-                    </span>
-                    <span className="font-semibold text-[#1e293b]">{fmtZAR(singleSubtotal)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>
-                      {twinRoomsCount}x Standard Twin (Twin Beds · {nightsCount} nights):
-                    </span>
-                    <span className="font-semibold text-[#1e293b]">{fmtZAR(twinSubtotal)}</span>
-                  </div>
-                  <div className="mt-1 flex items-baseline justify-between border-t border-[#cbd5e1] pt-2 text-[12.5px] font-bold text-[#1e293b]">
-                    <span>Quotation Total:</span>
-                    <span className="text-[15px] font-extrabold text-[#1a4332]">
-                      {fmtZAR(grandTotal)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[10.5px] leading-tight text-[#64748b]">
-                    * Rates subject to Infor HMS taxes and fees upon reservation booking.
-                  </p>
-                </div>
-
-                {/* Infor HMS Audit Proof Tabs */}
-                <div className="overflow-hidden rounded-sm border border-[#e2e8f0] bg-white">
-                  <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2 py-1.5">
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setProofTab('results')}
-                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                          proofTab === 'results'
-                            ? 'shadow-xs bg-white text-[#1e293b]'
-                            : 'text-[#64748b] hover:text-[#1e293b]'
-                        }`}
-                      >
-                        Availability Results
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProofTab('criteria')}
-                        className={`rounded-sm px-2 py-1 text-[11px] font-semibold transition-colors ${
-                          proofTab === 'criteria'
-                            ? 'shadow-xs bg-white text-[#1e293b]'
-                            : 'text-[#64748b] hover:text-[#1e293b]'
-                        }`}
-                      >
-                        Search Criteria
-                      </button>
-                    </div>
-                    <span className="flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
-                      <ShieldCheck className="h-3.5 w-3.5" /> Audit Saved
-                    </span>
-                  </div>
-
-                  <div
-                    onClick={() => setIsModalOpen(true)}
-                    className="group relative h-28 w-full cursor-pointer overflow-hidden bg-slate-900"
-                  >
-                    <img
-                      src="/quote-rate-proof.png"
-                      alt="Infor HMS Availability Screen Proof"
-                      className="group-hover:scale-102 h-full w-full object-cover object-top opacity-90 transition-transform duration-200 group-hover:opacity-100"
-                    />
-                    <div className="backdrop-blur-xs absolute bottom-2 right-2 flex items-center gap-1 rounded-sm bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                      <Search className="h-2.5 w-2.5" /> Inspect Full 1000×800
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(true)}
-                    className="flex w-full items-center justify-center gap-1.5 border-t border-[#e2e8f0] bg-white py-1.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#f8fafc]"
-                  >
-                    <ExternalLink className="h-3 w-3" /> Open Full-Screen (1000×800)
-                  </button>
-                </div>
-
+                <p>{selectedProposal?`${selectedProposal.arrivalDate} to ${selectedProposal.departureDate} · ${selectedProposal.currency} ${(selectedProposal.totalMinor/100).toFixed(2)} · ${selectedProposal.description}`:'Choose an authorized offer before creating a draft.'}</p>
+                <p>Sample placeholder — not live AI output</p>
+                <button type="button" onClick={()=>setIsModalOpen(true)}>Open Full-Screen (1000×800)</button>
                 {/* Draft Quotation into Outlook Reply Button */}
                 <Button
                   type="button"
                   aria-label="Insert Draft in Outlook"
                   onClick={handleInsertAiDraft}
-                  disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
+                  disabled={!canCreatePaneProposal(selectedProposal) || !activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
                   className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
                 >
                   <Send className="mr-1.5 h-3.5 w-3.5" />

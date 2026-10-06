@@ -6,9 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
 
-const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => ({
+const { sendCommandMock, quotePdfMutateMock, legacyQuotePdfMutateMock, proposalChoicesQueryMock, qualifiedOffer, sessionState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
+  legacyQuotePdfMutateMock: vi.fn(),
+  proposalChoicesQueryMock: vi.fn(),
+  qualifiedOffer: {
+    kind: 'native' as const,
+    workflowRunId: 'synthetic-run-1',
+    messageId: 'synthetic-message-1',
+    threadId: 'synthetic-thread-1',
+    revisionRef: 'synthetic-quote-revision-1',
+    factRefs: ['synthetic-quote-fact-1'],
+    totalMinor: 220002,
+    currency: 'ZAR',
+    arrivalDate: '2026-10-12',
+    departureDate: '2026-10-15',
+    description: 'Qualified synthetic offer',
+  },
   sessionState: {
     userId: 'staff-1',
     email: 'ropperman@legacyhotels.co.za',
@@ -51,6 +66,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       action === 'CREATE_REPLY_DRAFT' || action === 'ADD_ATTACHMENT_TO_DRAFT',
     requiresRelogin: sessionState.requiresRelogin,
     activeEmail: {
+      internetMessageId: '<synthetic@example.invalid>',
       entryId: '001',
       storeId: 'store-1',
       folderEntryId: 'folder-inbox',
@@ -91,12 +107,23 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteProposalPdf: { mutate: quotePdfMutateMock },
+      qualifiedProposalChoices: { query: proposalChoicesQueryMock },
+      qualifiedQuoteProposalPdf: { mutate: quotePdfMutateMock },
+      quoteProposalPdf: { mutate: legacyQuotePdfMutateMock },
     },
   },
 }));
 
 describe('Outlook pane quote proposal PDF', () => {
+  const loadOffer = async () => {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Load qualified proposals/i }));
+    });
+    const offerButton = await screen.findByRole('button', { name: /Qualified synthetic offer/i });
+    fireEvent.click(offerButton);
+    expect(offerButton.getAttribute('aria-pressed')).toBe('true');
+  };
+
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionState.userId = 'staff-1';
@@ -106,6 +133,11 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
     sessionState.requiresRelogin = false;
     sessionState.nativeSelectedEntryId = '001';
+    proposalChoicesQueryMock.mockReset();
+    proposalChoicesQueryMock.mockResolvedValue({
+      status: 'ready', threadId: qualifiedOffer.threadId, choices: [qualifiedOffer],
+    });
+    legacyQuotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
@@ -128,16 +160,30 @@ describe('Outlook pane quote proposal PDF', () => {
     vi.mocked(toast.success).mockClear();
   });
 
-  it('refuses convert and draft until a server-selected mailbox exists', async () => {
+  it('requires a server-qualified selection before PDF generation or Outlook draft mutation', () => {
+    render(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(button);
+    expect(proposalChoicesQueryMock).not.toHaveBeenCalled();
+    expect(quotePdfMutateMock).not.toHaveBeenCalled();
+    expect(legacyQuotePdfMutateMock).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('drops the selected proposal when the server-selected mailbox is removed', async () => {
     sessionState.email = 'kdouglas@legacyhotels.co.za';
     sessionState.outlookEmail = 'centurion@legacyhotels.co.za';
+    const pane = render(<OutlookPanePage />);
+    await loadOffer();
+    expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled')).toBe(false);
     sessionState.transportId = '';
-    render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/select.*mailbox/i));
-    });
+    pane.rerender(<OutlookPanePage />);
+    const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(button);
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
+    expect(legacyQuotePdfMutateMock).not.toHaveBeenCalled();
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
@@ -145,6 +191,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.email = 'kdouglas@legacyhotels.co.za';
     sessionState.outlookEmail = 'not-the-mailbox@legacyhotels.co.za';
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() =>
       expect(quotePdfMutateMock).toHaveBeenCalledWith(
@@ -190,6 +237,7 @@ describe('Outlook pane quote proposal PDF', () => {
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' };
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
     await act(async () => finishPdf({ fileName: 'Quote.pdf', pdfBase64: 'JVBERw==' }));
@@ -211,6 +259,7 @@ describe('Outlook pane quote proposal PDF', () => {
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => expect(sendCommandMock.mock.calls.filter(([action]) =>
@@ -237,22 +286,27 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
   });
 
-  it('attaches the Proposal PDF after a gold wrapper reply draft', async () => {
+  it('attaches the selected qualified Proposal PDF after the standard wrapper reply draft', async () => {
     render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() => {
       expect(quotePdfMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
           outlookEmail: 'centurion@legacyhotels.co.za',
-          agency: 'CIDB',
-          lines: expect.arrayContaining([
-            expect.objectContaining({ roomCode: 'STQN', meal: 'bb' }),
-            expect.objectContaining({ roomCode: 'STWN', meal: 'bb' }),
-          ]),
+          agency: 'Quote',
+          workflowRunId: qualifiedOffer.workflowRunId,
+          messageId: qualifiedOffer.messageId,
+          revisionRef: qualifiedOffer.revisionRef,
+          factRefs: qualifiedOffer.factRefs,
         }),
       );
     });
+
+    expect(proposalChoicesQueryMock).toHaveBeenCalledWith({ internetMessageId: '<synthetic@example.invalid>' });
+    expect(legacyQuotePdfMutateMock).not.toHaveBeenCalled();
+    expect(quotePdfMutateMock.mock.calls[0]?.[0]).not.toHaveProperty('lines');
 
     await waitFor(() => {
       expect(sendCommandMock).toHaveBeenCalledWith(
@@ -298,6 +352,7 @@ describe('Outlook pane quote proposal PDF', () => {
       };
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => {
@@ -336,6 +391,7 @@ describe('Outlook pane quote proposal PDF', () => {
       };
     });
     render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() =>
@@ -374,6 +430,7 @@ describe('Outlook pane quote proposal PDF', () => {
         }),
     );
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
     sessionState.userId = '';
@@ -393,6 +450,7 @@ describe('Outlook pane quote proposal PDF', () => {
         }),
     );
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(1));
     sessionState.requiresRelogin = true;
@@ -406,6 +464,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.requiresRelogin = false;
     pane.rerender(<OutlookPanePage />);
     expect(screen.queryByRole('status')).toBeNull();
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalledTimes(2));
     await waitFor(() =>
@@ -422,6 +481,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith(
       'CREATE_REPLY_DRAFT', expect.anything(),
@@ -435,6 +495,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await act(async () => finishNative({ entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' }));
     sessionState.requiresRelogin = false;
     render(<OutlookPanePage />);
+    await loadOffer();
 
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
@@ -453,6 +514,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const pane = render(<OutlookPanePage />);
+    await loadOffer();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(button);
     await waitFor(() => expect(screen.getByText('Please see attached quotation.')).toBeDefined());
@@ -480,6 +542,7 @@ describe('Outlook pane quote proposal PDF', () => {
     pane.rerender(<OutlookPanePage />);
     expect(screen.queryByText('Please see attached quotation.')).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
+    await loadOffer();
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));

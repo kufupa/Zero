@@ -68,11 +68,19 @@ When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` sti
 
 ### Quarantine promote
 
-Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME through `persistInboundMessage` (atomic quarantine delete) so backlog leaves quarantine into the correct transport and inbound triage enqueues normally.
+Recovery process for quarantined messages whose owner-routing header is missing: it uses remaining routing evidence, stores the message through normal ingestion, then clears quarantine only after persistence succeeds. Distinct from Parse-failure recovery, which retries mail quarantined after processing errors.
+
+### Parse-failure recovery
+
+Recovery process that replays durable raw email for messages quarantined after an ingestion attempt fails, once the underlying parser or system dependency is corrected, then returns successfully processed mail to its normal inbox.
+
+Bulk recovery preserves original message details and may leave downstream triage disabled to avoid replaying old work. Distinct from Quarantine promote (which resolves missing owner-routing metadata) and Raw MIME rehydrate (which recreates messages whose stored rows were lost).
 
 ### Raw MIME rehydrate
 
-Ops one-shot that rebuilds wiped message rows from durable S3 `raw-mime/` objects (same ingest persist path). Skips keys already present as messages or quarantine; default skips AI triage enqueue so bulk restore does not flood the worker. Distinct from Quarantine promote (which drains quarantine rows) and from intentional pilot DB wipe + seed (which restores transports/auth, not historical mail bodies). Prefer **Pilot RDS PITR rename recovery** when a clean pre-wipe restore window exists and thread/label continuity matters.
+Recovery process that recreates inbox messages when their stored rows are missing but their raw email remains in durable object storage. It skips source objects already represented by messages or quarantine, and bulk restoration may leave downstream triage disabled.
+
+Distinct from Quarantine promote (which resolves missing owner-routing metadata) and Parse-failure recovery (which retries messages already held in quarantine after processing errors); it is also distinct from intentional pilot DB wipe + seed (which restores transports/auth, not historical mail bodies). Prefer **Pilot RDS PITR rename recovery** when a clean pre-wipe restore window exists and thread/label continuity matters.
 
 ### Pilot RDS PITR rename recovery
 

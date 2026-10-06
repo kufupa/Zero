@@ -310,7 +310,7 @@ describe('mail.getEmlDownloadUrl (tRPC procedure unit)', () => {
     process.env.AWS_REGION = 'af-south-1';
 
     const fakeS3 = new FakeS3Storage('test-mail-bucket');
-    // Notice: not putting raw-mime/msg-expired-1.eml into fakeS3, simulating 30d lifecycle expiration
+    // Simulate an original MIME file already missing (for example, legacy expiration).
     setS3Storage(fakeS3);
 
     const mockMsg = {

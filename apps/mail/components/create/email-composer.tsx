@@ -10,20 +10,21 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/
 import { Command, ImagePlus, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { uniqueVerifiedFiles } from '@/hooks/draft-artifact-files';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import useComposeEditor from '@/hooks/use-compose-editor';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { CurvedArrow, X } from '../icons/icons';
 
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSettings } from '@/hooks/use-settings';
-import { useThread } from '@/hooks/use-threads';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { QuoteHistoryExpander } from './quote-history-expander';
 import { demoUpsertDraft } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { QuoteHistoryExpander } from './quote-history-expander';
+import { useTRPC } from '@/providers/query-provider';
+import { useSettings } from '@/hooks/use-settings';
+import { useThread } from '@/hooks/use-threads';
 import type { ParsedMessage } from '@/types';
 
 import { cn, formatFileSize } from '@/lib/utils';
@@ -62,6 +63,7 @@ import {
 } from '@/lib/compose-attachment-policy';
 import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
@@ -69,7 +71,6 @@ import { TemplateButton } from './template-button';
 import type { HeaderDebugLine } from '@/types';
 import { useDraft } from '@/hooks/use-drafts';
 import { m } from '@/paraglide/messages';
-import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 
 const hasFileDrag = (dataTransfer: DataTransfer | null): boolean =>
   dataTransfer !== null && Array.from(dataTransfer.types).includes('Files');
@@ -81,6 +82,7 @@ interface EmailComposerProps {
   initialSubject?: string;
   initialMessage?: string;
   initialAttachments?: File[];
+  hydratedAttachmentSnapshot?: { key: string; files: File[] };
   onSendEmail: (data: {
     to: string[];
     cc?: string[];
@@ -98,7 +100,7 @@ interface EmailComposerProps {
   autofocus?: boolean;
   settingsLoading?: boolean;
   editorClassName?: string;
-  /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
+  /** Sync reply recipients from props without remounting (e.g. reply → reply all). Subject follows props until staff edits begin; body never follows props. */
   syncReplyHeadersFromProps?: boolean;
   replyToMessageId?: string | null;
   replyToMessage?: ParsedMessage | null;
@@ -136,6 +138,7 @@ export function EmailComposer({
   initialSubject = '',
   initialMessage = '',
   initialAttachments = [],
+  hydratedAttachmentSnapshot,
   onSendEmail,
   onClose,
   className,
@@ -364,7 +367,11 @@ export function EmailComposer({
     setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
     setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
     setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
-    setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
+    // Reply/reply-all still updates recipients, but a draft refetch also changes
+    // initialSubject. Keep staff ownership of the subject even after autosave.
+    if (revisionRef.current.localRevision === 0) {
+      setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
+    }
     setShowCc(initialCc.length > 0);
     setShowBcc(initialBcc.length > 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
@@ -580,6 +587,42 @@ export function EmailComposer({
     autofocus,
   });
 
+  const hydratedSnapshotRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !hydratedAttachmentSnapshot ||
+      hydratedSnapshotRef.current === hydratedAttachmentSnapshot.key ||
+      revisionRef.current.localRevision > 0
+    )
+      return;
+    hydratedSnapshotRef.current = hydratedAttachmentSnapshot.key;
+    const files = hydratedAttachmentSnapshot.files;
+    setValue('attachments', files, { shouldDirty: false });
+    const entries = files.map((file) => ({
+      id: `attachment-${attachmentEntryIdRef.current++}`,
+      file,
+    }));
+    setAttachmentEntries(entries);
+    originalAttachmentsRef.current = entries;
+  }, [hydratedAttachmentSnapshot, setValue]);
+
+  const attachReviewedSnapshot = async () => {
+    if (!hydratedAttachmentSnapshot) return;
+    const current = getValues('attachments') ?? [];
+    const verified = await uniqueVerifiedFiles(current, hydratedAttachmentSnapshot.files);
+    const latest = getValues('attachments') ?? [];
+    const files = [...latest, ...verified.filter((file) => !latest.includes(file))];
+    setValue('attachments', files, { shouldDirty: true });
+    const entries = files.map((file) => ({
+      id: `attachment-${attachmentEntryIdRef.current++}`,
+      file,
+    }));
+    setAttachmentEntries(entries);
+    originalAttachmentsRef.current = entries;
+    hydratedSnapshotRef.current = hydratedAttachmentSnapshot.key;
+    markUnsavedChanges();
+  };
+
   // Add effect to focus editor when component mounts
   useEffect(() => {
     if (autofocus && editor) {
@@ -626,6 +669,7 @@ export function EmailComposer({
       if (
         shouldPersistDraft({
           hasUnsavedChanges: hasSynchronousDraftChanges(),
+          existingDraftId: activeDraftIdRef.current,
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -810,6 +854,7 @@ export function EmailComposer({
         if (
           !shouldPersistDraft({
             hasUnsavedChanges: snapshot.hasUnsavedChanges,
+            existingDraftId: snapshot.draftId,
             initialHtml: snapshot.initialHtml,
             html: snapshot.html,
             text: snapshot.text,
@@ -922,6 +967,7 @@ export function EmailComposer({
     const values = getValues();
     return {
       hasUnsavedChanges: hasSynchronousDraftChanges(),
+      existingDraftId: activeDraftIdRef.current,
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -981,6 +1027,7 @@ export function EmailComposer({
       const values = getValues();
       const action = resolveComposeCloseAction({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
+        existingDraftId: activeDraftIdRef.current,
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
@@ -1381,6 +1428,12 @@ export function EmailComposer({
       {/* Bottom Actions */}
       <div className="inline-flex w-full shrink-0 items-end justify-between self-stretch rounded-b-2xl bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">
         <div className="flex flex-col items-start justify-start gap-2">
+          {hydratedAttachmentSnapshot &&
+          hydratedSnapshotRef.current !== hydratedAttachmentSnapshot.key ? (
+            <Button type="button" variant="outline" onClick={attachReviewedSnapshot}>
+              Attach reviewed draft files
+            </Button>
+          ) : null}
           {toggleToolbar && <Toolbar editor={editor} />}
           <div className="flex flex-wrap items-center justify-start gap-2">
             {sendButton}

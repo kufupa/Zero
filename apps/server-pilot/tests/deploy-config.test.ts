@@ -2484,7 +2484,7 @@ describe('deploy config', () => {
     expect(script).toContain('GOTENBERG_URL:-http://127.0.0.1:3000');
   });
 
-  it('gotenberg sidecar binds loopback, pins libreoffice image, and never uses get.docker.com', async () => {
+  it('gotenberg sidecar binds loopback, pins Chromium and LibreOffice image, and never uses get.docker.com', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -2494,7 +2494,7 @@ describe('deploy config', () => {
     const install = readFileSync(join(deploy, 'install-gotenberg.sh'), 'utf8');
     const ops = readFileSync(join(deploy, 'ops-gotenberg.sh'), 'utf8');
 
-    expect(compose).toContain('gotenberg/gotenberg:8.36.0-libreoffice');
+    expect(compose).toMatch(/^\s*image: gotenberg\/gotenberg:8\.36\.0\s*$/m);
     expect(compose).toContain('127.0.0.1:3000:3000');
     expect(compose).toContain('--api-timeout=60s');
     expect(compose).toContain('--libreoffice-auto-start=true');

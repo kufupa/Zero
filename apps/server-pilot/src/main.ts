@@ -11,7 +11,9 @@ import { createEmlDownloadHandler } from './http/eml-download.js';
 import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.js';
 import { appRouter } from './trpc/router.js';
+import { initializeDraftArtifactServices } from './trpc/routes/drafts.js';
 
+initializeDraftArtifactServices();
 const app = new Hono();
 
 app.get('/health', (c) =>

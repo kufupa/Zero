@@ -371,3 +371,9 @@ describe('trusted quote request normalization', () => {
     });
   });
 });
+
+it('preserves eight occupancy groups and physical quantity independently of group limit',()=>{
+ const result=normalizeQuoteRequest({arrival:'2026-09-10',departure:'2026-09-12',rooms:Array.from({length:8},()=>({quantity:6,adultsPerRoom:2,childAges:[],roomTypeRef:'STD',ratePlanRef:'BAR'})),currency:'ZAR'},{referenceAuthority:commercialReferenceAuthority});
+ expect(result.status).toBe('ready');
+ if(result.status==='ready'){expect(result.request.rooms).toHaveLength(8);expect(result.request.rooms[0].quantity).toBe(6);}
+});

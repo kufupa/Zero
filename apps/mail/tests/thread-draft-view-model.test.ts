@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   buildThreadDraftViewModel,
   canRefreshHmsCandidate,
   hmsCandidateNotice,
 } from '../lib/mail/thread-draft-view-model';
 import type { ParsedDraft } from '@zero/server/driver/types';
+import { describe, expect, it } from 'vitest';
 import type { ParsedMessage } from '@/types';
 
 function draftMsg(partial: Partial<ParsedMessage> & Pick<ParsedMessage, 'id'>): ParsedMessage {
@@ -127,4 +127,26 @@ describe('buildThreadDraftViewModel', () => {
     expect(vm?.unresolvedFields).toEqual(['evidence']);
     expect(hmsCandidateNotice(vm!)).toContain('clarification');
   });
+});
+it('blocks required unavailable artifacts and preserves human attachment hydration ownership', () => {
+  const vm = buildThreadDraftViewModel(
+    pilotDraft({
+      id: 'generated',
+      origin: 'ai',
+      attachments: [
+        {
+          artifactRef: 'generated:q',
+          filename: 'quote.pdf',
+          state: 'missing',
+          sourceHash: 'a'.repeat(64),
+        },
+      ],
+    } as any),
+  );
+  expect(vm?.readinessLabel).toBe('Attachment unavailable');
+});
+it('preserves task review details from the server even when attachment readiness needs review',()=>{
+ const tasks=[{label:'Prepare new booking',state:'Pending staff action',details:['Room 1 · Alex Example · ZAR 262.00']}];
+ const vm=buildThreadDraftViewModel(pilotDraft({id:'review',origin:'ai',reviewSummary:{readinessLabel:'Pending staff action',reason:'Staff must complete the booking.',tasks,pricingProof:[]},attachments:[{artifactRef:'generated:q',filename:'quote.pdf',state:'missing'}]} as any));
+ expect(vm?.tasks).toEqual(tasks);expect(vm?.readinessLabel).toBe('Attachment unavailable');
 });

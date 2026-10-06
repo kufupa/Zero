@@ -15,6 +15,7 @@ type DraftMutationInput = {
 
 export type PersistDecisionInput = {
   hasUnsavedChanges: boolean;
+  existingDraftId?: string | null;
   initialHtml: string;
   html: string;
   text: string;
@@ -66,7 +67,8 @@ type EnsureEditableDraftInput = {
 
 export function shouldPersistDraft(input: PersistDecisionInput): boolean {
   if (!input.hasUnsavedChanges || input.aiBlocked) return false;
-  if (input.html.trim() === input.initialHtml.trim()) return false;
+  // A saved draft can change attachments or headers without changing its body.
+  if (!input.existingDraftId && input.html.trim() === input.initialHtml.trim()) return false;
   return (
     input.text.trim().length > 0 ||
     input.subject.trim().length > 0 ||

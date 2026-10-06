@@ -155,7 +155,9 @@ describe('bounded native trace privacy', () => {
       // Arbitrary values in that cookie are not automatically trusted.
       expect(collectHmsStorageStateSecretValues({ cookies: [{ name: 'iscallerlogin', value: 'opaque-secret' }] })).toEqual(['opaque-secret']);
       expect(collectHmsStorageStateSecretValues({ cookies: [{ name: 'JSESSIONID', value: 'no' }] })).toEqual(['no']);
-      await expect(sanitize(rawPath, reviewPath, ['no'])).rejects.toMatchObject({ code: 'TRACE_PRIVACY_FAILED' });
+      await sanitize(rawPath, reviewPath, ['no']);
+      const explicitOutput = unzipSync(await readFile(reviewPath));
+      for (const bytes of Object.values(explicitOutput)) expect(Buffer.from(bytes).toString('utf8')).not.toContain('no');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -306,6 +308,52 @@ describe('bounded native trace privacy', () => {
     }
   });
 
+  it.each(['cookie', 'header', 'query'])('redacts source-classified short credentials in retained representations: %s', async origin => {
+    const secret = 'q7', image = Buffer.from([0xff, 0xd8, 0xff, 0x71, 0x37, 0x00]);
+    const source = origin === 'cookie' ? { cookies: [{ name: 'authToken', value: secret }] } : origin === 'header' ? { headers: [{ name: 'Authorization', value: secret }] } : { url: `https://example.test/?token=${secret}` };
+    const { root, rawPath, reviewPath } = await fixture({
+      'trace.trace': JSON.stringify({ type: 'context-options', ...source, note: `opaque=${secret}` }),
+      'trace.network': JSON.stringify({ type: 'request', url: `https://example.test/?copy=${secret}`, duplicate: `encoded=${Buffer.from(secret).toString('base64')}` }),
+      'resources/text': `<div data-copy="${secret}">opaque=${secret}</div>`,
+      'resources/json': JSON.stringify({ duplicate: `opaque=${secret}` }),
+      'resources/screenshot': image,
+    });
+    try {
+      await sanitize(rawPath, reviewPath, []);
+      const output = unzipSync(await readFile(reviewPath));
+      for (const name of ['trace.trace', 'trace.network', 'resources/text', 'resources/json']) {
+        const text = Buffer.from(output[name]!).toString('utf8');
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain(Buffer.from(secret).toString('base64'));
+      }
+      expect(Buffer.from(output['resources/screenshot']!)).toEqual(image);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('redacts source-classified short credentials from JSON property names', async () => {
+    const secret='q7';const {root,rawPath,reviewPath}=await fixture({
+      'trace.trace': JSON.stringify({type:'context-options',cookies:[{name:'authToken',value:secret}]}),
+      'trace.network': JSON.stringify({type:'resource-snapshot'}),
+      'resources/json': JSON.stringify({[`copy-${secret}`]:{[`nested-${secret}`]:'safe'}}),
+    });
+    try{await sanitize(rawPath,reviewPath,[]);const output=unzipSync(await readFile(reviewPath));const text=Buffer.from(output['resources/json']!).toString();expect(text).not.toContain(secret);expect(JSON.parse(text)).toEqual({'copy-[REDACTED]':{'nested-[REDACTED]':'safe'}});}finally{await rm(root,{recursive:true,force:true});}
+  });
+  it('fails closed when secret-bearing JSON property names collide after redaction', async () => {
+    const {root,rawPath,reviewPath}=await fixture({
+      'trace.trace':JSON.stringify({type:'context-options',cookies:[{name:'authToken',value:'q7'}]}),
+      'trace.network':JSON.stringify({type:'resource-snapshot'}),
+      'resources/json':JSON.stringify({'copy-q7':'first','copy-[REDACTED]':'second'}),
+    });
+    try{await expect(sanitize(rawPath,reviewPath,[])).rejects.toThrow(HmsTracePrivacyError);await expect(readFile(reviewPath)).rejects.toThrow();}finally{await rm(root,{recursive:true,force:true});}
+  });
+
+  it('preserves literal, percent-case and short redaction with a longer unrelated credential', async () => {
+    const longSecret='x'.repeat(4096),secret='q7';const{root,rawPath,reviewPath}=await fixture({
+      'trace.trace':JSON.stringify({type:'context-options',note:'q7 safe',encoded:'Bearer%2fsecret+value'}),
+      'trace.network':JSON.stringify({type:'resource-snapshot'}),
+    });try{await sanitize(rawPath,reviewPath,[longSecret,secret,'Bearer/secret value']);const output=unzipSync(await readFile(reviewPath));expect(JSON.parse(Buffer.from(output['trace.trace']!).toString()).note).toBe('[REDACTED] safe');}finally{await rm(root,{recursive:true,force:true});}
+  });
+
   it('redacts explicit short secrets without treating metadata as secret', async () => {
     const shortSecret = 'q7';
     const { root, rawPath, reviewPath } = await fixture({
@@ -413,7 +461,7 @@ describe('bounded native trace privacy', () => {
     const terminated = new Promise<void>((resolve) => { markTerminated = resolve; });
     let worker: Worker | undefined;
     const emit = Worker.prototype.emit;
-    const emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (event, ...args) {
+    const emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
       const result = emit.call(this, event, ...args);
       if (event === 'online') {
         worker = this;
@@ -422,7 +470,7 @@ describe('bounded native trace privacy', () => {
       return result;
     });
     const terminate = Worker.prototype.terminate;
-    const terminateSpy = vi.spyOn(Worker.prototype, 'terminate').mockImplementation(async function () {
+    const terminateSpy = vi.spyOn(Worker.prototype, 'terminate').mockImplementation(async function (this: Worker) {
       const code = await terminate.call(this);
       markTerminated();
       await joinRelease;
@@ -459,7 +507,7 @@ describe('bounded native trace privacy', () => {
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => { markExited = resolve; });
     const emit = Worker.prototype.emit;
-    const emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (event, ...args) {
+    const emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
       if (event === 'message') return false;
       const result = emit.call(this, event, ...args);
       if (event === 'exit') markExited();

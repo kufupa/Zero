@@ -307,3 +307,18 @@ test('result shape accepts named fields and requires deposit fields unknown', ()
   const valued = resultResult(valuedDeposit);
   assert.equal(valued.ok, false);
 });
+
+test('oneOf requires exactly one branch and still enforces sibling constraints', () => {
+  const root = { $defs: {} };
+  assert.equal(validate({oneOf:[{type:'number'},{type:'integer'}]}, 1, root).ok,false);
+  assert.equal(validate({oneOf:[{type:'number'},{type:'integer'}]}, 1.5, root).ok,true);
+  assert.equal(validate({type:'integer',minimum:3,oneOf:[{type:'number'}]}, 1, root).ok,false);
+});
+
+test('array minimum, uniqueness, finite values and empty closed objects are validated',()=>{
+ const root={$defs:{}};
+ assert.equal(validate({type:'array',minItems:1},[],root).ok,false);
+ assert.equal(validate({type:'array',uniqueItems:true},[1,1],root).ok,false);
+ assert.equal(validate({type:'number'},Infinity,root).ok,false);
+ assert.equal(validate({type:'object',additionalProperties:false},{invented:1},root).ok,false);
+});

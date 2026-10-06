@@ -40,6 +40,14 @@ _Avoid_: card, thread blob
 One deterministic Playwright operation with a JSON Schema request and result.
 _Avoid_: workflow, folder, category, agent
 
+**AI backtest reservationist**:
+Eval-only Luna that classifies one inbound and fills PMS-tool request JSON. Quote may run the read CLI. Create and cancel stay dry-run (schema only). Not live triage. Not an HMS write.
+_Avoid_: master agent, mailTriage, quotation shadow (deferred live twin)
+
+**Quote proposal PDF**:
+Excel-template quotation PDF from Gotenberg. Separate from the HMS Hotel Availability quote result.
+_Avoid_: quote (alone), HMS quote, confirmation letter, proforma
+
 **Workflow folder**:
 Existing live triage slug (`bookings`, `manage-stay`, `automated-channel`, …). Staff unused as of 2026-09-18. Kept as a tag, not the lab’s primary LHS.
 _Avoid_: tool folder

@@ -17,7 +17,7 @@ describe('quote proposal helpers', () => {
     expect(proposalDescription('STWN', 'room_only')).toBe('Twin room Room Only');
     expect(proposalDescription('LUXKNG', 'bb')).toBe('Luxury room Bed & Breakfast');
     expect(proposalDescription('SUITE', 'bb')).toBe('Suite room Bed & Breakfast');
-    expect(proposalDescription('EXKNG', 'bb')).toBe('Single room Bed & Breakfast');
+    expect(proposalDescription('EXKNG', 'bb')).toBe('Executive room Bed & Breakfast');
     expect(occupancyRoomCode('single')).toBe('STQN');
     expect(occupancyRoomCode('twin')).toBe('STWN');
   });
@@ -39,3 +39,6 @@ describe('quote proposal helpers', () => {
     expect(html).not.toContain('<table');
   });
 });
+
+import { canCreatePaneProposal } from '../lib/quote-proposal/admission';
+it('refuses pane proposal creation until qualified evidence is implemented', () => { expect(canCreatePaneProposal()).toBe(false); });

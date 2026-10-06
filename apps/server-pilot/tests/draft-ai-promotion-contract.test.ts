@@ -1,7 +1,3 @@
-import { and, eq } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import type { DB } from '../src/db/client.js';
 import {
   aiDraftGeneration,
   mailDraft,
@@ -9,13 +5,13 @@ import {
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
-import {
-  TEST_DB_AVAILABLE,
-  probeTestDb,
-  withSeededTestDb,
-} from './helpers/test-db';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import { TRANSPORT_ID } from '../src/db/seed.js';
+import type { DB } from '../src/db/client.js';
+import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 
@@ -42,7 +38,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI draft promotion contract',
       textBody: 'Need help',
       receivedAt: new Date('2026-07-06T10:00:00Z'),
     });
-    const caller = await callerFor('user-navaai', { db });
+    const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
     return { caller, threadId, parentMessageId };
   }
 

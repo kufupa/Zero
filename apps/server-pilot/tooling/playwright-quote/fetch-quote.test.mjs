@@ -493,3 +493,28 @@ test('selected multi-group allocation uses proven building/room pools from extra
   assert.equal(allocation.pools[0].nights[0].demand,4);
   assert.equal(allocation.pools[0].nights[0].supply,3);
 });
+test('native nonroom bundles survive false package flag without tax or child entitlement inference',()=>{
+ const f=multipleSource();f.rate.ispkg=false;f.rate.nonroombundleslist=[{code:'BB',desc:'Bed & Breakfast',internalSecret:'drop'}];
+ const projected=quote.projectWindow({criteria:{},data:f.data,calendar:f.calendar});
+ assert.deepEqual(projected.data.children[0].children[0].children[0].nonroombundleslist,[{code:'BB',label:'Bed & Breakfast'}]);
+ const result=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
+ assert.deepEqual(result.options[0].rate.bundleLabels,[{code:'BB',label:'Bed & Breakfast'}]);
+ assert.equal(result.options[0].totals.taxInclusive,null);
+ assert.equal(quote.sourceFacts(result.options[0]).childMealEntitlement,undefined);
+ const changed=structuredClone({data:f.data,calendar:f.calendar});changed.data.children[0].children[0].children[0].nonroombundleslist=[{code:'BB',desc:'Dinner'}];
+ const conflict=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar},changed]);
+ assert.ok(conflict.options[0].issues.some(i=>i.code==='RATE_IDENTITY_CHANGED'));
+});
+
+test('observed native dinner board labels map without changing rate entitlement',()=>{
+ for(const board of ['Dinner Bed & Breakfast R','Dinner, Bed & Breakfast R','Dinner, Bed, Breakfast & Beverage R'])assert.equal(quote.sourceFacts({room:{code:'STWN',label:'Standard Twin'},rate:{code:'NGOVDB'},board},'').boardBase,'dinner_bed_breakfast');
+ assert.equal(quote.sourceFacts({room:{code:'STWN'},rate:{code:'X'},board:'Dinner might be included'},'').boardBase,undefined);
+});
+
+test('explicit Government strategy qualifies an unrestricted native government family without a negotiated organization',()=>{
+ const f=multipleSource();f.rate.code='NGOVDB';f.rate.desc='Local Government Rate Dinner';f.rate.isNegotiatedRate=false;f.calendar.options[0].rate='NGOVDB: Local Government Rate Dinner';f.calendar.options[0].board='Dinner, Bed, Breakfast & Beverage R';
+ const scoped={...request,search:{salesStrategy:'Government'}};const result=quote.extractOptions(scoped,scoped.rooms[0],[{data:f.data,calendar:f.calendar,criteria:{salesStrategy:'GOV'}}]);
+ assert.equal(result.options.find(o=>o.rate.code==='NGOVDB').eligibility,'verified');
+ const wrong=quote.extractOptions({...request,search:{salesStrategy:'Negotiated Contracted'}},request.rooms[0],[{data:f.data,calendar:f.calendar,criteria:{salesStrategy:'CON'}}]);assert.notEqual(wrong.options.find(o=>o.rate.code==='NGOVDB').eligibility,'verified');
+ f.rate.restricted=true;const restricted=quote.extractOptions(scoped,scoped.rooms[0],[{data:f.data,calendar:f.calendar,criteria:{salesStrategy:'GOV'}}]);assert.notEqual(restricted.options.find(o=>o.rate.code==='NGOVDB').eligibility,'verified');
+});

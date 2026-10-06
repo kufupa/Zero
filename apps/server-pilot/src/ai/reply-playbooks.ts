@@ -306,3 +306,9 @@ export function buildReplyPlaybook(input: ReplyPlaybookInput): ReplyPlaybookResu
 }
 
 export const selectReplyPlaybook = buildReplyPlaybook;
+
+/** Two corpus-backed family frames; all substantive clauses are independently verified. */
+export function composeReservationistReply(family:'quote'|'booking',clauses:readonly string[]):{textBody:string;htmlBody:string}{
+ const textBody=[family==='quote'?'Thank you for your enquiry.':'Thank you for your booking request.',...clauses,'Kind regards,\nCenturion Reservations'].join('\n\n');
+ return {textBody,htmlBody:textToSafeHtml(textBody)};
+}

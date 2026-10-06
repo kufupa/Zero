@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   buildDraftMutationInput,
   chooseDraftEditorState,
@@ -9,8 +8,36 @@ import {
   shouldEnsureEditableDraftForReply,
   shouldPersistDraft,
 } from '../lib/mail/draft-persistence';
+import { describe, expect, it } from 'vitest';
 
 describe('draft persistence', () => {
+  it('persists a dirty saved draft attachment edit after the body matches refetched initial content', () => {
+    expect(
+      shouldPersistDraft({
+        hasUnsavedChanges: true,
+        existingDraftId: 'saved-draft',
+        initialHtml: '<p>Saved body</p>',
+        html: '<p>Saved body</p>',
+        text: 'Saved body',
+        to: ['guest@example.test'],
+        subject: 'Saved subject',
+        aiBlocked: false,
+      }),
+    ).toBe(true);
+    expect(
+      resolveComposeCloseAction({
+        hasUnsavedChanges: true,
+        existingDraftId: 'saved-draft',
+        initialHtml: '<p>Saved body</p>',
+        html: '<p>Saved body</p>',
+        text: 'Saved body',
+        to: ['guest@example.test'],
+        subject: 'Saved subject',
+        aiBlocked: false,
+        intent: 'threadSwitch',
+      }),
+    ).toBe('flushAndLeave');
+  });
   it('persists partial draft bodies before recipients or subject exist', () => {
     expect(
       shouldPersistDraft({

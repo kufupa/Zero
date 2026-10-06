@@ -7,7 +7,6 @@ import {
   createReservationistAgent,
   createReservationistTools,
   QUOTE_UNAVAILABLE,
-  type ReservationistContext,
   type ReservationistRunners,
 } from '../src/ai/reservationist-agent.js';
 
@@ -21,7 +20,7 @@ function fakeRunners(): ReservationistRunners {
 }
 
 function ctx(liveQuoteOk: boolean) {
-  return new RequestContext<ReservationistContext>([
+  return new RequestContext<unknown>([
     ['propertyCode', 'HRCEN'],
     ['hotelRules', CENTURION_HOTEL_RULES],
     ['liveQuoteOk', liveQuoteOk],
@@ -38,13 +37,13 @@ type Exec = (input: unknown, context: unknown) => Promise<unknown>;
 const exec = (tool: { execute?: unknown }) => tool.execute as Exec;
 
 describe('reservationist tools', () => {
-  it('stubs quote with no HMS when the oracle does not want a quote', async () => {
+  it('changing legacy gold-derived context cannot control quote execution', async () => {
     const runners = fakeRunners();
     const tools = createReservationistTools(runners);
-    const out = await exec(tools.quote_stay)(stay, { requestContext: ctx(false) });
-    expect(out).toEqual({ status: QUOTE_UNAVAILABLE });
-    expect(JSON.stringify(out)).not.toMatch(/oracle/i);
-    expect(runners.quote).not.toHaveBeenCalled();
+    const first = await exec(tools.quote_stay)(stay, { requestContext: ctx(false) });
+    const second = await exec(tools.quote_stay)(stay, { requestContext: ctx(true) });
+    expect(first).toEqual(second);
+    expect(runners.quote).toHaveBeenCalledTimes(2);
   });
 
   it('runs a live v2 quote request when liveQuoteOk', async () => {

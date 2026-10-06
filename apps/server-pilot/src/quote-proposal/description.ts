@@ -7,8 +7,8 @@ const CLASS_BY_CODE: Record<string, string> = {
   DLXTWN: 'Deluxe',
   LUXKNG: 'Luxury',
   SUITE: 'Suite',
-  SKNG: 'Suite',
-  EXKNG: 'Single',
+  SKNG: 'Standard King',
+  EXKNG: 'Executive',
   STQN: 'Single',
   STWN: 'Twin',
 };

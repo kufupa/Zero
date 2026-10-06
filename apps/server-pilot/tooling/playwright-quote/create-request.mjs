@@ -25,7 +25,7 @@ function matchesType(type, data) {
   if (type === 'string') return typeof data === 'string';
   if (type === 'boolean') return typeof data === 'boolean';
   if (type === 'integer') return Number.isInteger(data);
-  if (type === 'number') return typeof data === 'number' && !Number.isNaN(data);
+  if (type === 'number') return typeof data === 'number' && Number.isFinite(data);
   if (type === 'object') return data !== null && typeof data === 'object' && !Array.isArray(data);
   if (type === 'array') return Array.isArray(data);
   return false;
@@ -34,13 +34,12 @@ function matchesType(type, data) {
 function check(schema, data, path, errors, root) {
   schema = deref(schema, root);
   if (schema.oneOf) {
-    const matched = schema.oneOf.some((sub) => {
+    const matched = schema.oneOf.filter((sub) => {
       const nested = [];
       check(sub, data, path, nested, root);
       return nested.length === 0;
     });
-    if (!matched) errors.push(`${path} oneOf`);
-    return;
+    if (matched.length !== 1) errors.push(`${path} oneOf`);
   }
   if (schema.allOf) {
     for (const sub of schema.allOf) check(sub, data, path, errors, root);
@@ -72,19 +71,21 @@ function check(schema, data, path, errors, root) {
     if (schema.maximum != null && data > schema.maximum) errors.push(`${path} maximum`);
   }
   if (Array.isArray(data)) {
+    if (schema.minItems != null && data.length < schema.minItems) errors.push(`${path} minItems`);
+    if (schema.uniqueItems && new Set(data.map(item => JSON.stringify(item))).size !== data.length) errors.push(`${path} uniqueItems`);
     if (schema.maxItems != null && data.length > schema.maxItems) errors.push(`${path} maxItems`);
     if (schema.items) {
       data.forEach((item, index) => check(schema.items, item, `${path}[${index}]`, errors, root));
     }
   }
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const props = schema.properties;
+    const props = schema.properties ?? {};
     if (schema.required) {
       for (const key of schema.required) {
         if (!Object.hasOwn(data, key)) errors.push(`${path}.${key} required`);
       }
     }
-    if (schema.additionalProperties === false && props) {
+    if (schema.additionalProperties === false) {
       for (const key of Object.keys(data)) {
         if (!Object.hasOwn(props, key)) errors.push(`${path}.${key} additionalProperties`);
       }

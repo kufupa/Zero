@@ -137,7 +137,6 @@ export function createReservationistTools(runners: ReservationistRunners) {
       inputSchema: quoteInput,
       execute: async (input, { requestContext }) => {
         const rc = requestContext as RequestContext<ReservationistContext>;
-        if (!rc.get('liveQuoteOk')) return { status: QUOTE_UNAVAILABLE };
         return runners.quote({
           schemaVersion: 2,
           propertyCode: rc.get('propertyCode'),

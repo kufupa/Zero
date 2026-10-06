@@ -81,7 +81,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         },
       ]);
 
-      const { mail, drafts } = await callerFor('user-navaai', { db });
+      const { mail, drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       const thread = await mail.get({ id: threadId });
       expect(thread.messages).toHaveLength(1);
       expect(thread.messages.some((m) => m.isDraft)).toBe(false);

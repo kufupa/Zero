@@ -1,6 +1,7 @@
 services:
   gotenberg:
-    image: gotenberg/gotenberg:8.36.0-libreoffice
+    # Revision proposals use Chromium HTML; keep LibreOffice for legacy XLSX callers.
+    image: gotenberg/gotenberg:8.36.0
     restart: unless-stopped
     mem_limit: 2g
     ports:

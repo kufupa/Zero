@@ -13,6 +13,11 @@ import {
   type LiveGuestStayRowFingerprintV2,
   type LiveGuestStayRowFingerprintV1,
 } from '../src/hms/contracts.js';
+import type {
+  LiveGuestStayDriver,
+  LiveGuestStayDriverOptions,
+  GuestStaySearchCapture,
+} from '../src/hms/live-guest-stay-driver.js';
 import {
   createCandidateTools,
   claimsFromToolResult,
@@ -31,7 +36,6 @@ import {
 import { createReservationCandidateSession } from '../src/hms/reservation-candidate-session.js';
 import { issueTrustedRequesterAuthorization } from '../src/hms/requester-authorization.js';
 import type { HmsBrowserArtifactReceiptV1 } from '../src/hms/browser-artifacts.js';
-import type { LiveGuestStayDriver } from '../src/hms/live-guest-stay-driver.js';
 import type { HmsPortfolioToolReleaseV2 } from '../src/hms/release-kernel.js';
 import { describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
@@ -79,6 +83,7 @@ function liveDriverWithSession(input: {
   receipt?: HmsBrowserArtifactReceiptV1 | null;
   origin?: string;
   violation?: HmsReadSession['violation'];
+  onSearchCapture?: LiveGuestStayDriverOptions['onSearchCapture'];
 }) {
   const close = vi.fn(async () => undefined);
   const session = {
@@ -98,6 +103,7 @@ function liveDriverWithSession(input: {
     driver: createLiveGuestStayDriver({
       runtime,
       transportId: 'transport-centurion',
+      onSearchCapture: input.onSearchCapture,
     }),
   };
 }
@@ -990,6 +996,240 @@ describe('live driver fail-closed boundaries', () => {
       terminalCode: 'UNVERIFIED_NEGATIVE',
       complete: true,
     });
+  });
+});
+
+describe('actual native search evidence acquisition', () => {
+  const productionOrigin = 'https://appsrv-1.legacyhotels.co.za';
+  it('retains native response conservation after audit close without issuing a negative certificate', async () => {
+    const response = JSON.stringify({
+      pageData: {
+        fromCome: true,
+        success: true,
+        grid: {
+          GRIDRESULT: {
+            type: 'LIST.DATA_ONLY.STORED',
+            DATASPY: { id: '1941', label: 'All' },
+            GRID: {
+              METADATA: { RECORDS: '1', GRIDNAME: 'OSRESS' },
+              DATA: [
+                { confirmationnumber: SYNTH.confOther, lastname: 'Other', firstname: 'Guest' },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined);
+    const receipt = {
+      operationOutcome: 'unverified_negative',
+      terminalCode: 'UNVERIFIED_NEGATIVE',
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      roleProofSha256: null,
+    } as unknown as HmsBrowserArtifactReceiptV1;
+    const { driver, close } = liveDriverWithSession({
+      origin: productionOrigin,
+      receipt,
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => response,
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    expect(
+      await driver.searchExactAndMap(confCandidate(), AbortSignal.timeout(5000), (r) => r.outcome),
+    ).toBe('not_found');
+    expect(onSearchCapture).toHaveBeenCalledOnce();
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      onSearchCapture.mock.invocationCallOrder[0]!,
+    );
+    const capture = onSearchCapture.mock.calls[0]![0];
+    expect(capture).toMatchObject({
+      candidate: confCandidate(),
+      response: {
+        text: response,
+        sha256: createHash('sha256').update(response).digest('hex'),
+        bytes: Buffer.byteLength(response),
+      },
+      conservation: {
+        nativeRecords: 1,
+        parsedRows: 1,
+        correlatedRows: 0,
+        emptyNative: false,
+        scopeCompleteness: 'unproven',
+      },
+      receipt,
+      negativeCertificate: null,
+    });
+    expect(capture.unavailableGates).toEqual(
+      expect.arrayContaining([
+        'candidateSource',
+        'surface',
+        'nativeRequestDifferential',
+        'scopeCompleteness',
+        'controlPair',
+        'candidateExhaustion',
+      ]),
+    );
+    expect(Date.parse(capture.observedAt)).toBeLessThanOrEqual(Date.parse(capture.finalizedAt));
+  });
+
+  it('does not treat a native null-grid empty signal as counted complete inventory', async () => {
+    const response = JSON.stringify({ pageData: { fromCome: true, grid: null, messages: null } }),
+      onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined);
+    const { driver } = liveDriverWithSession({
+      origin: productionOrigin,
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => response,
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    await driver.searchExact(confCandidate(), AbortSignal.timeout(5000));
+    expect(onSearchCapture.mock.calls[0]![0]).toMatchObject({
+      conservation: {
+        nativeRecords: null,
+        parsedRows: 0,
+        correlatedRows: 0,
+        emptyNative: true,
+        scopeCompleteness: 'unproven',
+      },
+      negativeCertificate: null,
+    });
+  });
+
+  it('never emits search capture after an unsafe finalized audit', async () => {
+    const onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined),
+      receipt = {
+        operationOutcome: 'policy_blocked',
+        terminalCode: 'POLICY_BLOCK',
+        blockedRequests: 1,
+        mutationRequests: 0,
+      } as unknown as HmsBrowserArtifactReceiptV1;
+    const { driver } = liveDriverWithSession({
+      receipt,
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => '<div data-testid="no-results">No reservations found</div>',
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    await expect(
+      driver.searchExact(confCandidate(), AbortSignal.timeout(5000)),
+    ).rejects.toMatchObject({ code: 'POLICY_BLOCK' });
+    expect(onSearchCapture).not.toHaveBeenCalled();
+  });
+
+  it('retains complete correlated native row counts when returned ambiguity is capped', async () => {
+    const response = JSON.stringify({
+      pageData: {
+        fromCome: true,
+        success: true,
+        grid: {
+          GRIDRESULT: {
+            type: 'LIST.DATA_ONLY.STORED',
+            DATASPY: { id: '1941', label: 'All' },
+            GRID: {
+              METADATA: { RECORDS: '21', GRIDNAME: 'OSRESS' },
+              DATA: Array.from({ length: 21 }, () => ({ confirmationnumber: SYNTH.conf })),
+            },
+          },
+        },
+      },
+    });
+    const onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined);
+    const { driver } = liveDriverWithSession({
+      origin: productionOrigin,
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => response,
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    const result = await driver.searchExact(confCandidate(), AbortSignal.timeout(5000));
+    expect(result).toMatchObject({ outcome: 'ambiguous', capped: true });
+    expect(result.observations).toHaveLength(20);
+    expect(onSearchCapture.mock.calls[0]![0].conservation).toMatchObject({
+      nativeRecords: 21,
+      parsedRows: 21,
+      correlatedRows: 21,
+    });
+  });
+
+  it('rejects candidate mutation during an acquired search before capture', async () => {
+    const candidate = confCandidate(),
+      onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined);
+    const { driver } = liveDriverWithSession({
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => {
+          candidate.value = 'changed';
+          return '<div data-testid="no-results">No reservations found</div>';
+        },
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    await expect(driver.searchExact(candidate, AbortSignal.timeout(5000))).rejects.toMatchObject({
+      code: 'SCHEMA_DRIFT',
+    });
+    expect(onSearchCapture).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when real response exceeds capture bounds', async () => {
+    const onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => undefined);
+    const { driver, close } = liveDriverWithSession({
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () =>
+          '<div data-testid="no-results">' + 'x'.repeat(20 * 1024 * 1024) + '</div>',
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    await expect(
+      driver.searchExact(confCandidate(), AbortSignal.timeout(5000)),
+    ).rejects.toMatchObject({ code: 'SCHEMA_DRIFT' });
+    expect(onSearchCapture).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledWith({
+      outcome: 'failed',
+      terminalCode: 'TOOL_ERROR',
+      complete: true,
+    });
+  });
+
+  it('propagates private evidence persistence failure after closing native session', async () => {
+    const failure = new Error('local evidence persistence failed'),
+      onSearchCapture = vi.fn(async (_capture: GuestStaySearchCapture) => {
+        throw failure;
+      });
+    const { driver, close } = liveDriverWithSession({
+      onSearchCapture,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () => '<div data-testid="no-results">No reservations found</div>',
+        waitForCorrelatedResponse: async () => '',
+      },
+    });
+    await expect(driver.searchExact(confCandidate(), AbortSignal.timeout(5000))).rejects.toBe(
+      failure,
+    );
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 

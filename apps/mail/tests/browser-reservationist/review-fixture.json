@@ -1,0 +1,66 @@
+{
+  "id": "synthetic-review",
+  "revisionKey": "d444aa8512113ca53fba7162f048855c3163f82e252aae91d5fa3a27a4dc3f4d",
+  "threadId": "thread",
+  "replyToMessageId": "request",
+  "to": [],
+  "cc": [],
+  "bcc": [],
+  "subject": "Synthetic staff action review",
+  "content": "Staff must review the prepared action.",
+  "updatedAt": "2026-10-04T10:00:00.000Z",
+  "status": "candidate",
+  "origin": "ai",
+  "generationId": "synthetic-generation",
+  "isStale": false,
+  "reviewSummary": {
+    "readinessLabel": "Needs review",
+    "reason": "Staff must review and complete the prepared action. No hotel changes have been saved.",
+    "tasks": [
+      {
+        "label": "Prepare new booking",
+        "state": "Pending staff action",
+        "details": [
+          "Selected booking total: ZAR 200.00",
+          "Current evidence observed 2026-10-04T10:00:00Z · Expires 2026-10-04T12:00:00Z",
+          "Current evidence observed 2026-10-04T10:00:00Z · Expires 2026-10-04T11:00:00Z",
+          "Room 1 · Alex Example · 2026-10-12 to 2026-10-14 · Standard Queen · 1 adults · 0 children · Best Available Rate",
+          "Room 1 · Breakfast",
+          "Room 1 · VAT included · Tourism levy included · Adult breakfast",
+          "Inclusion terms authored 2026-10-03",
+          "Room 1 · Organization: Synthetic Organization · Party evidence observed 2026-10-04T10:00:00Z",
+          "Room 1 · Source: E-Mail · Track: BAR · Guarantee: Non-Guaranteed Individual · Organization: Synthetic Organization",
+          "Room 1 total: ZAR 200.00",
+          "Room 1 · 2026-10-12: ZAR 100.00",
+          "Room 1 · 2026-10-13: ZAR 100.00",
+          "Room 1 · Observed 2026-10-04T10:00:00Z",
+          "No booking has been saved. Staff must complete the booking and verify availability."
+        ]
+      },
+      {
+        "label": "Review changes",
+        "state": "Pending staff action",
+        "details": [
+          "Reservation ABC123",
+          "Recorded stay: 2026-10-12 to 2026-10-14",
+          "Requested stay: 2026-10-15 to 2026-10-17",
+          "Observed 2026-10-04T10:00:00Z",
+          "Requested 2026-10-04T10:00:00Z",
+          "No changes have been saved. Staff must complete the amendment."
+        ]
+      },
+      {
+        "label": "Answer question",
+        "state": "Needs review",
+        "details": [
+          "Deposit amount due is unavailable; staff must verify it.",
+          "The claimed payment differs from the recorded deposit.",
+          "Claimed payment: ZAR 100.00 · Recorded deposit: ZAR 20.00 · Amounts differ.",
+          "Payment clearance remains unverified."
+        ]
+      }
+    ],
+    "pricingProof": []
+  },
+  "attachments": []
+}

@@ -4,6 +4,13 @@ import { describe, expect, it } from 'vitest';
 const nginx = readFileSync(new URL('../deploy/nginx.conf', import.meta.url), 'utf8');
 
 describe('Outlook pane Nginx route', () => {
+  it('keeps native read-only quote requests alive through both API proxies', () => {
+    const apiLocations = [...nginx.matchAll(/location \/api\/ \{([^}]+)\}/g)];
+    expect(apiLocations).toHaveLength(2);
+    for (const [, body] of apiLocations) {
+      expect(body).toContain('proxy_read_timeout 1250s;');
+    }
+  });
   it('canonicalizes slash form and blocks pane subpaths before the permissive SPA fallback', () => {
     const tlsServerStart = nginx.indexOf('listen 443 ssl default_server;');
     const paneStart = nginx.indexOf('location = /outlook-pane {', tlsServerStart);

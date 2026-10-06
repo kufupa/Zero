@@ -203,7 +203,8 @@
                       "required": ["code", "label"],
                       "properties": {
                         "code": { "$ref": "#/$defs/nativeCode" },
-                        "label": { "type": "string", "minLength": 1, "description": "On-screen rate name beside the code." }
+                        "label": { "type": "string", "minLength": 1, "description": "On-screen rate name beside the code." },
+                        "bundleLabels": { "type": "array", "maxItems": 32, "description": "Observed native nonroom bundle labels only; no entitlement or tax inference.", "items": { "type": "object", "additionalProperties": false, "required": ["label"], "properties": { "code": { "type": "string", "maxLength": 64 }, "label": { "type": "string", "minLength": 1, "maxLength": 256 } } } }
                       }
                     },
                     "displayedSum": { "type": ["string", "null"], "description": "Displayed nightly sum amount already returned by the CLI, or null when the sum is not established." },

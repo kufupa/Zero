@@ -575,7 +575,7 @@ function redactText(
   let result = text;
   for (const variant of variants) {
     if (
-      variant.text.length > 0 &&
+      variant.text.length > 0 && variant.text.length <= result.length &&
       (includeShort || !variant.short || variant.explicit)
     ) {
       if (result.includes(variant.text)) result = result.split(variant.text).join(REDACTION);
@@ -835,13 +835,15 @@ function sanitizeNode(
   if (!value || typeof value !== 'object') return value;
   const output: Record<string, unknown> = {};
   for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+    const outputKey = redactText(childKey, variants, true);
+    if (Object.hasOwn(output, outputKey)) privacyFailure();
     if (/^headers$/i.test(childKey)) {
       const sanitizedHeaders = sanitizeHeaders(child, variants);
-      if (sanitizedHeaders !== OMIT) output[childKey] = sanitizedHeaders;
+      if (sanitizedHeaders !== OMIT) output[outputKey] = sanitizedHeaders;
       continue;
     }
     const sanitized = sanitizeNode(child, variants, childKey, key);
-    if (sanitized !== OMIT) output[childKey] = sanitized;
+    if (sanitized !== OMIT) output[outputKey] = sanitized;
   }
   return output;
 }
@@ -1061,7 +1063,10 @@ export function sanitizeTraceArchiveBytes(
 
   const variants = escapedSecretVariants(
     [...secretValues, ...dynamicSecrets],
-    new Set(secretValues),
+    // Values discovered in credential fields are source-classified even when
+    // short. Redact them in retained text just like caller-supplied secrets;
+    // the final scan remains strict and native images keep the short-byte rule.
+    new Set([...secretValues, ...dynamicSecrets]),
   );
   const review: Zippable = {};
   const outputNames = new Set<string>();
