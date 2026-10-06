@@ -14,7 +14,8 @@ import {
   selectionDigest,
   buildQuoteStepInputs,
 } from '../lib/quote-workflow/session';
-import type { QuoteOffer, QuoteSelectionBinding } from '../lib/quote-workflow/types';
+import { openReviewItems } from '../lib/quote-workflow/review-items';
+import type { QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
   transportId: 't1',
@@ -907,5 +908,207 @@ describe('quote session', () => {
       ],
       party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
+  });
+});
+
+const authorisedOffer: QuoteOffer = {
+  id: 'o1',
+  kind: 'allocation',
+  roomCode: 'SKNG',
+  roomLabel: 'Standard King',
+  board: 'bb',
+  rateCode: 'BAR',
+  currency: 'ZAR',
+  nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
+  stayTotalMinor: 272000,
+  observedAt: '2026-10-05T12:00:00Z',
+  sourceRef: 'src-1',
+  restrictions: [],
+  combinable: true,
+  quoteRequestKey: '2026-11-12:2026-11-14',
+  coversGroupIds: ['g1'],
+  quantity: 1,
+  adults: 1,
+};
+
+function analysisReady(analysis = quoteAnalysis) {
+  return reduceQuoteSession(
+    reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() }),
+    { type: 'analysis_ready', analysis },
+  );
+}
+
+describe('quote session staff review items', () => {
+  it('projects a clean selected quote with no Items for you', () => {
+    const s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
+    expect(s.reviewItems).toEqual([]);
+    expect(openReviewItems(s)).toEqual([]);
+  });
+
+  it('keeps the actual unanswered question clause, not a truncated parking token', () => {
+    const s = analysisReady({
+      ...quoteAnalysis,
+      secondaryAsks: ['Is parking included?', 'parking', 'parking included'],
+    });
+    expect(s.reviewItems.map((item) => item.text)).toEqual(['Is parking included?']);
+    expect(s.reviewItems[0]).toMatchObject({ kind: 'question', rank: 'secondary', blocking: false });
+  });
+
+  it('names a failed business document by filename and reason', () => {
+    const start = analysisReady();
+    const s = reduceQuoteSession(start, {
+      type: 'analysis_missing_source',
+      missing: ['att-1'],
+      documents: [
+        {
+          filename: 'rooming-list.pdf',
+          reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+          sourceKind: 'attachment',
+        },
+      ],
+    });
+    expect(s.phase).toBe('missing_source');
+    expect(s.groups).toEqual(quoteAnalysis.groups);
+    expect(s.reviewItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'document_failure',
+          filename: 'rooming-list.pdf',
+          reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+          blocking: false,
+        }),
+        expect.objectContaining({ text: 'Is parking included?' }),
+      ]),
+    );
+  });
+
+  it('suppresses only positively identified signature or logo noise', () => {
+    const noise: QuoteReviewItem = {
+      id: 'noise-sig',
+      kind: 'signature_noise',
+      rank: 'unread_source',
+      text: 'Hotel logo.png',
+      sourceLabel: 'Signature block',
+      blocking: false,
+      positivelyIdentifiedNoise: true,
+    };
+    const unread: QuoteReviewItem = {
+      id: 'unread-png',
+      kind: 'document_failure',
+      rank: 'unread_source',
+      text: 'unknown-scan.png',
+      sourceLabel: 'Attachment',
+      filename: 'unknown-scan.png',
+      reason: 'Unread image was not identified as signature or logo noise.',
+      blocking: false,
+    };
+    const s = analysisReady({
+      ...quoteAnalysis,
+      secondaryAsks: [],
+      reviewItems: [noise, unread],
+    });
+    expect(s.reviewItems.map((item) => item.id)).toEqual(['unread-png']);
+  });
+
+  it('handles and undoes a source-bound item without treating handling as pricing approval', () => {
+    let s = analysisReady();
+    const questionId = s.reviewItems.find((item) => item.kind === 'question')!.id;
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(true);
+    s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: questionId });
+    expect(openReviewItems(s)).toEqual([]);
+    expect(s.handledReviewItemIds).toEqual([questionId]);
+    expect(canCreatePdf(s)).toBe(true);
+    s = reduceQuoteSession(s, { type: 'unhandle_review_item', itemId: questionId });
+    expect(openReviewItems(s).map((item) => item.id)).toEqual([questionId]);
+  });
+
+  it('clears handling on selection change and keeps it across stay edits that drop PDF', () => {
+    let s = analysisReady();
+    const questionId = s.reviewItems.find((item) => item.kind === 'question')!.id;
+    s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: questionId });
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(s.pdf).not.toBeNull();
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    expect(s.pdf).toBeNull();
+    expect(canCreatePdf(s)).toBe(false);
+    expect(s.handledReviewItemIds).toEqual([questionId]);
+    const switched = reduceQuoteSession(s, {
+      type: 'selection',
+      binding: bind({ entryId: 'e2', selectionEpoch: 2 }),
+    });
+    expect(switched.handledReviewItemIds).toEqual([]);
+    expect(switched.reviewItems).toEqual([]);
+  });
+
+  it('does not let a secondary ask block an otherwise authorised unsent insertion', () => {
+    let s = analysisReady();
+    expect(openReviewItems(s).some((item) => item.kind === 'question')).toBe(true);
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      reviewedReplyHtml: '<p>Full staff-edited reply</p>',
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+    });
+    expect(canCreatePdf(s)).toBe(true);
+    expect(canCreateNativeDraft(s)).toBe(true);
+    expect(s.reviewedReplyHtml).toBe('<p>Full staff-edited reply</p>');
+  });
+
+  it('still blocks PDF when a pricing-critical fact is missing', () => {
+    let s = analysisReady({
+      intent: 'quote',
+      groups: [
+        {
+          ...quoteAnalysis.groups[0]!,
+          arrivalDate: undefined,
+          fields: { ...quoteAnalysis.groups[0]!.fields, arrivalDate: 'missing' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+    });
+    expect(s.reviewItems.some((item) => item.kind === 'pricing_fact' && item.blocking)).toBe(true);
+    s = reduceQuoteSession(s, {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(false);
+    expect(canCreateNativeDraft(s)).toBe(false);
   });
 });

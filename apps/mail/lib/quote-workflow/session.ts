@@ -10,6 +10,7 @@ import type {
   QuoteToolStep,
   StayGroupRequirement,
 } from './types';
+import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
   return {
@@ -201,6 +202,8 @@ export function initialQuoteSession(): QuoteSession {
     mailboxStatus: null,
     evidence: null,
     partyLookup: null,
+    reviewItems: [],
+    handledReviewItemIds: [],
   };
 }
 
@@ -350,8 +353,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           phase: 'non_quote',
           analysis: action.analysis,
           groups: [],
+          reviewItems: [],
+          handledReviewItemIds: [],
         };
       }
+      const reviewItems = projectQuoteReviewItems(action.analysis, action.analysis.groups);
       return {
         ...session,
         phase: 'requirements',
@@ -359,14 +365,58 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         groups: action.analysis.groups,
         inputRevision: 1,
         steps: planQuoteSteps(action.analysis.groups),
+        reviewItems,
+        handledReviewItemIds: session.handledReviewItemIds.filter((id) =>
+          reviewItems.some((item) => item.id === id),
+        ),
       };
     }
     case 'analysis_unsynced':
       return { ...session, phase: 'unsynced' };
-    case 'analysis_missing_source':
-      return { ...session, phase: 'missing_source', missing: action.missing };
-    case 'analysis_failed':
-      return { ...session, phase: 'failed', errorMessage: action.message };
+    case 'analysis_missing_source': {
+      const documents = documentFailureItems(action.documents ?? []);
+      return {
+        ...session,
+        phase: 'missing_source',
+        missing: action.missing,
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents),
+      };
+    }
+    case 'analysis_failed': {
+      const failed = {
+        id: 'analysis-failed',
+        kind: 'analysis_failure' as const,
+        rank: 'unread_source' as const,
+        text: action.message,
+        sourceLabel: 'Selected message',
+        blocking: false,
+      };
+      return {
+        ...session,
+        phase: 'failed',
+        errorMessage: action.message,
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, [failed]),
+      };
+    }
+    case 'review_documents_failed': {
+      const documents = documentFailureItems(action.documents);
+      return {
+        ...session,
+        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, documents),
+      };
+    }
+    case 'handle_review_item':
+      if (!session.reviewItems.some((item) => item.id === action.itemId)) return session;
+      if (session.handledReviewItemIds.includes(action.itemId)) return session;
+      return {
+        ...session,
+        handledReviewItemIds: [...session.handledReviewItemIds, action.itemId],
+      };
+    case 'unhandle_review_item':
+      return {
+        ...session,
+        handledReviewItemIds: session.handledReviewItemIds.filter((id) => id !== action.itemId),
+      };
     case 'analysis_unsupported':
       return { ...session, phase: 'unsupported', errorMessage: action.message };
     case 'patch_group': {
@@ -379,6 +429,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         inputRevision: session.inputRevision + 1,
         phase: 'requirements',
         steps: planQuoteSteps(groups),
+        reviewItems: projectQuoteReviewItems(
+          session.analysis,
+          groups,
+          session.reviewItems.filter(
+            (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
+          ),
+        ),
       });
     }
     case 'results_ready': {

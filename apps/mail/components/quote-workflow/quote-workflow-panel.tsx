@@ -1,6 +1,8 @@
 import { allocationTotal, canCreatePdf } from '@/lib/quote-workflow/session';
-import type { QuoteOffer, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
+import type { QuoteOffer, QuoteReviewItem, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import { DocumentReview } from './document-review';
+import { ItemsForYou } from './items-for-you';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 
@@ -71,6 +73,15 @@ function OfferCard({
   );
 }
 
+function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
+  return (
+    phase === 'idle' ||
+    phase === 'unsynced' ||
+    phase === 'unsupported' ||
+    phase === 'non_quote'
+  );
+}
+
 export function QuoteWorkflowPanel({
   session,
   onPatchGroup,
@@ -79,6 +90,10 @@ export function QuoteWorkflowPanel({
   onSelectOffer,
   onReplyChange,
   onPreparePdf,
+  onHandleReviewItem,
+  onUndoReviewItem,
+  onViewSource,
+  onEditReply,
 }: {
   session: QuoteSession;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
@@ -87,23 +102,16 @@ export function QuoteWorkflowPanel({
   onSelectOffer?: (offerId: string) => void;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
+  onHandleReviewItem?: (itemId: string) => void;
+  onUndoReviewItem?: (itemId: string) => void;
+  onViewSource?: (item: QuoteReviewItem) => void;
+  onEditReply?: () => void;
 }) {
-  if (session.phase === 'analysing') {
-    return <StatusNote>Analysing selected email and authorised thread sources…</StatusNote>;
+  if (session.phase === 'idle') {
+    return <StatusNote>Select an inbound email in Outlook to analyse quote requirements.</StatusNote>;
   }
   if (session.phase === 'unsynced') {
     return <StatusNote>This selected email is not synced to the authorised mailbox yet.</StatusNote>;
-  }
-  if (session.phase === 'missing_source') {
-    return (
-      <StatusNote>
-        Authorised attachment content is missing. Filenames are not document bytes.
-        {session.missing.length ? ` Missing: ${session.missing.join(', ')}.` : ''}
-      </StatusNote>
-    );
-  }
-  if (session.phase === 'failed') {
-    return <StatusNote>{session.errorMessage ?? 'Analysis failed.'}</StatusNote>;
   }
   if (session.phase === 'unsupported') {
     return <StatusNote>{session.errorMessage ?? 'Unsupported request.'}</StatusNote>;
@@ -111,17 +119,33 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'non_quote') {
     return <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>;
   }
-  if (session.phase === 'idle') {
-    return <StatusNote>Select an inbound email in Outlook to analyse quote requirements.</StatusNote>;
-  }
 
-  const booked = allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id)));
-  const distinctKeys = new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey));
-  const jointUnknown = distinctKeys.size > 1;
+  const openItems = openReviewItems(session);
+  const handledItems = (session.reviewItems ?? []).filter(
+    (item) => notNoise(item) && (session.handledReviewItemIds ?? []).includes(item.id),
+  );
+  const authorizedPartial = Boolean(session.binding) && (session.phase === 'failed' || session.phase === 'missing_source' || session.phase === 'analysing');
+  const showWorkspace = !hideQuoteWorkspace(session.phase);
+  const showReply =
+    Boolean(session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) || authorizedPartial || openItems.length);
+
+  if (session.phase === 'analysing' && !session.groups.length && !openItems.length) {
+    return <StatusNote>Analysing selected email and authorised thread sources…</StatusNote>;
+  }
 
   return (
     <div className="flex flex-col gap-3">
-      {session.errorMessage ? <StatusNote>{session.errorMessage}</StatusNote> : null}
+      {session.phase === 'analysing' ? (
+        <StatusNote>Analysing selected email and authorised thread sources…</StatusNote>
+      ) : null}
+      {session.phase === 'failed' ? <StatusNote>{session.errorMessage ?? 'Analysis failed.'}</StatusNote> : null}
+      {session.phase === 'missing_source' ? (
+        <StatusNote>
+          Authorised attachment content is missing. Filenames are not document bytes.
+          {session.missing.length ? ` Missing: ${session.missing.join(', ')}.` : ''}
+        </StatusNote>
+      ) : null}
+      {session.errorMessage && session.phase !== 'failed' ? <StatusNote>{session.errorMessage}</StatusNote> : null}
       {session.mailboxStatus && session.mailboxStatus !== 'ready' ? (
         <StatusNote>
           {session.mailboxStatus === 'unsynced'
@@ -131,8 +155,15 @@ export function QuoteWorkflowPanel({
               : 'Mailbox quoteWorkflow.analyseSelection client is not bound. Local regex preview below is not the AI reservationist.'}
         </StatusNote>
       ) : null}
-      {session.analysis?.secondaryAsks.length ? (
-        <StatusNote>Secondary questions preserved: {session.analysis.secondaryAsks.join(' · ')}</StatusNote>
+      {showWorkspace ? (
+        <ItemsForYou
+          openItems={openItems}
+          handledItems={handledItems}
+          onViewSource={onViewSource}
+          onEditReply={onEditReply}
+          onHandle={onHandleReviewItem}
+          onUndo={onUndoReviewItem}
+        />
       ) : null}
       {session.analysis?.alternatives.length ? (
         <StatusNote>Requested alternatives preserved: {session.analysis.alternatives.join(', ')}</StatusNote>
@@ -140,18 +171,21 @@ export function QuoteWorkflowPanel({
       {session.groups.map((group, index) => (
         <RequirementCard key={group.id} group={group} index={index} onPatch={onPatchGroup} />
       ))}
-      <ToolStepList
-        steps={session.steps}
-        runningStepId={session.runningStepId}
-        onRunNext={onRunNext}
-        onRunStep={onRunStep}
-      />
+      {session.phase !== 'failed' && session.phase !== 'missing_source' ? (
+        <ToolStepList
+          steps={session.steps}
+          runningStepId={session.runningStepId}
+          onRunNext={onRunNext}
+          onRunStep={onRunStep}
+        />
+      ) : null}
       {session.offers.length ? (
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Results</h3>
           <p className="text-[11px] text-[#64748b]">
-            Selected allocation total {money(booked)}. Alternatives are not summed as if booked.
-            {jointUnknown
+            Selected allocation total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
+            Alternatives are not summed as if booked.
+            {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
               ? ' Separate date searches do not prove joint availability.'
               : ''}
           </p>
@@ -165,7 +199,7 @@ export function QuoteWorkflowPanel({
           ))}
         </section>
       ) : null}
-      {session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) ? (
+      {showReply ? (
         <DocumentReview session={session} onReplyChange={onReplyChange} onPreparePdf={onPreparePdf} />
       ) : null}
     </div>

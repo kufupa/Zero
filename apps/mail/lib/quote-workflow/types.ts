@@ -46,11 +46,41 @@ export type StayGroupRequirement = {
   fields: Record<string, FactProvenance>;
 };
 
+export type QuoteReviewItemKind =
+  | 'pricing_fact'
+  | 'document_failure'
+  | 'question'
+  | 'analysis_failure'
+  | 'signature_noise';
+
+export type QuoteReviewItemRank = 'pricing' | 'unread_source' | 'secondary';
+
+export type QuoteDocumentFailure = {
+  filename: string;
+  reason: string;
+  sourceKind: 'attachment' | 'email';
+  sourceRef?: string;
+};
+
+export type QuoteReviewItem = {
+  id: string;
+  kind: QuoteReviewItemKind;
+  rank: QuoteReviewItemRank;
+  text: string;
+  sourceLabel: string;
+  sourceRef?: string;
+  filename?: string;
+  reason?: string;
+  blocking: boolean;
+  positivelyIdentifiedNoise?: boolean;
+};
+
 export type QuoteAnalysis = {
   intent: QuoteIntent;
   groups: StayGroupRequirement[];
   secondaryAsks: string[];
   alternatives: string[];
+  reviewItems?: QuoteReviewItem[];
 };
 
 export type QuoteOfferKind = 'allocation' | 'alternative';
@@ -161,6 +191,8 @@ export type QuoteSession = {
   mailboxStatus: QuoteMailboxStatus | null;
   evidence: QuoteEvidenceProvenance | null;
   partyLookup: PartyLookupRef | null;
+  reviewItems: QuoteReviewItem[];
+  handledReviewItemIds: string[];
 };
 
 export type QuoteSessionAction =
@@ -168,8 +200,11 @@ export type QuoteSessionAction =
   | { type: 'analysis_started' }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
   | { type: 'analysis_unsynced' }
-  | { type: 'analysis_missing_source'; missing: string[] }
+  | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }
   | { type: 'analysis_failed'; message: string }
+  | { type: 'handle_review_item'; itemId: string }
+  | { type: 'unhandle_review_item'; itemId: string }
+  | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
   | {

@@ -28,6 +28,11 @@ function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSe
     return reduceQuoteSession(session, {
       type: 'analysis_missing_source',
       missing: fixture.missing ?? [],
+      documents: (fixture.attachmentFilenamesOnly ?? []).map((filename) => ({
+        filename,
+        reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+        sourceKind: 'attachment' as const,
+      })),
     });
   }
   if (fixture.phase === 'unsupported') {
@@ -61,11 +66,11 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText(/not synced/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('attachment-dependent')} />);
-    expect(screen.getByText(/authorised attachment content is missing/i)).toBeDefined();
+    expect(screen.getAllByText(/authorised attachment content is missing/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/rooming-list\.pdf is the document/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('source-failure')} />);
-    expect(screen.getByText(/Source failed/i)).toBeDefined();
+    expect(screen.getAllByText(/Source failed/i).length).toBeGreaterThan(0);
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('unsupported')} />);
     expect(screen.getByText(/Unsupported request/i)).toBeDefined();
@@ -210,5 +215,113 @@ describe('QuoteWorkflowPanel', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+  });
+
+  it('hides Items for you on a clean quote and on unsynced mail', () => {
+    render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} />);
+    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
+    cleanup();
+    render(<QuoteWorkflowPanel session={{ ...initialQuoteSession(), phase: 'unsynced' }} />);
+    expect(screen.getByText(/not synced/i)).toBeDefined();
+    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.queryByLabelText(/Arrival/i)).toBeNull();
+    expect(screen.queryByLabelText('Reviewed reply')).toBeNull();
+  });
+
+  it('shows the actual question, filename+reason, handle/undo, and partial-failure reply', () => {
+    const onHandle = vi.fn();
+    const onUndo = vi.fn();
+    const onViewSource = vi.fn();
+    const onEditReply = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('missing-fields')}
+        onHandleReviewItem={onHandle}
+        onUndoReviewItem={onUndo}
+        onViewSource={onViewSource}
+        onEditReply={onEditReply}
+      />,
+    );
+    expect(screen.getByLabelText('Items for you')).toBeDefined();
+    expect(screen.getByText('How many children, and what ages?')).toBeDefined();
+    expect(screen.getByText('Arrival date is missing for stay group g1.')).toBeDefined();
+    expect(screen.getByText('Needs a reply, not a pricing approval')).toBeDefined();
+    expect(screen.getAllByText('Pricing block — correct the stay facts').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Mark handled: How many children, and what ages?' }));
+    expect(onHandle).toHaveBeenCalledWith('question:how many children, and what ages?');
+    fireEvent.click(screen.getByRole('button', { name: 'View source for How many children, and what ages?' }));
+    expect(onViewSource).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit reply for How many children, and what ages?' }));
+    expect(onEditReply).toHaveBeenCalled();
+    expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
+    expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
+    cleanup();
+
+    const missing = sessionFromFixture('attachment-dependent');
+    render(<QuoteWorkflowPanel session={missing} />);
+    expect(screen.getByText('rooming-list.pdf')).toBeDefined();
+    expect(screen.getAllByText(/Authorised attachment content is missing/i).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
+    cleanup();
+
+    const failed = sessionFromFixture('source-failure');
+    render(<QuoteWorkflowPanel session={failed} />);
+    expect(screen.getAllByText(/Source failed/i).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
+    cleanup();
+
+    const handled = sessionFromFixture('missing-fields');
+    handled.handledReviewItemIds = ['question:how many children, and what ages?'];
+    render(<QuoteWorkflowPanel session={handled} onUndoReviewItem={onUndo} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo mark handled: How many children, and what ages?' }));
+    expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
+  });
+
+  it('does not show signature noise and does not let a secondary ask disable an authorised PDF', () => {
+    const noisy = sessionFromFixture('public-single');
+    noisy.reviewItems = [
+      {
+        id: 'noise-sig',
+        kind: 'signature_noise',
+        rank: 'unread_source',
+        text: 'Hotel logo.png',
+        sourceLabel: 'Signature',
+        blocking: false,
+        positivelyIdentifiedNoise: true,
+      },
+      {
+        id: 'q-shuttle',
+        kind: 'question',
+        rank: 'secondary',
+        text: 'Is an airport shuttle available?',
+        sourceLabel: 'Selected message',
+        blocking: false,
+      },
+    ];
+    render(<QuoteWorkflowPanel session={noisy} />);
+    expect(screen.queryByText('Hotel logo.png')).toBeNull();
+    expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
+    cleanup();
+    const ready = {
+      ...sessionFromFixture('public-single'),
+      evidence: { kind: 'authorised' as const, selectionEpoch: 1, inputRevision: 1 },
+      selectedOfferIds: ['pub-1'],
+      reviewedReplyHtml: '<p>Full staff-edited reply</p>',
+      reviewItems: [
+        {
+          id: 'q-shuttle',
+          kind: 'question' as const,
+          rank: 'secondary' as const,
+          text: 'Is an airport shuttle available?',
+          sourceLabel: 'Selected message',
+          blocking: false,
+        },
+      ],
+    };
+    render(<QuoteWorkflowPanel session={ready} />);
+    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 });

@@ -60,8 +60,9 @@ export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {
   const alternatives: string[] = [];
   if (/\broom[- ]?only|\bRO\b/i.test(admittedText)) alternatives.push('RO');
   if (/\bB&B\b|\bbed and breakfast|\bBB\b/i.test(admittedText)) alternatives.push('BB');
-  const secondaryAsks: string[] = [];
-  if (/\bparking\b/i.test(admittedText)) secondaryAsks.push('parking');
+  const secondaryAsks = [...admittedText.matchAll(/[^.?\n]*\b(parking|shuttle|airport)\b[^.?\n]*[?]?/gi)]
+    .map((match) => match[0].replace(/\s+/g, ' ').trim())
+    .filter((clause) => clause.length >= 8 && (/[?]/.test(clause) || /^(is |are |can |could |please |how |what )/i.test(clause)));
   const group: StayGroupRequirement = {
     id: 'g1',
     arrivalDate,

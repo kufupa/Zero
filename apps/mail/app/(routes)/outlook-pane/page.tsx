@@ -298,6 +298,9 @@ export default function OutlookPanePage() {
       }
       if (remote.kind === 'missing_source') {
         dispatchQuote({ type: 'mailbox_status', status: 'missing_source' });
+        if (remote.documents.length) {
+          dispatchQuote({ type: 'review_documents_failed', documents: remote.documents });
+        }
         return;
       }
       dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
@@ -1136,6 +1139,16 @@ export default function OutlookPanePage() {
                 dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
               }
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
+              onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
+              onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
+              onViewSource={(item) => {
+                toast.message(
+                  item.filename
+                    ? `See selected Outlook message attachment ${item.filename}. Filenames are not document bytes.`
+                    : 'See the selected Outlook message for the source clause.',
+                );
+              }}
               onPreparePdf={() => {
                 if (!canCreatePdf(quoteSession)) {
                   toast.warning('Select an authorised allocation with source evidence before generating a PDF.');

@@ -5,6 +5,7 @@ import {
   bindRunStep,
   quoteWorkflowFromTrpc,
   QUOTE_WORKFLOW_BIND_TARGETS,
+  STAFF_QUOTE_PILOT_MISSING,
 } from '../lib/quote-workflow/backend-bind';
 
 describe('quote workflow backend bind', () => {
@@ -259,6 +260,83 @@ describe('quote workflow backend bind', () => {
         centsReconciled: true,
       },
     });
+  });
+
+  it('names the unpublished U1/U2 contract instead of guessing enqueueHmsRead or minting centsReconciled', () => {
+    expect(STAFF_QUOTE_PILOT_MISSING.handoffFile).toBe(
+      'docs/plans/handoff-reports/2026-10-06-staff-quote-pilot-backend-handoff.md',
+    );
+    expect(STAFF_QUOTE_PILOT_MISSING.reviewProjection).toMatch(/source-bound review-item DTO/);
+    expect(STAFF_QUOTE_PILOT_MISSING.approvedInputExecution).toMatch(/not enqueueHmsRead/);
+    expect(STAFF_QUOTE_PILOT_MISSING.qualifiedArtifactRefs).toMatch(/must not mint centsReconciled:true/);
+  });
+
+  it('passes through published reviewItems and named documentFailures only', async () => {
+    const reviewItems = [
+      {
+        id: 'q-shuttle',
+        kind: 'question' as const,
+        rank: 'secondary' as const,
+        text: 'Is an airport shuttle available?',
+        sourceLabel: 'Selected message',
+        blocking: false,
+      },
+    ];
+    const ready = await bindAnalyseSelection({
+      mutate: vi.fn(async () => ({
+        status: 'ready' as const,
+        intent: 'quote' as const,
+        groups: [],
+        secondaryAsks: ['Is an airport shuttle available?'],
+        alternatives: [],
+        sourceRevision: 4,
+        reviewItems,
+      })),
+      input: { storeId: 'store-1', entryId: '001', folderEntryId: 'folder-inbox', selectionEpoch: 1 },
+    });
+    expect(ready).toEqual({
+      kind: 'ready',
+      sourceRevision: 4,
+      analysis: {
+        intent: 'quote',
+        groups: [],
+        secondaryAsks: ['Is an airport shuttle available?'],
+        alternatives: [],
+        reviewItems,
+      },
+    });
+
+    const missing = await bindAnalyseSelection({
+      mutate: vi.fn(async () => ({
+        status: 'missing_source' as const,
+        missing: ['att-1'],
+        documentFailures: [
+          {
+            filename: 'rooming-list.pdf',
+            reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+            sourceKind: 'attachment' as const,
+          },
+        ],
+      })),
+      input: { storeId: 'store-1', entryId: '001', folderEntryId: 'folder-inbox', selectionEpoch: 1 },
+    });
+    expect(missing).toEqual({
+      kind: 'missing_source',
+      missing: ['att-1'],
+      documents: [
+        {
+          filename: 'rooming-list.pdf',
+          reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
+          sourceKind: 'attachment',
+        },
+      ],
+    });
+
+    const unnamed = await bindAnalyseSelection({
+      mutate: vi.fn(async () => ({ status: 'missing_source' as const, missing: ['att-1'] })),
+      input: { storeId: 'store-1', entryId: '001', folderEntryId: 'folder-inbox', selectionEpoch: 1 },
+    });
+    expect(unnamed).toEqual({ kind: 'missing_source', missing: ['att-1'], documents: [] });
   });
 
   it('does not invent a second PDF engine when qualifiedQuoteProposalPdf is absent', async () => {

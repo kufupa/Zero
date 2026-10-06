@@ -1,4 +1,4 @@
-import type { PartyLookupRef, QuoteAnalysis, QuoteOffer } from './types';
+import type { PartyLookupRef, QuoteAnalysis, QuoteDocumentFailure, QuoteOffer, QuoteReviewItem } from './types';
 
 /**
  * Existing backend APIs this quoting UI must bind to (this branch / origin/main).
@@ -30,6 +30,17 @@ export const QUOTE_WORKFLOW_BIND_TARGETS = {
   nativeAttach: 'ADD_ATTACHMENT_TO_DRAFT',
 } as const;
 
+/** U1/U2 handoff unpublished at U3 start. Do not guess enqueueHmsRead or mint centsReconciled:true. */
+export const STAFF_QUOTE_PILOT_MISSING = {
+  handoffFile: 'docs/plans/handoff-reports/2026-10-06-staff-quote-pilot-backend-handoff.md',
+  reviewProjection:
+    'source-bound review-item DTO from validated task/recovery output (analyseSelection or drafts review summary)',
+  approvedInputExecution:
+    'authorized staff-approved stay execution seam bound to mailbox/message/inputRevision/canonical request digest — not enqueueHmsRead',
+  qualifiedArtifactRefs:
+    'qualified proposal/revision/artifact references for PDF; UI must not mint centsReconciled:true or typed room prices',
+} as const;
+
 export type AnalyseSelectionInput = {
   internetMessageId?: string;
   storeId: string;
@@ -40,7 +51,7 @@ export type AnalyseSelectionInput = {
 
 export type AnalyseSelectionResult =
   | { status: 'unsynced' }
-  | { status: 'missing_source'; missing: string[] }
+  | { status: 'missing_source'; missing: string[]; documentFailures?: QuoteDocumentFailure[] }
   | {
       status: 'ready';
       intent: QuoteAnalysis['intent'];
@@ -48,6 +59,7 @@ export type AnalyseSelectionResult =
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
       alternatives: QuoteAnalysis['alternatives'];
       sourceRevision: number;
+      reviewItems?: QuoteReviewItem[];
     };
 
 export type RunStepRequest = {
@@ -118,7 +130,7 @@ function isQualifiedPdf(value: unknown): value is QualifiedProposalPdfResult {
 export type BoundAnalyse =
   | { kind: 'unavailable'; reason: string }
   | { kind: 'unsynced' }
-  | { kind: 'missing_source'; missing: string[] }
+  | { kind: 'missing_source'; missing: string[]; documents: QuoteDocumentFailure[] }
   | { kind: 'ready'; analysis: QuoteAnalysis; sourceRevision: number };
 
 export async function bindAnalyseSelection(args: {
@@ -135,7 +147,13 @@ export async function bindAnalyseSelection(args: {
   try {
     const result = await args.mutate(args.input);
     if (result.status === 'unsynced') return { kind: 'unsynced' };
-    if (result.status === 'missing_source') return { kind: 'missing_source', missing: result.missing };
+    if (result.status === 'missing_source') {
+      return {
+        kind: 'missing_source',
+        missing: result.missing,
+        documents: Array.isArray(result.documentFailures) ? result.documentFailures : [],
+      };
+    }
     return {
       kind: 'ready',
       sourceRevision: result.sourceRevision,
@@ -144,6 +162,7 @@ export async function bindAnalyseSelection(args: {
         groups: result.groups,
         secondaryAsks: result.secondaryAsks,
         alternatives: result.alternatives,
+        ...(result.reviewItems?.length ? { reviewItems: result.reviewItems } : {}),
       },
     };
   } catch (error) {

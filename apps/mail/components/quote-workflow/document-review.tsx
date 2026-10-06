@@ -18,18 +18,13 @@ export function DocumentReview({
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         Complete reply (staff-editable)
         <textarea
+          id="quote-reviewed-reply"
           aria-label="Reviewed reply"
           className="outline-hidden min-h-28 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
           value={session.reviewedReplyHtml}
           onChange={(event) => onReplyChange?.(event.target.value)}
         />
       </label>
-      {session.analysis?.secondaryAsks.length ? (
-        <p className="text-[11px] text-amber-800">
-          Secondary questions still need answers in this reply:{' '}
-          {session.analysis.secondaryAsks.join(' · ')}
-        </p>
-      ) : null}
       <button
         type="button"
         disabled={!pdfReady}
