@@ -2,10 +2,10 @@
 
 **Worktree:** `/home/ubuntu/projects/zero/.worktrees/reservationist-quote-ui`  
 **Branch:** `feat/reservationist-quote-ui`  
-**HEAD:** 04:14 interactive Chromium proof (hydrated QuoteWorkflowPanel, labelled mocks, not Outlook)  
+**HEAD:** `dac83c1d` + closeout ledger (04:21 harness stopped)  
 **Base:** `origin/main` `2e3f1b3f` (PR #28 mailbox history/live-sync)  
 **Forbidden tree:** `/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools` (`feat/reservationist-backtest`) — **not edited by this executor**  
-**Verdict:** Bounded HITL quoting UI. Production does **not** synthesize offers/PDF or execute PMS. **Not live-ready.** No merge, deploy, send, or PMS in this window.
+**Verdict:** Independent **UI checkpoint complete**. Live AI / S3 / PMS / qualified PDF / Windows Outlook still **unavailable**. **Not product-ready.** Do **not** mark the original overnight product goal complete. No merge, deploy, send, or PMS in this window.
 
 ## 1. Overlapping paths vs sibling
 
@@ -126,4 +126,12 @@ Rejected `analyseSelection` / `runStep` / `qualifiedProposalPdf` mutate → type
 - `apps/mail/tests/browser-quote-workflow/interactive-pane-receipt.json`
 - `apps/mail/tests/browser-quote-workflow/capture-interactive-pane.mjs`
 
-Earlier 23:40:57Z “94 green” and 02:09:50Z “95 green” are **not** this HEAD (those still synthesized fixtures).
+## 7. Checkpoint close (04:21)
+
+Independent UI scope for this branch is **done**: HITL pane, no fixture synthesis on production, request-bound PDF/unavailable, hydrated Chromium proof with labelled mocks.
+
+Still **unavailable** (not this checkpoint): live reservationist/AI, S3 attachment bytes, PMS/`enqueueHmsRead`, `qualifiedQuoteProposalPdf`, Windows Classic Outlook native insert.
+
+Owned Vite 2628921/2628933 + esbuild 2628946 stopped. Port 4181 closed. `styled-pane.html` ignored, not deleted. Working tree recorded after this ledger commit.
+
+**Do not ship. Do not merge. Product goal remains open.**

@@ -9,13 +9,13 @@
 | Start | 2026-10-05T23:12:03Z |
 | Deadline | 2026-10-06T07:12:03Z |
 | Stop launching long tasks | 2026-10-06T06:57:03Z |
-| Last update | 2026-10-06T04:14:04Z |
+| Last update | 2026-10-06T04:20:45Z |
 
 Do not treat the 23:42 ledger “94 green” as current. That run is **earlier green** at 23:40:57Z, before RATE_TABLE native-PDF removal.
 
 ## Current task
 
-04:03 interactive browser proof **closed**. Vite + cached Chromium-1243 hydrated production `QuoteWorkflowPanel` with labelled MOCK adapter. Adults edit → React payload; per-step Run → unavailable (no offers/PDF/native); same-date two-group select `mix-a`+`mix-b`. **Browser UI, not Outlook.** `styled-pane.html` gitignored in place. No further feature work. **Not live-ready.**
+04:03 interactive browser proof **closed**. 04:21 harness closeout: owned Vite/browser/ports gone. Independent UI scope done. Live AI/S3/PMS/PDF/Windows still unavailable. **Not product-ready.** No further feature work.
 
 ## Completed evidence
 
@@ -53,7 +53,7 @@ None for UI. Live PMS owner is the other executor. No disposable DB verified for
 
 ## Owned processes / ports
 
-None.
+None. Closeout 04:20:45Z: TERM 2628921 (pnpm vite `--config tests/browser-quote-workflow/vite.interactive-pane.config.ts`, cwd quote-ui `apps/mail`), child 2628933 (`127.0.0.1:4181`), esbuild 2628946. After: all gone, 4181/9230/9229 closed. No chrome leftover. Receipt `/tmp/quote-ui-harness-closeout-0421.txt`.
 
 ## Time spent
 
