@@ -122,7 +122,27 @@ test('--stop-before availability fills stay fields only', () => {
   assert.equal(actions.includes('firstName'), false);
   assert.equal(actions.includes('checkAvailability'), false);
   assert.equal(actions.includes('save'), false);
-  assert.equal(parseStopBefore(['--stop-before', 'save']).ok, false);
+});
+
+test('--stop-before save previews availability and does not Save Record', () => {
+  const parsed = parseStopBefore(['--request', 'x.json', '--stop-before', 'save']);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.stopBefore, 'save');
+  const actions = stayActions(parsed.stopBefore);
+  assert.equal(actions.includes('firstName'), true);
+  assert.equal(actions.includes('lastName'), true);
+  assert.equal(actions.includes('checkAvailability'), true);
+  assert.equal(actions.includes('availability.png'), true);
+  assert.equal(actions.includes('save'), false);
+});
+
+test('--pane-commit saves without holding a preview session', () => {
+  const parsed = parseStopBefore(['--request', 'x.json', '--pane-commit']);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.stopBefore, null);
+  assert.equal(parsed.paneCommit, true);
+  const actions = stayActions(null);
+  assert.equal(actions.includes('save'), true);
 });
 
 test('missing --request fails before any browser work', async () => {
@@ -146,8 +166,16 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.match(source, /\^Search\$/);
   assert.match(source, /x-tool-close/);
   const shopReturn = source.indexOf("result.outcome = 'shop'");
+  const checkAvail = source.indexOf("clickTip(page, '^Check Availability$'");
+  const saveStop = source.indexOf("stop.stopBefore === 'save'");
   const saveClick = source.indexOf("clickTip(page, '^Save'");
+  const paneCommit = source.indexOf('stop.paneCommit');
+  const cancelClick = source.indexOf("clickTip(page, 'Cancel')");
   assert.ok(shopReturn !== -1 && saveClick !== -1 && shopReturn < saveClick);
+  assert.ok(checkAvail !== -1 && saveStop !== -1 && checkAvail < saveStop && saveStop < saveClick);
+  assert.ok(paneCommit !== -1 && cancelClick !== -1 && paneCommit < cancelClick);
+  assert.match(source, /outcome = 'previewed'/);
+  assert.match(source, /outcome = .committed./);
   assert.equal(source.includes('x-tree-expander'), false);
   assert.equal(source.includes('const LAB'), false);
   assert.equal(source.includes('Nava'), false);

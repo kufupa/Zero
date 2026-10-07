@@ -307,19 +307,36 @@ async function main() {
     }
     await clickTip(page, '^Check Availability$');
     await page.waitForTimeout(2500);
-    result.held = true;
+    result.clickedCheckAvailability = true;
+    result.held = false;
     await shot(page, dir, 'availability.png');
+    if (stop.stopBefore === 'save') {
+      result.outcome = 'previewed';
+      result.clickedSave = false;
+      result.saved = false;
+      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
+      process.stdout.write(`${result.outcome}\n`);
+      return;
+    }
     await clickTip(page, '^Save');
     await page.waitForTimeout(2500);
     const confirmation = await page.locator('input[name="confirmationnumber"]').inputValue().catch(() => '');
     result.confirmationNumber = confirmation.trim();
     result.saved = Boolean(result.confirmationNumber);
+    result.clickedSave = true;
     result.message = await readMessage(page);
     await shot(page, dir, 'saved.png');
     if (!result.saved) {
       result.outcome = 'save_failed';
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
       process.stdout.write(`${result.outcome}\n`);
+      return;
+    }
+    if (stop.paneCommit) {
+      result.cancelled = false;
+      result.outcome = 'committed';
+      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
+      process.stdout.write(`${result.outcome} ${result.confirmationNumber}\n`);
       return;
     }
     let cancelled = false;

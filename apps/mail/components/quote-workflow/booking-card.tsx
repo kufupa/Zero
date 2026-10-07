@@ -173,13 +173,29 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
           </article>
         );
       })}
-      <button
-        type="button"
-        disabled
-        className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-      >
-        Save
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled
+          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+        >
+          Preview
+        </button>
+        <button
+          type="button"
+          disabled
+          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+        >
+          Commit
+        </button>
+        <button
+          type="button"
+          disabled
+          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+        >
+          Save
+        </button>
+      </div>
       <p className="text-[11px] text-[#64748b]">Saving from the pane is coming next — copy into HMS</p>
     </section>
   );

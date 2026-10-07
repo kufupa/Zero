@@ -1,4 +1,5 @@
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
+import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -757,5 +758,54 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     cacheLoaders.promptVersion = 'prompt-h5-other';
     await analyse();
     expect(invokes).toBe(2);
+  });
+});
+
+const paneStay = {
+  firstName: 'Pat',
+  lastName: 'Labtest',
+  arrival: '2027-09-14',
+  departure: '2027-09-16',
+  adults: 1,
+  sourceOfBusiness: 'Walk in',
+  roomType: 'SUITE',
+  ratePlan: 'BAR',
+  track: 'BAR',
+  guaranteeType: 'Awaiting Voucher',
+};
+
+describe('quoteWorkflow.previewStay / commitStay', () => {
+  afterEach(() => {
+    paneStaySaveLoaders.spawn = null;
+    paneStaySaveLoaders.lock = null;
+    paneStaySaveLoaders.osressGuestDatesSearch = null;
+    paneStaySaveLoaders.enabled = null;
+  });
+
+  it('refuses preview and commit when RESERVATIONIST_PANE_SAVE is unset', async () => {
+    paneStaySaveLoaders.enabled = () => false;
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(mailboxCaller().quoteWorkflow.previewStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'pane_save_flag_off',
+    });
+    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'pane_save_flag_off',
+    });
+  });
+
+  it('commit refuses when the OSRESS guest-date reader is parked', async () => {
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.osressGuestDatesSearch = null;
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'osress_reader_parked',
+    });
   });
 });

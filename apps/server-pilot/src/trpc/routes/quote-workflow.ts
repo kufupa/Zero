@@ -18,8 +18,24 @@ import { createAzureLunaModel, LunaModelAdapter } from '../../ai/bedrock/luna.js
 import { analyseQuoteSources } from '../../ai/quote-workflow-analyse.js';
 import type { LunaAnalysis } from '../../ai/reservationist-decision.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
+import { runPaneStay } from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
+
+const paneStayInput = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  adults: z.number().int().min(0).max(16),
+  sourceOfBusiness: z.string().min(1),
+  roomType: z.string().min(1),
+  ratePlan: z.string().min(1),
+  track: z.string().min(1),
+  guaranteeType: z.string().min(1),
+  childAges: z.array(z.number().int()).max(16).optional(),
+  propertyCode: z.string().min(1).optional(),
+});
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
@@ -302,5 +318,11 @@ export const quoteWorkflowRouter = router({
       reason:
         'Live staff quote execution is workstation.executeStaffQuote. Do not call ai.enqueueHmsRead from this UI route.',
     };
+  }),
+  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
+    return runPaneStay({ mode: 'preview', stay: input });
+  }),
+  commitStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
+    return runPaneStay({ mode: 'commit', stay: input });
   }),
 });
