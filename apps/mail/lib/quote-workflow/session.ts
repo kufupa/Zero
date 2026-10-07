@@ -240,6 +240,7 @@ export function initialQuoteSession(): QuoteSession {
     bookingDraft: null,
     treatAs: null,
     staffNote: null,
+    analysisStartRevision: null,
   };
 }
 
@@ -548,14 +549,42 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'staff_note':
       return { ...session, staffNote: action.staffNote.trim() || null };
     case 'analysis_started':
-      return { ...session, phase: 'analysing', errorMessage: null };
+      return {
+        ...session,
+        phase: 'analysing',
+        errorMessage: null,
+        analysisStartRevision: session.inputRevision,
+      };
     case 'analysis_ready': {
+      const staffEditedDuringRun =
+        session.analysisStartRevision != null && session.analysisStartRevision !== session.inputRevision;
+      const loadingDone = session.phase === 'analysing' ? 'requirements' : session.phase;
+      if (staffEditedDuringRun) {
+        // Staff corrected stay fields after this run started. Keep their groups and take
+        // only the new read-out, so a late result never overwrites those edits.
+        const staffActions = action.analysis.staffActions ?? session.staffActions;
+        const reviewItems = projectQuoteReviewItems(action.analysis, session.groups, [], staffActions);
+        const sourceKey = reviewSourceKey(session);
+        const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
+        return {
+          ...session,
+          phase: loadingDone,
+          analysis: action.analysis,
+          analysisStartRevision: null,
+          staffActions,
+          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+          reviewItems,
+          handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
+        };
+      }
       if (hasStaffStayEdits(session) && !session.staffNote) {
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );
         return {
           ...session,
+          phase: loadingDone,
+          analysisStartRevision: null,
           reviewItems: projectQuoteReviewItems(
             session.analysis,
             session.groups,
@@ -571,6 +600,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
+          analysisStartRevision: null,
           analysis: action.analysis,
           groups: [],
           reviewItems: unreadItems,
@@ -592,6 +622,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return {
         ...(requirementsChanged ? clearDownstream(session) : session),
         phase: 'requirements',
+        analysisStartRevision: null,
         analysis: action.analysis,
         groups: action.analysis.groups,
         inputRevision: session.inputRevision + (requirementsChanged ? 1 : 0),

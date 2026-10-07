@@ -1842,6 +1842,47 @@ describe('quote session staff review items', () => {
   });
 });
 
+describe('Tell Luna runs racing staff stay edits', () => {
+  const twoAdultsTwoRooms = { ...quoteAnalysis.groups[0]!, adults: 2, quantity: 2 };
+
+  it('keeps stay edits made after Tell Luna was submitted while the run is in flight', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    const late = { ...quoteAnalysis, groups: [twoAdultsTwoRooms] };
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: late });
+    expect(session.groups[0]?.adults).toBe(9);
+    expect(session.groups[0]?.quantity).toBe(1);
+    expect(session.analysis).toEqual(late);
+    expect(session.phase).toBe('requirements');
+    expect(session.staffNote).toBe('2 twins');
+  });
+
+  it('applies the Tell Luna result when staff did not edit during the run', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...quoteAnalysis, groups: [twoAdultsTwoRooms] },
+    });
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.groups[0]?.quantity).toBe(2);
+    expect(session.phase).toBe('requirements');
+  });
+
+  it('finishes the loading state when a re-run after earlier stay edits applies no note', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(session.phase).toBe('requirements');
+    expect(session.groups[0]?.adults).toBe(9);
+  });
+});
+
 function lunaQuote(over: Partial<LunaAnalysisWire> = {}): LunaAnalysisWire {
   return {
     workflow: 'quote',
