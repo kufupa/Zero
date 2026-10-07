@@ -550,7 +550,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'analysis_started':
       return { ...session, phase: 'analysing', errorMessage: null };
     case 'analysis_ready': {
-      if (hasStaffStayEdits(session)) {
+      if (hasStaffStayEdits(session) && !session.staffNote) {
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );

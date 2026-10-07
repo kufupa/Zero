@@ -69,6 +69,11 @@ export function paneStaySaveEnabled(env: NodeJS.Dict<string> = process.env): boo
   return env.RESERVATIONIST_PANE_SAVE === 'on';
 }
 
+export function paneStayRequestBody(stay: PaneStay): Omit<PaneStay, 'propertyCode'> {
+  const { propertyCode: _ignored, ...request } = stay;
+  return request;
+}
+
 export function assertLabStayGuard(input: {
   lastName: string;
   arrivalDate?: string;
@@ -86,7 +91,7 @@ export function assertLabStayGuard(input: {
 async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-stay-'));
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, JSON.stringify(input.stay));
+  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)));
   const args = [CREATE_LAB_STAY, '--request', requestPath];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
@@ -163,6 +168,9 @@ export async function runPaneStay(input: {
       paneCommit: input.mode === 'commit',
     }),
   );
+  if (/^refused/i.test(spawned.outcome)) {
+    return { status: 'refused', reason: spawned.outcome };
+  }
   return {
     status: 'ok',
     outcome: spawned.outcome,

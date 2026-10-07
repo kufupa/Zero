@@ -15,6 +15,7 @@ import {
   buildQuoteStepInputs,
   staffSourceReady,
   analysisRetryKey,
+  hasStaffStayEdits,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type {
@@ -1461,6 +1462,23 @@ describe('quote session staff review items', () => {
     expect(analysisRetryKey('sel|1|1', 'requirements', undefined, null, '4 twins at R1800')).toBe(
       'sel|1|1|note:4 twins at R1800',
     );
+  });
+
+  it('applies Tell Luna analysis even after staff stay edits', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    expect(hasStaffStayEdits(session)).toBe(true);
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...quoteAnalysis.groups[0]!, adults: 2, quantity: 2 }],
+      },
+    });
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.groups[0]?.quantity).toBe(2);
+    expect(session.staffNote).toBe('2 twins');
   });
 
   it('re-runs analysis when staff treat-as quote or booking', () => {

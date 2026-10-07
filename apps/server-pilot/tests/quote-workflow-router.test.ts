@@ -666,6 +666,26 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     }
   });
 
+  it('does not cache regex_fallback so a later Luna call can recover', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    const first = await analyse();
+    expect(first).toMatchObject({ source: 'regex_fallback' });
+    let invokes = 0;
+    cacheLoaders.llmEnabled = () => true;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+        };
+      },
+    };
+    const second = await analyse();
+    expect(invokes).toBe(1);
+    expect(second).toMatchObject({ source: 'luna' });
+  });
+
   it('does not reuse cache when the staff note changes', async () => {
     let invokes = 0;
     cacheLoaders.adapter = {

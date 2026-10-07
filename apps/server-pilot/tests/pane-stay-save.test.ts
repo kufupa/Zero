@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertLabStayGuard,
+  paneStayRequestBody,
   paneStaySaveEnabled,
   paneStaySaveLoaders,
   runPaneStay,
@@ -57,6 +58,26 @@ describe('pane stay save guards', () => {
     await expect(runPaneStay({ mode: 'commit', stay: labStay })).resolves.toMatchObject({
       status: 'refused',
       reason: 'pane_save_flag_off',
+    });
+  });
+
+  it('omits propertyCode from the CLI request body', () => {
+    expect(paneStayRequestBody({ ...labStay, propertyCode: 'HRCEN' })).not.toHaveProperty(
+      'propertyCode',
+    );
+  });
+
+  it('treats a refused CLI outcome as refused, not ok', async () => {
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'refused_save_blank_required',
+      clickedSave: false,
+      confirmationNumber: '',
+    });
+    await expect(runPaneStay({ mode: 'preview', stay: labStay })).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'refused_save_blank_required',
     });
   });
 

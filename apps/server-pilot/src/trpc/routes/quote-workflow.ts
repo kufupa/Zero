@@ -246,7 +246,7 @@ export const quoteWorkflowRouter = router({
           : null;
       if (cacheFile) {
         const hit = await readAnalyseCache(cacheFile);
-        if (hit && hit.status === 'ready') {
+        if (hit && hit.status === 'ready' && hit.source === 'luna') {
           return { ...hit, sourceRevision: input.selectionEpoch };
         }
       }
@@ -307,8 +307,12 @@ export const quoteWorkflowRouter = router({
                 sourceRevision: input.selectionEpoch,
               };
             })();
-      if (cacheFile && cacheDir) {
-        await writeAnalyseCache(cacheDir, cacheFile, payload);
+      if (cacheFile && cacheDir && payload.source === 'luna') {
+        try {
+          await writeAnalyseCache(cacheDir, cacheFile, payload);
+        } catch {
+          /* analysis still returns; cache is best-effort */
+        }
       }
       return payload;
     }),
