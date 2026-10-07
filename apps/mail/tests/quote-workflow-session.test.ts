@@ -1450,9 +1450,77 @@ describe('quote session staff review items', () => {
   it('starts with a null bookingDraft and clears it downstream', () => {
     expect(initialQuoteSession().bookingDraft).toBeNull();
     let s = analysisReady();
-    s = { ...s, bookingDraft: { placeholder: true } };
+    s = {
+      ...s,
+      bookingDraft: {
+        draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+        options: { track: [], sourceOfBusiness: [], guaranteeType: [] },
+        messageId: 'mail-1',
+        selectionEpoch: 1,
+        inputRevision: 1,
+      },
+    };
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
     expect(s.bookingDraft).toBeNull();
+  });
+
+  it('accepts a matching booking_draft_ready and ignores a stale selectionEpoch', () => {
+    const payload = {
+      draft: {
+        rooms: [
+          {
+            groupId: 'g1',
+            roomIndex: 1,
+            request: { agency: 'XYZ TRAVEL', roomType: 'STQN', ratePlan: 'TAXYZ' },
+            schemaErrors: [] as string[],
+          },
+        ],
+        rateCheck: [],
+        missing: [],
+        flags: [] as string[],
+      },
+      options: { track: ['BAR'], sourceOfBusiness: ['Travel Agent'], guaranteeType: ['Guaranteed By Agent'] },
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+    };
+    let s = analysisReady();
+    s = withStaffSource(s);
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer: { ...authorisedOffer, id: 'rev-1', sourceRef: 'rev-1', nightly: [], stayTotalMinor: 850000 },
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader: emptyHeader(),
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    const stale = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload: { ...payload, selectionEpoch: 9 },
+      sourceHash: STAFF_HASH,
+    });
+    expect(stale.bookingDraft).toBeNull();
+    const ready = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload,
+      sourceHash: STAFF_HASH,
+    });
+    expect(ready.bookingDraft?.draft.rooms).toHaveLength(1);
+    const patched = reduceQuoteSession(ready, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
+    expect(patched.bookingDraft).toBeNull();
   });
 
   it('prefills government party into company and salesStrategy when header is empty', () => {
