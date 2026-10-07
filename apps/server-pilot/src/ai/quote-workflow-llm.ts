@@ -226,7 +226,14 @@ export async function analyseQuoteSelection(input: {
     if (!parsed.success) {
       return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
     }
-    return { source: 'luna', analysis: parsed.data };
+    const sourceText = prompt.user;
+    return {
+      source: 'luna',
+      analysis: {
+        ...parsed.data,
+        evidence: parsed.data.evidence.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote)),
+      },
+    };
   } catch (error) {
     return { source: 'regex_fallback', fallbackReason: fallbackReasonFromError(error) };
   } finally {

@@ -112,10 +112,27 @@ describe('quote session', () => {
       reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() }),
       {
         type: 'analysis_ready',
-        analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] },
+        analysis: {
+          intent: 'other',
+          groups: [],
+          secondaryAsks: [],
+          alternatives: [],
+          reviewItems: [
+            {
+              id: 'unread:scan',
+              kind: 'document_failure',
+              rank: 'unread_source',
+              text: 'Attachment scan.pdf could not be read (no extractable text). Review it manually.',
+              sourceLabel: 'scan.pdf',
+              blocking: true,
+            },
+          ],
+        },
       },
     );
     expect(s.phase).toBe('non_quote');
+    expect(s.reviewItems).toHaveLength(1);
+    expect(s.reviewItems[0]?.kind).toBe('document_failure');
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {

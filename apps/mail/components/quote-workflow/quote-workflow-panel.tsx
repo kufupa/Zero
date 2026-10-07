@@ -245,6 +245,11 @@ export function QuoteWorkflowPanel({
         <WorkflowBadge analysis={session.analysis} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
         <NeedsAnswerList missing={session.analysis?.luna?.missing} />
+        {(session.reviewItems ?? [])
+          .filter((item) => item.kind === 'document_failure')
+          .map((item) => (
+            <StatusNote key={item.id}>{item.text}</StatusNote>
+          ))}
         <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>
       </div>
     );

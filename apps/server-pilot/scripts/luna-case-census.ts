@@ -642,10 +642,19 @@ async function main(): Promise<void> {
       box,
       adapter: {
         invoke: async (input: Parameters<LunaModelAdapter['invoke']>[0]) => {
-          const result = await liveAdapter.invoke(input);
-          box.usd = result.usage.estimatedCostUsd;
-          box.latencyMs = result.usage.latencyMs;
-          return result;
+          try {
+            const result = await liveAdapter.invoke(input);
+            box.usd = result.usage.estimatedCostUsd;
+            box.latencyMs = result.usage.latencyMs;
+            return result;
+          } catch (error) {
+            const usage = (error as { usage?: { estimatedCostUsd?: number; latencyMs?: number } }).usage;
+            if (usage && Number.isFinite(usage.estimatedCostUsd)) {
+              box.usd = usage.estimatedCostUsd ?? 0;
+              box.latencyMs = usage.latencyMs ?? 0;
+            }
+            throw error;
+          }
         },
       },
     };

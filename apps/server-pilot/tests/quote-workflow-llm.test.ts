@@ -230,6 +230,25 @@ describe('analyseQuoteSelection', () => {
     expect(user).toContain('4111 1111 1111 1112');
   });
 
+  it('drops evidence quotes that are not a substring of the source text', async () => {
+    const result = await analyseQuoteSelection({
+      selection,
+      adapter: fakeAdapter(
+        analysis({
+          evidence: [
+            { field: 'arrival', quote: 'arriving 12 Nov' },
+            { field: 'arrival', quote: 'invented 99 Oct stay' },
+          ],
+        }),
+      ),
+      enabled: true,
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.evidence).toEqual([{ field: 'arrival', quote: 'arriving 12 Nov' }]);
+    }
+  });
+
   it('passes two quote tasks through unchanged on a multi_date analysis', async () => {
     const payload = analysis({
       workflow: 'quote',

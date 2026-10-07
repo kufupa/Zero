@@ -99,6 +99,32 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByText(/not a quoting request/i)).toBeDefined();
   });
 
+  it('keeps unread-attachment warnings on a non_quote fallback', () => {
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      source: 'regex_fallback',
+      aiUnavailable: true,
+      luna: null,
+      reviewItems: [
+        {
+          id: 'unread:scan',
+          kind: 'document_failure',
+          rank: 'unread_source',
+          text: 'Attachment scan.pdf could not be read (no extractable text). Review it manually.',
+          sourceLabel: 'scan.pdf',
+          blocking: true,
+        },
+      ],
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(
+      screen.getByText('Attachment scan.pdf could not be read (no extractable text). Review it manually.'),
+    ).toBeDefined();
+  });
+
   it('lists conference and unread-attachment flag copy', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',

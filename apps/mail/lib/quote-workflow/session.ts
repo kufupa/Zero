@@ -489,12 +489,15 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         };
       }
       if (action.analysis.intent !== 'quote') {
+        const unreadItems = (action.analysis.reviewItems ?? []).filter(
+          (item) => item.kind === 'document_failure',
+        );
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
           analysis: action.analysis,
           groups: [],
-          reviewItems: [],
+          reviewItems: unreadItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
         };
