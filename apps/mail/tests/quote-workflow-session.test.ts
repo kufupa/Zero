@@ -15,6 +15,7 @@ import {
   buildQuoteStepInputs,
   staffSourceReady,
   analysisRetryKey,
+  hasStaffStayEdits,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type {
@@ -1451,6 +1452,45 @@ describe('quote session staff review items', () => {
     expect(analysisRetryKey('sel|1|1', 'unsynced')).toBe('sel|1|1');
     expect(analysisRetryKey('sel|1|1', 'unsynced', 4)).toBe('sel|1|1|committed:4');
     expect(analysisRetryKey('sel|1|1', 'unsynced', 5)).toBe('sel|1|1|committed:5');
+  });
+
+  it('re-runs analysis when staff submit a Tell Luna note', () => {
+    expect(initialQuoteSession().staffNote).toBeNull();
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '4 twins at R1800' });
+    expect(session.staffNote).toBe('4 twins at R1800');
+    expect(analysisRetryKey('sel|1|1', 'requirements', undefined, null, '4 twins at R1800')).toBe(
+      'sel|1|1|note:4 twins at R1800',
+    );
+  });
+
+  it('applies Tell Luna analysis even after staff stay edits', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    expect(hasStaffStayEdits(session)).toBe(true);
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...quoteAnalysis.groups[0]!, adults: 2, quantity: 2 }],
+      },
+    });
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.groups[0]?.quantity).toBe(2);
+    expect(session.staffNote).toBe('2 twins');
+  });
+
+  it('re-runs analysis when staff treat-as quote or booking', () => {
+    expect(initialQuoteSession().treatAs).toBeNull();
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    expect(session.treatAs).toBe('quote');
+    expect(analysisRetryKey('sel|1|1', 'non_quote', undefined, 'quote')).toBe(
+      'sel|1|1|treatAs:quote',
+    );
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'create_booking' });
+    expect(session.treatAs).toBe('create_booking');
   });
 
   it('starts with a null bookingDraft and clears it downstream', () => {

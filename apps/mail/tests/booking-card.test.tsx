@@ -243,6 +243,12 @@ describe('booking cards', () => {
     ).toBeDefined();
   });
 
+  it('disables Preview and Commit while pane save stays behind the flag', () => {
+    render(<QuoteWorkflowPanel session={quotedSession()} />);
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Commit' })).toHaveProperty('disabled', true);
+  });
+
   it('keeps track/source/guarantee selects local-only', () => {
     const session = quotedSession();
     render(<QuoteWorkflowPanel session={session} />);

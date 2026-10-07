@@ -16,6 +16,42 @@ import { WorkflowBadge } from './workflow-badge';
 const fieldClass =
   'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
+function TellLunaBox({
+  onStaffNote,
+}: {
+  onStaffNote?: (note: string) => void;
+}) {
+  const [note, setNote] = useState('');
+  return (
+    <form
+      className="flex flex-col gap-1.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = note.trim();
+        if (!trimmed) return;
+        onStaffNote?.(trimmed);
+      }}
+    >
+      <label className="text-[11.5px] font-semibold text-[#475569]" htmlFor="tell-luna-note">
+        Tell Luna
+      </label>
+      <textarea
+        id="tell-luna-note"
+        aria-label="Tell Luna"
+        className="min-h-[4.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] text-[#1e293b]"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+      />
+      <button
+        type="submit"
+        className="self-start rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
+      >
+        Submit note
+      </button>
+    </form>
+  );
+}
+
 function formatZarMinor(minor: number | undefined): string {
   return minor !== undefined && minor > 0 ? (minor / 100).toFixed(2).replace(/\.00$/, '') : '';
 }
@@ -298,6 +334,8 @@ export function QuoteWorkflowPanel({
   onEditReply,
   onPatchStaffHeader,
   onSelectStayKey,
+  onTreatAs,
+  onStaffNote,
 }: {
   session: QuoteSession;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
@@ -312,6 +350,8 @@ export function QuoteWorkflowPanel({
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
   onSelectStayKey?: (stayKey: string) => void;
+  onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
+  onStaffNote?: (note: string) => void;
 }) {
   if (session.phase === 'idle') {
     return <StatusNote>Select an inbound email in Outlook to analyse quote requirements.</StatusNote>;
@@ -334,6 +374,23 @@ export function QuoteWorkflowPanel({
             <StatusNote key={item.id}>{item.text}</StatusNote>
           ))}
         <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>
+        <TellLunaBox onStaffNote={onStaffNote} />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
+            onClick={() => onTreatAs?.('quote')}
+          >
+            Treat as quote
+          </button>
+          <button
+            type="button"
+            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
+            onClick={() => onTreatAs?.('create_booking')}
+          >
+            Treat as booking
+          </button>
+        </div>
       </div>
     );
   }
@@ -360,6 +417,7 @@ export function QuoteWorkflowPanel({
   return (
     <div className="flex flex-col gap-3">
       <WorkflowBadge analysis={session.analysis} />
+      <TellLunaBox onStaffNote={onStaffNote} />
       {session.phase === 'analysing' ? (
         <StatusNote>Analysing selected email and authorised thread sources…</StatusNote>
       ) : null}

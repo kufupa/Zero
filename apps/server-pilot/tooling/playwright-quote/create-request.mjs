@@ -213,19 +213,26 @@ export function refuseRateRowClick() {
 }
 
 export function parseStopBefore(argv) {
+  const paneCommit = argv.includes('--pane-commit');
   const index = argv.indexOf('--stop-before');
-  if (index === -1) return { ok: true, stopBefore: null };
+  if (index === -1) return { ok: true, stopBefore: null, paneCommit };
   const value = argv[index + 1];
-  if (value !== 'availability') {
-    return { ok: false, exitCode: 2, error: 'Required: --stop-before availability' };
+  if (value !== 'availability' && value !== 'save') {
+    return { ok: false, exitCode: 2, error: 'Required: --stop-before availability|save' };
   }
-  return { ok: true, stopBefore: 'availability' };
+  if (paneCommit) {
+    return { ok: false, exitCode: 2, error: 'Do not combine --pane-commit with --stop-before' };
+  }
+  return { ok: true, stopBefore: value, paneCommit: false };
 }
 
 const STAY_FILL = ['arrival', 'departure', 'adults', 'sourceOfBusiness', 'roomType', 'ratePlan', 'track', 'guaranteeType', 'filled.png'];
 
 export function stayActions(stopBefore) {
   if (stopBefore === 'availability') return [...STAY_FILL];
+  if (stopBefore === 'save') {
+    return [...STAY_FILL, 'firstName', 'lastName', 'checkAvailability', 'availability.png'];
+  }
   return [...STAY_FILL, 'firstName', 'lastName', 'checkAvailability', 'availability.png', 'save', 'saved.png'];
 }
 

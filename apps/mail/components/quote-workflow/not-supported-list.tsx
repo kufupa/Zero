@@ -1,7 +1,8 @@
 import type { LunaAnalysisWire } from '@/lib/quote-workflow/types';
 
 const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
-  conference_or_group: 'Conference/group request: handle manually; the facts below are extracted',
+  conference_or_group: 'Venue / DDR / delegates / packages: handle manually',
+  rooms_only_group: 'Rooms-only group: quoting with stated quantity',
   amendment_or_cancel: 'Amendment/cancellation: not supported yet',
   long_stay: 'Over 30 nights: split manually',
   discount_or_negotiation: 'Discount asked: needs your decision',

@@ -64,6 +64,12 @@ function fakeAdapter(output: unknown, seen: ModelInvokeInput[] = []): ModelAdapt
 }
 
 describe('lunaAnalysisSchema', () => {
+  it('accepts rooms_only_group as an info flag', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ flags: ['rooms_only_group'] })).flags).toEqual([
+      'rooms_only_group',
+    ]);
+  });
+
   it('accepts quote and booking workflows and rejects a ninth task', () => {
     expect(lunaAnalysisSchema.parse(analysis()).workflow).toBe('create_booking');
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'quote' })).workflow).toBe('quote');
@@ -91,10 +97,26 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/extras/i);
     expect(prompt.system).toMatch(/single room/i);
     expect(prompt.system).toMatch(/never ask for room type, board or rate/i);
+    expect(prompt.system).toMatch(/rooms-only/i);
+    expect(prompt.system).toMatch(/stated quantity|room quantity/i);
+    expect(prompt.system).toMatch(/venue/i);
+    expect(prompt.system).toMatch(/DDR/i);
+    expect(prompt.system).toMatch(/delegates/i);
+    expect(prompt.system).toMatch(/packages/i);
+    expect(prompt.system).toMatch(/rooms_only_group/);
+    expect(prompt.system).not.toMatch(
+      /Groups of 10\+ rooms, delegates or events set the conference_or_group flag/,
+    );
     expect(prompt.user).toContain('2026-10-06');
     expect(prompt.user).toContain('Earlier: we need rooms in November.');
     expect(prompt.user).toContain('Guest list: Ann, Bob');
     expect(prompt.user).toContain('rooming.pdf');
+  });
+
+  it('adds a staff treat-as-quote override to the prompt', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection, { treatAs: 'quote' });
+    expect(prompt.system).toMatch(/staff override/i);
+    expect(prompt.system).toMatch(/treat this mail as a quote/i);
   });
 });
 
@@ -234,6 +256,72 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups).toEqual([]);
   });
 
+  it('quotes a rooms-only group of 15 with quantity 15 and an info chip', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: ['rooms_only_group'],
+          groups: [{ ...group, rooms: 15, board: null }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(15);
+    expect(mapped.missing.some((item) => item.field === 'rooms_only_group')).toBe(true);
+    expect(mapped.missing.some((item) => /rooms-only|stated quantity/i.test(item.question))).toBe(
+      true,
+    );
+  });
+
+  it('quotes 10+ rooms-only groups even when Luna omits rooms_only_group', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: [],
+          groups: [{ ...group, rooms: 12 }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(12);
+    expect(mapped.missing.some((item) => item.field === 'rooms_only_group')).toBe(true);
+  });
+
+  it('staff treatAs quote keeps a venue-flagged rooms group on the quote path', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'other',
+          flags: ['conference_or_group'],
+          groups: [{ ...group, rooms: 15 }],
+        }),
+      ),
+      { treatAs: 'quote' },
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(15);
+  });
+
+  it('maps venue / DDR / delegates / packages to other with a handle-manually reason chip', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: ['conference_or_group'],
+          groups: [{ ...group, rooms: 15 }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('other');
+    expect(mapped.groups).toEqual([]);
+    expect(mapped.missing.some((item) => item.field === 'handle_manually')).toBe(true);
+    expect(
+      mapped.missing.some((item) => /venue|DDR|delegates|packages/i.test(item.question)),
+    ).toBe(true);
+  });
+
   it('never reads tasks; pane mapping is identical with or without them', () => {
     const withTasks = mapLlmDecision(
       lunaAnalysisSchema.parse(
@@ -326,6 +414,44 @@ describe('analyseQuoteSelection', () => {
     expect(result.source).toBe('luna');
     if (result.source === 'luna') {
       expect(result.analysis.evidence).toEqual([{ field: 'arrival', quote: 'arriving 12 Nov' }]);
+    }
+  });
+
+  it('puts a staff note first as top-priority evidence', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection, {
+      staffNote: 'They want 4 twins at R1800 B&B',
+    });
+    expect(prompt.user.startsWith('Staff note (top-priority evidence):')).toBe(true);
+    expect(prompt.user).toContain('They want 4 twins at R1800 B&B');
+    expect(prompt.system).toMatch(/staff note/i);
+  });
+
+  it('keeps rateClaims whose quote is a substring of the staff note', async () => {
+    const kept = {
+      kind: 'exact' as const,
+      amount: '1800',
+      currency: 'ZAR',
+      basis: 'per_room_per_night' as const,
+      taxBasis: 'gross_included' as const,
+      quote: 'R1800 B&B',
+    };
+    const result = await analyseQuoteSelection({
+      selection,
+      adapter: fakeAdapter(
+        analysis({
+          rateClaims: [kept],
+          evidence: [{ field: 'quantity', quote: '4 twins' }],
+        }),
+      ),
+      enabled: true,
+      staffNote: 'Please quote 4 twins at R1800 B&B',
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.rateClaims).toEqual([kept]);
+      expect(result.analysis.evidence).toEqual([
+        { field: 'quantity', quote: '4 twins', source: 'staff_note' },
+      ]);
     }
   });
 

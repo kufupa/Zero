@@ -54,6 +54,7 @@ export const lunaAnalysisSchema = z.object({
   flags: z.array(
     z.enum([
       'conference_or_group',
+      'rooms_only_group',
       'amendment_or_cancel',
       'long_stay',
       'discount_or_negotiation',
@@ -80,7 +81,13 @@ export const lunaAnalysisSchema = z.object({
     }),
   ),
   missing: z.array(z.object({ field: z.string(), question: z.string() })),
-  evidence: z.array(z.object({ field: z.string(), quote: z.string() })),
+  evidence: z.array(
+    z.object({
+      field: z.string(),
+      quote: z.string(),
+      source: z.enum(['staff_note']).optional(),
+    }),
+  ),
   tasks: z
     .array(
       z.object({

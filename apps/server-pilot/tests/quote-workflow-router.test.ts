@@ -1,7 +1,11 @@
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
+import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const enqueueHmsRead = vi.fn();
 
@@ -77,6 +81,8 @@ describe('quoteWorkflow.analyseSelection', () => {
     quoteWorkflowLoaders.loadSyncedSelection = null;
     quoteWorkflowLoaders.adapter = null;
     quoteWorkflowLoaders.llmEnabled = null;
+    quoteWorkflowLoaders.analyseCacheDir = null;
+    quoteWorkflowLoaders.promptVersion = null;
     enqueueHmsRead.mockReset();
   });
 
@@ -512,5 +518,339 @@ describe('quoteWorkflow.analyseSelection', () => {
     });
     expect(result.status).toBe('integration_unavailable');
     expect(enqueueHmsRead).not.toHaveBeenCalled();
+  });
+});
+
+describe('quoteWorkflow.analyseSelection file cache', () => {
+  const cacheLoaders = quoteWorkflowLoaders as typeof quoteWorkflowLoaders & {
+    analyseCacheDir: string | null;
+    promptVersion: string | null;
+  };
+
+  async function analyse() {
+    return mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 11,
+    });
+  }
+
+  beforeEach(async () => {
+    cacheLoaders.analyseCacheDir = await mkdtemp(join(tmpdir(), 'luna-analyse-'));
+    cacheLoaders.promptVersion = 'prompt-h5-test';
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    cacheLoaders.llmEnabled = () => true;
+  });
+
+  afterEach(async () => {
+    const dir = cacheLoaders.analyseCacheDir;
+    cacheLoaders.loadSyncedSelection = null;
+    cacheLoaders.adapter = null;
+    cacheLoaders.llmEnabled = null;
+    cacheLoaders.analyseCacheDir = null;
+    cacheLoaders.promptVersion = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reuses the file cache on re-click in under 1s without a second model call', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    const first = await analyse();
+    expect(invokes).toBe(1);
+    expect(first.status).toBe('ready');
+    const started = Date.now();
+    const second = await analyse();
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(invokes).toBe(1);
+    expect(second.status).toBe('ready');
+    if (first.status === 'ready' && second.status === 'ready') {
+      expect(second.source).toBe('luna');
+      expect(second.groups).toEqual(first.groups);
+    }
+    const files = await readdir(cacheLoaders.analyseCacheDir!);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/prompt-h5-test/);
+  });
+
+  it('misses the cache when the selection source changes', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await analyse();
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 3 rooms 2026-12-01 to 2026-12-03, 1 adult, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    await analyse();
+    expect(invokes).toBe(2);
+  });
+
+  it('treatAs quote remaps a venue-flagged analysis onto the quote path', async () => {
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Conference',
+      bodyText: 'Please quote 15 rooms 2026-11-12 to 2026-11-14, 1 adult, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    cacheLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          workflow: 'other',
+          flags: ['conference_or_group'],
+          groups: [{ ...quoteGroup, rooms: 15 }],
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 12,
+      treatAs: 'quote',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.intent).toBe('quote');
+      expect(result.groups[0]?.quantity).toBe(15);
+      expect(result.luna?.workflow).toBe('quote');
+    }
+  });
+
+  it('keeps treatAs quote on regex fallback', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Venue',
+      bodyText: 'DDR and conference rooms please.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 13,
+      treatAs: 'quote',
+      staffNote: '12 standard twins 12-14 Nov',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.intent).toBe('quote');
+      expect(result.workflow).toBe('quote');
+    }
+  });
+
+  it('does not cache regex_fallback so a later Luna call can recover', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    const first = await analyse();
+    expect(first).toMatchObject({ source: 'regex_fallback' });
+    let invokes = 0;
+    cacheLoaders.llmEnabled = () => true;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+        };
+      },
+    };
+    const second = await analyse();
+    expect(invokes).toBe(1);
+    expect(second).toMatchObject({ source: 'luna' });
+  });
+
+  it('does not reuse cache when the staff note changes', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 14,
+      staffNote: 'first note',
+    });
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 15,
+      staffNote: 'second note',
+    });
+    expect(invokes).toBe(2);
+  });
+
+  it('does not reuse an auto cache entry for a treatAs quote click', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput({ workflow: 'other', flags: ['conference_or_group'] }),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await analyse();
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 13,
+      treatAs: 'quote',
+    });
+    expect(invokes).toBe(2);
+  });
+
+  it('misses the cache when promptVersion changes', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await analyse();
+    cacheLoaders.promptVersion = 'prompt-h5-other';
+    await analyse();
+    expect(invokes).toBe(2);
+  });
+});
+
+const paneStay = {
+  firstName: 'Pat',
+  lastName: 'Labtest',
+  arrival: '2027-09-14',
+  departure: '2027-09-16',
+  adults: 1,
+  sourceOfBusiness: 'Walk in',
+  roomType: 'SUITE',
+  ratePlan: 'BAR',
+  track: 'BAR',
+  guaranteeType: 'Awaiting Voucher',
+};
+
+describe('quoteWorkflow.previewStay / commitStay', () => {
+  afterEach(() => {
+    paneStaySaveLoaders.spawn = null;
+    paneStaySaveLoaders.lock = null;
+    paneStaySaveLoaders.osressGuestDatesSearch = null;
+    paneStaySaveLoaders.enabled = null;
+  });
+
+  it('refuses preview and commit when RESERVATIONIST_PANE_SAVE is unset', async () => {
+    paneStaySaveLoaders.enabled = () => false;
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(mailboxCaller().quoteWorkflow.previewStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'pane_save_flag_off',
+    });
+    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'pane_save_flag_off',
+    });
+  });
+
+  it('commit refuses when the OSRESS guest-date reader is parked', async () => {
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.osressGuestDatesSearch = null;
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'osress_reader_parked',
+    });
   });
 });

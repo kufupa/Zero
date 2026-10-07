@@ -199,11 +199,15 @@ export function analysisRetryKey(
   admission: string,
   phase: QuoteSession['phase'],
   syncCommitted?: number,
+  treatAs?: 'quote' | 'create_booking' | null,
+  staffNote?: string | null,
 ): string {
-  if (phase === 'unsynced' && Number.isFinite(syncCommitted)) {
-    return `${admission}|committed:${syncCommitted}`;
-  }
-  return admission;
+  const base =
+    phase === 'unsynced' && Number.isFinite(syncCommitted)
+      ? `${admission}|committed:${syncCommitted}`
+      : admission;
+  const withTreat = treatAs ? `${base}|treatAs:${treatAs}` : base;
+  return staffNote ? `${withTreat}|note:${staffNote}` : withTreat;
 }
 
 export function initialQuoteSession(): QuoteSession {
@@ -234,6 +238,8 @@ export function initialQuoteSession(): QuoteSession {
     reviewItems: [],
     handledReviewItemIds: [],
     bookingDraft: null,
+    treatAs: null,
+    staffNote: null,
   };
 }
 
@@ -537,10 +543,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         binding: action.binding,
       };
     }
+    case 'treat_as':
+      return { ...session, treatAs: action.treatAs };
+    case 'staff_note':
+      return { ...session, staffNote: action.staffNote.trim() || null };
     case 'analysis_started':
       return { ...session, phase: 'analysing', errorMessage: null };
     case 'analysis_ready': {
-      if (hasStaffStayEdits(session)) {
+      if (hasStaffStayEdits(session) && !session.staffNote) {
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );

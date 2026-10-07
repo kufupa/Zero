@@ -120,6 +120,24 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByText('Amendment/cancellation: not supported yet')).toBeDefined();
     expect(screen.getByText('Reservation number?')).toBeDefined();
     expect(screen.getByText(/not a quoting request/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Treat as booking' })).toBeDefined();
+  });
+
+  it('calls onTreatAs quote from the Other workflow actions', () => {
+    const onTreatAs = vi.fn();
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'other' }),
+    });
+    render(<QuoteWorkflowPanel session={session} onTreatAs={onTreatAs} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    expect(onTreatAs).toHaveBeenCalledWith('quote');
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as booking' }));
+    expect(onTreatAs).toHaveBeenCalledWith('create_booking');
   });
 
   it('keeps unread-attachment warnings on a non_quote fallback', () => {
@@ -159,10 +177,21 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ flags: ['conference_or_group', 'attachment_unread'] }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(
-      screen.getByText('Conference/group request: handle manually; the facts below are extracted'),
-    ).toBeDefined();
+    expect(screen.getByText('Venue / DDR / delegates / packages: handle manually')).toBeDefined();
     expect(screen.getByText("An attachment couldn't be read: open it")).toBeDefined();
+  });
+
+  it('lists rooms-only group as an info chip, not handle-manually', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [{ ...g1, quantity: 15 }],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ flags: ['rooms_only_group'] }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Rooms-only group: quoting with stated quantity')).toBeDefined();
+    expect(screen.queryByText('Venue / DDR / delegates / packages: handle manually')).toBeNull();
   });
 
   it('lists needs-your-answer questions from luna.missing', () => {
@@ -177,6 +206,38 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Guest names for room 2?')).toBeDefined();
+  });
+
+  it('labels staff-note evidence chips as staff note', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        evidence: [{ field: 'adults', quote: '2 adults from desk', source: 'staff_note' }],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('staff note')).toBeDefined();
+    expect(screen.getByText('2 adults from desk')).toBeDefined();
+  });
+
+  it('submits Tell Luna notes through onStaffNote', () => {
+    const onStaffNote = vi.fn();
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
+    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+      target: { value: '4 twins at R1800' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    expect(onStaffNote).toHaveBeenCalledWith('4 twins at R1800');
   });
 
   it('renders evidence quotes as literal text, never HTML', () => {
@@ -391,5 +452,66 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
     expect(screen.queryByDisplayValue('Stale')).toBeNull();
+  }, 15_000);
+
+  it('re-runs analyseSelection with treatAs quote from the Outlook pane', async () => {
+    analyseMutate.mockImplementation(async (input: { treatAs?: string }) => {
+      if (input.treatAs === 'quote') {
+        return {
+          status: 'ready',
+          intent: 'quote',
+          groups: [g1],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 2,
+          luna: lunaWire({ workflow: 'quote' }),
+        };
+      }
+      return {
+        status: 'ready',
+        intent: 'other',
+        groups: [],
+        secondaryAsks: [],
+        alternatives: [],
+        sourceRevision: 1,
+        luna: lunaWire({ workflow: 'other' }),
+      };
+    });
+    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
+    render(<OutlookPanePage />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    await waitFor(() => {
+      expect(
+        analyseMutate.mock.calls.some((call) => (call[0] as { treatAs?: string })?.treatAs === 'quote'),
+      ).toBe(true);
+    });
+    await waitFor(() => expect(screen.getByLabelText('Arrival')).toBeDefined());
+  }, 15_000);
+
+  it('re-runs analyseSelection with a staff note from Tell Luna', async () => {
+    analyseMutate.mockResolvedValue({
+      status: 'ready',
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
+    render(<OutlookPanePage />);
+    await waitFor(() => expect(screen.getByLabelText('Tell Luna')).toBeDefined());
+    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+      target: { value: '4 twins at R1800' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    await waitFor(() => {
+      expect(
+        analyseMutate.mock.calls.some(
+          (call) => (call[0] as { staffNote?: string })?.staffNote === '4 twins at R1800',
+        ),
+      ).toBe(true);
+    });
   }, 15_000);
 });

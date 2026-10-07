@@ -7,6 +7,7 @@ import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js'
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
+import { createHash } from 'node:crypto';
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
@@ -14,7 +15,14 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Groups of 10+ rooms, delegates or events set the conference_or_group flag. Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+
+export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
+  .update(CENTURION_HOTEL_RULES)
+  .update('\n')
+  .update(K2_MAPPING)
+  .digest('hex')
+  .slice(0, 16);
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'invalid_output' | 'disabled';
 
@@ -59,12 +67,21 @@ export function quoteWorkflowLlmEnabled(
   return Boolean(env.AZURE_OPENAI_BASE_URL && env.AZURE_FOUNDRY_API_KEY);
 }
 
-export function buildQuoteWorkflowPrompt(selection: SyncedQuoteSelection): {
+export type QuoteTreatAs = 'quote' | 'create_booking';
+
+export function buildQuoteWorkflowPrompt(
+  selection: SyncedQuoteSelection,
+  options?: { treatAs?: QuoteTreatAs; staffNote?: string },
+): {
   system: string;
   user: string;
   files: Array<{ filename: string; mediaType: string; data: Uint8Array }>;
 } {
   const parts: string[] = [];
+  const staffNote = options?.staffNote?.trim();
+  if (staffNote) {
+    parts.push(`Staff note (top-priority evidence):\n${maskCardNumbers(staffNote)}`);
+  }
   if (selection.receivedAt) {
     parts.push(`Received at: ${selection.receivedAt.slice(0, 10)}`);
   }
@@ -106,8 +123,16 @@ export function buildQuoteWorkflowPrompt(selection: SyncedQuoteSelection): {
     parts.push(`Attachments:\n${attachmentChunks.join('\n')}`);
   }
 
+  const treatAsLine = options?.treatAs
+    ? options.treatAs === 'create_booking'
+      ? 'Staff override: treat this mail as a booking. Extract stay groups and use workflow create_booking even if you would otherwise classify it as other.'
+      : 'Staff override: treat this mail as a quote. Extract stay groups and use workflow quote even if you would otherwise classify it as other.'
+    : '';
+  const staffNoteLine = staffNote
+    ? 'The staff note is a first-class evidence source. rateClaims and evidence quotes may be exact contiguous substrings of the staff note.'
+    : '';
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}`,
+    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
     user: parts.join('\n\n'),
     files,
   };
@@ -149,16 +174,38 @@ function mapStatedOrDefaultBoard(
   return board === 'dbb' ? 'dinner_bb' : board;
 }
 
+function venueOrEventManual(analysis: LunaAnalysis): boolean {
+  return analysis.flags.includes('conference_or_group');
+}
+
+function roomsOnlyInfoNeeded(analysis: LunaAnalysis): boolean {
+  return (
+    analysis.flags.includes('rooms_only_group') ||
+    analysis.groups.some((group) => (group.rooms ?? 0) >= 10)
+  );
+}
+
+const VENUE_MANUAL_QUESTION = 'Venue / DDR / delegates / packages: handle manually';
+const ROOMS_ONLY_INFO_QUESTION = 'Rooms-only group: quoting with stated quantity';
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
-export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
+export function mapLlmDecision(
+  analysis: LunaAnalysis,
+  options?: { treatAs?: QuoteTreatAs },
+): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
-  if (analysis.workflow === 'other') {
+  const staffQuote = Boolean(options?.treatAs);
+  if ((analysis.workflow === 'other' || venueOrEventManual(analysis)) && !staffQuote) {
+    const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
+    if (venueOrEventManual(analysis)) {
+      routed.unshift({ field: 'handle_manually', question: VENUE_MANUAL_QUESTION });
+    }
     return {
       intent: 'other',
       groups: [],
       secondaryAsks: [],
       alternatives: [],
-      missing: analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field)),
+      missing: routed,
     };
   }
   const groups = analysis.groups.map((group, index) => {
@@ -223,6 +270,9 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
   for (const item of analysis.missing) {
     if (!hotelDefaultedQuestion(item.field)) missing.push(item);
   }
+  if (roomsOnlyInfoNeeded(analysis)) {
+    missing.unshift({ field: 'rooms_only_group', question: ROOMS_ONLY_INFO_QUESTION });
+  }
   return { intent: 'quote', groups, secondaryAsks: [], alternatives: [], missing };
 }
 
@@ -239,13 +289,18 @@ export async function analyseQuoteSelection(input: {
   adapter: ModelAdapter | null;
   enabled: boolean;
   deadlineMs?: number;
+  treatAs?: QuoteTreatAs;
+  staffNote?: string;
 }): Promise<AnalyseQuoteSelectionResult> {
   if (!input.enabled || !input.adapter) {
     return { source: 'regex_fallback', fallbackReason: 'disabled' };
   }
   const deadlineMs = input.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const controller = new AbortController();
-  const prompt = buildQuoteWorkflowPrompt(input.selection);
+  const prompt = buildQuoteWorkflowPrompt(input.selection, {
+    treatAs: input.treatAs,
+    staffNote: input.staffNote,
+  });
   const responseSchema = zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' }) as Record<
     string,
     unknown
@@ -276,13 +331,18 @@ export async function analyseQuoteSelection(input: {
       return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
     }
     const sourceText = prompt.user;
+    const staffNote = input.staffNote?.trim() ?? '';
     const verbatim = <T extends { quote: string }>(items: T[]) =>
       items.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote));
     return {
       source: 'luna',
       analysis: {
         ...parsed.data,
-        evidence: verbatim(parsed.data.evidence),
+        evidence: verbatim(parsed.data.evidence).map((item) =>
+          staffNote && staffNote.includes(item.quote)
+            ? { ...item, source: 'staff_note' as const }
+            : item,
+        ),
         rateClaims: verbatim(parsed.data.rateClaims),
       },
     };

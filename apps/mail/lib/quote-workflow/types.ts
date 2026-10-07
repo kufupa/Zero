@@ -100,6 +100,7 @@ export type LunaAnalysisWire = {
   workflow: 'quote' | 'create_booking' | 'other';
   flags: Array<
     | 'conference_or_group'
+    | 'rooms_only_group'
     | 'amendment_or_cancel'
     | 'long_stay'
     | 'discount_or_negotiation'
@@ -132,7 +133,7 @@ export type LunaAnalysisWire = {
     quote: string;
   }>;
   missing: Array<{ field: string; question: string }>;
-  evidence: Array<{ field: string; quote: string }>;
+  evidence: Array<{ field: string; quote: string; source?: 'staff_note' }>;
   tasks: Array<{
     kind: 'quote' | 'create_booking' | 'amend' | 'cancel' | 'availability' | 'other';
     groupIndexes: number[];
@@ -370,12 +371,18 @@ export type QuoteSession = {
   handledReviewItemIds: string[];
   /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
   bookingDraft: BookingDraftReady | null;
+  /** Staff override that re-runs analyseSelection as quote or booking. */
+  treatAs: 'quote' | 'create_booking' | null;
+  /** Staff "Tell Luna" note re-submitted as top-priority evidence. */
+  staffNote: string | null;
 };
 
 export type QuoteSessionAction =
   | { type: 'reset' }
   | { type: 'selection'; binding: QuoteSelectionBinding }
   | { type: 'analysis_started' }
+  | { type: 'treat_as'; treatAs: 'quote' | 'create_booking' }
+  | { type: 'staff_note'; staffNote: string }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
   | { type: 'analysis_unsynced' }
   | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }
