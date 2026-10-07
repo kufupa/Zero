@@ -13,6 +13,7 @@ import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-
 import {
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
+  proposalFactRefsForRevision,
   quotedTotalWithStoredExtras,
   resolvePriorQuoteForBooking,
 } from '../../ai/prior-quote-booking.js';
@@ -544,7 +545,7 @@ export const workstationRouter = router({
           transportId: ctx.activeTransportId,
           messageId: input.messageId,
           revisionRef: input.revisionRef,
-          factRefs: [],
+          factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
         });
         const cloned = structuredClone(revision);
         const extraTotalMinor = quotedTotalWithStoredExtras(cloned, bound.run) - cloned.totalMinor;

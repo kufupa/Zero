@@ -3,6 +3,7 @@ import {
   analysisMatchesQuotedStay,
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
+  proposalFactRefsForRevision,
   resolvePriorQuoteForBooking,
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
@@ -270,6 +271,47 @@ describe('priorStaffQuoteRequotePayload', () => {
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
+  });
+
+  it('returns saved extras bundle refs for the matching revision', async () => {
+    const revision = await freshRevision();
+    const run = {
+      transportId: 't1',
+      threadId: 'thread-1',
+      state: 'succeeded',
+      metrics: {
+        reservationistResult: {
+          quoteRevisionIds: [revision.id],
+          quoteRevisions: [revision],
+          proposalFacts: [
+            {
+              ref: 'extras-dinner',
+              facts: {
+                revisionId: revision.id,
+                authorizationId: revision.authorizationId,
+                sourceRef: 'message:mail-1',
+                sourceHash: 'ab'.repeat(32),
+                extras: [],
+                includedEntitlements: [],
+              },
+            },
+            {
+              ref: 'extras-other',
+              facts: {
+                revisionId: 'rev-other',
+                authorizationId: revision.authorizationId,
+                sourceRef: 'message:mail-1',
+                sourceHash: 'ab'.repeat(32),
+                extras: [],
+                includedEntitlements: [],
+              },
+            },
+          ],
+        },
+      },
+    };
+    expect(proposalFactRefsForRevision(run, revision.id)).toEqual(['extras-dinner']);
+    expect(proposalFactRefsForRevision(run, 'missing')).toEqual([]);
   });
 });
 

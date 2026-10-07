@@ -96,6 +96,7 @@ import {
   bindUsePriorQuoteForBooking,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  expiredPriorQuoteNotice,
   expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
@@ -438,9 +439,8 @@ export default function OutlookPanePage() {
       }
       if (cancelled) return;
       if (!prior || prior.status !== 'ok') {
-        if (reasons.includes('scope_mismatch')) {
-          toast.warning('Stay dates do not match the earlier quote — run Quote again');
-        } else if (reasons.includes('expired') && expiredPrior) {
+        const notice = expiredPriorQuoteNotice(reasons, expiredPrior);
+        if (notice === 'requote' && expiredPrior) {
           toast.warning(expiredPriorQuoteToastMessage(), {
             action: {
               label: EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
@@ -449,6 +449,8 @@ export default function OutlookPanePage() {
               },
             },
           });
+        } else if (notice === 'mismatch') {
+          toast.warning('Stay dates do not match the earlier quote — run Quote again');
         }
         return;
       }

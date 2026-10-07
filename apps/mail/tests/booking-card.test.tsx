@@ -11,6 +11,7 @@ import {
   bindUsePriorQuoteForBooking,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  expiredPriorQuoteNotice,
   expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
@@ -374,6 +375,16 @@ describe('expired prior re-quote', () => {
   it('exposes the re-quote label and expired toast copy', () => {
     expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote same stay');
     expect(expiredPriorQuoteToastMessage()).toMatch(/expired/i);
+  });
+
+  it('prefers a matching expired quote over an unrelated stay mismatch', () => {
+    expect(
+      expiredPriorQuoteNotice(['scope_mismatch', 'expired'], {
+        workflowRunId: 'run-old',
+        revisionRef: 'rev-old',
+      }),
+    ).toBe('requote');
+    expect(expiredPriorQuoteNotice(['scope_mismatch'], null)).toBe('mismatch');
   });
 
   it('sends prior groups and party header unchanged when staff has not edited stays', () => {

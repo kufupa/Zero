@@ -251,6 +251,16 @@ export function expiredPriorQuoteToastMessage(): string {
   return 'This quote expired — re-quote the same stay or run Quote again';
 }
 
+/** Prefer a matching expired revision over unrelated stay mismatches on the same thread. */
+export function expiredPriorQuoteNotice(
+  reasons: readonly string[],
+  expiredPrior: PriorStaffQuoteRequoteRow | null,
+): 'requote' | 'mismatch' | null {
+  if (expiredPrior) return 'requote';
+  if (reasons.includes('scope_mismatch')) return 'mismatch';
+  return null;
+}
+
 /** Stay groups and party header for bindExecuteStaffQuote after an expired prior revision. */
 export function buildExpiredPriorRequoteBindArgs(args: {
   stored: PriorStaffQuoteRequotePayload;

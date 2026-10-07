@@ -134,14 +134,24 @@ function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['boar
   return 'bb';
 }
 
+function proposalBundles(run: PriorQuoteRun): Array<{ ref: string; facts: AuthorizedProposalFacts }> {
+  const result = run.metrics?.reservationistResult as
+    | { proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }> }
+    | undefined;
+  return result?.proposalFacts ?? [];
+}
+
 function proposalFactsForRevision(
   run: PriorQuoteRun,
   revisionId: string,
 ): AuthorizedProposalFacts | undefined {
-  const result = run.metrics?.reservationistResult as
-    | { proposalFacts?: Array<{ facts: AuthorizedProposalFacts }> }
-    | undefined;
-  return result?.proposalFacts?.find((row) => row.facts.revisionId === revisionId)?.facts;
+  return proposalBundles(run).find((row) => row.facts.revisionId === revisionId)?.facts;
+}
+
+export function proposalFactRefsForRevision(run: PriorQuoteRun, revisionId: string): string[] {
+  return proposalBundles(run)
+    .filter((row) => row.facts.revisionId === revisionId && row.ref)
+    .map((row) => row.ref);
 }
 
 export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQuoteRun): number {
