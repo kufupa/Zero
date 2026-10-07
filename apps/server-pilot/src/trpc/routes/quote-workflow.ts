@@ -8,6 +8,7 @@ import {
   mapLlmDecision,
   quoteWorkflowLlmEnabled,
   QUOTE_WORKFLOW_PROMPT_VERSION,
+  type QuoteTreatAs,
 } from '../../ai/quote-workflow-llm.js';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -88,11 +89,13 @@ function analyseCachePath(input: {
   sourceHash: string;
   promptVersion: string;
   cacheDir: string;
+  treatAs?: QuoteTreatAs;
 }): string {
   const id = input.internetMessageId.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+  const treat = input.treatAs ?? 'auto';
   return join(
     input.cacheDir,
-    `${id}_${input.sourceHash.slice(0, 16)}_${input.promptVersion}.json`,
+    `${id}_${input.sourceHash.slice(0, 16)}_${input.promptVersion}_${treat}.json`,
   );
 }
 
@@ -118,6 +121,7 @@ export const analyseSelectionInput = z.object({
   entryId: z.string().min(1),
   folderEntryId: z.string().min(1),
   selectionEpoch: z.number().int(),
+  treatAs: z.enum(['quote', 'create_booking']).optional(),
 });
 
 export const runStepInput = z.object({
@@ -213,6 +217,7 @@ export const quoteWorkflowRouter = router({
               sourceHash: hashSyncedQuoteSelection(synced),
               promptVersion,
               cacheDir,
+              treatAs: input.treatAs,
             })
           : null;
       if (cacheFile) {
@@ -230,6 +235,7 @@ export const quoteWorkflowRouter = router({
         adapter: resolved.adapter,
         enabled: resolved.enabled,
         deadlineMs: 25_000,
+        treatAs: input.treatAs,
       });
       const payload =
         llm.source === 'luna'
@@ -237,8 +243,12 @@ export const quoteWorkflowRouter = router({
               const flags: LunaAnalysis['flags'] = unread.length
                 ? Array.from(new Set([...llm.analysis.flags, 'attachment_unread' as const]))
                 : llm.analysis.flags;
-              const luna: LunaAnalysis = { ...llm.analysis, flags };
-              const mapped = mapLlmDecision(luna);
+              const luna: LunaAnalysis = {
+                ...llm.analysis,
+                flags,
+                ...(input.treatAs ? { workflow: input.treatAs } : {}),
+              };
+              const mapped = mapLlmDecision(luna, { treatAs: input.treatAs });
               return {
                 status: 'ready' as const,
                 intent: mapped.intent,

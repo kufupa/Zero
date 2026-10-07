@@ -298,6 +298,7 @@ export function QuoteWorkflowPanel({
   onEditReply,
   onPatchStaffHeader,
   onSelectStayKey,
+  onTreatAs,
 }: {
   session: QuoteSession;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
@@ -312,6 +313,7 @@ export function QuoteWorkflowPanel({
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
   onSelectStayKey?: (stayKey: string) => void;
+  onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
 }) {
   if (session.phase === 'idle') {
     return <StatusNote>Select an inbound email in Outlook to analyse quote requirements.</StatusNote>;
@@ -334,6 +336,22 @@ export function QuoteWorkflowPanel({
             <StatusNote key={item.id}>{item.text}</StatusNote>
           ))}
         <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
+            onClick={() => onTreatAs?.('quote')}
+          >
+            Treat as quote
+          </button>
+          <button
+            type="button"
+            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
+            onClick={() => onTreatAs?.('create_booking')}
+          >
+            Treat as booking
+          </button>
+        </div>
       </div>
     );
   }

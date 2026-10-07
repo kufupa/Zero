@@ -120,6 +120,24 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByText('Amendment/cancellation: not supported yet')).toBeDefined();
     expect(screen.getByText('Reservation number?')).toBeDefined();
     expect(screen.getByText(/not a quoting request/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Treat as booking' })).toBeDefined();
+  });
+
+  it('calls onTreatAs quote from the Other workflow actions', () => {
+    const onTreatAs = vi.fn();
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'other' }),
+    });
+    render(<QuoteWorkflowPanel session={session} onTreatAs={onTreatAs} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    expect(onTreatAs).toHaveBeenCalledWith('quote');
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as booking' }));
+    expect(onTreatAs).toHaveBeenCalledWith('create_booking');
   });
 
   it('keeps unread-attachment warnings on a non_quote fallback', () => {
@@ -402,5 +420,40 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
     expect(screen.queryByDisplayValue('Stale')).toBeNull();
+  }, 15_000);
+
+  it('re-runs analyseSelection with treatAs quote from the Outlook pane', async () => {
+    analyseMutate.mockImplementation(async (input: { treatAs?: string }) => {
+      if (input.treatAs === 'quote') {
+        return {
+          status: 'ready',
+          intent: 'quote',
+          groups: [g1],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 2,
+          luna: lunaWire({ workflow: 'quote' }),
+        };
+      }
+      return {
+        status: 'ready',
+        intent: 'other',
+        groups: [],
+        secondaryAsks: [],
+        alternatives: [],
+        sourceRevision: 1,
+        luna: lunaWire({ workflow: 'other' }),
+      };
+    });
+    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
+    render(<OutlookPanePage />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    await waitFor(() => {
+      expect(
+        analyseMutate.mock.calls.some((call) => (call[0] as { treatAs?: string })?.treatAs === 'quote'),
+      ).toBe(true);
+    });
+    await waitFor(() => expect(screen.getByLabelText('Arrival')).toBeDefined());
   }, 15_000);
 });

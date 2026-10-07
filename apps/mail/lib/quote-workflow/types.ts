@@ -371,12 +371,15 @@ export type QuoteSession = {
   handledReviewItemIds: string[];
   /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
   bookingDraft: BookingDraftReady | null;
+  /** Staff override that re-runs analyseSelection as quote or booking. */
+  treatAs: 'quote' | 'create_booking' | null;
 };
 
 export type QuoteSessionAction =
   | { type: 'reset' }
   | { type: 'selection'; binding: QuoteSelectionBinding }
   | { type: 'analysis_started' }
+  | { type: 'treat_as'; treatAs: 'quote' | 'create_booking' }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
   | { type: 'analysis_unsynced' }
   | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }

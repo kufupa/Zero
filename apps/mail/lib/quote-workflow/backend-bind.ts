@@ -40,6 +40,7 @@ export type AnalyseSelectionInput = {
   entryId: string;
   folderEntryId: string;
   selectionEpoch: number;
+  treatAs?: 'quote' | 'create_booking';
 };
 
 export type AnalyseSelectionResult =

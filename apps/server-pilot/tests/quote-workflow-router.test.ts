@@ -624,6 +624,78 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     expect(invokes).toBe(2);
   });
 
+  it('treatAs quote remaps a venue-flagged analysis onto the quote path', async () => {
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Conference',
+      bodyText: 'Please quote 15 rooms 2026-11-12 to 2026-11-14, 1 adult, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    cacheLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          workflow: 'other',
+          flags: ['conference_or_group'],
+          groups: [{ ...quoteGroup, rooms: 15 }],
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 12,
+      treatAs: 'quote',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.intent).toBe('quote');
+      expect(result.groups[0]?.quantity).toBe(15);
+      expect(result.luna?.workflow).toBe('quote');
+    }
+  });
+
+  it('does not reuse an auto cache entry for a treatAs quote click', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput({ workflow: 'other', flags: ['conference_or_group'] }),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await analyse();
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 13,
+      treatAs: 'quote',
+    });
+    expect(invokes).toBe(2);
+  });
+
   it('misses the cache when promptVersion changes', async () => {
     let invokes = 0;
     cacheLoaders.adapter = {

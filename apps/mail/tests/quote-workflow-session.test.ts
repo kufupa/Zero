@@ -1453,6 +1453,18 @@ describe('quote session staff review items', () => {
     expect(analysisRetryKey('sel|1|1', 'unsynced', 5)).toBe('sel|1|1|committed:5');
   });
 
+  it('re-runs analysis when staff treat-as quote or booking', () => {
+    expect(initialQuoteSession().treatAs).toBeNull();
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    expect(session.treatAs).toBe('quote');
+    expect(analysisRetryKey('sel|1|1', 'non_quote', undefined, 'quote')).toBe(
+      'sel|1|1|treatAs:quote',
+    );
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'create_booking' });
+    expect(session.treatAs).toBe('create_booking');
+  });
+
   it('starts with a null bookingDraft and clears it downstream', () => {
     expect(initialQuoteSession().bookingDraft).toBeNull();
     let s = analysisReady();

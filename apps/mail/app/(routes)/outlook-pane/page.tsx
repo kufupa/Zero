@@ -296,6 +296,7 @@ export default function OutlookPanePage() {
     quoteAdmissionKey,
     quoteSession.phase,
     sync.status?.committed,
+    quoteSession.treatAs,
   );
   useEffect(() => {
     const binding = quoteSession.binding;
@@ -312,6 +313,7 @@ export default function OutlookPanePage() {
         entryId: binding.entryId,
         folderEntryId: binding.folderEntryId,
         selectionEpoch,
+        ...(quoteSession.treatAs ? { treatAs: quoteSession.treatAs } : {}),
       },
     })
       .then((remote) => {
@@ -1455,6 +1457,7 @@ export default function OutlookPanePage() {
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
+              onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
               onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
               onViewSource={(item) => {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });

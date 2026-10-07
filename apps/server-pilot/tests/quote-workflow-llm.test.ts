@@ -112,6 +112,12 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('Guest list: Ann, Bob');
     expect(prompt.user).toContain('rooming.pdf');
   });
+
+  it('adds a staff treat-as-quote override to the prompt', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection, { treatAs: 'quote' });
+    expect(prompt.system).toMatch(/staff override/i);
+    expect(prompt.system).toMatch(/treat this mail as a quote/i);
+  });
 });
 
 describe('mapLlmDecision', () => {
@@ -281,6 +287,21 @@ describe('mapLlmDecision', () => {
     expect(mapped.intent).toBe('quote');
     expect(mapped.groups[0]?.quantity).toBe(12);
     expect(mapped.missing.some((item) => item.field === 'rooms_only_group')).toBe(true);
+  });
+
+  it('staff treatAs quote keeps a venue-flagged rooms group on the quote path', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'other',
+          flags: ['conference_or_group'],
+          groups: [{ ...group, rooms: 15 }],
+        }),
+      ),
+      { treatAs: 'quote' },
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(15);
   });
 
   it('maps venue / DDR / delegates / packages to other with a handle-manually reason chip', () => {

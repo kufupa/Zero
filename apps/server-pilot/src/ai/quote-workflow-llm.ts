@@ -67,7 +67,12 @@ export function quoteWorkflowLlmEnabled(
   return Boolean(env.AZURE_OPENAI_BASE_URL && env.AZURE_FOUNDRY_API_KEY);
 }
 
-export function buildQuoteWorkflowPrompt(selection: SyncedQuoteSelection): {
+export type QuoteTreatAs = 'quote' | 'create_booking';
+
+export function buildQuoteWorkflowPrompt(
+  selection: SyncedQuoteSelection,
+  options?: { treatAs?: QuoteTreatAs; staffNote?: string },
+): {
   system: string;
   user: string;
   files: Array<{ filename: string; mediaType: string; data: Uint8Array }>;
@@ -114,8 +119,13 @@ export function buildQuoteWorkflowPrompt(selection: SyncedQuoteSelection): {
     parts.push(`Attachments:\n${attachmentChunks.join('\n')}`);
   }
 
+  const treatAsLine = options?.treatAs
+    ? options.treatAs === 'create_booking'
+      ? 'Staff override: treat this mail as a booking. Extract stay groups and use workflow create_booking even if you would otherwise classify it as other.'
+      : 'Staff override: treat this mail as a quote. Extract stay groups and use workflow quote even if you would otherwise classify it as other.'
+    : '';
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}`,
+    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}${treatAsLine ? `\n${treatAsLine}` : ''}`,
     user: parts.join('\n\n'),
     files,
   };
@@ -172,9 +182,13 @@ const VENUE_MANUAL_QUESTION = 'Venue / DDR / delegates / packages: handle manual
 const ROOMS_ONLY_INFO_QUESTION = 'Rooms-only group: quoting with stated quantity';
 
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
-export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
+export function mapLlmDecision(
+  analysis: LunaAnalysis,
+  options?: { treatAs?: QuoteTreatAs },
+): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
-  if (analysis.workflow === 'other' || venueOrEventManual(analysis)) {
+  const staffQuote = Boolean(options?.treatAs);
+  if ((analysis.workflow === 'other' || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
     if (venueOrEventManual(analysis)) {
       routed.unshift({ field: 'handle_manually', question: VENUE_MANUAL_QUESTION });
@@ -268,13 +282,18 @@ export async function analyseQuoteSelection(input: {
   adapter: ModelAdapter | null;
   enabled: boolean;
   deadlineMs?: number;
+  treatAs?: QuoteTreatAs;
+  staffNote?: string;
 }): Promise<AnalyseQuoteSelectionResult> {
   if (!input.enabled || !input.adapter) {
     return { source: 'regex_fallback', fallbackReason: 'disabled' };
   }
   const deadlineMs = input.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const controller = new AbortController();
-  const prompt = buildQuoteWorkflowPrompt(input.selection);
+  const prompt = buildQuoteWorkflowPrompt(input.selection, {
+    treatAs: input.treatAs,
+    staffNote: input.staffNote,
+  });
   const responseSchema = zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' }) as Record<
     string,
     unknown
