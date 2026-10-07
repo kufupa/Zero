@@ -1,6 +1,25 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
+import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
+import type { StaffQuoteAttestation } from './staff-quote-workflow.js';
+
+export type PriorStaffQuoteRequoteGroup = {
+  id: string;
+  arrivalDate: string;
+  departureDate: string;
+  quantity: number;
+  adults: number;
+  childrenAges: number[];
+  board: 'room_only' | 'bb' | 'dinner_bb';
+  roomCodes?: string[];
+};
+
+export type PriorStaffQuoteRequotePayload = {
+  groups: PriorStaffQuoteRequoteGroup[];
+  salesStrategy: 'BAR' | 'Government';
+  company: string;
+  agency: string;
+};
 
 export type ThreadQuoteRevisionSummary = {
   workflowRunId: string;
@@ -100,6 +119,47 @@ export function collectThreadQuoteRevisions(
     }
   }
   return summaries;
+}
+
+function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['board'] {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'dinner_bed_breakfast') return 'dinner_bb';
+  return 'bb';
+}
+
+/** Stored revision + attestation inputs for executeStaffQuote when freshness expired. */
+export function priorStaffQuoteRequotePayload(
+  run: PriorQuoteRun,
+  revisionRef: string,
+): PriorStaffQuoteRequotePayload | null {
+  if (run.state !== 'succeeded') return null;
+  const revision = revisionsFromRun(run).find((row) => row.id === revisionRef);
+  if (!revision) return null;
+  const staff = run.metrics?.staffQuoteAttestation as
+    | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
+    | undefined;
+  if (
+    staff?.version !== 1 ||
+    staff.kind !== 'staff_approved_quote' ||
+    !staff.revisionIds?.includes(revisionRef)
+  ) {
+    return null;
+  }
+  return {
+    groups: revision.groups.map((group) => ({
+      id: group.id,
+      arrivalDate: group.arrivalDate,
+      departureDate: group.departureDate,
+      quantity: group.quantity,
+      adults: group.adults,
+      childrenAges: [...group.childAges],
+      board: staffBoardFromRevision(group.board),
+      ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
+    })),
+    salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
+    company: staff.header.company ?? '',
+    agency: staff.header.agency ?? '',
+  };
 }
 
 export function resolvePriorQuoteForBooking(

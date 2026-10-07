@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   analysisMatchesQuotedStay,
   collectThreadQuoteRevisions,
+  priorStaffQuoteRequotePayload,
   resolvePriorQuoteForBooking,
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
@@ -144,6 +145,56 @@ describe('analysisMatchesQuotedStay', () => {
         revision,
       ),
     ).toBe(false);
+  });
+});
+
+describe('priorStaffQuoteRequotePayload', () => {
+  it('returns stored groups and party header from attestation', async () => {
+    const revision = await freshRevision();
+    revision.groups[0]!.childAges = [7];
+    const payload = priorStaffQuoteRequotePayload(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          staffQuoteAttestation: {
+            version: 1,
+            kind: 'staff_approved_quote',
+            transportId: 't1',
+            userId: 'u1',
+            threadId: 'thread-1',
+            messageId: 'mail-1',
+            sourceHash: 'a'.repeat(64),
+            selectionEpoch: 1,
+            inputRevision: 1,
+            inputDigest: 'digest',
+            authorizationId: 'auth',
+            revisionIds: [revision.id],
+            header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+            salesStrategy: 'BAR',
+          },
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+          },
+        },
+      },
+      revision.id,
+    );
+    expect(payload).toMatchObject({
+      salesStrategy: 'BAR',
+      company: 'Acme',
+      agency: 'XYZ TRAVEL',
+      groups: [
+        expect.objectContaining({
+          arrivalDate: revision.groups[0]!.arrivalDate,
+          quantity: revision.groups[0]!.quantity,
+          childrenAges: [7],
+          roomCodes: [revision.groups[0]!.roomCode],
+        }),
+      ],
+    });
   });
 });
 

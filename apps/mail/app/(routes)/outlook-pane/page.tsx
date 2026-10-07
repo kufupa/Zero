@@ -90,11 +90,16 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import {
+  bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
   bindUsePriorQuoteForBooking,
+  buildExpiredPriorRequoteBindArgs,
+  EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
+  type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import {
   bindExecuteStaffQuote,
@@ -109,6 +114,7 @@ import {
   canCreatePdf,
   canRunQuoteStep,
   groupsForQuoteStep,
+  hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
   pickNextRunnableStep,
@@ -203,6 +209,9 @@ export default function OutlookPanePage() {
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const quoteSessionRef = useRef(quoteSession);
+  quoteSessionRef.current = quoteSession;
+  const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
@@ -401,6 +410,7 @@ export default function OutlookPanePage() {
       if (cancelled || !revisions[0]) return;
       const reasons: string[] = [];
       let prior: Awaited<ReturnType<typeof bindUsePriorQuoteForBooking>> | null = null;
+      let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
       for (const row of revisions) {
         if (cancelled) return;
         const candidate = await bindUsePriorQuoteForBooking({
@@ -422,13 +432,23 @@ export default function OutlookPanePage() {
           break;
         }
         reasons.push(candidate.reason);
+        if (candidate.reason === 'expired' && !expiredPrior) {
+          expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+        }
       }
       if (cancelled) return;
       if (!prior || prior.status !== 'ok') {
         if (reasons.includes('scope_mismatch')) {
           toast.warning('Stay dates do not match the earlier quote — run Quote again');
-        } else if (reasons.includes('expired')) {
-          toast.warning('This quote expired — run Quote again');
+        } else if (reasons.includes('expired') && expiredPrior) {
+          toast.warning(expiredPriorQuoteToastMessage(), {
+            action: {
+              label: EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+              onClick: () => {
+                requoteSameStayRef.current(expiredPrior);
+              },
+            },
+          });
         }
         return;
       }
@@ -881,6 +901,81 @@ export default function OutlookPanePage() {
         setIsDraftPending(false);
       }
     }
+  };
+
+  requoteSameStayRef.current = (row) => {
+    const session = quoteSessionRef.current;
+    const luna = session.analysis?.luna;
+    const source = session.staffSource;
+    const binding = session.binding;
+    if (luna?.workflow !== 'create_booking' || !source || !binding) {
+      toast.warning('Stay facts are not ready for a re-quote.');
+      return;
+    }
+    const selectionEpoch = binding.selectionEpoch;
+    const inputRevision = session.inputRevision;
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindGetPriorStaffQuoteRequote({
+      query: staff.workstation.getPriorStaffQuoteRequote?.query,
+      threadId: source.threadId,
+      row,
+    }).then((loaded) => {
+      if (loaded.status !== 'ok') {
+        toast.warning(loaded.reason);
+        return;
+      }
+      const { groups, header } = buildExpiredPriorRequoteBindArgs({
+        stored: loaded.payload,
+        sessionGroups: session.groups,
+        sessionHeader: session.staffHeader,
+        staffEdited: hasStaffStayEdits(session),
+      });
+      return bindExecuteStaffQuote({
+        mutate: staff.workstation.executeStaffQuote?.mutate,
+        source,
+        selectionEpoch,
+        inputRevision,
+        groups,
+        header,
+      }).then((remote) => {
+        if (remote.status !== 'ok') {
+          toast.warning(remote.reason);
+          return;
+        }
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: remote.offer,
+          staffQuote: remote.staffQuote,
+          selectionEpoch,
+          inputRevision,
+          extrasReviewItems: remote.extrasReviewItems,
+        });
+        for (const item of remote.extrasReviewItems) toast.warning(item);
+        return bindPrepareBookingDraft({
+          mutate: staff.workstation.prepareBookingDraft?.mutate,
+          source,
+          workflowRunId: remote.staffQuote.workflowRunId,
+          revisionRef: remote.staffQuote.revisionRef,
+          messageId: source.messageId,
+          selectionEpoch,
+          inputRevision,
+          analysis: {
+            ...luna,
+            groups: overlayLunaGroupsFromStaff(luna, session.groups),
+          },
+        }).then((draftRemote) => {
+          if (draftRemote.status !== 'ok') {
+            toast.warning(draftRemote.reason);
+            return;
+          }
+          dispatchQuote({
+            type: 'booking_draft_ready',
+            payload: draftRemote.payload,
+            sourceHash: source.sourceHash,
+          });
+        });
+      });
+    });
   };
 
   const runQuoteStep = (stepId: string) => {

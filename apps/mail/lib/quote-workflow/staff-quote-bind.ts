@@ -578,6 +578,22 @@ type StaffQuoteClient = {
       | ({ status: 'ready' } & UsePriorQuoteForBookingReady)
     >;
   };
+  getPriorStaffQuoteRequote?: {
+    query: (
+      input: { workflowRunId: string; revisionRef: string; threadId: string },
+    ) => Promise<
+      | { status: 'unavailable'; reason?: string }
+      | {
+          status: 'ready';
+          payload: {
+            groups: StaffQuoteGroupInput[];
+            salesStrategy: 'BAR' | 'Government';
+            company: string;
+            agency: string;
+          };
+        }
+    >;
+  };
 };
 
 type DraftsClient = {

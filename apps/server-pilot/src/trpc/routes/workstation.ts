@@ -12,6 +12,7 @@ import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rule
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
 import {
   collectThreadQuoteRevisions,
+  priorStaffQuoteRequotePayload,
   resolvePriorQuoteForBooking,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
@@ -141,6 +142,14 @@ export const usePriorQuoteForBookingInput = z
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+export const getPriorStaffQuoteRequoteInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    threadId: z.string().min(1),
   })
   .strict();
 
@@ -589,6 +598,31 @@ export const workstationRouter = router({
           threadId: input.threadId,
         }),
       };
+    }),
+  getPriorStaffQuoteRequote: mailboxProcedure
+    .input(getPriorStaffQuoteRequoteInput)
+    .query(async ({ input, ctx }) => {
+      const [run] = await getDb()
+        .select({
+          id: aiWorkflowRun.id,
+          transportId: aiWorkflowRun.transportId,
+          threadId: aiWorkflowRun.threadId,
+          state: aiWorkflowRun.state,
+          metrics: aiWorkflowRun.metrics,
+        })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.threadId, input.threadId),
+          ),
+        )
+        .limit(1);
+      if (!run) return { status: 'unavailable' as const, reason: 'not_found' as const };
+      const payload = priorStaffQuoteRequotePayload(run, input.revisionRef);
+      if (!payload) return { status: 'unavailable' as const, reason: 'not_found' as const };
+      return { status: 'ready' as const, payload };
     }),
   usePriorQuoteForBooking: mailboxProcedure
     .input(usePriorQuoteForBookingInput)
