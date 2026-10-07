@@ -5,6 +5,7 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     const pathname = new URL(raw, 'https://timeout.invalid').pathname;
     const routes = decodeURIComponent(pathname.split('/').at(-1) ?? '').split(',');
     if (routes.includes('workstation.executeStaffQuote')) return 20 * 60_000;
+    if (routes.includes('quoteWorkflow.analyseSelection')) return 45_000;
     if (
       routes.includes('workstation.qualifiedQuoteProposalPdf') ||
       routes.includes('workstation.quoteProposalPdf')

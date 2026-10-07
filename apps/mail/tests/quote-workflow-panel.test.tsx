@@ -146,6 +146,7 @@ describe('QuoteWorkflowPanel', () => {
     const session = { ...sessionFromFixture('public-single'), mailboxStatus: 'unsynced' as const };
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText(/Mailbox quoteWorkflow.analyseSelection: unsynced/i)).toBeDefined();
+    expect(screen.queryByText(/Local regex preview/i)).toBeNull();
     expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
   });
 

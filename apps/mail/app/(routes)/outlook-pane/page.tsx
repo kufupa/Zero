@@ -78,7 +78,6 @@ import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progr
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
-import { analyseLocalEmail } from '@/lib/quote-workflow/analyse-local';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
@@ -276,14 +275,9 @@ export default function OutlookPanePage() {
 
   const quoteAdmissionKey = quoteSession.binding ? admissionKey(quoteSession.binding) : '';
   useEffect(() => {
-    if (!quoteSession.binding || !quoteAdmissionKey) return;
-    dispatchQuote({ type: 'analysis_started' });
-    const analysis = analyseLocalEmail({
-      subject: activeEmail?.subject ?? '',
-      bodyText: activeEmail?.bodyText ?? '',
-    });
-    dispatchQuote({ type: 'analysis_ready', analysis });
     const binding = quoteSession.binding;
+    if (!binding || !quoteAdmissionKey) return;
+    dispatchQuote({ type: 'analysis_started' });
     const workflow = quoteWorkflowFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
     let cancelled = false;
@@ -296,26 +290,38 @@ export default function OutlookPanePage() {
         folderEntryId: binding.folderEntryId,
         selectionEpoch,
       },
-    }).then((remote) => {
-      if (cancelled) return;
-      if (remote.kind === 'ready') {
-        dispatchQuote({ type: 'mailbox_status', status: 'ready' });
-        dispatchQuote({ type: 'analysis_ready', analysis: remote.analysis });
-        return;
-      }
-      if (remote.kind === 'unsynced') {
-        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
-        return;
-      }
-      if (remote.kind === 'missing_source') {
-        dispatchQuote({ type: 'mailbox_status', status: 'missing_source' });
-        if (remote.documents.length) {
-          dispatchQuote({ type: 'review_documents_failed', documents: remote.documents });
+    })
+      .then((remote) => {
+        if (cancelled) return;
+        if (remote.kind === 'ready') {
+          dispatchQuote({ type: 'mailbox_status', status: 'ready' });
+          dispatchQuote({ type: 'analysis_ready', analysis: remote.analysis });
+          return;
         }
-        return;
-      }
-      dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
-    });
+        if (remote.kind === 'unsynced') {
+          dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+          dispatchQuote({ type: 'analysis_unsynced' });
+          return;
+        }
+        if (remote.kind === 'missing_source') {
+          dispatchQuote({ type: 'mailbox_status', status: 'missing_source' });
+          dispatchQuote({
+            type: 'analysis_missing_source',
+            missing: remote.missing,
+            documents: remote.documents,
+          });
+          return;
+        }
+        dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
+        dispatchQuote({ type: 'analysis_failed', message: remote.reason });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error && error.message.trim() ? error.message : 'analyseSelection rejected';
+        dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
+        dispatchQuote({ type: 'analysis_failed', message });
+      });
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindStaffQuoteSource({
       query: staff.workstation.staffQuoteSource?.query,
@@ -340,7 +346,8 @@ export default function OutlookPanePage() {
     return () => {
       cancelled = true;
     };
-  }, [activeEmail?.bodyText, activeEmail?.subject, quoteAdmissionKey]);
+    // Admission key is the selection identity. Body/subject are no longer read on the client.
+  }, [quoteAdmissionKey]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);

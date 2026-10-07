@@ -4,8 +4,11 @@ import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import { DocumentReview } from './document-review';
 import { ItemsForYou } from './items-for-you';
+import { NeedsAnswerList } from './needs-answer-list';
+import { NotSupportedList } from './not-supported-list';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
+import { WorkflowBadge } from './workflow-badge';
 
 
 const fieldClass =
@@ -237,7 +240,12 @@ export function QuoteWorkflowPanel({
     return <StatusNote>{session.errorMessage ?? 'Unsupported request.'}</StatusNote>;
   }
   if (session.phase === 'non_quote') {
-    return <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>;
+    return (
+      <div className="flex flex-col gap-3">
+        <WorkflowBadge analysis={session.analysis} />
+        <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>
+      </div>
+    );
   }
 
   const openItems = openReviewItems(session);
@@ -261,6 +269,7 @@ export function QuoteWorkflowPanel({
 
   return (
     <div className="flex flex-col gap-3">
+      <WorkflowBadge analysis={session.analysis} />
       {session.phase === 'analysing' ? (
         <StatusNote>Analysing selected email and authorised thread sources…</StatusNote>
       ) : null}
@@ -275,21 +284,25 @@ export function QuoteWorkflowPanel({
       {session.mailboxStatus && session.mailboxStatus !== 'ready' ? (
         <StatusNote>
           {session.mailboxStatus === 'unsynced'
-            ? 'Mailbox quoteWorkflow.analyseSelection: unsynced. Local regex preview below is not the AI reservationist and is not mailbox-synced.'
+            ? 'Mailbox quoteWorkflow.analyseSelection: unsynced. This result is not mailbox-synced.'
             : session.mailboxStatus === 'missing_source'
               ? 'Mailbox quoteWorkflow.analyseSelection: authorised attachment bytes are missing. Filenames are not document content.'
-              : 'Mailbox quoteWorkflow.analyseSelection client is not bound. Local regex preview below is not the AI reservationist.'}
+              : 'Mailbox quoteWorkflow.analyseSelection client is not bound.'}
         </StatusNote>
       ) : null}
       {showWorkspace ? (
-        <ItemsForYou
-          openItems={openItems}
-          handledItems={handledItems}
-          onViewSource={onViewSource}
-          onEditReply={onEditReply}
-          onHandle={onHandleReviewItem}
-          onUndo={onUndoReviewItem}
-        />
+        <>
+          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
+          <NeedsAnswerList missing={session.analysis?.luna?.missing} />
+          <ItemsForYou
+            openItems={openItems}
+            handledItems={handledItems}
+            onViewSource={onViewSource}
+            onEditReply={onEditReply}
+            onHandle={onHandleReviewItem}
+            onUndo={onUndoReviewItem}
+          />
+        </>
       ) : null}
       {session.analysis?.alternatives.length ? (
         <StatusNote>Requested alternatives preserved: {session.analysis.alternatives.join(', ')}</StatusNote>
@@ -308,7 +321,13 @@ export function QuoteWorkflowPanel({
         />
       ) : null}
       {session.groups.map((group, index) => (
-        <RequirementCard key={group.id} group={group} index={index} onPatch={onPatchGroup} />
+        <RequirementCard
+          key={group.id}
+          group={group}
+          index={index}
+          onPatch={onPatchGroup}
+          evidence={session.analysis?.luna?.evidence}
+        />
       ))}
       {session.phase !== 'failed' && session.phase !== 'missing_source' ? (
         <ToolStepList

@@ -1421,4 +1421,54 @@ describe('quote session staff review items', () => {
     expect(s.staffQuote).toBeNull();
     expect(canCreateNativeDraft(s)).toBe(false);
   });
+
+  it('starts with a null bookingDraft and clears it downstream', () => {
+    expect(initialQuoteSession().bookingDraft).toBeNull();
+    let s = analysisReady();
+    s = { ...s, bookingDraft: { placeholder: true } };
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
+    expect(s.bookingDraft).toBeNull();
+  });
+
+  it('prefills government party into company and salesStrategy when header is empty', () => {
+    const s = analysisReady({
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: 'government', name: 'Dept X', reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    expect(s.staffHeader.company).toBe('Dept X');
+    expect(s.staffHeader.salesStrategy).toBe('Government');
+    expect(s.staffHeader.agency).toBe('');
+  });
+
+  it('does not overwrite a staff-edited header with luna.party', () => {
+    let s = analysisReady();
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Staff Co' } });
+    s = reduceQuoteSession(s, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        luna: {
+          workflow: 'quote',
+          flags: [],
+          groups: [],
+          party: { kind: 'government', name: 'Dept X', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    });
+    expect(s.staffHeader.company).toBe('Staff Co');
+    expect(s.staffHeader.salesStrategy).toBe('BAR');
+  });
 });

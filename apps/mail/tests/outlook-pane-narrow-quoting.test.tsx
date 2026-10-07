@@ -66,6 +66,27 @@ vi.mock('../providers/query-provider', () => ({
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: vi.fn() },
     },
+    quoteWorkflow: {
+      analyseSelection: {
+        mutate: async () => ({
+          status: 'ready' as const,
+          intent: 'quote' as const,
+          groups: [
+            {
+              id: 'g1',
+              childrenAges: [],
+              board: 'unknown' as const,
+              quantity: 1,
+              specialRequests: [],
+              fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
+            },
+          ],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 1,
+        }),
+      },
+    },
   },
 }));
 
@@ -87,11 +108,11 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();
     expect(screen.queryByText(/R2,150\.00/)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /^Run next$/i })).toBeDefined();
+    expect(await screen.findByRole('button', { name: /^Run next$/i })).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
     await waitFor(() => {
-      expect(screen.getByText(/enqueueHmsRead|without offers|not owned by this quoting UI|no quoteWorkflow.runStep/i)).toBeDefined();
+      expect(screen.getAllByText(/enqueueHmsRead|without offers|not owned by this quoting UI|no quoteWorkflow.runStep|staffQuoteSource/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i })).toBeDefined();

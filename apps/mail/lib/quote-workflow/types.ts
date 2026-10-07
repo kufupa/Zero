@@ -95,6 +95,55 @@ export type ReservationistStaffAction = {
   status: 'open';
 };
 
+/** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
+export type LunaAnalysisWire = {
+  workflow: 'quote' | 'create_booking' | 'other';
+  flags: Array<
+    | 'conference_or_group'
+    | 'amendment_or_cancel'
+    | 'long_stay'
+    | 'discount_or_negotiation'
+    | 'multi_date'
+    | 'extras'
+    | 'mixed_request'
+    | 'attachment_unread'
+  >;
+  groups: Array<{
+    arrival: string | null;
+    departure: string | null;
+    rooms: number | null;
+    adultsPerRoom: number | null;
+    childAges: number[];
+    board: 'room_only' | 'bb' | 'dbb' | null;
+    roomPreference: string | null;
+    guestNames: string[];
+  }>;
+  party: {
+    kind: 'agency' | 'organization' | 'government' | 'private' | null;
+    name: string | null;
+    reference: string | null;
+  };
+  rateClaims: Array<{
+    kind: 'exact' | 'ceiling' | 'budget' | 'average_daily' | 'total' | 'paid';
+    amount: string;
+    currency: string;
+    basis: 'per_room_per_night' | 'total' | 'unknown';
+    taxBasis: 'gross_included' | 'exclusive' | 'unknown';
+    quote: string;
+  }>;
+  missing: Array<{ field: string; question: string }>;
+  evidence: Array<{ field: string; quote: string }>;
+  tasks: Array<{
+    kind: 'quote' | 'create_booking' | 'amend' | 'cancel' | 'availability' | 'other';
+    groupIndexes: number[];
+    note: string;
+  }>;
+};
+
+export type QuoteAnalysisSource = 'luna' | 'regex_fallback';
+
+export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'invalid_output';
+
 export type QuoteAnalysis = {
   intent: QuoteIntent;
   groups: StayGroupRequirement[];
@@ -102,6 +151,10 @@ export type QuoteAnalysis = {
   alternatives: string[];
   reviewItems?: QuoteReviewItem[];
   staffActions?: ReservationistStaffAction[];
+  luna?: LunaAnalysisWire | null;
+  aiUnavailable?: boolean;
+  source?: QuoteAnalysisSource;
+  fallbackReason?: QuoteWorkflowFallbackReason;
 };
 
 export type StaffQuoteSource = {
@@ -277,6 +330,8 @@ export type QuoteSession = {
   handledSourceKey: string | null;
   reviewItems: QuoteReviewItem[];
   handledReviewItemIds: string[];
+  /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
+  bookingDraft: unknown | null;
 };
 
 export type QuoteSessionAction =
