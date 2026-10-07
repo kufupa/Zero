@@ -195,6 +195,34 @@ describe('buildBookingDrafts', () => {
     expect(draft.missing).toEqual([]);
   });
 
+  it('does not compare a second stay’s rate claim against a single quoted stay', async () => {
+    const revision = await agencyRevision();
+    const first = analysis().groups[0]!;
+    const draft = await buildBookingDrafts({
+      analysis: analysis({
+        groups: [
+          { ...first, arrival: '2026-10-12', departure: '2026-10-13' },
+          { ...first, arrival: '2026-12-01', departure: '2026-12-03' },
+        ],
+        rateClaims: [
+          {
+            kind: 'exact',
+            amount: '1850.00',
+            currency: 'ZAR',
+            basis: 'per_room_per_night',
+            taxBasis: 'gross_included',
+            quote: '1850.00',
+          },
+        ],
+      }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      validate: validateCreate,
+    });
+    expect(draft.rateCheck[0]).toMatchObject({ status: 'cannot_check', reason: 'ambiguous_stay' });
+  });
+
   it('assigns guest names from the luna group with the same stay dates, not array index', async () => {
     const revision = await agencyRevision();
     revision.groups[0]!.arrivalDate = '2026-12-01';

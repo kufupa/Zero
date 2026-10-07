@@ -269,11 +269,16 @@ export async function buildBookingDrafts(input: {
   if (revision.groups.length > 1 && roomCodes.size > 1) {
     flags.push('joint_inventory_unproven');
   }
+  const lunaStayKeys = new Set(
+    input.analysis.groups.map((group) => `${group.arrival}:${group.departure}`),
+  );
+  const stayUnclear = lunaStayKeys.size > 1;
   return {
     rooms,
-    rateCheck: input.analysis.rateClaims.map((claim) =>
-      checkRateClaim(claim, revision, input.messageId),
-    ),
+    rateCheck: input.analysis.rateClaims.map((claim) => {
+      const compared = checkRateClaim(claim, revision, input.messageId);
+      return stayUnclear ? { ...compared, status: 'cannot_check' as const, reason: 'ambiguous_stay' } : compared;
+    }),
     missing: uniqueMissing,
     flags,
   };
