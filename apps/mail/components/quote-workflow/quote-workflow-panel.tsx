@@ -243,6 +243,8 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <WorkflowBadge analysis={session.analysis} />
+        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
+        <NeedsAnswerList missing={session.analysis?.luna?.missing} />
         <StatusNote>This message is not a quoting request. No quoting workflow was opened.</StatusNote>
       </div>
     );

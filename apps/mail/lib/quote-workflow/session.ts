@@ -195,6 +195,17 @@ export function admissionKey(binding: QuoteSelectionBinding): string {
   return `${selectionDigest(binding)}|${binding.selectionEpoch}|${binding.scopeEpoch}`;
 }
 
+export function analysisRetryKey(
+  admission: string,
+  phase: QuoteSession['phase'],
+  syncCommitted?: number,
+): string {
+  if (phase === 'unsynced' && Number.isFinite(syncCommitted)) {
+    return `${admission}|committed:${syncCommitted}`;
+  }
+  return admission;
+}
+
 export function initialQuoteSession(): QuoteSession {
   return {
     phase: 'idle',

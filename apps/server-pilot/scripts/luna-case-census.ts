@@ -147,6 +147,15 @@ function parseArgs(argv: string[]) {
       i += 1;
     }
   }
+  if (!Number.isInteger(out.limit) || out.limit < 0) {
+    throw new Error('--limit must be an integer >= 0');
+  }
+  if (!Number.isInteger(out.concurrency) || out.concurrency < 1) {
+    throw new Error('--concurrency must be a positive integer');
+  }
+  if (!Number.isFinite(out.costCap) || out.costCap <= 0) {
+    throw new Error('--cost-cap must be a finite number > 0');
+  }
   return out;
 }
 
@@ -239,10 +248,6 @@ function bucketOf(analysis: LunaAnalysis): Bucket {
   return 'partial';
 }
 
-function amountDigits(value: string): string {
-  return value.replace(/[^\d]/g, '');
-}
-
 function compactAmount(value: string): string {
   return value.replace(/[\s,\u00a0]/g, '').replace(/^[A-Za-z$€£R¥]+/u, '');
 }
@@ -250,16 +255,11 @@ function compactAmount(value: string): string {
 function inventedPriceCodes(analysis: LunaAnalysis, maskedSource: string): string[] {
   const codes: string[] = [];
   for (const [index, claim] of analysis.rateClaims.entries()) {
-    const digits = amountDigits(claim.amount);
-    const compact = compactAmount(claim.amount);
-    const sourceCompact = maskedSource.replace(/[\s,\u00a0]/g, '');
-    const amountOk =
-      Boolean(digits) &&
-      ((Boolean(compact) && sourceCompact.includes(compact)) ||
-        sourceCompact.includes(digits) ||
-        amountDigits(maskedSource).includes(digits));
-    if (!amountOk) codes.push(`amount:${index}`);
     if (!claim.quote || !maskedSource.includes(claim.quote)) codes.push(`quote:${index}`);
+    const compact = compactAmount(claim.amount);
+    const quoteCompact = compactAmount(claim.quote ?? '');
+    const amountInQuote = Boolean(compact) && Boolean(claim.quote) && quoteCompact.includes(compact);
+    if (!amountInQuote) codes.push(`amount:${index}`);
   }
   return codes;
 }

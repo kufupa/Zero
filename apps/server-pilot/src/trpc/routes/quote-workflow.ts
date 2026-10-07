@@ -52,12 +52,21 @@ export const runStepInput = z.object({
   inputs: z.record(z.unknown()),
 });
 
-function unreadAttachments(attachments: SyncedQuoteAttachment[]): SyncedQuoteAttachment[] {
+function unreadAttachments(
+  attachments: SyncedQuoteAttachment[],
+  mode: 'bytes' | 'text' = 'bytes',
+): SyncedQuoteAttachment[] {
+  if (mode === 'text') {
+    return attachments.filter((attachment) => !String(attachment.text ?? '').trim());
+  }
   return attachments.filter((attachment) => !attachment.bytesPresent && !attachment.text);
 }
 
-function documentFailureItems(attachments: SyncedQuoteAttachment[]) {
-  return unreadAttachments(attachments).map((attachment) => ({
+function documentFailureItems(
+  attachments: SyncedQuoteAttachment[],
+  mode: 'bytes' | 'text' = 'bytes',
+) {
+  return unreadAttachments(attachments, mode).map((attachment) => ({
     id: `unread:${attachment.id}`,
     kind: 'document_failure' as const,
     rank: 'unread_source' as const,
@@ -162,7 +171,7 @@ export const quoteWorkflowRouter = router({
       return {
         status: 'ready' as const,
         ...analysis,
-        reviewItems: attachmentReviews,
+        reviewItems: documentFailureItems(synced.attachments, 'text'),
         source: 'regex_fallback' as const,
         fallbackReason: llm.fallbackReason,
         aiUnavailable: true as const,

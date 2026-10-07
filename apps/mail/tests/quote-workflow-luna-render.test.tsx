@@ -80,6 +80,25 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
+  it('shows not-supported copy and missing questions on a non_quote Other workflow', () => {
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        workflow: 'other',
+        flags: ['amendment_or_cancel'],
+        missing: [{ field: 'reference', question: 'Reservation number?' }],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Other')).toBeDefined();
+    expect(screen.getByText('Amendment/cancellation: not supported yet')).toBeDefined();
+    expect(screen.getByText('Reservation number?')).toBeDefined();
+    expect(screen.getByText(/not a quoting request/i)).toBeDefined();
+  });
+
   it('lists conference and unread-attachment flag copy', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',

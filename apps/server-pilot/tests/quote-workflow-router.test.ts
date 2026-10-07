@@ -136,6 +136,28 @@ describe('quoteWorkflow.analyseSelection', () => {
     }
   });
 
+  it('flags a scanned PDF with bytes but no text as unread on regex fallback', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please send availability for two rooms.',
+      preceding: [],
+      attachments: [{ id: 'scan', filename: 'scan.pdf', bytesPresent: true }],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.reviewItems?.some((item) => item.kind === 'document_failure')).toBe(true);
+    }
+  });
+
   it('merges attachment_unread and never returns missing_source for a non-PDF attachment', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Rooms',

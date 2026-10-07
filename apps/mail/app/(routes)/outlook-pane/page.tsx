@@ -98,6 +98,7 @@ import {
 } from '@/lib/quote-workflow/staff-quote-bind';
 import {
   admissionKey,
+  analysisRetryKey,
   canCreatePdf,
   canRunQuoteStep,
   groupsForQuoteStep,
@@ -274,6 +275,11 @@ export default function OutlookPanePage() {
   ]);
 
   const quoteAdmissionKey = quoteSession.binding ? admissionKey(quoteSession.binding) : '';
+  const quoteAnalysisRetryKey = analysisRetryKey(
+    quoteAdmissionKey,
+    quoteSession.phase,
+    sync.snapshot?.status?.committed,
+  );
   useEffect(() => {
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
@@ -347,7 +353,8 @@ export default function OutlookPanePage() {
       cancelled = true;
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
-  }, [quoteAdmissionKey]);
+    // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
+  }, [quoteAnalysisRetryKey]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);

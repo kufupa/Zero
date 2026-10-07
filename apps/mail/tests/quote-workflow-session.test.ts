@@ -14,6 +14,7 @@ import {
   selectionDigest,
   buildQuoteStepInputs,
   staffSourceReady,
+  analysisRetryKey,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type { QuoteAnalysis, QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
@@ -1420,6 +1421,13 @@ describe('quote session staff review items', () => {
     expect(s.pdf).toBeNull();
     expect(s.staffQuote).toBeNull();
     expect(canCreateNativeDraft(s)).toBe(false);
+  });
+
+  it('retries analysis when unsynced mailbox committed count advances', () => {
+    expect(analysisRetryKey('sel|1|1', 'requirements', 4)).toBe('sel|1|1');
+    expect(analysisRetryKey('sel|1|1', 'unsynced')).toBe('sel|1|1');
+    expect(analysisRetryKey('sel|1|1', 'unsynced', 4)).toBe('sel|1|1|committed:4');
+    expect(analysisRetryKey('sel|1|1', 'unsynced', 5)).toBe('sel|1|1|committed:5');
   });
 
   it('starts with a null bookingDraft and clears it downstream', () => {
