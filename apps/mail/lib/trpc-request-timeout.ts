@@ -9,7 +9,8 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     if (
       routes.includes('workstation.qualifiedQuoteProposalPdf') ||
       routes.includes('workstation.quoteProposalPdf') ||
-      routes.includes('workstation.prepareBookingDraft')
+      routes.includes('workstation.prepareBookingDraft') ||
+      routes.includes('workstation.usePriorQuoteForBooking')
     )
       return 60_000;
   } catch {

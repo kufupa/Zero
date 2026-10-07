@@ -89,7 +89,11 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
-import { bindPrepareBookingDraft } from '@/lib/quote-workflow/booking-draft-bind';
+import {
+  bindListThreadQuoteRevisions,
+  bindPrepareBookingDraft,
+  bindUsePriorQuoteForBooking,
+} from '@/lib/quote-workflow/booking-draft-bind';
 import {
   bindExecuteStaffQuote,
   bindQualifiedStaffProposalPdf,
@@ -356,6 +360,116 @@ export default function OutlookPanePage() {
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
   }, [quoteAnalysisRetryKey]);
+
+  const priorQuoteKey = [
+    quoteSession.analysis?.luna?.workflow ?? '',
+    quoteSession.staffSource?.threadId ?? '',
+    String(quoteSession.inputRevision),
+    String(quoteSession.binding?.selectionEpoch ?? 0),
+    quoteSession.staffQuote ? 'quoted' : '',
+    quoteSession.bookingDraft ? 'drafted' : '',
+  ].join(':');
+  useEffect(() => {
+    const luna = quoteSession.analysis?.luna;
+    const source = quoteSession.staffSource;
+    const binding = quoteSession.binding;
+    if (
+      luna?.workflow !== 'create_booking' ||
+      !source ||
+      !binding ||
+      quoteSession.staffQuote ||
+      quoteSession.bookingDraft
+    ) {
+      return;
+    }
+    const staff = staffQuoteFromTrpc(trpcClient);
+    const selectionEpoch = binding.selectionEpoch;
+    const inputRevision = quoteSession.inputRevision;
+    const header = quoteSession.staffHeader;
+    const groupId = quoteSession.groups[0]?.id;
+    const quantity = quoteSession.groups[0]?.quantity;
+    let cancelled = false;
+    void bindListThreadQuoteRevisions({
+      query: staff.workstation.listThreadQuoteRevisions?.query,
+      threadId: source.threadId,
+    }).then(async (revisions) => {
+      const first = revisions[0];
+      if (cancelled || !first) return;
+      const prior = await bindUsePriorQuoteForBooking({
+        mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
+        source,
+        workflowRunId: first.workflowRunId,
+        revisionRef: first.revisionRef,
+        threadId: source.threadId,
+        messageId: source.messageId,
+        selectionEpoch,
+        inputRevision,
+        analysis: luna,
+      });
+      if (cancelled) return;
+      if (prior.status !== 'ok') {
+        if (prior.reason === 'expired') toast.warning('This quote expired — run Quote again');
+        if (prior.reason === 'scope_mismatch') {
+          toast.warning('Stay dates do not match the earlier quote — run Quote again');
+        }
+        return;
+      }
+      const stayKey = `${prior.payload.arrivalDate}:${prior.payload.departureDate}`;
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: {
+          id: prior.payload.revisionRef,
+          kind: 'allocation',
+          roomCode: prior.payload.roomCode,
+          roomLabel: 'Selected allocation',
+          board: 'bb',
+          rateCode: prior.payload.rateCode,
+          currency: 'ZAR',
+          nightly: [],
+          stayTotalMinor: prior.payload.totalMinor,
+          observedAt: '',
+          sourceRef: prior.payload.revisionRef,
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: stayKey,
+          coversGroupIds: groupId ? [groupId] : [],
+          quantity,
+        },
+        staffQuote: {
+          workflowRunId: prior.payload.workflowRunId,
+          revisionRef: prior.payload.revisionRef,
+          factRefs: [],
+          messageId: source.messageId,
+          threadId: source.threadId,
+          sourceHash: source.sourceHash,
+          selectionEpoch,
+          inputRevision,
+          inputDigest: prior.payload.revisionRef,
+          totalMinor: prior.payload.totalMinor,
+          currency: prior.payload.currency,
+          quoteRequestKey: stayKey,
+          approvedHeader: header,
+        },
+        selectionEpoch,
+        inputRevision,
+      });
+      dispatchQuote({
+        type: 'booking_draft_ready',
+        payload: {
+          draft: prior.payload.draft,
+          options: prior.payload.options,
+          messageId: prior.payload.messageId,
+          selectionEpoch: prior.payload.selectionEpoch,
+          inputRevision: prior.payload.inputRevision,
+          revisionRef: prior.payload.revisionRef,
+        },
+        sourceHash: source.sourceHash,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [priorQuoteKey]);
 
   // Diagnostic state
   const [testing, setTesting] = useState(false);

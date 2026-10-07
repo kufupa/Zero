@@ -4,7 +4,11 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import { bindPrepareBookingDraft } from '../lib/quote-workflow/booking-draft-bind';
+import {
+  bindListThreadQuoteRevisions,
+  bindPrepareBookingDraft,
+  bindUsePriorQuoteForBooking,
+} from '../lib/quote-workflow/booking-draft-bind';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type {
   BookingDraftReady,
@@ -275,5 +279,32 @@ describe('bindPrepareBookingDraft', () => {
   it('returns unavailable when the client has no mutate', async () => {
     const bound = await bindPrepareBookingDraft({ source, ...input });
     expect(bound.status).toBe('unavailable');
+  });
+});
+
+describe('bindUsePriorQuoteForBooking', () => {
+  const source = { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH };
+
+  it('does not call prepare when listThreadQuoteRevisions is empty', async () => {
+    const listed = await bindListThreadQuoteRevisions({
+      query: async () => ({ revisions: [] }),
+      threadId: 'thread-1',
+    });
+    expect(listed).toEqual([]);
+  });
+
+  it('rejects an expired prior quote without returning a draft', async () => {
+    const bound = await bindUsePriorQuoteForBooking({
+      mutate: async () => ({ status: 'unavailable', reason: 'expired' }),
+      source,
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      threadId: 'thread-1',
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      analysis: luna,
+    });
+    expect(bound).toEqual({ status: 'unavailable', reason: 'expired' });
   });
 });
