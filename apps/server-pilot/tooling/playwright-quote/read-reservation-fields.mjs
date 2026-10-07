@@ -207,6 +207,32 @@ async function clickTreeLabel(page, label) {
   return clickMenuExact(page, label);
 }
 
+async function openOsressShell(page, origin) {
+  return page.evaluate(
+    async ({ url, form }) => {
+      const body = new URLSearchParams(form);
+      const res = await fetch(url, {
+        method: 'POST',
+        body,
+        credentials: 'include',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      return res.text();
+    },
+    {
+      url: `${origin}/web/base/OSRESS?FUNCTION_CLASS=WEBL`,
+      form: {
+        SYSTEM_FUNCTION_NAME: 'OSRESS',
+        USER_FUNCTION_NAME: 'OSRESS',
+        FUNCTION_CLASS: 'WEBL',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+    },
+  );
+}
+
 export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
   const html = await page.content().catch(() => '');
   if (hasSearch(html)) return { navigated: 'already_open' };
@@ -230,6 +256,15 @@ export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
     while (Date.now() < paintDeadline) {
       if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'menu' };
       await delay(timeouts.pollMs);
+    }
+    if (timeouts.origin) {
+      await openOsressShell(page, timeouts.origin);
+      const xhrDeadline = Date.now() + timeouts.searchPaintMs;
+      while (Date.now() < xhrDeadline) {
+        if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'osress_open' };
+        await delay(timeouts.pollMs);
+      }
+      return { navigated: 'osress_open' };
     }
   }
   throw new Error('GUEST_STAY_NAV_NO_SEARCH');
@@ -360,7 +395,7 @@ async function main() {
   try {
     await login(page, secret);
     const origin = new URL(page.url()).origin;
-    await navigateGuestStay(page);
+    await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
     for (const conf of confs.filter((c) => !done.has(c))) {
       const positiveControl = conf === SEP15_POSITIVE_CONTROL;
       let row;
