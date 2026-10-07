@@ -395,6 +395,8 @@ export type QuoteSessionAction =
       inputRevision: number;
       reviewedReplyHtml?: string;
       extrasReviewItems?: string[];
+      /** Apply without bumping inputRevision — the quote already used this header. */
+      approvedHeader?: StaffQuoteHeader;
     }
   | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }

@@ -414,6 +414,32 @@ describe('expired prior re-quote', () => {
     });
   });
 
+  it('restores stored extras onto the re-quote header when staff has not edited stays', () => {
+    const { header } = buildExpiredPriorRequoteBindArgs({
+      stored: {
+        ...stored,
+        dinnerAllowanceMinor: 12_500,
+        shuttleRequested: true,
+        shuttleMinor: 45_000,
+      },
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+    expect(header).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      shuttleRequested: true,
+      shuttleMinor: 45_000,
+    });
+  });
+
   it('uses patched session groups when staff edited after prefill', () => {
     const edited: StayGroupRequirement = {
       ...g1,

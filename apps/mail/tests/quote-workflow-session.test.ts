@@ -17,7 +17,13 @@ import {
   analysisRetryKey,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
-import type { QuoteAnalysis, QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
+import type {
+  LunaAnalysisWire,
+  QuoteAnalysis,
+  QuoteOffer,
+  QuoteReviewItem,
+  QuoteSelectionBinding,
+} from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
   transportId: 't1',
@@ -1572,4 +1578,183 @@ describe('quote session staff review items', () => {
     expect(s.staffHeader.company).toBe('Staff Co');
     expect(s.staffHeader.salesStrategy).toBe('BAR');
   });
+
+  it('prefills a per-person dinner allowance and ignores room rates that include dinner', () => {
+    const allowance = analysisReady({
+      ...quoteAnalysis,
+      luna: lunaQuote({
+        rateClaims: [
+          {
+            kind: 'exact',
+            amount: '450',
+            currency: 'ZAR',
+            basis: 'unknown',
+            taxBasis: 'gross_included',
+            quote: 'Dinner allowance R450 per person per night',
+          },
+        ],
+      }),
+    });
+    expect(allowance.staffHeader.dinnerAllowanceMinor).toBe(45000);
+    const included = analysisReady({
+      ...quoteAnalysis,
+      luna: lunaQuote({
+        rateClaims: [
+          {
+            kind: 'exact',
+            amount: '1560',
+            currency: 'ZAR',
+            basis: 'per_room_per_night',
+            taxBasis: 'gross_included',
+            quote: 'R1,560 per room per night including dinner',
+          },
+        ],
+      }),
+    });
+    expect(included.staffHeader.dinnerAllowanceMinor).toBeUndefined();
+  });
+
+  it('checks shuttle only when the email mentions a shuttle or transfer', () => {
+    const dinnerOnly = analysisReady({
+      ...quoteAnalysis,
+      luna: lunaQuote({ flags: ['extras'] }),
+    });
+    expect(dinnerOnly.staffHeader.shuttleRequested).toBeUndefined();
+    const shuttle = analysisReady({
+      ...quoteAnalysis,
+      luna: lunaQuote({
+        flags: ['extras'],
+        evidence: [{ field: 'specialRequests', quote: 'Please add an airport shuttle' }],
+      }),
+    });
+    expect(shuttle.staffHeader.shuttleRequested).toBe(true);
+  });
+
+  it('applies the approved quote header without bumping inputRevision', () => {
+    let s = analysisReady();
+    s = withStaffSource(s);
+    const approvedHeader = {
+      salesStrategy: 'BAR' as const,
+      company: 'Acme Corp',
+      agency: 'XYZ TRAVEL',
+      attention: '',
+      clientEmail: '',
+      clientTelephone: '',
+    };
+    const offer: QuoteOffer = {
+      id: 'rev-1',
+      kind: 'allocation',
+      roomCode: '',
+      roomLabel: 'Selected allocation',
+      board: 'bb',
+      rateCode: '',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '',
+      sourceRef: 'rev-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 1,
+    };
+    const quoted = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader,
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      approvedHeader,
+    });
+    expect(quoted.inputRevision).toBe(s.inputRevision);
+    expect(quoted.staffHeader.company).toBe('Acme Corp');
+    expect(quoted.staffHeader.agency).toBe('XYZ TRAVEL');
+    expect(canCreatePdf(quoted)).toBe(true);
+  });
+
+  it('replaces previous quote-extras review items with the latest notes', () => {
+    let s = analysisReady();
+    s = withStaffSource(s);
+    const approvedHeader = emptyHeader();
+    const offer: QuoteOffer = {
+      id: 'rev-1',
+      kind: 'allocation',
+      roomCode: '',
+      roomLabel: 'Selected allocation',
+      board: 'bb',
+      rateCode: '',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '',
+      sourceRef: 'rev-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 1,
+    };
+    const staffQuote = {
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      factRefs: [] as string[],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: STAFF_HASH,
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      inputDigest: 'digest',
+      totalMinor: 850000,
+      currency: 'ZAR',
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      approvedHeader,
+    };
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote,
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      extrasReviewItems: ['Shuttle requested — add a price or answer in the reply'],
+    });
+    expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote,
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      extrasReviewItems: [],
+    });
+    expect(s.reviewItems.some((item) => item.sourceLabel === 'Quote extras')).toBe(false);
+  });
 });
+
+function lunaQuote(over: Partial<LunaAnalysisWire> = {}): LunaAnalysisWire {
+  return {
+    workflow: 'quote',
+    flags: [],
+    groups: [],
+    party: { kind: null, name: null, reference: null },
+    rateClaims: [],
+    missing: [],
+    evidence: [],
+    tasks: [],
+    ...over,
+  };
+}

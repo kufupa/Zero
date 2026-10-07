@@ -196,6 +196,81 @@ describe('priorStaffQuoteRequotePayload', () => {
       ],
     });
   });
+
+  it('restores stored dinner and shuttle extras onto the re-quote payload', async () => {
+    const revision = await freshRevision();
+    const payload = priorStaffQuoteRequotePayload(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          staffQuoteAttestation: {
+            version: 1,
+            kind: 'staff_approved_quote',
+            transportId: 't1',
+            userId: 'u1',
+            threadId: 'thread-1',
+            messageId: 'mail-1',
+            sourceHash: 'a'.repeat(64),
+            selectionEpoch: 1,
+            inputRevision: 1,
+            inputDigest: 'digest',
+            authorizationId: 'auth',
+            revisionIds: [revision.id],
+            header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+            salesStrategy: 'BAR',
+          },
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+            proposalFacts: [
+              {
+                ref: 'extras',
+                facts: {
+                  revisionId: revision.id,
+                  authorizationId: revision.authorizationId,
+                  sourceRef: 'message:mail-1',
+                  sourceHash: 'ab'.repeat(32),
+                  extras: [
+                    {
+                      id: 'dinner-allowance',
+                      label: 'Dinner allowance',
+                      quantity: 1,
+                      units: 2,
+                      unitKind: 'person_service',
+                      unitMinor: 12_500,
+                      service: 'dinner_allowance',
+                      persons: [],
+                      dates: [],
+                    },
+                    {
+                      id: 'shuttle',
+                      label: 'Shuttle',
+                      quantity: 1,
+                      units: 1,
+                      unitKind: 'trip',
+                      unitMinor: 45_000,
+                      service: 'shuttle',
+                      persons: [],
+                      dates: [revision.groups[0]!.arrivalDate],
+                    },
+                  ],
+                  includedEntitlements: [],
+                },
+              },
+            ],
+          },
+        },
+      },
+      revision.id,
+    );
+    expect(payload).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      shuttleRequested: true,
+      shuttleMinor: 45_000,
+    });
+  });
 });
 
 describe('resolvePriorQuoteForBooking', () => {

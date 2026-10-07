@@ -443,14 +443,30 @@ function rateClaimAmountMinor(amount: string): number | undefined {
 
 function dinnerAllowanceFromRateClaims(analysis: QuoteAnalysis): number | undefined {
   for (const claim of analysis.luna?.rateClaims ?? []) {
-    if (!claim.quote?.trim() || !/dinner|meal allowance/i.test(claim.quote)) continue;
+    const quote = claim.quote?.trim() ?? '';
+    if (!quote) continue;
+    if (claim.currency && claim.currency !== 'ZAR') continue;
+    const separateDinner =
+      /dinner allowance|meal allowance/i.test(quote) ||
+      (/dinner/i.test(quote) && /per person/i.test(quote));
+    if (!separateDinner) continue;
+    if (/includ(?:e|ing)/i.test(quote) && !/allowance|per person/i.test(quote)) continue;
     const minor = rateClaimAmountMinor(claim.amount);
     if (!minor) continue;
     const amountDigits = claim.amount.replace(/[^\d]/g, '');
-    if (!amountDigits || !claim.quote.replace(/[^\d]/g, '').includes(amountDigits)) continue;
+    if (!amountDigits || !quote.replace(/[^\d]/g, '').includes(amountDigits)) continue;
     return minor;
   }
   return undefined;
+}
+
+function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
+  const texts = [
+    ...(analysis.luna?.evidence ?? []).map((row) => row.quote),
+    ...(analysis.luna?.missing ?? []).map((row) => row.question),
+    ...(analysis.groups ?? []).flatMap((group) => group.specialRequests ?? []),
+  ];
+  return texts.some((text) => /shuttle|transfer|airport/i.test(text));
 }
 
 function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
@@ -468,7 +484,7 @@ function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAna
     const dinner = dinnerAllowanceFromRateClaims(analysis);
     if (dinner) next = { ...next, dinnerAllowanceMinor: dinner };
   }
-  if (!next.shuttleRequested && analysis.luna?.flags.includes('extras')) {
+  if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
   }
   return next;
@@ -478,8 +494,9 @@ function reviewItemsFromExtrasNotes(
   session: QuoteSession,
   notes: readonly string[],
 ): QuoteSession['reviewItems'] {
-  if (!notes.length) return session.reviewItems;
-  const existing = new Set(session.reviewItems.map((item) => item.text));
+  const kept = session.reviewItems.filter((item) => item.sourceLabel !== 'Quote extras');
+  if (!notes.length) return kept;
+  const existing = new Set(kept.map((item) => item.text));
   const added = notes
     .filter((text) => text.trim() && !existing.has(text))
     .map((text, index) => ({
@@ -490,7 +507,7 @@ function reviewItemsFromExtrasNotes(
       sourceLabel: 'Quote extras',
       blocking: false,
     }));
-  return added.length ? [...session.reviewItems, ...added] : session.reviewItems;
+  return added.length ? [...kept, ...added] : kept;
 }
 
 function applyGroupPatch(
@@ -703,6 +720,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         errorMessage: null,
         runningStepId: null,
         reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        staffHeader: action.approvedHeader
+          ? { ...session.staffHeader, ...action.approvedHeader }
+          : session.staffHeader,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,

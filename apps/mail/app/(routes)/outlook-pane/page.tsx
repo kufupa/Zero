@@ -949,6 +949,7 @@ export default function OutlookPanePage() {
           selectionEpoch,
           inputRevision,
           extrasReviewItems: remote.extrasReviewItems,
+          approvedHeader: header,
         });
         for (const item of remote.extrasReviewItems) toast.warning(item);
         return bindPrepareBookingDraft({
@@ -1051,6 +1052,7 @@ export default function OutlookPanePage() {
         selectionEpoch,
         inputRevision,
         extrasReviewItems: remote.extrasReviewItems,
+        approvedHeader: quoteSession.staffHeader,
       });
       for (const item of remote.extrasReviewItems) toast.warning(item);
       const luna = quoteSession.analysis?.luna;

@@ -235,6 +235,9 @@ export type PriorStaffQuoteRequotePayload = {
   salesStrategy: 'BAR' | 'Government';
   company: string;
   agency: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
 };
 
 export type PriorStaffQuoteRequoteRow = {
@@ -276,6 +279,17 @@ export function buildExpiredPriorRequoteBindArgs(args: {
         salesStrategy: args.stored.salesStrategy,
         company: args.stored.company,
         agency: args.stored.agency,
+        ...(args.stored.dinnerAllowanceMinor !== undefined
+          ? { dinnerAllowanceMinor: args.stored.dinnerAllowanceMinor }
+          : {}),
+        ...(args.stored.shuttleRequested
+          ? {
+              shuttleRequested: true,
+              ...(args.stored.shuttleMinor !== undefined
+                ? { shuttleMinor: args.stored.shuttleMinor }
+                : {}),
+            }
+          : {}),
       },
     };
   }

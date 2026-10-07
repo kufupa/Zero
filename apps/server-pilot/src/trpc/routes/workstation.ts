@@ -13,6 +13,7 @@ import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-
 import {
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
+  quotedTotalWithStoredExtras,
   resolvePriorQuoteForBooking,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
@@ -672,7 +673,7 @@ export const workstationRouter = router({
         inputRevision: input.inputRevision,
         revisionRef: resolved.revision.id,
         workflowRunId: run.id,
-        totalMinor: resolved.revision.totalMinor,
+        totalMinor: quotedTotalWithStoredExtras(resolved.revision, run),
         currency: resolved.revision.currency,
         arrivalDate: resolved.revision.groups[0]!.arrivalDate,
         departureDate: resolved.revision.groups.at(-1)!.departureDate,

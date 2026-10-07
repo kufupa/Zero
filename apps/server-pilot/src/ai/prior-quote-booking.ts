@@ -1,6 +1,10 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
+import {
+  deriveAuthorizedExtraLines,
+  type AuthorizedProposalFacts,
+} from '../quote-proposal/quote-lines.js';
 import type { StaffQuoteAttestation } from './staff-quote-workflow.js';
 
 export type PriorStaffQuoteRequoteGroup = {
@@ -19,6 +23,9 @@ export type PriorStaffQuoteRequotePayload = {
   salesStrategy: 'BAR' | 'Government';
   company: string;
   agency: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
 };
 
 export type ThreadQuoteRevisionSummary = {
@@ -127,6 +134,46 @@ function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['boar
   return 'bb';
 }
 
+function proposalFactsForRevision(
+  run: PriorQuoteRun,
+  revisionId: string,
+): AuthorizedProposalFacts | undefined {
+  const result = run.metrics?.reservationistResult as
+    | { proposalFacts?: Array<{ facts: AuthorizedProposalFacts }> }
+    | undefined;
+  return result?.proposalFacts?.find((row) => row.facts.revisionId === revisionId)?.facts;
+}
+
+export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQuoteRun): number {
+  const facts = proposalFactsForRevision(run, revision.id);
+  if (!facts) return revision.totalMinor;
+  try {
+    const extra = deriveAuthorizedExtraLines(revision, facts).reduce(
+      (sum, line) => sum + line.totalMinor,
+      0,
+    );
+    return revision.totalMinor + extra;
+  } catch {
+    return revision.totalMinor;
+  }
+}
+
+function extrasHeaderFromFacts(facts: AuthorizedProposalFacts | undefined): {
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
+} {
+  if (!facts) return {};
+  const dinner = facts.extras.find(
+    (row) => row.service === 'dinner_allowance' && row.unitKind === 'person_service',
+  );
+  const shuttle = facts.extras.find((row) => row.service === 'shuttle' && row.unitKind === 'trip');
+  return {
+    ...(dinner ? { dinnerAllowanceMinor: dinner.unitMinor } : {}),
+    ...(shuttle ? { shuttleRequested: true as const, shuttleMinor: shuttle.unitMinor } : {}),
+  };
+}
+
 /** Stored revision + attestation inputs for executeStaffQuote when freshness expired. */
 export function priorStaffQuoteRequotePayload(
   run: PriorQuoteRun,
@@ -159,6 +206,7 @@ export function priorStaffQuoteRequotePayload(
     salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
     company: staff.header.company ?? '',
     agency: staff.header.agency ?? '',
+    ...extrasHeaderFromFacts(proposalFactsForRevision(run, revisionRef)),
   };
 }
 
