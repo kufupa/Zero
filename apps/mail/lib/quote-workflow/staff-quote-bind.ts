@@ -1,6 +1,8 @@
 import type {
   PrepareBookingDraftInput,
   PrepareBookingDraftResult,
+  UsePriorQuoteForBookingInput,
+  UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import type {
   QuoteOffer,
@@ -545,6 +547,17 @@ type StaffQuoteClient = {
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
+  listThreadQuoteRevisions?: {
+    query: (input: { threadId: string }) => Promise<{ revisions?: Array<{ workflowRunId: string; revisionRef: string }> }>;
+  };
+  usePriorQuoteForBooking?: {
+    mutate: (
+      input: UsePriorQuoteForBookingInput,
+    ) => Promise<
+      | { status: 'unavailable'; reason?: string }
+      | ({ status: 'ready' } & UsePriorQuoteForBookingReady)
+    >;
+  };
 };
 
 type DraftsClient = {

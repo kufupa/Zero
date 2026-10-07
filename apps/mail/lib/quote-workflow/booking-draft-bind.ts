@@ -1,4 +1,4 @@
-import type { BookingDraftReady, LunaAnalysisWire, StaffQuoteSource } from './types';
+import type { BookingDraftReady, LunaAnalysisWire, QuoteBoard, StaffQuoteSource, StayGroupRequirement } from './types';
 
 export type PrepareBookingDraftInput = {
   workflowRunId: string;
@@ -83,5 +83,140 @@ export async function bindPrepareBookingDraft(args: {
     };
   } catch (error) {
     return { status: 'unavailable', reason: rejectionReason(error, 'prepareBookingDraft') };
+  }
+}
+
+export type UsePriorQuoteForBookingInput = PrepareBookingDraftInput & { threadId: string };
+
+export type UsePriorQuoteForBookingReady = BookingDraftReady & {
+  workflowRunId: string;
+  totalMinor: number;
+  currency: string;
+  arrivalDate: string;
+  departureDate: string;
+  roomCode: string;
+  rateCode: string;
+  board: QuoteBoard;
+};
+
+export function overlayLunaGroupsFromStaff(
+  luna: LunaAnalysisWire,
+  groups: StayGroupRequirement[],
+): LunaAnalysisWire['groups'] {
+  if (!groups.length) return luna.groups;
+  return groups.map((group, index) => {
+    const match =
+      luna.groups.find(
+        (row) => row.arrival === (group.arrivalDate ?? null) && row.departure === (group.departureDate ?? null),
+      ) ?? luna.groups[index];
+    return {
+      arrival: group.arrivalDate ?? null,
+      departure: group.departureDate ?? null,
+      rooms: group.quantity ?? null,
+      adultsPerRoom: group.adults ?? null,
+      childAges: [...(group.childrenAges ?? [])],
+      board:
+        group.board === 'dinner_bb'
+          ? 'dbb'
+          : group.board === 'unknown' || !group.board
+            ? null
+            : group.board,
+      roomPreference: group.roomPreference ?? null,
+      guestNames: [...(match?.guestNames ?? [])],
+    };
+  });
+}
+
+export function offerBoardFromRevision(board: string | null | undefined): QuoteBoard {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'dinner_bed_breakfast' || board === 'dinner_bb' || board === 'dbb') return 'dinner_bb';
+  return 'bb';
+}
+
+export type BoundUsePriorQuoteForBooking =
+  | { status: 'unavailable'; reason: string }
+  | { status: 'ok'; payload: UsePriorQuoteForBookingReady };
+
+export async function bindListThreadQuoteRevisions(args: {
+  query?: (input: { threadId: string }) => Promise<{ revisions?: Array<{ workflowRunId: string; revisionRef: string }> }>;
+  threadId: string;
+}): Promise<{ workflowRunId: string; revisionRef: string }[]> {
+  if (!args.query) return [];
+  try {
+    const result = await args.query({ threadId: args.threadId });
+    return Array.isArray(result?.revisions) ? result.revisions.filter((row) => row.workflowRunId && row.revisionRef) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function bindUsePriorQuoteForBooking(args: {
+  mutate?: (
+    input: UsePriorQuoteForBookingInput,
+  ) => Promise<
+    | { status: 'unavailable'; reason?: string }
+    | ({ status: 'ready' } & UsePriorQuoteForBookingReady)
+  >;
+  source: StaffQuoteSource;
+  workflowRunId: string;
+  revisionRef: string;
+  threadId: string;
+  messageId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  analysis: LunaAnalysisWire;
+}): Promise<BoundUsePriorQuoteForBooking> {
+  if (!args.mutate) {
+    return { status: 'unavailable', reason: 'Client has no workstation.usePriorQuoteForBooking.' };
+  }
+  try {
+    const result = await args.mutate({
+      workflowRunId: args.workflowRunId,
+      revisionRef: args.revisionRef,
+      threadId: args.threadId,
+      messageId: args.messageId,
+      selectionEpoch: args.selectionEpoch,
+      inputRevision: args.inputRevision,
+      analysis: args.analysis,
+    });
+    if (!result || typeof result !== 'object' || result.status !== 'ready') {
+      const reason =
+        result && typeof result === 'object' && 'reason' in result && typeof result.reason === 'string'
+          ? result.reason
+          : 'usePriorQuoteForBooking did not return a ready draft.';
+      return { status: 'unavailable', reason };
+    }
+    if (
+      result.selectionEpoch !== args.selectionEpoch ||
+      result.inputRevision !== args.inputRevision ||
+      result.messageId !== args.source.messageId ||
+      result.revisionRef !== args.revisionRef
+    ) {
+      return {
+        status: 'unavailable',
+        reason: 'usePriorQuoteForBooking result is stale against the current selection.',
+      };
+    }
+    return {
+      status: 'ok',
+      payload: {
+        draft: result.draft,
+        options: result.options,
+        messageId: result.messageId,
+        selectionEpoch: result.selectionEpoch,
+        inputRevision: result.inputRevision,
+        revisionRef: result.revisionRef,
+        workflowRunId: result.workflowRunId,
+        totalMinor: result.totalMinor,
+        currency: result.currency,
+        arrivalDate: result.arrivalDate,
+        departureDate: result.departureDate,
+        roomCode: result.roomCode,
+        rateCode: result.rateCode,
+        board: offerBoardFromRevision(result.board),
+      },
+    };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error, 'usePriorQuoteForBooking') };
   }
 }

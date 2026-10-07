@@ -9,6 +9,10 @@ import {
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
+import {
+  collectThreadQuoteRevisions,
+  resolvePriorQuoteForBooking,
+} from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
 import {
   buildRevisionProposalPdf,
@@ -118,6 +122,20 @@ export const prepareBookingDraftInput = z
   .object({
     workflowRunId: z.string().min(1),
     revisionRef: z.string().min(1),
+    messageId: z.string().min(1),
+    selectionEpoch: z.number().int().nonnegative(),
+    inputRevision: z.number().int().nonnegative(),
+    analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+export const listThreadQuoteRevisionsInput = z.object({ threadId: z.string().min(1) }).strict();
+
+export const usePriorQuoteForBookingInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    threadId: z.string().min(1),
     messageId: z.string().min(1),
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
@@ -530,6 +548,93 @@ export const workstationRouter = router({
           reason: error instanceof Error ? error.message : 'quote_revision_unavailable',
         };
       }
+    }),
+  listThreadQuoteRevisions: mailboxProcedure
+    .input(listThreadQuoteRevisionsInput)
+    .query(async ({ input, ctx }) => {
+      const rows = await getDb()
+        .select({
+          id: aiWorkflowRun.id,
+          transportId: aiWorkflowRun.transportId,
+          threadId: aiWorkflowRun.threadId,
+          state: aiWorkflowRun.state,
+          createdAt: aiWorkflowRun.createdAt,
+          finishedAt: aiWorkflowRun.finishedAt,
+          metrics: aiWorkflowRun.metrics,
+        })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.threadId, input.threadId),
+            eq(aiWorkflowRun.state, 'succeeded'),
+          ),
+        )
+        .orderBy(desc(aiWorkflowRun.createdAt))
+        .limit(20);
+      return {
+        revisions: collectThreadQuoteRevisions(rows, {
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+        }),
+      };
+    }),
+  usePriorQuoteForBooking: mailboxProcedure
+    .input(usePriorQuoteForBookingInput)
+    .mutation(async ({ input, ctx }) => {
+      const [run] = await getDb()
+        .select({
+          id: aiWorkflowRun.id,
+          transportId: aiWorkflowRun.transportId,
+          threadId: aiWorkflowRun.threadId,
+          state: aiWorkflowRun.state,
+          createdAt: aiWorkflowRun.createdAt,
+          finishedAt: aiWorkflowRun.finishedAt,
+          metrics: aiWorkflowRun.metrics,
+        })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.threadId, input.threadId),
+          ),
+        )
+        .limit(1);
+      if (!run) return { status: 'unavailable' as const, reason: 'not_found' as const };
+      const resolved = resolvePriorQuoteForBooking(run, {
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+        revisionRef: input.revisionRef,
+        analysis: input.analysis,
+      });
+      if (resolved.status !== 'ready') return resolved;
+      const staff = run.metrics?.staffQuoteAttestation as
+        | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
+        | undefined;
+      const draft = await buildBookingDrafts({
+        analysis: input.analysis,
+        revision: structuredClone(resolved.revision),
+        defaults: bookingCodeDefaults(partyClassFromRevision(resolved.revision, staff)),
+        messageId: input.messageId,
+      });
+      return {
+        status: 'ready' as const,
+        draft,
+        options: createRequestFieldOptions(),
+        messageId: input.messageId,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        revisionRef: resolved.revision.id,
+        workflowRunId: run.id,
+        totalMinor: resolved.revision.totalMinor,
+        currency: resolved.revision.currency,
+        arrivalDate: resolved.revision.groups[0]!.arrivalDate,
+        departureDate: resolved.revision.groups.at(-1)!.departureDate,
+        roomCode: resolved.revision.groups[0]!.roomCode,
+        rateCode: resolved.revision.groups[0]!.rateCode,
+        board: resolved.revision.groups[0]!.board,
+      };
     }),
   bridgeTicket: publicProcedure
     .input(

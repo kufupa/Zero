@@ -25,6 +25,9 @@ describe('procedure-specific request deadlines', () => {
   });
   it('gives prepareBookingDraft a 60s client deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.prepareBookingDraft?batch=1')).toBe(60_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.usePriorQuoteForBooking?batch=1')).toBe(
+      60_000,
+    );
   });
   it('takes the longer deadline for encoded batched paths', () => {
     expect(
