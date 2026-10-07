@@ -723,6 +723,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         staffHeader: action.approvedHeader
           ? { ...session.staffHeader, ...action.approvedHeader }
           : session.staffHeader,
+        groups: action.groups?.length ? action.groups : session.groups,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,

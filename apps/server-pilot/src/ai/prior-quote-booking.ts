@@ -225,14 +225,15 @@ export function resolvePriorQuoteForBooking(
   }
   const revision = revisionsFromRun(run).find((row) => row.id === scope.revisionRef);
   if (!revision) return { status: 'unavailable', reason: 'not_found' };
+  const asked = scope.analysis.groups.filter((group) => group.arrival && group.departure);
+  if (asked.length && !analysisMatchesQuotedStay(scope.analysis, revision)) {
+    return { status: 'unavailable', reason: 'scope_mismatch' };
+  }
   try {
     assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, scope.now ?? new Date());
   } catch (error) {
     if (error instanceof DraftApprovalError) return { status: 'unavailable', reason: 'expired' };
     throw error;
-  }
-  if (!analysisMatchesQuotedStay(scope.analysis, revision)) {
-    return { status: 'unavailable', reason: 'scope_mismatch' };
   }
   return { status: 'ready', revision };
 }

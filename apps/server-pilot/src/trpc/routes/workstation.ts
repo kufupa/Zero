@@ -547,11 +547,13 @@ export const workstationRouter = router({
           factRefs: [],
         });
         const cloned = structuredClone(revision);
+        const extraTotalMinor = quotedTotalWithStoredExtras(cloned, bound.run) - cloned.totalMinor;
         const draft = await buildBookingDrafts({
           analysis: input.analysis,
           revision: cloned,
           defaults: bookingCodeDefaults(partyClassFromRevision(cloned, staff)),
           messageId: input.messageId,
+          extraTotalMinor,
         });
         return {
           status: 'ready' as const,
@@ -658,11 +660,14 @@ export const workstationRouter = router({
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
         | undefined;
+      const extraTotalMinor =
+        quotedTotalWithStoredExtras(resolved.revision, run) - resolved.revision.totalMinor;
       const draft = await buildBookingDrafts({
         analysis: input.analysis,
         revision: structuredClone(resolved.revision),
         defaults: bookingCodeDefaults(partyClassFromRevision(resolved.revision, staff)),
         messageId: input.messageId,
+        extraTotalMinor,
       });
       return {
         status: 'ready' as const,

@@ -1687,6 +1687,63 @@ describe('quote session staff review items', () => {
     expect(canCreatePdf(quoted)).toBe(true);
   });
 
+  it('applies restored stay groups so a short booking email can still create a PDF', () => {
+    let s = analysisReady({
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, arrivalDate: undefined, departureDate: undefined }],
+    });
+    s = withStaffSource(s);
+    const approvedHeader = emptyHeader();
+    const restored = {
+      ...quoteAnalysis.groups[0]!,
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+    };
+    const offer: QuoteOffer = {
+      id: 'rev-1',
+      kind: 'allocation',
+      roomCode: '',
+      roomLabel: 'Selected allocation',
+      board: 'bb',
+      rateCode: '',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '',
+      sourceRef: 'rev-1',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+      coversGroupIds: ['g1'],
+      quantity: 1,
+    };
+    const quoted = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader,
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      approvedHeader,
+      groups: [restored],
+    });
+    expect(quoted.groups[0]?.arrivalDate).toBe('2026-11-12');
+    expect(canCreatePdf(quoted)).toBe(true);
+  });
+
   it('replaces previous quote-extras review items with the latest notes', () => {
     let s = analysisReady();
     s = withStaffSource(s);

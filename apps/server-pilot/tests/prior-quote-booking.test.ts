@@ -383,6 +383,34 @@ describe('resolvePriorQuoteForBooking', () => {
     );
     expect(resolved).toEqual({ status: 'unavailable', reason: 'scope_mismatch' });
   });
+
+  it('returns scope_mismatch for an expired revision whose stay does not match', async () => {
+    const revision = await freshRevision();
+    revision.authoredDate = '2026-09-01';
+    const resolved = resolvePriorQuoteForBooking(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+          },
+        },
+      },
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        revisionRef: revision.id,
+        analysis: analysis({
+          groups: [{ ...analysis().groups[0]!, arrival: '2026-12-01', departure: '2026-12-03' }],
+        }),
+        now: new Date('2026-10-07T03:00:00Z'),
+      },
+    );
+    expect(resolved).toEqual({ status: 'unavailable', reason: 'scope_mismatch' });
+  });
 });
 
 function emptyListDb(): DB {

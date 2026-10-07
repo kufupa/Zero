@@ -950,6 +950,7 @@ export default function OutlookPanePage() {
           inputRevision,
           extrasReviewItems: remote.extrasReviewItems,
           approvedHeader: header,
+          groups,
         });
         for (const item of remote.extrasReviewItems) toast.warning(item);
         return bindPrepareBookingDraft({
