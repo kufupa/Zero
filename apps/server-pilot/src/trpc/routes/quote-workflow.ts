@@ -15,7 +15,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAzureLunaModel, LunaModelAdapter } from '../../ai/bedrock/luna.js';
-import { analyseQuoteSources } from '../../ai/quote-workflow-analyse.js';
+import {
+  analyseQuoteSources,
+  type QuoteWorkflowAnalysis,
+} from '../../ai/quote-workflow-analyse.js';
 import type { LunaAnalysis } from '../../ai/reservationist-decision.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { runPaneStay } from '../../ai/pane-stay-save.js';
@@ -194,6 +197,48 @@ function questionItems(missing: Array<{ field: string; question: string }>) {
   }));
 }
 
+/**
+ * Luna-shaped carrier for a staff override on the regex fallback. The pane reads the
+ * booking choice from luna.workflow (as on the Luna path), so this must pass
+ * lunaAnalysisSchema for the server booking-draft calls that echo it back.
+ */
+function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnalysis): LunaAnalysis {
+  return {
+    workflow: treatAs,
+    flags: [],
+    groups: analysis.groups.map((group) => ({
+      arrival: group.arrivalDate ?? null,
+      departure: group.departureDate ?? null,
+      rooms: group.quantity ?? null,
+      adultsPerRoom: group.adults ?? null,
+      childAges: [...group.childrenAges],
+      board: group.board === 'unknown' ? null : group.board === 'dinner_bb' ? 'dbb' : group.board,
+      roomPreference: null,
+      guestNames: [],
+    })),
+    party: { kind: null, name: null, reference: null },
+    rateClaims: [],
+    missing: [],
+    evidence: [],
+    tasks: [
+      {
+        kind: treatAs,
+        groupIndexes: analysis.groups.map((_, index) => index),
+        note: 'Staff override on the regex fallback.',
+      },
+    ],
+  };
+}
+
+const LUNA_UNAVAILABLE_ITEM = {
+  id: 'luna-unavailable',
+  kind: 'question' as const,
+  rank: 'secondary' as const,
+  text: 'Luna is unavailable, so these stay facts come from the email text. Check the dates below, or add a note with corrections.',
+  sourceLabel: 'Selected message',
+  blocking: false as const,
+};
+
 function resolveAdapter(enabled: boolean): { enabled: boolean; adapter: ModelAdapter | null } {
   if (!enabled) return { enabled: false, adapter: null };
   if (quoteWorkflowLoaders.adapter) {
@@ -296,19 +341,26 @@ export const quoteWorkflowRouter = router({
                 preceding: synced.preceding,
                 attachments: synced.attachments,
               });
-              const treated =
-                input.treatAs === 'create_booking' || input.treatAs === 'quote'
-                  ? { intent: input.treatAs, workflow: input.treatAs }
-                  : {};
+              const treatAs = input.treatAs;
+              // A staff override always quotes; the booking choice rides on workflow and luna.
+              const override = treatAs
+                ? {
+                    intent: 'quote' as const,
+                    workflow: treatAs,
+                    luna: fallbackLunaCarrier(treatAs, analysis),
+                  }
+                : { luna: null };
               return {
                 status: 'ready' as const,
                 ...analysis,
-                ...treated,
-                reviewItems: documentFailureItems(synced.attachments, 'text'),
+                ...override,
+                reviewItems: [
+                  ...documentFailureItems(synced.attachments, 'text'),
+                  ...(treatAs ? [LUNA_UNAVAILABLE_ITEM] : []),
+                ],
                 source: 'regex_fallback' as const,
                 fallbackReason: llm.fallbackReason,
                 aiUnavailable: true as const,
-                luna: null,
                 sourceRevision: input.selectionEpoch,
               };
             })();

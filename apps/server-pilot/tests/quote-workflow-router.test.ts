@@ -1,6 +1,7 @@
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
+import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -688,6 +689,62 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(result.source).toBe('regex_fallback');
       expect(result.intent).toBe('quote');
       expect(result.workflow).toBe('quote');
+    }
+  });
+
+  it('keeps a booking override on the quote workspace when Luna is unavailable', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 21,
+      treatAs: 'create_booking',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.intent).toBe('quote');
+      expect(result.workflow).toBe('create_booking');
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+      });
+      // The pane reads the booking choice from luna.workflow; the carrier must pass the
+      // server booking-draft schema so the pane can send it back.
+      expect(result.luna?.workflow).toBe('create_booking');
+      expect(lunaAnalysisSchema.safeParse(result.luna).success).toBe(true);
+    }
+  });
+
+  it('tells staff what to check when a regex-fallback override is shown', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 22,
+      treatAs: 'create_booking',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.reviewItems?.map((item) => item.text)).toContainEqual(
+        expect.stringMatching(/^Luna is unavailable.*Check the dates below/),
+      );
     }
   });
 
