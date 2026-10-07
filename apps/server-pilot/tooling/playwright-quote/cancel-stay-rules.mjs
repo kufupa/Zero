@@ -42,6 +42,75 @@ export function hmsDateToIso(value) {
   return parseIsoDate(`${match[3]}-${String(month + 1).padStart(2, '0')}-${match[1].padStart(2, '0')}`);
 }
 
+const HMS_DATE_TOKEN = /^\d{1,2}-[A-Za-z]{3}-\d{4}$/;
+const CONFIRMATION_TOKEN = /^\d+-\d+$/;
+// "Last, First" with no digits, so the "Sep 14, 2027 - Nov 13, 2027" window line never matches.
+const GUEST_TOKEN = /^(\p{L}[\p{L}'’. -]*),\s*(\p{L}[\p{L}'’. -]*)?$/u;
+// Status is words only: dates, "Records: 1 of 1" and ids never match.
+const STATUS_TOKEN = /^\p{L}[\p{L} -]*$/u;
+const WINDOW_LABEL = /^([A-Za-z]{3,})\s+(\d{1,2}),\s*(\d{4})\s+-\s+([A-Za-z]{3,})\s+(\d{1,2}),\s*(\d{4})$/;
+
+function monthNumber(word) {
+  const index = HMS_MONTHS.indexOf(String(word).slice(0, 3).toUpperCase());
+  return index === -1 ? null : index + 1;
+}
+
+function isoFromParts(year, month, day) {
+  if (!month) return null;
+  return parseIsoDate(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+}
+
+// Quick-search window line, for example "Sep 14, 2027 - Nov 13, 2027". Returns inclusive ISO bounds or null.
+export function parseDateWindowLabel(text) {
+  const match = WINDOW_LABEL.exec(squash(text));
+  if (!match) return null;
+  const from = isoFromParts(match[3], monthNumber(match[1]), match[2]);
+  const to = isoFromParts(match[6], monthNumber(match[4]), match[5]);
+  if (!from || !to || from > to) return null;
+  return { from, to };
+}
+
+// True when the arrival day falls inside the window, both ends included.
+export function windowCovers(window, arrivalIso) {
+  const day = parseIsoDate(arrivalIso);
+  return Boolean(window && day && window.from <= day && day <= window.to);
+}
+
+// Reads one quick-search row from its cell texts in document order. Returns null unless the row has exactly
+// one confirmation (equal to the expected one), exactly one "Last, First" guest, a status word after the guest,
+// and HMS dates (arrival first, departure second). Dates stay in HMS form; identityCheck converts them.
+export function parseQuickSearchRow(cellTexts, confirmation) {
+  const cells = [];
+  for (const raw of cellTexts ?? []) {
+    for (const line of String(raw ?? '').split('\n')) {
+      const cell = squash(line);
+      if (cell) cells.push(cell);
+    }
+  }
+  const expected = squash(confirmation);
+  const confirmations = cells.filter((cell) => CONFIRMATION_TOKEN.test(cell));
+  if (confirmations.length !== 1 || confirmations[0] !== expected) return null;
+  const guests = cells.filter((cell) => GUEST_TOKEN.test(cell));
+  if (guests.length !== 1) return null;
+  const guest = GUEST_TOKEN.exec(guests[0]);
+  const dates = cells.filter((cell) => HMS_DATE_TOKEN.test(cell));
+  if (!dates[0] || !hmsDateToIso(dates[0])) return null;
+  if (dates[1] && !hmsDateToIso(dates[1])) return null;
+  const guestIndex = cells.indexOf(guests[0]);
+  const status = cells
+    .slice(guestIndex + 1)
+    .find((cell) => STATUS_TOKEN.test(cell) && !HMS_DATE_TOKEN.test(cell));
+  if (!status) return null;
+  return {
+    confirmation: expected,
+    lastName: guest[1].trim(),
+    firstName: (guest[2] ?? '').trim(),
+    status,
+    arrival: dates[0],
+    departure: dates[1] ?? null,
+  };
+}
+
 export function parseCancelArgs(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {

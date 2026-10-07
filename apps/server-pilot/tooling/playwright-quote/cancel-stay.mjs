@@ -1,7 +1,11 @@
 #!/usr/bin/env node
-// Cancel one lab Guest Stay by confirmation number. The opened record must be
+// Cancel one lab Guest Stay by confirmation number. The stay must be
 // Labtest with arrival on or after 2027-01-01 and match --confirmation and
 // --arrival, or the run refuses before any cancel action.
+// Find uses the header quick search: its dropdown row (conf, "Last, First", status,
+// dates) is guarded before the record is opened, and a Cancelled row ends the run.
+// If the quick-search window does not cover arrival, its calendar icon moves it first;
+// the grid window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
 // recorded and left open; OK is never clicked on it.
@@ -14,15 +18,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
   checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus, normalizeReasons,
-  parseCancelArgs, parsePenalty, pickerMonthSteps, preflight, resolveOutcome, squash,
+  parseCancelArgs, parseDateWindowLabel, parsePenalty, parseQuickSearchRow, pickerMonthSteps, preflight,
+  resolveOutcome, squash, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 const MAX_PICKER_CLICKS = 60;
+const QUICK_WAIT_MS = 8000;
 const CANCEL_NOTE = 'Lab proof cancel';
 const PICKER_OPEN = '.x-datepicker:visible, .x-date-picker:visible, .x-monthpicker:visible';
 const PICKER_TITLE = '.x-datepicker-month .x-btn-inner, .x-datepicker-month';
 const PICKER_NEXT = '.x-datepicker-next, .x-datepicker-next a';
 const PICKER_PREV = '.x-datepicker-prev, .x-datepicker-prev a';
+const WINDOW_LABEL_TEXT = /\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/;
 
 function newResult(args) {
   return {
@@ -34,6 +41,7 @@ function newResult(args) {
     statusBefore: null,
     statusAfter: null,
     reasons: [],
+    findMethod: null,
     cancelPath: null,
     penaltyText: null,
     penaltyAmount: null,
@@ -112,16 +120,26 @@ async function runSearch(page) {
 }
 
 // The window picker opens on a real mouse click (cancel-now.mjs); a programmatic click does not open it.
-async function openWindowPicker(page) {
-  const labels = page.getByText(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/);
-  const boxes = [];
+// The window label nearest the bottom of the screen. Its calendar icon sits just to its right.
+async function lowestWindowLabel(page) {
+  const labels = page.getByText(WINDOW_LABEL_TEXT);
+  let best = null;
   for (const index of await visibleIndexes(labels)) {
     const box = await labels.nth(index).boundingBox();
-    if (box && box.width > 40) boxes.push(box);
+    if (box && box.width > 40 && (!best || box.y > best.box.y)) best = { locator: labels.nth(index), box };
   }
-  boxes.sort((a, b) => b.y - a.y);
-  const box = boxes[0];
-  if (!box) throw new Error('NO_VISIBLE_DATE_WINDOW');
+  return best;
+}
+
+async function readWindow(page) {
+  const label = await lowestWindowLabel(page);
+  return label ? parseDateWindowLabel(await label.locator.innerText()) : null;
+}
+
+async function openWindowPicker(page) {
+  const label = await lowestWindowLabel(page);
+  if (!label) throw new Error('NO_VISIBLE_DATE_WINDOW');
+  const { box } = label;
   const midY = box.y + box.height / 2;
   await page.mouse.click(box.x + box.width + 22, midY);
   await page.waitForTimeout(500);
@@ -132,9 +150,8 @@ async function openWindowPicker(page) {
   if ((await page.locator(PICKER_OPEN).count()) === 0) throw new Error('DATE_PICKER_NOT_OPEN');
 }
 
-// Puts the arrival day inside the search window, then Apply and Run.
-async function setArrivalWindow(page, arrival) {
-  await openWindowPicker(page);
+// Moves the open picker to the arrival month and clicks the arrival day.
+async function pickArrivalDay(page, arrival) {
   const title = page.locator(PICKER_TITLE).first();
   let steps = pickerMonthSteps(await title.innerText(), arrival);
   for (let clicks = 0; steps !== 0; clicks += 1) {
@@ -154,9 +171,127 @@ async function setArrivalWindow(page, arrival) {
   if (hits.length !== 1) throw new Error(`DATE_PICKER_DAY_AMBIGUOUS:${hits.length}`);
   await cells.nth(hits[0]).click({ force: true });
   await page.waitForTimeout(300);
-  await page.locator('a.x-btn:visible').filter({ hasText: /^Apply$/ }).first().click({ force: true });
+}
+
+// Some pickers apply on the day click and show no Apply, so Apply is clicked only when it is on screen.
+async function clickApplyIfShown(page) {
+  const apply = page.locator('a.x-btn:visible').filter({ hasText: /^Apply$/ });
+  if ((await apply.count()) === 0) return false;
+  await apply.first().click({ force: true });
   await page.waitForTimeout(400);
+  return true;
+}
+
+// Grid fallback: picker to the arrival day, then Apply if shown, then the grid Run.
+async function setArrivalWindow(page, arrival) {
+  await openWindowPicker(page);
+  await pickArrivalDay(page, arrival);
+  await clickApplyIfShown(page);
   await runSearch(page);
+}
+
+// Quick-search window: the calendar icon opens the picker and the arrival day moves the window.
+async function setQuickWindow(page, arrival) {
+  await openWindowPicker(page);
+  await pickArrivalDay(page, arrival);
+  await clickApplyIfShown(page);
+  await page.waitForTimeout(600);
+}
+
+// Header quick search: fill the confirmation and press Enter. The dropdown lists matching stays.
+async function quickSearch(page, confirmation) {
+  const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+  await search.click({ force: true });
+  await search.fill(confirmation);
+  await search.press('Enter');
+  await page.waitForTimeout(800);
+}
+
+async function clickRunIfShown(page) {
+  const run = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
+  if ((await run.count()) === 0) return false;
+  await run.first().click({ force: true });
+  await page.waitForTimeout(1000);
+  return true;
+}
+
+// For the element holding the confirmation: the nearest ancestor showing an HMS date is the row. Cell texts are
+// the row's visible leaf elements in document order. inPanel is true when an ancestor shows the quick-search
+// tabs (In-House and Departures), which keeps grid rows out of the match.
+async function readQuickRowCells(locator) {
+  return locator.evaluate((el) => {
+    const DATE = /\b\d{1,2}-[A-Za-z]{3}-\d{4}\b/;
+    const shown = (node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    };
+    let row = null;
+    let inPanel = false;
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      const text = node.innerText || '';
+      if (!row && DATE.test(text)) row = node;
+      if (/In-?House/.test(text) && /Departures/.test(text)) {
+        inPanel = true;
+        break;
+      }
+    }
+    if (!row) return { inPanel, cells: null };
+    const leaves = row.children.length === 0
+      ? [row]
+      : [...row.querySelectorAll('*')].filter((node) => node.children.length === 0 && shown(node));
+    return { inPanel, cells: leaves.map((node) => node.innerText || '') };
+  });
+}
+
+// Null when the quick panel shows no row for the confirmation. Throws when the row is ambiguous or unreadable.
+async function readQuickRow(page, confirmation) {
+  const matches = page.getByText(confirmation, { exact: true });
+  const candidates = [];
+  for (const index of await visibleIndexes(matches)) {
+    const locator = matches.nth(index);
+    const { inPanel, cells } = await readQuickRowCells(locator);
+    if (inPanel) candidates.push({ locator, cells });
+  }
+  if (candidates.length === 0) return null;
+  if (candidates.length > 1) throw new Error('AMBIGUOUS_QUICK_ROW');
+  const row = parseQuickSearchRow(candidates[0].cells, confirmation);
+  if (!row) throw new Error('QUICK_ROW_UNPARSED');
+  return { locator: candidates[0].locator, row };
+}
+
+async function waitQuickRow(page, confirmation) {
+  const deadline = Date.now() + QUICK_WAIT_MS;
+  for (;;) {
+    const found = await readQuickRow(page, confirmation);
+    if (found || Date.now() >= deadline) return found;
+    await page.waitForTimeout(500);
+  }
+}
+
+// Quick search first. When its window does not cover arrival, the calendar icon moves the window and the search
+// runs again. The grid window picker is the last resort. Returns {method, locator, row}; row is null on the grid path.
+async function findStay(ctx, { evidence = false } = {}) {
+  const { page, args } = ctx;
+  await quickSearch(page, args.confirmation);
+  let found = await waitQuickRow(page, args.confirmation);
+  if (!found && (await clickRunIfShown(page))) found = await waitQuickRow(page, args.confirmation);
+  let method = found ? 'quick' : null;
+  const dateWindow = await readWindow(page);
+  if (dateWindow && !windowCovers(dateWindow, args.arrival)) {
+    await setQuickWindow(page, args.arrival);
+    await quickSearch(page, args.confirmation);
+    const moved = await waitQuickRow(page, args.confirmation);
+    if (moved) {
+      found = moved;
+      method = 'quick_calendar';
+    }
+  }
+  if (found) return { method, locator: found.locator, row: found.row };
+  await searchConfirmation(page, args.confirmation);
+  await setArrivalWindow(page, args.arrival);
+  if (evidence) await shot(ctx, 'window.png');
+  const row = await findRow(page, args.confirmation);
+  return row ? { method: 'picker', locator: row, row: null } : null;
 }
 
 async function findRow(page, confirmation) {
@@ -262,11 +397,9 @@ async function readBack(ctx, blocked) {
     return record.confirmation === args.confirmation ? squash(record.status) : null;
   }
   result.readbackMethod = 're-search';
-  await searchConfirmation(page, args.confirmation);
-  await runSearch(page);
-  const row = await findRow(page, args.confirmation);
-  if (!row) return null;
-  await openRecord(page, row);
+  const found = await findStay(ctx);
+  if (!found) return null;
+  await openRecord(page, found.locator);
   const record = await readRecord(page);
   return record.confirmation === args.confirmation ? squash(record.status) : null;
 }
@@ -282,19 +415,32 @@ async function run(ctx) {
   mark(ctx, 'login');
   await openGuestStay(page);
   await page.waitForTimeout(1500);
-  await searchConfirmation(page, args.confirmation);
-  await setArrivalWindow(page, args.arrival);
-  await shot(ctx, 'window.png');
+  const found = await findStay(ctx, { evidence: true });
   mark(ctx, 'search');
-  const row = await findRow(page, args.confirmation);
-  if (!row) {
+  if (!found) {
     result.outcome = 'not_found';
     return;
   }
+  result.findMethod = found.method;
   await shot(ctx, 'found.png');
-  await openRecord(page, row);
+  if (found.row) {
+    // Quick-search row: guard and status come from the dropdown, before any record is opened.
+    result.statusBefore = squash(found.row.status);
+    const rowVerdict = identityCheck(args, found.row);
+    if (!rowVerdict.ok) {
+      result.outcome = rowVerdict.outcome;
+      result.refusal = rowVerdict.reason;
+      return;
+    }
+    if (isCancelledStatus(found.row.status)) {
+      result.statusAfter = result.statusBefore;
+      result.outcome = resolveOutcome({ mode: args.mode, statusBefore: found.row.status, statusAfter: found.row.status });
+      return;
+    }
+  }
+  await openRecord(page, found.locator);
   const record = await readRecord(page);
-  result.statusBefore = squash(record.status);
+  if (!found.row) result.statusBefore = squash(record.status);
   await shot(ctx, 'opened.png');
   mark(ctx, 'opened');
 
@@ -305,7 +451,7 @@ async function run(ctx) {
     return;
   }
   if (isCancelledStatus(record.status)) {
-    result.statusAfter = result.statusBefore;
+    result.statusAfter = squash(record.status);
     result.outcome = resolveOutcome({ mode: args.mode, statusBefore: record.status, statusAfter: record.status });
     return;
   }

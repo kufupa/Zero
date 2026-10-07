@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck, isCancelledStatus, labGuard,
-  normalizeReasons, parseCancelArgs, parseIsoDate, parsePenalty, pickerMonthSteps, preflight, resolveOutcome,
+  normalizeReasons, parseCancelArgs, parseDateWindowLabel, parseIsoDate, parsePenalty, parseQuickSearchRow,
+  pickerMonthSteps, preflight, resolveOutcome, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -146,6 +147,71 @@ test('pickerMonthSteps counts month clicks from the picker title to the arrival 
   assert.equal(pickerMonthSteps('Sep 2027', '2027-09-14'), 0);
   assert.equal(pickerMonthSteps('Sept 2027', '2027-09-14'), 0);
   assert.equal(pickerMonthSteps('Sep 07, 2026 - Nov 06, 2026', '2027-09-14'), null);
+});
+
+test('parseDateWindowLabel reads the quick-search window and rejects reversed or invalid ranges', () => {
+  assert.deepEqual(parseDateWindowLabel('Sep 14, 2027 - Nov 13, 2027'), { from: '2027-09-14', to: '2027-11-13' });
+  assert.deepEqual(parseDateWindowLabel('Sept 1, 2026 - Oct 2, 2026'), { from: '2026-09-01', to: '2026-10-02' });
+  assert.equal(parseDateWindowLabel('Nov 13, 2027 - Sep 14, 2027'), null);
+  assert.equal(parseDateWindowLabel('Sep 31, 2027 - Nov 13, 2027'), null);
+  assert.equal(parseDateWindowLabel('Sep 14, 2027'), null);
+  assert.equal(parseDateWindowLabel(''), null);
+});
+
+test('windowCovers includes both window ends and refuses unknown windows', () => {
+  const window = { from: '2027-09-14', to: '2027-11-13' };
+  assert.equal(windowCovers(window, '2027-09-14'), true);
+  assert.equal(windowCovers(window, '2027-11-13'), true);
+  assert.equal(windowCovers(window, '2027-09-13'), false);
+  assert.equal(windowCovers(window, '2027-11-14'), false);
+  assert.equal(windowCovers(window, 'garbage'), false);
+  assert.equal(windowCovers(null, '2027-09-14'), false);
+});
+
+test('parseQuickSearchRow reads conf, Last, First, status and arrival/departure from the dropdown row', () => {
+  const row = parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027', '15-SEP-2027'], '57291630-1');
+  assert.deepEqual(row, {
+    confirmation: '57291630-1',
+    lastName: 'Labtest',
+    firstName: 'Nava',
+    status: 'Cancelled',
+    arrival: '14-SEP-2027',
+    departure: '15-SEP-2027',
+  });
+  assert.deepEqual(
+    parseQuickSearchRow(['Sep 14, 2027 - Nov 13, 2027', 'All', 'In-House', '57291630-1', 'Labtest, Nava', 'Reserved', '14-SEP-2027', '15-SEP-2027', 'Records: 1 of 1'], '57291630-1'),
+    { confirmation: '57291630-1', lastName: 'Labtest', firstName: 'Nava', status: 'Reserved', arrival: '14-SEP-2027', departure: '15-SEP-2027' },
+  );
+});
+
+test('parseQuickSearchRow splits multi-line cells and keeps hyphen, apostrophe and multi-word names', () => {
+  const row = parseQuickSearchRow(['  57291630-1 ', " Labtest,   Nava-Jo ", 'Checked In', '14-SEP-2027\n15-SEP-2027'], '57291630-1');
+  assert.equal(row.firstName, 'Nava-Jo');
+  assert.equal(row.status, 'Checked In');
+  assert.equal(row.departure, '15-SEP-2027');
+  assert.equal(parseQuickSearchRow(['57291630-1', "O'Neil, Anne", 'Reserved', '14-SEP-2027'], '57291630-1').lastName, "O'Neil");
+});
+
+test('parseQuickSearchRow returns null for any row it cannot read exactly', () => {
+  const full = ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027', '15-SEP-2027'];
+  assert.equal(parseQuickSearchRow(full, '11110906-1'), null, 'other confirmation');
+  assert.equal(parseQuickSearchRow(['57291630-1', '46184891-1', ...full.slice(1)], '57291630-1'), null, 'two confirmations');
+  assert.equal(parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Labtest, Ana', 'Cancelled', '14-SEP-2027'], '57291630-1'), null, 'two guests');
+  assert.equal(parseQuickSearchRow(['57291630-1', 'Labtest, Nava', '14-SEP-2027', '15-SEP-2027'], '57291630-1'), null, 'no status');
+  assert.equal(parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Cancelled', 'Records: 1 of 1'], '57291630-1'), null, 'no date');
+  assert.equal(parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Cancelled', '31-FEB-2027'], '57291630-1'), null, 'impossible date');
+  assert.equal(parseQuickSearchRow(['57291630-1', 'Labtest', 'Cancelled', '14-SEP-2027'], '57291630-1'), null, 'no first name separator');
+  assert.equal(parseQuickSearchRow(null, '57291630-1'), null);
+});
+
+test('a parsed quick-search row feeds the identity guard: lab row passes, real guest is refused', () => {
+  const args = { confirmation: '57291630-1', arrival: '2027-09-14' };
+  const lab = parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Reserved', '14-SEP-2027', '15-SEP-2027'], '57291630-1');
+  assert.deepEqual(identityCheck(args, lab), { ok: true, outcome: null, reason: null });
+  const guest = parseQuickSearchRow(['57291630-1', 'Smith, Jo', 'Reserved', '14-SEP-2027', '15-SEP-2027'], '57291630-1');
+  assert.equal(identityCheck(args, guest).outcome, 'refused_not_lab');
+  const otherArrival = parseQuickSearchRow(['57291630-1', 'Labtest, Nava', 'Reserved', '08-JUN-2027', '09-JUN-2027'], '57291630-1');
+  assert.equal(identityCheck(args, otherArrival).outcome, 'refused_identity_mismatch');
 });
 
 test('checkCdpEnv allows only a local borrowed browser with no credentials', () => {
