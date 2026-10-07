@@ -15,14 +15,20 @@ const DEFAULT_LUNA_REGION = 'us-east-1';
  * regex, so reasoning must be forced or effort is silently dropped. Bedrock
  * does not keep stored responses, so reasoning state travels encrypted.
  */
-export const LUNA_PROVIDER_OPTIONS = {
-  openai: {
-    forceReasoning: true,
-    reasoningEffort: LUNA_REASONING_EFFORT,
-    store: false,
-    include: ['reasoning.encrypted_content' as const],
-  },
-};
+export type LunaReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
+export function lunaProviderOptions(reasoningEffort: LunaReasoningEffort = LUNA_REASONING_EFFORT) {
+  return {
+    openai: {
+      forceReasoning: true,
+      reasoningEffort,
+      store: false,
+      include: ['reasoning.encrypted_content' as const],
+    },
+  };
+}
+
+export const LUNA_PROVIDER_OPTIONS = lunaProviderOptions();
 
 type SourceData = string | ArrayBuffer | ArrayBufferView;
 
@@ -105,9 +111,26 @@ export const LUNA_RATE_TABLE_VERSION = 'gpt-6-luna-global-cris-2026-09';
 /** JSON-in/JSON-out adapter so the existing triage workflow can run on Luna. */
 export class LunaModelAdapter implements ModelAdapter {
   private readonly model: LunaLanguageModel;
+  private readonly reasoningEffort: LunaReasoningEffort;
+  private readonly routeId: string;
+  private readonly modelId: string;
+  private readonly protocol: string;
 
-  constructor(options: { model?: LunaLanguageModel; region?: string } = {}) {
+  constructor(
+    options: {
+      model?: LunaLanguageModel;
+      region?: string;
+      reasoningEffort?: LunaReasoningEffort;
+      routeId?: string;
+      modelId?: string;
+      protocol?: string;
+    } = {},
+  ) {
     this.model = options.model ?? createLunaModel({ region: options.region });
+    this.reasoningEffort = options.reasoningEffort ?? LUNA_REASONING_EFFORT;
+    this.routeId = options.routeId ?? 'gpt6_luna_max';
+    this.modelId = options.modelId ?? LUNA_MODEL_ID;
+    this.protocol = options.protocol ?? 'bedrock-openai-responses';
   }
 
   async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
@@ -130,16 +153,19 @@ export class LunaModelAdapter implements ModelAdapter {
         ? { type: 'json', schema: input.responseSchema as never, name: 'mail_ai_output' }
         : { type: 'json' },
       // Triage schemas predate OpenAI strict mode; validation happens after parse.
-      providerOptions: { openai: { ...LUNA_PROVIDER_OPTIONS.openai, strictJsonSchema: false } },
+      providerOptions: { openai: { ...lunaProviderOptions(this.reasoningEffort).openai, strictJsonSchema: false } },
       abortSignal: active.length ? AbortSignal.any(active) : undefined,
     });
+    if (result.finishReason && result.finishReason.unified !== 'stop') {
+      throw new Error(`model_response_incomplete:${result.finishReason.unified}`);
+    }
     const text = result.content
       .flatMap((part) => (part.type === 'text' ? [part.text] : []))
       .join('');
     const inputTokens = result.usage.inputTokens.total ?? 0;
     const outputTokens = result.usage.outputTokens.total ?? 0;
     return {
-      modelId: LUNA_MODEL_ID,
+      modelId: this.modelId,
       output: parseModelJson(text),
       usage: {
         inputTokens,
@@ -152,9 +178,9 @@ export class LunaModelAdapter implements ModelAdapter {
         rateTableVersion: LUNA_RATE_TABLE_VERSION,
       },
       provenance: {
-        routeId: 'gpt6_luna_max',
-        protocol: `bedrock-openai-responses/effort-${LUNA_REASONING_EFFORT}`,
-        modelId: LUNA_MODEL_ID,
+        routeId: this.routeId,
+        protocol: `${this.protocol}/effort-${this.reasoningEffort}`,
+        modelId: this.modelId,
         usageSource: result.usage.inputTokens.total === undefined ? 'unknown' : 'reported',
       },
     };

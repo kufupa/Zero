@@ -27,6 +27,7 @@ import {
 } from './property-knowledge-contract.js';
 import { documentValidationIsUsable } from '../mail/artifacts/existing-document-contracts.js';
 import type { ExistingDocumentService } from '../mail/artifacts/existing-document-service.js';
+import { isLuhnValid, PAN_CANDIDATE_PATTERN } from './card-mask.js';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
@@ -146,23 +147,6 @@ const PAYMENT_SECRET_PATTERNS = [
   /\bBasic\s+[A-Za-z0-9+/]{8,}={0,2}\b/i,
   /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/,
 ];
-
-const PAN_CANDIDATE_PATTERN = /(?<!\d)(?:\d[ -]?){13,19}(?!\d)/g;
-
-function isLuhnValid(value: string): boolean {
-  let sum = 0;
-  let double = false;
-  for (let index = value.length - 1; index >= 0; index -= 1) {
-    let digit = Number(value[index]);
-    if (double) {
-      digit *= 2;
-      if (digit > 9) digit -= 9;
-    }
-    sum += digit;
-    double = !double;
-  }
-  return sum % 10 === 0;
-}
 
 function hasPaymentSecret(content: string): boolean {
   if (PAYMENT_SECRET_PATTERNS.some((pattern) => pattern.test(content))) return true;
