@@ -115,6 +115,48 @@ test('hasSearch matches Guest Stay search chrome not a random page', () => {
   assert.equal(reader.hasSearch('<div>Front Desk</div>'), false);
 });
 
+test('navigate retries Front Desk click with force when overlay intercepts', async () => {
+  const clicks = [];
+  let html = '<div>Front Desk</div>';
+  const page = {
+    content: async () => html,
+    evaluate: async (fn, label) => {
+      if (typeof fn === 'function' && fn.length === 0) return false;
+      return html
+        .replace(/<[^>]+>/g, '\n')
+        .split('\n')
+        .some((line) => line.trim() === label);
+    },
+    click: async (sel, options = {}) => {
+      clicks.push({ sel, force: Boolean(options.force) });
+      if (sel === 'text=Front Desk' && !options.force) {
+        throw new Error('page.click: Timeout 30000ms exceeded.');
+      }
+      if (sel === 'text=Front Desk' && options.force) {
+        html = '<div>Front Desk</div>\n<div>Guest Stay</div>';
+      }
+      if (sel === 'text=Guest Stay') html = '<input name="search">';
+    },
+  };
+  const result = await reader.navigateGuestStay(page, {
+    frontDeskMs: 200,
+    guestStayMs: 200,
+    searchPaintMs: 200,
+    pollMs: 10,
+  });
+  assert.equal(result.navigated, 'menu');
+  assert.equal(clicks[0].sel, 'text=Front Desk');
+  assert.equal(clicks[0].force, false);
+  assert.equal(
+    clicks.some((c) => c.sel === 'text=Front Desk' && c.force),
+    true,
+  );
+  assert.equal(
+    clicks.some((c) => c.sel === 'text=Guest Stay'),
+    true,
+  );
+});
+
 test('navigate clicks Front Desk then Guest Stay and waits for search input', async () => {
   const clicks = [];
   let html = '<div>Front Desk</div>';
@@ -192,8 +234,9 @@ test('borrowed CDP is 127.0.0.1 only', () => {
 
 test('source stays read-only: Guest Stay menu nav, no save/cancel/checkin, no mail UI', async () => {
   const source = await readFile(sourceUrl, 'utf8');
-  assert.match(source, /text=Front Desk/);
-  assert.match(source, /text=Guest Stay/);
+  assert.match(source, /text=\$\{label\}/);
+  assert.match(source, /'Front Desk'/);
+  assert.match(source, /'Guest Stay'/);
   assert.match(source, /___NOMATCH___/);
   assert.equal(source.includes('__NAVA_UNUSED__'), false);
   assert.match(source, /59898948-1/);

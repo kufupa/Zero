@@ -156,26 +156,44 @@ async function exactMenuLabel(page, label) {
   }
 }
 
+async function clickMenuExact(page, label) {
+  const sel = `text=${label}`;
+  try {
+    await page.click(sel, { timeout: 4_000 });
+    return true;
+  } catch {
+    try {
+      await page.click(sel, { force: true, timeout: 4_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
   const html = await page.content().catch(() => '');
   if (hasSearch(html)) return { navigated: 'already_open' };
-  const menuDeadline = Date.now() + timeouts.frontDeskMs;
-  while (!(await exactMenuLabel(page, 'Front Desk')) && Date.now() < menuDeadline) {
-    await delay(timeouts.pollMs);
-  }
-  if (!(await exactMenuLabel(page, 'Front Desk'))) {
-    throw new Error('GUEST_STAY_NAV_NO_FRONT_DESK');
-  }
-  await page.click('text=Front Desk');
-  const guestDeadline = Date.now() + timeouts.guestStayMs;
-  while (!(await exactMenuLabel(page, 'Guest Stay')) && Date.now() < guestDeadline) {
-    await delay(timeouts.pollMs);
-  }
-  await page.click('text=Guest Stay');
-  const paintDeadline = Date.now() + timeouts.searchPaintMs;
-  while (Date.now() < paintDeadline) {
-    if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'menu' };
-    await delay(timeouts.pollMs);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const menuDeadline = Date.now() + timeouts.frontDeskMs;
+    while (!(await exactMenuLabel(page, 'Front Desk')) && Date.now() < menuDeadline) {
+      await delay(timeouts.pollMs);
+    }
+    if (!(await exactMenuLabel(page, 'Front Desk'))) {
+      if (attempt === 2) throw new Error('GUEST_STAY_NAV_NO_FRONT_DESK');
+      continue;
+    }
+    await clickMenuExact(page, 'Front Desk');
+    const guestDeadline = Date.now() + timeouts.guestStayMs;
+    while (!(await exactMenuLabel(page, 'Guest Stay')) && Date.now() < guestDeadline) {
+      await delay(timeouts.pollMs);
+    }
+    await clickMenuExact(page, 'Guest Stay');
+    const paintDeadline = Date.now() + timeouts.searchPaintMs;
+    while (Date.now() < paintDeadline) {
+      if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'menu' };
+      await delay(timeouts.pollMs);
+    }
   }
   throw new Error('GUEST_STAY_NAV_NO_SEARCH');
 }
