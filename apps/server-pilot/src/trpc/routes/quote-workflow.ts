@@ -292,13 +292,18 @@ export const quoteWorkflowRouter = router({
               console.warn('quote_workflow_fallback', llm.fallbackReason);
               const analysis = analyseQuoteSources({
                 subject: synced.subject,
-                bodyText: synced.bodyText,
+                bodyText: [input.staffNote, synced.bodyText].filter(Boolean).join('\n\n'),
                 preceding: synced.preceding,
                 attachments: synced.attachments,
               });
+              const treated =
+                input.treatAs === 'create_booking' || input.treatAs === 'quote'
+                  ? { intent: input.treatAs, workflow: input.treatAs }
+                  : {};
               return {
                 status: 'ready' as const,
                 ...analysis,
+                ...treated,
                 reviewItems: documentFailureItems(synced.attachments, 'text'),
                 source: 'regex_fallback' as const,
                 fallbackReason: llm.fallbackReason,

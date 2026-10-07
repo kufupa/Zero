@@ -666,6 +666,31 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     }
   });
 
+  it('keeps treatAs quote on regex fallback', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Venue',
+      bodyText: 'DDR and conference rooms please.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 13,
+      treatAs: 'quote',
+      staffNote: '12 standard twins 12-14 Nov',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.intent).toBe('quote');
+      expect(result.workflow).toBe('quote');
+    }
+  });
+
   it('does not cache regex_fallback so a later Luna call can recover', async () => {
     cacheLoaders.llmEnabled = () => false;
     const first = await analyse();
