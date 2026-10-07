@@ -2,6 +2,7 @@ import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } f
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import { BookingCards } from './booking-card';
 import { DocumentReview } from './document-review';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
@@ -364,6 +365,7 @@ export function QuoteWorkflowPanel({
           ))}
         </section>
       ) : null}
+      {session.bookingDraft ? <BookingCards draft={session.bookingDraft} /> : null}
       {showReply ? (
         <DocumentReview session={session} onReplyChange={onReplyChange} onPreparePdf={onPreparePdf} />
       ) : null}

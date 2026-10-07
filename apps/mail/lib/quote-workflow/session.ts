@@ -621,6 +621,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         evidence: null,
         steps: planQuoteSteps(session.groups, action.stayKey),
         runningStepId: null,
+        bookingDraft: null,
       };
     }
     case 'staff_quote_ready': {
@@ -656,7 +657,20 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
         ),
+        bookingDraft: null,
       };
+    }
+    case 'booking_draft_ready': {
+      if (!requestMatchesCurrent(session, action.payload.selectionEpoch, action.payload.inputRevision)) {
+        return session;
+      }
+      const source = session.staffSource;
+      if (!source || source.sourceHash !== action.sourceHash) return session;
+      if (source.messageId !== action.payload.messageId) return session;
+      if (!session.staffQuote || session.staffQuote.revisionRef !== action.payload.revisionRef) {
+        return session;
+      }
+      return { ...session, bookingDraft: action.payload };
     }
     case 'handle_review_item': {
       const item = session.reviewItems.find((row) => row.id === action.itemId);
@@ -777,6 +791,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         staffQuote: null,
         staffQuotes: {},
         evidence: null,
+        bookingDraft: null,
         errorMessage: action.reason,
         steps: session.steps.map((step) =>
           step.id === action.stepId

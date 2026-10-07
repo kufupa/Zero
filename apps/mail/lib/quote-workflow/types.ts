@@ -303,6 +303,41 @@ export type QuoteToolStep = {
   shareKey?: string;
 };
 
+export type BookingDraftRoom = {
+  groupId: string;
+  roomIndex: number;
+  request: Record<string, unknown>;
+  schemaErrors: string[];
+};
+
+export type BookingRateCheck = {
+  status: 'match' | 'mismatch' | 'cannot_check';
+  claimQuote: string;
+  assumedTaxBasis: boolean;
+  reason?: string;
+  differenceMinor?: number;
+};
+
+export type BookingDraftPayload = {
+  rooms: BookingDraftRoom[];
+  rateCheck: BookingRateCheck[];
+  missing: Array<{ field: string; question: string }>;
+  flags: string[];
+};
+
+export type BookingDraftReady = {
+  draft: BookingDraftPayload;
+  options: {
+    track: string[];
+    sourceOfBusiness: string[];
+    guaranteeType: string[];
+  };
+  messageId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  revisionRef: string;
+};
+
 export type QuoteSession = {
   phase: QuoteWorkflowPhase;
   binding: QuoteSelectionBinding | null;
@@ -331,7 +366,7 @@ export type QuoteSession = {
   reviewItems: QuoteReviewItem[];
   handledReviewItemIds: string[];
   /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
-  bookingDraft: unknown | null;
+  bookingDraft: BookingDraftReady | null;
 };
 
 export type QuoteSessionAction =
@@ -357,6 +392,7 @@ export type QuoteSessionAction =
       inputRevision: number;
       reviewedReplyHtml?: string;
     }
+  | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
   | {

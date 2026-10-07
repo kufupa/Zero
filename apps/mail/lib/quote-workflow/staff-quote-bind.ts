@@ -1,4 +1,8 @@
 import type {
+  PrepareBookingDraftInput,
+  PrepareBookingDraftResult,
+} from './booking-draft-bind';
+import type {
   QuoteOffer,
   ReservationistStaffAction,
   StaffQuoteAllocation,
@@ -540,6 +544,7 @@ type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
+  prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
 };
 
 type DraftsClient = {

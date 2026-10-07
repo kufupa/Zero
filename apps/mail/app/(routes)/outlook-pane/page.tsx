@@ -89,6 +89,7 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
+import { bindPrepareBookingDraft } from '@/lib/quote-workflow/booking-draft-bind';
 import {
   bindExecuteStaffQuote,
   bindQualifiedStaffProposalPdf,
@@ -823,6 +824,29 @@ export default function OutlookPanePage() {
         selectionEpoch,
         inputRevision,
       });
+      const luna = quoteSession.analysis?.luna;
+      if (luna?.workflow === 'create_booking') {
+        void bindPrepareBookingDraft({
+          mutate: staff.workstation.prepareBookingDraft?.mutate,
+          source,
+          workflowRunId: remote.staffQuote.workflowRunId,
+          revisionRef: remote.staffQuote.revisionRef,
+          messageId: source.messageId,
+          selectionEpoch,
+          inputRevision,
+          analysis: luna,
+        }).then((draftRemote) => {
+          if (draftRemote.status !== 'ok') {
+            toast.warning(draftRemote.reason);
+            return;
+          }
+          dispatchQuote({
+            type: 'booking_draft_ready',
+            payload: draftRemote.payload,
+            sourceHash: source.sourceHash,
+          });
+        });
+      }
     });
   };
 

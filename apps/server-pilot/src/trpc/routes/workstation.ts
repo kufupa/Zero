@@ -7,6 +7,9 @@ import {
   attestStaffQuote,
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
+import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
+import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
+import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
 import {
   buildRevisionProposalPdf,
   renderImportedProposalHtml,
@@ -111,6 +114,29 @@ type rQualifiedChoice = {
   departureDate: string;
   description: string;
 };
+export const prepareBookingDraftInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    messageId: z.string().min(1),
+    selectionEpoch: z.number().int().nonnegative(),
+    inputRevision: z.number().int().nonnegative(),
+    analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+function partyClassFromRevision(
+  revision: QuoteRevision,
+  attestation: (StaffQuoteAttestation & { salesStrategy?: string }) | undefined,
+): PartyClass {
+  const context = revision.groups[0]?.context ?? {};
+  if ('agency' in context) return 'agency';
+  if ('organization' in context) {
+    return attestation?.salesStrategy === 'Government' ? 'government' : 'organization';
+  }
+  return 'private';
+}
+
 export const qualifiedProposalInput = z
   .object({
     workflowRunId: z.string().min(1),
@@ -425,7 +451,7 @@ export const workstationRouter = router({
         executorLane: 'hms',
         generationId,
         metrics: {
-          staffQuoteAttestation: attestation,
+          staffQuoteAttestation: { ...attestation, salesStrategy: input.salesStrategy },
           reservationistResult: {
             readiness: 'ready_for_staff_review',
             quoteRevisionIds: [revision.id],
@@ -454,6 +480,57 @@ export const workstationRouter = router({
         .join('; '),
     };
   }),
+  prepareBookingDraft: mailboxProcedure
+    .input(prepareBookingDraftInput)
+    .mutation(async ({ input, ctx }) => {
+      const [bound] = await getDb()
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) return { status: 'unavailable' as const, reason: 'quote_revision_unavailable' };
+      try {
+        const staff = bound.run.metrics?.staffQuoteAttestation as
+          | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
+          | undefined;
+        const { revision } = resolveLedgerProposal(bound.run, {
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          revisionRef: input.revisionRef,
+          factRefs: [],
+        });
+        const cloned = structuredClone(revision);
+        const draft = await buildBookingDrafts({
+          analysis: input.analysis,
+          revision: cloned,
+          defaults: bookingCodeDefaults(partyClassFromRevision(cloned, staff)),
+          messageId: input.messageId,
+        });
+        return {
+          status: 'ready' as const,
+          draft,
+          options: createRequestFieldOptions(),
+          messageId: input.messageId,
+          selectionEpoch: input.selectionEpoch,
+          inputRevision: input.inputRevision,
+          revisionRef: input.revisionRef,
+          workflowRunId: input.workflowRunId,
+        };
+      } catch (error) {
+        return {
+          status: 'unavailable' as const,
+          reason: error instanceof Error ? error.message : 'quote_revision_unavailable',
+        };
+      }
+    }),
   bridgeTicket: publicProcedure
     .input(
       z
