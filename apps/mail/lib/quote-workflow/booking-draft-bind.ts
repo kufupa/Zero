@@ -1,4 +1,4 @@
-import type { BookingDraftReady, LunaAnalysisWire, StaffQuoteSource } from './types';
+import type { BookingDraftReady, LunaAnalysisWire, QuoteBoard, StaffQuoteSource, StayGroupRequirement } from './types';
 
 export type PrepareBookingDraftInput = {
   workflowRunId: string;
@@ -96,7 +96,42 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   departureDate: string;
   roomCode: string;
   rateCode: string;
+  board: QuoteBoard;
 };
+
+export function overlayLunaGroupsFromStaff(
+  luna: LunaAnalysisWire,
+  groups: StayGroupRequirement[],
+): LunaAnalysisWire['groups'] {
+  if (!groups.length) return luna.groups;
+  return groups.map((group, index) => {
+    const match =
+      luna.groups.find(
+        (row) => row.arrival === (group.arrivalDate ?? null) && row.departure === (group.departureDate ?? null),
+      ) ?? luna.groups[index];
+    return {
+      arrival: group.arrivalDate ?? null,
+      departure: group.departureDate ?? null,
+      rooms: group.quantity ?? null,
+      adultsPerRoom: group.adults ?? null,
+      childAges: [...(group.childrenAges ?? [])],
+      board:
+        group.board === 'dinner_bb'
+          ? 'dbb'
+          : group.board === 'unknown' || !group.board
+            ? null
+            : group.board,
+      roomPreference: group.roomPreference ?? null,
+      guestNames: [...(match?.guestNames ?? [])],
+    };
+  });
+}
+
+export function offerBoardFromRevision(board: string | null | undefined): QuoteBoard {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'dinner_bed_breakfast' || board === 'dinner_bb' || board === 'dbb') return 'dinner_bb';
+  return 'bb';
+}
 
 export type BoundUsePriorQuoteForBooking =
   | { status: 'unavailable'; reason: string }
@@ -178,6 +213,7 @@ export async function bindUsePriorQuoteForBooking(args: {
         departureDate: result.departureDate,
         roomCode: result.roomCode,
         rateCode: result.rateCode,
+        board: offerBoardFromRevision(result.board),
       },
     };
   } catch (error) {

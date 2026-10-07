@@ -633,6 +633,7 @@ export const workstationRouter = router({
         departureDate: resolved.revision.groups.at(-1)!.departureDate,
         roomCode: resolved.revision.groups[0]!.roomCode,
         rateCode: resolved.revision.groups[0]!.rateCode,
+        board: resolved.revision.groups[0]!.board,
       };
     }),
   bridgeTicket: publicProcedure

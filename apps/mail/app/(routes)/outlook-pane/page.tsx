@@ -93,6 +93,8 @@ import {
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
   bindUsePriorQuoteForBooking,
+  offerBoardFromRevision,
+  overlayLunaGroupsFromStaff,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import {
   bindExecuteStaffQuote,
@@ -409,19 +411,7 @@ export default function OutlookPanePage() {
         inputRevision,
         analysis: {
           ...luna,
-          groups: quoteSession.groups.length
-            ? quoteSession.groups.map((group) => ({
-                arrival: group.arrivalDate ?? null,
-                departure: group.departureDate ?? null,
-                rooms: group.quantity ?? null,
-                adultsPerRoom: group.adults ?? null,
-                childAges: [...(group.childrenAges ?? [])],
-                board:
-                  group.board === 'dinner_bb' ? 'dbb' : group.board === 'unknown' ? null : (group.board ?? null),
-                roomPreference: group.roomPreference ?? null,
-                guestNames: [],
-              }))
-            : luna.groups,
+          groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
         },
       });
       if (cancelled) return;
@@ -440,7 +430,7 @@ export default function OutlookPanePage() {
           kind: 'allocation',
           roomCode: prior.payload.roomCode,
           roomLabel: 'Selected allocation',
-          board: 'bb',
+          board: offerBoardFromRevision(prior.payload.board),
           rateCode: prior.payload.rateCode,
           currency: 'ZAR',
           nightly: [],

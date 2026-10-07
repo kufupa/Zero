@@ -8,6 +8,8 @@ import {
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
   bindUsePriorQuoteForBooking,
+  offerBoardFromRevision,
+  overlayLunaGroupsFromStaff,
 } from '../lib/quote-workflow/booking-draft-bind';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type {
@@ -306,5 +308,40 @@ describe('bindUsePriorQuoteForBooking', () => {
       analysis: luna,
     });
     expect(bound).toEqual({ status: 'unavailable', reason: 'expired' });
+  });
+
+  it('keeps extracted guest names when overlaying staff-edited stays', () => {
+    const named: LunaAnalysisWire = {
+      ...luna,
+      groups: [
+        {
+          arrival: '2026-11-12',
+          departure: '2026-11-14',
+          rooms: 2,
+          adultsPerRoom: 1,
+          childAges: [],
+          board: 'room_only',
+          roomPreference: null,
+          guestNames: ['John Smith', 'Jane Doe'],
+        },
+      ],
+    };
+    expect(
+      overlayLunaGroupsFromStaff(named, [
+        {
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 2,
+          adults: 1,
+          childrenAges: [],
+          board: 'room_only',
+        },
+      ])[0]?.guestNames,
+    ).toEqual(['John Smith', 'Jane Doe']);
+  });
+
+  it('maps a room-only revision board onto the reused offer', () => {
+    expect(offerBoardFromRevision('room_only')).toBe('room_only');
+    expect(offerBoardFromRevision('dinner_bed_breakfast')).toBe('dinner_bb');
   });
 });
