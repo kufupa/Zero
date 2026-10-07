@@ -145,6 +145,37 @@ append_env NAVA_BUILD_COMMIT "${NAVA_BUILD_COMMIT:-}"
 append_env HMS_SHADOW_SERVICE_USER_ID "${HMS_SHADOW_SERVICE_USER_ID:-}"
 append_env HMS_BROWSER_ARTIFACT_ROOT "${HMS_BROWSER_ARTIFACT_ROOT:-/opt/nava/shared/hms-browser-artifacts}"
 append_env GOTENBERG_URL "${GOTENBERG_URL:-http://127.0.0.1:3000}"
+# Optional Azure Luna (quote analyse). Fetch fails closed: omit keys, never echo values.
+: "${AZURE_LUNA_SECRET_NAME:=nava-zero/server-pilot/azure-luna}"
+AZURE_LUNA_PARSED="$(
+  aws secretsmanager get-secret-value \
+    --region "$AWS_REGION" \
+    --secret-id "$AZURE_LUNA_SECRET_NAME" \
+    --query SecretString \
+    --output text 2>/dev/null \
+    | node -e '
+      let raw = "";
+      process.stdin.on("data", (chunk) => { raw += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const parsed = JSON.parse(raw);
+          const base = typeof parsed.AZURE_OPENAI_BASE_URL === "string" ? parsed.AZURE_OPENAI_BASE_URL.trim() : "";
+          const key = typeof parsed.AZURE_FOUNDRY_API_KEY === "string" ? parsed.AZURE_FOUNDRY_API_KEY.trim() : "";
+          if (!base || !key || /[\r\n\0]/.test(base) || /[\r\n\0]/.test(key)) process.exit(0);
+          process.stdout.write(JSON.stringify({ AZURE_OPENAI_BASE_URL: base, AZURE_FOUNDRY_API_KEY: key }));
+        } catch {
+          process.exit(0);
+        }
+      });
+    ' || true
+)"
+if [[ -n "${AZURE_LUNA_PARSED}" ]]; then
+  AZURE_OPENAI_BASE_URL="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).AZURE_OPENAI_BASE_URL)' "$AZURE_LUNA_PARSED")"
+  AZURE_FOUNDRY_API_KEY="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).AZURE_FOUNDRY_API_KEY)' "$AZURE_LUNA_PARSED")"
+  append_env AZURE_OPENAI_BASE_URL "$AZURE_OPENAI_BASE_URL"
+  append_env AZURE_FOUNDRY_API_KEY "$AZURE_FOUNDRY_API_KEY"
+fi
+unset AZURE_LUNA_PARSED AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY
 # Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
 # HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.
 
