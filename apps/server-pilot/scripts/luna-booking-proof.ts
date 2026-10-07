@@ -189,16 +189,21 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() + 3);
   const arrivalDate = new Date(`${arrival}T00:00:00Z`);
+  const departureDate = new Date(`${departure}T00:00:00Z`);
+  let proofArrival = arrival;
+  let proofDeparture = departure;
   if (arrivalDate < cutoff) {
-    const shifted = new Date(arrivalDate);
-    shifted.setUTCFullYear(2027);
+    const years = 2027 - arrivalDate.getUTCFullYear();
+    const shiftedArrival = new Date(arrivalDate);
+    shiftedArrival.setUTCFullYear(arrivalDate.getUTCFullYear() + years);
+    const shiftedDeparture = new Date(departureDate);
+    shiftedDeparture.setUTCFullYear(departureDate.getUTCFullYear() + years);
+    proofArrival = shiftedArrival.toISOString().slice(0, 10);
+    proofDeparture = shiftedDeparture.toISOString().slice(0, 10);
     summary.date_shifted = true;
-    summary.shifted_arrival = shifted.toISOString().slice(0, 10);
+    summary.shifted_arrival = proofArrival;
+    summary.shifted_departure = proofDeparture;
   }
-  const proofArrival = summary.date_shifted ? String(summary.shifted_arrival) : arrival;
-  const proofDeparture = summary.date_shifted
-    ? String(summary.shifted_arrival).slice(0, 8) + departure.slice(8)
-    : departure;
 
   const party = analysis.party;
   const kind = party.kind === 'agency' ? 'bookingAgency' : party.kind === 'organization' || party.kind === 'government' ? 'organization' : null;
@@ -269,8 +274,9 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     }),
     { mode: 0o600 },
   );
-  const quoteOut = path.join(QUOTE_OUT_ROOT, `luna-mvp-${row.id.slice(0, 8)}`);
+  const quoteOut = path.join(QUOTE_OUT_ROOT, `luna-mvp-${row.id.slice(0, 8)}-${Date.now()}`);
   await mkdir(quoteOut, { recursive: true, mode: 0o700 });
+  const quoteStarted = Date.now();
   const quoted = await runNode(
     path.join(TOOLING, 'fetch-quote.mjs'),
     ['--request', quoteReq, '--output', quoteOut],
@@ -284,10 +290,13 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     rateCode?: string;
   };
   let quoteJson: { outcome?: string; groups?: Array<{ options?: QuoteOption[] }> } = {};
-  const latestQuote = await latestResultJson(quoteOut);
+  const latestQuote = quoted.code === 0 ? await latestResultJson(quoteOut) : null;
   if (latestQuote) {
-    quoteJson = JSON.parse(await readFile(latestQuote, 'utf8')) as typeof quoteJson;
-    await copyFile(latestQuote, path.join(dest, 'quote-result.json'));
+    const quoteStat = await stat(latestQuote);
+    if (quoteStat.mtimeMs >= quoteStarted - 1000) {
+      quoteJson = JSON.parse(await readFile(latestQuote, 'utf8')) as typeof quoteJson;
+      await copyFile(latestQuote, path.join(dest, 'quote-result.json'));
+    }
   }
   summary.quote_outcome = quoteJson.outcome;
   const option = quoteJson.groups?.[0]?.options?.find((row) => {
@@ -326,6 +335,7 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
   const requestPath = path.join(dest, 'request.json');
   await writeFile(requestPath, JSON.stringify(request, null, 2), { mode: 0o600 });
 
+  const createStarted = Date.now();
   const created = await runNode(
     path.join(TOOLING, 'create-lab-stay.mjs'),
     ['--request', requestPath, '--stop-before', 'availability'],
@@ -333,7 +343,19 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
   );
   summary.create_exit = created.code;
   summary.create_stdout = created.stdout.trim().split('\n').at(-1) ?? '';
-  const copied = await copyProofArtifacts(dest);
+  const createOk = (summary.create_stdout as string).includes('stopped_before_availability');
+  let copied: string[] = [];
+  if (createOk) {
+    const createResultPath = path.join(CREATE_PROOF, 'result.json');
+    try {
+      const createStat = await stat(createResultPath);
+      if (createStat.mtimeMs >= createStarted - 1000) {
+        copied = await copyProofArtifacts(dest);
+      }
+    } catch {
+      copied = [];
+    }
+  }
   summary.copied = copied;
   try {
     const createResult = JSON.parse(await readFile(path.join(dest, 'result.json'), 'utf8')) as {
@@ -343,9 +365,9 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     summary.create_outcome = createResult.outcome;
     summary.blankRequired = createResult.blankRequired ?? [];
   } catch {
-    summary.create_outcome = 'missing_result';
+    summary.create_outcome = createOk ? 'missing_result' : 'create_failed';
   }
-  summary.outcome = summary.create_outcome ?? 'create_failed';
+  summary.outcome = createOk ? (summary.create_outcome ?? 'stopped_before_availability') : 'create_failed';
   await writeFile(path.join(dest, 'summary.json'), JSON.stringify(summary, null, 2), { mode: 0o600 });
   return summary;
 }

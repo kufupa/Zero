@@ -121,6 +121,7 @@ function draftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraf
     messageId: 'mail-1',
     selectionEpoch: 1,
     inputRevision: 1,
+    revisionRef: 'rev-1',
   };
 }
 
@@ -208,6 +209,15 @@ describe('booking cards', () => {
     expect(screen.getByText(/mismatch/i)).toBeDefined();
   });
 
+  it('shows party_rate_not_applied on the booking draft', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={quotedSession(draftReady({ flags: ['party_rate_not_applied'] }))}
+      />,
+    );
+    expect(screen.getByText('party_rate_not_applied')).toBeDefined();
+  });
+
   it('disables Save with the coming-next copy', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     const save = screen.getByRole('button', { name: /save/i });
@@ -251,6 +261,12 @@ describe('bindPrepareBookingDraft', () => {
       ...input,
     });
     expect(staleMessage.status).toBe('unavailable');
+    const staleRevision = await bindPrepareBookingDraft({
+      mutate: async () => ({ status: 'ready' as const, ...draftReady(), revisionRef: 'other-rev' }),
+      source,
+      ...input,
+    });
+    expect(staleRevision.status).toBe('unavailable');
   });
 
   it('returns unavailable when the client has no mutate', async () => {

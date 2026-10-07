@@ -60,6 +60,11 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
       {draft.draft.rateCheck.map((check, index) => (
         <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
       ))}
+      {draft.draft.flags.map((flag) => (
+        <p key={flag} className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+          {flag}
+        </p>
+      ))}
       {draft.draft.missing.map((item) => (
         <p key={`${item.field}:${item.question}`} className="text-[11px] text-amber-800">
           {item.question}

@@ -223,7 +223,11 @@ export async function buildBookingDrafts(input: {
   const rooms: BookingDraftRoom[] = [];
   const missing: BookingDraftMissing[] = [];
   for (const [gi, group] of revision.groups.entries()) {
-    const names = input.analysis.groups[gi]?.guestNames ?? [];
+    const lunaGroup =
+      input.analysis.groups.find(
+        (row) => row.arrival === group.arrivalDate && row.departure === group.departureDate,
+      ) ?? input.analysis.groups[gi];
+    const names = lunaGroup?.guestNames ?? [];
     const party = partyFromContext(group.context);
     for (let roomIndex = 1; roomIndex <= group.quantity; roomIndex++) {
       const guestName = names[roomIndex - 1] ?? (roomIndex === 1 ? names[0] : undefined) ?? null;

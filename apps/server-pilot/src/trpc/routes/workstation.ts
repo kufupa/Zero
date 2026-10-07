@@ -521,6 +521,8 @@ export const workstationRouter = router({
           messageId: input.messageId,
           selectionEpoch: input.selectionEpoch,
           inputRevision: input.inputRevision,
+          revisionRef: input.revisionRef,
+          workflowRunId: input.workflowRunId,
         };
       } catch (error) {
         return {

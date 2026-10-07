@@ -59,7 +59,8 @@ export async function bindPrepareBookingDraft(args: {
     if (
       ready.selectionEpoch !== args.selectionEpoch ||
       ready.inputRevision !== args.inputRevision ||
-      ready.messageId !== args.source.messageId
+      ready.messageId !== args.source.messageId ||
+      ready.revisionRef !== args.revisionRef
     ) {
       return {
         status: 'unavailable',
@@ -77,6 +78,7 @@ export async function bindPrepareBookingDraft(args: {
         messageId: ready.messageId,
         selectionEpoch: ready.selectionEpoch,
         inputRevision: ready.inputRevision,
+        revisionRef: ready.revisionRef,
       },
     };
   } catch (error) {

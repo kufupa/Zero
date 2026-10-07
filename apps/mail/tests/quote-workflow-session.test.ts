@@ -1458,6 +1458,7 @@ describe('quote session staff review items', () => {
         messageId: 'mail-1',
         selectionEpoch: 1,
         inputRevision: 1,
+        revisionRef: 'rev-1',
       },
     };
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
@@ -1483,6 +1484,7 @@ describe('quote session staff review items', () => {
       messageId: 'mail-1',
       selectionEpoch: 1,
       inputRevision: 1,
+      revisionRef: 'rev-1',
     };
     let s = analysisReady();
     s = withStaffSource(s);
@@ -1519,6 +1521,12 @@ describe('quote session staff review items', () => {
       sourceHash: STAFF_HASH,
     });
     expect(ready.bookingDraft?.draft.rooms).toHaveLength(1);
+    const otherRevision = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload: { ...payload, revisionRef: 'rev-other' },
+      sourceHash: STAFF_HASH,
+    });
+    expect(otherRevision.bookingDraft).toBeNull();
     const patched = reduceQuoteSession(ready, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
     expect(patched.bookingDraft).toBeNull();
   });

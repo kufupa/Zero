@@ -667,6 +667,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const source = session.staffSource;
       if (!source || source.sourceHash !== action.sourceHash) return session;
       if (source.messageId !== action.payload.messageId) return session;
+      if (!session.staffQuote || session.staffQuote.revisionRef !== action.payload.revisionRef) {
+        return session;
+      }
       return { ...session, bookingDraft: action.payload };
     }
     case 'handle_review_item': {

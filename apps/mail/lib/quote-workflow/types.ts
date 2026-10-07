@@ -335,6 +335,7 @@ export type BookingDraftReady = {
   messageId: string;
   selectionEpoch: number;
   inputRevision: number;
+  revisionRef: string;
 };
 
 export type QuoteSession = {
