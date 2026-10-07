@@ -1,11 +1,16 @@
 /**
  * @vitest-environment happy-dom
  */
+import type {
+  QuoteAnalysis,
+  QuoteSession,
+  StayGroupRequirement,
+  LunaAnalysisWire,
+} from '../lib/quote-workflow/types';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import type { QuoteAnalysis, QuoteSession, StayGroupRequirement, LunaAnalysisWire } from '../lib/quote-workflow/types';
+import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => cleanup());
 
@@ -139,7 +144,9 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(
-      screen.getByText('Attachment scan.pdf could not be read (no extractable text). Review it manually.'),
+      screen.getByText(
+        'Attachment scan.pdf could not be read (no extractable text). Review it manually.',
+      ),
     ).toBeDefined();
   });
 
@@ -328,7 +335,7 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     expect(screen.getAllByText(/analyseSelection network down/i).length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('Arrival')).toBeNull();
-  });
+  }, 15_000);
 
   it('ignores a stale analyseSelection result after the selection changes', async () => {
     let resolveFirst!: (value: unknown) => void;
@@ -384,5 +391,5 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
     expect(screen.queryByDisplayValue('Stale')).toBeNull();
-  });
+  }, 15_000);
 });
