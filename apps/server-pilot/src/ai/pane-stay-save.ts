@@ -10,6 +10,9 @@ const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
 );
+// The hotel this HMS session runs on. The CLI never receives a propertyCode (paneStayRequestBody strips it),
+// so every property lock is keyed on this value, whatever the stay asks for.
+export const PANE_STAY_PROPERTY_CODE = 'HRCEN';
 
 export type PaneStay = {
   firstName: string;
@@ -43,7 +46,7 @@ export type PaneStaySpawnResult = {
   screenshot?: string;
 };
 
-type PaneStayLock = {
+export type PaneStayLock = {
   withLock: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
@@ -80,7 +83,7 @@ export function assertLabStayGuard(input: {
   arrival?: string;
 }): void {
   const arrival = input.arrivalDate ?? input.arrival ?? '';
-  if (!/Labtest/i.test(input.lastName)) {
+  if (!/^labtest$/i.test(input.lastName.trim())) {
     throw new Error('pane_save_labtest_required');
   }
   if (arrival < '2027-01-01') {
@@ -108,15 +111,23 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   };
 }
 
-function resolveLock(propertyCode: string): PaneStayLock | null {
-  if (paneStaySaveLoaders.lock) return paneStaySaveLoaders.lock;
+// Production lock for the session's hotel. Cancel and save share this key, so they serialize with each other.
+export function paneStayPropertyLock(): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
   return createPostgresPropertyReadLock({
     tenantId: process.env.PANE_STAY_TENANT_ID || 'legacy',
-    propertyCode,
+    propertyCode: PANE_STAY_PROPERTY_CODE,
     databaseUrl,
   });
+}
+
+// An explicit propertyCode must name the session's hotel. Any other value would lock a key the session never
+// uses, so the lock could be bypassed. Such requests are refused before any lock or spawn.
+export function paneStayPropertyRefusal(propertyCode: string | undefined): string | null {
+  return propertyCode === undefined || propertyCode === PANE_STAY_PROPERTY_CODE
+    ? null
+    : 'pane_save_property_mismatch';
 }
 
 export async function runPaneStay(input: {
@@ -139,6 +150,10 @@ export async function runPaneStay(input: {
   } catch (error) {
     return { status: 'refused', reason: (error as Error).message };
   }
+  const propertyRefusal = paneStayPropertyRefusal(input.stay.propertyCode);
+  if (propertyRefusal) {
+    return { status: 'refused', reason: propertyRefusal };
+  }
   if (input.mode === 'commit') {
     const reader = paneStaySaveLoaders.osressGuestDatesSearch;
     if (!reader) {
@@ -156,7 +171,7 @@ export async function runPaneStay(input: {
       return { status: 'refused', reason: 'osress_duplicate' };
     }
   }
-  const lock = resolveLock(input.stay.propertyCode || 'HRCEN');
+  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock();
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }

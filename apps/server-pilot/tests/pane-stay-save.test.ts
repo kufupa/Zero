@@ -1,11 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertLabStayGuard,
+  PANE_STAY_PROPERTY_CODE,
+  paneStayPropertyLock,
+  paneStayPropertyRefusal,
   paneStayRequestBody,
   paneStaySaveEnabled,
   paneStaySaveLoaders,
   runPaneStay,
 } from '../src/ai/pane-stay-save.js';
+import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
 
 const labStay = {
   firstName: 'Pat',
@@ -59,6 +63,66 @@ describe('pane stay save guards', () => {
       status: 'refused',
       reason: 'pane_save_flag_off',
     });
+  });
+
+  it('requires the Labtest last name as a whole word, not a substring', () => {
+    expect(() =>
+      assertLabStayGuard({ lastName: ' Labtest ', arrivalDate: '2027-01-01' }),
+    ).not.toThrow();
+    expect(() =>
+      assertLabStayGuard({ lastName: 'Labtest Smith', arrivalDate: '2027-09-14' }),
+    ).toThrow(/labtest/i);
+    expect(() =>
+      assertLabStayGuard({ lastName: 'Labtestino', arrivalDate: '2027-09-14' }),
+    ).toThrow(/labtest/i);
+  });
+
+  it('refuses an explicit propertyCode for another hotel before any lock or spawn', async () => {
+    const locked: string[] = [];
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.lock = {
+      withLock: async (fn) => {
+        locked.push('lock');
+        return fn();
+      },
+    };
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    for (const mode of ['preview', 'commit'] as const) {
+      await expect(
+        runPaneStay({ mode, stay: { ...labStay, propertyCode: 'OTHER' } }),
+      ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_property_mismatch' });
+    }
+    expect(locked).toEqual([]);
+  });
+
+  it('accepts an explicit propertyCode that names the session hotel', () => {
+    expect(paneStayPropertyRefusal(undefined)).toBeNull();
+    expect(paneStayPropertyRefusal(PANE_STAY_PROPERTY_CODE)).toBeNull();
+    expect(paneStayPropertyRefusal('hrcen')).toBe('pane_save_property_mismatch');
+    expect(paneStayPropertyRefusal('')).toBe('pane_save_property_mismatch');
+  });
+
+  it('the production property lock is keyed on the session hotel, not on the stay', () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
+    vi.stubEnv('PANE_STAY_TENANT_ID', '');
+    try {
+      const lock = paneStayPropertyLock() as unknown as { key: string } | null;
+      expect(lock?.key).toBe(propertyReadLockKey('legacy', 'HRCEN'));
+      expect(lock?.key).not.toBe(propertyReadLockKey('legacy', 'OTHER'));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('has no production lock without DATABASE_URL', () => {
+    vi.stubEnv('DATABASE_URL', '');
+    try {
+      expect(paneStayPropertyLock()).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('omits propertyCode from the CLI request body', () => {
