@@ -272,6 +272,47 @@ describe('analyseQuoteSelection', () => {
     }
   });
 
+  it('drops rateClaims whose quote is not a substring of the source text', async () => {
+    const kept = {
+      kind: 'exact' as const,
+      amount: '1560',
+      currency: 'ZAR',
+      basis: 'per_room_per_night' as const,
+      taxBasis: 'gross_included' as const,
+      quote: 'R1560 B&B',
+    };
+    const invented = { ...kept, quote: 'R9999 invented', amount: '9999' };
+    const result = await analyseQuoteSelection({
+      selection: { ...selection, bodyText: `${selection.bodyText} Rate R1560 B&B.` },
+      adapter: fakeAdapter(analysis({ rateClaims: [kept, invented] })),
+      enabled: true,
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.rateClaims).toEqual([kept]);
+    }
+  });
+
+  it('returns no rateClaims when every claim quote is invented', async () => {
+    const invented = {
+      kind: 'exact' as const,
+      amount: '9999',
+      currency: 'ZAR',
+      basis: 'per_room_per_night' as const,
+      taxBasis: 'gross_included' as const,
+      quote: 'R9999 invented nightly',
+    };
+    const result = await analyseQuoteSelection({
+      selection,
+      adapter: fakeAdapter(analysis({ rateClaims: [invented] })),
+      enabled: true,
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.rateClaims).toEqual([]);
+    }
+  });
+
   it('passes two quote tasks through unchanged on a multi_date analysis', async () => {
     const payload = analysis({
       workflow: 'quote',

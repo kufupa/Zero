@@ -246,11 +246,14 @@ export async function analyseQuoteSelection(input: {
       return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
     }
     const sourceText = prompt.user;
+    const verbatim = <T extends { quote: string }>(items: T[]) =>
+      items.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote));
     return {
       source: 'luna',
       analysis: {
         ...parsed.data,
-        evidence: parsed.data.evidence.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote)),
+        evidence: verbatim(parsed.data.evidence),
+        rateClaims: verbatim(parsed.data.rateClaims),
       },
     };
   } catch (error) {
