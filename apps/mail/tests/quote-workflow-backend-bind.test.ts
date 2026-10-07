@@ -444,6 +444,29 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('sends staff-confirmed dinner and shuttle extras on executeStaffQuote', async () => {
+    const mutate = vi.fn(async () => readyResult);
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: {
+        ...government,
+        dinnerAllowanceMinor: 12_500,
+        shuttleRequested: true,
+        shuttleMinor: 45_000,
+      },
+    });
+    expect(result.status).toBe('ok');
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      shuttleRequested: true,
+      shuttleMinor: 45_000,
+    });
+  });
+
   it('rejects a zero total and requires PDF hash to match actual bytes', async () => {
     const mutateQuote = vi.fn(async () => ({ ...readyResult, totalMinor: 0 }));
     const zero = await bindExecuteStaffQuote({

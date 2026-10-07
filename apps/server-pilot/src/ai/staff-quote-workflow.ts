@@ -10,7 +10,11 @@ import type {
 } from './reservationist-business-services.js';
 import type { ReservationistExecutionServices } from './reservationist-execution.js';
 import type { RevisionProposalHeader } from '../quote-proposal/proposal-pdf.js';
-import { deriveQuoteLines } from '../quote-proposal/quote-lines.js';
+import {
+  deriveAuthorizedExtraLines,
+  deriveQuoteLines,
+  type AuthorizedProposalFacts,
+} from '../quote-proposal/quote-lines.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -44,6 +48,9 @@ export const staffQuoteInput = z
     attention: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
+    dinnerAllowanceMinor: z.number().int().positive().optional(),
+    shuttleRequested: z.boolean().optional(),
+    shuttleMinor: z.number().int().positive().optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
@@ -211,6 +218,93 @@ export function prepareStaffQuote(
     >,
   };
 }
+const SHUTTLE_REVIEW_TEXT = 'Shuttle requested — add a price or answer in the reply';
+
+function buildStayPersons(input: StaffQuoteInput): Array<{ id: string; age: number }> {
+  const persons: Array<{ id: string; age: number }> = [];
+  for (const group of input.groups) {
+    for (let room = 0; room < group.quantity; room += 1) {
+      for (let adult = 0; adult < group.adults; adult += 1) {
+        persons.push({ id: `${group.id}-r${room}-a${adult}`, age: 18 });
+      }
+      for (let child = 0; child < group.childrenAges.length; child += 1) {
+        persons.push({
+          id: `${group.id}-r${room}-c${child}`,
+          age: group.childrenAges[child]!,
+        });
+      }
+    }
+  }
+  return persons;
+}
+
+export type StaffProposalFactsBuild = {
+  facts: AuthorizedProposalFacts | null;
+  factRefs: string[];
+  extrasReviewItems: string[];
+};
+
+/** Pure staff-confirmed extras for PDF and draft totals; never model-priced. */
+export function buildStaffProposalFacts(
+  input: StaffQuoteInput,
+  scope: { messageId: string; sourceHash: string },
+  prepared: { authorizationId: string },
+  revision: QuoteRevision,
+): StaffProposalFactsBuild {
+  input = staffQuoteInput.parse(input);
+  if (revision.authorizationId !== prepared.authorizationId)
+    throw new Error('staff_quote_attestation_mismatch');
+  const extras: AuthorizedProposalFacts['extras'] = [];
+  const extrasReviewItems: string[] = [];
+  const first = input.groups[0]!;
+  const dates = occupiedDates(first.arrivalDate, first.departureDate);
+  if (input.dinnerAllowanceMinor && input.dinnerAllowanceMinor > 0) {
+    const persons = buildStayPersons(input);
+    const units = persons.length * dates.length;
+    extras.push({
+      id: 'dinner-allowance',
+      label: 'Dinner allowance',
+      quantity: 1,
+      units,
+      unitKind: 'person_service',
+      unitMinor: input.dinnerAllowanceMinor,
+      service: 'dinner_allowance',
+      persons,
+      dates,
+    });
+  }
+  if (input.shuttleRequested) {
+    if (input.shuttleMinor && input.shuttleMinor > 0) {
+      extras.push({
+        id: 'shuttle',
+        label: 'Shuttle',
+        quantity: 1,
+        units: 1,
+        unitKind: 'trip',
+        unitMinor: input.shuttleMinor,
+        service: 'shuttle',
+        persons: [],
+        dates: [first.arrivalDate],
+      });
+    } else {
+      extrasReviewItems.push(SHUTTLE_REVIEW_TEXT);
+    }
+  }
+  if (!extras.length) {
+    return { facts: null, factRefs: [], extrasReviewItems };
+  }
+  const facts: AuthorizedProposalFacts = {
+    revisionId: revision.id,
+    authorizationId: revision.authorizationId,
+    sourceRef: `message:${scope.messageId}`,
+    sourceHash: scope.sourceHash,
+    extras,
+    includedEntitlements: [],
+  };
+  deriveAuthorizedExtraLines(revision, facts);
+  return { facts, factRefs: ['extras'], extrasReviewItems };
+}
+
 export async function executeStaffQuote(
   prepared: ReturnType<typeof prepareStaffQuote>,
   services: ReservationistExecutionServices,

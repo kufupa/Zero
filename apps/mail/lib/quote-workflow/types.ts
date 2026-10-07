@@ -193,6 +193,9 @@ export type StaffQuoteHeader = {
   attention: string;
   clientEmail: string;
   clientTelephone: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
 };
 
 export function emptyStaffQuoteHeader(): StaffQuoteHeader {
@@ -391,6 +394,7 @@ export type QuoteSessionAction =
       selectionEpoch: number;
       inputRevision: number;
       reviewedReplyHtml?: string;
+      extrasReviewItems?: string[];
     }
   | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }

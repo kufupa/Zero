@@ -431,17 +431,66 @@ function hasStaffStayEdits(session: QuoteSession): boolean {
   );
 }
 
+function rateClaimAmountMinor(amount: string): number | undefined {
+  const normalized = amount.replaceAll(',', '').trim();
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
+  if (!match) return undefined;
+  const major = Number(match[1]);
+  const frac = (match[2] ?? '00').padEnd(2, '0').slice(0, 2);
+  const minor = major * 100 + Number(frac);
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
+}
+
+function dinnerAllowanceFromRateClaims(analysis: QuoteAnalysis): number | undefined {
+  for (const claim of analysis.luna?.rateClaims ?? []) {
+    if (!claim.quote?.trim() || !/dinner|meal allowance/i.test(claim.quote)) continue;
+    const minor = rateClaimAmountMinor(claim.amount);
+    if (!minor) continue;
+    const amountDigits = claim.amount.replace(/[^\d]/g, '');
+    if (!amountDigits || !claim.quote.replace(/[^\d]/g, '').includes(amountDigits)) continue;
+    return minor;
+  }
+  return undefined;
+}
+
 function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
+  let next = header;
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
-  if (!party || !name) return header;
-  if (header.company.trim() || header.agency.trim()) return header;
-  if (party.kind === 'agency') return { ...header, agency: name };
-  if (party.kind === 'organization') return { ...header, company: name };
-  if (party.kind === 'government') {
-    return { ...header, company: name, salesStrategy: 'Government' };
+  if (party && name && !header.company.trim() && !header.agency.trim()) {
+    if (party.kind === 'agency') next = { ...next, agency: name };
+    else if (party.kind === 'organization') next = { ...next, company: name };
+    else if (party.kind === 'government') {
+      next = { ...next, company: name, salesStrategy: 'Government' };
+    }
   }
-  return header;
+  if (next.dinnerAllowanceMinor === undefined) {
+    const dinner = dinnerAllowanceFromRateClaims(analysis);
+    if (dinner) next = { ...next, dinnerAllowanceMinor: dinner };
+  }
+  if (!next.shuttleRequested && analysis.luna?.flags.includes('extras')) {
+    next = { ...next, shuttleRequested: true };
+  }
+  return next;
+}
+
+function reviewItemsFromExtrasNotes(
+  session: QuoteSession,
+  notes: readonly string[],
+): QuoteSession['reviewItems'] {
+  if (!notes.length) return session.reviewItems;
+  const existing = new Set(session.reviewItems.map((item) => item.text));
+  const added = notes
+    .filter((text) => text.trim() && !existing.has(text))
+    .map((text, index) => ({
+      id: `staff-extras-review-${index}-${text.length}`,
+      kind: 'question' as const,
+      rank: 'secondary' as const,
+      text,
+      sourceLabel: 'Quote extras',
+      blocking: false,
+    }));
+  return added.length ? [...session.reviewItems, ...added] : session.reviewItems;
 }
 
 function applyGroupPatch(
@@ -654,6 +703,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         errorMessage: null,
         runningStepId: null,
         reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
         ),

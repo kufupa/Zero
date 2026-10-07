@@ -955,7 +955,9 @@ export default function OutlookPanePage() {
         staffQuote: remote.staffQuote,
         selectionEpoch,
         inputRevision,
+        extrasReviewItems: remote.extrasReviewItems,
       });
+      for (const item of remote.extrasReviewItems) toast.warning(item);
       const luna = quoteSession.analysis?.luna;
       if (luna?.workflow === 'create_booking') {
         void bindPrepareBookingDraft({

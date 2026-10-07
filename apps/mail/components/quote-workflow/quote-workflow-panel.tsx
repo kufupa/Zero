@@ -87,6 +87,64 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
       </label>
+      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        Dinner allowance (ZAR / person / night)
+        <input
+          aria-label="Dinner allowance"
+          className={fieldClass}
+          inputMode="decimal"
+          value={
+            header.dinnerAllowanceMinor
+              ? (header.dinnerAllowanceMinor / 100).toFixed(2).replace(/\.00$/, '')
+              : ''
+          }
+          onChange={(event) => {
+            const raw = event.target.value.trim();
+            if (!raw) {
+              onPatch?.({ dinnerAllowanceMinor: undefined });
+              return;
+            }
+            const rand = Number(raw);
+            onPatch?.({
+              dinnerAllowanceMinor:
+                Number.isFinite(rand) && rand > 0 ? Math.round(rand * 100) : undefined,
+            });
+          }}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+        <input
+          type="checkbox"
+          aria-label="Shuttle requested"
+          checked={Boolean(header.shuttleRequested)}
+          onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
+        />
+        Shuttle requested
+      </label>
+      {header.shuttleRequested ? (
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Shuttle amount (ZAR)
+          <input
+            aria-label="Shuttle amount"
+            className={fieldClass}
+            inputMode="decimal"
+            value={
+              header.shuttleMinor ? (header.shuttleMinor / 100).toFixed(2).replace(/\.00$/, '') : ''
+            }
+            onChange={(event) => {
+              const raw = event.target.value.trim();
+              if (!raw) {
+                onPatch?.({ shuttleMinor: undefined });
+                return;
+              }
+              const rand = Number(raw);
+              onPatch?.({
+                shuttleMinor: Number.isFinite(rand) && rand > 0 ? Math.round(rand * 100) : undefined,
+              });
+            }}
+          />
+        </label>
+      ) : null}
     </section>
   );
 }

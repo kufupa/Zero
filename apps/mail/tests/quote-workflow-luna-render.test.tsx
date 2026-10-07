@@ -361,7 +361,7 @@ describe('Outlook pane Luna analysis bind', () => {
     await waitFor(() => expect(analyseMutate).toHaveBeenCalled());
     paneState.entryId = '002';
     view.rerender(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByDisplayValue('Fresh')).toBeDefined());
+    await waitFor(() => expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0));
     await act(async () => {
       resolveFirst({
         status: 'ready',
@@ -382,7 +382,7 @@ describe('Outlook pane Luna analysis bind', () => {
         sourceRevision: 1,
       });
     });
-    expect(screen.getByDisplayValue('Fresh')).toBeDefined();
+    expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
     expect(screen.queryByDisplayValue('Stale')).toBeNull();
   });
 });

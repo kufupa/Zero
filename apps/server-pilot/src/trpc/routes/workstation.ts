@@ -5,6 +5,7 @@ import {
   prepareStaffQuote,
   executeStaffQuote,
   attestStaffQuote,
+  buildStaffProposalFacts,
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
@@ -446,6 +447,13 @@ export const workstationRouter = router({
       });
     }
     const attestation = attestStaffQuote(input, scope, prepared, revision);
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const extraTotal = proposal.facts
+      ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
+          (sum, line) => sum + line.totalMinor,
+          0,
+        )
+      : 0;
     if (!(await stillCurrent()))
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
@@ -474,7 +482,9 @@ export const workstationRouter = router({
             readiness: 'ready_for_staff_review',
             quoteRevisionIds: [revision.id],
             quoteRevisions: [revision],
-            proposalFacts: [],
+            proposalFacts: proposal.facts
+              ? [{ ref: 'extras', facts: proposal.facts }]
+              : [],
           },
         },
       });
@@ -485,11 +495,12 @@ export const workstationRouter = router({
       revisionRef: revision.id,
       messageId: mail.id,
       threadId: mail.threadId,
-      factRefs: [],
+      factRefs: proposal.factRefs,
+      extrasReviewItems: proposal.extrasReviewItems,
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       inputDigest: prepared.inputDigest,
-      totalMinor: revision.totalMinor,
+      totalMinor: revision.totalMinor + extraTotal,
       currency: revision.currency,
       arrivalDate: revision.groups[0].arrivalDate,
       departureDate: revision.groups.at(-1)!.departureDate,
