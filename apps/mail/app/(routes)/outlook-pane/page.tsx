@@ -398,27 +398,37 @@ export default function OutlookPanePage() {
       query: staff.workstation.listThreadQuoteRevisions?.query,
       threadId: source.threadId,
     }).then(async (revisions) => {
-      const first = revisions[0];
-      if (cancelled || !first) return;
-      const prior = await bindUsePriorQuoteForBooking({
-        mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
-        source,
-        workflowRunId: first.workflowRunId,
-        revisionRef: first.revisionRef,
-        threadId: source.threadId,
-        messageId: source.messageId,
-        selectionEpoch,
-        inputRevision,
-        analysis: {
-          ...luna,
-          groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
-        },
-      });
+      if (cancelled || !revisions[0]) return;
+      const reasons: string[] = [];
+      let prior: Awaited<ReturnType<typeof bindUsePriorQuoteForBooking>> | null = null;
+      for (const row of revisions) {
+        if (cancelled) return;
+        const candidate = await bindUsePriorQuoteForBooking({
+          mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
+          source,
+          workflowRunId: row.workflowRunId,
+          revisionRef: row.revisionRef,
+          threadId: source.threadId,
+          messageId: source.messageId,
+          selectionEpoch,
+          inputRevision,
+          analysis: {
+            ...luna,
+            groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
+          },
+        });
+        if (candidate.status === 'ok') {
+          prior = candidate;
+          break;
+        }
+        reasons.push(candidate.reason);
+      }
       if (cancelled) return;
-      if (prior.status !== 'ok') {
-        if (prior.reason === 'expired') toast.warning('This quote expired — run Quote again');
-        if (prior.reason === 'scope_mismatch') {
+      if (!prior || prior.status !== 'ok') {
+        if (reasons.includes('scope_mismatch')) {
           toast.warning('Stay dates do not match the earlier quote — run Quote again');
+        } else if (reasons.includes('expired')) {
+          toast.warning('This quote expired — run Quote again');
         }
         return;
       }
