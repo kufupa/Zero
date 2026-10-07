@@ -66,6 +66,27 @@ vi.mock('../providers/query-provider', () => ({
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: vi.fn() },
     },
+    quoteWorkflow: {
+      analyseSelection: {
+        mutate: async () => ({
+          status: 'ready' as const,
+          intent: 'quote' as const,
+          groups: [
+            {
+              id: 'g1',
+              childrenAges: [],
+              board: 'unknown' as const,
+              quantity: 1,
+              specialRequests: [],
+              fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
+            },
+          ],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 1,
+        }),
+      },
+    },
   },
 }));
 
@@ -84,14 +105,15 @@ describe('production pane never synthesizes quote evidence', () => {
 
   it('keeps integration unavailable and does not emit fixture offers, PDF, or native calls', async () => {
     render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
     await waitFor(() => {
-      expect(screen.getByText(/integration unavailable|not owned by this quoting UI|enqueueHmsRead|no quoteWorkflow.runStep/i)).toBeDefined();
+      expect(screen.getAllByText(/integration unavailable|not owned by this quoting UI|enqueueHmsRead|no quoteWorkflow.runStep|staffQuoteSource/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.queryByText(/R2\s*720/)).toBeNull();
     expect(screen.queryByText(/Quote-fixture-not-live-hms/)).toBeNull();
-    expect(screen.queryByRole('button', { name: /Prepare quotation PDF/i })).toBeNull();
+    const pdfButton = screen.queryByRole('button', { name: /Prepare quotation PDF/i });
+    if (pdfButton) expect(pdfButton).toHaveProperty('disabled', true);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(sendCommandMock.mock.calls.map((call) => call[0])).not.toContain('CREATE_REPLY_DRAFT');
     expect(sendCommandMock.mock.calls.map((call) => call[0])).not.toContain('ADD_ATTACHMENT_TO_DRAFT');

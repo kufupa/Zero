@@ -1,6 +1,7 @@
 import type {
   ApprovedStayGroup,
   PartyLookupRef,
+  QuoteAnalysis,
   QuoteEvidenceProvenance,
   QuoteOffer,
   QuoteSession,
@@ -10,6 +11,7 @@ import type {
   QuoteToolStep,
   StaffQuoteAllocation,
   StayGroupRequirement,
+  StaffQuoteHeader,
 } from './types';
 import { emptyStaffQuoteHeader } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
@@ -193,6 +195,17 @@ export function admissionKey(binding: QuoteSelectionBinding): string {
   return `${selectionDigest(binding)}|${binding.selectionEpoch}|${binding.scopeEpoch}`;
 }
 
+export function analysisRetryKey(
+  admission: string,
+  phase: QuoteSession['phase'],
+  syncCommitted?: number,
+): string {
+  if (phase === 'unsynced' && Number.isFinite(syncCommitted)) {
+    return `${admission}|committed:${syncCommitted}`;
+  }
+  return admission;
+}
+
 export function initialQuoteSession(): QuoteSession {
   return {
     phase: 'idle',
@@ -220,6 +233,7 @@ export function initialQuoteSession(): QuoteSession {
     handledSourceKey: null,
     reviewItems: [],
     handledReviewItemIds: [],
+    bookingDraft: null,
   };
 }
 
@@ -369,6 +383,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     partyLookup: null,
     staffQuote: null,
     staffQuotes: {},
+    bookingDraft: null,
   };
 }
 
@@ -410,9 +425,23 @@ function provenanceMatches(
 }
 
 function hasStaffStayEdits(session: QuoteSession): boolean {
+  if (session.inputRevision > 1) return true;
   return session.groups.some((group) =>
     Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
   );
+}
+
+function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
+  const party = analysis.luna?.party;
+  const name = party?.name?.trim();
+  if (!party || !name) return header;
+  if (header.company.trim() || header.agency.trim()) return header;
+  if (party.kind === 'agency') return { ...header, agency: name };
+  if (party.kind === 'organization') return { ...header, company: name };
+  if (party.kind === 'government') {
+    return { ...header, company: name, salesStrategy: 'Government' };
+  }
+  return header;
 }
 
 function applyGroupPatch(
@@ -460,13 +489,17 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         };
       }
       if (action.analysis.intent !== 'quote') {
+        const unreadItems = (action.analysis.reviewItems ?? []).filter(
+          (item) => item.kind === 'document_failure',
+        );
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
           analysis: action.analysis,
           groups: [],
-          reviewItems: [],
+          reviewItems: unreadItems,
           handledReviewItemIds: [],
+          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
         };
       }
       const keys = requestedQuoteKeys(action.analysis.groups);
@@ -491,6 +524,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           ? session.steps
           : planQuoteSteps(action.analysis.groups, selectedStayKey),
         staffActions: action.analysis.staffActions ?? session.staffActions,
+        staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
         reviewItems,
         handledSourceKey: sourceKey || null,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),

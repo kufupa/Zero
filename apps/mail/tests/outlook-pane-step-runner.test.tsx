@@ -70,6 +70,25 @@ vi.mock('../providers/query-provider', () => ({
       quoteProposalPdf: { mutate: vi.fn() },
     },
     quoteWorkflow: {
+      analyseSelection: {
+        mutate: async () => ({
+          status: 'ready' as const,
+          intent: 'quote' as const,
+          groups: [
+            {
+              id: 'g1',
+              childrenAges: [],
+              board: 'unknown' as const,
+              quantity: 1,
+              specialRequests: [],
+              fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
+            },
+          ],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 1,
+        }),
+      },
       runStep: { mutate: (...args: unknown[]) => runStepMutateMock(...args) },
     },
   },

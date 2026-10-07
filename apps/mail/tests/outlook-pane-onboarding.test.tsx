@@ -85,6 +85,27 @@ vi.mock('../providers/query-provider', () => ({
         }),
       },
     },
+    quoteWorkflow: {
+      analyseSelection: {
+        mutate: async () => ({
+          status: 'ready' as const,
+          intent: 'quote' as const,
+          groups: [
+            {
+              id: 'g1',
+              childrenAges: [],
+              board: 'unknown' as const,
+              quantity: 1,
+              specialRequests: [],
+              fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
+            },
+          ],
+          secondaryAsks: [],
+          alternatives: [],
+          sourceRevision: 1,
+        }),
+      },
+    },
   },
 }));
 
@@ -225,14 +246,14 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.getByText(/Welcome to Nava AI/i)).toBeDefined();
   });
 
-  it('correctly opens the quote tool without a September RATE_TABLE calendar', () => {
+  it('correctly opens the quote tool without a September RATE_TABLE calendar', async () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
     expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/Change Dates/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /^Run next$/i })).toBeDefined();
+    expect(await screen.findByRole('button', { name: /^Run next$/i })).toBeDefined();
   });
 
   it('displays Sample badge when no active email is present from bridge', () => {

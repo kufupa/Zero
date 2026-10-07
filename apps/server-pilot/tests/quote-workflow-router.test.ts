@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { appRouter } from '../src/trpc/router.js';
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { appRouter } from '../src/trpc/router.js';
 
 const enqueueHmsRead = vi.fn();
 
@@ -18,6 +18,31 @@ function mailboxCaller() {
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
+}
+
+const quoteGroup = {
+  arrival: '2026-11-12',
+  departure: '2026-11-14',
+  rooms: 1,
+  adultsPerRoom: 2,
+  childAges: [] as number[],
+  board: 'bb' as const,
+  roomPreference: null,
+  guestNames: [] as string[],
+};
+
+function lunaOutput(overrides: Record<string, unknown> = {}) {
+  return {
+    workflow: 'quote',
+    flags: [] as string[],
+    groups: [quoteGroup],
+    party: { kind: null, name: null, reference: null },
+    rateClaims: [] as unknown[],
+    missing: [] as unknown[],
+    evidence: [{ field: 'arrival', quote: '2026-11-12' }],
+    tasks: [{ kind: 'quote' as const, groupIndexes: [0], note: 'quote stay' }],
+    ...overrides,
+  };
 }
 
 describe('analyseQuoteSources', () => {
@@ -50,6 +75,8 @@ describe('analyseQuoteSources', () => {
 describe('quoteWorkflow.analyseSelection', () => {
   afterEach(() => {
     quoteWorkflowLoaders.loadSyncedSelection = null;
+    quoteWorkflowLoaders.adapter = null;
+    quoteWorkflowLoaders.llmEnabled = null;
     enqueueHmsRead.mockReset();
   });
 
@@ -77,13 +104,21 @@ describe('quoteWorkflow.analyseSelection', () => {
     expect(enqueueHmsRead).not.toHaveBeenCalled();
   });
 
-  it('returns missing_source when an attachment has a filename but no admitted bytes', async () => {
+  it('still analyses when an attachment is unreadable and lists it as a document_failure', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Quote request',
       bodyText: 'Please send availability for two rooms.',
       preceding: [],
-      attachments: [{ id: 'att-rooming-list', filename: 'rooming-list.pdf', bytesPresent: false }],
+      attachments: [
+        {
+          id: 'att-rooming-list',
+          filename: 'rooming-list.pdf',
+          bytesPresent: false,
+          readFailure: 'encrypted',
+        },
+      ],
     });
+    quoteWorkflowLoaders.llmEnabled = () => false;
     const result = await mailboxCaller().quoteWorkflow.analyseSelection({
       internetMessageId: '<a@x>',
       storeId: 'store-1',
@@ -91,11 +126,302 @@ describe('quoteWorkflow.analyseSelection', () => {
       folderEntryId: 'folder-1',
       selectionEpoch: 1,
     });
-    expect(result).toEqual({
-      status: 'missing_source',
-      missing: ['att-rooming-list'],
-      documentFailures: [{ filename: 'rooming-list.pdf', sourceRef: 'att-rooming-list', sourceKind: 'attachment', reason: 'Content unavailable; review the original attachment.' }],
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.fallbackReason).toBe('disabled');
+      expect(result.aiUnavailable).toBe(true);
+      expect(result.luna).toBeNull();
+      expect(result.reviewItems?.some((item) => item.kind === 'document_failure')).toBe(true);
+    }
+  });
+
+  it('flags a scanned PDF with bytes but no text as unread on regex fallback', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please send availability for two rooms.',
+      preceding: [],
+      attachments: [{ id: 'scan', filename: 'scan.pdf', bytesPresent: true }],
     });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.reviewItems?.some((item) => item.kind === 'document_failure')).toBe(true);
+    }
+  });
+
+  it('merges attachment_unread and never returns missing_source for a non-PDF attachment', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [
+        { id: 'sheet', filename: 'rooming.xlsx', bytesPresent: false, readFailure: 'not a PDF' },
+      ],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('luna');
+      expect(result.luna?.flags).toContain('attachment_unread');
+      expect(result.reviewItems?.some((item) => item.kind === 'document_failure')).toBe(true);
+    }
+  });
+
+  it('returns the Luna analysis through the route with an injected adapter', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('luna');
+      expect(result.aiUnavailable).toBe(false);
+      expect(result.workflow).toBe('quote');
+      expect(result.groups[0]).toMatchObject({ quantity: 1, adults: 2, board: 'bb' });
+      expect(result.sourceRevision).toBe(4);
+    }
+  });
+
+  it('maps create_booking to intent quote and keeps luna.workflow', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Book rooms',
+      bodyText: 'Please confirm 1 room 12-14 Nov 2026, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          workflow: 'create_booking',
+          tasks: [{ kind: 'create_booking', groupIndexes: [0], note: 'book stay' }],
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 5,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.intent).toBe('quote');
+      expect(result.groups).toHaveLength(1);
+      expect(result.luna?.workflow).toBe('create_booking');
+    }
+  });
+
+  it('passes luna.tasks through and keeps both groups for multi_date', async () => {
+    const tasks = [
+      { kind: 'quote' as const, groupIndexes: [0], note: 'first date option' },
+      { kind: 'quote' as const, groupIndexes: [1], note: 'second date option' },
+    ];
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Two dates',
+      bodyText: 'Quote 12-14 Nov or 1-3 Dec 2026, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          flags: ['multi_date'],
+          groups: [quoteGroup, { ...quoteGroup, arrival: '2026-12-01', departure: '2026-12-03' }],
+          tasks,
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 6,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.luna?.tasks).toEqual(tasks);
+      expect(result.luna?.flags).toContain('multi_date');
+      expect(result.groups).toHaveLength(2);
+    }
+  });
+
+  it('falls back with invalid_output when Luna returns nine tasks', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          tasks: Array.from({ length: 9 }, () => ({ kind: 'quote', groupIndexes: [0], note: 'x' })),
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 7,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.fallbackReason).toBe('invalid_output');
+      expect(result.aiUnavailable).toBe(true);
+      expect(result.luna).toBeNull();
+    }
+  });
+
+  it('does not call the adapter when the kill switch is off', async () => {
+    const seen: unknown[] = [];
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async (input) => {
+        seen.push(input);
+        throw new Error('should not be called');
+      },
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 8,
+    });
+    expect(seen).toHaveLength(0);
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.fallbackReason).toBe('disabled');
+    }
+  });
+
+  it('never serialises scanned PDF bytes on the ready payload', async () => {
+    const pdf = new TextEncoder().encode('%PDF-1.4 scanned');
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [{ id: 'scan', filename: 'scan.pdf', bytesPresent: true, pdf }],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 9,
+    });
+    expect(JSON.stringify(result)).not.toMatch(/%PDF-/);
+    expect(JSON.parse(JSON.stringify(result)).pdf).toBeUndefined();
   });
 
   it('classifies non-quote mail without calling PMS', async () => {
@@ -105,6 +431,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       preceding: [],
       attachments: [],
     });
+    quoteWorkflowLoaders.llmEnabled = () => false;
     const result = await mailboxCaller().quoteWorkflow.analyseSelection({
       storeId: 'store-1',
       entryId: 'entry-1',

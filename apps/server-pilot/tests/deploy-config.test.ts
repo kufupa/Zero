@@ -2468,6 +2468,16 @@ describe('deploy config', () => {
     expect(script).toMatch(/UNDO_SEND_SECONDS:=20/);
   });
 
+  it('write-ec2-env.sh persists QUOTE_WORKFLOW_LLM kill switch with Azure keys', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    expect(script).toContain('append_env QUOTE_WORKFLOW_LLM');
+    expect(script).toContain('append_env AZURE_OPENAI_BASE_URL');
+  });
+
   it('write-ec2-env.sh persists GOTENBERG_URL for quote PDF convert', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');

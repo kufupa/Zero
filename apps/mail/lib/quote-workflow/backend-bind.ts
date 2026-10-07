@@ -1,4 +1,12 @@
-import type { QuoteAnalysis, QuoteDocumentFailure, QuoteOffer, QuoteReviewItem } from './types';
+import type {
+  QuoteAnalysis,
+  QuoteAnalysisSource,
+  QuoteDocumentFailure,
+  QuoteOffer,
+  QuoteReviewItem,
+  QuoteWorkflowFallbackReason,
+  LunaAnalysisWire,
+} from './types';
 
 /**
  * Published staff-quote contract (handoff 2026-10-06). Adapter types live in this tree;
@@ -45,6 +53,10 @@ export type AnalyseSelectionResult =
       alternatives: QuoteAnalysis['alternatives'];
       sourceRevision: number;
       reviewItems?: QuoteReviewItem[];
+      source?: QuoteAnalysisSource;
+      fallbackReason?: QuoteWorkflowFallbackReason;
+      aiUnavailable?: boolean;
+      luna?: LunaAnalysisWire | null;
     };
 
 export type RunStepRequest = {
@@ -127,6 +139,10 @@ export async function bindAnalyseSelection(args: {
         secondaryAsks: result.secondaryAsks,
         alternatives: result.alternatives,
         ...(result.reviewItems?.length ? { reviewItems: result.reviewItems } : {}),
+        ...(result.source ? { source: result.source } : {}),
+        ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+        ...(result.aiUnavailable !== undefined ? { aiUnavailable: result.aiUnavailable } : {}),
+        ...(result.luna !== undefined ? { luna: result.luna } : {}),
       },
     };
   } catch (error) {

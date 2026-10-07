@@ -24,36 +24,11 @@ export type ReservationistContext = {
   liveQuoteOk: boolean;
 };
 
-export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), Johannesburg timezone.
-- Dates are ISO yyyy-mm-dd; departureDate is the checkout day (exclusive). Rates are per room per night in ZAR.
-- A stay request with dates and occupancy that asks for price/availability is a quote. Quote before replying with any rate.
-- A named company, agency or corporate account that should get its negotiated rate: party_lookup first, then quote_stay with rateContext using the returned nativeId.
-- A formal written quotation (company/agency ask, or "send a quote") after a successful quote: quote_proposal_pdf.
-- An explicit instruction to book/confirm with guest name, dates and room: create_reservation_dry_run. It never saves; it only validates the create request.
-- Cold vendor/sales outreach, newsletters, promos, quarantine digests and cold solicitation are spam. OTP codes, bounces, payment notices, OTA relays, job/CV, day-visitor or F&B asks are not spam.
-- Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
-- Cancellations, amendments, invoices, folios and anything else are other (no tools).
-- Groups of 10+ rooms/delegates or events are other (no tools).
-- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
-- A request to "assist with"/"book" rooms with dates and guest names is create.
-- Missing dates: no tool can run; decide the workflow and list what is missing.`;
-
-export const reservationistDecisionSchema = z.object({
-  workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other']),
-  stayAsk: z
-    .object({
-      arrivalDate: z.string(),
-      departureDate: z.string(),
-      adults: z.number().int(),
-      children: z.number().int(),
-      rooms: z.number().int(),
-    })
-    .nullable(),
-  missing: z.array(z.string()),
-  replyDraft: z.string(),
-  rationale: z.string(),
-});
-export type ReservationistDecision = z.infer<typeof reservationistDecisionSchema>;
+export {
+  CENTURION_HOTEL_RULES,
+  reservationistDecisionSchema,
+  type ReservationistDecision,
+} from './reservationist-decision.js';
 
 export type ReservationistRunners = {
   quote(request: Record<string, unknown>): Promise<Record<string, unknown>>;

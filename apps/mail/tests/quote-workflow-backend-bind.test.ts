@@ -261,6 +261,60 @@ describe('quote workflow backend bind', () => {
       },
     });
 
+    const lunaReady = await bindAnalyseSelection({
+      mutate: vi.fn(async () => ({
+        status: 'ready' as const,
+        intent: 'quote' as const,
+        groups: [],
+        secondaryAsks: [],
+        alternatives: [],
+        sourceRevision: 4,
+        source: 'luna' as const,
+        aiUnavailable: false,
+        luna: {
+          workflow: 'create_booking' as const,
+          flags: ['extras' as const],
+          groups: [],
+          party: { kind: 'agency' as const, name: 'Acme Travel', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      })),
+      input: { storeId: 'store-1', entryId: '001', folderEntryId: 'folder-inbox', selectionEpoch: 1 },
+    });
+    expect(lunaReady.kind).toBe('ready');
+    if (lunaReady.kind === 'ready') {
+      expect(lunaReady.analysis.source).toBe('luna');
+      expect(lunaReady.analysis.aiUnavailable).toBe(false);
+      expect(lunaReady.analysis.luna?.workflow).toBe('create_booking');
+      expect(lunaReady.analysis.luna?.party.name).toBe('Acme Travel');
+    }
+
+    const fallbackReady = await bindAnalyseSelection({
+      mutate: vi.fn(async () => ({
+        status: 'ready' as const,
+        intent: 'quote' as const,
+        groups: [],
+        secondaryAsks: [],
+        alternatives: [],
+        sourceRevision: 4,
+        source: 'regex_fallback' as const,
+        fallbackReason: 'timeout' as const,
+        aiUnavailable: true,
+        luna: null,
+      })),
+      input: { storeId: 'store-1', entryId: '001', folderEntryId: 'folder-inbox', selectionEpoch: 1 },
+    });
+    expect(fallbackReady.kind).toBe('ready');
+    if (fallbackReady.kind === 'ready') {
+      expect(fallbackReady.analysis.source).toBe('regex_fallback');
+      expect(fallbackReady.analysis.fallbackReason).toBe('timeout');
+      expect(fallbackReady.analysis.aiUnavailable).toBe(true);
+      expect(fallbackReady.analysis.luna).toBeNull();
+    }
+
     const missing = await bindAnalyseSelection({
       mutate: vi.fn(async () => ({
         status: 'missing_source' as const,

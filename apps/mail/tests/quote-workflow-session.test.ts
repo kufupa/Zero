@@ -14,6 +14,7 @@ import {
   selectionDigest,
   buildQuoteStepInputs,
   staffSourceReady,
+  analysisRetryKey,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type { QuoteAnalysis, QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
@@ -111,10 +112,27 @@ describe('quote session', () => {
       reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() }),
       {
         type: 'analysis_ready',
-        analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] },
+        analysis: {
+          intent: 'other',
+          groups: [],
+          secondaryAsks: [],
+          alternatives: [],
+          reviewItems: [
+            {
+              id: 'unread:scan',
+              kind: 'document_failure',
+              rank: 'unread_source',
+              text: 'Attachment scan.pdf could not be read (no extractable text). Review it manually.',
+              sourceLabel: 'scan.pdf',
+              blocking: true,
+            },
+          ],
+        },
       },
     );
     expect(s.phase).toBe('non_quote');
+    expect(s.reviewItems).toHaveLength(1);
+    expect(s.reviewItems[0]?.kind).toBe('document_failure');
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {
@@ -1420,5 +1438,62 @@ describe('quote session staff review items', () => {
     expect(s.pdf).toBeNull();
     expect(s.staffQuote).toBeNull();
     expect(canCreateNativeDraft(s)).toBe(false);
+  });
+
+  it('retries analysis when unsynced mailbox committed count advances', () => {
+    expect(analysisRetryKey('sel|1|1', 'requirements', 4)).toBe('sel|1|1');
+    expect(analysisRetryKey('sel|1|1', 'unsynced')).toBe('sel|1|1');
+    expect(analysisRetryKey('sel|1|1', 'unsynced', 4)).toBe('sel|1|1|committed:4');
+    expect(analysisRetryKey('sel|1|1', 'unsynced', 5)).toBe('sel|1|1|committed:5');
+  });
+
+  it('starts with a null bookingDraft and clears it downstream', () => {
+    expect(initialQuoteSession().bookingDraft).toBeNull();
+    let s = analysisReady();
+    s = { ...s, bookingDraft: { placeholder: true } };
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
+    expect(s.bookingDraft).toBeNull();
+  });
+
+  it('prefills government party into company and salesStrategy when header is empty', () => {
+    const s = analysisReady({
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: 'government', name: 'Dept X', reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    expect(s.staffHeader.company).toBe('Dept X');
+    expect(s.staffHeader.salesStrategy).toBe('Government');
+    expect(s.staffHeader.agency).toBe('');
+  });
+
+  it('does not overwrite a staff-edited header with luna.party', () => {
+    let s = analysisReady();
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Staff Co' } });
+    s = reduceQuoteSession(s, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        luna: {
+          workflow: 'quote',
+          flags: [],
+          groups: [],
+          party: { kind: 'government', name: 'Dept X', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    });
+    expect(s.staffHeader.company).toBe('Staff Co');
+    expect(s.staffHeader.salesStrategy).toBe('BAR');
   });
 });
