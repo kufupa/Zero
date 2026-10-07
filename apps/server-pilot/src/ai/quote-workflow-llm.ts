@@ -141,6 +141,14 @@ function defaultBoard(
   return partyKind === 'government' ? 'dinner_bb' : 'bb';
 }
 
+function mapStatedOrDefaultBoard(
+  board: LunaAnalysis['groups'][number]['board'],
+  partyKind: LunaAnalysis['party']['kind'],
+): MappedQuoteDecision['groups'][number]['board'] {
+  if (board === null) return defaultBoard(partyKind);
+  return board === 'dbb' ? 'dinner_bb' : board;
+}
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
@@ -169,11 +177,10 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
       });
     }
     const boardDefaulted = group.board === null;
-    const board: MappedQuoteDecision['groups'][number]['board'] = boardDefaulted
-      ? defaultBoard(analysis.party.kind)
-      : group.board === 'dbb'
-        ? 'dinner_bb'
-        : group.board;
+    const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
+      group.board,
+      analysis.party.kind,
+    );
     return {
       id: `g${index + 1}`,
       ...(arrivalDate ? { arrivalDate } : {}),
