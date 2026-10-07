@@ -89,6 +89,8 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/create_booking/);
     expect(prompt.system).toMatch(/conference_or_group/);
     expect(prompt.system).toMatch(/extras/i);
+    expect(prompt.system).toMatch(/single room/i);
+    expect(prompt.system).toMatch(/never ask for room type, board or rate/i);
     expect(prompt.user).toContain('2026-10-06');
     expect(prompt.user).toContain('Earlier: we need rooms in November.');
     expect(prompt.user).toContain('Guest list: Ann, Bob');
@@ -132,6 +134,61 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups).toHaveLength(1);
   });
 
+  it('defaults unstated board to bb for a private party and marks it defaulted', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          party: { kind: 'private', name: null, reference: null },
+          groups: [{ ...group, board: null }],
+        }),
+      ),
+    );
+    expect(mapped.groups[0]?.board).toBe('bb');
+    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
+  });
+
+  it('defaults unstated board to dinner_bb for a government party', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          party: { kind: 'government', name: 'Department of Forestry', reference: null },
+          groups: [{ ...group, board: null }],
+        }),
+      ),
+    );
+    expect(mapped.groups[0]?.board).toBe('dinner_bb');
+    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
+  });
+
+  it('keeps a stated board over the party default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          party: { kind: 'government', name: 'Department of Forestry', reference: null },
+          groups: [{ ...group, board: 'bb' }],
+        }),
+      ),
+    );
+    expect(mapped.groups[0]?.board).toBe('bb');
+    expect(mapped.groups[0]?.fields.board).toBe('extracted');
+  });
+
+  it('drops room-type and board questions from missing because the hotel defaults those', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          missing: [
+            { field: 'roomType', question: 'Which room type?' },
+            { field: 'roomPreference', question: 'Queen or twin?' },
+            { field: 'guestNames', question: 'Guest names?' },
+            { field: 'board', question: 'Bed and breakfast or dinner?' },
+          ],
+        }),
+      ),
+    );
+    expect(mapped.missing.map((item) => item.field)).toEqual(['guestNames']);
+  });
+
   it('drops malformed dates and marks them missing', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
@@ -143,8 +200,8 @@ describe('mapLlmDecision', () => {
     );
     expect(mapped.groups[0]?.arrivalDate).toBeUndefined();
     expect(mapped.groups[0]?.fields.arrivalDate).toBe('missing');
-    expect(mapped.groups[0]?.board).toBe('unknown');
-    expect(mapped.groups[0]?.fields.board).toBe('missing');
+    expect(mapped.groups[0]?.board).toBe('bb');
+    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
     expect(mapped.missing.some((item) => item.field === 'arrivalDate')).toBe(true);
   });
 
@@ -157,14 +214,14 @@ describe('mapLlmDecision', () => {
       {
         id: 'g1',
         childrenAges: [],
-        board: 'unknown',
+        board: 'bb',
         specialRequests: [],
         fields: {
           arrivalDate: 'missing',
           departureDate: 'missing',
           quantity: 'missing',
           adults: 'missing',
-          board: 'missing',
+          board: 'defaulted',
         },
       },
     ]);

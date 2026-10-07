@@ -52,6 +52,24 @@ function sessionWithAnalysis(analysis: QuoteAnalysis): QuoteSession {
 }
 
 describe('QuoteWorkflowPanel Luna extras', () => {
+  it('labels a defaulted board as usual and still shows the stay as editable', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [
+        {
+          ...g1,
+          fields: { ...g1.fields, board: 'defaulted' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByLabelText('Board')).toHaveProperty('value', 'bb');
+    expect(screen.getByText('usual')).toBeDefined();
+  });
+
   it('shows Booking badge and stay groups for create_booking workflow', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',

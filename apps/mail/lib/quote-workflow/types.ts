@@ -1,6 +1,6 @@
 export type QuoteIntent = 'quote' | 'other';
 
-export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing';
+export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defaulted';
 
 export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
