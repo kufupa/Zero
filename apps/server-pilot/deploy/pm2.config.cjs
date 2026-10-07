@@ -1,3 +1,12 @@
+const path = require('node:path');
+
+/**
+ * Luna analyse cache shared by http (pane read) and ai-worker (warmer write).
+ * Resolves to the same apps/server-pilot/.private/luna-analyse-cache the route
+ * computes from its own module URL, so warmed files are hits for the pane.
+ */
+const LUNA_ANALYSE_CACHE_DIR = path.resolve(__dirname, '..', '.private', 'luna-analyse-cache');
+
 /** @type {import('pm2').StartOptions} */
 module.exports = {
   apps: [
@@ -15,6 +24,8 @@ module.exports = {
         PORT: '8788',
         NAVA_AUTH_SESSION_PROFILE: 'legacy',
         NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+        LUNA_ANALYSE_CACHE_DIR,
+        LUNA_ANALYSE_WARMER: 'on',
       },
     },
     {
@@ -66,6 +77,8 @@ module.exports = {
         AI_MODEL_ID: process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0',
         BEDROCK_REGION: process.env.BEDROCK_REGION ?? 'us-east-1',
         NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+        LUNA_ANALYSE_CACHE_DIR,
+        LUNA_ANALYSE_WARMER: 'on',
       },
     },
     {
