@@ -174,6 +174,25 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
       },
     };
   });
+  if (groups.length === 0) {
+    groups.push({
+      id: 'g1',
+      childrenAges: [],
+      board: 'unknown',
+      specialRequests: [],
+      fields: {
+        arrivalDate: 'missing',
+        departureDate: 'missing',
+        quantity: 'missing',
+        adults: 'missing',
+        board: 'missing',
+      },
+    });
+    missing.push({
+      field: 'stay',
+      question: 'Stay dates, rooms and occupancy for this quote?',
+    });
+  }
   return { intent: 'quote', groups, secondaryAsks: [], alternatives: [], missing };
 }
 

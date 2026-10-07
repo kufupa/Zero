@@ -148,6 +148,29 @@ describe('mapLlmDecision', () => {
     expect(mapped.missing.some((item) => item.field === 'arrivalDate')).toBe(true);
   });
 
+  it('keeps one blank editable stay group when quote has no extracted groups', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [] })),
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups).toEqual([
+      {
+        id: 'g1',
+        childrenAges: [],
+        board: 'unknown',
+        specialRequests: [],
+        fields: {
+          arrivalDate: 'missing',
+          departureDate: 'missing',
+          quantity: 'missing',
+          adults: 'missing',
+          board: 'missing',
+        },
+      },
+    ]);
+    expect(mapped.missing.some((item) => item.field === 'stay')).toBe(true);
+  });
+
   it('maps other to other with no groups prefilled', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'other' })));
     expect(mapped.intent).toBe('other');
