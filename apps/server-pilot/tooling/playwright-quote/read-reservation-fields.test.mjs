@@ -242,6 +242,31 @@ test('navigate clicks Front Desk then Guest Stay and waits for search input', as
   assert.deepEqual(clicks, ['text=Front Desk', 'text=Guest Stay']);
 });
 
+test('navigate opens OSRESS shell over XHR when menu search never paints', async () => {
+  const urls = [];
+  const page = {
+    content: async () => '<div>Front Desk</div>\n<div>Guest Stay</div>',
+    evaluate: async (fn, arg) => {
+      if (arg && typeof arg === 'object' && arg.url) {
+        urls.push(arg.url);
+        return '<input name="search">';
+      }
+      return arg === 'Front Desk' || arg === 'Guest Stay';
+    },
+    click: async () => {},
+  };
+  const result = await reader.navigateGuestStay(page, {
+    frontDeskMs: 40,
+    guestStayMs: 40,
+    searchPaintMs: 40,
+    pollMs: 10,
+    origin: 'https://hms.example',
+  });
+  assert.equal(result.navigated, 'osress_open');
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /\/web\/base\/OSRESS\?FUNCTION_CLASS=WEBL/);
+});
+
 test('navigate does not POST OSRESS and fails closed when search never paints', async () => {
   const posts = [];
   const page = {
@@ -306,5 +331,5 @@ test('source stays read-only: Guest Stay menu nav, no save/cancel/checkin, no ma
   const nav = source.indexOf('navigateGuestStay');
   const search = source.indexOf("'/web/base/OSRESS.search'");
   assert.ok(nav !== -1 && search !== -1 && nav < search);
-  assert.equal(/['"]\/web\/base\/OSRESS['"]/.test(source), false);
+  assert.match(source, /OSRESS\?FUNCTION_CLASS=WEBL/);
 });
