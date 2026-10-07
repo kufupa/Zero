@@ -236,6 +236,14 @@ async function openOsressShell(page, origin) {
 export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
   const html = await page.content().catch(() => '');
   if (hasSearch(html)) return { navigated: 'already_open' };
+  if (timeouts.origin) {
+    await openOsressShell(page, timeouts.origin);
+    const xhrDeadline = Date.now() + timeouts.searchPaintMs;
+    while (Date.now() < xhrDeadline) {
+      if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'osress_open' };
+      await delay(timeouts.pollMs);
+    }
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const menuDeadline = Date.now() + timeouts.frontDeskMs;
     while (!(await exactMenuLabel(page, 'Front Desk')) && Date.now() < menuDeadline) {
@@ -257,16 +265,8 @@ export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
       if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'menu' };
       await delay(timeouts.pollMs);
     }
-    if (timeouts.origin) {
-      await openOsressShell(page, timeouts.origin);
-      const xhrDeadline = Date.now() + timeouts.searchPaintMs;
-      while (Date.now() < xhrDeadline) {
-        if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'osress_open' };
-        await delay(timeouts.pollMs);
-      }
-      return { navigated: 'osress_open' };
-    }
   }
+  if (timeouts.origin) return { navigated: 'osress_open' };
   throw new Error('GUEST_STAY_NAV_NO_SEARCH');
 }
 
@@ -420,7 +420,7 @@ async function main() {
       await delay(PAUSE_MS);
     }
   } finally {
-    await ctx.close().catch(() => {});
+    await Promise.race([ctx.close().catch(() => {}), delay(5_000)]);
     try {
       browser.disconnect?.();
     } catch {
