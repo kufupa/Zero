@@ -115,6 +115,65 @@ test('hasSearch matches Guest Stay search chrome not a random page', () => {
   assert.equal(reader.hasSearch('<div>Front Desk</div>'), false);
 });
 
+test('navigate uses visible Ext tree labels after app-menu-trigger', async () => {
+  const clicks = [];
+  let html = '<div>Front Desk</div>';
+  let menuOpen = false;
+  function makeLocator(sel, extra = {}) {
+    return {
+      filter({ hasText }) {
+        return makeLocator(sel, { ...extra, hasText: String(hasText) });
+      },
+      async count() {
+        if (sel.includes('app-menu-trigger')) return 1;
+        if (sel.includes('x-tree-node-text') && String(extra.hasText).includes('Front Desk')) {
+          return menuOpen ? 1 : 0;
+        }
+        return 1;
+      },
+      async click() {
+        clicks.push({ sel, hasText: extra.hasText || null });
+        if (sel.includes('app-menu-trigger')) {
+          menuOpen = true;
+          return;
+        }
+        if (String(extra.hasText).includes('Front Desk')) {
+          html = '<div>Front Desk</div>\n<div>Guest Stay</div>';
+        }
+        if (String(extra.hasText).includes('Guest Stay')) html = '<input name="search">';
+      },
+    };
+  }
+  const page = {
+    content: async () => html,
+    evaluate: async (_fn, label) =>
+      html
+        .replace(/<[^>]+>/g, '\n')
+        .split('\n')
+        .some((line) => line.trim() === label),
+    locator: (sel) => makeLocator(sel),
+    click: async () => {
+      throw new Error('generic text= click should not run when locator exists');
+    },
+  };
+  const result = await reader.navigateGuestStay(page, {
+    frontDeskMs: 200,
+    guestStayMs: 200,
+    searchPaintMs: 200,
+    pollMs: 10,
+  });
+  assert.equal(result.navigated, 'menu');
+  assert.equal(clicks[0].sel.includes('app-menu-trigger'), true);
+  assert.equal(
+    clicks.some((c) => c.sel.includes('x-tree-node-text') && String(c.hasText).includes('Front Desk')),
+    true,
+  );
+  assert.equal(
+    clicks.some((c) => c.sel.includes('x-tree-node-text') && String(c.hasText).includes('Guest Stay')),
+    true,
+  );
+});
+
 test('navigate retries Front Desk click with force when overlay intercepts', async () => {
   const clicks = [];
   let html = '<div>Front Desk</div>';
