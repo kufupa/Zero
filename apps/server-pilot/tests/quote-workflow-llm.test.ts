@@ -64,6 +64,12 @@ function fakeAdapter(output: unknown, seen: ModelInvokeInput[] = []): ModelAdapt
 }
 
 describe('lunaAnalysisSchema', () => {
+  it('accepts rooms_only_group as an info flag', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ flags: ['rooms_only_group'] })).flags).toEqual([
+      'rooms_only_group',
+    ]);
+  });
+
   it('accepts quote and booking workflows and rejects a ninth task', () => {
     expect(lunaAnalysisSchema.parse(analysis()).workflow).toBe('create_booking');
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'quote' })).workflow).toBe('quote');
@@ -91,6 +97,16 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/extras/i);
     expect(prompt.system).toMatch(/single room/i);
     expect(prompt.system).toMatch(/never ask for room type, board or rate/i);
+    expect(prompt.system).toMatch(/rooms-only/i);
+    expect(prompt.system).toMatch(/stated quantity|room quantity/i);
+    expect(prompt.system).toMatch(/venue/i);
+    expect(prompt.system).toMatch(/DDR/i);
+    expect(prompt.system).toMatch(/delegates/i);
+    expect(prompt.system).toMatch(/packages/i);
+    expect(prompt.system).toMatch(/rooms_only_group/);
+    expect(prompt.system).not.toMatch(
+      /Groups of 10\+ rooms, delegates or events set the conference_or_group flag/,
+    );
     expect(prompt.user).toContain('2026-10-06');
     expect(prompt.user).toContain('Earlier: we need rooms in November.');
     expect(prompt.user).toContain('Guest list: Ann, Bob');
@@ -232,6 +248,57 @@ describe('mapLlmDecision', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'other' })));
     expect(mapped.intent).toBe('other');
     expect(mapped.groups).toEqual([]);
+  });
+
+  it('quotes a rooms-only group of 15 with quantity 15 and an info chip', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: ['rooms_only_group'],
+          groups: [{ ...group, rooms: 15, board: null }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(15);
+    expect(mapped.missing.some((item) => item.field === 'rooms_only_group')).toBe(true);
+    expect(mapped.missing.some((item) => /rooms-only|stated quantity/i.test(item.question))).toBe(
+      true,
+    );
+  });
+
+  it('quotes 10+ rooms-only groups even when Luna omits rooms_only_group', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: [],
+          groups: [{ ...group, rooms: 12 }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('quote');
+    expect(mapped.groups[0]?.quantity).toBe(12);
+    expect(mapped.missing.some((item) => item.field === 'rooms_only_group')).toBe(true);
+  });
+
+  it('maps venue / DDR / delegates / packages to other with a handle-manually reason chip', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          flags: ['conference_or_group'],
+          groups: [{ ...group, rooms: 15 }],
+        }),
+      ),
+    );
+    expect(mapped.intent).toBe('other');
+    expect(mapped.groups).toEqual([]);
+    expect(mapped.missing.some((item) => item.field === 'handle_manually')).toBe(true);
+    expect(
+      mapped.missing.some((item) => /venue|DDR|delegates|packages/i.test(item.question)),
+    ).toBe(true);
   });
 
   it('never reads tasks; pane mapping is identical with or without them', () => {

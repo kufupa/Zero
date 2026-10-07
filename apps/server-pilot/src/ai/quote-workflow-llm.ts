@@ -14,7 +14,7 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Groups of 10+ rooms, delegates or events set the conference_or_group flag. Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'invalid_output' | 'disabled';
 
@@ -149,16 +149,34 @@ function mapStatedOrDefaultBoard(
   return board === 'dbb' ? 'dinner_bb' : board;
 }
 
+function venueOrEventManual(analysis: LunaAnalysis): boolean {
+  return analysis.flags.includes('conference_or_group');
+}
+
+function roomsOnlyInfoNeeded(analysis: LunaAnalysis): boolean {
+  return (
+    analysis.flags.includes('rooms_only_group') ||
+    analysis.groups.some((group) => (group.rooms ?? 0) >= 10)
+  );
+}
+
+const VENUE_MANUAL_QUESTION = 'Venue / DDR / delegates / packages: handle manually';
+const ROOMS_ONLY_INFO_QUESTION = 'Rooms-only group: quoting with stated quantity';
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
-  if (analysis.workflow === 'other') {
+  if (analysis.workflow === 'other' || venueOrEventManual(analysis)) {
+    const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
+    if (venueOrEventManual(analysis)) {
+      routed.unshift({ field: 'handle_manually', question: VENUE_MANUAL_QUESTION });
+    }
     return {
       intent: 'other',
       groups: [],
       secondaryAsks: [],
       alternatives: [],
-      missing: analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field)),
+      missing: routed,
     };
   }
   const groups = analysis.groups.map((group, index) => {
@@ -222,6 +240,9 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
   }
   for (const item of analysis.missing) {
     if (!hotelDefaultedQuestion(item.field)) missing.push(item);
+  }
+  if (roomsOnlyInfoNeeded(analysis)) {
+    missing.unshift({ field: 'rooms_only_group', question: ROOMS_ONLY_INFO_QUESTION });
   }
   return { intent: 'quote', groups, secondaryAsks: [], alternatives: [], missing };
 }

@@ -159,10 +159,21 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ flags: ['conference_or_group', 'attachment_unread'] }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(
-      screen.getByText('Conference/group request: handle manually; the facts below are extracted'),
-    ).toBeDefined();
+    expect(screen.getByText('Venue / DDR / delegates / packages: handle manually')).toBeDefined();
     expect(screen.getByText("An attachment couldn't be read: open it")).toBeDefined();
+  });
+
+  it('lists rooms-only group as an info chip, not handle-manually', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [{ ...g1, quantity: 15 }],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ flags: ['rooms_only_group'] }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Rooms-only group: quoting with stated quantity')).toBeDefined();
+    expect(screen.queryByText('Venue / DDR / delegates / packages: handle manually')).toBeNull();
   });
 
   it('lists needs-your-answer questions from luna.missing', () => {

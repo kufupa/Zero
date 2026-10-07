@@ -100,6 +100,7 @@ export type LunaAnalysisWire = {
   workflow: 'quote' | 'create_booking' | 'other';
   flags: Array<
     | 'conference_or_group'
+    | 'rooms_only_group'
     | 'amendment_or_cancel'
     | 'long_stay'
     | 'discount_or_negotiation'

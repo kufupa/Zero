@@ -54,6 +54,7 @@ export const lunaAnalysisSchema = z.object({
   flags: z.array(
     z.enum([
       'conference_or_group',
+      'rooms_only_group',
       'amendment_or_cancel',
       'long_stay',
       'discount_or_negotiation',
