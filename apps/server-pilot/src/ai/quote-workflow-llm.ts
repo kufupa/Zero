@@ -7,6 +7,7 @@ import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js'
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
+import { createHash } from 'node:crypto';
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
@@ -14,7 +15,14 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+
+export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
+  .update(CENTURION_HOTEL_RULES)
+  .update('\n')
+  .update(K2_MAPPING)
+  .digest('hex')
+  .slice(0, 16);
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'invalid_output' | 'disabled';
 
