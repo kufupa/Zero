@@ -75,6 +75,23 @@ describe('analyseQuoteSources', () => {
       }).intent,
     ).toBe('other');
   });
+
+  it.each(['quote', 'create_booking'] as const)(
+    'keeps a stay group for a staff %s override when no quote keyword matches',
+    (treatAs) => {
+      const analysis = analyseQuoteSources({
+        subject: 'Reservation',
+        bodyText: 'Please reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+        treatAs,
+      });
+      expect(analysis.intent).toBe('quote');
+      expect(analysis.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+        adults: 2,
+      });
+    },
+  );
 });
 
 describe('quoteWorkflow.analyseSelection', () => {
@@ -745,6 +762,33 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(result.reviewItems?.map((item) => item.text)).toContainEqual(
         expect.stringMatching(/^Luna is unavailable.*Check the dates below/),
       );
+    }
+  });
+
+  it('keeps a stay group when treat-as quote is applied to a mail with no quote keyword', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Reservation',
+      bodyText: 'Please reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 23,
+      treatAs: 'quote',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.intent).toBe('quote');
+      expect(result.groups).toHaveLength(1);
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+      });
     }
   });
 

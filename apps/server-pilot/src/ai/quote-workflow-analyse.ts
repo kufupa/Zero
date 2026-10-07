@@ -29,6 +29,8 @@ export type QuoteWorkflowAnalyseInput = {
   bodyText: string;
   preceding?: Array<{ bodyText: string }>;
   attachments?: QuoteWorkflowAttachmentAdmission[];
+  /** Staff override. Skips the quote-keyword gate so a stay group is always extracted. */
+  treatAs?: 'quote' | 'create_booking';
 };
 
 export type QuoteWorkflowStayGroup = {
@@ -89,7 +91,7 @@ export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWork
     byteSize: part.byteSize,
     admittedText: Boolean(part.bytesPresent || part.text),
   }));
-  if (!looksLikeQuote(admittedText)) {
+  if (!input.treatAs && !looksLikeQuote(admittedText)) {
     return { intent: 'other', groups: [], secondaryAsks: [], alternatives: [], attachmentAdmissions };
   }
   const dates = [...admittedText.matchAll(new RegExp(ISO_DATE, 'g'))].map((match) => match[0]);

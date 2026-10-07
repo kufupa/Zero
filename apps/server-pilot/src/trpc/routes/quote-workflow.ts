@@ -340,6 +340,7 @@ export const quoteWorkflowRouter = router({
                 bodyText: [input.staffNote, synced.bodyText].filter(Boolean).join('\n\n'),
                 preceding: synced.preceding,
                 attachments: synced.attachments,
+                treatAs: input.treatAs,
               });
               const treatAs = input.treatAs;
               // A staff override always quotes; the booking choice rides on workflow and luna.
