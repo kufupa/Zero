@@ -1,6 +1,32 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
+import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
+import {
+  deriveAuthorizedExtraLines,
+  type AuthorizedProposalFacts,
+} from '../quote-proposal/quote-lines.js';
+import type { StaffQuoteAttestation } from './staff-quote-workflow.js';
+
+export type PriorStaffQuoteRequoteGroup = {
+  id: string;
+  arrivalDate: string;
+  departureDate: string;
+  quantity: number;
+  adults: number;
+  childrenAges: number[];
+  board: 'room_only' | 'bb' | 'dinner_bb';
+  roomCodes?: string[];
+};
+
+export type PriorStaffQuoteRequotePayload = {
+  groups: PriorStaffQuoteRequoteGroup[];
+  salesStrategy: 'BAR' | 'Government';
+  company: string;
+  agency: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
+};
 
 export type ThreadQuoteRevisionSummary = {
   workflowRunId: string;
@@ -102,6 +128,98 @@ export function collectThreadQuoteRevisions(
   return summaries;
 }
 
+function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['board'] {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'dinner_bed_breakfast') return 'dinner_bb';
+  return 'bb';
+}
+
+function proposalBundles(run: PriorQuoteRun): Array<{ ref: string; facts: AuthorizedProposalFacts }> {
+  const result = run.metrics?.reservationistResult as
+    | { proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }> }
+    | undefined;
+  return result?.proposalFacts ?? [];
+}
+
+function proposalFactsForRevision(
+  run: PriorQuoteRun,
+  revisionId: string,
+): AuthorizedProposalFacts | undefined {
+  return proposalBundles(run).find((row) => row.facts.revisionId === revisionId)?.facts;
+}
+
+export function proposalFactRefsForRevision(run: PriorQuoteRun, revisionId: string): string[] {
+  return proposalBundles(run)
+    .filter((row) => row.facts.revisionId === revisionId && row.ref)
+    .map((row) => row.ref);
+}
+
+export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQuoteRun): number {
+  const facts = proposalFactsForRevision(run, revision.id);
+  if (!facts) return revision.totalMinor;
+  try {
+    const extra = deriveAuthorizedExtraLines(revision, facts).reduce(
+      (sum, line) => sum + line.totalMinor,
+      0,
+    );
+    return revision.totalMinor + extra;
+  } catch {
+    return revision.totalMinor;
+  }
+}
+
+function extrasHeaderFromFacts(facts: AuthorizedProposalFacts | undefined): {
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
+} {
+  if (!facts) return {};
+  const dinner = facts.extras.find(
+    (row) => row.service === 'dinner_allowance' && row.unitKind === 'person_service',
+  );
+  const shuttle = facts.extras.find((row) => row.service === 'shuttle' && row.unitKind === 'trip');
+  return {
+    ...(dinner ? { dinnerAllowanceMinor: dinner.unitMinor } : {}),
+    ...(shuttle ? { shuttleRequested: true as const, shuttleMinor: shuttle.unitMinor } : {}),
+  };
+}
+
+/** Stored revision + attestation inputs for executeStaffQuote when freshness expired. */
+export function priorStaffQuoteRequotePayload(
+  run: PriorQuoteRun,
+  revisionRef: string,
+): PriorStaffQuoteRequotePayload | null {
+  if (run.state !== 'succeeded') return null;
+  const revision = revisionsFromRun(run).find((row) => row.id === revisionRef);
+  if (!revision) return null;
+  const staff = run.metrics?.staffQuoteAttestation as
+    | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
+    | undefined;
+  if (
+    staff?.version !== 1 ||
+    staff.kind !== 'staff_approved_quote' ||
+    !staff.revisionIds?.includes(revisionRef)
+  ) {
+    return null;
+  }
+  return {
+    groups: revision.groups.map((group) => ({
+      id: group.id,
+      arrivalDate: group.arrivalDate,
+      departureDate: group.departureDate,
+      quantity: group.quantity,
+      adults: group.adults,
+      childrenAges: [...group.childAges],
+      board: staffBoardFromRevision(group.board),
+      ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
+    })),
+    salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
+    company: staff.header.company ?? '',
+    agency: staff.header.agency ?? '',
+    ...extrasHeaderFromFacts(proposalFactsForRevision(run, revisionRef)),
+  };
+}
+
 export function resolvePriorQuoteForBooking(
   run: PriorQuoteRun,
   scope: {
@@ -117,14 +235,15 @@ export function resolvePriorQuoteForBooking(
   }
   const revision = revisionsFromRun(run).find((row) => row.id === scope.revisionRef);
   if (!revision) return { status: 'unavailable', reason: 'not_found' };
+  const asked = scope.analysis.groups.filter((group) => group.arrival && group.departure);
+  if (asked.length && !analysisMatchesQuotedStay(scope.analysis, revision)) {
+    return { status: 'unavailable', reason: 'scope_mismatch' };
+  }
   try {
     assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, scope.now ?? new Date());
   } catch (error) {
     if (error instanceof DraftApprovalError) return { status: 'unavailable', reason: 'expired' };
     throw error;
-  }
-  if (!analysisMatchesQuotedStay(scope.analysis, revision)) {
-    return { status: 'unavailable', reason: 'scope_mismatch' };
   }
   return { status: 'ready', revision };
 }

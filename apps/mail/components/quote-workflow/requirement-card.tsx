@@ -150,7 +150,16 @@ export function RequirementCard({
         <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Board
+        <span>
+          Board
+          {group.fields.board === 'defaulted' ? (
+            <span className="ml-1 text-[11px] font-normal normal-case tracking-normal text-[#64748b]">
+              usual
+            </span>
+          ) : (
+            <Provenance value={group.fields.board} />
+          )}
+        </span>
         <select
           className={fieldClass}
           aria-label="Board"

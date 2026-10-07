@@ -424,24 +424,90 @@ function provenanceMatches(
   return true;
 }
 
-function hasStaffStayEdits(session: QuoteSession): boolean {
+export function hasStaffStayEdits(session: QuoteSession): boolean {
   if (session.inputRevision > 1) return true;
   return session.groups.some((group) =>
     Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
   );
 }
 
+function rateClaimAmountMinor(amount: string): number | undefined {
+  const normalized = amount.replaceAll(',', '').trim();
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
+  if (!match) return undefined;
+  const major = Number(match[1]);
+  const frac = (match[2] ?? '00').padEnd(2, '0').slice(0, 2);
+  const minor = major * 100 + Number(frac);
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
+}
+
+function dinnerAllowanceFromRateClaims(analysis: QuoteAnalysis): number | undefined {
+  for (const claim of analysis.luna?.rateClaims ?? []) {
+    const quote = claim.quote?.trim() ?? '';
+    if (!quote) continue;
+    if (claim.currency && claim.currency !== 'ZAR') continue;
+    const separateDinner =
+      /dinner allowance|meal allowance/i.test(quote) ||
+      (/dinner/i.test(quote) && /per person/i.test(quote));
+    if (!separateDinner) continue;
+    if (/includ(?:e|ing)/i.test(quote) && !/allowance|per person/i.test(quote)) continue;
+    const minor = rateClaimAmountMinor(claim.amount);
+    if (!minor) continue;
+    const amountDigits = claim.amount.replace(/[^\d]/g, '');
+    if (!amountDigits || !quote.replace(/[^\d]/g, '').includes(amountDigits)) continue;
+    return minor;
+  }
+  return undefined;
+}
+
+function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
+  const texts = [
+    ...(analysis.luna?.evidence ?? []).map((row) => row.quote),
+    ...(analysis.luna?.missing ?? []).map((row) => row.question),
+    ...(analysis.groups ?? []).flatMap((group) => group.specialRequests ?? []),
+  ];
+  return texts.some((text) => /shuttle|transfer|airport/i.test(text));
+}
+
 function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
+  let next = header;
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
-  if (!party || !name) return header;
-  if (header.company.trim() || header.agency.trim()) return header;
-  if (party.kind === 'agency') return { ...header, agency: name };
-  if (party.kind === 'organization') return { ...header, company: name };
-  if (party.kind === 'government') {
-    return { ...header, company: name, salesStrategy: 'Government' };
+  if (party && name && !header.company.trim() && !header.agency.trim()) {
+    if (party.kind === 'agency') next = { ...next, agency: name };
+    else if (party.kind === 'organization') next = { ...next, company: name };
+    else if (party.kind === 'government') {
+      next = { ...next, company: name, salesStrategy: 'Government' };
+    }
   }
-  return header;
+  if (next.dinnerAllowanceMinor === undefined) {
+    const dinner = dinnerAllowanceFromRateClaims(analysis);
+    if (dinner) next = { ...next, dinnerAllowanceMinor: dinner };
+  }
+  if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
+    next = { ...next, shuttleRequested: true };
+  }
+  return next;
+}
+
+function reviewItemsFromExtrasNotes(
+  session: QuoteSession,
+  notes: readonly string[],
+): QuoteSession['reviewItems'] {
+  const kept = session.reviewItems.filter((item) => item.sourceLabel !== 'Quote extras');
+  if (!notes.length) return kept;
+  const existing = new Set(kept.map((item) => item.text));
+  const added = notes
+    .filter((text) => text.trim() && !existing.has(text))
+    .map((text, index) => ({
+      id: `staff-extras-review-${index}-${text.length}`,
+      kind: 'question' as const,
+      rank: 'secondary' as const,
+      text,
+      sourceLabel: 'Quote extras',
+      blocking: false,
+    }));
+  return added.length ? [...kept, ...added] : kept;
 }
 
 function applyGroupPatch(
@@ -654,6 +720,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         errorMessage: null,
         runningStepId: null,
         reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        staffHeader: action.approvedHeader
+          ? { ...session.staffHeader, ...action.approvedHeader }
+          : session.staffHeader,
+        groups: action.groups?.length ? action.groups : session.groups,
+        reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
         ),

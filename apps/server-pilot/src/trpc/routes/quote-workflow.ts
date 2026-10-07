@@ -152,7 +152,7 @@ export const quoteWorkflowRouter = router({
           alternatives: mapped.alternatives,
           reviewItems: [
             ...attachmentReviews,
-            ...questionItems([...luna.missing, ...mapped.missing]),
+            ...questionItems(mapped.missing),
           ],
           source: 'luna' as const,
           aiUnavailable: false as const,

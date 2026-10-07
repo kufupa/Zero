@@ -236,6 +236,48 @@ describe('quoteWorkflow.analyseSelection', () => {
     }
   });
 
+  it('does not surface room-type questions when Luna asks for a hotel default', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Please quote 1 room 12-14 Nov for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput({
+          missing: [
+            { field: 'roomType', question: 'Which room type?' },
+            { field: 'guestNames', question: 'Guest names?' },
+          ],
+        }),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      const texts = (result.reviewItems ?? []).map((item) => item.text);
+      expect(texts.some((text) => /room type/i.test(text))).toBe(false);
+      expect(texts.some((text) => /Guest names/i.test(text))).toBe(true);
+    }
+  });
+
   it('maps create_booking to intent quote and keeps luna.workflow', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Book rooms',

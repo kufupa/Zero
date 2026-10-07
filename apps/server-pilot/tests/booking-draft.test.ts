@@ -346,6 +346,52 @@ describe('buildBookingDrafts', () => {
     });
   });
 
+  it('matches a guest total that includes stored extras while nightly stays room-only', async () => {
+    const revision = await agencyRevision();
+    const extra = 50_000;
+    const amount = ((revision.totalMinor + extra) / 100).toFixed(2);
+    const withExtras = await buildBookingDrafts({
+      analysis: analysis({
+        rateClaims: [
+          {
+            kind: 'total',
+            amount,
+            currency: 'ZAR',
+            basis: 'total',
+            taxBasis: 'gross_included',
+            quote: amount,
+          },
+        ],
+      }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      extraTotalMinor: extra,
+      validate: validateCreate,
+    });
+    expect(withExtras.rateCheck[0]).toMatchObject({ status: 'match' });
+    const roomsOnly = await buildBookingDrafts({
+      analysis: analysis({
+        rateClaims: [
+          {
+            kind: 'total',
+            amount,
+            currency: 'ZAR',
+            basis: 'total',
+            taxBasis: 'gross_included',
+            quote: amount,
+          },
+        ],
+      }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      extraTotalMinor: 0,
+      validate: validateCreate,
+    });
+    expect(roomsOnly.rateCheck[0]?.status).toBe('mismatch');
+  });
+
   it('asks for the second guest while keeping other fields on that request', async () => {
     const revision = await agencyRevision();
     const draft = await buildBookingDrafts({

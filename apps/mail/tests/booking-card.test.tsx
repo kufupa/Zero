@@ -2,16 +2,23 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
+  bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
   bindUsePriorQuoteForBooking,
+  buildExpiredPriorRequoteBindArgs,
+  EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  expiredPriorQuoteNotice,
+  expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
+  staffQuoteGroupsForExpiredPriorRequote,
 } from '../lib/quote-workflow/booking-draft-bind';
-import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { bindExecuteStaffQuote } from '../lib/quote-workflow/staff-quote-bind';
+import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type {
   BookingDraftReady,
   LunaAnalysisWire,
@@ -343,5 +350,182 @@ describe('bindUsePriorQuoteForBooking', () => {
   it('maps a room-only revision board onto the reused offer', () => {
     expect(offerBoardFromRevision('room_only')).toBe('room_only');
     expect(offerBoardFromRevision('dinner_bed_breakfast')).toBe('dinner_bb');
+  });
+});
+
+describe('expired prior re-quote', () => {
+  const stored = {
+    groups: [
+      {
+        id: 'prior-g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 2,
+        adults: 1,
+        childrenAges: [7],
+        board: 'bb' as const,
+        roomCodes: ['STQN'],
+      },
+    ],
+    salesStrategy: 'BAR' as const,
+    company: 'Acme Corp',
+    agency: 'XYZ TRAVEL',
+  };
+
+  it('exposes the re-quote label and expired toast copy', () => {
+    expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote same stay');
+    expect(expiredPriorQuoteToastMessage()).toMatch(/expired/i);
+  });
+
+  it('prefers a matching expired quote over an unrelated stay mismatch', () => {
+    expect(
+      expiredPriorQuoteNotice(['scope_mismatch', 'expired'], {
+        workflowRunId: 'run-old',
+        revisionRef: 'rev-old',
+      }),
+    ).toBe('requote');
+    expect(expiredPriorQuoteNotice(['scope_mismatch'], null)).toBe('mismatch');
+  });
+
+  it('sends prior groups and party header unchanged when staff has not edited stays', () => {
+    const groups = staffQuoteGroupsForExpiredPriorRequote({
+      stored,
+      sessionGroups: [g1],
+      staffEdited: false,
+    });
+    expect(groups).toMatchObject([
+      {
+        id: 'g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 2,
+        adults: 1,
+        childrenAges: [7],
+        board: 'bb',
+        roomCodes: ['STQN'],
+      },
+    ]);
+    const { header } = buildExpiredPriorRequoteBindArgs({
+      stored,
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: 'Front desk',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+    expect(header).toMatchObject({
+      company: 'Acme Corp',
+      agency: 'XYZ TRAVEL',
+      attention: 'Front desk',
+    });
+  });
+
+  it('restores stored extras onto the re-quote header when staff has not edited stays', () => {
+    const { header } = buildExpiredPriorRequoteBindArgs({
+      stored: {
+        ...stored,
+        dinnerAllowanceMinor: 12_500,
+        shuttleRequested: true,
+        shuttleMinor: 45_000,
+      },
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+    expect(header).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      shuttleRequested: true,
+      shuttleMinor: 45_000,
+    });
+  });
+
+  it('uses patched session groups when staff edited after prefill', () => {
+    const edited: StayGroupRequirement = {
+      ...g1,
+      quantity: 3,
+      fields: { ...g1.fields, quantity: 'staff_corrected' },
+    };
+    const session = reduceQuoteSession({ ...initialQuoteSession(), groups: [g1] }, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { quantity: 3 },
+    });
+    expect(hasStaffStayEdits(session)).toBe(true);
+    const groups = staffQuoteGroupsForExpiredPriorRequote({
+      stored,
+      sessionGroups: [edited],
+      staffEdited: true,
+    });
+    expect(groups).toMatchObject([{ quantity: 3, adults: 1 }]);
+    expect(groups).not.toMatchObject([{ quantity: 2 }]);
+  });
+
+  it('calls executeStaffQuote with the resolved prior inputs', async () => {
+    const mutate = vi.fn(async () => ({
+      status: 'ready' as const,
+      workflowRunId: 'run-new',
+      revisionRef: 'rev-new',
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      factRefs: [],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: 'digest',
+      totalMinor: 100_00,
+      currency: 'ZAR',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      description: 'Stay',
+    }));
+    const { groups, header } = buildExpiredPriorRequoteBindArgs({
+      stored,
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+    await bindExecuteStaffQuote({
+      mutate,
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups,
+      header,
+    });
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groups: [expect.objectContaining({ id: 'g1', quantity: 2, roomCodes: ['STQN'] })],
+        company: 'Acme Corp',
+        agency: 'XYZ TRAVEL',
+        salesStrategy: 'BAR',
+      }),
+    );
+  });
+
+  it('loads stored payload through getPriorStaffQuoteRequote', async () => {
+    const bound = await bindGetPriorStaffQuoteRequote({
+      query: async () => ({ status: 'ready', payload: stored }),
+      threadId: 'thread-1',
+      row: { workflowRunId: 'run-1', revisionRef: 'rev-1' },
+    });
+    expect(bound).toEqual({ status: 'ok', payload: stored });
   });
 });

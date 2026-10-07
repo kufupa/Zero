@@ -1,6 +1,6 @@
 export type QuoteIntent = 'quote' | 'other';
 
-export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing';
+export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defaulted';
 
 export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
@@ -193,6 +193,9 @@ export type StaffQuoteHeader = {
   attention: string;
   clientEmail: string;
   clientTelephone: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
 };
 
 export function emptyStaffQuoteHeader(): StaffQuoteHeader {
@@ -391,6 +394,10 @@ export type QuoteSessionAction =
       selectionEpoch: number;
       inputRevision: number;
       reviewedReplyHtml?: string;
+      extrasReviewItems?: string[];
+      /** Apply without bumping inputRevision — the quote already used this header. */
+      approvedHeader?: StaffQuoteHeader;
+      groups?: StayGroupRequirement[];
     }
   | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }

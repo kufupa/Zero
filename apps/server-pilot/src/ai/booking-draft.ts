@@ -109,7 +109,7 @@ function normalizeClaimAmount(raw: string): { amount: string; precision: number 
   return { amount, precision: fraction?.length ?? 0 };
 }
 
-function comparisonTarget(revision: QuoteRevision) {
+function comparisonTarget(revision: QuoteRevision, extraTotalMinor = 0) {
   const groups = revision.groups;
   return {
     currency: revision.currency,
@@ -129,7 +129,7 @@ function comparisonTarget(revision: QuoteRevision) {
             ),
           ),
     quantity: groups.length === 1 ? groups[0]!.quantity : 1,
-    totalMinor: groups.reduce((sum, group) => sum + group.totalMinor, 0),
+    totalMinor: groups.reduce((sum, group) => sum + group.totalMinor, 0) + extraTotalMinor,
   };
 }
 
@@ -137,9 +137,21 @@ function checkRateClaim(
   claim: LunaAnalysis['rateClaims'][number],
   revision: QuoteRevision,
   messageId: string,
+  extraTotalMinor = 0,
 ): RateComparison & { claimQuote: string; assumedTaxBasis: boolean } {
   const assumedTaxBasis = claim.taxBasis === 'unknown';
   const { amount, precision } = normalizeClaimAmount(claim.amount);
+  const rooms = comparisonTarget(revision);
+  const target =
+    claim.basis === 'total' || claim.kind === 'total'
+      ? {
+          currency: rooms.currency,
+          basis: 'total' as const,
+          scopeDigest: rooms.scopeDigest,
+          taxBasis: rooms.taxBasis,
+          totalMinor: rooms.totalMinor + extraTotalMinor,
+        }
+      : rooms;
   const comparison = compareRateClaim(
     {
       kind: claim.kind,
@@ -151,7 +163,7 @@ function checkRateClaim(
       source: { ref: messageId, page: 1, quote: claim.quote || claim.amount },
       precision,
     },
-    comparisonTarget(revision),
+    target,
   );
   return { ...comparison, claimQuote: claim.quote || claim.amount, assumedTaxBasis };
 }
@@ -214,6 +226,7 @@ export async function buildBookingDrafts(input: {
   revision: QuoteRevision;
   defaults: BookingDraftDefaults;
   messageId: string;
+  extraTotalMinor?: number;
   validate?: (
     request: Record<string, unknown>,
   ) => Promise<{ ok: boolean; errors: unknown[] }>;
@@ -276,7 +289,7 @@ export async function buildBookingDrafts(input: {
   return {
     rooms,
     rateCheck: input.analysis.rateClaims.map((claim) => {
-      const compared = checkRateClaim(claim, revision, input.messageId);
+      const compared = checkRateClaim(claim, revision, input.messageId, input.extraTotalMinor ?? 0);
       return stayUnclear ? { ...compared, status: 'cannot_check' as const, reason: 'ambiguous_stay' } : compared;
     }),
     missing: uniqueMissing,

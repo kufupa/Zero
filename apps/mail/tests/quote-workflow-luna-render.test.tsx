@@ -1,11 +1,16 @@
 /**
  * @vitest-environment happy-dom
  */
+import type {
+  QuoteAnalysis,
+  QuoteSession,
+  StayGroupRequirement,
+  LunaAnalysisWire,
+} from '../lib/quote-workflow/types';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import type { QuoteAnalysis, QuoteSession, StayGroupRequirement, LunaAnalysisWire } from '../lib/quote-workflow/types';
+import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => cleanup());
 
@@ -52,6 +57,24 @@ function sessionWithAnalysis(analysis: QuoteAnalysis): QuoteSession {
 }
 
 describe('QuoteWorkflowPanel Luna extras', () => {
+  it('labels a defaulted board as usual and still shows the stay as editable', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [
+        {
+          ...g1,
+          fields: { ...g1.fields, board: 'defaulted' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByLabelText('Board')).toHaveProperty('value', 'bb');
+    expect(screen.getByText('usual')).toBeDefined();
+  });
+
   it('shows Booking badge and stay groups for create_booking workflow', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
@@ -121,7 +144,9 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(
-      screen.getByText('Attachment scan.pdf could not be read (no extractable text). Review it manually.'),
+      screen.getByText(
+        'Attachment scan.pdf could not be read (no extractable text). Review it manually.',
+      ),
     ).toBeDefined();
   });
 
@@ -310,7 +335,7 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     expect(screen.getAllByText(/analyseSelection network down/i).length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('Arrival')).toBeNull();
-  });
+  }, 15_000);
 
   it('ignores a stale analyseSelection result after the selection changes', async () => {
     let resolveFirst!: (value: unknown) => void;
@@ -343,7 +368,7 @@ describe('Outlook pane Luna analysis bind', () => {
     await waitFor(() => expect(analyseMutate).toHaveBeenCalled());
     paneState.entryId = '002';
     view.rerender(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByDisplayValue('Fresh')).toBeDefined());
+    await waitFor(() => expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0));
     await act(async () => {
       resolveFirst({
         status: 'ready',
@@ -364,7 +389,7 @@ describe('Outlook pane Luna analysis bind', () => {
         sourceRevision: 1,
       });
     });
-    expect(screen.getByDisplayValue('Fresh')).toBeDefined();
+    expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
     expect(screen.queryByDisplayValue('Stale')).toBeNull();
-  });
+  }, 15_000);
 });

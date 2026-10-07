@@ -76,6 +76,7 @@ type CensusRow = {
   workflow: Workflow | 'unavailable';
   flags: string[];
   bucket: Bucket;
+  staffEquivalent: boolean;
   inventedPrice: boolean;
   inventedPriceCodes: string[];
   taskKinds: string[];
@@ -246,6 +247,13 @@ function bucketOf(analysis: LunaAnalysis): Bucket {
   if (analysis.workflow === 'other') return 'other';
   if (analysis.flags.length === 0 && !missingPricing(analysis)) return 'full';
   return 'partial';
+}
+
+/** Staff-equivalent: dates/rooms/occupancy present; extras/unread/discount flags do not disqualify. */
+export function staffEquivalentOf(analysis: LunaAnalysis): boolean {
+  if (analysis.workflow === 'other') return false;
+  if (analysis.flags.some((flag) => MANUAL_FLAGS.has(flag))) return false;
+  return !missingPricing(analysis);
 }
 
 function compactAmount(value: string): string {
@@ -482,6 +490,8 @@ function writeSummary(input: {
       ['full', 'partial', 'manual', 'other'].map((key) => [key, String(buckets[key] ?? 0)]),
     ),
     '',
+    `staffEquivalent: ${luna.filter((row) => row.staffEquivalent).length} (old full ${buckets.full ?? 0})`,
+    '',
     '## Multi-tool (K14)',
     `Rows with tasks.length > 1: ${multi}`,
     `amend tasks: ${amendTasks}; cancel tasks: ${cancelTasks}; availability tasks: ${availabilityTasks}`,
@@ -689,6 +699,7 @@ async function main(): Promise<void> {
           workflow: 'unavailable',
           flags: [],
           bucket: 'other',
+          staffEquivalent: false,
           inventedPrice: false,
           inventedPriceCodes: [],
           taskKinds: [],
@@ -711,6 +722,7 @@ async function main(): Promise<void> {
           workflow: analysis.workflow,
           flags: analysis.flags,
           bucket: bucketOf(analysis),
+          staffEquivalent: staffEquivalentOf(analysis),
           inventedPrice: inventedCodes.length > 0,
           inventedPriceCodes: inventedCodes,
           taskKinds: kinds,
@@ -763,6 +775,7 @@ async function main(): Promise<void> {
       workflows,
       buckets,
       inventedPrices: invented,
+      staffEquivalent: lunaRows.filter((row) => row.staffEquivalent).length,
       multiTool: lunaRows.filter((row) => row.taskKinds.length > 1).length,
       costUsd: Number(after.costUsd.toFixed(6)),
       costCapped,
@@ -779,7 +792,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : 'census_failed');
-  process.exitCode = 1;
-});
+const invokedDirectly =
+  Boolean(process.argv[1]) &&
+  path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : 'census_failed');
+    process.exitCode = 1;
+  });
+}

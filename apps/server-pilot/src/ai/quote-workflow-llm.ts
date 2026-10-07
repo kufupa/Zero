@@ -14,7 +14,7 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Groups of 10+ rooms, delegates or events set the conference_or_group flag. Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Groups of 10+ rooms, delegates or events set the conference_or_group flag. Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'invalid_output' | 'disabled';
 
@@ -35,7 +35,7 @@ export type MappedQuoteDecision = {
     roomPreference?: string;
     organisation?: string;
     specialRequests: string[];
-    fields: Record<string, 'extracted' | 'staff_corrected' | 'missing'>;
+    fields: Record<string, 'extracted' | 'staff_corrected' | 'missing' | 'defaulted'>;
   }>;
   secondaryAsks: string[];
   alternatives: string[];
@@ -131,11 +131,35 @@ function fieldState(value: unknown): 'extracted' | 'missing' {
   return value === null || value === undefined ? 'missing' : 'extracted';
 }
 
+function hotelDefaultedQuestion(field: string): boolean {
+  return /^(roomType|roomPreference|room_type|board)$/i.test(field);
+}
+
+function defaultBoard(
+  partyKind: LunaAnalysis['party']['kind'],
+): MappedQuoteDecision['groups'][number]['board'] {
+  return partyKind === 'government' ? 'dinner_bb' : 'bb';
+}
+
+function mapStatedOrDefaultBoard(
+  board: LunaAnalysis['groups'][number]['board'],
+  partyKind: LunaAnalysis['party']['kind'],
+): MappedQuoteDecision['groups'][number]['board'] {
+  if (board === null) return defaultBoard(partyKind);
+  return board === 'dbb' ? 'dinner_bb' : board;
+}
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   if (analysis.workflow === 'other') {
-    return { intent: 'other', groups: [], secondaryAsks: [], alternatives: [], missing };
+    return {
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      missing: analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field)),
+    };
   }
   const groups = analysis.groups.map((group, index) => {
     const arrivalDate = validIsoDate(group.arrival);
@@ -152,8 +176,11 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
         question: `Departure date for group ${index + 1} is not a valid ISO calendar date.`,
       });
     }
-    const board: MappedQuoteDecision['groups'][number]['board'] =
-      group.board === 'dbb' ? 'dinner_bb' : group.board === null ? 'unknown' : group.board;
+    const boardDefaulted = group.board === null;
+    const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
+      group.board,
+      analysis.party.kind,
+    );
     return {
       id: `g${index + 1}`,
       ...(arrivalDate ? { arrivalDate } : {}),
@@ -170,7 +197,7 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
         departureDate: departureDate ? ('extracted' as const) : ('missing' as const),
         quantity: fieldState(group.rooms),
         adults: fieldState(group.adultsPerRoom),
-        board: fieldState(group.board),
+        board: boardDefaulted ? ('defaulted' as const) : fieldState(group.board),
       },
     };
   });
@@ -178,20 +205,23 @@ export function mapLlmDecision(analysis: LunaAnalysis): MappedQuoteDecision {
     groups.push({
       id: 'g1',
       childrenAges: [],
-      board: 'unknown',
+      board: defaultBoard(analysis.party.kind),
       specialRequests: [],
       fields: {
         arrivalDate: 'missing',
         departureDate: 'missing',
         quantity: 'missing',
         adults: 'missing',
-        board: 'missing',
+        board: 'defaulted',
       },
     });
     missing.push({
       field: 'stay',
       question: 'Stay dates, rooms and occupancy for this quote?',
     });
+  }
+  for (const item of analysis.missing) {
+    if (!hotelDefaultedQuestion(item.field)) missing.push(item);
   }
   return { intent: 'quote', groups, secondaryAsks: [], alternatives: [], missing };
 }
@@ -246,11 +276,14 @@ export async function analyseQuoteSelection(input: {
       return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
     }
     const sourceText = prompt.user;
+    const verbatim = <T extends { quote: string }>(items: T[]) =>
+      items.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote));
     return {
       source: 'luna',
       analysis: {
         ...parsed.data,
-        evidence: parsed.data.evidence.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote)),
+        evidence: verbatim(parsed.data.evidence),
+        rateClaims: verbatim(parsed.data.rateClaims),
       },
     };
   } catch (error) {

@@ -331,4 +331,18 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
+
+  it('keeps a trailing decimal while typing a dinner allowance', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const input = screen.getByLabelText('Dinner allowance') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '125.' } });
+    expect(input.value).toBe('125.');
+  });
 });

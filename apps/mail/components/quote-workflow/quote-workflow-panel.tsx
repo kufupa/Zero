@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
@@ -14,6 +15,60 @@ import { WorkflowBadge } from './workflow-badge';
 
 const fieldClass =
   'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+
+function formatZarMinor(minor: number | undefined): string {
+  return minor !== undefined && minor > 0 ? (minor / 100).toFixed(2).replace(/\.00$/, '') : '';
+}
+
+function ZarMinorInput({
+  ariaLabel,
+  minor,
+  onMinorChange,
+}: {
+  ariaLabel: string;
+  minor: number | undefined;
+  onMinorChange: (minor: number | undefined) => void;
+}) {
+  const formatted = formatZarMinor(minor);
+  const [draft, setDraft] = useState(formatted);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(formatted);
+  }, [formatted, focused]);
+  return (
+    <input
+      aria-label={ariaLabel}
+      className={fieldClass}
+      inputMode="decimal"
+      value={focused ? draft : formatted}
+      onFocus={() => {
+        setDraft(formatted);
+        setFocused(true);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const raw = draft.trim();
+        if (!raw) {
+          onMinorChange(undefined);
+          return;
+        }
+        const rand = Number(raw);
+        onMinorChange(Number.isFinite(rand) && rand > 0 ? Math.round(rand * 100) : undefined);
+      }}
+      onChange={(event) => {
+        const raw = event.target.value;
+        setDraft(raw);
+        if (!raw.trim()) {
+          onMinorChange(undefined);
+          return;
+        }
+        if (/\.\d{0,1}$/.test(raw) && raw.endsWith('.')) return;
+        const rand = Number(raw.trim());
+        if (Number.isFinite(rand) && rand > 0) onMinorChange(Math.round(rand * 100));
+      }}
+    />
+  );
+}
 
 function StaffHeaderFields({
   header,
@@ -87,6 +142,33 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
       </label>
+      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        Dinner allowance (ZAR / person / night)
+        <ZarMinorInput
+          ariaLabel="Dinner allowance"
+          minor={header.dinnerAllowanceMinor}
+          onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+        <input
+          type="checkbox"
+          aria-label="Shuttle requested"
+          checked={Boolean(header.shuttleRequested)}
+          onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
+        />
+        Shuttle requested
+      </label>
+      {header.shuttleRequested ? (
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Shuttle amount (ZAR)
+          <ZarMinorInput
+            ariaLabel="Shuttle amount"
+            minor={header.shuttleMinor}
+            onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+          />
+        </label>
+      ) : null}
     </section>
   );
 }

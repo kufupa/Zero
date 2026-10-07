@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   analysisMatchesQuotedStay,
   collectThreadQuoteRevisions,
+  priorStaffQuoteRequotePayload,
+  proposalFactRefsForRevision,
   resolvePriorQuoteForBooking,
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
@@ -147,6 +149,172 @@ describe('analysisMatchesQuotedStay', () => {
   });
 });
 
+describe('priorStaffQuoteRequotePayload', () => {
+  it('returns stored groups and party header from attestation', async () => {
+    const revision = await freshRevision();
+    revision.groups[0]!.childAges = [7];
+    const payload = priorStaffQuoteRequotePayload(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          staffQuoteAttestation: {
+            version: 1,
+            kind: 'staff_approved_quote',
+            transportId: 't1',
+            userId: 'u1',
+            threadId: 'thread-1',
+            messageId: 'mail-1',
+            sourceHash: 'a'.repeat(64),
+            selectionEpoch: 1,
+            inputRevision: 1,
+            inputDigest: 'digest',
+            authorizationId: 'auth',
+            revisionIds: [revision.id],
+            header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+            salesStrategy: 'BAR',
+          },
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+          },
+        },
+      },
+      revision.id,
+    );
+    expect(payload).toMatchObject({
+      salesStrategy: 'BAR',
+      company: 'Acme',
+      agency: 'XYZ TRAVEL',
+      groups: [
+        expect.objectContaining({
+          arrivalDate: revision.groups[0]!.arrivalDate,
+          quantity: revision.groups[0]!.quantity,
+          childrenAges: [7],
+          roomCodes: [revision.groups[0]!.roomCode],
+        }),
+      ],
+    });
+  });
+
+  it('restores stored dinner and shuttle extras onto the re-quote payload', async () => {
+    const revision = await freshRevision();
+    const payload = priorStaffQuoteRequotePayload(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          staffQuoteAttestation: {
+            version: 1,
+            kind: 'staff_approved_quote',
+            transportId: 't1',
+            userId: 'u1',
+            threadId: 'thread-1',
+            messageId: 'mail-1',
+            sourceHash: 'a'.repeat(64),
+            selectionEpoch: 1,
+            inputRevision: 1,
+            inputDigest: 'digest',
+            authorizationId: 'auth',
+            revisionIds: [revision.id],
+            header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+            salesStrategy: 'BAR',
+          },
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+            proposalFacts: [
+              {
+                ref: 'extras',
+                facts: {
+                  revisionId: revision.id,
+                  authorizationId: revision.authorizationId,
+                  sourceRef: 'message:mail-1',
+                  sourceHash: 'ab'.repeat(32),
+                  extras: [
+                    {
+                      id: 'dinner-allowance',
+                      label: 'Dinner allowance',
+                      quantity: 1,
+                      units: 2,
+                      unitKind: 'person_service',
+                      unitMinor: 12_500,
+                      service: 'dinner_allowance',
+                      persons: [],
+                      dates: [],
+                    },
+                    {
+                      id: 'shuttle',
+                      label: 'Shuttle',
+                      quantity: 1,
+                      units: 1,
+                      unitKind: 'trip',
+                      unitMinor: 45_000,
+                      service: 'shuttle',
+                      persons: [],
+                      dates: [revision.groups[0]!.arrivalDate],
+                    },
+                  ],
+                  includedEntitlements: [],
+                },
+              },
+            ],
+          },
+        },
+      },
+      revision.id,
+    );
+    expect(payload).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      shuttleRequested: true,
+      shuttleMinor: 45_000,
+    });
+  });
+
+  it('returns saved extras bundle refs for the matching revision', async () => {
+    const revision = await freshRevision();
+    const run = {
+      transportId: 't1',
+      threadId: 'thread-1',
+      state: 'succeeded',
+      metrics: {
+        reservationistResult: {
+          quoteRevisionIds: [revision.id],
+          quoteRevisions: [revision],
+          proposalFacts: [
+            {
+              ref: 'extras-dinner',
+              facts: {
+                revisionId: revision.id,
+                authorizationId: revision.authorizationId,
+                sourceRef: 'message:mail-1',
+                sourceHash: 'ab'.repeat(32),
+                extras: [],
+                includedEntitlements: [],
+              },
+            },
+            {
+              ref: 'extras-other',
+              facts: {
+                revisionId: 'rev-other',
+                authorizationId: revision.authorizationId,
+                sourceRef: 'message:mail-1',
+                sourceHash: 'ab'.repeat(32),
+                extras: [],
+                includedEntitlements: [],
+              },
+            },
+          ],
+        },
+      },
+    };
+    expect(proposalFactRefsForRevision(run, revision.id)).toEqual(['extras-dinner']);
+    expect(proposalFactRefsForRevision(run, 'missing')).toEqual([]);
+  });
+});
+
 describe('resolvePriorQuoteForBooking', () => {
   it('returns ready when the thread run is fresh and dates match', async () => {
     const revision = await freshRevision();
@@ -240,6 +408,34 @@ describe('resolvePriorQuoteForBooking', () => {
         metrics: {
           reservationistResult: {
             readiness: 'ready_for_staff_review',
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+          },
+        },
+      },
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        revisionRef: revision.id,
+        analysis: analysis({
+          groups: [{ ...analysis().groups[0]!, arrival: '2026-12-01', departure: '2026-12-03' }],
+        }),
+        now: new Date('2026-10-07T03:00:00Z'),
+      },
+    );
+    expect(resolved).toEqual({ status: 'unavailable', reason: 'scope_mismatch' });
+  });
+
+  it('returns scope_mismatch for an expired revision whose stay does not match', async () => {
+    const revision = await freshRevision();
+    revision.authoredDate = '2026-09-01';
+    const resolved = resolvePriorQuoteForBooking(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          reservationistResult: {
             quoteRevisionIds: [revision.id],
             quoteRevisions: [revision],
           },

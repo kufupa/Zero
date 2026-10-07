@@ -5,12 +5,16 @@ import {
   prepareStaffQuote,
   executeStaffQuote,
   attestStaffQuote,
+  buildStaffProposalFacts,
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
 import {
   collectThreadQuoteRevisions,
+  priorStaffQuoteRequotePayload,
+  proposalFactRefsForRevision,
+  quotedTotalWithStoredExtras,
   resolvePriorQuoteForBooking,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
@@ -140,6 +144,14 @@ export const usePriorQuoteForBookingInput = z
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+export const getPriorStaffQuoteRequoteInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    threadId: z.string().min(1),
   })
   .strict();
 
@@ -446,6 +458,13 @@ export const workstationRouter = router({
       });
     }
     const attestation = attestStaffQuote(input, scope, prepared, revision);
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const extraTotal = proposal.facts
+      ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
+          (sum, line) => sum + line.totalMinor,
+          0,
+        )
+      : 0;
     if (!(await stillCurrent()))
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
@@ -474,7 +493,9 @@ export const workstationRouter = router({
             readiness: 'ready_for_staff_review',
             quoteRevisionIds: [revision.id],
             quoteRevisions: [revision],
-            proposalFacts: [],
+            proposalFacts: proposal.facts
+              ? [{ ref: 'extras', facts: proposal.facts }]
+              : [],
           },
         },
       });
@@ -485,11 +506,12 @@ export const workstationRouter = router({
       revisionRef: revision.id,
       messageId: mail.id,
       threadId: mail.threadId,
-      factRefs: [],
+      factRefs: proposal.factRefs,
+      extrasReviewItems: proposal.extrasReviewItems,
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       inputDigest: prepared.inputDigest,
-      totalMinor: revision.totalMinor,
+      totalMinor: revision.totalMinor + extraTotal,
       currency: revision.currency,
       arrivalDate: revision.groups[0].arrivalDate,
       departureDate: revision.groups.at(-1)!.departureDate,
@@ -523,14 +545,16 @@ export const workstationRouter = router({
           transportId: ctx.activeTransportId,
           messageId: input.messageId,
           revisionRef: input.revisionRef,
-          factRefs: [],
+          factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
         });
         const cloned = structuredClone(revision);
+        const extraTotalMinor = quotedTotalWithStoredExtras(cloned, bound.run) - cloned.totalMinor;
         const draft = await buildBookingDrafts({
           analysis: input.analysis,
           revision: cloned,
           defaults: bookingCodeDefaults(partyClassFromRevision(cloned, staff)),
           messageId: input.messageId,
+          extraTotalMinor,
         });
         return {
           status: 'ready' as const,
@@ -579,6 +603,31 @@ export const workstationRouter = router({
         }),
       };
     }),
+  getPriorStaffQuoteRequote: mailboxProcedure
+    .input(getPriorStaffQuoteRequoteInput)
+    .query(async ({ input, ctx }) => {
+      const [run] = await getDb()
+        .select({
+          id: aiWorkflowRun.id,
+          transportId: aiWorkflowRun.transportId,
+          threadId: aiWorkflowRun.threadId,
+          state: aiWorkflowRun.state,
+          metrics: aiWorkflowRun.metrics,
+        })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.threadId, input.threadId),
+          ),
+        )
+        .limit(1);
+      if (!run) return { status: 'unavailable' as const, reason: 'not_found' as const };
+      const payload = priorStaffQuoteRequotePayload(run, input.revisionRef);
+      if (!payload) return { status: 'unavailable' as const, reason: 'not_found' as const };
+      return { status: 'ready' as const, payload };
+    }),
   usePriorQuoteForBooking: mailboxProcedure
     .input(usePriorQuoteForBookingInput)
     .mutation(async ({ input, ctx }) => {
@@ -612,11 +661,14 @@ export const workstationRouter = router({
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
         | undefined;
+      const extraTotalMinor =
+        quotedTotalWithStoredExtras(resolved.revision, run) - resolved.revision.totalMinor;
       const draft = await buildBookingDrafts({
         analysis: input.analysis,
         revision: structuredClone(resolved.revision),
         defaults: bookingCodeDefaults(partyClassFromRevision(resolved.revision, staff)),
         messageId: input.messageId,
+        extraTotalMinor,
       });
       return {
         status: 'ready' as const,
@@ -627,7 +679,7 @@ export const workstationRouter = router({
         inputRevision: input.inputRevision,
         revisionRef: resolved.revision.id,
         workflowRunId: run.id,
-        totalMinor: resolved.revision.totalMinor,
+        totalMinor: quotedTotalWithStoredExtras(resolved.revision, run),
         currency: resolved.revision.currency,
         arrivalDate: resolved.revision.groups[0]!.arrivalDate,
         departureDate: resolved.revision.groups.at(-1)!.departureDate,

@@ -63,6 +63,9 @@ export type ExecuteStaffQuoteInput = {
   attention: string;
   clientEmail: string;
   clientTelephone: string;
+  dinnerAllowanceMinor?: number;
+  shuttleRequested?: boolean;
+  shuttleMinor?: number;
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -72,6 +75,7 @@ export type ExecuteStaffQuoteResult = {
   messageId: string;
   threadId: string;
   factRefs: string[];
+  extrasReviewItems?: string[];
   selectionEpoch: number;
   inputRevision: number;
   inputDigest: string;
@@ -338,7 +342,7 @@ export async function bindStaffActions(args: {
 
 export type BoundExecuteStaffQuote =
   | { status: 'unavailable'; reason: string }
-  | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation };
+  | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
 
 export function allocationFromStaffQuote(
   result: ExecuteStaffQuoteResult,
@@ -366,7 +370,15 @@ export function allocationFromStaffQuote(
 
 export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   ExecuteStaffQuoteInput,
-  'salesStrategy' | 'company' | 'agency' | 'attention' | 'clientEmail' | 'clientTelephone'
+  | 'salesStrategy'
+  | 'company'
+  | 'agency'
+  | 'attention'
+  | 'clientEmail'
+  | 'clientTelephone'
+  | 'dinnerAllowanceMinor'
+  | 'shuttleRequested'
+  | 'shuttleMinor'
 > {
   const salesStrategy = header.salesStrategy === 'Government' ? 'Government' : header.salesStrategy === 'BAR' ? 'BAR' : null;
   if (!salesStrategy) {
@@ -379,6 +391,11 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
     attention: header.attention.trim(),
     clientEmail: header.clientEmail.trim(),
     clientTelephone: header.clientTelephone.trim(),
+    ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
+      ? { dinnerAllowanceMinor: header.dinnerAllowanceMinor }
+      : {}),
+    ...(header.shuttleRequested ? { shuttleRequested: true } : {}),
+    ...(header.shuttleMinor && header.shuttleMinor > 0 ? { shuttleMinor: header.shuttleMinor } : {}),
   };
 }
 
@@ -459,6 +476,9 @@ export async function bindExecuteStaffQuote(args: {
       status: 'ok',
       offer: allocationFromStaffQuote(result, args.groups),
       staffQuote,
+      extrasReviewItems: Array.isArray(result.extrasReviewItems)
+        ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : [],
     };
   } catch (error) {
     return { status: 'unavailable', reason: rejectionReason(error, 'executeStaffQuote') };
@@ -556,6 +576,22 @@ type StaffQuoteClient = {
     ) => Promise<
       | { status: 'unavailable'; reason?: string }
       | ({ status: 'ready' } & UsePriorQuoteForBookingReady)
+    >;
+  };
+  getPriorStaffQuoteRequote?: {
+    query: (
+      input: { workflowRunId: string; revisionRef: string; threadId: string },
+    ) => Promise<
+      | { status: 'unavailable'; reason?: string }
+      | {
+          status: 'ready';
+          payload: {
+            groups: StaffQuoteGroupInput[];
+            salesStrategy: 'BAR' | 'Government';
+            company: string;
+            agency: string;
+          };
+        }
     >;
   };
 };

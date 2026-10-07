@@ -1,7 +1,8 @@
 ---
-title: "feat: Luna reservationist MVP — analyse, prefill, booking drafts (overnight)"
+title: "feat: Luna reservationist MVP — analyse, prefill, booking drafts (overnight) + v2 day run"
 type: feat
 date: 2026-10-06
+revised: 2026-10-07 (v2 day run, see "v2 day run" section first)
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 execution: code
@@ -16,6 +17,189 @@ target_repo: zero (worktree `.worktrees/luna-mvp`, branch `feat/luna-reservation
 **Execution posture:** Autonomous overnight (see the mandate below). Write each unit's tests first, then implement. One executor. Standard non-fast subagents only; if none are available, work inline. Start on the user's "go". **T0 = the UTC time of "go".** Record T0 in the ledger first thing in U0. Every time in this plan is T0-relative (`T+h:mm`); the executor writes the absolute UTC next to each one in the ledger.
 
 **Evidence:** `docs/plans/2026-10-06-002-reservationist-mvp-evidence-ledger.md` (`[L#]`), `docs/plans/2026-10-06-003-case-coverage-gap-audit.md` (`[G]`), research briefs `/tmp/retro/brief-{A,B,C,D}-*.md` (VPS-local, not in git; copy to `.private/luna-mvp/briefs/` in U0).
+
+---
+
+## v2 day run (Oct 7 2026) — read this first
+
+**State when v2 was written (11:50 UTC):**
+- v1 D1–D10 are done. S1 is merged as [PR #33](https://github.com/kufupa/Zero/pull/33): main `6dfbb38b`, deployed to EC2.
+- S2–S5 have not started.
+- Local branch `feat/luna-mvp-stretch` is `origin/main` plus one unpushed docs commit (`4cb2a6a8`). There is also one untracked read-only research script, `apps/server-pilot/tooling/playwright-quote/read-reservation-fields.mjs`.
+- This section **supersedes** the v1 "Stretch queue" and "Schedule" sections below. Everything else (Global Constraints, the mandate, runbooks, safety) still applies, except where "v2 safety amendments" below changes it.
+
+**HMS outage (staff-confirmed, updated 12:14 UTC):** down from 12:00 SAST until **minimum 15:30 SAST (13:30 UTC)**; may still run to 16:00 SAST (14:00 UTC). VPN is healthy; `appsrv-1` login times out. Phase A needs no HMS. **Do not probe before 13:30 UTC.** First probe at 13:30 UTC, then at every later unit boundary. If Checkpoint A finishes before 13:30, park A6.
+
+**Models and gates:** the user switches models by hand.
+- Phase A and Phase C run on the execution model.
+- **Gate G1** comes after Checkpoint A: **STOP**, write the ledger and report, and tell the user "Phase A done; switch model for Phase B".
+- Phase B (analysis, short) runs on the research model and ends by confirming Phase C.
+- Phase C then runs to the end with no further gate.
+
+**Velocity, measured from last night's commit times:**
+- A feature unit took 15–45m: U1 ≈30m, U3 ≈31m, U7 ≈45m, U8 ≈15m.
+- A checkpoint (Greptile ×2 + fixes + PR + merge + deploy + verify) took 50–95m: CP1 1h34 including parallel U7 work, CP2 1h38, S1 review/merge ≈55m.
+- The v1 plan's P50s were about 2.3× too high. The v2 estimates below are measured values.
+
+### What staff actually do (research, Oct 7; aggregates only)
+
+**Sources:**
+- 116 HMS confirmation letters (outbound PDFs, Sep 28–Oct 6) parsed from S3. They are in `.private/luna-mvp/staff-bookings/letters/`, and the script is `letters_join.py` in the same folder.
+- 71 of those letters joined to their inbound request, by guest surname or recipient address. The join is a heuristic and some joins are wrong, so the numbers are directional.
+- The v1 census (1,189 rows) and the gap audit `[G]`.
+
+**Findings:**
+- **Staff book from thin emails and fill the gaps themselves.** 77% of requests (55/71) name no room type, and 82% (58/71) state no rate. Many say only "as per our telephone conversation". Staff don't send these back with questions.
+- **Unstated room type becomes a Standard room.** 78% of letters (91/116) are Standard Queen or Standard Twin. For 1 adult: Standard Queen 47, Standard Twin 30. Both cost the same within each rate tier, so the choice is about availability, not a question for the client. "Single room" means 1 adult.
+- **Unstated board becomes B&B.** 80% of letters (93/116) are B&B. DBB is 23/116, and 17 of the 18 joined DBB letters come from government senders, all on one fixed DBB tier. Rule: government gets DBB, everyone else gets B&B.
+- **Rates fall into a few fixed tiers per party.** The quote tool already prices by party and `salesStrategy`, and the model never prices.
+- **Dinner add-ons are separate charges.** When a client stated a dinner add-on (an amount per person), staff booked B&B and charged dinner separately, which is exactly S3 extras.
+- **Booking doesn't wait for payment.** Every letter shows deposit received = 0 (116/116). Guarantee arrives later as a pro forma payment, voucher or PO.
+- **A signed quotation turns straight into a booking**, which is the S1 lane.
+- **Still unknown (HMS is down):** track, source of business, market segment, guarantee type and created-by per party class. Phase B reads 182 real reservations, read-only, to learn these.
+
+**Product consequence, a new target:** "fully prefilled" is the wrong goal. The target is **staff-equivalent prefill**. That means everything staff would enter from the email, plus the defaults staff always apply. A field stays blank only where staff also had to ask: guest names on a booking, a shuttle flight time, or an unclear party. Questions are asked only for those. The census gets a `staffEquivalent` bucket (A2). The v1 baseline is `full` = 35/399 desk-action rows; `staffEquivalent` gets measured against it.
+
+### Phase A — no HMS (execution model; starts ~12:20 UTC; P50 end ~15:40, P80 ~16:30)
+
+| # | Item | P50 / P80 |
+|---|---|---|
+| A0 | Setup: watchdog `/loop 30m /continue-autonomously`; ledger heading `## v2`; `git switch -c feat/luna-v2-a` from current HEAD (`origin/main` + `4cb2a6a8`); commit this plan, the ledger and `read-reservation-fields.mjs` by explicit path (`docs:` / `chore(tooling):`) | 10m / 15m |
+| A1 | Verbatim filter for `rateClaims` | 15m / 25m |
+| A2 | Staff-equivalent defaults plus census re-run | 40m / 1h |
+| A3 | S3 extras on the staff quote path | 45m / 1h15 |
+| A4 | S1b: one-click re-quote when the prior quote has expired | 30m / 50m |
+| A5 | Checkpoint A (S5 docs written during Greptile waits) | 60m / 95m |
+| A6 | HMS probe **not before 13:30 UTC** (15:30 SAST floor); when up, run the Phase B read in the background | background |
+
+**A1. `rateClaims` verbatim filter.**
+- `apps/server-pilot/src/ai/quote-workflow-llm.ts:248-254` filters `evidence` to verbatim spans but returns `rateClaims` unfiltered. These are the 5 residual invented prices.
+- Apply the same `sourceText.includes(claim.quote)` filter to `rateClaims`.
+- Tests: a claim not in the source is dropped; a claim in the source is kept; when every claim is dropped, the price check shows "can't check", never an invented amount.
+- Commit: `fix(reservationist): drop rate claims that are not verbatim in the email`.
+
+**A2. Staff-equivalent defaults (from the findings above).**
+- *Board:* `quote-workflow-llm.ts:156` maps `board:null` to `'unknown'`, which then blocks the quote (`apps/mail/lib/quote-workflow/session.ts:272`, `review-items.ts:41`, `staff-quote-bind.ts:181`).
+  - Change: null becomes `'dinner_bb'` when Luna's party kind is government, otherwise `'bb'`.
+  - Add `'defaulted'` to the `fields` state union (`quote-workflow-llm.ts:38`).
+  - The pane shows plain text "usual" next to a defaulted board. Staff can still edit it.
+  - When the email states a board, it always wins.
+- *Room type:* an unstated room type never produces a missing question. Drop `roomType`/`roomPreference` entries from `missing` in the mapper. The quote returns options and staff pick.
+- *Prompt:* append to `K2_MAPPING` (`quote-workflow-llm.ts:17`): "single room" = 1 adult per room; a double/twin room with no headcount = 2 adults; never ask for room type, board or rate, because the hotel defaults those.
+- *Census:* add a `staffEquivalent` bucket to `apps/server-pilot/scripts/luna-case-census.ts` (next to `bucketOf`, `:244`):
+  - workflow is quote or create_booking;
+  - `missingPricing` is false;
+  - no `MANUAL_FLAGS`;
+  - extras, unread attachments and discounts no longer disqualify a row.
+- Re-run the full census in the background (Runbook G, about $0.70, about 20m) and record the old `full` count next to the new `staffEquivalent` count in the ledger. Smoke `--limit 20` first.
+- Tests:
+  - board null with a private party gives `bb` and `defaulted`;
+  - board null with a government party gives `dinner_bb`;
+  - a stated board wins over the default;
+  - room-type questions are filtered out;
+  - the pane test for a defaulted board renders "usual" and doesn't block the quote.
+- Commit: `feat(reservationist): default board and room like staff do`.
+
+**A3. S3 extras.** Follow stretch-specs §S3, with these corrections:
+- The staff path writes `proposalFacts: []` at `apps/server-pilot/src/trpc/routes/workstation.ts:477`, not `:433`.
+- Build `AuthorizedProposalFacts` (`apps/server-pilot/src/quote-proposal/quote-lines.ts:34-36`) from fields staff confirmed in the pane, with `revisionId`, `authorizationId`, `sourceRef` and `sourceHash` taken from the revision and the prepared quote.
+- *Dinner:*
+  - `unitKind:'person_service'`, `quantity:1`, persons = each group's guests, dates = each night, `units = persons.length × dates.length`. Any other combination throws `ambiguous_meal_units`.
+  - `unitMinor` is the staff-confirmed amount per person per night.
+  - The pane prefills the amount only when an A1-filtered verbatim claim holds it; otherwise the field is empty and staff type it.
+- *Shuttle:* with no staff-typed amount, add no extras line, only a review item "Shuttle requested — add a price or answer in the reply". With an amount, add a `trip` line. Never add an R0 line.
+- The draft total check (`drafts.ts` via `deriveAuthorizedExtraLines`) must include the extras.
+- Tests:
+  - the spec's three cases;
+  - a 2-adult, 3-night dinner gives 6 units and no throw;
+  - a shuttle with no amount gives a review item and no line.
+- Commit per the spec.
+
+**A4. S1b: re-quote an expired prior quote.**
+- `apps/mail/app/(routes)/outlook-pane/page.tsx:430` only toasts "This quote expired — run Quote again". The cause is the 15-minute freshness window (`reservationist-business-services.ts` `maxAge` 15×60000).
+- Replace the toast with a "Re-quote same stay" action:
+  - It calls `executeStaffQuote` with the prior revision's groups (dates, quantity, adults, childAges, board, roomCodes) and the party header from `metrics.staffQuoteAttestation` (company / agency / `salesStrategy`).
+  - Then it continues to `prepareBookingDraft`, as S1 does.
+- Fake-only tests: an expired result renders the action; clicking it sends the prior inputs unchanged; staff edits made after the prefill still win.
+- The live run moves to C2.
+- Commit: `feat(pane): re-quote an expired earlier quote in one click`.
+
+**A5. Checkpoint A.**
+- Runbook E, **always `-b origin/main`**. Two rounds; a third only for open P0/P1.
+- Then PR, merge, Runbook B deploy, Runbook C verify, and the host smoke from U6 step 9.
+- Deploying during or after the outage is fine. If health fails, roll back with Runbook D to `6dfbb38b`.
+- During Greptile waits, write the S5 docs (stretch-specs §S5). Seed B3 with the letters findings above: the letter fields all come from the HMS reservation header, so "send the confirmation letter" is a post-save HMS step, not a new generator. Timebox 30m each.
+
+**A6. HMS probe (background).**
+- **Earliest 13:30 UTC.** If wall clock is before that, do not probe; continue A1–A5.
+- Run Runbook F plus the U0 `party-lookup.mjs` probe.
+- When HMS is up, run the Phase B read:
+  - Smoke 3 first: `node apps/server-pilot/tooling/playwright-quote/read-reservation-fields.mjs --input .private/luna-mvp/staff-bookings/smoke.json --out .private/luna-mvp/staff-bookings/fields-smoke.jsonl`.
+  - Need at least 2 rows with outcome `read`.
+  - Then the full set: `--input input.json --out fields.jsonl` (182 rows, resumable, about 15–25m).
+- Serial; no other live HMS step runs at the same time. Read-only: the script's route guard aborts save/cancel/delete/checkin/checkout POSTs.
+
+**G1 (end of Phase A):** STOP. Update the ledger and the report § v2. Tell the user: "Phase A done; switch model for Phase B".
+
+### Phase B — staff-code analysis (research model, P50 45m)
+
+- **B1.**
+  - Join `.private/luna-mvp/staff-bookings/fields.jsonl` to the inbound requests, using confirmation number, letter and surname (pattern from `letters_join.py`).
+  - Per party class (agency / government / organization / private; derived from company/ta1 and the rate tier), crosstab track, sourceOfBusiness, guaranteeType, marketSegment, rate-plan family and createdby.
+  - Note what staff typed in `reservationnote` / `caller` when the email lacked facts.
+  - Derive defaults with the existing rule: n≥3, support ≥60%, valid enum.
+  - Output `.private/luna-mvp/code-mining/crosstab.md` and an aggregates-only table in the ledger.
+- **B2.** Confirm or reorder Phase C, and edit this section in place if the findings change it.
+
+### Phase C — HMS live plus lab saves (execution model; P50 ≈ 7h after Phase B, so about 23:30 UTC, P80 about 01:30)
+
+| # | Item | P50 / P80 |
+|---|---|---|
+| C1 | Fill `MINED_CROSSTAB` in `apps/server-pilot/src/ai/booking-code-rules.ts` from B1; enum-validity test green; fields that fail the rule stay null with `CLIENT_QUESTION` | 20m / 35m |
+| C2 | Live read-only proofs to `.private/luna-mvp/proofs/v2/`: S1b re-quote on a real thread (quote only); S3 extras PDF on one real quote | 30m / 50m |
+| C3 | S2 multi-date quotes: stretch-specs §S2; guards re-verified Oct 7 at `apps/mail/lib/quote-workflow/staff-quote-bind.ts:207-209` and `apps/server-pilot/src/ai/staff-quote-workflow.ts:115`; one live 2-date quote | 50m / 1h20 |
+| C4 | Checkpoint C (as A5) | 60m / 95m |
+| C5 | Lab saves (A2), described below | 1h / 1h30 |
+| C6 | A1 Save route (stretch-specs §S4) behind `RESERVATIONIST_PANE_SAVE`; guard is **lab-only** (`Labtest` + arrival ≥2027) until the user tries it; prove it through the route with one of the C5 lab-stay slots; the flag stays **unset on EC2** | 1h / 1h30 |
+| C7 | Amendment/cancel read-only assist, described below | 1h30 / 2h15 |
+| C8 | Checkpoint D plus the report § v2 | 1h20 / 2h |
+
+**C5. Lab saves.**
+1. First read the folio of lab stay `46184891-1`, read-only: did an R2,060 penalty post when it was cancelled? If it did, use an arrival ≥2027 that is outside the penalty window.
+2. Then make at most 3 lab stays **in total, including the C6 proof**. For each one, in this order:
+   - `create-lab-stay.mjs` full save, with no `--stop-before`;
+   - record the confirmation in the ledger immediately;
+   - readback with `read-reservation-fields.mjs`;
+   - `cancel-lab-stay.mjs` on that confirmation only;
+   - readback to confirm it is cancelled.
+
+**C7. Amendment/cancel read-only assist.** This is the biggest unbuilt lane: 166 census rows are flagged amend/cancel.
+- When Luna returns an `amend` or `cancel` task, the pane offers "Find reservation".
+- It uses the `OSRESS.search` → `OSRESV.HDR` read path from `read-reservation-fields.mjs`, searching by confirmation number first, then by guest + dates.
+- It shows the current stay (dates, room, rate, pax, status) next to the requested change.
+- No writes.
+
+**Cut order if behind:** C7 (leave it as a PR) → C6 (leave it as a PR) → the C3 live proof. Never cut C1, or the readback and cancel steps of C5.
+
+### v2 done criteria
+
+- [ ] **E1** Checkpoint A merged and deployed with A1–A4. The ledger has the census old `full` vs new `staffEquivalent`, and invented prices = 0 after A1.
+- [ ] **E2** Staff-booking read: ≥100 rows with outcome `read`, or an HMS outage note; `crosstab.md` written.
+- [ ] **E3** `MINED_CROSSTAB` filled wherever the support rule holds; the rest null with `CLIENT_QUESTION`.
+- [ ] **E4** ≤3 lab stays, each with save → readback → cancel → readback evidence. Zero writes to real bookings.
+- [ ] **E5** Checkpoints C and D merged and deployed, or PR-reviewed with the reason recorded.
+- [ ] **E6** `docs/plans/handoff-reports/2026-10-07-luna-mvp.md` § v2 updated (no PII), with an open-questions list.
+
+### v2 safety amendments (all other Global Constraints still hold)
+
+- **HMS writes are allowed only on lab stays this run creates.** A lab stay has guest last name `Labtest`, arrival ≥ 2027-01-01, and its confirmation recorded in the ledger when it was created. At most 3 per run.
+- `cancel-lab-stay.mjs` runs only on those confirmations. `LAB_CANCEL_CONFIRMATION` is set inline for that one command only.
+- **Never save, modify or cancel a real booking. Reading real bookings is allowed.**
+- Pane Save stays off for real guests (`RESERVATIONIST_PANE_SAVE` unset on EC2) until the user tries it.
+- Greptile always runs against `-b origin/main`; local `main` is stale at `5568ea18`.
+- Smoke 3 rows before any batch (HMS reads, census).
+- The watchdog starts at A0. Last night 5h32 was lost to a silent stop.
+- Unchanged: no sends; the pilot-RDS rule; `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL` before every Vitest run; no PII in git; one serial CDP owner; never touch other worktrees.
 
 ---
 
@@ -71,7 +255,7 @@ The Oct 2–6 sprint shipped a regex-only pane. Luna code never reached the ship
 - **Code style:** ESM, NodeNext, relative imports end in `.js`. zod **v3**: use `zodToJsonSchema(schema, {$refStrategy:'none'})`, never `z.toJSONSchema`. Prettier: width 100, single quotes. Multi-line readable style, as in `quote-workflow.ts`. tRPC return branches use `as const` literals.
 - **Luna:** use `LunaModelAdapter` (`apps/server-pilot/src/ai/bedrock/luna.ts`) with `createAzureLunaModel()`. Server-pilot has **no `ai` package**, so no `generateObject`. Call `adapter.invoke({systemPrompt, userPrompt, files?, responseSchema, signal, deadlineAt})`, then `lunaAnalysisSchema.safeParse(output)`. Effort `medium` (3.8–7.2s measured vs 22.7s at max [L19]). Server deadline 25s via `Promise.race`; client timeout 45s. Kill switch `QUOTE_WORKFLOW_LLM=off`.
 - **Field name:** `adultsPerRoom`, never `adults`, inside the Luna schema; its meaning flipped across earlier efforts [L20]. The pane field `adults` means per room.
-- **Live HMS:** serial only. One borrowed owner on EC2 CDP `127.0.0.1:19223`, reached over the SSM tunnel. Never start or restart someone else's owner. `--stop-before availability` on every create run. `LAB_CANCEL_CONFIRMATION` unset. Never run `cancel-lab-stay.mjs`. **Wednesday maintenance:** tonight crosses into Wed Oct 7. Before each live HMS step, run the U0 login probe. If HMS is down, treat it as an external outage: defer only the live steps, continue other units, and re-probe at the next unit boundary.
+- **Live HMS:** serial only. One borrowed owner on EC2 CDP `127.0.0.1:19223`, reached over the SSM tunnel. Never start or restart someone else's owner. `--stop-before availability` on every create run. `LAB_CANCEL_CONFIRMATION` unset. Never run `cancel-lab-stay.mjs` (**v2 exception:** lab stays this run created, per "v2 safety amendments"). **Wednesday maintenance (v2: 10:00 UTC until **minimum 13:30 UTC** / 15:30 SAST Oct 7, staff-confirmed):** tonight crosses into Wed Oct 7. Before each live HMS step, run the U0 login probe. If HMS is down, treat it as an external outage: defer only the live steps, continue other units, and re-probe at the next unit boundary.
 - **Privacy:** raw PII stays in `.private/luna-mvp/` (gitignored). Git, PRs, SSM stdout and the morning report carry aggregates and codes only. Never print secret values.
 - **Overruns:** cut scope; never add infrastructure. Max 2 prompt-tuning rounds. Log every divergence in the ledger `.superpowers/sdd/luna-mvp-progress.md`.
 
@@ -107,7 +291,7 @@ The Oct 2–6 sprint shipped a regex-only pane. Luna code never reached the ship
 - Force-push main, `--no-verify`, destructive git.
 - IT Exchange/VPN/real mail creds.
 - Any Vitest or test command pointed at pilot or production RDS; setting `VITEST_ALLOW_PILOT_RDS=1`; sourcing `.env.production` into a test process.
-- HMS Save/Cancel/Delete; sending email.
+- HMS Save/Cancel/Delete (**v2 exception:** ≤3 `Labtest` lab stays with arrival ≥2027 that this run created; never a real booking); sending email.
 - Printing or committing secret values; secret values in SSM command parameters.
 
 ### Pilot RDS safety (overrides autonomy)
@@ -656,7 +840,7 @@ Optional: 380px pane PNGs via `apps/mail/tests/browser-quote-workflow/` (labelle
 
 ---
 
-## Stretch queue (user decision 23:21: keep running after D1–D10)
+## Stretch queue (v1; superseded by "v2 day run" above. S1 done as PR #33; S2–S5 moved into v2 phases)
 
 **Specs first (U0b).** Right after U0, the orchestrator itself (not a subagent) writes `docs/plans/2026-10-07-001-luna-mvp-stretch-specs.md` (no PII), timeboxed to 25m. U4's background run continues meanwhile.
 - **S1–S3** get full implementation-plan sections in the same shape as U1/U7: goal, files with **verified** line refs, contracts, approach, test scenarios, verification and commit message.
@@ -683,7 +867,7 @@ Optional: 380px pane PNGs via `apps/mail/tests/browser-quote-workflow/` (labelle
 
 ---
 
-## Schedule (UTC; P50 from git throughput, measured HMS times and the 1.5–2× optimism history)
+## Schedule (v1, historical; v2 uses the measured estimates in "v2 day run")
 
 | Unit | P50 | P80 | Lands (P50, T0-relative) |
 |---|---:|---:|---|
@@ -710,7 +894,7 @@ HMS note: Wednesday maintenance is wall-clock, not T0-relative. The U0 probe and
 
 | Risk | Mitigation |
 |---|---|
-| HMS Wednesday maintenance blocks U4/U9 | Probe before each live step; defer only the live work; record an outage note (D6/D8 allow it) |
+| HMS Wednesday maintenance blocks live reads | v2: do not probe before 13:30 UTC (15:30 SAST floor). Defer only live work; Phase A continues |
 | IAM write denied for U2 | Deploy with the regex fallback plus badge; the report gives the user's commands |
 | Removing the regex breaks 8 pane tests | U3 adds the `analyseSelection` stub to each mock; stale files RCA'd against the U0 baseline |
 | Luna classifies poorly on a corpus slice | Census buckets plus `check-30.md`; max 2 prompt-tuning rounds |
@@ -796,7 +980,7 @@ pnpm --filter @zero/server exec tsx scripts/luna-case-census.ts --limit 20   # s
 
 ## Execution Mode
 
-Autonomous overnight, with no user checkpoint. REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Each implementation subagent gets one unit: its U-ID section, the brief path and the files, never raw PII. Review between units. Do not ask "which approach?". Before the first code change, record the initiative in Hindsight (`hindsight_capture_initiative`). Resume from the first unit not yet done, according to the ledger.
+v1: autonomous overnight, with no user checkpoint. **v2:** autonomous within each phase, with one user gate (G1, the model switch after Checkpoint A). Start v2 at A0, on the user's go. REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Each implementation subagent gets one unit: its U-ID section, the brief path and the files, never raw PII. Review between units. Do not ask "which approach?". Before the first code change, record the initiative in Hindsight (`hindsight_capture_initiative`). Resume from the first unit not yet done, according to the ledger.
 
 ---
 
@@ -824,6 +1008,38 @@ Autonomous overnight, with no user checkpoint. REQUIRED SUB-SKILL: superpowers:s
 - **Correction (23:15):** ledger row 24 ("Azure adapter only uncommitted") is stale. `createAzureLunaModel` (`luna.ts:90`) and `LunaModelAdapter` (`:106`) are on main. Only the reasoning-effort option is uncommitted in `luna-mvp`.
 - **Ponytail, accepted:** reuse the PAN helpers; evidence as plain text; null defaults allowed; proofs folded into Checkpoint 2.
 - **Ponytail, rejected (user asked for these):** cutting the census, cutting code mining, a single Greptile round, dropping coverage numbers.
+- **v1 run retro (Oct 7, 11:00):**
+  - MVP built in 4h02 against a P50 of 9h30.
+  - 5h32 idle after a silent stop; fix: watchdog.
+  - Planning took 3h15 for 842 lines.
+  - Greptile was about a third of hands-on time; 2 of 9 rounds ran against the stale local `main`; fix: `-b origin/main`.
+  - The miner ran without a smoke test and got 0/40 reads, because UI grid search fails; fix: request-level `OSRESS.search` → `OSRESV.HDR` plus smoke 3.
+  - The S1 spec missed the 15-minute freshness window; fix: S1b.
+  - Census rank misled: extras beats multi-date.
+- **User decisions (Oct 7, 11:17–11:32):**
+  - Extend the run (8h+), with checkpoints every 1–2h.
+  - Autonomous lab-only saves: `Labtest`, 2027+, ≤3, save → readback → cancel → readback; never real bookings; reads allowed.
+  - Pane Save stays off for real guests.
+  - Target staff-equivalent prefill, not fully prefilled; learn from staff's real bookings.
+  - HMS is down until **minimum 15:30 SAST** (13:30 UTC); may run to 16:00 SAST. Do not probe before 13:30 UTC.
+  - Stop after writing v2 and before execution.
+  - The user switches models between phases (gate G1).
+- **v2 inline review (both lenses):**
+  - *Completeness (eng):*
+    - Every Phase A item has file:line anchors, verified Oct 7.
+    - The board default covers all 4 blocking sites.
+    - The extras facts carry revision/authorization/source fields.
+    - The shuttle never prices.
+    - The lab-save sequence includes readbacks.
+    - HMS writes are bounded by identity, count and ledger record.
+  - *Simplicity (ponytail):*
+    - A shuttle without a price becomes a review item, not an R0 line.
+    - Board and room defaults are rules, not a model.
+    - The Phase B join reuses `letters_join.py`.
+    - S5 docs fit into Greptile waits.
+    - No new infrastructure.
+    - The amendment assist reuses the research reader's read path.
+  - *Rejected:* a learned room-type model, since the price is the same within a tier; building a confirmation-letter generator, since HMS already produces the letter.
 
 ## Retro summary (why Oct 2–6 produced a regex tool)
 
