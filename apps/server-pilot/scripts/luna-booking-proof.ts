@@ -264,8 +264,8 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
           id: 'group-1',
           quantity: group?.rooms ?? 1,
           adults: group?.adultsPerRoom ?? 1,
-          children: 0,
-          childAges: [],
+          children: (group?.childAges ?? []).length,
+          childAges: group?.childAges ?? [],
         },
       ],
       rateContext:

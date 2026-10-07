@@ -186,6 +186,9 @@ describe('booking cards', () => {
     expect(screen.getByText(/Room 1/i)).toBeDefined();
     expect(screen.getByText(/Room 2/i)).toBeDefined();
     expect(screen.getAllByText(/STQN · TAXYZ/)).toHaveLength(2);
+    expect(screen.getByText('John Smith')).toBeDefined();
+    expect(screen.getByText('Jane Doe')).toBeDefined();
+    expect(screen.getAllByText('1 adult')).toHaveLength(2);
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {

@@ -10,6 +10,18 @@ function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function guestLabel(request: Record<string, unknown>): string {
+  return [textValue(request.firstName), textValue(request.lastName)].filter(Boolean).join(' ');
+}
+
+function occupancyLabel(request: Record<string, unknown>): string {
+  const adults = typeof request.adults === 'number' ? request.adults : Number(request.adults) || 0;
+  const childAges = Array.isArray(request.childAges) ? request.childAges : [];
+  const adultsPart = `${adults} adult${adults === 1 ? '' : 's'}`;
+  if (!childAges.length) return adultsPart;
+  return `${adultsPart} · ${childAges.length} child${childAges.length === 1 ? '' : 'ren'}`;
+}
+
 function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
     return (
@@ -74,6 +86,7 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = choices[key] ?? { track: '', sourceOfBusiness: '', guaranteeType: '' };
         const party = textValue(room.request.agency) || textValue(room.request.organization);
+        const guest = guestLabel(room.request);
         return (
           <article
             key={key}
@@ -87,6 +100,8 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
               {textValue(room.request.roomType)} · {textValue(room.request.ratePlan)}
             </p>
             {party ? <p className="text-[12px] font-semibold text-[#1e293b]">{party}</p> : null}
+            {guest ? <p className="text-[12px] text-[#1e293b]">{guest}</p> : null}
+            <p className="text-[11px] text-[#64748b]">{occupancyLabel(room.request)}</p>
             <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
               Track
               <select
