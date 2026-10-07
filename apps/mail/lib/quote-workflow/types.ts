@@ -133,7 +133,7 @@ export type LunaAnalysisWire = {
     quote: string;
   }>;
   missing: Array<{ field: string; question: string }>;
-  evidence: Array<{ field: string; quote: string }>;
+  evidence: Array<{ field: string; quote: string; source?: 'staff_note' }>;
   tasks: Array<{
     kind: 'quote' | 'create_booking' | 'amend' | 'cancel' | 'availability' | 'other';
     groupIndexes: number[];
@@ -373,6 +373,8 @@ export type QuoteSession = {
   bookingDraft: BookingDraftReady | null;
   /** Staff override that re-runs analyseSelection as quote or booking. */
   treatAs: 'quote' | 'create_booking' | null;
+  /** Staff "Tell Luna" note re-submitted as top-priority evidence. */
+  staffNote: string | null;
 };
 
 export type QuoteSessionAction =
@@ -380,6 +382,7 @@ export type QuoteSessionAction =
   | { type: 'selection'; binding: QuoteSelectionBinding }
   | { type: 'analysis_started' }
   | { type: 'treat_as'; treatAs: 'quote' | 'create_booking' }
+  | { type: 'staff_note'; staffNote: string }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
   | { type: 'analysis_unsynced' }
   | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }

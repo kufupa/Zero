@@ -27,23 +27,24 @@ function Provenance({ value }: { value?: string }) {
 
 function quotesFor(
   field: string,
-  evidence: Array<{ field: string; quote: string }> | undefined,
-): string[] {
+  evidence: Array<{ field: string; quote: string; source?: 'staff_note' }> | undefined,
+): Array<{ quote: string; source?: 'staff_note' }> {
   if (!evidence?.length) return [];
   const aliases = FIELD_EVIDENCE_ALIASES[field] ?? [field];
-  return evidence.filter((item) => aliases.includes(item.field)).map((item) => item.quote);
+  return evidence.filter((item) => aliases.includes(item.field));
 }
 
-function FieldEvidence({ quotes }: { quotes: string[] }) {
+function FieldEvidence({ quotes }: { quotes: Array<{ quote: string; source?: 'staff_note' }> }) {
   if (!quotes.length) return null;
+  const fromStaff = quotes.some((item) => item.source === 'staff_note');
   return (
     <>
       <span className="ml-1 rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
-        AI suggestion
+        {fromStaff ? 'staff note' : 'AI suggestion'}
       </span>
-      {quotes.map((quote) => (
-        <p key={quote} className="font-normal text-[11px] text-[#64748b]">
-          {quote}
+      {quotes.map((item) => (
+        <p key={item.quote} className="font-normal text-[11px] text-[#64748b]">
+          {item.quote}
         </p>
       ))}
     </>
@@ -59,7 +60,7 @@ export function RequirementCard({
   group: StayGroupRequirement;
   index: number;
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
-  evidence?: Array<{ field: string; quote: string }>;
+  evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
 }) {
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">

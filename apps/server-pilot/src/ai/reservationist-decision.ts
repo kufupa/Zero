@@ -81,7 +81,13 @@ export const lunaAnalysisSchema = z.object({
     }),
   ),
   missing: z.array(z.object({ field: z.string(), question: z.string() })),
-  evidence: z.array(z.object({ field: z.string(), quote: z.string() })),
+  evidence: z.array(
+    z.object({
+      field: z.string(),
+      quote: z.string(),
+      source: z.enum(['staff_note']).optional(),
+    }),
+  ),
   tasks: z
     .array(
       z.object({

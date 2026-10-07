@@ -1453,6 +1453,16 @@ describe('quote session staff review items', () => {
     expect(analysisRetryKey('sel|1|1', 'unsynced', 5)).toBe('sel|1|1|committed:5');
   });
 
+  it('re-runs analysis when staff submit a Tell Luna note', () => {
+    expect(initialQuoteSession().staffNote).toBeNull();
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '4 twins at R1800' });
+    expect(session.staffNote).toBe('4 twins at R1800');
+    expect(analysisRetryKey('sel|1|1', 'requirements', undefined, null, '4 twins at R1800')).toBe(
+      'sel|1|1|note:4 twins at R1800',
+    );
+  });
+
   it('re-runs analysis when staff treat-as quote or booking', () => {
     expect(initialQuoteSession().treatAs).toBeNull();
     let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });

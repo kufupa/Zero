@@ -665,6 +665,44 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     }
   });
 
+  it('does not reuse cache when the staff note changes', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 14,
+      staffNote: 'first note',
+    });
+    await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 15,
+      staffNote: 'second note',
+    });
+    expect(invokes).toBe(2);
+  });
+
   it('does not reuse an auto cache entry for a treatAs quote click', async () => {
     let invokes = 0;
     cacheLoaders.adapter = {

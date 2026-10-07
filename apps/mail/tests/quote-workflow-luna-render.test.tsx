@@ -208,6 +208,38 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByText('Guest names for room 2?')).toBeDefined();
   });
 
+  it('labels staff-note evidence chips as staff note', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        evidence: [{ field: 'adults', quote: '2 adults from desk', source: 'staff_note' }],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('staff note')).toBeDefined();
+    expect(screen.getByText('2 adults from desk')).toBeDefined();
+  });
+
+  it('submits Tell Luna notes through onStaffNote', () => {
+    const onStaffNote = vi.fn();
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
+    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+      target: { value: '4 twins at R1800' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    expect(onStaffNote).toHaveBeenCalledWith('4 twins at R1800');
+  });
+
   it('renders evidence quotes as literal text, never HTML', () => {
     const xss = '<img src=x onerror=alert(1)>';
     const session = sessionWithAnalysis({
@@ -455,5 +487,31 @@ describe('Outlook pane Luna analysis bind', () => {
       ).toBe(true);
     });
     await waitFor(() => expect(screen.getByLabelText('Arrival')).toBeDefined());
+  }, 15_000);
+
+  it('re-runs analyseSelection with a staff note from Tell Luna', async () => {
+    analyseMutate.mockResolvedValue({
+      status: 'ready',
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      luna: lunaWire({ workflow: 'quote' }),
+    });
+    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
+    render(<OutlookPanePage />);
+    await waitFor(() => expect(screen.getByLabelText('Tell Luna')).toBeDefined());
+    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+      target: { value: '4 twins at R1800' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    await waitFor(() => {
+      expect(
+        analyseMutate.mock.calls.some(
+          (call) => (call[0] as { staffNote?: string })?.staffNote === '4 twins at R1800',
+        ),
+      ).toBe(true);
+    });
   }, 15_000);
 });

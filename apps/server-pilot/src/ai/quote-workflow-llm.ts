@@ -78,6 +78,10 @@ export function buildQuoteWorkflowPrompt(
   files: Array<{ filename: string; mediaType: string; data: Uint8Array }>;
 } {
   const parts: string[] = [];
+  const staffNote = options?.staffNote?.trim();
+  if (staffNote) {
+    parts.push(`Staff note (top-priority evidence):\n${maskCardNumbers(staffNote)}`);
+  }
   if (selection.receivedAt) {
     parts.push(`Received at: ${selection.receivedAt.slice(0, 10)}`);
   }
@@ -124,8 +128,11 @@ export function buildQuoteWorkflowPrompt(
       ? 'Staff override: treat this mail as a booking. Extract stay groups and use workflow create_booking even if you would otherwise classify it as other.'
       : 'Staff override: treat this mail as a quote. Extract stay groups and use workflow quote even if you would otherwise classify it as other.'
     : '';
+  const staffNoteLine = staffNote
+    ? 'The staff note is a first-class evidence source. rateClaims and evidence quotes may be exact contiguous substrings of the staff note.'
+    : '';
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}${treatAsLine ? `\n${treatAsLine}` : ''}`,
+    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
     user: parts.join('\n\n'),
     files,
   };
@@ -324,13 +331,18 @@ export async function analyseQuoteSelection(input: {
       return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
     }
     const sourceText = prompt.user;
+    const staffNote = input.staffNote?.trim() ?? '';
     const verbatim = <T extends { quote: string }>(items: T[]) =>
       items.filter((item) => Boolean(item.quote) && sourceText.includes(item.quote));
     return {
       source: 'luna',
       analysis: {
         ...parsed.data,
-        evidence: verbatim(parsed.data.evidence),
+        evidence: verbatim(parsed.data.evidence).map((item) =>
+          staffNote && staffNote.includes(item.quote)
+            ? { ...item, source: 'staff_note' as const }
+            : item,
+        ),
         rateClaims: verbatim(parsed.data.rateClaims),
       },
     };

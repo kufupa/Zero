@@ -52,7 +52,10 @@ const DEFAULT_ANALYSE_CACHE_DIR = fileURLToPath(
   new URL('../../../.private/luna-analyse-cache', import.meta.url),
 );
 
-export function hashSyncedQuoteSelection(selection: SyncedQuoteSelection): string {
+export function hashSyncedQuoteSelection(
+  selection: SyncedQuoteSelection,
+  extras?: { staffNote?: string },
+): string {
   const hash = createHash('sha256');
   hash.update(selection.subject);
   hash.update('\0');
@@ -73,6 +76,10 @@ export function hashSyncedQuoteSelection(selection: SyncedQuoteSelection): strin
     hash.update('\0');
     hash.update(attachment.bytesPresent ? '1' : '0');
     if (attachment.pdf) hash.update(Buffer.from(attachment.pdf));
+  }
+  if (extras?.staffNote?.trim()) {
+    hash.update('\0staffNote\n');
+    hash.update(extras.staffNote.trim());
   }
   return hash.digest('hex');
 }
@@ -122,6 +129,7 @@ export const analyseSelectionInput = z.object({
   folderEntryId: z.string().min(1),
   selectionEpoch: z.number().int(),
   treatAs: z.enum(['quote', 'create_booking']).optional(),
+  staffNote: z.string().max(4000).optional(),
 });
 
 export const runStepInput = z.object({
@@ -214,7 +222,7 @@ export const quoteWorkflowRouter = router({
         input.internetMessageId && cacheDir
           ? analyseCachePath({
               internetMessageId: input.internetMessageId,
-              sourceHash: hashSyncedQuoteSelection(synced),
+              sourceHash: hashSyncedQuoteSelection(synced, { staffNote: input.staffNote }),
               promptVersion,
               cacheDir,
               treatAs: input.treatAs,
@@ -236,6 +244,7 @@ export const quoteWorkflowRouter = router({
         enabled: resolved.enabled,
         deadlineMs: 25_000,
         treatAs: input.treatAs,
+        staffNote: input.staffNote,
       });
       const payload =
         llm.source === 'luna'

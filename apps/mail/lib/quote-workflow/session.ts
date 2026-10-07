@@ -200,12 +200,14 @@ export function analysisRetryKey(
   phase: QuoteSession['phase'],
   syncCommitted?: number,
   treatAs?: 'quote' | 'create_booking' | null,
+  staffNote?: string | null,
 ): string {
   const base =
     phase === 'unsynced' && Number.isFinite(syncCommitted)
       ? `${admission}|committed:${syncCommitted}`
       : admission;
-  return treatAs ? `${base}|treatAs:${treatAs}` : base;
+  const withTreat = treatAs ? `${base}|treatAs:${treatAs}` : base;
+  return staffNote ? `${withTreat}|note:${staffNote}` : withTreat;
 }
 
 export function initialQuoteSession(): QuoteSession {
@@ -237,6 +239,7 @@ export function initialQuoteSession(): QuoteSession {
     handledReviewItemIds: [],
     bookingDraft: null,
     treatAs: null,
+    staffNote: null,
   };
 }
 
@@ -542,6 +545,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     }
     case 'treat_as':
       return { ...session, treatAs: action.treatAs };
+    case 'staff_note':
+      return { ...session, staffNote: action.staffNote.trim() || null };
     case 'analysis_started':
       return { ...session, phase: 'analysing', errorMessage: null };
     case 'analysis_ready': {

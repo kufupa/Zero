@@ -417,6 +417,44 @@ describe('analyseQuoteSelection', () => {
     }
   });
 
+  it('puts a staff note first as top-priority evidence', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection, {
+      staffNote: 'They want 4 twins at R1800 B&B',
+    });
+    expect(prompt.user.startsWith('Staff note (top-priority evidence):')).toBe(true);
+    expect(prompt.user).toContain('They want 4 twins at R1800 B&B');
+    expect(prompt.system).toMatch(/staff note/i);
+  });
+
+  it('keeps rateClaims whose quote is a substring of the staff note', async () => {
+    const kept = {
+      kind: 'exact' as const,
+      amount: '1800',
+      currency: 'ZAR',
+      basis: 'per_room_per_night' as const,
+      taxBasis: 'gross_included' as const,
+      quote: 'R1800 B&B',
+    };
+    const result = await analyseQuoteSelection({
+      selection,
+      adapter: fakeAdapter(
+        analysis({
+          rateClaims: [kept],
+          evidence: [{ field: 'quantity', quote: '4 twins' }],
+        }),
+      ),
+      enabled: true,
+      staffNote: 'Please quote 4 twins at R1800 B&B',
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.rateClaims).toEqual([kept]);
+      expect(result.analysis.evidence).toEqual([
+        { field: 'quantity', quote: '4 twins', source: 'staff_note' },
+      ]);
+    }
+  });
+
   it('drops rateClaims whose quote is not a substring of the source text', async () => {
     const kept = {
       kind: 'exact' as const,
