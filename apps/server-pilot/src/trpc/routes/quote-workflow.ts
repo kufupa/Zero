@@ -337,9 +337,10 @@ export const quoteWorkflowRouter = router({
               console.warn('quote_workflow_fallback', llm.fallbackReason);
               const analysis = analyseQuoteSources({
                 subject: synced.subject,
-                bodyText: [input.staffNote, synced.bodyText].filter(Boolean).join('\n\n'),
+                bodyText: synced.bodyText,
                 preceding: synced.preceding,
                 attachments: synced.attachments,
+                staffNote: input.staffNote,
                 treatAs: input.treatAs,
               });
               const treatAs = input.treatAs;

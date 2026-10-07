@@ -92,6 +92,47 @@ describe('analyseQuoteSources', () => {
       });
     },
   );
+
+  it('lets a staff note arrival correction replace only the arrival it names', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Arrival is now 2027-11-13',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-13',
+      departureDate: '2027-11-14',
+      adults: 2,
+    });
+    expect(analysis.groups[0]?.fields).toMatchObject({
+      arrivalDate: 'staff_corrected',
+      departureDate: 'extracted',
+    });
+  });
+
+  it('lets a staff note departure correction replace only the departure it names', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Departure is now 2027-11-15',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-12',
+      departureDate: '2027-11-15',
+    });
+  });
+
+  it('reads two dates in a staff note in reading order, mixing date formats', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Stay 13 November 2027 to 2027-11-15',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-13',
+      departureDate: '2027-11-15',
+    });
+  });
 });
 
 describe('quoteWorkflow.analyseSelection', () => {
@@ -787,6 +828,31 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(result.groups).toHaveLength(1);
       expect(result.groups[0]).toMatchObject({
         arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+      });
+    }
+  });
+
+  it('applies a staff note arrival correction without mixing in the email dates', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 24,
+      staffNote: 'Arrival is now 2027-11-13',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-13',
         departureDate: '2027-11-14',
       });
     }
