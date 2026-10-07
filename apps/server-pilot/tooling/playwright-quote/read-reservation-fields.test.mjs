@@ -1,0 +1,208 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import * as reader from './read-reservation-fields.mjs';
+
+const sourceUrl = new URL('./read-reservation-fields.mjs', import.meta.url);
+
+test('import has no CLI, browser or credential side effects', () => {
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `await import(${JSON.stringify(sourceUrl.href)}); console.log('import only');`,
+    ],
+    { encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH } },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout.trim(), 'import only');
+  assert.equal(child.stderr, '');
+});
+
+test('unused OR slots use ___NOMATCH___ not empty or __NAVA_UNUSED__', () => {
+  assert.equal(reader.OSRESS_OR_UNUSED_TOKEN, '___NOMATCH___');
+  const body = reader.searchBody('59898948-1');
+  assert.equal(body.MADDON_FILTER_VALUE_3, '59898948-1');
+  for (const n of [4, 5, 6, 7, 8, 9, 10]) {
+    assert.equal(body[`MADDON_FILTER_VALUE_${n}`], '___NOMATCH___');
+    assert.notEqual(body[`MADDON_FILTER_VALUE_${n}`], '');
+  }
+  assert.equal(body.externalconfirmation, '___NOMATCH___');
+  assert.equal(JSON.stringify(body).includes('__NAVA_UNUSED__'), false);
+});
+
+test('Sep-15 positive control is queued first and never resume-skipped', () => {
+  assert.equal(reader.SEP15_POSITIVE_CONTROL, '59898948-1');
+  assert.deepEqual(reader.queueConfirmations(['AAA-1', 'BBB-2']), [
+    '59898948-1',
+    'AAA-1',
+    'BBB-2',
+  ]);
+  assert.deepEqual(reader.queueConfirmations(['AAA-1', '59898948-1']), [
+    '59898948-1',
+    'AAA-1',
+  ]);
+  const skipped = reader.resumeSkipped(
+    [
+      JSON.stringify({ conf: '59898948-1', outcome: 'not_found' }),
+      JSON.stringify({ conf: 'AAA-1', outcome: 'not_found' }),
+      JSON.stringify({ conf: 'BBB-2', outcome: 'read' }),
+    ].join('\n'),
+  );
+  assert.equal(skipped.has('59898948-1'), false);
+  assert.equal(skipped.has('AAA-1'), false);
+  assert.equal(skipped.has('BBB-2'), true);
+});
+
+test('not_found is only resumable after a green positive control', () => {
+  const afterGreen = reader.resumeSkipped(
+    [
+      JSON.stringify({ conf: '59898948-1', outcome: 'read', role: 'positive_control' }),
+      JSON.stringify({ conf: 'AAA-1', outcome: 'not_found' }),
+    ].join('\n'),
+  );
+  assert.equal(afterGreen.has('59898948-1'), false);
+  assert.equal(afterGreen.has('AAA-1'), true);
+});
+
+test('envelope shape logs types and keys never values', () => {
+  const shape = reader.envelopeShape({
+    fromCome: true,
+    grid: {
+      GRIDRESULT: {
+        GRID: {
+          DATA: [{ confirmationnumber: '59898948-1', lastname: 'SECRET-PII', firstname: 'DO-NOT-LOG' }],
+        },
+      },
+    },
+    messages: null,
+  });
+  const json = JSON.stringify(shape);
+  assert.equal(json.includes('SECRET-PII'), false);
+  assert.equal(json.includes('DO-NOT-LOG'), false);
+  assert.equal(json.includes('59898948-1'), false);
+  assert.equal(shape.type, 'object');
+  assert.ok(shape.keys.includes('grid'));
+  assert.equal(shape.fields.grid.fields.GRIDRESULT.fields.GRID.fields.DATA.type, 'array');
+  assert.equal(shape.fields.grid.fields.GRIDRESULT.fields.GRID.fields.DATA.length, 1);
+  assert.equal(shape.fields.messages.type, 'null');
+});
+
+test('stdout payload refuses confirmation numbers and field values', () => {
+  const payload = reader.stdoutPayload({
+    phase: 'search',
+    outcome: 'read',
+    rowCount: 1,
+    envelope: reader.envelopeShape({ GRIDRESULT: { GRID: { DATA: [{ lastname: 'PII' }] } } }),
+    positiveControl: true,
+  });
+  const json = JSON.stringify(payload);
+  assert.equal(payload.phase, 'search');
+  assert.equal(payload.positiveControl, true);
+  assert.equal(json.includes('PII'), false);
+  assert.equal(json.includes('59898948-1'), false);
+  assert.equal('conf' in payload, false);
+  assert.equal('fields' in payload, false);
+  assert.equal('grid' in payload, false);
+});
+
+test('hasSearch matches Guest Stay search chrome not a random page', () => {
+  assert.equal(reader.hasSearch('<input name="search">'), true);
+  assert.equal(reader.hasSearch('<input name="ff_confirmationnumber">'), true);
+  assert.equal(reader.hasSearch('<table data-testid="results">'), true);
+  assert.equal(reader.hasSearch('<div>Front Desk</div>'), false);
+});
+
+test('navigate clicks Front Desk then Guest Stay and waits for search input', async () => {
+  const clicks = [];
+  let html = '<div>Front Desk</div>';
+  const page = {
+    content: async () => html,
+    evaluate: async (_fn, label) =>
+      html
+        .replace(/<[^>]+>/g, '\n')
+        .split('\n')
+        .some((line) => line.trim() === label),
+    click: async (sel) => {
+      clicks.push(sel);
+      if (sel === 'text=Front Desk') html = '<div>Front Desk</div>\n<div>Guest Stay</div>';
+      if (sel === 'text=Guest Stay') html = '<input name="search">';
+    },
+  };
+  const result = await reader.navigateGuestStay(page, {
+    frontDeskMs: 200,
+    guestStayMs: 200,
+    searchPaintMs: 200,
+    pollMs: 10,
+  });
+  assert.equal(result.navigated, 'menu');
+  assert.deepEqual(clicks, ['text=Front Desk', 'text=Guest Stay']);
+});
+
+test('navigate does not POST OSRESS and fails closed when search never paints', async () => {
+  const posts = [];
+  const page = {
+    content: async () => '<div>Front Desk</div>\n<div>Guest Stay</div>',
+    evaluate: async (_fn, label) => label === 'Front Desk' || label === 'Guest Stay',
+    click: async () => {},
+    post: async (...args) => {
+      posts.push(args);
+    },
+  };
+  await assert.rejects(
+    () =>
+      reader.navigateGuestStay(page, {
+        frontDeskMs: 40,
+        guestStayMs: 40,
+        searchPaintMs: 40,
+        pollMs: 10,
+      }),
+    /GUEST_STAY_NAV_NO_SEARCH/,
+  );
+  assert.deepEqual(posts, []);
+});
+
+test('borrowed CDP is 127.0.0.1 only', () => {
+  assert.equal(
+    reader.assertBorrowedCdp({
+      HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:9222',
+      HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
+    }).hostname,
+    '127.0.0.1',
+  );
+  assert.throws(
+    () =>
+      reader.assertBorrowedCdp({
+        HMS_STAGEHAND_CDP_URL: 'http://10.0.0.8:9222',
+        HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
+      }),
+    /PRIVATE_CDP_REQUIRED/,
+  );
+  assert.throws(
+    () =>
+      reader.assertBorrowedCdp({
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:9222',
+        HMS_STAGEHAND_BROWSER_OWNERSHIP: 'owned',
+      }),
+    /BORROWED_REQUIRED/,
+  );
+});
+
+test('source stays read-only: Guest Stay menu nav, no save/cancel/checkin, no mail UI', async () => {
+  const source = await readFile(sourceUrl, 'utf8');
+  assert.match(source, /text=Front Desk/);
+  assert.match(source, /text=Guest Stay/);
+  assert.match(source, /___NOMATCH___/);
+  assert.equal(source.includes('__NAVA_UNUSED__'), false);
+  assert.match(source, /59898948-1/);
+  assert.match(source, /PRIVATE_CDP_REQUIRED/);
+  assert.match(source, /BORROWED_REQUIRED/);
+  assert.match(source, /save\|delete\|cancel\|duplicate\|checkin\|checkout\|crs/i);
+  assert.equal(/outlook-pane|mail UI|\/mail\//i.test(source), false);
+  const nav = source.indexOf('navigateGuestStay');
+  const search = source.indexOf("'/web/base/OSRESS.search'");
+  assert.ok(nav !== -1 && search !== -1 && nav < search);
+  assert.equal(/['"]\/web\/base\/OSRESS['"]/.test(source), false);
+});
