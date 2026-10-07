@@ -171,6 +171,42 @@ async function clickMenuExact(page, label) {
   }
 }
 
+async function openAppMenu(page) {
+  if (typeof page.locator !== 'function') return;
+  try {
+    const frontDesk = page
+      .locator('span.x-tree-node-text:visible')
+      .filter({ hasText: /^Front Desk$/ });
+    if (typeof frontDesk.count === 'function' && (await frontDesk.count()) > 0) return;
+    await page.locator('a.app-menu-trigger:visible').click({ timeout: 4_000 });
+  } catch {
+    /* already open */
+  }
+}
+
+async function clickTreeLabel(page, label) {
+  if (typeof page.locator === 'function') {
+    try {
+      await page
+        .locator('span.x-tree-node-text:visible')
+        .filter({ hasText: new RegExp(`^${label}$`) })
+        .click({ timeout: 4_000 });
+      return true;
+    } catch {
+      try {
+        await page
+          .locator('span.x-tree-node-text:visible')
+          .filter({ hasText: new RegExp(`^${label}$`) })
+          .click({ force: true, timeout: 4_000 });
+        return true;
+      } catch {
+        /* fall through to text= walker */
+      }
+    }
+  }
+  return clickMenuExact(page, label);
+}
+
 export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
   const html = await page.content().catch(() => '');
   if (hasSearch(html)) return { navigated: 'already_open' };
@@ -183,12 +219,13 @@ export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
       if (attempt === 2) throw new Error('GUEST_STAY_NAV_NO_FRONT_DESK');
       continue;
     }
-    await clickMenuExact(page, 'Front Desk');
+    await openAppMenu(page);
+    await clickTreeLabel(page, 'Front Desk');
     const guestDeadline = Date.now() + timeouts.guestStayMs;
     while (!(await exactMenuLabel(page, 'Guest Stay')) && Date.now() < guestDeadline) {
       await delay(timeouts.pollMs);
     }
-    await clickMenuExact(page, 'Guest Stay');
+    await clickTreeLabel(page, 'Guest Stay');
     const paintDeadline = Date.now() + timeouts.searchPaintMs;
     while (Date.now() < paintDeadline) {
       if (hasSearch(await page.content().catch(() => ''))) return { navigated: 'menu' };
