@@ -121,6 +121,30 @@ describe('analysisMatchesQuotedStay', () => {
       ),
     ).toBe(false);
   });
+
+  it('rejects a booking whose room count differs from the quoted stay', async () => {
+    const revision = await freshRevision();
+    expect(
+      analysisMatchesQuotedStay(
+        analysis({
+          groups: [{ ...analysis().groups[0]!, rooms: 1 }],
+        }),
+        revision,
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a booking whose occupancy differs from the quoted stay', async () => {
+    const revision = await freshRevision();
+    expect(
+      analysisMatchesQuotedStay(
+        analysis({
+          groups: [{ ...analysis().groups[0]!, adultsPerRoom: 2 }],
+        }),
+        revision,
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('resolvePriorQuoteForBooking', () => {

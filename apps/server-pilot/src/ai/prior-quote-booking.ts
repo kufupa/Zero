@@ -54,11 +54,21 @@ export function analysisMatchesQuotedStay(
   analysis: LunaAnalysis,
   revision: Pick<QuoteRevision, 'groups'>,
 ): boolean {
-  const asked = analysis.groups[0];
-  if (!asked?.arrival || !asked.departure) return false;
-  return revision.groups.some(
-    (group) => group.arrivalDate === asked.arrival && group.departureDate === asked.departure,
+  const asked = analysis.groups.filter((group) => group.arrival && group.departure);
+  if (!asked.length) return false;
+  const quoted = new Set(
+    revision.groups.map((group) => `${group.arrivalDate}:${group.departureDate}`),
   );
+  if (!asked.every((group) => quoted.has(`${group.arrival}:${group.departure}`))) return false;
+  if (asked.some((group) => typeof group.rooms === 'number')) {
+    const askedRooms = asked.reduce((sum, group) => sum + (group.rooms ?? 0), 0);
+    const quotedRooms = revision.groups.reduce((sum, group) => sum + group.quantity, 0);
+    if (askedRooms !== quotedRooms) return false;
+  }
+  if (asked.length === 1 && typeof asked[0]?.adultsPerRoom === 'number') {
+    if (!revision.groups.every((group) => group.adults === asked[0]!.adultsPerRoom)) return false;
+  }
+  return true;
 }
 
 export function collectThreadQuoteRevisions(

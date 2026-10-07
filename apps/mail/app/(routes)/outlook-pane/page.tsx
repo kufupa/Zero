@@ -283,7 +283,7 @@ export default function OutlookPanePage() {
   const quoteAnalysisRetryKey = analysisRetryKey(
     quoteAdmissionKey,
     quoteSession.phase,
-    sync.snapshot?.status?.committed,
+    sync.status?.committed,
   );
   useEffect(() => {
     const binding = quoteSession.binding;
@@ -366,6 +366,9 @@ export default function OutlookPanePage() {
     quoteSession.staffSource?.threadId ?? '',
     String(quoteSession.inputRevision),
     String(quoteSession.binding?.selectionEpoch ?? 0),
+    quoteSession.groups
+      .map((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}:${group.quantity ?? ''}:${group.adults ?? ''}`)
+      .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
     quoteSession.bookingDraft ? 'drafted' : '',
   ].join(':');
@@ -404,7 +407,22 @@ export default function OutlookPanePage() {
         messageId: source.messageId,
         selectionEpoch,
         inputRevision,
-        analysis: luna,
+        analysis: {
+          ...luna,
+          groups: quoteSession.groups.length
+            ? quoteSession.groups.map((group) => ({
+                arrival: group.arrivalDate ?? null,
+                departure: group.departureDate ?? null,
+                rooms: group.quantity ?? null,
+                adultsPerRoom: group.adults ?? null,
+                childAges: [...(group.childrenAges ?? [])],
+                board:
+                  group.board === 'dinner_bb' ? 'dbb' : group.board === 'unknown' ? null : (group.board ?? null),
+                roomPreference: group.roomPreference ?? null,
+                guestNames: [],
+              }))
+            : luna.groups,
+        },
       });
       if (cancelled) return;
       if (prior.status !== 'ok') {
