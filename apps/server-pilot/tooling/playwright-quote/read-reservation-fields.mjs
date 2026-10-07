@@ -99,14 +99,26 @@ function pickFields(text) {
   return out;
 }
 
-async function post(ctx, origin, path, form) {
+async function post(page, origin, path, form) {
   if (!ALLOWED_PATH.test(path)) throw new Error(`READ_ONLY_PATH_BLOCKED ${path}`);
-  const res = await ctx.request.post(`${origin}${path}`, { form, timeout: 60_000 });
-  return res.text();
+  // Fetch inside the borrowed Chrome so HMS traffic uses EC2 VPN/hosts, not this host's DNS.
+  return page.evaluate(
+    async ({ url, form }) => {
+      const body = new URLSearchParams(form);
+      const res = await fetch(url, {
+        method: 'POST',
+        body,
+        credentials: 'include',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      return res.text();
+    },
+    { url: `${origin}${path}`, form },
+  );
 }
 
-async function readOne(ctx, origin, conf) {
-  const searchText = await post(ctx, origin, '/web/base/OSRESS.search', searchBody(conf));
+async function readOne(page, origin, conf) {
+  const searchText = await post(page, origin, '/web/base/OSRESS.search', searchBody(conf));
   if (/loadLocalizedPage/i.test(searchText) && searchText.length < 2000) return { conf, outcome: 'session_stub' };
   const data = pageData(searchText);
   const rows = data?.grid?.GRIDRESULT?.GRID?.DATA ?? data?.GRIDRESULT?.GRID?.DATA ?? [];
@@ -123,7 +135,7 @@ async function readOne(ctx, origin, conf) {
     CURRENT_TAB_NAME: 'HDR',
     ...(row.id != null ? { reservationstayid: String(row.id), id: String(row.id) } : {}),
   };
-  const hdr = await post(ctx, origin, '/web/base/OSRESV.HDR', form);
+  const hdr = await post(page, origin, '/web/base/OSRESV.HDR', form);
   const fields = pickFields(hdr);
   if (fields.confirmationnumber && fields.confirmationnumber !== conf) return { conf, outcome: 'identity_mismatch' };
   const grid = {};
@@ -136,9 +148,17 @@ async function main() {
   process.umask(0o077);
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
   const confs = JSON.parse(await readFile(input, 'utf8')).slice(0, cap);
+  const resumeDone = new Set(['read', 'not_found', 'ambiguous', 'identity_mismatch']);
   let done = new Set();
   try {
-    done = new Set((await readFile(out, 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l).conf));
+    done = new Set(
+      (await readFile(out, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((row) => resumeDone.has(row.outcome))
+        .map((row) => row.conf),
+    );
   } catch {
     /* fresh */
   }
@@ -160,7 +180,7 @@ async function main() {
   try {
     await login(page, secret);
     const origin = new URL(page.url()).origin;
-    await post(ctx, origin, '/web/base/OSRESS', {
+    await post(page, origin, '/web/base/OSRESS', {
       SYSTEM_FUNCTION_NAME: 'OSRESS',
       USER_FUNCTION_NAME: 'OSRESS',
       FUNCTION_CLASS: 'WEBL',
@@ -171,7 +191,7 @@ async function main() {
     for (const conf of confs.filter((c) => !done.has(c))) {
       let row;
       try {
-        row = await readOne(ctx, origin, conf);
+        row = await readOne(page, origin, conf);
       } catch (error) {
         row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160) };
       }
