@@ -89,6 +89,8 @@ import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import {
   completedDateOptions,
   requireMultiOptionDraft,
+  multiOptionSignature,
+  type CombinedReplyEdit,
 } from '@/lib/quote-workflow/multi-option-draft';
 import {
   bindAnalyseSelection,
@@ -243,6 +245,8 @@ export default function OutlookPanePage() {
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
+  // Staff's edit of the combined reply. It is used only while the completed options are the same ones.
+  const [combinedEdit, setCombinedEdit] = useState<CombinedReplyEdit | null>(null);
   useEffect(() => {
     let alive = true;
     void readPaneSaveFlag(trpcClient).then((on) => {
@@ -815,7 +819,7 @@ export default function OutlookPanePage() {
     }
     const reviewedDraft =
       scope === 'all'
-        ? requireMultiOptionDraft(quoteSession)
+        ? requireMultiOptionDraft(quoteSession, combinedEdit)
         : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
     if (!reviewedDraft) {
       toast.error(
@@ -1680,6 +1684,22 @@ export default function OutlookPanePage() {
                       ? allOptionsLabel
                       : 'Insert draft in Outlook'}
                 </Button>
+                {allOptionsDraft ? (
+                  <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                    Combined reply (you can edit it)
+                    <textarea
+                      aria-label="Combined reply"
+                      className="outline-hidden min-h-28 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
+                      value={requireMultiOptionDraft(quoteSession, combinedEdit)?.html ?? ''}
+                      onChange={(event) =>
+                        setCombinedEdit({
+                          signature: multiOptionSignature(quoteSession) ?? '',
+                          html: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                ) : null}
                 {allOptionsDraft ? (
                   <p className="text-center text-[11px] text-[#64748b]">
                     Puts every option you ran into one email draft. Nothing is sent.

@@ -2,6 +2,7 @@ import {
   completedDateOptions,
   formatStayRange,
   multiOptionDraftHtml,
+  multiOptionSignature,
   optionAttachmentName,
   requireMultiOptionDraft,
 } from '../lib/quote-workflow/multi-option-draft';
@@ -183,6 +184,17 @@ describe('one reply for every completed date option', () => {
     expect(html).toMatch(/Option B total: R1\D*360\.00/);
     expect(html.indexOf('Option A:')).toBeLessThan(html.indexOf('Option B:'));
     expect(html).toContain('not a booking');
+  });
+
+  it('uses the staff-edited combined reply while the options are unchanged, and the generated body otherwise', () => {
+    const session = twoQuotedOptions();
+    const generated = requireMultiOptionDraft(session)?.html ?? '';
+    const edited = '<p>Rates are per room per night, breakfast included.</p>';
+    const signature = multiOptionSignature(session) ?? '';
+    expect(requireMultiOptionDraft(session, { signature, html: edited })?.html).toBe(edited);
+    // An edit made for another set of options is never sent.
+    expect(requireMultiOptionDraft(session, { signature: 'stale', html: edited })?.html).toBe(generated);
+    expect(requireMultiOptionDraft(session, null)?.html).toBe(generated);
   });
 
   it('attaches each option PDF once, with its option letter in the name', () => {

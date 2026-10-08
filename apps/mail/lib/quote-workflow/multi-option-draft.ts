@@ -77,12 +77,28 @@ export function completedDateOptions(session: QuoteSession): CompletedDateOption
   return options;
 }
 
-/** The one reply covering all completed options, or null unless at least two are complete. */
-export function requireMultiOptionDraft(session: QuoteSession): MultiOptionDraft | null {
+/** What staff wrote in the combined reply, and the completed options it was written for. */
+export type CombinedReplyEdit = { signature: string; html: string };
+
+/** Identifies the completed options: an edit is used only while they are still the same runs and PDFs. */
+export function multiOptionSignature(session: QuoteSession): string | null {
   const options = completedDateOptions(session);
   if (options.length < 2) return null;
+  return options
+    .map((option) => `${option.letter}:${option.key}:${option.quote.totalMinor}:${option.pdf.pdfHash ?? ''}`)
+    .join('|');
+}
+
+/** The one reply covering all completed options, or null unless at least two are complete. */
+export function requireMultiOptionDraft(
+  session: QuoteSession,
+  edit?: CombinedReplyEdit | null,
+): MultiOptionDraft | null {
+  const options = completedDateOptions(session);
+  if (options.length < 2) return null;
+  const edited = edit && edit.signature === multiOptionSignature(session) ? edit.html : null;
   return {
-    html: multiOptionDraftHtml(options),
+    html: edited ?? multiOptionDraftHtml(options),
     attachments: options.map((option) => ({
       fileName: optionAttachmentName(option.pdf.fileName, option.letter),
       pdfBase64: option.pdf.bytesBase64,
