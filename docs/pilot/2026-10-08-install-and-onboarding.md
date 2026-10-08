@@ -42,7 +42,7 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 - [ ] Installer: `NavaOutlookSetup.exe`, **version 1.0.14**.
 - [ ] Download link: `https://nava.legacyhotels.co.za/download/NavaOutlookSetup.exe`
-- [ ] SHA-256: **`e5e8a99b…07b5df`** (partial). **Full hash: TBC.** Get the full value from the 1.0.14 release record and write it down before the call. Do not use the hash in the 2026-10-02 security record. It is for 1.0.12.
+- [ ] SHA-256 (1.0.14, verified on the server 2026-10-08 05:55 UTC): **`e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df`**. Do not use the hash in the 2026-10-02 security record. It is for 1.0.12.
 - [ ] The file hash must match the full value before anyone runs it (see Part 1, step 3).
 
 ### Staff PC
@@ -101,7 +101,7 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 1. Open Windows PowerShell in the Downloads folder.
 2. Run: `Get-FileHash .\NavaOutlookSetup.exe -Algorithm SHA256`
-3. Compare the result with the **full** SHA-256 for 1.0.14 from the release record. The partial value on this page is `e5e8a99b…07b5df`.
+3. Compare the result with the SHA-256 for 1.0.14: `e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df`.
 4. If the value does not match, **stop**. Do not run the file. Call the founder.
 
 ### Step 4. Run the installer
@@ -201,7 +201,7 @@ The read-root and folder approvals are separate operator commands. They are in `
 
 These are facts from the repo that differ from, or limit, what the call would otherwise promise.
 
-1. **Installer hash.** The version is 1.0.14. The full SHA-256 is TBC. The repo's last recorded hash is for 1.0.12 and does not apply.
+1. **Installer hash.** The version is 1.0.14. SHA-256 `e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df` (verified on the server).
 2. **Device code scope.** Device credentials and the one-use code are per Windows user (runbook step 6, and the operator README).
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, the add-in refuses to create the reply draft, by design (runbook, order of operations, step 8). **Insert draft in Outlook is refused on non-default shared mailboxes.** Staff must reply by hand in Outlook for those mailboxes.
 4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE=on`. Cancel commits only for test stays (arrival on or after 2027-01-01).
