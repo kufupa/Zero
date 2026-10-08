@@ -319,6 +319,22 @@ describe('inbound triage analyse warmer', () => {
     expect(adapter.invoke).not.toHaveBeenCalled();
   });
 
+  it('drops a warm once 50 are already waiting, logs luna_warm_skip_queue_full and never queues it', async () => {
+    vi.mocked(getDb).mockReturnValue(triggerDb({ direction: 'inbound', messageIdHeader: MESSAGE_ID }));
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const stuck = deps({ loadSyncedSelection: () => new Promise<never>(() => undefined), cacheDir });
+    // Two jobs hold the slots and 50 wait behind them. Each call takes its place in the queue synchronously.
+    for (let i = 0; i < 52; i += 1) void warmInboundTriageAnalyse(run(), stuck, FLAG_ON);
+    const outcome = await Promise.race([
+      warmInboundTriageAnalyse(run(), stuck, FLAG_ON),
+      new Promise<string>((resolve) => setTimeout(() => resolve('queued'), 20)),
+    ]);
+    expect(outcome).toBe('skipped');
+    expect(info).toHaveBeenCalledWith('luna_warm_skip_queue_full', { code: 'queue_full' });
+    info.mockRestore();
+    __resetInboundTriageAnalyseWarmForTests();
+  });
+
   it('a disabled Luna logs code disabled and does not spend a cap slot', async () => {
     const adapter = okAdapter();
     const env = { ...FLAG_ON, LUNA_ANALYSE_WARMER_MAX_PER_HOUR: '1' };

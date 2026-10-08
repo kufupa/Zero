@@ -29,6 +29,8 @@ import {
 const DEFAULT_MAX_PER_HOUR = 60;
 const HOUR_MS = 60 * 60 * 1000;
 const MAX_IN_FLIGHT = 2;
+/** Warms waiting for a slot. A warm past this is dropped, so a burst cannot queue without end. */
+const MAX_WAITING = 50;
 const LOADER_TIMEOUT_MS = 15_000;
 
 export type InboundTriageWarmRun = {
@@ -75,6 +77,10 @@ function acquireSlot(): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => waiting.push(resolve));
+}
+
+function queueIsFull(): boolean {
+  return inFlight >= MAX_IN_FLIGHT && waiting.length >= MAX_WAITING;
 }
 
 function releaseSlot(): void {
@@ -183,6 +189,10 @@ export async function warmInboundTriageAnalyse(
   if (!analyseWarmerEnabled(env)) return 'skipped';
   if (run.runKind !== 'inbound_triage' || !run.admissionSnapshotId) return 'skipped';
   if (run.executorLane !== 'default') return 'skipped';
+  if (queueIsFull()) {
+    console.info('luna_warm_skip_queue_full', { code: 'queue_full' });
+    return 'skipped';
+  }
   await acquireSlot();
   const started = Date.now();
   try {
