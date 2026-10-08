@@ -165,6 +165,8 @@ export interface PilotCapabilities {
   hotelCategories: true;
   staleDraftWarning: true;
   catchupUpload: boolean;
+  /** True only when RESERVATIONIST_PANE_SAVE=on: the pane may offer Preview/Commit. */
+  paneSave: boolean;
 }
 
 export interface ManagerConfig {

@@ -156,6 +156,7 @@ import type { ReservationLookupResult, ReservationRow } from '../hms/reservation
 import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document-list-contract.js';
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
+import { scheduleInboundTriageAnalyseWarm } from './quote-workflow-warmer.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
@@ -5365,7 +5366,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   const composedCandidateDraftRoute =
     candidateDraftRouteFactory?.() ?? createProductionDraftModelRouteFactory()();
-  await executeAiRun(claimed.id, {
+  const executed = await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
     mailBaselineExtractionRoute: composedMailBaselineExtractionRoute,
@@ -5380,6 +5381,11 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
+  if (executed.state === 'succeeded') {
+    // Fire-and-forget after the triage commit, never inside the admission
+    // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
+    scheduleInboundTriageAnalyseWarm(claimed);
+  }
   return true;
 }
 

@@ -141,6 +141,17 @@ export type LunaAnalysisWire = {
   }>;
 };
 
+/** Server analyse payload `amendment`. Null unless Luna classed the mail as amend or cancel. */
+export type QuoteAmendment = {
+  kind: 'amend' | 'cancel';
+  confirmationNumber: string | null;
+  guestLastName: string | null;
+  /** ISO day as stated in the email. */
+  arrival: string | null;
+  departure: string | null;
+  requestedChange: string | null;
+};
+
 export type QuoteAnalysisSource = 'luna' | 'regex_fallback';
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'invalid_output';
@@ -153,6 +164,8 @@ export type QuoteAnalysis = {
   reviewItems?: QuoteReviewItem[];
   staffActions?: ReservationistStaffAction[];
   luna?: LunaAnalysisWire | null;
+  /** Intent stays other for amend and cancel. This only feeds the HMS lookup panel. */
+  amendment?: QuoteAmendment | null;
   aiUnavailable?: boolean;
   source?: QuoteAnalysisSource;
   fallbackReason?: QuoteWorkflowFallbackReason;

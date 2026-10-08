@@ -1,9 +1,40 @@
-import { describe, expect, it } from 'vitest';
+import { asc, getTableName } from 'drizzle-orm';
+import { describe, expect, it, vi } from 'vitest';
+import { getDb } from '../src/db/client.js';
+import { attachment } from '../src/db/schema/mail.js';
 import {
+  loadSyncedQuoteSelectionFromMailbox,
   orderCausalPreceding,
   readQuoteAttachments,
   type QuoteAttachmentRow,
 } from '../src/ai/quote-workflow-synced-selection.js';
+
+vi.mock('../src/db/client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/db/client.js')>()),
+  getDb: vi.fn(),
+}));
+
+/** Minimal select chain: where/limit/orderBy, awaitable, rows keyed by table name. */
+function fakeMailboxDb(
+  rowsByTable: Record<string, unknown[]>,
+  orderByCalls: Array<{ table: string; args: unknown[] }>,
+) {
+  const query = (table: string) => {
+    const rows = rowsByTable[table] ?? [];
+    const builder = Object.assign(Promise.resolve(rows), {
+      where: () => builder,
+      limit: async () => rows,
+      orderBy: (...args: unknown[]) => {
+        orderByCalls.push({ table, args });
+        return builder;
+      },
+    });
+    return builder;
+  };
+  return {
+    select: () => ({ from: (table: object) => query(getTableName(table as never)) }),
+  };
+}
 
 function row(overrides: Partial<QuoteAttachmentRow> & { id: string }): QuoteAttachmentRow {
   return {
@@ -91,5 +122,52 @@ describe('orderCausalPreceding', () => {
         { id: 'older', textBody: 'ask', receivedAt: new Date('2026-10-04T09:00:00Z') },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('loadSyncedQuoteSelectionFromMailbox', () => {
+  it('reads attachment rows in id order so the analyse cache key does not follow row order', async () => {
+    const orderByCalls: Array<{ table: string; args: unknown[] }> = [];
+    vi.mocked(getDb).mockReturnValue(
+      fakeMailboxDb(
+        {
+          message: [
+            {
+              id: 'm1',
+              threadId: 't1',
+              subject: 'Rooms',
+              textBody: 'Quote 2 rooms',
+              receivedAt: new Date('2026-10-05T12:00:00Z'),
+            },
+          ],
+          attachment: [
+            {
+              id: 'att-b',
+              filename: 'b.xlsx',
+              mimeType: 'application/vnd.ms-excel',
+              sizeBytes: 10,
+              isInline: false,
+              s3Key: 'attachments/m1/att-b',
+              messageId: 'm1',
+            },
+            {
+              id: 'att-a',
+              filename: 'a.xlsx',
+              mimeType: 'application/vnd.ms-excel',
+              sizeBytes: 10,
+              isInline: false,
+              s3Key: 'attachments/m1/att-a',
+              messageId: 'm1',
+            },
+          ],
+        },
+        orderByCalls,
+      ) as never,
+    );
+    await loadSyncedQuoteSelectionFromMailbox({
+      transportId: 'transport-1',
+      internetMessageId: '<m1@example.com>',
+    });
+    expect(orderByCalls).toEqual([{ table: 'attachment', args: [asc(attachment.id)] }]);
   });
 });

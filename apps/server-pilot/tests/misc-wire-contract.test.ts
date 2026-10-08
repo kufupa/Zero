@@ -148,7 +148,22 @@ describe('pilot inert legacy routers', () => {
       hotelCategories: true,
       staleDraftWarning: true,
       catchupUpload: false,
+      paneSave: false,
     });
+
+    const prevPaneSave = process.env.RESERVATIONIST_PANE_SAVE;
+    try {
+      process.env.RESERVATIONIST_PANE_SAVE = 'on';
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({ paneSave: true });
+      process.env.RESERVATIONIST_PANE_SAVE = 'off';
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({ paneSave: false });
+    } finally {
+      if (prevPaneSave === undefined) {
+        delete process.env.RESERVATIONIST_PANE_SAVE;
+      } else {
+        process.env.RESERVATIONIST_PANE_SAVE = prevPaneSave;
+      }
+    }
 
     const prevFlag = process.env.CATCHUP_UPLOAD_ENABLED;
     try {

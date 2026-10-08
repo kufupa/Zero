@@ -1,29 +1,22 @@
 import {
   loadSyncedQuoteSelectionFromMailbox,
-  type SyncedQuoteAttachment,
   type SyncedQuoteSelection,
 } from '../../ai/quote-workflow-synced-selection.js';
 import {
-  analyseQuoteSelection,
-  mapLlmDecision,
   quoteWorkflowLlmEnabled,
   QUOTE_WORKFLOW_PROMPT_VERSION,
-  type QuoteTreatAs,
 } from '../../ai/quote-workflow-llm.js';
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createAzureLunaModel, LunaModelAdapter } from '../../ai/bedrock/luna.js';
 import {
-  analyseQuoteSources,
-  type QuoteWorkflowAnalysis,
-} from '../../ai/quote-workflow-analyse.js';
-import type { LunaAnalysis } from '../../ai/reservationist-decision.js';
+  analyseSyncedSelection,
+  canonicalInternetMessageId,
+  resolveAnalyseCacheDir,
+} from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { runPaneStay } from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
+
+export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
 
 const paneStayInput = z.object({
   firstName: z.string().min(1),
@@ -67,80 +60,6 @@ export const quoteWorkflowLoaders: {
   promptVersion: null,
 };
 
-const DEFAULT_ANALYSE_CACHE_DIR = fileURLToPath(
-  new URL('../../../.private/luna-analyse-cache', import.meta.url),
-);
-
-export function hashSyncedQuoteSelection(
-  selection: SyncedQuoteSelection,
-  extras?: { staffNote?: string },
-): string {
-  const hash = createHash('sha256');
-  hash.update(selection.subject);
-  hash.update('\0');
-  hash.update(selection.bodyText);
-  hash.update('\0');
-  hash.update(selection.receivedAt ?? '');
-  for (const message of selection.preceding) {
-    hash.update('\0');
-    hash.update(message.bodyText);
-  }
-  for (const attachment of selection.attachments) {
-    hash.update('\0');
-    hash.update(attachment.id);
-    hash.update('\0');
-    hash.update(attachment.filename);
-    hash.update('\0');
-    hash.update(attachment.text ?? '');
-    hash.update('\0');
-    hash.update(attachment.bytesPresent ? '1' : '0');
-    if (attachment.pdf) hash.update(Buffer.from(attachment.pdf));
-  }
-  if (extras?.staffNote?.trim()) {
-    hash.update('\0staffNote\n');
-    hash.update(extras.staffNote.trim());
-  }
-  return hash.digest('hex');
-}
-
-function resolveAnalyseCacheDir(): string | null {
-  if (quoteWorkflowLoaders.analyseCacheDir) return quoteWorkflowLoaders.analyseCacheDir;
-  if (process.env.LUNA_ANALYSE_CACHE_DIR) return process.env.LUNA_ANALYSE_CACHE_DIR;
-  if (process.env.VITEST) return null;
-  return DEFAULT_ANALYSE_CACHE_DIR;
-}
-
-function analyseCachePath(input: {
-  internetMessageId: string;
-  sourceHash: string;
-  promptVersion: string;
-  cacheDir: string;
-  treatAs?: QuoteTreatAs;
-}): string {
-  const id = input.internetMessageId.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
-  const treat = input.treatAs ?? 'auto';
-  return join(
-    input.cacheDir,
-    `${id}_${input.sourceHash.slice(0, 16)}_${input.promptVersion}_${treat}.json`,
-  );
-}
-
-async function readAnalyseCache(path: string): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await readFile(path, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-async function writeAnalyseCache(dir: string, path: string, payload: unknown): Promise<void> {
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeFile(path, JSON.stringify(payload), { mode: 0o600 });
-}
-
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
   storeId: z.string().min(1),
@@ -158,117 +77,17 @@ export const runStepInput = z.object({
   inputs: z.record(z.unknown()),
 });
 
-function unreadAttachments(
-  attachments: SyncedQuoteAttachment[],
-  mode: 'bytes' | 'text' = 'bytes',
-): SyncedQuoteAttachment[] {
-  if (mode === 'text') {
-    return attachments.filter((attachment) => !String(attachment.text ?? '').trim());
-  }
-  return attachments.filter((attachment) => !attachment.bytesPresent && !attachment.text);
-}
-
-function documentFailureItems(
-  attachments: SyncedQuoteAttachment[],
-  mode: 'bytes' | 'text' = 'bytes',
-) {
-  return unreadAttachments(attachments, mode).map((attachment) => ({
-    id: `unread:${attachment.id}`,
-    kind: 'document_failure' as const,
-    rank: 'unread_source' as const,
-    text: `Attachment ${attachment.filename} could not be read (${attachment.readFailure ?? 'unavailable'}). Review it manually.`,
-    sourceLabel: attachment.filename,
-    sourceRef: attachment.id,
-    sourceKind: 'attachment' as const,
-    filename: attachment.filename,
-    reason: attachment.readFailure ?? 'Content unavailable; review the original attachment.',
-    blocking: true as const,
-  }));
-}
-
-function questionItems(missing: Array<{ field: string; question: string }>) {
-  return missing.map((item, index) => ({
-    id: `missing:${item.field}:${index}`,
-    kind: 'question' as const,
-    rank: 'secondary' as const,
-    text: item.question,
-    sourceLabel: item.field,
-    blocking: false as const,
-  }));
-}
-
-/**
- * Luna-shaped carrier for a staff override on the regex fallback. The pane reads the
- * booking choice from luna.workflow (as on the Luna path), so this must pass
- * lunaAnalysisSchema for the server booking-draft calls that echo it back.
- */
-function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnalysis): LunaAnalysis {
-  return {
-    workflow: treatAs,
-    flags: [],
-    groups: analysis.groups.map((group) => ({
-      arrival: group.arrivalDate ?? null,
-      departure: group.departureDate ?? null,
-      rooms: group.quantity ?? null,
-      adultsPerRoom: group.adults ?? null,
-      childAges: [...group.childrenAges],
-      board: group.board === 'unknown' ? null : group.board === 'dinner_bb' ? 'dbb' : group.board,
-      roomPreference: null,
-      guestNames: [],
-    })),
-    party: { kind: null, name: null, reference: null },
-    rateClaims: [],
-    missing: [],
-    evidence: [],
-    tasks: [
-      {
-        kind: treatAs,
-        groupIndexes: analysis.groups.map((_, index) => index),
-        note: 'Staff override on the regex fallback.',
-      },
-    ],
-  };
-}
-
-const LUNA_UNAVAILABLE_ITEM = {
-  id: 'luna-unavailable',
-  kind: 'question' as const,
-  rank: 'secondary' as const,
-  text: 'Luna is unavailable, so the stay details come from the email text. Check the dates and room count below. Edit the room count directly, since a note cannot change it. A note can still correct dates and adults.',
-  sourceLabel: 'Selected message',
-  blocking: false as const,
-};
-
-function resolveAdapter(enabled: boolean): { enabled: boolean; adapter: ModelAdapter | null } {
-  if (!enabled) return { enabled: false, adapter: null };
-  if (quoteWorkflowLoaders.adapter) {
-    return { enabled: true, adapter: quoteWorkflowLoaders.adapter };
-  }
-  try {
-    return {
-      enabled: true,
-      adapter: new LunaModelAdapter({
-        model: createAzureLunaModel(),
-        reasoningEffort: 'medium',
-        routeId: 'azure_quote',
-        modelId: 'gpt-6-luna',
-        protocol: 'azure-openai-responses',
-      }),
-    };
-  } catch {
-    return { enabled: false, adapter: null };
-  }
-}
-
 export const quoteWorkflowRouter = router({
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
     .mutation(async ({ input, ctx }) => {
+      // One canonical id for the loader's exact match and for the cache key.
+      const internetMessageId = canonicalInternetMessageId(input.internetMessageId) ?? undefined;
       const loader =
         quoteWorkflowLoaders.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
       const synced = await loader({
         transportId: ctx.activeTransportId,
-        internetMessageId: input.internetMessageId,
+        internetMessageId,
         entryId: input.entryId,
         storeId: input.storeId,
         signal: AbortSignal.timeout(15_000),
@@ -276,102 +95,19 @@ export const quoteWorkflowRouter = router({
       if (!synced) {
         return { status: 'unsynced' as const };
       }
-      const cacheDir = resolveAnalyseCacheDir();
-      const promptVersion =
-        quoteWorkflowLoaders.promptVersion ?? QUOTE_WORKFLOW_PROMPT_VERSION;
-      const cacheFile =
-        input.internetMessageId && cacheDir
-          ? analyseCachePath({
-              internetMessageId: input.internetMessageId,
-              sourceHash: hashSyncedQuoteSelection(synced, { staffNote: input.staffNote }),
-              promptVersion,
-              cacheDir,
-              treatAs: input.treatAs,
-            })
-          : null;
-      if (cacheFile) {
-        const hit = await readAnalyseCache(cacheFile);
-        if (hit && hit.status === 'ready' && hit.source === 'luna') {
-          return { ...hit, sourceRevision: input.selectionEpoch };
-        }
-      }
-      const unread = unreadAttachments(synced.attachments);
-      const attachmentReviews = documentFailureItems(synced.attachments);
-      const requested = quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env);
-      const resolved = resolveAdapter(requested);
-      const llm = await analyseQuoteSelection({
-        selection: synced,
-        adapter: resolved.adapter,
-        enabled: resolved.enabled,
-        deadlineMs: 25_000,
+      const { payload, outcome } = await analyseSyncedSelection(synced, {
+        internetMessageId,
         treatAs: input.treatAs,
         staffNote: input.staffNote,
+        selectionEpoch: input.selectionEpoch,
+        cacheDir: resolveAnalyseCacheDir(quoteWorkflowLoaders.analyseCacheDir),
+        promptVersion: quoteWorkflowLoaders.promptVersion ?? QUOTE_WORKFLOW_PROMPT_VERSION,
+        adapter: quoteWorkflowLoaders.adapter,
+        llmEnabled: () =>
+          quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env),
       });
-      const payload =
-        llm.source === 'luna'
-          ? (() => {
-              const flags: LunaAnalysis['flags'] = unread.length
-                ? Array.from(new Set([...llm.analysis.flags, 'attachment_unread' as const]))
-                : llm.analysis.flags;
-              const luna: LunaAnalysis = {
-                ...llm.analysis,
-                flags,
-                ...(input.treatAs ? { workflow: input.treatAs } : {}),
-              };
-              const mapped = mapLlmDecision(luna, { treatAs: input.treatAs });
-              return {
-                status: 'ready' as const,
-                intent: mapped.intent,
-                groups: mapped.groups,
-                secondaryAsks: mapped.secondaryAsks,
-                alternatives: mapped.alternatives,
-                reviewItems: [...attachmentReviews, ...questionItems(mapped.missing)],
-                source: 'luna' as const,
-                aiUnavailable: false as const,
-                luna,
-                workflow: luna.workflow,
-                sourceRevision: input.selectionEpoch,
-              };
-            })()
-          : (() => {
-              console.warn('quote_workflow_fallback', llm.fallbackReason);
-              const analysis = analyseQuoteSources({
-                subject: synced.subject,
-                bodyText: synced.bodyText,
-                preceding: synced.preceding,
-                attachments: synced.attachments,
-                staffNote: input.staffNote,
-                treatAs: input.treatAs,
-              });
-              const treatAs = input.treatAs;
-              // A staff override always quotes; the booking choice rides on workflow and luna.
-              const override = treatAs
-                ? {
-                    intent: 'quote' as const,
-                    workflow: treatAs,
-                    luna: fallbackLunaCarrier(treatAs, analysis),
-                  }
-                : { luna: null };
-              return {
-                status: 'ready' as const,
-                ...analysis,
-                ...override,
-                reviewItems: [
-                  ...documentFailureItems(synced.attachments, 'text'),
-                  ...(treatAs ? [LUNA_UNAVAILABLE_ITEM] : []),
-                ],
-                source: 'regex_fallback' as const,
-                fallbackReason: llm.fallbackReason,
-                aiUnavailable: true as const,
-                sourceRevision: input.selectionEpoch,
-              };
-            })();
-      if (cacheFile && cacheDir && payload.source === 'luna') {
-        try {
-          await writeAnalyseCache(cacheDir, cacheFile, payload);
-        } catch {
-          /* analysis still returns; cache is best-effort */
-        }
+      if (outcome.kind === 'fallback') {
+        console.warn('quote_workflow_fallback', outcome.reason);
       }
       return payload;
     }),
@@ -382,10 +118,22 @@ export const quoteWorkflowRouter = router({
         'Live staff quote execution is workstation.executeStaffQuote. Do not call ai.enqueueHmsRead from this UI route.',
     };
   }),
-  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
-    return runPaneStay({ mode: 'preview', stay: input });
+  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input, ctx }) => {
+    return runPaneStay({
+      mode: 'preview',
+      stay: input,
+      owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+    });
   }),
-  commitStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
-    return runPaneStay({ mode: 'commit', stay: input });
-  }),
+  commitStay: mailboxProcedure
+    .input(paneStayInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }))
+    .mutation(async ({ input, ctx }) => {
+      const { previewDigest, ...stay } = input;
+      return runPaneStay({
+        mode: 'commit',
+        stay,
+        previewDigest,
+        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+      });
+    }),
 });

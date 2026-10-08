@@ -10,6 +10,7 @@ export const PILOT_CAPABILITIES = {
   hotelCategories: true,
   staleDraftWarning: true,
   catchupUpload: false,
+  paneSave: false,
 } satisfies PilotCapabilities;
 
 export function canUseNaturalLanguageSearch(): boolean {

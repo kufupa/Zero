@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
 import {
@@ -198,7 +198,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       messageId: attachment.messageId,
     })
     .from(attachment)
-    .where(eq(attachment.messageId, row.id));
+    .where(eq(attachment.messageId, row.id))
+    .orderBy(asc(attachment.id));
 
   const signal = input.signal ?? AbortSignal.timeout(15_000);
   let reader: QuoteAttachmentReader;
