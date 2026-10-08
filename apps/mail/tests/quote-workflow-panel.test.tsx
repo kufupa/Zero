@@ -195,7 +195,8 @@ describe('QuoteWorkflowPanel', () => {
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
     expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
-    expect(screen.getByText(/Combined PDF is blocked/i)).toBeDefined();
+    expect(screen.getByText(/Each date search keeps its own quote and PDF/)).toBeDefined();
+    expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
 
   it('keeps mixed same-date groups selected and blocks a partial PDF', () => {
