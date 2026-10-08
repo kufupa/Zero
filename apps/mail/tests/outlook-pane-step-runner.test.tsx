@@ -175,7 +175,7 @@ describe('mounted pane step runner and current inputs', () => {
       party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     });
     render(<OutlookPanePage />);
-    const organisation = await screen.findByLabelText('Organisation / agency');
+    const organisation = await screen.findByLabelText('Company or agency');
     fireEvent.change(organisation, { target: { value: 'Provincial Treasury' } });
     const party = await screen.findByRole('button', { name: /Run Look up organisation Provincial Treasury/i });
     expect((party as HTMLButtonElement).disabled).toBe(false);

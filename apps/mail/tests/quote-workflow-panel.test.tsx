@@ -60,13 +60,13 @@ describe('QuoteWorkflowPanel', () => {
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);
-    expect(screen.getByText(/Analysing selected email/i)).toBeDefined();
+    expect(screen.getByText(/Luna is reading the email/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'unsynced' }} />);
-    expect(screen.getByText(/not synced/i)).toBeDefined();
+    expect(screen.getByText(/not finished syncing/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('attachment-dependent')} />);
-    expect(screen.getAllByText(/authorised attachment content is missing/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/rooming-list\.pdf is the document/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('source-failure')} />);
@@ -91,7 +91,7 @@ describe('QuoteWorkflowPanel', () => {
         }), { type: 'analysis_ready', analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] } })}
       />,
     );
-    expect(screen.getByText(/not a quoting request/i)).toBeDefined();
+    expect(screen.getByText(/not a quote request/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Run next/i })).toBeNull();
   });
 
@@ -110,7 +110,7 @@ describe('QuoteWorkflowPanel', () => {
   it('labels missing fields and extracted provenance', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('missing-fields')} />);
     expect(screen.getAllByText('Missing').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Extracted').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Email').length).toBeGreaterThan(0);
   });
 
   it('runs next only when not already running, and shows retry guidance on failure', () => {
@@ -138,14 +138,14 @@ describe('QuoteWorkflowPanel', () => {
 
   it('does not sum alternatives and shows honest missing screenshots', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('ro-vs-bb')} />);
-    expect(screen.getByText(/not included in the selected allocation total/i)).toBeDefined();
+    expect(screen.getByText(/not counted in the total/i)).toBeDefined();
     expect(screen.getAllByText(/No authorised screenshot is tied to this tool run/i).length).toBeGreaterThan(0);
   });
 
   it('labels mailbox analyseSelection unsynced while keeping local requirement cards', () => {
     const session = { ...sessionFromFixture('public-single'), mailboxStatus: 'unsynced' as const };
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText(/Mailbox quoteWorkflow.analyseSelection: unsynced/i)).toBeDefined();
+    expect(screen.getByText(/This email has not finished syncing/i)).toBeDefined();
     expect(screen.queryByText(/Local regex preview/i)).toBeNull();
     expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
   });
@@ -185,7 +185,7 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Authorised</p>',
     };
     const first = render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    fireEvent.click(screen.getAllByRole('button').find((el) => (el.textContent ?? '').includes('Allocation'))!);
+    fireEvent.click(screen.getAllByRole('button').find((el) => (el.textContent ?? '').includes('Counted in the total'))!);
     expect(onSelectOffer).toHaveBeenCalled();
     first.unmount();
     session = { ...session, selectedOfferIds: ['st-a'] };
@@ -221,12 +221,12 @@ describe('QuoteWorkflowPanel', () => {
 
   it('hides Items for you on a clean quote and on unsynced mail', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} />);
-    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.queryByLabelText('Check before sending')).toBeNull();
     expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={{ ...initialQuoteSession(), phase: 'unsynced' }} />);
-    expect(screen.getByText(/not synced/i)).toBeDefined();
-    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.getByText(/not finished syncing/i)).toBeDefined();
+    expect(screen.queryByLabelText('Check before sending')).toBeNull();
     expect(screen.queryByLabelText(/Arrival/i)).toBeNull();
     expect(screen.queryByLabelText('Reviewed reply')).toBeNull();
   });
@@ -245,15 +245,15 @@ describe('QuoteWorkflowPanel', () => {
         onEditReply={onEditReply}
       />,
     );
-    expect(screen.getByLabelText('Items for you')).toBeDefined();
+    expect(screen.getByLabelText('Check before sending')).toBeDefined();
     expect(screen.getByText('How many children, and what ages?')).toBeDefined();
-    expect(screen.getByText('Arrival date is missing for stay group g1.')).toBeDefined();
-    expect(screen.getByText('Needs a reply, not a pricing approval')).toBeDefined();
-    expect(screen.getAllByText('Pricing block — correct the stay facts').length).toBeGreaterThan(0);
+    expect(screen.getByText('Arrival date is missing for Stay 1.')).toBeDefined();
+    expect(screen.getByText('Needs a reply. Not a price decision.')).toBeDefined();
+    expect(screen.getAllByText('Blocks the quote — fix the stay details first').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Mark handled: How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as done: How many children, and what ages?' }));
     expect(onHandle).toHaveBeenCalledWith('question:how many children, and what ages?');
-    fireEvent.click(screen.getByRole('button', { name: 'Source guidance for How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show in email: How many children, and what ages?' }));
     expect(onViewSource).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Edit reply for How many children, and what ages?' }));
     expect(onEditReply).toHaveBeenCalled();
@@ -263,8 +263,8 @@ describe('QuoteWorkflowPanel', () => {
 
     const missing = sessionFromFixture('attachment-dependent');
     render(<QuoteWorkflowPanel session={missing} />);
-    expect(screen.getByText('Unread: rooming-list.pdf')).toBeDefined();
-    expect(screen.getAllByText(/Authorised attachment content is missing/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('Could not read: rooming-list.pdf')).toBeDefined();
+    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
     cleanup();
 
@@ -277,7 +277,7 @@ describe('QuoteWorkflowPanel', () => {
     const handled = sessionFromFixture('missing-fields');
     handled.handledReviewItemIds = ['question:how many children, and what ages?'];
     render(<QuoteWorkflowPanel session={handled} onUndoReviewItem={onUndo} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Undo mark handled: How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo mark as done: How many children, and what ages?' }));
     expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
   });
 

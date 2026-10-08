@@ -1,8 +1,9 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BookingCards } from '../components/quote-workflow/booking-card';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -198,10 +199,11 @@ describe('booking cards', () => {
     expect(screen.getAllByText('XYZ TRAVEL')).toHaveLength(2);
     expect(screen.getByText(/Room 1/i)).toBeDefined();
     expect(screen.getByText(/Room 2/i)).toBeDefined();
-    expect(screen.getAllByText(/STQN · TAXYZ/)).toHaveLength(2);
-    expect(screen.getByText('John Smith')).toBeDefined();
-    expect(screen.getByText('Jane Doe')).toBeDefined();
-    expect(screen.getAllByText('1 adult')).toHaveLength(2);
+    expect(screen.getAllByText('STQN')).toHaveLength(2);
+    expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
+    expect(screen.getByText('Smith')).toBeDefined();
+    expect(screen.getByText('Doe')).toBeDefined();
+    expect(screen.getAllByRole('button', { name: /^Copy Adults for room \d$/ })).toHaveLength(2);
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {
@@ -222,7 +224,7 @@ describe('booking cards', () => {
       />,
     );
     expect(screen.getByText(/R1,700/)).toBeDefined();
-    expect(screen.getByText(/mismatch/i)).toBeDefined();
+    expect(screen.getByText(/differs from the email/i)).toBeDefined();
   });
 
   it('shows party_rate_not_applied on the booking draft', () => {
@@ -231,7 +233,7 @@ describe('booking cards', () => {
         session={quotedSession(draftReady({ flags: ['party_rate_not_applied'] }))}
       />,
     );
-    expect(screen.getByText('party_rate_not_applied')).toBeDefined();
+    expect(screen.getByText(/Company rate not applied/)).toBeDefined();
   });
 
   it('disables Save with the coming-next copy', () => {
@@ -239,14 +241,14 @@ describe('booking cards', () => {
     const save = screen.getByRole('button', { name: /save/i });
     expect(save).toHaveProperty('disabled', true);
     expect(
-      screen.getByText('Saving from the pane is coming next — copy into HMS'),
+      screen.getByText('Saving from this pane is coming soon. For now, copy each field into HMS.'),
     ).toBeDefined();
   });
 
   it('disables Preview and Commit while pane save stays behind the flag', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getByRole('button', { name: 'Preview' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Commit' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Book in HMS' })).toHaveProperty('disabled', true);
   });
 
   it('keeps track/source/guarantee selects local-only', () => {
@@ -256,6 +258,59 @@ describe('booking cards', () => {
     fireEvent.change(track, { target: { value: 'COR' } });
     expect((track as HTMLSelectElement).value).toBe('COR');
     expect(session.bookingDraft?.draft.rooms[0]?.request.track).toBeUndefined();
+  });
+});
+
+describe('booking card copy buttons', () => {
+  function stubClipboard() {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    return writeText;
+  }
+
+  async function flushClipboard() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('opens with a plain-English note that saving in HMS is off', () => {
+    render(<BookingCards draft={draftReady()} />);
+    expect(
+      screen.getByText(
+        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+      ),
+    ).toBeDefined();
+  });
+
+  it('copies a field value to the clipboard and shows Copied for about 1.5 seconds', async () => {
+    const writeText = stubClipboard();
+    vi.useFakeTimers();
+    render(<BookingCards draft={draftReady()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    expect(writeText).toHaveBeenCalledWith('2026-11-12');
+    await flushClipboard();
+    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByRole('button', { name: 'Copy Arrival for room 1' })).toBeDefined();
+  });
+
+  it('copies the track the staff picked, and stays disabled until one is picked', () => {
+    const writeText = stubClipboard();
+    render(<BookingCards draft={draftReady()} />);
+    expect(screen.getByRole('button', { name: 'Copy Track for room 1' })).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Track for room 1' }));
+    expect(writeText).toHaveBeenCalledWith('COR');
   });
 });
 
@@ -379,7 +434,7 @@ describe('expired prior re-quote', () => {
   };
 
   it('exposes the re-quote label and expired toast copy', () => {
-    expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote same stay');
+    expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote this stay');
     expect(expiredPriorQuoteToastMessage()).toMatch(/expired/i);
   });
 

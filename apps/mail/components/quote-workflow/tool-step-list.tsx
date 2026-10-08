@@ -1,5 +1,14 @@
 import { canRunQuoteStep, formatQuoteStepInputs } from '@/lib/quote-workflow/session';
-import type { QuoteToolStep } from '@/lib/quote-workflow/types';
+import type { QuoteToolStep, QuoteToolStepStatus } from '@/lib/quote-workflow/types';
+
+const STEP_STATUS_LABEL: Record<QuoteToolStepStatus, string> = {
+  queued: 'Waiting',
+  ready: 'Ready',
+  running: 'Running…',
+  succeeded: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
 
 export function ToolStepList({
   steps,
@@ -16,15 +25,15 @@ export function ToolStepList({
   const running = Boolean(runningStepId);
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Approved tool steps</h3>
+      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Searches in HMS</h3>
       <p className="text-[11px] text-[#64748b]">
-        Read-only hotel searches stay serial. This pane will not start a second PMS owner.
+        These searches only read from HMS. They run one at a time.
       </p>
       {steps.map((step) => (
         <div key={step.id} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold text-[#1e293b]">{step.title}</span>
-            <span className="text-[10px] font-bold uppercase text-[#64748b]">{step.status}</span>
+            <span className="text-[10px] font-bold uppercase text-[#64748b]">{STEP_STATUS_LABEL[step.status] ?? step.status}</span>
           </div>
           {step.retryGuidance ? (
             <p className="text-[11px] text-amber-800">{step.retryGuidance}</p>
@@ -48,6 +57,7 @@ export function ToolStepList({
       >
         Run next
       </button>
+      <p className="text-[11px] text-[#64748b]">Runs the next search that is ready. One at a time.</p>
     </section>
   );
 }
