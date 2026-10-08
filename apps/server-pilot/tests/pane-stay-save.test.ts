@@ -145,7 +145,7 @@ describe('pane stay save guards', () => {
     enableSave();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'busy';
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner() }),
+      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
     ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
   });
 
@@ -236,12 +236,13 @@ describe('pane stay save guards', () => {
 
   it('commit refuses when OSRESS finds a duplicate stay', async () => {
     paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.lock = passingLock();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner() }),
+      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'osress_duplicate' });
   });
 
@@ -318,6 +319,36 @@ describe('pane stay preview digest and commit', () => {
         previewDigest: paneStayDigest(labStay),
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_digest_mismatch' });
+  });
+
+  it('runs the duplicate read under the same property lock as the save, taken once', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const previewDigest = preview.previewDigest as string;
+    let held = false;
+    let acquisitions = 0;
+    paneStaySaveLoaders.lock = {
+      withLock: async (fn) => {
+        acquisitions += 1;
+        held = true;
+        try {
+          return await fn();
+        } finally {
+          held = false;
+        }
+      },
+    };
+    const heldDuringRead: boolean[] = [];
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => {
+      heldDuringRead.push(held);
+      return 'clear';
+    };
+    await expect(
+      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect(heldDuringRead).toEqual([true]);
+    expect(acquisitions).toBe(1);
   });
 
   it('a matching preview commits once; replaying the same grant is refused', async () => {

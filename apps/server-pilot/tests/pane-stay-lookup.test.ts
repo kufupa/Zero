@@ -193,15 +193,6 @@ describe('findStay', () => {
     expect(waitMs).toBeLessThanOrEqual(20_000);
   });
 
-  it('reports busy, not duplicate, when the guest-dates check cannot get the property lock in time', async () => {
-    const busy: PaneStayLock = {
-      withLock: async () => {
-        throw busyLockError();
-      },
-    };
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => busy })).resolves.toBe('busy');
-  });
-
   it('runs the find CLI under the lock and maps a found stay with its file names', async () => {
     const seen: string[] = [];
     let registered: { runId: string; dir: string } | null = null;
@@ -339,8 +330,7 @@ describe('guestDatesVerdict', () => {
 });
 
 describe('guestDatesDuplicateCheckViaCli', () => {
-  it('runs the search-guest CLI under the lock and returns the verdict of a complete read', async () => {
-    const seen: string[] = [];
+  it('runs the search-guest CLI without taking a lock, and returns the verdict of a complete read', async () => {
     const calls: PaneStayLookupSpawnInput[] = [];
     paneStayLookupLoaders.spawn = async (input) => {
       calls.push(input);
@@ -360,8 +350,7 @@ describe('guestDatesDuplicateCheckViaCli', () => {
         screenshots: [],
       });
     };
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock(seen) })).resolves.toBe('duplicate');
-    expect(seen).toEqual(['lock']);
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
     expect(calls).toEqual([{ mode: 'search-guest', ...DUP_QUERY }]);
   });
 
@@ -371,26 +360,19 @@ describe('guestDatesDuplicateCheckViaCli', () => {
       calls.push(input);
       return lookupResult({ outcome: 'ok', stay: null, rows: [], screenshots: [] });
     };
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock() })).resolves.toBe('clear');
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
     expect(calls).toHaveLength(1);
-  });
-
-  it('is parked without a lock, with no spawn', async () => {
-    paneStayLookupLoaders.spawn = async () => {
-      throw new Error('must not spawn');
-    };
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => null })).resolves.toBe('parked');
   });
 
   it('fails closed to duplicate on an incomplete or failed read', async () => {
     paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ambiguous_capped', stay: null, rows: [], screenshots: [] });
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock() })).resolves.toBe('duplicate');
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
     paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'execution_failure', stay: null, rows: [], screenshots: [] });
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock() })).resolves.toBe('duplicate');
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
     paneStayLookupLoaders.spawn = async () => {
       throw new Error('pane_lookup_no_result');
     };
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock() })).resolves.toBe('duplicate');
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
   });
 
   it('removes its run directory once the verdict is read, since panel screenshots show guest names', async () => {
@@ -399,7 +381,7 @@ describe('guestDatesDuplicateCheckViaCli', () => {
     await writeFile(join(dir, 'panel.png'), Buffer.from('png'));
     paneStayLookupLoaders.spawn = async () =>
       lookupResult({ outcome: 'ok', stay: null, rows: [], screenshots: [join(dir, 'panel.png')], runId: 'x', runDir: dir });
-    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => passingLock() })).resolves.toBe('clear');
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
     await expect(access(dir)).rejects.toThrow();
   });
 });
@@ -427,7 +409,7 @@ describe('save path wiring', () => {
     }
   });
 
-  it('the wired reader takes the save path lock and spawns the search-guest CLI', async () => {
+  it('the wired reader spawns the search-guest CLI without taking a lock', async () => {
     const saved = process.env.PANE_STAY_DUP_CHECK;
     try {
       delete process.env.PANE_STAY_DUP_CHECK;
@@ -444,7 +426,7 @@ describe('save path wiring', () => {
       const reader = save.paneStaySaveLoaders.osressGuestDatesSearch;
       expect(reader).toBeTypeOf('function');
       await expect(reader?.(DUP_QUERY)).resolves.toBe('clear');
-      expect(seen).toEqual(['lock']);
+      expect(seen).toEqual([]);
       expect(calls).toEqual([{ mode: 'search-guest', ...DUP_QUERY }]);
     } finally {
       if (saved === undefined) delete process.env.PANE_STAY_DUP_CHECK;

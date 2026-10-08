@@ -303,23 +303,8 @@ export async function runPaneStay(input: {
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
-    const reader = paneStaySaveLoaders.osressGuestDatesSearch;
-    if (!reader) {
+    if (!paneStaySaveLoaders.osressGuestDatesSearch) {
       return { status: 'refused', reason: 'osress_reader_parked' };
-    }
-    const status = await reader({
-      lastName: input.stay.lastName,
-      arrival: input.stay.arrival,
-      departure: input.stay.departure,
-    });
-    if (status === 'parked') {
-      return { status: 'refused', reason: 'osress_reader_parked' };
-    }
-    if (status === 'busy') {
-      return { status: 'refused', reason: 'refused_lock_busy' };
-    }
-    if (status === 'duplicate') {
-      return { status: 'refused', reason: 'osress_duplicate' };
     }
     if (input.previewDigest === undefined) {
       return { status: 'refused', reason: 'pane_save_preview_required' };
@@ -332,29 +317,42 @@ export async function runPaneStay(input: {
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }
+  const reader = input.mode === 'commit' ? paneStaySaveLoaders.osressGuestDatesSearch : null;
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
-  let spawned: PaneStaySpawnResult | null;
+  // One lock covers the duplicate read, the grant and the save, so no other run can save this guest between the read
+  // and the save. The reader takes no lock of its own: a second acquisition would wait on this one.
+  type Gate = { refusal: string } | { spawned: PaneStaySpawnResult };
+  let gate: Gate;
   try {
-    spawned = await lock.withLock(
-      async () => {
+    gate = await lock.withLock(async (): Promise<Gate> => {
+      if (reader) {
+        const status = await reader({
+          lastName: input.stay.lastName,
+          arrival: input.stay.arrival,
+          departure: input.stay.departure,
+        });
+        if (status === 'parked') return { refusal: 'osress_reader_parked' };
+        if (status === 'busy') return { refusal: 'refused_lock_busy' };
+        if (status === 'duplicate') return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        if (input.mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock()))
-          return null;
-        return spawn({
+        if (!takePanePreview(input.owner, digest, paneStayClock())) {
+          return { refusal: 'pane_save_preview_required' };
+        }
+      }
+      return {
+        spawned: await spawn({
           stay: input.stay,
           stopBefore: input.mode === 'preview' ? 'save' : null,
           paneCommit: input.mode === 'commit',
-        });
-      },
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-    );
+        }),
+      };
+    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
     throw error;
   }
-  if (spawned === null) {
-    return { status: 'refused', reason: 'pane_save_preview_required' };
-  }
+  if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
+  const spawned = gate.spawned;
   if (/^refused/i.test(spawned.outcome)) {
     return { status: 'refused', reason: spawned.outcome };
   }
@@ -401,12 +399,10 @@ export function paneStayDupCheckMode(env: NodeJS.Dict<string> = process.env): 'c
   return env.PANE_STAY_DUP_CHECK === 'off' ? 'off' : 'cli';
 }
 
-// Wired at module init. The check takes the same property lock as save and cancel (the save loader's lock when a
-// test sets one). It runs before the save lock is taken, never nested inside it.
+// Wired at module init. runPaneStay calls the reader while it holds the save's property lock, so the reader runs its
+// CLI unlocked. A reader that cannot get the lock is reported by the save as refused_lock_busy.
 paneStaySaveLoaders.osressGuestDatesSearch =
   paneStayDupCheckMode() === 'cli'
     ? (input) =>
-        guestDatesDuplicateCheckViaCli(input, {
-          lock: () => paneStaySaveLoaders.lock ?? paneStayPropertyLock(),
-        })
+        guestDatesDuplicateCheckViaCli(input)
     : null;

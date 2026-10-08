@@ -284,24 +284,19 @@ export function guestDatesVerdict(rows: PaneStayPanelRow[], query: GuestDatesQue
   return duplicate ? 'duplicate' : 'clear';
 }
 
-// Duplicate reader for commit: a search-guest run under the property lock. Only a complete read that finds no
-// duplicate is clear. A missing lock is parked; a failed or incomplete read is a duplicate, so the save is refused.
+// Duplicate reader for commit. It runs a search-guest CLI and takes no lock: the save holds the property lock across
+// this read and the write, and a second acquisition here would wait on the first. Only a complete read that finds no
+// duplicate is clear; a failed or incomplete read is a duplicate, so the save is refused.
 export async function guestDatesDuplicateCheckViaCli(
   input: GuestDatesQuery,
-  deps: { lock: () => PaneStayLock | null },
 ): Promise<OsressDuplicateStatus> {
-  const lock = deps.lock();
-  if (!lock) return 'parked';
   const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
   let run: PaneStayLookupSpawnResult | null = null;
   try {
-    run = await lock.withLock(
-      () => spawn({ mode: 'search-guest', ...input }),
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-    );
+    run = await spawn({ mode: 'search-guest', ...input });
     return run.outcome === 'ok' ? guestDatesVerdict(run.rows, input) : 'duplicate';
-  } catch (error) {
-    return isPropertyReadLockDeadline(error) ? 'busy' : 'duplicate';
+  } catch {
+    return 'duplicate';
   } finally {
     // Panel screenshots show guest names, so this run's directory does not outlive the check.
     if (run?.runDir) await rm(run.runDir, { recursive: true, force: true }).catch(() => {});
