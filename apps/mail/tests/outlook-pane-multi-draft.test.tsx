@@ -101,6 +101,11 @@ vi.mock('../lib/auth-client', () => ({
   signIn: { email: vi.fn() },
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => {
   const optionFor = (groups: Array<{ arrivalDate: string }>) =>
     OPTIONS.find((option) => option.arrivalDate === groups[0]?.arrivalDate)!;

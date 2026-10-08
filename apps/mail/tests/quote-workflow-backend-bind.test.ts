@@ -482,7 +482,7 @@ describe('staff quote execute/PDF header bind', () => {
     });
     expect(mixed).toEqual({
       status: 'unavailable',
-      reason: 'Distinct stays need separate executeStaffQuote calls.',
+      reason: 'Each date range needs its own quote. Run them one at a time.',
     });
     expect(mutate).not.toHaveBeenCalled();
   });
