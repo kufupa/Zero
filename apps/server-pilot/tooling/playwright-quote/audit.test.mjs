@@ -128,3 +128,24 @@ test('video registers its full-size frames before trace subscribes to the shared
   await audit.start(page);
   assert.equal((await audit.finish()).status,'complete');
 });
+
+test('snapshot reads a pending view without stopping, hashing or writing the trace',async t=>{
+  const {directory,audit}=await fixture(t);
+  const page=browserPage();
+  await audit.start(page);
+  await audit.checkpoint('login-complete');
+  const snapshot=audit.snapshot();
+  assert.equal(snapshot.status,'pending');
+  assert.equal(snapshot.trace.status,'pending');
+  assert.equal(snapshot.screenshots[0].path,'screenshots/login-complete.png');
+  assert.equal(snapshot.trace.sha256,undefined);
+  await assert.rejects(stat(join(directory,'trace.zip')),{code:'ENOENT'});
+  const events=(await readFile(join(directory,'events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.some(e=>e.phase==='capture_complete'),false);
+  snapshot.screenshots.push({path:'screenshots/tampered.png'});
+  assert.equal(audit.snapshot().screenshots.length,1,'a snapshot is a copy, not the live report');
+  const finished=await audit.finish();
+  assert.equal(finished.status,'complete');
+  assert.equal(finished.screenshots.length,1);
+  assert.match(finished.trace.sha256,/^[a-f0-9]{64}$/);
+});
