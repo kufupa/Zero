@@ -493,3 +493,45 @@ test('selected multi-group allocation uses proven building/room pools from extra
   assert.equal(allocation.pools[0].nights[0].demand,4);
   assert.equal(allocation.pools[0].nights[0].supply,3);
 });
+
+// A fake Hotel Availability menu. Hotel Availability appears from Availability click `revealOnClick` on,
+// or from the start when alreadyVisible. Infinity never reveals it.
+function hotelMenuPage({revealOnClick=2,alreadyVisible=false}={}){
+  const log=[];let availabilityClicks=0;
+  const visibleNames=()=>['Front Desk','Availability',...(alreadyVisible||availabilityClicks>=revealOnClick?['Hotel Availability']:[])];
+  const treeNode=(matchers)=>{
+    const matching=()=>visibleNames().filter(name=>matchers.every(re=>re.test(name)));
+    return{
+      filter:({hasText})=>treeNode([...matchers,hasText]),
+      count:async()=>matching().length,
+      click:async()=>{const[name]=matching();if(!name)throw new Error('TimeoutError: node is not visible');log.push(name);if(name==='Availability')availabilityClicks+=1;},
+      waitFor:async()=>{if(!matching().length)throw new Error('TimeoutError: waitFor');},
+    };
+  };
+  const page={
+    locator(selector){
+      if(selector==='a.app-menu-trigger:visible')return{click:async()=>{log.push('menu');}};
+      if(selector==='span.x-tree-node-text:visible')return treeNode([]);
+      if(selector==='input[name="startdate"]:visible')return{waitFor:async()=>{log.push('startdate');}};
+      throw new Error(`unexpected selector ${selector}`);
+    },
+    getByRole:(role,{name})=>({waitFor:async()=>{log.push(`${role}:${name}`);}}),
+  };
+  return{page,log,availabilityClicks:()=>availabilityClicks};
+}
+test('Hotel Availability menu ignores a first Availability click that does not reveal the child',async()=>{
+  const menu=hotelMenuPage({revealOnClick:2});
+  await quote.openHotelAvailability(menu.page);
+  assert.deepEqual(menu.log,['menu','Front Desk','Availability','Availability','Hotel Availability','startdate','heading:Hotel Availability']);
+});
+test('Hotel Availability menu does not click Availability when the child is already visible',async()=>{
+  const menu=hotelMenuPage({alreadyVisible:true});
+  await quote.openHotelAvailability(menu.page);
+  assert.deepEqual(menu.log,['menu','Front Desk','Hotel Availability','startdate','heading:Hotel Availability']);
+  assert.equal(menu.availabilityClicks(),0);
+});
+test('Hotel Availability menu stops after four Availability clicks and fails when the child never appears',async()=>{
+  const menu=hotelMenuPage({revealOnClick:Infinity});
+  await assert.rejects(quote.openHotelAvailability(menu.page),/TimeoutError/);
+  assert.equal(menu.availabilityClicks(),4);
+});
