@@ -1,4 +1,5 @@
 import type {
+  QuoteAmendment,
   QuoteAnalysis,
   QuoteAnalysisSource,
   QuoteDocumentFailure,
@@ -59,6 +60,7 @@ export type AnalyseSelectionResult =
       fallbackReason?: QuoteWorkflowFallbackReason;
       aiUnavailable?: boolean;
       luna?: LunaAnalysisWire | null;
+      amendment?: QuoteAmendment | null;
     };
 
 export type RunStepRequest = {
@@ -145,6 +147,7 @@ export async function bindAnalyseSelection(args: {
         ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
         ...(result.aiUnavailable !== undefined ? { aiUnavailable: result.aiUnavailable } : {}),
         ...(result.luna !== undefined ? { luna: result.luna } : {}),
+        ...(result.amendment !== undefined ? { amendment: result.amendment } : {}),
       },
     };
   } catch (error) {
