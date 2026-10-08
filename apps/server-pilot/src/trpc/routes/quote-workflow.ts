@@ -101,6 +101,7 @@ export const quoteWorkflowRouter = router({
         staffNote: input.staffNote,
         selectionEpoch: input.selectionEpoch,
         cacheDir: resolveAnalyseCacheDir(quoteWorkflowLoaders.analyseCacheDir),
+        transportId: ctx.activeTransportId,
         promptVersion: quoteWorkflowLoaders.promptVersion ?? QUOTE_WORKFLOW_PROMPT_VERSION,
         adapter: quoteWorkflowLoaders.adapter,
         llmEnabled: () =>

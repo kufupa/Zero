@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getDb } from '../src/db/client.js';
-import { defaultAnalyseCacheDirFor } from '../src/ai/quote-workflow-analyse-selection.js';
+import {
+  analyseCachePath,
+  defaultAnalyseCacheDirFor,
+} from '../src/ai/quote-workflow-analyse-selection.js';
 import {
   analyseWarmerMaxPerHour,
   scheduleInboundTriageAnalyseWarm,
@@ -119,6 +122,20 @@ function mailboxCaller() {
     accessRole: 'owner',
   } as never);
 }
+
+describe('analyse cache key', () => {
+  it('includes the transport, so another mailbox never reads this analysis of the same mail', () => {
+    const base = {
+      internetMessageId: MESSAGE_ID,
+      sourceHash: 'a'.repeat(64),
+      promptVersion: PROMPT_VERSION,
+      cacheDir: '/tmp/luna-analyse-cache',
+    };
+    const one = analyseCachePath({ ...base, transportId: 'transport-1' });
+    expect(analyseCachePath({ ...base, transportId: 'transport-1' })).toBe(one);
+    expect(analyseCachePath({ ...base, transportId: 'transport-2' })).not.toBe(one);
+  });
+});
 
 describe('inbound triage analyse warmer', () => {
   let cacheDir: string;

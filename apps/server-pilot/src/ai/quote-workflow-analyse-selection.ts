@@ -87,13 +87,16 @@ export function analyseCachePath(input: {
   promptVersion: string;
   cacheDir: string;
   treatAs?: QuoteTreatAs;
+  /** The mailbox transport. The same mail under another transport is another cache entry. */
+  transportId: string;
 }): string {
   const canonical = canonicalInternetMessageId(input.internetMessageId) ?? input.internetMessageId;
   const id = canonical.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
   const treat = input.treatAs ?? 'auto';
+  const transport = createHash('sha256').update(input.transportId).digest('hex').slice(0, 12);
   return join(
     input.cacheDir,
-    `${id}_${input.sourceHash.slice(0, 16)}_${input.promptVersion}_${treat}.json`,
+    `${transport}_${id}_${input.sourceHash.slice(0, 16)}_${input.promptVersion}_${treat}.json`,
   );
 }
 
@@ -229,6 +232,8 @@ export type AnalyseSyncedOptions = {
   selectionEpoch: number;
   cacheDir: string | null;
   promptVersion: string;
+  /** The mailbox transport, part of the cache key. The pane and the warmer must pass the same one. */
+  transportId: string;
   /** Injected model seam. Absent or null means the production Luna adapter when enabled. */
   adapter?: ModelAdapter | null;
   /** Read only after a cache miss, so a cache hit never touches the flag or env. */
@@ -257,6 +262,7 @@ export async function analyseSyncedSelection(
           promptVersion: options.promptVersion,
           cacheDir,
           treatAs,
+          transportId: options.transportId,
         })
       : null;
   if (cacheFile) {

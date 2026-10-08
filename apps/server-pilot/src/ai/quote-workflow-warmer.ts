@@ -154,6 +154,7 @@ async function runWarm(
     sourceHash: hashSyncedQuoteSelection(synced),
     promptVersion,
     cacheDir,
+    transportId: run.transportId,
   });
   if (isReusableAnalyseCache(await readAnalyseCache(cacheFile))) return cachedHit(started);
   // Disabled Luna makes no model call, so it must not spend a cap slot.
@@ -167,6 +168,7 @@ async function runWarm(
     selectionEpoch: 0,
     cacheDir,
     promptVersion,
+    transportId: run.transportId,
     adapter: deps.adapter,
     llmEnabled,
   });
