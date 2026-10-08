@@ -95,7 +95,9 @@ const PARTY_RATE_FAILURE_CODES: ReadonlySet<string> = new Set([
 
 export function isPartyRateFailure(error: unknown): boolean {
   const code =
-    error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '';
   return PARTY_RATE_FAILURE_CODES.has(code);
 }
 
@@ -290,9 +292,13 @@ export function prepareStaffQuote(
     header,
     inputDigest,
     authorizationId,
-    approval: { context, request, header, rates } satisfies NonNullable<
-      Parameters<typeof createReservationistBusinessServices>[1]
-    >,
+    // The kill switch turns every party lookup off, the header's name lookup included, so no rate context is sent.
+    approval: {
+      context,
+      request,
+      header,
+      rates: rates === 'party' && quoteRateContextEnabled() ? 'party' : 'public',
+    } satisfies NonNullable<Parameters<typeof createReservationistBusinessServices>[1]>,
   };
 }
 const SHUTTLE_REVIEW_TEXT = 'Shuttle requested — add a price or answer in the reply';

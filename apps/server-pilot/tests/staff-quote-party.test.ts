@@ -228,6 +228,45 @@ describe('executeStaffQuote with a picked party', () => {
     expect(calls[0]).not.toHaveProperty('rateContext');
     expect(calls[0].search.salesStrategy).toBe('BAR');
   });
+  it('with QUOTE_RATE_CONTEXT=off, looks up no party at all, not even the header name, and quotes at BAR', async () => {
+    vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
+    const prepared = prepare(staffQuoteInput.parse({ ...baseInput(), company: ABC }));
+    expect(prepared.approval.rates).toBe('public');
+    const calls: any[] = [];
+    const readParty = vi.fn(async () => {
+      throw new Error('no party lookup with the kill switch off');
+    });
+    const services = createReservationistBusinessServices(
+      { ...optionsFor(prepared, calls), readParty },
+      prepared.approval,
+    );
+    await executeStaffQuote(prepared, services, async () => true);
+    expect(readParty).not.toHaveBeenCalled();
+    expect(calls[0]).not.toHaveProperty('rateContext');
+    expect(calls[0].search.salesStrategy).toBe('BAR');
+  });
+
+  it("with no party picked and the switch on, keeps today's header name lookup exactly", async () => {
+    const prepared = prepare(staffQuoteInput.parse({ ...baseInput(), company: ABC }));
+    expect(prepared.approval.rates).toBe('party');
+    const calls: any[] = [];
+    const readParty = vi.fn(async (kind: string, name: string) => {
+      throw Object.assign(new Error('business_party_identity_unavailable'), {
+        code: 'business_party_identity_unavailable',
+        kind,
+        name,
+      });
+    });
+    const services = createReservationistBusinessServices(
+      { ...optionsFor(prepared, calls), readParty },
+      prepared.approval,
+    );
+    await expect(executeStaffQuote(prepared, services, async () => true)).rejects.toMatchObject({
+      code: 'business_party_identity_unavailable',
+    });
+    expect(readParty).toHaveBeenCalledWith('organization', ABC, expect.anything());
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe('party rate fallback', () => {
