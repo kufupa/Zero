@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck, isCancelledStatus, labGuard,
-  normalizeReasons, parseCancelArgs, parseDateWindowLabel, parseIsoDate, parsePenalty, parseQuickSearchRow,
-  pickerMonthSteps, preflight, resolveOutcome, windowCovers,
+  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck, isCancelledStatus,
+  labGuard, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parseIsoDate, parsePenalty,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -214,6 +214,28 @@ test('a parsed quick-search row feeds the identity guard: lab row passes, real g
   assert.equal(identityCheck(args, otherArrival).outcome, 'refused_identity_mismatch');
 });
 
+test('parseBalanceValue reads the record balance with or without currency and thousands separators', () => {
+  assert.equal(parseBalanceValue('0.00'), '0.00');
+  assert.equal(parseBalanceValue('0.00 ZAR'), '0.00');
+  assert.equal(parseBalanceValue('R2,060.00'), '2060.00');
+  assert.equal(parseBalanceValue('ZAR 12.5'), '12.5');
+  assert.equal(parseBalanceValue('-12.50'), '-12.50');
+  assert.equal(parseBalanceValue(''), null);
+  assert.equal(parseBalanceValue('n/a'), null);
+  assert.equal(parseBalanceValue(null), null);
+});
+
+test('chooseStaySource prefers an open form for the same confirmation and falls back to the dropdown row', () => {
+  const open = { confirmation: '57291630-1', lastName: 'Labtest', arrival: '14-SEP-2027', status: 'Cancelled' };
+  const row = { locator: 'row-locator', row: { confirmation: '57291630-1' } };
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open, row }), 'open_record');
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open: { ...open, confirmation: '11110906-1' }, row }), 'row');
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open: null, row }), 'row');
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open, row, allowOpen: false }), 'row');
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open, row: null, allowOpen: false }), null);
+  assert.equal(chooseStaySource({ confirmation: '57291630-1', open: null, row: null }), null);
+});
+
 test('checkCdpEnv allows only a local borrowed browser with no credentials', () => {
   const ok = checkCdpEnv({ HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223', HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed' });
   assert.deepEqual(ok, { ok: true, error: null, href: 'http://127.0.0.1:19223/' });
@@ -235,4 +257,12 @@ test('cancel-stay.mjs never closes the browser, clicks OK only in the reason win
   assert.equal((source.match(/=== 'OK'/g) || []).length, 1);
   const penaltyClicks = source.split('\n').filter((line) => /penalty/i.test(line) && /\.click\(/.test(line));
   assert.deepEqual(penaltyClicks, []);
+});
+
+test('cancel-stay.mjs never presses Enter in the header search and scopes the row lookup to the quick panel', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  assert.equal(/press\('Enter'\)/.test(source), false);
+  assert.match(source, /ancestor::\*\[contains\(\., "Records:"\)\]\[1\]/);
+  assert.match(source, /In\.\?House/);
+  assert.match(source, /readBalance\(page\)/);
 });

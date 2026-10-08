@@ -2,10 +2,11 @@
 // Cancel one lab Guest Stay by confirmation number. The stay must be
 // Labtest with arrival on or after 2027-01-01 and match --confirmation and
 // --arrival, or the run refuses before any cancel action.
-// Find uses the header quick search: its dropdown row (conf, "Last, First", status,
-// dates) is guarded before the record is opened, and a Cancelled row ends the run.
-// If the quick-search window does not cover arrival, its calendar icon moves it first;
-// the grid window picker is the fallback.
+// Find types the confirmation in the header search; Enter is not pressed because it opens the record. An open
+// record for the confirmation is read as it stands (status, balance). Otherwise the dropdown row (conf,
+// "Last, First", status, dates) is guarded before the record is opened. A Cancelled stay ends the run as
+// already_cancelled. If the dropdown window does not cover arrival, its calendar icon moves it first; the grid
+// window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
 // recorded and left open; OK is never clicked on it.
@@ -17,9 +18,9 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus, normalizeReasons,
-  parseCancelArgs, parseDateWindowLabel, parsePenalty, parseQuickSearchRow, pickerMonthSteps, preflight,
-  resolveOutcome, squash, windowCovers,
+  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus,
+  normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, squash, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 const MAX_PICKER_CLICKS = 60;
@@ -40,6 +41,7 @@ function newResult(args) {
     reason: args.reason,
     statusBefore: null,
     statusAfter: null,
+    balance: null,
     reasons: [],
     findMethod: null,
     cancelPath: null,
@@ -198,15 +200,7 @@ async function setQuickWindow(page, arrival) {
   await page.waitForTimeout(600);
 }
 
-// Header quick search: fill the confirmation and press Enter. The dropdown lists matching stays.
-async function quickSearch(page, confirmation) {
-  const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
-  await search.click({ force: true });
-  await search.fill(confirmation);
-  await search.press('Enter');
-  await page.waitForTimeout(800);
-}
-
+// Enter is never pressed in the header search: with one match it opens the record and closes the dropdown.
 async function clickRunIfShown(page) {
   const run = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
   if ((await run.count()) === 0) return false;
@@ -215,83 +209,127 @@ async function clickRunIfShown(page) {
   return true;
 }
 
-// For the element holding the confirmation: the nearest ancestor showing an HMS date is the row. Cell texts are
-// the row's visible leaf elements in document order. inPanel is true when an ancestor shows the quick-search
-// tabs (In-House and Departures), which keeps grid rows out of the match.
-async function readQuickRowCells(locator) {
+// The quick-search dropdown: the nearest ancestor of its In-House tab that also holds the "Records:" footer.
+// The record header and the grid are outside it, so the row lookup below cannot match them.
+async function quickPanel(page) {
+  const tabs = page.getByText(/^In.?House$/);
+  const shownTabs = await visibleIndexes(tabs);
+  if (shownTabs.length === 0) return null;
+  const panel = tabs.nth(shownTabs[0]).locator('xpath=ancestor::*[contains(., "Records:")][1]');
+  return (await panel.count()) === 1 ? panel : null;
+}
+
+// Visible leaf texts of the nearest ancestor that shows an HMS date: the dropdown row's cells, in document order.
+async function rowCells(locator) {
   return locator.evaluate((el) => {
     const DATE = /\b\d{1,2}-[A-Za-z]{3}-\d{4}\b/;
     const shown = (node) => {
       const box = node.getBoundingClientRect();
       return box.width > 0 && box.height > 0;
     };
-    let row = null;
-    let inPanel = false;
-    for (let node = el; node && node !== document.body; node = node.parentElement) {
-      const text = node.innerText || '';
-      if (!row && DATE.test(text)) row = node;
-      if (/In-?House/.test(text) && /Departures/.test(text)) {
-        inPanel = true;
-        break;
-      }
-    }
-    if (!row) return { inPanel, cells: null };
+    let row = el;
+    while (row && row !== document.body && !DATE.test(row.innerText || '')) row = row.parentElement;
+    if (!row || row === document.body) return null;
     const leaves = row.children.length === 0
       ? [row]
       : [...row.querySelectorAll('*')].filter((node) => node.children.length === 0 && shown(node));
-    return { inPanel, cells: leaves.map((node) => node.innerText || '') };
+    return leaves.map((node) => node.innerText || '');
   });
 }
 
-// Null when the quick panel shows no row for the confirmation. Throws when the row is ambiguous or unreadable.
+// Null when the dropdown shows no row for the confirmation. Throws when the row is ambiguous or unreadable.
 async function readQuickRow(page, confirmation) {
-  const matches = page.getByText(confirmation, { exact: true });
-  const candidates = [];
-  for (const index of await visibleIndexes(matches)) {
-    const locator = matches.nth(index);
-    const { inPanel, cells } = await readQuickRowCells(locator);
-    if (inPanel) candidates.push({ locator, cells });
-  }
-  if (candidates.length === 0) return null;
-  if (candidates.length > 1) throw new Error('AMBIGUOUS_QUICK_ROW');
-  const row = parseQuickSearchRow(candidates[0].cells, confirmation);
+  const panel = await quickPanel(page);
+  if (!panel) return null;
+  const matches = panel.getByText(confirmation, { exact: true });
+  const hits = await visibleIndexes(matches);
+  if (hits.length === 0) return null;
+  if (hits.length > 1) throw new Error('AMBIGUOUS_QUICK_ROW');
+  const locator = matches.nth(hits[0]);
+  const row = parseQuickSearchRow(await rowCells(locator), confirmation);
   if (!row) throw new Error('QUICK_ROW_UNPARSED');
-  return { locator: candidates[0].locator, row };
+  return { locator, row };
 }
 
-async function waitQuickRow(page, confirmation) {
+// The open record form, when it shows this confirmation. HMS can open the record on its own after a search.
+async function readOpenRecord(page, confirmation) {
+  if ((await page.locator('input[name="confirmationnumber"]:visible').count()) === 0) return null;
+  const record = await readRecord(page);
+  return record.confirmation === confirmation ? record : null;
+}
+
+// Balance on the open record ("Balance: 0.00 ZAR"): the input beside the Balance label. Null when unreadable.
+async function readBalance(page) {
+  const labels = page.getByText(/^Balance:?$/);
+  for (const index of await visibleIndexes(labels)) {
+    const candidates = await labels.nth(index).evaluate((label) => {
+      const byFor = label.htmlFor ? document.getElementById(label.htmlFor) : null;
+      const scope = label.closest('.x-form-item, tr') ?? label.parentElement;
+      const inputs = scope ? [...scope.querySelectorAll('input')] : [];
+      return [byFor, ...inputs].filter((el) => el && el.getClientRects().length > 0).map((el) => el.value);
+    });
+    for (const value of candidates) {
+      const balance = parseBalanceValue(value);
+      if (balance !== null) return balance;
+    }
+  }
+  return null;
+}
+
+// Polls the open form and the dropdown row. With needRow, only the row counts: a form opened before a commit can be stale.
+async function waitForStay(page, confirmation, { needRow }) {
   const deadline = Date.now() + QUICK_WAIT_MS;
   for (;;) {
-    const found = await readQuickRow(page, confirmation);
-    if (found || Date.now() >= deadline) return found;
+    const open = needRow ? null : await readOpenRecord(page, confirmation);
+    const row = await readQuickRow(page, confirmation);
+    if (open || row) return { open, row };
+    if (Date.now() >= deadline) return { open, row };
     await page.waitForTimeout(500);
   }
 }
 
-// Quick search first. When its window does not cover arrival, the calendar icon moves the window and the search
-// runs again. The grid window picker is the last resort. Returns {method, locator, row}; row is null on the grid path.
-async function findStay(ctx, { evidence = false } = {}) {
+// The header search types the confirmation only. An open record for it is used as it stands. Otherwise the
+// dropdown row is used; when the panel window does not cover arrival, its calendar icon moves the window first.
+// The grid window picker is the last resort. Returns {method, locator, row, open}: row is the dropdown row
+// (guarded before anything opens), open is the open record form, and locator is the row or grid cell to click.
+async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) {
   const { page, args } = ctx;
-  await quickSearch(page, args.confirmation);
-  let found = await waitQuickRow(page, args.confirmation);
-  if (!found && (await clickRunIfShown(page))) found = await waitQuickRow(page, args.confirmation);
-  let method = found ? 'quick' : null;
-  const dateWindow = await readWindow(page);
-  if (dateWindow && !windowCovers(dateWindow, args.arrival)) {
-    await setQuickWindow(page, args.arrival);
-    await quickSearch(page, args.confirmation);
-    const moved = await waitQuickRow(page, args.confirmation);
-    if (moved) {
-      found = moved;
-      method = 'quick_calendar';
-    }
+  await searchConfirmation(page, args.confirmation);
+  let probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
+  if (!probe.open && !probe.row && (await clickRunIfShown(page))) {
+    probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
   }
-  if (found) return { method, locator: found.locator, row: found.row };
+  const source = chooseStaySource({
+    confirmation: args.confirmation,
+    open: probe.open,
+    row: probe.row,
+    allowOpen: allowOpenRecord,
+  });
+  if (source === 'open_record') return { method: 'open_record', locator: null, row: null, open: probe.open };
+  if (source === 'row') {
+    let found = probe.row;
+    let method = 'quick';
+    const dateWindow = await readWindow(page);
+    if (dateWindow && !windowCovers(dateWindow, args.arrival)) {
+      await setQuickWindow(page, args.arrival);
+      await searchConfirmation(page, args.confirmation);
+      const moved = await waitForStay(page, args.confirmation, { needRow: true });
+      if (moved.row) {
+        found = moved.row;
+        method = 'quick_calendar';
+      }
+    }
+    return { method, locator: found.locator, row: found.row, open: null };
+  }
   await searchConfirmation(page, args.confirmation);
   await setArrivalWindow(page, args.arrival);
   if (evidence) await shot(ctx, 'window.png');
+  if (allowOpenRecord) {
+    const late = await readOpenRecord(page, args.confirmation);
+    if (late) return { method: 'picker', locator: null, row: null, open: late };
+  }
   const row = await findRow(page, args.confirmation);
-  return row ? { method: 'picker', locator: row, row: null } : null;
+  return row ? { method: 'picker', locator: row, row: null, open: null } : null;
 }
 
 async function findRow(page, confirmation) {
@@ -397,8 +435,9 @@ async function readBack(ctx, blocked) {
     return record.confirmation === args.confirmation ? squash(record.status) : null;
   }
   result.readbackMethod = 're-search';
-  const found = await findStay(ctx);
-  if (!found) return null;
+  // Never trust a form that was open before the action: re-open the row from a fresh search.
+  const found = await findStay(ctx, { allowOpenRecord: false });
+  if (!found || !found.locator) return null;
   await openRecord(page, found.locator);
   const record = await readRecord(page);
   return record.confirmation === args.confirmation ? squash(record.status) : null;
@@ -438,8 +477,10 @@ async function run(ctx) {
       return;
     }
   }
-  await openRecord(page, found.locator);
+  // An open record for this confirmation needs no click; a row or grid cell is opened here.
+  if (found.locator) await openRecord(page, found.locator);
   const record = await readRecord(page);
+  result.balance = await readBalance(page);
   if (!found.row) result.statusBefore = squash(record.status);
   await shot(ctx, 'opened.png');
   mark(ctx, 'opened');

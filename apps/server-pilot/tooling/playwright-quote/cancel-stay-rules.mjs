@@ -111,6 +111,23 @@ export function parseQuickSearchRow(cellTexts, confirmation) {
   };
 }
 
+// Balance text from the record: "0.00", "0.00 ZAR", "R2,060.00", "-12.50". Returns the number text or null.
+export function parseBalanceValue(text) {
+  const cleaned = squash(text)
+    .replace(/^[A-Za-z]{1,3}\s?/, '')
+    .replace(/\s*[A-Za-z]{3}$/, '')
+    .replace(/,/g, '');
+  return /^-?\d+(\.\d{1,2})?$/.test(cleaned) ? cleaned : null;
+}
+
+// Which record to act on. An open form for this confirmation is authoritative: its status and balance are the
+// record's own. Otherwise the dropdown row is used, and it is guarded before any record is opened.
+export function chooseStaySource({ confirmation, open, row, allowOpen = true }) {
+  if (allowOpen && open && squash(open.confirmation) === squash(confirmation)) return 'open_record';
+  if (row) return 'row';
+  return null;
+}
+
 export function parseCancelArgs(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
