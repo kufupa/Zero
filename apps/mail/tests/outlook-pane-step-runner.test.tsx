@@ -5,9 +5,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 
-const { sendCommandMock, runStepMutateMock } = vi.hoisted(() => ({
+const { sendCommandMock, executeStaffQuoteMutateMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
-  runStepMutateMock: vi.fn(),
+  executeStaffQuoteMutateMock: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
@@ -34,6 +34,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       storeId: 'store-1',
       folderEntryId: 'folder-inbox',
       subject: 'Suite Availability Request',
+      internetMessageId: '<suite-availability@example.invalid>',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
@@ -67,7 +68,17 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteProposalPdf: { mutate: vi.fn() },
+      staffQuoteSource: {
+        query: async () => ({
+          status: 'ready' as const,
+          messageId: 'mail-1',
+          threadId: 'thread-1',
+          sourceHash: 'ab'.repeat(32),
+        }),
+      },
+      executeStaffQuote: {
+        mutate: (...args: unknown[]) => executeStaffQuoteMutateMock(...args),
+      },
     },
     quoteWorkflow: {
       analyseSelection: {
@@ -89,20 +100,51 @@ vi.mock('../providers/query-provider', () => ({
           sourceRevision: 1,
         }),
       },
-      runStep: { mutate: (...args: unknown[]) => runStepMutateMock(...args) },
     },
   },
 }));
+
+type StaffQuoteRequest = {
+  selectionEpoch: number;
+  inputRevision: number;
+  groups: Array<{ arrivalDate: string; departureDate: string }>;
+};
+
+/** A ready executeStaffQuote answer that echoes the request it answers. */
+function readyStaffQuote(request: StaffQuoteRequest) {
+  return {
+    status: 'ready' as const,
+    workflowRunId: 'run-1',
+    revisionRef: 'rev-1',
+    messageId: 'mail-1',
+    threadId: 'thread-1',
+    factRefs: [],
+    selectionEpoch: request.selectionEpoch,
+    inputRevision: request.inputRevision,
+    inputDigest: 'digest',
+    totalMinor: 272000,
+    currency: 'ZAR',
+    arrivalDate: request.groups[0]?.arrivalDate,
+    departureDate: request.groups[0]?.departureDate,
+    description: 'Standard King',
+  };
+}
+
+/** The stay facts executeStaffQuote needs: dates, a known board, quantity and adults. */
+async function fillStayFacts(arrival: string, departure: string) {
+  fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: arrival } });
+  fireEvent.change(screen.getByLabelText('Departure'), { target: { value: departure } });
+  fireEvent.change(screen.getByLabelText('Board'), { target: { value: 'bb' } });
+  fireEvent.change(screen.getByLabelText('Quantity'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '1' } });
+}
 
 describe('mounted pane step runner and current inputs', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sendCommandMock.mockReset();
-    runStepMutateMock.mockReset();
-    runStepMutateMock.mockResolvedValue({
-      status: 'integration_unavailable',
-      reason: 'Live PMS search is not owned by this quoting UI.',
-    });
+    executeStaffQuoteMutateMock.mockReset();
+    executeStaffQuoteMutateMock.mockImplementation(async (request: StaffQuoteRequest) => readyStaffQuote(request));
   });
 
   afterEach(() => {
@@ -110,113 +152,71 @@ describe('mounted pane step runner and current inputs', () => {
     cleanup();
   });
 
-  it('runs the explicit step control with current inputs and inputRevision', async () => {
+  it('runs the explicit step control with the current stay facts and revision', async () => {
     render(<OutlookPanePage />);
-    const perStep = await screen.findByRole('button', { name: /^Run Search availability/i });
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    const perStep = await screen.findByRole('button', { name: /^Run Search availability 2026-11-12 → 2026-11-14/i });
     expect((perStep as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(perStep);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(1));
-    const payload = runStepMutateMock.mock.calls[0]?.[0] as {
-      stepId: string;
-      inputRevision: number;
-      inputs: Record<string, unknown>;
-    };
-    expect(payload.stepId).toMatch(/^quote-stay-/);
-    expect(payload.inputRevision).toBe(1);
-    expect(payload.inputs).toEqual({
-      stepKind: 'quote_stay',
-      binding: expect.objectContaining({
-        storeId: 'store-1',
-        entryId: '001',
-        folderEntryId: 'folder-inbox',
-      }),
-      groups: [
-        expect.objectContaining({
-          id: 'g1',
-          quantity: 1,
-          childrenAges: [],
-          board: 'unknown',
-        }),
-      ],
-    });
-    expect((payload.inputs.groups as Array<{ arrivalDate?: string }>)[0]?.arrivalDate).toBe('2026-11-14');
-  });
-
-  it('replans the stay search after staff edit dates then sends the new request key', async () => {
-    render(<OutlookPanePage />);
-    const arrival = await screen.findByLabelText('Arrival');
-    fireEvent.change(arrival, { target: { value: '2026-12-01' } });
-    const departure = screen.getByLabelText('Departure');
-    fireEvent.change(departure, { target: { value: '2026-12-03' } });
-    const perStep = screen.getByRole('button', { name: /Run Search availability 2026-12-01 → 2026-12-03/i });
-    fireEvent.click(perStep);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalled());
-    const payload = runStepMutateMock.mock.calls.at(-1)?.[0] as {
-      stepId: string;
-      inputRevision: number;
-      inputs: { stepKind?: string; groups?: Array<{ arrivalDate?: string; departureDate?: string; adults?: number }> };
-    };
-    expect(payload.stepId).toBe('quote-stay-2026-12-01:2026-12-03');
-    expect(payload.inputRevision).toBeGreaterThan(1);
-    expect(payload.inputs.stepKind).toBe('quote_stay');
-    expect(payload.inputs.groups).toEqual([
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
+    expect(executeStaffQuoteMutateMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: 'g1',
-        arrivalDate: '2026-12-01',
-        departureDate: '2026-12-03',
-        quantity: 1,
+        messageId: 'mail-1',
+        sourceHash: 'ab'.repeat(32),
+        salesStrategy: 'BAR',
+        inputRevision: expect.any(Number),
+        groups: [
+          expect.objectContaining({
+            id: 'g1',
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            quantity: 1,
+            adults: 1,
+            childrenAges: [],
+            board: 'bb',
+          }),
+        ],
       }),
-    ]);
+    );
   });
 
-  it('runs party lookup with a backend party ref then enables quote stay', async () => {
-    runStepMutateMock.mockResolvedValueOnce({
-      status: 'ok',
-      party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
-    });
+  it('replans the stay search after staff edit dates then sends the new stay', async () => {
     render(<OutlookPanePage />);
-    const organisation = await screen.findByLabelText('Organisation / agency');
-    fireEvent.change(organisation, { target: { value: 'Provincial Treasury' } });
-    const party = await screen.findByRole('button', { name: /Run Look up organisation Provincial Treasury/i });
-    expect((party as HTMLButtonElement).disabled).toBe(false);
-    const stayBefore = screen.getByRole('button', { name: /Run Search availability/i });
-    expect((stayBefore as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(party);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(1));
-    const lookupPayload = runStepMutateMock.mock.calls[0]?.[0] as {
-      stepId: string;
-      inputs: { stepKind?: string; groups?: Array<{ organisation?: string }> };
-    };
-    expect(lookupPayload.stepId).toBe('party-lookup');
-    expect(lookupPayload.inputs.stepKind).toBe('party_lookup');
-    expect(lookupPayload.inputs.groups).toEqual([
-      expect.objectContaining({ organisation: 'Provincial Treasury' }),
-    ]);
-    const stay = await screen.findByRole('button', { name: /Run Search availability/i });
-    expect((stay as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(stay);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(2));
-    const stayPayload = runStepMutateMock.mock.calls[1]?.[0] as {
-      stepId: string;
-      inputs: { stepKind?: string; party?: { partyRef?: string } };
-    };
-    expect(stayPayload.stepId).toMatch(/^quote-stay-/);
-    expect(stayPayload.inputs.stepKind).toBe('quote_stay');
-    expect(stayPayload.inputs.party).toEqual({
-      organisation: 'Provincial Treasury',
-      partyRef: 'party-treasury-1',
-    });
-  });
-
-  it('releases a running step when runStep mutate rejects so retry works', async () => {
-    runStepMutateMock.mockRejectedValueOnce(new Error('runStep network down'));
-    render(<OutlookPanePage />);
-    const perStep = await screen.findByRole('button', { name: /^Run Search availability/i });
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-12-01' } });
+    fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-12-03' } });
+    const perStep = await screen.findByRole('button', { name: /Run Search availability 2026-12-01 → 2026-12-03/i });
     fireEvent.click(perStep);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
+    const request = executeStaffQuoteMutateMock.mock.calls[0]?.[0] as {
+      inputRevision: number;
+      groups: Array<{ arrivalDate?: string; departureDate?: string; quantity?: number }>;
+    };
+    expect(request.inputRevision).toBeGreaterThan(1);
+    expect(request.groups).toEqual([
+      expect.objectContaining({ id: 'g1', arrivalDate: '2026-12-01', departureDate: '2026-12-03', quantity: 1 }),
+    ]);
+  });
+
+  it('has no separate party lookup: the stay search runs from the stay facts alone', async () => {
+    render(<OutlookPanePage />);
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    const stay = await screen.findByRole('button', { name: /^Run Search availability/i });
+    expect((stay as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: /Look up organisation/i })).toBeNull();
+    fireEvent.click(stay);
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('releases a running step when executeStaffQuote rejects so retry works', async () => {
+    executeStaffQuoteMutateMock.mockRejectedValueOnce(new Error('executeStaffQuote network down'));
+    render(<OutlookPanePage />);
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
     const retry = await screen.findByRole('button', { name: /^Run Search availability/i });
     expect((retry as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(retry);
-    await waitFor(() => expect(runStepMutateMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(2));
   });
 });
