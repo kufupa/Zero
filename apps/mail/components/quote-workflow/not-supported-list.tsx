@@ -6,7 +6,7 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   amendment_or_cancel: 'Amendment/cancellation: not supported yet',
   long_stay: 'Over 30 nights: split manually',
   discount_or_negotiation: 'Discount asked: needs your decision',
-  multi_date: 'Several date options: quote the first, add the rest manually',
+  multi_date: "Several date options: run each one. Build each option's PDF before running the next.",
   extras: 'Extras requested (shuttle/dinner): add manually',
   mixed_request: 'Several requests in one email: check each',
   attachment_unread: "An attachment couldn't be read: open it",

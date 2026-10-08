@@ -114,13 +114,15 @@ import {
   analysisRetryKey,
   canCreatePdf,
   canRunQuoteStep,
+  evidenceMatchesSession,
   groupsForQuoteStep,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
   pickNextRunnableStep,
+  quoteRunBlockReason,
   reduceQuoteSession,
-  staffQuoteForStay,
+  staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
@@ -989,6 +991,11 @@ export default function OutlookPanePage() {
   const runQuoteStep = (stepId: string) => {
     const step = quoteSession.steps.find((item) => item.id === stepId);
     if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    const waiting = quoteRunBlockReason(quoteSession, step);
+    if (waiting) {
+      toast.warning(waiting);
+      return;
+    }
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
@@ -1085,6 +1092,77 @@ export default function OutlookPanePage() {
           });
         });
       }
+    });
+  };
+
+  /**
+   * Builds the quotation PDF for one date option from that option's own run.
+   * A null stayKey means the selected option (the "Prepare quotation PDF" button).
+   */
+  const preparePdfFor = (stayKey: string | null) => {
+    const session = quoteSessionRef.current;
+    const key = stayKey ?? session.selectedStayKey;
+    const quote = key ? (session.staffQuotes[key] ?? null) : null;
+    const source = session.staffSource;
+    const authorised =
+      staffSourceReady(session) &&
+      session.evidence?.kind === 'authorised' &&
+      evidenceMatchesSession(session);
+    if (!quote || !key || !authorised || (key === session.selectedStayKey && !canCreatePdf(session))) {
+      toast.warning('Select an authorised allocation with source evidence before generating a PDF.');
+      return;
+    }
+    if (isQuoteFixturePreview()) {
+      toast.warning('Fixture preview cannot prepare an insertable PDF.');
+      return;
+    }
+    if (!source || quote.totalMinor <= 0) {
+      toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
+      return;
+    }
+    const header = quote.approvedHeader;
+    if (!header) {
+      toast.warning('qualifiedQuoteProposalPdf needs the approved executeStaffQuote company/agency header.');
+      return;
+    }
+    if (key !== session.selectedStayKey) dispatchQuote({ type: 'select_stay_key', stayKey: key });
+    const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+    const inputRevision = session.inputRevision;
+    const selectedOfferIds = [quote.revisionRef];
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindQualifiedStaffProposalPdf({
+      mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
+      input: {
+        workflowRunId: quote.workflowRunId,
+        revisionRef: quote.revisionRef,
+        messageId: source.messageId,
+        outlookEmail: session.binding?.mailboxEmail ?? '',
+        factRefs: quote.factRefs,
+        company: header.company,
+        agency: header.agency,
+        attention: header.attention,
+        clientEmail: header.clientEmail,
+        clientTelephone: header.clientTelephone,
+      },
+      expectedTotalMinor: quote.totalMinor,
+    }).then((remote) => {
+      if (remote.status === 'unavailable') {
+        toast.warning(remote.reason);
+        return;
+      }
+      dispatchQuote({
+        type: 'pdf_ready',
+        pdf: {
+          fileName: remote.pdf.fileName,
+          bytesBase64: remote.pdf.pdfBase64,
+          pdfHash: remote.pdf.pdfHash,
+          revisionId: remote.pdf.revisionId,
+          totalMinor: remote.pdf.totalMinor,
+        },
+        selectionEpoch,
+        inputRevision,
+        selectedOfferIds,
+      });
     });
   };
 
@@ -1470,65 +1548,8 @@ export default function OutlookPanePage() {
                     : 'Source guidance: selected Outlook message above. This does not open a separate source viewer.',
                 );
               }}
-              onPreparePdf={() => {
-                if (!canCreatePdf(quoteSession)) {
-                  toast.warning('Select an authorised allocation with source evidence before generating a PDF.');
-                  return;
-                }
-                if (isQuoteFixturePreview() || quoteSession.evidence?.kind !== 'authorised') {
-                  toast.warning('Fixture preview cannot prepare an insertable PDF.');
-                  return;
-                }
-                const source = quoteSession.staffSource;
-                const staffQuote = staffQuoteForStay(quoteSession);
-                if (!source || !staffQuote || staffQuote.totalMinor <= 0) {
-                  toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
-                  return;
-                }
-                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
-                const inputRevision = quoteSession.inputRevision;
-                const selectedOfferIds = [...quoteSession.selectedOfferIds];
-                const staff = staffQuoteFromTrpc(trpcClient);
-                const header = staffQuote.approvedHeader;
-                if (!header) {
-                  toast.warning('qualifiedQuoteProposalPdf needs the approved executeStaffQuote company/agency header.');
-                  return;
-                }
-                void bindQualifiedStaffProposalPdf({
-                  mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-                  input: {
-                    workflowRunId: staffQuote.workflowRunId,
-                    revisionRef: staffQuote.revisionRef,
-                    messageId: source.messageId,
-                    outlookEmail: quoteSession.binding?.mailboxEmail ?? '',
-                    factRefs: staffQuote.factRefs,
-                    company: header.company,
-                    agency: header.agency,
-                    attention: header.attention,
-                    clientEmail: header.clientEmail,
-                    clientTelephone: header.clientTelephone,
-                  },
-                  expectedTotalMinor: staffQuote.totalMinor,
-                }).then((remote) => {
-                  if (remote.status === 'unavailable') {
-                    toast.warning(remote.reason);
-                    return;
-                  }
-                  dispatchQuote({
-                    type: 'pdf_ready',
-                    pdf: {
-                      fileName: remote.pdf.fileName,
-                      bytesBase64: remote.pdf.pdfBase64,
-                      pdfHash: remote.pdf.pdfHash,
-                      revisionId: remote.pdf.revisionId,
-                      totalMinor: remote.pdf.totalMinor,
-                    },
-                    selectionEpoch,
-                    inputRevision,
-                    selectedOfferIds,
-                  });
-                });
-              }}
+              onPreparePdf={() => preparePdfFor(null)}
+              onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
             />
 
             <div className="flex flex-col gap-2.5">
