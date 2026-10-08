@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,12 @@ const CREATE_LAB_STAY = fileURLToPath(
 // The hotel this HMS session runs on. The CLI never receives a propertyCode (paneStayRequestBody strips it),
 // so every property lock is keyed on this value, whatever the stay asks for.
 export const PANE_STAY_PROPERTY_CODE = 'HRCEN';
+// A successful preview can be committed for this long, once, and only for the same stay.
+export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
+// A run's screenshots stay fetchable for this long, then its directory is removed.
+export const PANE_RUN_TTL_MS = 30 * 60_000;
+export const PANE_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const PANE_SCREENSHOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
 
 export type PaneStay = {
   firstName: string;
@@ -43,7 +50,24 @@ export type PaneStaySpawnResult = {
   outcome: string;
   clickedSave: boolean;
   confirmationNumber: string;
-  screenshot?: string;
+  /** Per-run directory that create-lab-stay.mjs wrote to. Absent when a test spawn never runs the CLI. */
+  runId?: string;
+  runDir?: string;
+  /** PNG file names written by the run. */
+  screenshots?: string[];
+};
+
+export type PaneStayResult = {
+  status: 'ok' | 'refused';
+  reason?: string;
+  outcome?: string;
+  confirmationNumber?: string;
+  clickedSave?: boolean;
+  /** Set only when a preview succeeded. Commit sends it back with the same stay. */
+  previewDigest?: string | null;
+  runId?: string;
+  /** Screenshot file names. Fetch the bytes with readPaneStayScreenshot. */
+  screenshots?: string[];
 };
 
 export type PaneStayLock = {
@@ -61,12 +85,18 @@ export const paneStaySaveLoaders: {
       }) => Promise<OsressDuplicateStatus>)
     | null;
   enabled: (() => boolean) | null;
+  now: (() => number) | null;
 } = {
   spawn: null,
   lock: null,
   osressGuestDatesSearch: null,
   enabled: null,
+  now: null,
 };
+
+function clock(): number {
+  return paneStaySaveLoaders.now?.() ?? Date.now();
+}
 
 export function paneStaySaveEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return env.RESERVATIONIST_PANE_SAVE === 'on';
@@ -91,24 +121,121 @@ export function assertLabStayGuard(input: {
   }
 }
 
+// Canonical form of the stay: strings trimmed, undefined dropped, keys sorted. Equal stays give equal digests.
+function canonicalStay(stay: PaneStay): string {
+  const entries = Object.entries(stay)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify(Object.fromEntries(entries));
+}
+
+export function paneStayDigest(stay: PaneStay): string {
+  return createHash('sha256').update(canonicalStay(stay), 'utf8').digest('hex');
+}
+
+// In-memory preview grants, keyed by owner and digest. One commit consumes a grant.
+const panePreviews = new Map<string, number>();
+
+function previewKey(owner: string, digest: string): string {
+  return `${owner}\0${digest}`;
+}
+
+function recordPanePreview(owner: string, digest: string, now: number): void {
+  for (const [key, expiresAt] of panePreviews) {
+    if (expiresAt <= now) panePreviews.delete(key);
+  }
+  panePreviews.set(previewKey(owner, digest), now + PANE_PREVIEW_TTL_MS);
+}
+
+// True only for an unexpired grant from the same owner. The grant is consumed either way.
+function takePanePreview(owner: string, digest: string, now: number): boolean {
+  const key = previewKey(owner, digest);
+  const expiresAt = panePreviews.get(key);
+  panePreviews.delete(key);
+  return expiresAt !== undefined && expiresAt > now;
+}
+
+// Run directories whose screenshots the owner can fetch. Expired runs are removed from disk.
+type PaneRun = { dir: string; owner: string; expiresAt: number };
+const paneRuns = new Map<string, PaneRun>();
+
+async function pruneExpiredPaneRuns(now: number): Promise<void> {
+  for (const [runId, run] of paneRuns) {
+    if (run.expiresAt > now) continue;
+    paneRuns.delete(runId);
+    await rm(run.dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function registerPaneRun(input: { runId: string; dir: string; owner: string; now: number }): void {
+  paneRuns.set(input.runId, {
+    dir: input.dir,
+    owner: input.owner,
+    expiresAt: input.now + PANE_RUN_TTL_MS,
+  });
+}
+
+// Owner-scoped screenshot bytes as a PNG data URL. Only names of PNG files inside a registered run directory.
+export async function readPaneStayScreenshot(input: {
+  runId: string;
+  name: string;
+  owner: string;
+}): Promise<{ status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string }> {
+  await pruneExpiredPaneRuns(clock());
+  if (!PANE_RUN_ID_PATTERN.test(input.runId) || !PANE_SCREENSHOT_NAME_PATTERN.test(input.name)) {
+    return { status: 'unavailable', reason: 'screenshot_request_invalid' };
+  }
+  const run = paneRuns.get(input.runId);
+  if (!run || run.owner !== input.owner) {
+    return { status: 'unavailable', reason: 'screenshot_unavailable' };
+  }
+  try {
+    const bytes = await readFile(join(run.dir, input.name));
+    return { status: 'ok', dataUrl: `data:image/png;base64,${bytes.toString('base64')}` };
+  } catch {
+    return { status: 'unavailable', reason: 'screenshot_unavailable' };
+  }
+}
+
 async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
-  const dir = await mkdtemp(join(tmpdir(), 'pane-stay-'));
+  const runId = randomUUID();
+  const dir = join(tmpdir(), `pane-stay-${runId}`);
+  await mkdir(dir, { mode: 0o700 });
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)));
-  const args = [CREATE_LAB_STAY, '--request', requestPath];
+  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
+  const args = [CREATE_LAB_STAY, '--request', requestPath, '--out', dir];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
-  const { stdout } = await execFileAsync('node', args, {
-    timeout: 20 * 60_000,
-    env: { ...process.env },
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync('node', args, {
+      timeout: 20 * 60_000,
+      env: { ...process.env },
+    }));
+  } finally {
+    await rm(requestPath, { force: true });
+  }
   const line = stdout.trim().split('\n').at(-1) ?? '';
   const [outcome = '', confirmationNumber = ''] = line.split(/\s+/);
+  const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
     clickedSave: Boolean(input.paneCommit),
     confirmationNumber,
+    runId,
+    runDir: dir,
+    screenshots,
   };
+}
+
+// Tenant of the worker's HMS reads (HMS_EXPECTED_TENANT), so save and cancel serialize with them on the
+// shared browser. PANE_STAY_TENANT_ID overrides it.
+export function paneStayTenantId(env: NodeJS.Dict<string> = process.env): string {
+  const configured = [env.PANE_STAY_TENANT_ID, env.HMS_EXPECTED_TENANT].find(
+    (value) => value !== undefined && value.trim() !== '',
+  );
+  return configured ?? 'legacy';
 }
 
 // Production lock for the session's hotel. Cancel and save share this key, so they serialize with each other.
@@ -116,7 +243,7 @@ export function paneStayPropertyLock(): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
   return createPostgresPropertyReadLock({
-    tenantId: process.env.PANE_STAY_TENANT_ID || 'legacy',
+    tenantId: paneStayTenantId(),
     propertyCode: PANE_STAY_PROPERTY_CODE,
     databaseUrl,
   });
@@ -130,17 +257,15 @@ export function paneStayPropertyRefusal(propertyCode: string | undefined): strin
     : 'pane_save_property_mismatch';
 }
 
+// Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
+// Commit: needs the previewDigest of a successful preview of this same stay (same owner, within 10 minutes,
+// once). The duplicate reader stays fail-closed: while it is parked, commit refuses.
 export async function runPaneStay(input: {
   mode: PaneStayMode;
   stay: PaneStay;
-}): Promise<{
-  status: 'ok' | 'refused';
-  reason?: string;
-  outcome?: string;
-  confirmationNumber?: string;
-  clickedSave?: boolean;
-  screenshot?: string;
-}> {
+  owner: string;
+  previewDigest?: string;
+}): Promise<PaneStayResult> {
   const enabled = paneStaySaveLoaders.enabled ?? (() => paneStaySaveEnabled());
   if (!enabled()) {
     return { status: 'refused', reason: 'pane_save_flag_off' };
@@ -154,6 +279,7 @@ export async function runPaneStay(input: {
   if (propertyRefusal) {
     return { status: 'refused', reason: propertyRefusal };
   }
+  const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
     const reader = paneStaySaveLoaders.osressGuestDatesSearch;
     if (!reader) {
@@ -170,27 +296,45 @@ export async function runPaneStay(input: {
     if (status === 'duplicate') {
       return { status: 'refused', reason: 'osress_duplicate' };
     }
+    if (input.previewDigest === undefined) {
+      return { status: 'refused', reason: 'pane_save_preview_required' };
+    }
+    if (input.previewDigest !== digest) {
+      return { status: 'refused', reason: 'pane_save_digest_mismatch' };
+    }
   }
   const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock();
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
-  const spawned = await lock.withLock(() =>
-    spawn({
+  const spawned = await lock.withLock(async () => {
+    // The grant is taken under the lock, so two concurrent commits cannot both spawn.
+    if (input.mode === 'commit' && !takePanePreview(input.owner, digest, clock())) return null;
+    return spawn({
       stay: input.stay,
       stopBefore: input.mode === 'preview' ? 'save' : null,
       paneCommit: input.mode === 'commit',
-    }),
-  );
+    });
+  });
+  if (spawned === null) {
+    return { status: 'refused', reason: 'pane_save_preview_required' };
+  }
   if (/^refused/i.test(spawned.outcome)) {
     return { status: 'refused', reason: spawned.outcome };
+  }
+  const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
+  if (previewed) recordPanePreview(input.owner, digest, clock());
+  if (spawned.runId && spawned.runDir) {
+    registerPaneRun({ runId: spawned.runId, dir: spawned.runDir, owner: input.owner, now: clock() });
   }
   return {
     status: 'ok',
     outcome: spawned.outcome,
     confirmationNumber: spawned.confirmationNumber,
     clickedSave: spawned.clickedSave,
-    screenshot: spawned.screenshot,
+    previewDigest: previewed ? digest : null,
+    runId: spawned.runId,
+    screenshots: spawned.screenshots ?? [],
   };
 }

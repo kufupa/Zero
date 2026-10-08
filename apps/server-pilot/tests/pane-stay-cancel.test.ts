@@ -269,3 +269,30 @@ describe('pane stay cancel', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('paneStayCancel.paneStayScreenshot', () => {
+  it('validates the run id and PNG name strictly and answers unavailable for unknown runs', async () => {
+    await expect(
+      mailboxCaller().paneStayCancel.paneStayScreenshot({ runId: '../etc', name: 'filled.png' }),
+    ).rejects.toThrow();
+    await expect(
+      mailboxCaller().paneStayCancel.paneStayScreenshot({
+        runId: '00000000-0000-4000-8000-000000000000',
+        name: '../filled.png',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      mailboxCaller().paneStayCancel.paneStayScreenshot({
+        runId: '00000000-0000-4000-8000-000000000000',
+        name: 'filled.png',
+        extra: true,
+      } as never),
+    ).rejects.toThrow();
+    await expect(
+      mailboxCaller().paneStayCancel.paneStayScreenshot({
+        runId: '00000000-0000-4000-8000-000000000000',
+        name: 'filled.png',
+      }),
+    ).resolves.toEqual({ status: 'unavailable', reason: 'screenshot_unavailable' });
+  });
+});

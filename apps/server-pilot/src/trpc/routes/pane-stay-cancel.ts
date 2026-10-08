@@ -1,4 +1,9 @@
 import { commitCancel, previewCancel } from '../../ai/pane-stay-cancel.js';
+import {
+  PANE_RUN_ID_PATTERN,
+  PANE_SCREENSHOT_NAME_PATTERN,
+  readPaneStayScreenshot,
+} from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -21,6 +26,14 @@ const commitCancelInput = z
   })
   .strict();
 
+// Screenshot of a save run: only a run id this server issued to this owner, and a PNG name from the run.
+const paneStayScreenshotInput = z
+  .object({
+    runId: z.string().regex(PANE_RUN_ID_PATTERN),
+    name: z.string().regex(PANE_SCREENSHOT_NAME_PATTERN),
+  })
+  .strict();
+
 export const paneStayCancelRouter = router({
   previewCancel: mailboxProcedure
     .input(previewCancelInput)
@@ -28,4 +41,13 @@ export const paneStayCancelRouter = router({
   commitCancel: mailboxProcedure
     .input(commitCancelInput)
     .mutation(async ({ input }) => commitCancel(input)),
+  paneStayScreenshot: mailboxProcedure
+    .input(paneStayScreenshotInput)
+    .query(async ({ input, ctx }) =>
+      readPaneStayScreenshot({
+        runId: input.runId,
+        name: input.name,
+        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+      }),
+    ),
 });
