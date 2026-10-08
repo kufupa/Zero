@@ -279,6 +279,7 @@ describe('booking card copy buttons', () => {
   afterEach(() => {
     vi.useRealTimers();
     Reflect.deleteProperty(navigator, 'clipboard');
+    Reflect.deleteProperty(document, 'execCommand');
   });
 
   it('opens with a plain-English note that saving in HMS is off', () => {
@@ -311,6 +312,57 @@ describe('booking card copy buttons', () => {
     fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy Track for room 1' }));
     expect(writeText).toHaveBeenCalledWith('COR');
+  });
+
+  function stubExecCommand(result: () => boolean) {
+    const execCommand = vi.fn(() => result());
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
+    return execCommand;
+  }
+
+  it('falls back to a selected hidden textarea when the clipboard API is missing', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    let copiedFrom: string | undefined;
+    const execCommand = stubExecCommand(() => {
+      copiedFrom = document.querySelector('textarea')?.value;
+      return true;
+    });
+    render(<BookingCards draft={draftReady()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    await flushClipboard();
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(copiedFrom).toBe('2026-11-12');
+    expect(document.querySelector('textarea')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+    expect(screen.queryByText('Copy failed – select the text')).toBeNull();
+  });
+
+  it('uses the same fallback when writeText rejects', async () => {
+    const writeText = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const execCommand = stubExecCommand(() => true);
+    render(<BookingCards draft={draftReady()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    await flushClipboard();
+    expect(writeText).toHaveBeenCalledWith('2026-11-12');
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+  });
+
+  it('says Copy failed – select the text briefly when both copy paths fail', async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    stubExecCommand(() => false);
+    render(<BookingCards draft={draftReady()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    await flushClipboard();
+    expect(screen.getByText('Copy failed – select the text')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Copy Arrival for room 1' })).toBeDefined();
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.queryByText('Copy failed – select the text')).toBeNull();
   });
 });
 

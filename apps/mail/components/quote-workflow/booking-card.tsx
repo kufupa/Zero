@@ -7,6 +7,7 @@ const fieldClass =
   'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 const COPIED_MS = 1500;
+const COPY_FAILED_MS = 3000;
 
 const BOARD_LABELS: Record<string, string | undefined> = {
   room_only: 'Room only',
@@ -32,12 +33,32 @@ function nightsBetween(arrival: string, departure: string): string {
   return nights > 0 ? String(nights) : '';
 }
 
+// Fallback for webviews without the async clipboard API, or where it rejects: select a
+// hidden textarea and use the legacy copy command, which still works in those hosts.
+function copyViaSelection(value: string): boolean {
+  if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false;
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
+}
+
 async function writeClipboard(value: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(value);
     return true;
   } catch {
-    return false;
+    return copyViaSelection(value);
   }
 }
 
@@ -66,27 +87,38 @@ function RateCheckChip({ check }: { check: BookingRateCheck }) {
   );
 }
 
+type CopyStatus = 'idle' | 'copied' | 'failed';
+
 function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: number; value: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<CopyStatus>('idle');
   useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), COPIED_MS);
+    if (status === 'idle') return;
+    const timer = window.setTimeout(
+      () => setStatus('idle'),
+      status === 'copied' ? COPIED_MS : COPY_FAILED_MS,
+    );
     return () => window.clearTimeout(timer);
-  }, [copied]);
+  }, [status]);
+  const copied = status === 'copied';
   return (
-    <button
-      type="button"
-      disabled={!value}
-      aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for room ${roomIndex}`}
-      onClick={() => {
-        void writeClipboard(value).then((ok) => {
-          if (ok) setCopied(true);
-        });
-      }}
-      className="h-6 shrink-0 rounded-xs border border-[#cbd5e1] bg-white px-2 text-[11px] font-semibold text-[#0066cc] disabled:text-[#94a3b8]"
-    >
-      {copied ? 'Copied' : 'Copy'}
-    </button>
+    <>
+      <button
+        type="button"
+        disabled={!value}
+        aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for room ${roomIndex}`}
+        onClick={() => {
+          void writeClipboard(value).then((ok) => setStatus(ok ? 'copied' : 'failed'));
+        }}
+        className="h-6 shrink-0 rounded-xs border border-[#cbd5e1] bg-white px-2 text-[11px] font-semibold text-[#0066cc] disabled:text-[#94a3b8]"
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      {status === 'failed' ? (
+        <span role="status" className="shrink-0 text-[11px] text-amber-800">
+          Copy failed – select the text
+        </span>
+      ) : null}
+    </>
   );
 }
 
