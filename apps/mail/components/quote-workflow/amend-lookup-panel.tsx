@@ -22,12 +22,11 @@ import {
   amendDiffs,
   amendFindClientFromTrpc,
   amendFindOutcome,
-  enqueueFailureCopy,
   formatStayDate,
   knownFactValue,
   matchedOnLabel,
   outcomeNote,
-  pollHmsFindReceipt,
+  runHmsFind,
   type AmendDiff,
   type AmendFindClient,
   type AmendFindOutcome,
@@ -119,31 +118,16 @@ export function AmendLookupPanel({
         if (isCurrent()) setLookup({ key: activeKey, status });
       };
       setLookup({ key: activeKey, status: { phase: 'running' } });
-      if (!activeClient) {
-        finish({ phase: 'error', message: AMEND_FIND_COPY.unavailable });
-        return;
-      }
-      let started: { readResultRef: string };
-      try {
-        started = await activeClient.enqueueHmsRead({
-          threadId: activeThread,
-          toolId: 'hms_find_reservation',
-        });
-      } catch (error) {
-        finish({ phase: 'error', message: enqueueFailureCopy(error) });
-        return;
-      }
-      const poll = await pollHmsFindReceipt({
-        readHmsReceipt: activeClient.readHmsReceipt,
+      const run = await runHmsFind({
+        client: activeClient,
         threadId: activeThread,
-        readResultRef: started.readResultRef,
         intervalMs,
         timeoutMs,
         isCurrent,
       });
-      if (poll.kind === 'receipt') finish({ phase: 'done', outcome: amendFindOutcome(poll.receipt) });
-      else if (poll.kind === 'timeout') finish({ phase: 'error', message: AMEND_FIND_COPY.busy });
-      else if (poll.kind === 'error') finish({ phase: 'error', message: AMEND_FIND_COPY.readFailed });
+      if (run.kind === 'receipt') finish({ phase: 'done', outcome: amendFindOutcome(run.receipt) });
+      else if (run.kind === 'timeout') finish({ phase: 'error', message: AMEND_FIND_COPY.busy });
+      else if (run.kind === 'error') finish({ phase: 'error', message: run.message });
     },
     [intervalMs, timeoutMs],
   );

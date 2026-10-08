@@ -225,6 +225,14 @@ describe('AmendLookupPanel', () => {
     await waitFor(() => expect(screen.getByText('HMS is busy. Try again in a minute.')).toBeTruthy());
     expect(read).not.toHaveBeenCalled();
   });
+
+  it('reports an enqueue that returns no read reference instead of crashing', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const read = vi.fn();
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpcMock(enqueue, read)} timing={POLL_FAST} />);
+    await waitFor(() => expect(screen.getByText(AMEND_FIND_COPY.startFailed)).toBeTruthy());
+    expect(read).not.toHaveBeenCalled();
+  });
 });
 
 describe('amend find helpers', () => {

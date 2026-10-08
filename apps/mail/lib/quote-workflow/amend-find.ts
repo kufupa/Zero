@@ -117,6 +117,50 @@ export async function pollHmsFindReceipt(options: PollOptions): Promise<PollOutc
   }
 }
 
+export type HmsFindRun =
+  | { kind: 'receipt'; receipt: HmsFindReceiptWire }
+  | { kind: 'timeout' }
+  | { kind: 'error'; message: string }
+  | { kind: 'stopped' };
+
+export type RunHmsFindOptions = {
+  /** Null when the ai routes are not bound. The run then fails with the unavailable copy. */
+  client: AmendFindClient | null;
+  threadId: string;
+  intervalMs?: number;
+  timeoutMs?: number;
+  /** False once the panel unmounts or a newer lookup supersedes this one. */
+  isCurrent: () => boolean;
+};
+
+/**
+ * The only HMS call the amend pane makes for a look-up: enqueue the read-only find, then poll its receipt.
+ * The panel calls this and nothing else, so the transport can change here without touching the panel.
+ */
+export async function runHmsFind(options: RunHmsFindOptions): Promise<HmsFindRun> {
+  const client = options.client;
+  if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  let started: { readResultRef: string } | undefined;
+  try {
+    started = await client.enqueueHmsRead({ threadId: options.threadId, toolId: 'hms_find_reservation' });
+  } catch (error) {
+    return { kind: 'error', message: enqueueFailureCopy(error) };
+  }
+  if (!started?.readResultRef) return { kind: 'error', message: AMEND_FIND_COPY.startFailed };
+  const poll = await pollHmsFindReceipt({
+    readHmsReceipt: client.readHmsReceipt,
+    threadId: options.threadId,
+    readResultRef: started.readResultRef,
+    intervalMs: options.intervalMs,
+    timeoutMs: options.timeoutMs,
+    isCurrent: options.isCurrent,
+  });
+  if (poll.kind === 'receipt') return { kind: 'receipt', receipt: poll.receipt };
+  if (poll.kind === 'timeout') return { kind: 'timeout' };
+  if (poll.kind === 'error') return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+  return { kind: 'stopped' };
+}
+
 /** Plain-English copy for a failed enqueueHmsRead. The client sees the server message text. */
 export function enqueueFailureCopy(error: unknown): string {
   const text = errorText(error);
