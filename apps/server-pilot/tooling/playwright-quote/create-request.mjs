@@ -3,6 +3,7 @@
 // zod-to-json-schema). $ref siblings other than description are not used.
 // Descriptions are ignored at validation time.
 import { readFile } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 
 const schemaUrl = new URL('./create-tool.schema.json', import.meta.url);
 
@@ -234,6 +235,17 @@ export function stayActions(stopBefore) {
     return [...STAY_FILL, 'firstName', 'lastName', 'checkAvailability', 'availability.png'];
   }
   return [...STAY_FILL, 'firstName', 'lastName', 'checkAvailability', 'availability.png', 'save', 'saved.png'];
+}
+
+// --out <absolute dir>: where this run writes its screenshots and result.json. Absent: the shared proof dir.
+export function parseOutDir(argv) {
+  const index = argv.indexOf('--out');
+  if (index === -1) return { ok: true, exitCode: 0, outDir: null };
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--') || !isAbsolute(value)) {
+    return { ok: false, exitCode: 2, error: 'Required: --out <absolute directory>' };
+  }
+  return { ok: true, exitCode: 0, outDir: value };
 }
 
 export function parseRequestPath(argv) {

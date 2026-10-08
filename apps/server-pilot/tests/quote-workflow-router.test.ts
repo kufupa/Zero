@@ -1164,7 +1164,9 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       status: 'refused',
       reason: 'pane_save_flag_off',
     });
-    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+    await expect(
+      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
+    ).resolves.toMatchObject({
       status: 'refused',
       reason: 'pane_save_flag_off',
     });
@@ -1176,9 +1178,42 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
-    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay)).resolves.toMatchObject({
+    await expect(
+      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
+    ).resolves.toMatchObject({
       status: 'refused',
       reason: 'osress_reader_parked',
     });
+  });
+
+  it('commitStay requires a 64-hex previewDigest at the schema', async () => {
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(mailboxCaller().quoteWorkflow.commitStay(paneStay as never)).rejects.toThrow();
+    await expect(
+      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: 'abc' } as never),
+    ).rejects.toThrow();
+  });
+
+  it('previewStay returns previewDigest and commitStay commits only with it, once', async () => {
+    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => 'clear';
+    paneStaySaveLoaders.spawn = async (input) =>
+      input.paneCommit
+        ? { outcome: 'committed', clickedSave: true, confirmationNumber: '46184891-1' }
+        : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
+    const preview = await mailboxCaller().quoteWorkflow.previewStay(paneStay);
+    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
+    const previewDigest = preview.previewDigest as string;
+    expect(previewDigest).toMatch(/^[0-9a-f]{64}$/);
+    await expect(
+      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    await expect(
+      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 });

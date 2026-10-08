@@ -118,10 +118,22 @@ export const quoteWorkflowRouter = router({
         'Live staff quote execution is workstation.executeStaffQuote. Do not call ai.enqueueHmsRead from this UI route.',
     };
   }),
-  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
-    return runPaneStay({ mode: 'preview', stay: input });
+  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input, ctx }) => {
+    return runPaneStay({
+      mode: 'preview',
+      stay: input,
+      owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+    });
   }),
-  commitStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input }) => {
-    return runPaneStay({ mode: 'commit', stay: input });
-  }),
+  commitStay: mailboxProcedure
+    .input(paneStayInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }))
+    .mutation(async ({ input, ctx }) => {
+      const { previewDigest, ...stay } = input;
+      return runPaneStay({
+        mode: 'commit',
+        stay,
+        previewDigest,
+        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+      });
+    }),
 });
