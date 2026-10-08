@@ -21,7 +21,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
   arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
-  isCancelledStatus, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
+  isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
   parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
@@ -693,7 +693,7 @@ async function drive(ctx) {
   } catch (error) {
     ctx.result.error = squash(error?.message || error).slice(0, 300);
   }
-  if (!ctx.result.outcome) ctx.result.outcome = 'execution_failure';
+  if (!ctx.result.outcome) ctx.result.outcome = outcomeAfterFailure(ctx.result);
   if (exitCodeFor(ctx.result.outcome) === 1 && ctx.page) {
     await shot(ctx, 'failure.png').catch(() => {});
   }

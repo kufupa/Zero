@@ -251,6 +251,13 @@ export function pickerMonthSteps(title, targetIso) {
 
 // Outcome from the status before the action and the status read back after it.
 // Preview must leave the status unchanged. Commit counts as cancelled only when the status reads Cancelled.
+// An error after the reason OK click leaves the cancel uncertain: HMS may have applied it before a read or screenshot
+// failed. Only a read that shows Cancelled settles it. Before the click nothing was applied, so it stays a failure.
+export function outcomeAfterFailure({ clickedOk, statusAfter }) {
+  if (!clickedOk) return 'execution_failure';
+  return isCancelledStatus(statusAfter) ? 'cancelled' : 'cancel_unconfirmed';
+}
+
 export function resolveOutcome({ mode, statusBefore, statusAfter }) {
   if (isCancelledStatus(statusBefore)) return 'already_cancelled';
   if (mode === 'preview') {

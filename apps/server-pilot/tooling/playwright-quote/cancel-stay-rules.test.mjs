@@ -5,7 +5,7 @@ import {
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
-  pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
+  outcomeAfterFailure, pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
   searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
@@ -701,4 +701,12 @@ test('arrivalReport says when the booking arrives on another day than the one as
   });
   assert.equal(arrivalReport({ arrival: '2027-10-12' }, null).arrivalMismatch, false, 'an unreadable HMS arrival is not a mismatch');
   assert.equal(arrivalReport({ arrival: null }, '2027-10-13').arrivalMismatch, false, 'no requested arrival, no mismatch');
+});
+
+test('an error after the OK click stays uncertain unless a read confirmed the cancel', () => {
+  assert.equal(outcomeAfterFailure({ clickedOk: true, statusAfter: null }), 'cancel_unconfirmed');
+  assert.equal(outcomeAfterFailure({ clickedOk: true, statusAfter: 'Reserved' }), 'cancel_unconfirmed');
+  assert.equal(outcomeAfterFailure({ clickedOk: true, statusAfter: 'Cancelled' }), 'cancelled');
+  assert.equal(outcomeAfterFailure({ clickedOk: false, statusAfter: 'Cancelled' }), 'execution_failure');
+  assert.equal(outcomeAfterFailure({ clickedOk: false, statusAfter: null }), 'execution_failure');
 });
