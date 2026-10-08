@@ -153,7 +153,12 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
  const inside=(path:string)=>{const r=relative(privateRoot,resolve(path));return r!==''&&!r.startsWith('..')&&!isAbsolute(r);};
  if(!['http:','ws:'].includes(cdp.protocol)||!['127.0.0.1','localhost','[::1]'].includes(cdp.hostname)||cdp.username||cdp.password||cdp.search||owner.browserOwnership!=='borrowed'||!owner.propertyCode||!isAbsolute(owner.secretPath)||!inside(output))throw new Error('native_browser_owner_or_private_output_invalid');
  const script=join(repo,'apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs'),contract=join(repo,'apps/server-pilot/tooling/playwright-quote/quote-contract.mjs'),ownerHash=quoteDigest(options.owner),run=promisify(execFile);
- const dispatch=options.dispatch??(async(input)=>{try{return await run(input.executable,input.args,{env:input.env,signal:input.signal,timeout:input.timeout,maxBuffer:1024*1024});}catch{throw new Error('native_quote_read_unavailable');}});
+ const savedFailure=async(evidence:string)=>{try{const bytes=await readFile(join(evidence,'result.json'));return bytes.length<=20*1024*1024&&(JSON.parse(bytes.toString()) as {outcome?:unknown}).outcome==='execution_failure';}catch{return false;}};
+ const dispatch=options.dispatch??(async(input)=>{try{return await run(input.executable,input.args,{env:input.env,signal:input.signal,timeout:input.timeout,maxBuffer:1024*1024});}catch(error){
+  // fetch-quote exits 2 after it writes result.json for an execution_failure. Keep that evidence so the reader below reports the saved phase.
+  const stdout=String((error as {stdout?:unknown}|null)?.stdout??'');const evidence=/^Evidence: (.+)$/m.exec(stdout)?.[1];
+  if(evidence&&inside(evidence)&&resolve(evidence).startsWith(`${output}/`)&&await savedFailure(evidence))return{stdout};
+  throw new Error('native_quote_read_unavailable');}});
  return async(request,signal)=>{signal.throwIfAborted();if(quoteDigest(options.owner)!==ownerHash||request.propertyCode!==owner.propertyCode)throw new Error('native_quote_owner_scope_mismatch');
   const normalize=await import(pathToFileURL(contract).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request?:unknown};composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string}};
   const wire={schemaVersion:2,...structuredClone(request)},normalized=normalize.normalizeQuoteRequest(wire);if(!normalized.ok)throw new Error('native_quote_request_invalid');const toolHashBefore=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');
