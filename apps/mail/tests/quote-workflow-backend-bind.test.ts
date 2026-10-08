@@ -567,3 +567,55 @@ describe('staff quote execute/PDF header bind', () => {
     expect(missingAgency.status).toBe('unavailable');
   });
 });
+
+describe('staff quote no-matching-rate flag', () => {
+  const source = { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+  const stay = {
+    id: 'g1',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    quantity: 1,
+    adults: 1,
+    childrenAges: [] as number[],
+    board: 'dinner_bb' as const,
+    specialRequests: [] as string[],
+    fields: {},
+  };
+  const header = {
+    salesStrategy: 'BAR' as const,
+    company: '',
+    agency: '',
+    attention: '',
+    clientEmail: '',
+    clientTelephone: '',
+  };
+
+  it('flags only the clean HMS no-match, so the pane can offer the B&B fallback', async () => {
+    const noMatch = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw new Error(
+          'HMS has no rate for this meal plan under BAR. For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.',
+        );
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header,
+    });
+    expect(noMatch).toMatchObject({ status: 'unavailable', noMatchingRate: true });
+
+    const otherFailure = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw new Error("HMS didn't respond as expected.");
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header,
+    });
+    expect(otherFailure.status).toBe('unavailable');
+    expect(otherFailure).not.toHaveProperty('noMatchingRate', true);
+  });
+});
