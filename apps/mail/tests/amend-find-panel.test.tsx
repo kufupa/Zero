@@ -426,6 +426,21 @@ describe('AmendLookupPanel cancel from the pane', () => {
     ).toBeTruthy();
   });
 
+  it('says HMS may have cancelled the booking when the commit comes back cancel_unconfirmed', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+    const commit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'cancel_unconfirmed' }));
+    renderCancel({ preview, commit });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
+      target: { value: 'Duplicate Booking' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+    expect(
+      await screen.findByText('HMS may have cancelled this booking. Check HMS before trying again.'),
+    ).toBeTruthy();
+  });
+
   it('says the booking is already cancelled in HMS and offers no cancel', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue(

@@ -23,7 +23,7 @@ export const AMEND_CANCEL_COPY = {
   testOnly: 'Cancelling from here only works on test bookings right now.',
   reasonRefused: 'HMS did not accept that reason. Pick another and try again.',
   previewAgain: 'Preview the cancellation again first.',
-  unconfirmed: "Luna couldn't confirm the cancellation in HMS. Check HMS yourself.",
+  unconfirmed: 'HMS may have cancelled this booking. Check HMS before trying again.',
   failed: "Luna couldn't finish in HMS. Check HMS yourself.",
 } as const;
 
