@@ -405,29 +405,6 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   };
 }
 
-/**
- * A stay's company or agency is the party its rate is for. Every stay on one quote must name the same party,
- * and it must match the quote header's Company or Agency whenever the header names one.
- */
-export function stayOrganisationError(
-  groups: readonly StaffQuoteGroupInput[],
-  header: StaffQuoteHeader,
-): string | null {
-  const named = [
-    ...new Set(groups.map((group) => group.organisation).filter((value): value is string => Boolean(value))),
-  ];
-  if (named.length > 1) {
-    return 'Stays on one quote need the same company or agency. Make the names match or quote the stays separately.';
-  }
-  const [party] = named;
-  if (!party) return null;
-  const headerParties = [header.company, header.agency].map((value) => value.trim()).filter(Boolean);
-  if (headerParties.length > 0 && !headerParties.includes(party)) {
-    return 'The company or agency on this stay must match the quote header Company or Agency.';
-  }
-  return null;
-}
-
 export async function bindExecuteStaffQuote(args: {
   mutate?: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
   source: StaffQuoteSource;
@@ -445,8 +422,6 @@ export async function bindExecuteStaffQuote(args: {
   }
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
-  const partyError = stayOrganisationError(prepared.ok, args.header);
-  if (partyError) return { status: 'unavailable', reason: partyError };
   try {
     const header = approvedExecuteHeader(args.header);
     const result = await args.mutate({
