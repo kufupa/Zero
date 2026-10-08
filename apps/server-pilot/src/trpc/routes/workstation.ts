@@ -6,6 +6,7 @@ import {
   executeStaffQuote,
   attestStaffQuote,
   buildStaffProposalFacts,
+  quoteWithPartyFallback,
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
@@ -540,38 +541,58 @@ export const workstationRouter = router({
         databaseUrl,
       });
       let revision: QuoteRevision;
+      const fallback: { note?: string } = {};
+      const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
+        const services = getInstalledStaffQuoteServices(
+          {
+            authorizationId: attempt.authorizationId,
+            authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
+            signer: {
+              signerName: ctx.sessionUser.name ?? '',
+              signerEmail: ctx.sessionUser.email,
+            },
+            onEvidenceDirectory: (directory) => {
+              evidence.directory = directory;
+            },
+          },
+          attempt.approval,
+        );
+        return executeStaffQuote(
+          attempt,
+          {
+            ...services,
+            resolveQuoteTask:
+              services.resolveQuoteTask &&
+              (async (quoteContext) => {
+                const resolved = await services.resolveQuoteTask!(quoteContext);
+                queued.setPhase(2);
+                return resolved;
+              }),
+          },
+          stillCurrent,
+        );
+      };
       try {
         revision = await lock.withLock(
           async () => {
             queued.setPhase(1);
-            const services = getInstalledStaffQuoteServices(
-              {
-                authorizationId: prepared.authorizationId,
-                authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
-                signer: {
-                  signerName: ctx.sessionUser.name ?? '',
-                  signerEmail: ctx.sessionUser.email,
-                },
-                onEvidenceDirectory: (directory) => {
-                  evidence.directory = directory;
-                },
-              },
-              prepared.approval,
-            );
-            return executeStaffQuote(
-              prepared,
-              {
-                ...services,
-                resolveQuoteTask:
-                  services.resolveQuoteTask &&
-                  (async (quoteContext) => {
-                    const resolved = await services.resolveQuoteTask!(quoteContext);
-                    queued.setPhase(2);
-                    return resolved;
-                  }),
-              },
-              stillCurrent,
-            );
+            // A picked party HMS cannot price is quoted once more at public rates; the review note says so.
+            const attempt = await quoteWithPartyFallback({
+              input,
+              first: prepared,
+              retry: () =>
+                prepareStaffQuote(
+                  input,
+                  scope,
+                  { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+                  signal,
+                  'public',
+                ),
+              run: quoteAt,
+            });
+            prepared = attempt.prepared;
+            fallback.note = attempt.note ?? undefined;
+            return attempt.result;
           },
           { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
         );
@@ -639,7 +660,7 @@ export const workstationRouter = router({
         messageId: mail.id,
         threadId: mail.threadId,
         factRefs: proposal.factRefs,
-        extrasReviewItems: proposal.extrasReviewItems,
+        extrasReviewItems: [...(fallback.note ? [fallback.note] : []), ...proposal.extrasReviewItems],
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,
         inputDigest: prepared.inputDigest,

@@ -51,9 +51,81 @@ export const staffQuoteInput = z
     dinnerAllowanceMinor: z.number().int().positive().optional(),
     shuttleRequested: z.boolean().optional(),
     shuttleMinor: z.number().int().positive().optional(),
+    // The HMS company or agency the pane's Find in HMS picker chose. Absent means public rates, exactly as before.
+    party: z
+      .object({
+        kind: z.enum(['agency', 'company']),
+        nativeId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+        name: z.string().min(1).max(256),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
+
+/** Kill switch. QUOTE_RATE_CONTEXT=off sends no rate context, and the party picker refuses. Any other value keeps it on. */
+export function quoteRateContextEnabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return env.QUOTE_RATE_CONTEXT?.trim().toLowerCase() !== 'off';
+}
+
+/** 'party' sends the picked company or agency as rate context; 'public' quotes public rates and never sends one. */
+export type StaffQuoteRates = 'party' | 'public';
+
+/** The native rate context for a picked party: the agency field carries an agency, the organization field a company. */
+export function partyRateContext(party: NonNullable<StaffQuoteInput['party']>): {
+  organization?: { nativeId: string; name: string };
+  agency?: { nativeId: string; name: string };
+} {
+  const ref = { nativeId: party.nativeId, name: party.name };
+  return party.kind === 'agency' ? { agency: ref } : { organization: ref };
+}
+
+/** Codes a picked party can cause when HMS will not price its rate. The retry at public rates is for these only. */
+const PARTY_RATE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'business_party_identity_unavailable',
+  'business_party_lookup_unavailable',
+  'business_party_source_unbound',
+  'business_selected_price_unavailable',
+  'business_selected_joint_inventory_unavailable',
+  'staff_quote_party_unavailable',
+  'staff_quote_party_invalid',
+  'staff_quote_party_changed',
+]);
+
+export function isPartyRateFailure(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
+  return PARTY_RATE_FAILURE_CODES.has(code);
+}
+
+/** The review item for a quote that fell back to public rates because HMS could not apply the picked party's rate. */
+export function partyRateFallbackNote(name: string): string {
+  return `HMS couldn't apply ${name}'s rate, so these are public rates. Check in HMS.`;
+}
+
+/**
+ * Quotes the picked party first. When HMS cannot price that party, quotes once more at public rates and returns the
+ * review note saying so. Any other failure, and every quote without a picked party, fails as before.
+ */
+export async function quoteWithPartyFallback<T, P>(options: {
+  input: StaffQuoteInput;
+  first: P;
+  retry: () => P;
+  run: (attempt: P) => Promise<T>;
+}): Promise<{ prepared: P; result: T; note: string | null }> {
+  try {
+    return { prepared: options.first, result: await options.run(options.first), note: null };
+  } catch (error) {
+    if (!options.input.party || !isPartyRateFailure(error)) throw error;
+    const retry = options.retry();
+    return {
+      prepared: retry,
+      result: await options.run(retry),
+      note: partyRateFallbackNote(options.input.party.name),
+    };
+  }
+}
 export type StaffQuoteScope = {
   transportId: string;
   userId: string;
@@ -97,6 +169,7 @@ export function prepareStaffQuote(
   scope: StaffQuoteScope,
   signer: Pick<RevisionProposalHeader, 'signerName' | 'signerEmail'>,
   signal: AbortSignal,
+  rates: StaffQuoteRates = 'party',
 ) {
   input = staffQuoteInput.parse(input);
   signal.throwIfAborted();
@@ -150,6 +223,10 @@ export function prepareStaffQuote(
       },
       details: 'full',
       maxOptionsPerGroup: 50,
+      // Only a picked party with the kill switch on adds rate context. Without one the request is unchanged.
+      ...(input.party && rates === 'party' && quoteRateContextEnabled()
+        ? { rateContext: partyRateContext(input.party) }
+        : {}),
     };
   const inputDigest = quoteDigest({
       input,
@@ -213,7 +290,7 @@ export function prepareStaffQuote(
     header,
     inputDigest,
     authorizationId,
-    approval: { context, request, header } satisfies NonNullable<
+    approval: { context, request, header, rates } satisfies NonNullable<
       Parameters<typeof createReservationistBusinessServices>[1]
     >,
   };
