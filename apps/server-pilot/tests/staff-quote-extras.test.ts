@@ -51,6 +51,28 @@ describe('buildStaffProposalFacts', () => {
     expect(lines[0].totalMinor).toBe(12_500 * 6);
   });
 
+  it('charges the dinner allowance only to the groups that took the B&B fallback, never to the other guests', async () => {
+    const revision = await syntheticRevision();
+    const groups = [
+      { id: 'dinner', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 2, childrenAges: [], board: 'bb' as const },
+      { id: 'room', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 1, childrenAges: [], board: 'room_only' as const },
+    ];
+    const onDinner = buildStaffProposalFacts(
+      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['dinner'] }),
+      scope,
+      { authorizationId: revision.authorizationId },
+      revision,
+    );
+    expect(onDinner.facts?.extras[0]).toMatchObject({ units: 6 });
+    const onOtherDates = buildStaffProposalFacts(
+      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['elsewhere'] }),
+      scope,
+      { authorizationId: revision.authorizationId },
+      revision,
+    );
+    expect(onOtherDates.factRefs).toEqual([]);
+  });
+
   it('adds a shuttle review item without an extras line when shuttle has no amount', async () => {
     const revision = await syntheticRevision();
     const built = buildStaffProposalFacts(

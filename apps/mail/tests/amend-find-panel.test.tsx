@@ -8,9 +8,14 @@ import {
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
+  amendSearchClientFromTrpc,
+  hmsNumberFor,
+  noSearchMatchCopy,
   notHmsNumberNote,
   runHmsFind,
+  runHmsSearch,
   type AmendFindClient,
+  type AmendSearchClient,
   type FindStayReply,
   type StayRecordWire,
 } from '../lib/quote-workflow/amend-find';
@@ -115,12 +120,37 @@ function refusal(outcome: string): FindStayReply {
 }
 
 /** The paneStayLookup routes and the capability route, as the panel reads them off the tRPC client. */
-function lookupTrpc(findStay: ReturnType<typeof vi.fn>, shot: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(NO_SHOT)) {
+function lookupTrpc(
+  findStay: ReturnType<typeof vi.fn>,
+  shot: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(NO_SHOT),
+  searchGuest: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null }),
+) {
   return {
-    paneStayLookup: { findStay: { mutate: findStay }, screenshot: { query: shot } },
+    paneStayLookup: {
+      findStay: { mutate: findStay },
+      screenshot: { query: shot },
+      searchGuest: { mutate: searchGuest },
+    },
     brain: { getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) } },
   };
 }
+
+const ROW_MOKOENA = {
+  confirmation: '46184891-1',
+  firstName: 'Thabo',
+  lastName: 'Mokoena',
+  status: 'Reserved',
+  arrival: '2026-10-12',
+  departure: '2026-10-13',
+};
+const ROW_CANCELLED = {
+  confirmation: '46184892-1',
+  firstName: 'Lerato',
+  lastName: 'Mokoena',
+  status: 'Cancelled',
+  arrival: '2026-10-12',
+  departure: null,
+};
 
 /** Staff press the find button. The panel never looks up HMS on its own. */
 function pressFind() {
@@ -271,7 +301,7 @@ describe('AmendLookupPanel', () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          'No booking with that number in HMS. Check the number in the email or search HMS by guest name.',
+          'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
         ),
       ).toBeTruthy(),
     );
@@ -296,7 +326,7 @@ describe('AmendLookupPanel', () => {
     );
     expect(
       screen.getByText(
-        "The number in the email (9999SH999999) looks like the agent's own reference, not an HMS booking number. Search HMS by guest name.",
+        "The number in the email (9999SH999999) looks like the agent's own reference, not an HMS booking number. Find the booking by guest name below.",
       ),
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
@@ -311,7 +341,7 @@ describe('AmendLookupPanel', () => {
     const button = screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(
-      screen.getByText("Luna couldn't find a booking number in the email. Search HMS by name instead."),
+      screen.getByText("Luna couldn't find a booking number in the email. Find the booking by guest name below."),
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
     expect(findStay).not.toHaveBeenCalled();
@@ -351,6 +381,208 @@ describe('AmendLookupPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
     expect(findStay).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AmendLookupPanel guest-name search', () => {
+  const NO_NUMBER: QuoteAmendment = { ...AMEND, confirmationNumber: null };
+  const SEARCH_BUTTON = 'Search HMS (about 1 minute)';
+  const NO_ROWS_OK = { outcome: 'ok', rows: [], screenshots: [], runId: null };
+
+  it('prefills the name search from the email, and opens it when the email has no booking number', () => {
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn())} />);
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-10-12');
+    expect((screen.getByLabelText('Departure (optional)') as HTMLInputElement).value).toBe('2026-10-14');
+    expect((screen.getByRole('button', { name: SEARCH_BUTTON }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('keeps the name search closed while the email has a usable booking number', () => {
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn())} />);
+    expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+  });
+
+  it('searches by surname and arrival, lists the bookings, and a click runs the find for that booking', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    const search = vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      rows: [ROW_MOKOENA, ROW_CANCELLED],
+      screenshots: [],
+      runId: null,
+    });
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(findStay, undefined, search)} />);
+    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await waitFor(() =>
+      expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' }),
+    );
+    const list = await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    const items = within(list).getAllByRole('button') as HTMLButtonElement[];
+    expect(items).toHaveLength(2);
+    expect(items[0]?.textContent).toContain('46184891-1');
+    expect(items[0]?.textContent).toContain('Thabo Mokoena');
+    expect(items[0]?.textContent).toContain('Reserved');
+    expect(items[0]?.textContent).toContain('12 Oct 2026 to 13 Oct 2026');
+    expect(items[1]?.textContent).toContain('Cancelled');
+    expect(items[1]?.textContent).toContain('12 Oct 2026 to Not shown');
+    fireEvent.click(items[0] as HTMLButtonElement);
+    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    expect(findStay).toHaveBeenCalledWith({ confirmation: '46184891-1', arrival: '2026-10-12' });
+    expect(screen.getByText('confirmation number 46184891-1')).toBeTruthy();
+  });
+
+  it('says no booking matched the surname and arrival, and says what to check', async () => {
+    const search = vi.fn().mockResolvedValue(NO_ROWS_OK);
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
+    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await waitFor(() =>
+      expect(
+        screen.getByText('No booking for Mokoena arriving 12 Oct 2026 in HMS. Check the spelling or dates.'),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByRole('list', { name: 'Bookings found in HMS' })).toBeNull();
+  });
+
+  it('says to add the departure date when the search is capped, and lists nothing from the partial read', async () => {
+    const search = vi.fn().mockResolvedValue({ outcome: 'ambiguous_capped', rows: [], screenshots: [], runId: null });
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
+    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await waitFor(() => expect(screen.getByText('Many matches — add the departure date.')).toBeTruthy());
+    expect(screen.queryByRole('list', { name: 'Bookings found in HMS' })).toBeNull();
+  });
+
+  it('maps a refused search to plain copy, and checks the dates before any call', async () => {
+    const search = vi.fn().mockResolvedValue({ outcome: 'refused_lock_busy', rows: [], screenshots: [], runId: null });
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
+    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await waitFor(() =>
+      expect(screen.getByText('HMS is busy with another quote or lookup. Try again in a minute.')).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByLabelText('Departure (optional)'), { target: { value: '2026-10-11' } });
+    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await waitFor(() => expect(screen.getByText('Check the surname and dates, then search again.')).toBeTruthy());
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a digits-only number as its first stay, and opens the name search when HMS does not know it', async () => {
+    const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
+    render(
+      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '57291630' })} trpc={lookupTrpc(findStay)} />,
+    );
+    expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+    pressFind();
+    await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: '57291630-1', arrival: '2026-10-12' }));
+    await waitFor(() => expect(screen.getByTestId('amend-guest-search')).toBeTruthy());
+    expect(
+      screen.getByText(
+        'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
+      ),
+    ).toBeTruthy();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
+  });
+
+  it('finds a digits-only number as its first stay, the same as a dash number, and shows that booking', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(
+      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '57291630' })} trpc={lookupTrpc(findStay)} />,
+    );
+    pressFind();
+    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    expect(findStay).toHaveBeenCalledWith({ confirmation: '57291630-1', arrival: '2026-10-12' });
+    expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+  });
+});
+
+describe('guest-name search helpers', () => {
+  it('reads a digits-only email number as its first stay, and takes a dash number as written', () => {
+    expect(hmsNumberFor('57291630')).toBe('57291630-1');
+    expect(hmsNumberFor(' 5729163012 ')).toBe('5729163012-1');
+    expect(hmsNumberFor('57291630-2')).toBe('57291630-2');
+    expect(hmsNumberFor('12345')).toBeNull();
+    expect(hmsNumberFor('9999SH999999')).toBeNull();
+    expect(hmsNumberFor(null)).toBeNull();
+  });
+
+  it('binds searchGuest to the paneStayLookup route only', async () => {
+    expect(amendSearchClientFromTrpc({ paneStayLookup: { findStay: {} } })).toBeNull();
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
+    const client = amendSearchClientFromTrpc(lookupTrpc(vi.fn(), undefined, search));
+    await client?.searchGuest({ lastName: 'Mokoena', arrival: '2026-10-12' });
+    expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12' });
+  });
+
+  it('sends a surname of 2 to 40 letters, spaces, apostrophes or hyphens and a real arrival, and nothing else', async () => {
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
+    const client: AmendSearchClient = { searchGuest: search };
+    await expect(runHmsSearch({ client, lastName: 'X', arrival: '2026-10-12' })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.searchInvalid,
+    });
+    await expect(runHmsSearch({ client, lastName: "O'Brien-Jones", arrival: '2026-02-31' })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.searchInvalid,
+    });
+    await expect(runHmsSearch({ client, lastName: 'Mok0ena', arrival: '2026-10-12' })).resolves.toMatchObject({
+      kind: 'error',
+    });
+    expect(search).not.toHaveBeenCalled();
+    await runHmsSearch({ client, lastName: "  O'Brien   Jones ", arrival: '2026-10-12' });
+    expect(search).toHaveBeenCalledWith({ lastName: "O'Brien Jones", arrival: '2026-10-12' });
+  });
+
+  it('turns each search outcome into rows, the no-match or capped state, or plain copy', async () => {
+    const reply = (outcome: string, rows: unknown[] = []) =>
+      vi.fn().mockResolvedValue({ outcome, rows, screenshots: [], runId: null });
+    const base = { lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' };
+    await expect(runHmsSearch({ client: { searchGuest: reply('ok', [ROW_MOKOENA]) }, ...base })).resolves.toEqual({
+      kind: 'rows',
+      rows: [ROW_MOKOENA],
+    });
+    await expect(runHmsSearch({ client: { searchGuest: reply('ok') }, ...base })).resolves.toEqual({
+      kind: 'none',
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+    });
+    await expect(runHmsSearch({ client: { searchGuest: reply('ambiguous_capped') }, ...base })).resolves.toEqual({
+      kind: 'capped',
+    });
+    await expect(runHmsSearch({ client: { searchGuest: reply('execution_failure') }, ...base })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.searchFailed,
+    });
+    await expect(
+      runHmsSearch({
+        client: { searchGuest: vi.fn().mockRejectedValue(new Error('socket hang up')) },
+        ...base,
+      }),
+    ).resolves.toEqual({ kind: 'error', message: AMEND_FIND_COPY.searchFailed });
+    await expect(runHmsSearch({ client: null, ...base })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.unavailable,
+    });
+    await expect(runHmsSearch({ client: { searchGuest: reply('refused_flag_off') }, ...base })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.unavailable,
+    });
+  });
+
+  it('names the surname and arrival in the no-match copy', () => {
+    expect(noSearchMatchCopy('Mokoena', '2026-10-12')).toBe(
+      'No booking for Mokoena arriving 12 Oct 2026 in HMS. Check the spelling or dates.',
+    );
+  });
+
+  it('refuses a departure that is not a real day after the arrival, with no call', async () => {
+    const search = vi.fn();
+    const client: AmendSearchClient = { searchGuest: search };
+    await expect(
+      runHmsSearch({ client, lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-12' }),
+    ).resolves.toEqual({ kind: 'error', message: AMEND_FIND_COPY.searchInvalid });
+    await expect(
+      runHmsSearch({ client, lastName: 'Mokoena', arrival: '2026-10-12', departure: 'next week' }),
+    ).resolves.toEqual({ kind: 'error', message: AMEND_FIND_COPY.searchInvalid });
+    expect(search).not.toHaveBeenCalled();
   });
 });
 
@@ -433,6 +665,37 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does not carry a preview over to another booking picked from the name search', async () => {
+    capabilities.paneSave = true;
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA, ROW_CANCELLED], screenshots: [], runId: null });
+    const findStay = vi
+      .fn()
+      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []))
+      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+    const trpc = {
+      ...lookupTrpc(findStay, undefined, search),
+      paneStayCancel: {
+        previewCancel: { mutate: preview },
+        commitCancel: { mutate: vi.fn() },
+        paneStayScreenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
+      },
+    };
+    render(<AmendLookupPanel session={sessionWith({ ...CANCEL, confirmationNumber: null })} trpc={trpc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS (about 1 minute)' }));
+    const bookings = () => within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button');
+    await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    fireEvent.click(bookings()[0] as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText(`HMS says: ${PENALTY}`)).toBeTruthy();
+
+    fireEvent.click(bookings()[1] as HTMLButtonElement);
+    await waitFor(() => expect(findStay).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
+    expect(screen.queryByText(`HMS says: ${PENALTY}`)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
   });
 
   it('says so when HMS shows no cancellation fee', async () => {

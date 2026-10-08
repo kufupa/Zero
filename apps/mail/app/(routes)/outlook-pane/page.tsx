@@ -127,8 +127,10 @@ import {
   canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
+  dinnerAllowanceStillRequired,
   evidenceMatchesSession,
   groupsForQuoteStep,
+  quoteRunIsCurrent,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
@@ -632,6 +634,15 @@ export default function OutlookPanePage() {
       setPingErrorMessage(err instanceof Error ? err.message : 'Connection failed');
     }
   };
+
+  // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
+  const pendingDinnerFallbackStepRef = useRef<string | null>(null);
+  useEffect(() => {
+    const stepId = pendingDinnerFallbackStepRef.current;
+    if (!stepId) return;
+    pendingDinnerFallbackStepRef.current = null;
+    runQuoteStep(stepId);
+  }, [quoteSession.inputRevision]);
 
   if (isLoading) {
     return (
@@ -1146,7 +1157,28 @@ export default function OutlookPanePage() {
           selectionEpoch,
           inputRevision,
         });
-        toast.warning(remote.reason);
+        const dinnerGroupIds = stayGroups
+          .filter((group) => group.board === 'dinner_bb')
+          .map((group) => group.id);
+        if (remote.noMatchingRate && dinnerGroupIds.length) {
+          toast.warning(remote.reason, {
+            duration: 60_000,
+            action: {
+              label: 'Quote as B&B + dinner allowance',
+              onClick: () => {
+                // The offer belongs to the run that made it. If staff have since moved to another email or edited
+                // the inputs, it is stale and must not patch the current quote.
+                if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
+                  toast.warning('That quote has changed. Run the quote again to quote as B&B.');
+                  return;
+                }
+                quoteAsBbWithDinnerAllowance(step.id, dinnerGroupIds);
+              },
+            },
+          });
+        } else {
+          toast.warning(remote.reason);
+        }
         return;
       }
       dispatchQuote({
@@ -1186,11 +1218,27 @@ export default function OutlookPanePage() {
   };
 
   /**
+   * One-click dinner fallback after a clean HMS no-match: switch the dinner groups to B&B, mark the
+   * dinner allowance as staff-entered (never priced here), then re-run the same quote step once the
+   * patched session has rendered (see pendingDinnerFallbackStepRef).
+   */
+  const quoteAsBbWithDinnerAllowance = (stepId: string, groupIds: string[]) => {
+    if (!groupIds.length) return;
+    pendingDinnerFallbackStepRef.current = stepId;
+    dispatchQuote({ type: 'staff_dinner_bb_fallback', groupIds });
+    toast.warning('Quoting as Bed & Breakfast. Enter the dinner allowance per person per night before preparing the PDF.');
+  };
+
+  /**
    * Builds the quotation PDF for one date option from that option's own run.
    * A null stayKey means the selected option (the "Prepare quotation PDF" button).
    */
   const preparePdfFor = (stayKey: string | null) => {
     const session = quoteSessionRef.current;
+    if (dinnerAllowanceStillRequired(session.staffHeader)) {
+      toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
+      return;
+    }
     const key = stayKey ?? session.selectedStayKey;
     const quote = key ? (session.staffQuotes[key] ?? null) : null;
     const source = session.staffSource;

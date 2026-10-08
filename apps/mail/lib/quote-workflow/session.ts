@@ -568,6 +568,21 @@ function applyGroupPatch(
   return { ...group, ...patch, id: group.id, fields };
 }
 
+/** A B&B fallback for dinner needs a staff-entered per-person allowance before any PDF; never price it here. */
+export function dinnerAllowanceStillRequired(
+  header: Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor'>,
+): boolean {
+  return Boolean(header.dinnerAllowanceRequired) && !(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0);
+}
+
+/** A quote run and the actions it offers belong to one selection and one input revision. Once either moves on, they are stale. */
+export function quoteRunIsCurrent(
+  session: Pick<QuoteSession, 'binding' | 'inputRevision'>,
+  run: { selectionEpoch: number; inputRevision: number },
+): boolean {
+  return (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch && session.inputRevision === run.inputRevision;
+}
+
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
   switch (action.type) {
     case 'reset':
@@ -853,6 +868,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     case 'analysis_unsupported':
       return { ...session, phase: 'unsupported', errorMessage: action.message };
+    case 'staff_dinner_bb_fallback': {
+      if (!action.groupIds.length) return session;
+      const patched = action.groupIds.reduce<QuoteSession>(
+        (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { board: 'bb' } }),
+        session,
+      );
+      // The allowance is for the groups that fell back, so the header keeps their ids for the quote run to scope it.
+      const dinnerAllowanceGroupIds = [
+        ...new Set([...(patched.staffHeader.dinnerAllowanceGroupIds ?? []), ...action.groupIds]),
+      ];
+      return {
+        ...patched,
+        staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds },
+      };
+    }
     case 'patch_group': {
       const groups = session.groups.map((group) =>
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,

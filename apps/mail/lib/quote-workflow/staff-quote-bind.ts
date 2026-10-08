@@ -67,6 +67,7 @@ export type ExecuteStaffQuoteInput = {
   clientEmail: string;
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceGroupIds?: string[];
   shuttleRequested?: boolean;
   shuttleMinor?: number;
   /** Sent only when staff picked a company or agency in HMS. Without one the request is unchanged. */
@@ -350,8 +351,11 @@ export async function bindStaffActions(args: {
   }
 }
 
+/** Must match NATIVE_NO_MATCHING_RATE_PREFIX in apps/server-pilot/src/trpc/routes/workstation.ts. */
+const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
+
 export type BoundExecuteStaffQuote =
-  | { status: 'unavailable'; reason: string }
+  | { status: 'unavailable'; reason: string; noMatchingRate?: boolean }
   | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
 
 export function allocationFromStaffQuote(
@@ -378,7 +382,25 @@ export function allocationFromStaffQuote(
   };
 }
 
-export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
+/**
+ * The dinner-allowance groups for one quote. The header holds ids from every date option, but the server
+ * caps the list at 8 and charges only the listed groups, so each quote keeps just its own ids. An empty
+ * list is kept on purpose: an omitted list would charge every group.
+ */
+function dinnerAllowanceGroupIdsFor(
+  header: StaffQuoteHeader,
+  quoteGroupIds?: readonly string[],
+): string[] | undefined {
+  const ids = header.dinnerAllowanceGroupIds;
+  if (!ids?.length) return undefined;
+  const inQuote = quoteGroupIds ? new Set(quoteGroupIds) : null;
+  return [...new Set(ids)].filter((id) => !inQuote || inQuote.has(id));
+}
+
+export function approvedExecuteHeader(
+  header: StaffQuoteHeader,
+  quoteGroupIds?: readonly string[],
+): Pick<
   ExecuteStaffQuoteInput,
   | 'salesStrategy'
   | 'company'
@@ -387,6 +409,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   | 'clientEmail'
   | 'clientTelephone'
   | 'dinnerAllowanceMinor'
+  | 'dinnerAllowanceGroupIds'
   | 'shuttleRequested'
   | 'shuttleMinor'
 > {
@@ -394,6 +417,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   if (!salesStrategy) {
     throw new Error('Choose the rate type (BAR or Government) before running the quote.');
   }
+  const dinnerGroupIds = dinnerAllowanceGroupIdsFor(header, quoteGroupIds);
   return {
     salesStrategy,
     company: header.company.trim(),
@@ -402,7 +426,10 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
     clientEmail: header.clientEmail.trim(),
     clientTelephone: header.clientTelephone.trim(),
     ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
-      ? { dinnerAllowanceMinor: header.dinnerAllowanceMinor }
+      ? {
+          dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+          ...(dinnerGroupIds ? { dinnerAllowanceGroupIds: dinnerGroupIds } : {}),
+        }
       : {}),
     ...(header.shuttleRequested ? { shuttleRequested: true } : {}),
     ...(header.shuttleMinor && header.shuttleMinor > 0 ? { shuttleMinor: header.shuttleMinor } : {}),
@@ -427,7 +454,10 @@ export async function bindExecuteStaffQuote(args: {
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
-    const header = approvedExecuteHeader(args.header);
+    const header = approvedExecuteHeader(
+      args.header,
+      prepared.ok.map((group) => group.id),
+    );
     const result = await args.mutate({
       messageId: args.source.messageId,
       sourceHash: args.source.sourceHash,
@@ -504,7 +534,12 @@ export async function bindExecuteStaffQuote(args: {
         : [],
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error) };
+    const reason = rejectionReason(error);
+    return {
+      status: 'unavailable',
+      reason,
+      noMatchingRate: reason.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX),
+    };
   }
 }
 

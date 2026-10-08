@@ -12,6 +12,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { TRPCError } from '@trpc/server';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
+import { awaitPendingStaffQuote } from '../src/ai/staff-quote-trace-async.js';
 
 const hoisted = vi.hoisted(() => ({
   db: undefined as unknown,
@@ -19,6 +21,7 @@ const hoisted = vi.hoisted(() => ({
   services: vi.fn(),
   executeStaffQuote: vi.fn(),
   emitEvidence: false,
+  lockReleased: undefined as (() => void) | undefined,
 }));
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
@@ -37,7 +40,11 @@ vi.mock('../src/hms/property-read-lock.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/property-read-lock.js')>()),
   createPostgresPropertyReadLock: () => ({
     key: '0',
-    withLock: async <T>(callback: () => Promise<T>) => callback(),
+    withLock: async <T>(callback: () => Promise<T>) => {
+      const value = await callback();
+      hoisted.lockReleased?.();
+      return value;
+    },
   }),
 }));
 vi.mock('../src/quote-proposal/quote-lines.js', async (importOriginal) => ({
@@ -236,6 +243,7 @@ function installation() {
 beforeEach(async () => {
   outputDir = await mkdtemp(join(tmpdir(), 'zero-quote-run-'));
   hoisted.emitEvidence = false;
+  hoisted.lockReleased = undefined;
   hoisted.configure.mockReset();
   hoisted.services.mockReset();
   hoisted.executeStaffQuote.mockReset();
@@ -450,5 +458,222 @@ describe('workstation.executeStaffQuote run evidence', () => {
         values: expect.objectContaining({ status: 'failed' }),
       }),
     );
+  });
+});
+
+describe('workstation.executeStaffQuote provisional trace (QUOTE_TRACE_ASYNC)', () => {
+  const quoteRevision = (prepared: { authorizationId: string }) => ({
+    id: 'rev-synthetic-async',
+    authorizationId: prepared.authorizationId,
+    totalMinor: 220002,
+    currency: 'ZAR',
+    groups: [{ arrivalDate: '2026-10-12', departureDate: '2026-10-15', context: {} }],
+  });
+
+  /**
+   * The installation hands the mutation a finish promise, as the provisional dispatch does. The test
+   * decides when the capture child's trace finishes, and whether that finish succeeds.
+   */
+  function provisionalCapture(options: { failAfterCapture?: boolean } = {}) {
+    let emit: ((finished: Promise<void>) => void) | undefined;
+    let settle!: { resolve: () => void; reject: (error: Error) => void };
+    const finished = new Promise<void>((resolve, reject) => (settle = { resolve, reject }));
+    finished.catch(() => undefined);
+    hoisted.configure.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: {
+        cdpUrl: 'http://127.0.0.1:9222',
+        browserOwnership: 'borrowed',
+        propertyCode: 'HRCEN',
+        secretPath: '/synthetic/secret.json',
+      },
+      outputDir,
+      ratePolicyConfigurationPath: '/synthetic/policy.json',
+    });
+    hoisted.services.mockImplementation(
+      (serviceOptions: {
+        onEvidenceDirectory?: (directory: string) => void;
+        onTraceFinish?: (finished: Promise<void>) => void;
+      }) => {
+        emit = serviceOptions.onTraceFinish;
+        serviceOptions.onEvidenceDirectory?.(join(outputDir, RUN));
+        return { resolveQuoteTask: async () => ({}), authorizeGuestProposal: async () => true };
+      },
+    );
+    hoisted.executeStaffQuote.mockImplementation(async (prepared: { authorizationId: string }) => {
+      emit?.(finished);
+      if (options.failAfterCapture) throw new Error('staff_quote_proposal_unauthorized');
+      return quoteRevision(prepared);
+    });
+    return {
+      finish: () => settle.resolve(),
+      fail: (error: Error) => settle.reject(error),
+    };
+  }
+
+  /** Resolves with the quote if the mutation returns first, or with a marker if it is still waiting. */
+  const returnsBeforeFinish = <T>(promise: Promise<T>) =>
+    Promise.race([promise, delay(300).then(() => 'still-waiting' as const)]);
+
+  it('returns the captured quote while the trace finishes, releasing the lock and recording the run only after', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['login-complete.png', 'group-1-availability-results.png']);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    const capture = provisionalCapture();
+    const released: string[] = [];
+    hoisted.lockReleased = () => released.push('lock');
+
+    const early = await returnsBeforeFinish(caller().workstation.executeStaffQuote(quoteInput));
+    expect(early).toMatchObject({ status: 'ready', runId: RUN });
+    expect(released).toEqual([]);
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+
+    capture.finish();
+    await awaitPendingStaffQuote(RUN);
+    expect(released).toEqual(['lock']);
+    const run = fake.inserted.find((entry) => entry.table === aiWorkflowRun);
+    expect(run?.values.metrics).toMatchObject({ staffQuoteEvidence: { runId: RUN } });
+  });
+
+  it('when the trace fails, the quote was already returned but no run is recorded and the generation fails', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    const capture = provisionalCapture();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const early = await returnsBeforeFinish(caller().workstation.executeStaffQuote(quoteInput));
+    expect(early).toMatchObject({ status: 'ready' });
+    capture.fail(new Error('staff_quote_trace_finish_failed'));
+    await awaitPendingStaffQuote(RUN);
+
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+    expect(fake.updated).toContainEqual(
+      expect.objectContaining({
+        table: aiDraftGeneration,
+        values: expect.objectContaining({
+          status: 'failed',
+          errorMessage: 'staff_quote_trace_finish_failed',
+        }),
+      }),
+    );
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('not recorded'));
+    logged.mockRestore();
+  });
+
+  it('a newer approval during the trace stops the run from being recorded', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    const capture = provisionalCapture();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await caller().workstation.executeStaffQuote(quoteInput);
+    // A later approval for the same message becomes the latest generation.
+    await (
+      fake.db as unknown as {
+        insert: (table: unknown) => { values: (values: Record<string, unknown>) => Promise<void> };
+      }
+    )
+      .insert(aiDraftGeneration)
+      .values({ id: 'gen-newer-approval' });
+    capture.finish();
+    await awaitPendingStaffQuote(RUN);
+
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('staff_quote_superseded'));
+    logged.mockRestore();
+  });
+
+  it('the quote choices for a message wait for a provisional run to finish before listing it', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    hoisted.db = fakeDb({}).db;
+    const capture = provisionalCapture();
+    await caller().workstation.executeStaffQuote(quoteInput);
+
+    const choices = caller().workstation.qualifiedProposalChoices({
+      internetMessageId: mail.messageIdHeader,
+    });
+    await expect(returnsBeforeFinish(choices)).resolves.toBe('still-waiting');
+    capture.finish();
+    await expect(choices).resolves.toMatchObject({ messageId: mail.id });
+  });
+
+  it('a screenshot for a provisional run waits for its trace to finish before it is read', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    hoisted.db = fakeDb({ ownedRunIds: [RUN] }).db;
+    const capture = provisionalCapture();
+    await caller().workstation.executeStaffQuote(quoteInput);
+
+    const shot = caller().workstation.quoteRunScreenshot({
+      runId: RUN,
+      name: 'group-1-availability-results.png',
+    });
+    await expect(returnsBeforeFinish(shot)).resolves.toBe('still-waiting');
+    capture.finish();
+    await expect(shot).resolves.toMatchObject({
+      status: 'ready',
+      name: 'group-1-availability-results.png',
+    });
+  });
+
+  it('when the quote fails after a provisional capture, the failure waits for the trace and records nothing', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun([]);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    const capture = provisionalCapture({ failAfterCapture: true });
+    const outcome = caller()
+      .workstation.executeStaffQuote(quoteInput)
+      .then(
+        () => 'resolved',
+        (error: TRPCError) => error.code,
+      );
+
+    await expect(returnsBeforeFinish(outcome)).resolves.toBe('still-waiting');
+    capture.finish();
+    await expect(outcome).resolves.toBe('PRECONDITION_FAILED');
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+  });
+
+  it('with the flag off, the lock is released before the run is recorded, as before', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'off');
+    await seedRun(['group-1-availability-results.png']);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    installation();
+    hoisted.emitEvidence = true;
+    const order: string[] = [];
+    const runsRecorded = () => fake.inserted.filter((entry) => entry.table === aiWorkflowRun).length;
+    hoisted.lockReleased = () => order.push(`lock with ${runsRecorded()} runs recorded`);
+    hoisted.executeStaffQuote.mockImplementation(async (prepared: { authorizationId: string }) =>
+      quoteRevision(prepared),
+    );
+
+    const quote = await caller().workstation.executeStaffQuote(quoteInput);
+    expect(quote).toMatchObject({ status: 'ready', runId: RUN });
+    expect(order).toEqual(['lock with 0 runs recorded']);
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(true);
+  });
+
+  it('with the flag on but no provisional capture, the run is recorded before the response, as before', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    const fake = fakeDb({});
+    hoisted.db = fake.db;
+    installation();
+    hoisted.emitEvidence = true;
+    hoisted.executeStaffQuote.mockImplementation(async (prepared: { authorizationId: string }) =>
+      quoteRevision(prepared),
+    );
+
+    const quote = await caller().workstation.executeStaffQuote(quoteInput);
+    expect(quote).toMatchObject({ status: 'ready', runId: RUN });
+    expect(fake.inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(true);
   });
 });

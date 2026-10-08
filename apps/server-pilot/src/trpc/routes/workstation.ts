@@ -62,6 +62,11 @@ import {
   QUOTE_SCREENSHOT_NAME_PATTERN,
   readQuoteRunScreenshot,
 } from '../../ai/staff-quote-evidence.js';
+import {
+  awaitPendingStaffQuote,
+  quoteTraceAsyncEnabled,
+  registerPendingStaffQuote,
+} from '../../ai/staff-quote-trace-async.js';
 import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
@@ -106,8 +111,23 @@ function isHmsExecutionFailure(error: unknown, code: string, phase: string): boo
   return error instanceof Error && (error.name === 'TimeoutError' || /timeout/i.test(error.message));
 }
 
-export function staffQuoteFailureMessage(error: unknown): string {
+export const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
+
+/** Clean HMS no-match: name the strategy, and offer the dinner fallback only when dinner was requested. */
+export function nativeNoMatchingRateMessage(context: { salesStrategy?: string; dinnerRequested?: boolean }): string {
+  const strategy = context.salesStrategy ?? 'the selected rate type';
+  const next = context.dinnerRequested
+    ? 'For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.'
+    : 'Try another meal plan or rate type.';
+  return `${NATIVE_NO_MATCHING_RATE_PREFIX}${strategy}. ${next}`;
+}
+
+export function staffQuoteFailureMessage(
+  error: unknown,
+  context: { salesStrategy?: string; dinnerRequested?: boolean } = {},
+): string {
   const code = staffQuoteFailureCode(error);
+  if (code === 'native_quote_no_matching_rate') return nativeNoMatchingRateMessage(context);
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',
@@ -365,6 +385,43 @@ export const quoteRunScreenshotInput = z
   })
   .strict();
 
+type DeferredQuoteRevision = {
+  promise: Promise<QuoteRevision>;
+  resolve: (revision: QuoteRevision) => void;
+  reject: (error: unknown) => void;
+};
+
+function deferredQuoteRevision(): DeferredQuoteRevision {
+  let resolve!: (revision: QuoteRevision) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<QuoteRevision>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * Provisional mode only. Resolves `captured` once the quote is captured, then keeps the caller's
+ * property lock held until every capture child has exited, so its trace has finished first.
+ */
+async function awaitProvisionalCapture(
+  quote: Promise<QuoteRevision>,
+  finishes: readonly Promise<void>[],
+  captured: DeferredQuoteRevision,
+): Promise<QuoteRevision> {
+  let revision: QuoteRevision;
+  try {
+    revision = await quote;
+  } catch (error) {
+    await Promise.allSettled(finishes);
+    throw error;
+  }
+  if (finishes.length) captured.resolve(revision);
+  await Promise.all(finishes);
+  return revision;
+}
+
 export const workstationRouter = router({
   outlookSync: outlookSyncRouter,
   /** Own staff quote run status. HMS-free and cheap; the pane polls only while pending. */
@@ -390,6 +447,7 @@ export const workstationRouter = router({
   quoteRunScreenshot: mailboxProcedure
     .input(quoteRunScreenshotInput)
     .query(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.runId);
       const [owned] = await getDb()
         .select({ id: aiWorkflowRun.id })
         .from(aiWorkflowRun)
@@ -534,6 +592,12 @@ export const workstationRouter = router({
       userId: scope.userId,
       lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
     });
+    // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
+    // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
+    const traceAsync = quoteTraceAsyncEnabled();
+    const traceFinishes: Promise<void>[] = [];
+    let queueEndedLater = false;
+    let lockRun: Promise<QuoteRevision> | undefined;
     try {
       const lock = createPostgresPropertyReadLock({
         tenantId: config.tenantId,
@@ -554,6 +618,9 @@ export const workstationRouter = router({
             onEvidenceDirectory: (directory) => {
               evidence.directory = directory;
             },
+            onTraceFinish: (finished) => {
+              traceFinishes.push(finished);
+            },
           },
           attempt.approval,
         );
@@ -572,12 +639,13 @@ export const workstationRouter = router({
           stillCurrent,
         );
       };
+      const captured = deferredQuoteRevision();
       try {
-        revision = await lock.withLock(
+        lockRun = lock.withLock(
           async () => {
             queued.setPhase(1);
             // A picked party HMS cannot price is quoted once more at public rates; the review note says so.
-            const attempt = await quoteWithPartyFallback({
+            const quote = quoteWithPartyFallback({
               input,
               first: prepared,
               retry: () =>
@@ -589,13 +657,24 @@ export const workstationRouter = router({
                   'public',
                 ),
               run: quoteAt,
+            }).then((attempt) => {
+              prepared = attempt.prepared;
+              fallback.note = attempt.note ?? undefined;
+              return attempt.result;
             });
-            prepared = attempt.prepared;
-            fallback.note = attempt.note ?? undefined;
-            return attempt.result;
+            return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
           },
           { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
         );
+        if (traceAsync) {
+          lockRun.then(
+            (value) => captured.resolve(value),
+            (error) => captured.reject(error),
+          );
+          revision = await captured.promise;
+        } else {
+          revision = await lockRun;
+        }
       } catch (error) {
         console.warn('staff_quote_failed', staffQuoteFailureLog(error));
         await db
@@ -604,7 +683,10 @@ export const workstationRouter = router({
           .where(eq(aiDraftGeneration.id, generationId));
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: staffQuoteFailureMessage(error),
+          message: staffQuoteFailureMessage(error, {
+            salesStrategy: input.salesStrategy,
+            dinnerRequested: input.groups.some((group) => group.board === 'dinner_bb'),
+          }),
         });
       }
       queued.setPhase(3);
@@ -624,12 +706,13 @@ export const workstationRouter = router({
       const runId = evidence.directory
         ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
         : null;
-      await db.transaction(async (tx) => {
-        await tx
-          .update(aiDraftGeneration)
-          .set({ status: 'succeeded' })
-          .where(eq(aiDraftGeneration.id, generationId));
-        await tx.insert(aiWorkflowRun).values({
+      const persistRun = () =>
+        db.transaction(async (tx) => {
+          await tx
+            .update(aiDraftGeneration)
+            .set({ status: 'succeeded' })
+            .where(eq(aiDraftGeneration.id, generationId));
+          await tx.insert(aiWorkflowRun).values({
           id: workflowRunId,
           transportId: scope.transportId,
           threadId: scope.threadId,
@@ -652,8 +735,8 @@ export const workstationRouter = router({
             ...(runId ? { staffQuoteEvidence: { runId } } : {}),
           },
         });
-      });
-      return {
+        });
+      const summary = async () => ({
         status: 'ready' as const,
         workflowRunId,
         revisionRef: revision.id,
@@ -673,14 +756,42 @@ export const workstationRouter = router({
           .join('; '),
         runId,
         screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
-      };
+      });
+      if (traceAsync && traceFinishes.length > 0 && lockRun) {
+        // The quote is shown now. The run is recorded, and the queue freed, only after the lock
+        // has been released, which happens once the trace has finished.
+        queueEndedLater = true;
+        const pending = lockRun
+          .then(async () => {
+            // A newer approval may have superseded this generation while the trace finished.
+            if (!(await stillCurrent())) throw new Error('staff_quote_superseded');
+            await persistRun();
+          })
+          .catch(async (error: unknown) => {
+            console.error(
+              `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
+            );
+            await Promise.resolve(
+              db
+                .update(aiDraftGeneration)
+                .set({ status: 'failed', errorMessage: 'staff_quote_trace_finish_failed' })
+                .where(eq(aiDraftGeneration.id, generationId)),
+            ).catch(() => undefined);
+          })
+          .finally(() => queued.end());
+        registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
+        return summary();
+      }
+      await persistRun();
+      return summary();
     } finally {
-      queued.end();
+      if (!queueEndedLater) queued.end();
     }
   }),
   prepareBookingDraft: mailboxProcedure
     .input(prepareBookingDraftInput)
     .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
       const [bound] = await getDb()
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)
@@ -764,6 +875,7 @@ export const workstationRouter = router({
   getPriorStaffQuoteRequote: mailboxProcedure
     .input(getPriorStaffQuoteRequoteInput)
     .query(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
       const [run] = await getDb()
         .select({
           id: aiWorkflowRun.id,
@@ -789,6 +901,7 @@ export const workstationRouter = router({
   usePriorQuoteForBooking: mailboxProcedure
     .input(usePriorQuoteForBookingInput)
     .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
       const [run] = await getDb()
         .select({
           id: aiWorkflowRun.id,
@@ -908,6 +1021,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
       const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const, choices: [] };
+      await awaitPendingStaffQuote(mail.id);
       const runs = await getDb()
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)
@@ -1076,6 +1190,7 @@ export const workstationRouter = router({
   qualifiedQuoteProposalPdf: mailboxProcedure
     .input(qualifiedProposalInput)
     .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
       const [bound] = await getDb()
@@ -1196,6 +1311,7 @@ export const workstationRouter = router({
         .strict(),
     )
     .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
       const [bound] = await getDb()
