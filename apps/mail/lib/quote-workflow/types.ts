@@ -185,6 +185,10 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
+  /** HMS evidence run for the audit view; null when the run left no screenshots. */
+  runId?: string | null;
+  /** Screenshot file names for runId, in capture order. */
+  screenshots?: string[];
 };
 
 export type StaffQuoteHeader = {
@@ -209,6 +213,11 @@ export function emptyStaffQuoteHeader(): StaffQuoteHeader {
     clientTelephone: '',
   };
 }
+
+/** workstation.quoteRunScreenshot result. dataUrl is a PNG data URL. */
+export type QuoteRunScreenshotResult =
+  | { status: 'ready'; name: string; mimeType: string; sizeBytes: number; dataUrl: string }
+  | { status: 'unavailable'; reason: string };
 
 /** workstation.hmsQueueStatus: this caller's staff quote run. `message` is plain English. */
 export type QueueStatus = {

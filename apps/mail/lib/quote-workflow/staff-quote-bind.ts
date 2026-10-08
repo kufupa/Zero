@@ -7,6 +7,7 @@ import type {
 import type {
   QueueStatus,
   QuoteOffer,
+  QuoteRunScreenshotResult,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -85,6 +86,9 @@ export type ExecuteStaffQuoteResult = {
   arrivalDate: string;
   departureDate: string;
   description: string;
+  /** Optional so a pane built before the server change still parses the result. */
+  runId?: string | null;
+  screenshots?: string[];
 };
 
 export type StaffQuoteSourceResult =
@@ -474,6 +478,10 @@ export async function bindExecuteStaffQuote(args: {
         clientEmail: header.clientEmail,
         clientTelephone: header.clientTelephone,
       },
+      runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
+      screenshots: Array.isArray(result.screenshots)
+        ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+        : [],
     };
     return {
       status: 'ok',
@@ -566,6 +574,25 @@ export async function bindQualifiedStaffProposalPdf(args: {
 }
 
 /**
+ * Reads one audit screenshot of a staff quote run. A missing query, a failed read,
+ * or a response that is not a PNG/JPEG data URL resolves to unavailable.
+ */
+export async function bindQuoteRunScreenshot(args: {
+  query?: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
+  runId: string;
+  name: string;
+}): Promise<QuoteRunScreenshotResult> {
+  if (!args.query) return { status: 'unavailable', reason: 'not_connected' };
+  try {
+    const result = await args.query({ runId: args.runId, name: args.name });
+    if (result?.status === 'ready' && result.dataUrl.startsWith('data:image/')) return result;
+    return { status: 'unavailable', reason: result?.status === 'unavailable' ? result.reason : 'invalid_response' };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error) };
+  }
+}
+
+/**
  * Reads the caller's staff quote run status. A missing query (older server) or a
  * failed read resolves to null, so the poller keeps its last good status.
  */
@@ -582,6 +609,9 @@ type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
   hmsQueueStatus?: { query: () => Promise<QueueStatus> };
+  quoteRunScreenshot?: {
+    query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
+  };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {

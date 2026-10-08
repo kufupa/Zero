@@ -105,6 +105,7 @@ import {
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
+  bindQuoteRunScreenshot,
   bindQualifiedStaffProposalPdf,
   bindStaffActions,
   bindStaffQuoteSource,
@@ -1474,6 +1475,12 @@ export default function OutlookPanePage() {
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
               onStaffNote={(staffNote) => dispatchQuote({ type: 'staff_note', staffNote })}
               hmsQueue={{ pending: quoteRunPending, status: hmsQueue }}
+              onLoadRunScreenshot={(input) =>
+                bindQuoteRunScreenshot({
+                  query: staffQuoteFromTrpc(trpcClient).workstation.quoteRunScreenshot?.query,
+                  ...input,
+                })
+              }
               onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
               onViewSource={(item) => {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
@@ -1545,15 +1552,6 @@ export default function OutlookPanePage() {
             />
 
             <div className="flex flex-col gap-2.5">
-                <div className="overflow-hidden rounded-sm border border-amber-200 bg-amber-50 px-2.5 py-2">
-                  <p className="text-[11px] font-semibold text-amber-900">
-                    No HMS screenshot for this quote
-                  </p>
-                  <p className="text-[11px] text-amber-800">
-                    No screenshot is attached to this quote. Check the quoted details and PDF before sending.
-                  </p>
-                </div>
-
                 {/* Draft Quotation into Outlook Reply Button */}
                 <Button
                   type="button"

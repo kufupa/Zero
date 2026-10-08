@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
@@ -9,6 +9,7 @@ import { HmsQueueStatusLine } from './hms-queue-status';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
+import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge } from './workflow-badge';
@@ -269,10 +270,13 @@ function OfferCard({
   offer,
   selected,
   onSelect,
+  showShot = true,
 }: {
   offer: QuoteOffer;
   selected: boolean;
   onSelect?: (id: string) => void;
+  /** A staff quote shows its HMS audit screenshot beside the card instead. */
+  showShot?: boolean;
 }) {
   const varying = new Set(offer.nightly.map((n) => n.amountMinor)).size > 1;
   const shot =
@@ -315,7 +319,7 @@ function OfferCard({
           {restriction}
         </p>
       ))}
-      <p className="text-[11px] text-[#64748b]">{shot}</p>
+      {showShot ? <p className="text-[11px] text-[#64748b]">{shot}</p> : null}
     </button>
   );
 }
@@ -346,6 +350,7 @@ export function QuoteWorkflowPanel({
   onTreatAs,
   onStaffNote,
   hmsQueue,
+  onLoadRunScreenshot,
 }: {
   session: QuoteSession;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
@@ -364,6 +369,8 @@ export function QuoteWorkflowPanel({
   onStaffNote?: (note: string) => void;
   /** HMS queue progress for the staff quote run in flight. */
   hmsQueue?: { pending: boolean; status: QueueStatus | null };
+  /** Loads one HMS audit screenshot of a completed staff quote run. */
+  onLoadRunScreenshot?: LoadRunScreenshot;
 }) {
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Luna will read it and list what the quote needs.</StatusNote>;
@@ -513,14 +520,27 @@ export function QuoteWorkflowPanel({
               ? ' Each date search keeps its own quote. A combined PDF is blocked, so prepare the PDF for one stay at a time.'
               : ''}
           </p>
-          {session.offers.map((offer) => (
-            <OfferCard
-              key={offer.id}
-              offer={offer}
-              selected={session.selectedOfferIds.includes(offer.id)}
-              onSelect={onSelectOffer}
-            />
-          ))}
+          {session.offers.map((offer) => {
+            const staffQuote = session.staffQuote?.revisionRef === offer.id ? session.staffQuote : null;
+            return (
+              <Fragment key={offer.id}>
+                <OfferCard
+                  offer={offer}
+                  selected={session.selectedOfferIds.includes(offer.id)}
+                  onSelect={onSelectOffer}
+                  showShot={!staffQuote}
+                />
+                {staffQuote ? (
+                  <QuoteAuditScreenshot
+                    key={staffQuote.runId ?? staffQuote.revisionRef}
+                    runId={staffQuote.runId ?? null}
+                    screenshots={staffQuote.screenshots ?? []}
+                    loadScreenshot={onLoadRunScreenshot}
+                  />
+                ) : null}
+              </Fragment>
+            );
+          })}
         </section>
       ) : null}
       {session.bookingDraft ? <BookingCards draft={session.bookingDraft} groups={session.groups} /> : null}

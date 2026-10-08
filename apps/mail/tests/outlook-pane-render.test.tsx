@@ -44,6 +44,10 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.
     releaseStaffQuote: null as null | (() => void),
     hmsQueueStatus: null as null | Record<string, unknown>,
     hmsQueueReads: 0,
+    /** Audit run id and screenshot names that executeStaffQuote returns. */
+    staffQuoteRunId: null as null | string,
+    staffQuoteScreenshots: [] as string[],
+    screenshotReads: [] as string[],
   },
 }));
 
@@ -145,6 +149,8 @@ vi.mock('../providers/query-provider', () => ({
             status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
             selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
             arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
+            runId: bridgeMockState.staffQuoteRunId,
+            screenshots: [...bridgeMockState.staffQuoteScreenshots],
           };
         },
       },
@@ -152,6 +158,18 @@ vi.mock('../providers/query-provider', () => ({
         query: async () => {
           bridgeMockState.hmsQueueReads += 1;
           return bridgeMockState.hmsQueueStatus ?? { state: 'idle', message: '' };
+        },
+      },
+      quoteRunScreenshot: {
+        query: async ({ name }: { runId: string; name: string }) => {
+          bridgeMockState.screenshotReads.push(name);
+          return {
+            status: 'ready',
+            name,
+            mimeType: 'image/png',
+            sizeBytes: 16,
+            dataUrl: `data:image/png;base64,SHOT-${name}`,
+          };
         },
       },
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
@@ -237,6 +255,9 @@ describe('OutlookPanePage', () => {
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.hmsQueueStatus = null;
     bridgeMockState.hmsQueueReads = 0;
+    bridgeMockState.staffQuoteRunId = null;
+    bridgeMockState.staffQuoteScreenshots = [];
+    bridgeMockState.screenshotReads = [];
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
@@ -257,7 +278,27 @@ describe('OutlookPanePage', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Send manually in Outlook/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeNull();
-    expect(screen.getByText(/No HMS screenshot for this quote/i)).toBeDefined();
+    expect(screen.queryByText(/No HMS screenshot for this quote/i)).toBeNull();
+  });
+
+  it('says there is no HMS screenshot once a quote completes without a run id', async () => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    expect(await screen.findByText(/No HMS screenshot for this quote/i)).toBeDefined();
+    expect(bridgeMockState.screenshotReads).toEqual([]);
+  });
+
+  it('shows the HMS audit screenshot after the staff quote completes and opens a full-size viewer', async () => {
+    bridgeMockState.staffQuoteRunId = '2026-10-08T10-15-30-125Z-0a1b2c3d';
+    bridgeMockState.staffQuoteScreenshots = ['01-search.png', '02-rates.png', '03-save.png'];
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna did in HMS' }));
+    expect(screen.getByRole('dialog', { name: 'HMS quote screenshots' })).toBeDefined();
+    expect(await screen.findByRole('img', { name: 'HMS screenshot 2 of 3' })).toBeDefined();
+    expect(bridgeMockState.screenshotReads).toContain('02-rates.png');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('opens only the native pairing dialog when the installer is unpaired', async () => {
