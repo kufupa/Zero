@@ -4,6 +4,7 @@ import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
+import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { DocumentReview } from './document-review';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
@@ -344,8 +345,11 @@ export function QuoteWorkflowPanel({
   onSelectStayKey,
   onTreatAs,
   onStaffNote,
+  paneSave,
 }: {
   session: QuoteSession;
+  /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
+  paneSave?: PaneStayClient | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
@@ -518,7 +522,9 @@ export function QuoteWorkflowPanel({
           ))}
         </section>
       ) : null}
-      {session.bookingDraft ? <BookingCards draft={session.bookingDraft} groups={session.groups} /> : null}
+      {session.bookingDraft ? (
+        <BookingCards draft={session.bookingDraft} groups={session.groups} paneSave={paneSave} />
+      ) : null}
       {showReply ? (
         <DocumentReview session={session} onReplyChange={onReplyChange} onPreparePdf={onPreparePdf} />
       ) : null}
