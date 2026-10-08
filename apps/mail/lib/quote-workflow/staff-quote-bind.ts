@@ -702,7 +702,7 @@ export function staffQuoteFromTrpc(trpc: unknown): {
   workstation: StaffQuoteClient;
   drafts: DraftsClient;
 } {
-  if (!trpc || typeof trpc !== 'object') return { workstation: {}, drafts: {} };
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return { workstation: {}, drafts: {} };
   const row = trpc as { workstation?: StaffQuoteClient; drafts?: DraftsClient };
   return { workstation: row.workstation ?? {}, drafts: row.drafts ?? {} };
 }

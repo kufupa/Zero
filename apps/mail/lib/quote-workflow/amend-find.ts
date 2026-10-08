@@ -114,7 +114,7 @@ type TrpcPaneStayLookupRoutes = {
 
 /** Binds paneStayLookup.findStay and paneStayLookup.screenshot off a tRPC client. Null when either is missing. */
 export function amendFindClientFromTrpc(trpc: unknown): AmendFindClient | null {
-  if (!trpc || typeof trpc !== 'object') return null;
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcPaneStayLookupRoutes).paneStayLookup;
   const find = routes?.findStay;
   const shot = routes?.screenshot;
@@ -298,7 +298,7 @@ type TrpcPaneStayLookupSearchRoute = {
 
 /** Binds paneStayLookup.searchGuest off a tRPC client. Null when the route is missing. */
 export function amendSearchClientFromTrpc(trpc: unknown): AmendSearchClient | null {
-  if (!trpc || typeof trpc !== 'object') return null;
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const search = (trpc as TrpcPaneStayLookupSearchRoute).paneStayLookup?.searchGuest;
   if (!search) return null;
   return { searchGuest: (input) => search.mutate(input) };

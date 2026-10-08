@@ -98,7 +98,7 @@ type QuoteWorkflowClient = {
 };
 
 export function quoteWorkflowFromTrpc(trpc: unknown): QuoteWorkflowClient {
-  if (!trpc || typeof trpc !== 'object') return {};
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return {};
   const quoteWorkflow = (trpc as { quoteWorkflow?: QuoteWorkflowClient }).quoteWorkflow;
   return quoteWorkflow ?? {};
 }

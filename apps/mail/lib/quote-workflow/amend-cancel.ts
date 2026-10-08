@@ -165,7 +165,7 @@ type TrpcCapabilityRoutes = {
  * react-query context. Null when the route is missing; cancelling then stays switched off.
  */
 export function amendCapabilitiesFromTrpc(trpc: unknown): (() => Promise<PaneCapabilitiesReply>) | null {
-  if (!trpc || typeof trpc !== 'object') return null;
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const route = (trpc as TrpcCapabilityRoutes).brain?.getCapabilities;
   if (!route) return null;
   return () => route.query();
@@ -173,7 +173,7 @@ export function amendCapabilitiesFromTrpc(trpc: unknown): (() => Promise<PaneCap
 
 /** Binds the three paneStayCancel routes off a tRPC client. Null when any of them is missing. */
 export function amendCancelClientFromTrpc(trpc: unknown): AmendCancelClient | null {
-  if (!trpc || typeof trpc !== 'object') return null;
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcPaneStayCancelRoutes).paneStayCancel;
   const preview = routes?.previewCancel;
   const commit = routes?.commitCancel;
