@@ -12,6 +12,7 @@ import path from 'node:path';
 import {
   analyseQuoteSelection,
   buildQuoteWorkflowPrompt,
+  isAmendOrCancelWorkflow,
   quoteWorkflowLlmEnabled,
 } from '../src/ai/quote-workflow-llm.js';
 import { lunaAnalysisSchema, type LunaAnalysis } from '../src/ai/reservationist-decision.js';
@@ -244,14 +245,14 @@ function missingPricing(analysis: LunaAnalysis): boolean {
 
 function bucketOf(analysis: LunaAnalysis): Bucket {
   if (analysis.flags.some((flag) => MANUAL_FLAGS.has(flag))) return 'manual';
-  if (analysis.workflow === 'other') return 'other';
+  if (analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow)) return 'other';
   if (analysis.flags.length === 0 && !missingPricing(analysis)) return 'full';
   return 'partial';
 }
 
 /** Staff-equivalent: dates/rooms/occupancy present; extras/unread/discount flags do not disqualify. */
 export function staffEquivalentOf(analysis: LunaAnalysis): boolean {
-  if (analysis.workflow === 'other') return false;
+  if (analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow)) return false;
   if (analysis.flags.some((flag) => MANUAL_FLAGS.has(flag))) return false;
   return !missingPricing(analysis);
 }
@@ -473,7 +474,10 @@ function writeSummary(input: {
     '## Workflows',
     markdownTable(
       ['workflow', 'n'],
-      ['quote', 'create_booking', 'other'].map((key) => [key, String(workflows[key] ?? 0)]),
+      ['quote', 'create_booking', 'amend', 'cancel', 'other'].map((key) => [
+        key,
+        String(workflows[key] ?? 0),
+      ]),
     ),
     '',
     '## Flags',

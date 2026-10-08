@@ -1,0 +1,12 @@
+{
+  "firstName": "Proof",
+  "lastName": "Labtest",
+  "arrival": "2027-10-12",
+  "departure": "2027-10-13",
+  "adults": 1,
+  "sourceOfBusiness": "Walk in",
+  "roomType": "STQN",
+  "ratePlan": "BAR",
+  "track": "BAR",
+  "guaranteeType": "Non-Guaranteed Individual"
+}

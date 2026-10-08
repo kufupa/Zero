@@ -60,6 +60,11 @@ vi.mock('../hooks/use-connections', () => ({
   }),
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
@@ -107,7 +112,7 @@ describe('production pane never synthesizes quote evidence', () => {
     render(<OutlookPanePage />);
     fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
     await waitFor(() => {
-      expect(screen.getAllByText(/integration unavailable|not owned by this quoting UI|enqueueHmsRead|no quoteWorkflow.runStep|staffQuoteSource/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.queryByText(/R2\s*720/)).toBeNull();

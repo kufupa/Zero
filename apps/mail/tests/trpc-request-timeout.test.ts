@@ -45,4 +45,19 @@ describe('procedure-specific request deadlines', () => {
     ).toBe(60_000);
     expect(trpcRequestTimeoutMs('/api/trpc/%ZZ')).toBe(5_000);
   });
+  it('gives a browser lookup six minutes, longer than its five-minute server bound', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.findStay?batch=1')).toBe(360_000);
+  });
+  it('gives cancel preview and commit 21 minutes, longer than the 20-minute server bound', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.previewCancel?batch=1')).toBe(1_260_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.commitCancel?batch=1')).toBe(1_260_000);
+  });
+  it('gives preview and commit of a pane save 27 minutes, past the duplicate read and the 20-minute save bound', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.previewStay?batch=1')).toBe(1_620_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.commitStay?batch=1')).toBe(1_620_000);
+  });
+  it('keeps the screenshot reads short', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.screenshot?batch=1')).toBe(5_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.paneStayScreenshot?batch=1')).toBe(5_000);
+  });
 });

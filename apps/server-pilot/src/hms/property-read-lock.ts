@@ -38,6 +38,34 @@ export interface PropertyReadLockAcquisitionOptions {
 
 const PROPERTY_READ_LOCK_POLL_MS = 25;
 
+/** The cause of an acquisition that ran out of time. Use isPropertyReadLockDeadline to test for it. */
+export const PROPERTY_READ_LOCK_DEADLINE_MESSAGE =
+  'property read advisory lock acquisition deadline exceeded';
+
+/** How long a pane run waits for the property lock before it gives up and reports the HMS lock as busy. */
+export const PANE_PROPERTY_LOCK_WAIT_MS = 20_000;
+
+/** Acquisition bounds that end `waitMs` after `now`. The lock stops polling at that deadline. */
+export function acquisitionWithin(
+  waitMs: number,
+  now: number = Date.now(),
+): PropertyReadLockAcquisitionOptions {
+  return { deadlineAt: now + waitMs };
+}
+
+/**
+ * True when a lock acquisition gave up at its deadline. The error may be wrapped, so the cause chain is searched.
+ * An abort or a failed connection is not a deadline.
+ */
+export function isPropertyReadLockDeadline(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (current instanceof Error && current.message === PROPERTY_READ_LOCK_DEADLINE_MESSAGE) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export function propertyReadLockKey(tenantId: string, propertyCode: string): string {
   const digest = createHash('sha256').update(`${tenantId}\0${propertyCode}`, 'utf8').digest();
   // Keep the decimal representation explicit in SQL and in receipts.  A
@@ -67,7 +95,7 @@ function assertAcquisitionActive(options: PropertyReadLockAcquisitionOptions): v
   }
   const deadlineAt = acquisitionDeadlineAt(options);
   if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
-    throw lockError(new Error('property read advisory lock acquisition deadline exceeded'));
+    throw lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE));
   }
 }
 
@@ -105,14 +133,14 @@ function withAcquisitionBounds<T>(
       if (remaining <= 0) {
         settled = true;
         cleanup();
-        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+        reject(lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE)));
         return;
       }
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         cleanup();
-        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+        reject(lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE)));
       }, remaining);
       timer.unref?.();
     }
@@ -145,7 +173,7 @@ function waitForAcquisitionPoll(options: PropertyReadLockAcquisitionOptions): Pr
   const remaining = deadlineAt === undefined ? PROPERTY_READ_LOCK_POLL_MS : deadlineAt - Date.now();
   if (remaining <= 0) {
     return Promise.reject(
-      lockError(new Error('property read advisory lock acquisition deadline exceeded')),
+      lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE)),
     );
   }
   const waitMs = Math.min(PROPERTY_READ_LOCK_POLL_MS, remaining);
@@ -156,7 +184,7 @@ function waitForAcquisitionPoll(options: PropertyReadLockAcquisitionOptions): Pr
       settled = true;
       cleanup();
       if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
-        reject(lockError(new Error('property read advisory lock acquisition deadline exceeded')));
+        reject(lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE)));
       } else {
         resolve();
       }

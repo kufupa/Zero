@@ -57,7 +57,7 @@ function sessionWithAnalysis(analysis: QuoteAnalysis): QuoteSession {
 }
 
 describe('QuoteWorkflowPanel Luna extras', () => {
-  it('labels a defaulted board as usual and still shows the stay as editable', () => {
+  it('labels a defaulted meal plan as Default and still shows the stay as editable', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [
@@ -71,8 +71,8 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ workflow: 'quote' }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByLabelText('Board')).toHaveProperty('value', 'bb');
-    expect(screen.getByText('usual')).toBeDefined();
+    expect(screen.getByLabelText('Meal plan')).toHaveProperty('value', 'bb');
+    expect(screen.getByText('Default')).toBeDefined();
   });
 
   it('shows Booking badge and stay groups for create_booking workflow', () => {
@@ -88,7 +88,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
-  it('shows AI unavailable and still renders regex groups', () => {
+  it('shows Read without AI and still renders local groups', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [g1],
@@ -99,7 +99,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: null,
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('AI unavailable')).toBeDefined();
+    expect(screen.getByText('Read without AI')).toBeDefined();
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
@@ -117,11 +117,11 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Other')).toBeDefined();
-    expect(screen.getByText('Amendment/cancellation: not supported yet')).toBeDefined();
+    expect(screen.getByText('Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.')).toBeDefined();
     expect(screen.getByText('Reservation number?')).toBeDefined();
-    expect(screen.getByText(/not a quoting request/i)).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Treat as booking' })).toBeDefined();
+    expect(screen.getByText(/not a quote request/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'This is a quote request' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'This is a booking' })).toBeDefined();
   });
 
   it('calls onTreatAs quote from the Other workflow actions', () => {
@@ -134,9 +134,9 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ workflow: 'other' }),
     });
     render(<QuoteWorkflowPanel session={session} onTreatAs={onTreatAs} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    fireEvent.click(screen.getByRole('button', { name: 'This is a quote request' }));
     expect(onTreatAs).toHaveBeenCalledWith('quote');
-    fireEvent.click(screen.getByRole('button', { name: 'Treat as booking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'This is a booking' }));
     expect(onTreatAs).toHaveBeenCalledWith('create_booking');
   });
 
@@ -177,8 +177,8 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ flags: ['conference_or_group', 'attachment_unread'] }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Venue / DDR / delegates / packages: handle manually')).toBeDefined();
-    expect(screen.getByText("An attachment couldn't be read: open it")).toBeDefined();
+    expect(screen.getByText('Conference or group request (venue, day delegates, packages): handle it by hand.')).toBeDefined();
+    expect(screen.getByText('An attachment could not be read. Open it in Outlook and check it.')).toBeDefined();
   });
 
   it('lists rooms-only group as an info chip, not handle-manually', () => {
@@ -190,8 +190,8 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ flags: ['rooms_only_group'] }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Rooms-only group: quoting with stated quantity')).toBeDefined();
-    expect(screen.queryByText('Venue / DDR / delegates / packages: handle manually')).toBeNull();
+    expect(screen.getByText('Rooms-only group: quoting the number of rooms stated.')).toBeDefined();
+    expect(screen.queryByText('Conference or group request (venue, day delegates, packages): handle it by hand.')).toBeNull();
   });
 
   it('lists needs-your-answer questions from luna.missing', () => {
@@ -219,7 +219,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('staff note')).toBeDefined();
+    expect(screen.getByText('Your note')).toBeDefined();
     expect(screen.getByText('2 adults from desk')).toBeDefined();
   });
 
@@ -233,10 +233,10 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ workflow: 'quote' }),
     });
     render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
-    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+    fireEvent.change(screen.getByLabelText("Tell Luna what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
     expect(onStaffNote).toHaveBeenCalledWith('4 twins at R1800');
   });
 
@@ -286,7 +286,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(
       screen.getByText(
-        'This email needs 3 steps: quote, quote, create booking. The pane handles the first; do the rest manually.',
+        'This email asks for 3 things: a quote, a quote, a booking. This pane handles the first. Do the rest by hand.',
       ),
     ).toBeDefined();
     expect(screen.queryByRole('button', { name: /do the rest/i })).toBeNull();
@@ -303,7 +303,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.queryByText(/This email needs/i)).toBeNull();
+    expect(screen.queryByText(/This email asks for/i)).toBeNull();
   });
 });
 
@@ -360,6 +360,11 @@ vi.mock('../hooks/use-connections', () => ({
   }),
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
@@ -392,7 +397,7 @@ describe('Outlook pane Luna analysis bind', () => {
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
     await waitFor(() => {
-      expect(screen.queryByText(/Analysing selected email/i)).toBeNull();
+      expect(screen.queryByText(/Luna is reading the email/i)).toBeNull();
     });
     expect(screen.getAllByText(/analyseSelection network down/i).length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('Arrival')).toBeNull();
@@ -479,8 +484,8 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Treat as quote' })).toBeDefined());
-    fireEvent.click(screen.getByRole('button', { name: 'Treat as quote' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'This is a quote request' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'This is a quote request' }));
     await waitFor(() => {
       expect(
         analyseMutate.mock.calls.some((call) => (call[0] as { treatAs?: string })?.treatAs === 'quote'),
@@ -501,11 +506,11 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByLabelText('Tell Luna')).toBeDefined());
-    fireEvent.change(screen.getByLabelText('Tell Luna'), {
+    await waitFor(() => expect(screen.getByLabelText("Tell Luna what's wrong")).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Tell Luna what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Submit note' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
     await waitFor(() => {
       expect(
         analyseMutate.mock.calls.some(

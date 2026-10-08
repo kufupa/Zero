@@ -1,4 +1,5 @@
 import type {
+  QuoteAmendment,
   QuoteAnalysis,
   QuoteAnalysisSource,
   QuoteDocumentFailure,
@@ -59,6 +60,7 @@ export type AnalyseSelectionResult =
       fallbackReason?: QuoteWorkflowFallbackReason;
       aiUnavailable?: boolean;
       luna?: LunaAnalysisWire | null;
+      amendment?: QuoteAmendment | null;
     };
 
 export type RunStepRequest = {
@@ -101,8 +103,10 @@ export function quoteWorkflowFromTrpc(trpc: unknown): QuoteWorkflowClient {
   return quoteWorkflow ?? {};
 }
 
-function rejectionReason(error: unknown, label: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : `${label} rejected`;
+function rejectionReason(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : 'The request did not finish. Refresh the pane and try again.';
 }
 
 export type BoundAnalyse =
@@ -119,7 +123,7 @@ export async function bindAnalyseSelection(args: {
     return {
       kind: 'unavailable',
       reason:
-        'Client has no quoteWorkflow.analyseSelection. Bind to mailboxProcedure analyseSelection (getDb message/attachment).',
+        'Luna cannot read emails in this pane yet. Refresh the pane and try again.',
     };
   }
   try {
@@ -145,10 +149,11 @@ export async function bindAnalyseSelection(args: {
         ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
         ...(result.aiUnavailable !== undefined ? { aiUnavailable: result.aiUnavailable } : {}),
         ...(result.luna !== undefined ? { luna: result.luna } : {}),
+        ...(result.amendment !== undefined ? { amendment: result.amendment } : {}),
       },
     };
   } catch (error) {
-    return { kind: 'unavailable', reason: rejectionReason(error, 'analyseSelection') };
+    return { kind: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -167,14 +172,14 @@ export async function bindRunStep(args: {
   if (args.inputs.stepKind === 'party_lookup') {
     return {
       status: 'unavailable',
-      reason: 'executeStaffQuote resolves party internally. Do not execute party twice.',
+      reason: 'The company lookup runs automatically with the quote. No need to run it separately.',
     };
   }
   if (!args.mutate) {
     return {
       status: 'unavailable',
       reason:
-        'quoteWorkflow.runStep is not the staff-quote seam. Use workstation.executeStaffQuote. Do not call enqueueHmsRead.',
+        'This step is not available here. Use the quote search instead.',
     };
   }
   try {
@@ -191,12 +196,12 @@ export async function bindRunStep(args: {
     if (!Array.isArray(offers) || offers.length === 0) {
       return {
         status: 'unavailable',
-        reason: 'runStep returned ok without offers. Do not synthesize inventory.',
+        reason: 'HMS returned no room options for this search. Check HMS directly.',
       };
     }
     return { status: 'ok', kind: 'quote_stay', offers, reviewedReplyHtml: result.reviewedReplyHtml };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'runStep') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -212,6 +217,6 @@ export async function bindQualifiedProposalPdf(args: {
   return {
     status: 'unavailable',
     reason:
-      'Use workstation.qualifiedQuoteProposalPdf via bindQualifiedStaffProposalPdf with workflowRunId/revisionRef/pdfHash. Do not mint centsReconciled:true.',
+      'PDF creation is not connected to this pane yet. Refresh the pane and try again.',
   };
 }

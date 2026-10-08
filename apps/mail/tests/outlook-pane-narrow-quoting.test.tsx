@@ -60,6 +60,11 @@ vi.mock('../hooks/use-connections', () => ({
   }),
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
@@ -112,7 +117,7 @@ describe('mounted Outlook pane quoting path at 380px', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
     await waitFor(() => {
-      expect(screen.getAllByText(/enqueueHmsRead|without offers|not owned by this quoting UI|no quoteWorkflow.runStep|staffQuoteSource/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/not available here|no room options|not owned by this quoting UI|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i })).toBeDefined();

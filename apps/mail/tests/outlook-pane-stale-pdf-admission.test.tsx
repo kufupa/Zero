@@ -4,25 +4,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import {
-  AUTHORISED_QUOTE_OFFERS,
-  AUTHORISED_QUOTE_PDF,
-  AUTHORISED_REPLY_HTML,
-} from './helpers/authorised-quote-evidence';
+import { AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer } from './helpers/prepare-reviewed-quote';
 
-const SECOND_OFFER = {
-  ...AUTHORISED_QUOTE_OFFERS[0]!,
-  id: 'auth-2',
-  roomCode: 'STWN',
-  roomLabel: 'Standard Twin',
-  sourceRef: 'auth-src-2',
-};
-
-const { sendCommandMock, quotePdfMutateMock, runStepMutateMock } = vi.hoisted(() => ({
+const { sendCommandMock, quotePdfMutateMock, executeStaffQuoteMutateMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
-  runStepMutateMock: vi.fn(),
+  executeStaffQuoteMutateMock: vi.fn(),
 }));
 
 function deferred<T>() {
@@ -68,6 +56,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       storeId: 'store-1',
       folderEntryId: 'folder-inbox',
       subject: 'Suite Availability Request',
+      internetMessageId: '<suite-availability@example.invalid>',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
@@ -96,11 +85,29 @@ vi.mock('../lib/auth-client', () => ({
   signIn: { email: vi.fn() },
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteProposalPdf: { mutate: vi.fn() },
+      staffQuoteSource: {
+        query: async () => ({
+          status: 'ready' as const,
+          messageId: 'mail-1',
+          threadId: 'thread-1',
+          sourceHash: 'ab'.repeat(32),
+        }),
+      },
+      executeStaffQuote: {
+        mutate: (...args: unknown[]) => executeStaffQuoteMutateMock(...args),
+      },
+      qualifiedQuoteProposalPdf: {
+        mutate: (...args: unknown[]) => quotePdfMutateMock(...args),
+      },
     },
     quoteWorkflow: {
       analyseSelection: {
@@ -122,11 +129,35 @@ vi.mock('../providers/query-provider', () => ({
           sourceRevision: 1,
         }),
       },
-      runStep: { mutate: (...args: unknown[]) => runStepMutateMock(...args) },
-      qualifiedProposalPdf: { mutate: (...args: unknown[]) => quotePdfMutateMock(...args) },
     },
   },
 }));
+
+type StaffQuoteRequest = {
+  selectionEpoch: number;
+  inputRevision: number;
+  groups: Array<{ arrivalDate: string; departureDate: string }>;
+};
+
+/** A ready executeStaffQuote answer for one selected allocation, echoing the request it answers. */
+function readyStaffQuote(request: StaffQuoteRequest) {
+  return {
+    status: 'ready' as const,
+    workflowRunId: 'run-auth',
+    revisionRef: 'rev-auth',
+    messageId: 'mail-1',
+    threadId: 'thread-1',
+    factRefs: [],
+    selectionEpoch: request.selectionEpoch,
+    inputRevision: request.inputRevision,
+    inputDigest: 'digest',
+    totalMinor: AUTHORISED_QUOTE_PDF.totalMinor,
+    currency: 'ZAR',
+    arrivalDate: request.groups[0]?.arrivalDate,
+    departureDate: request.groups[0]?.departureDate,
+    description: 'Standard King',
+  };
+}
 
 async function waitForAllocation(label: string) {
   return waitFor(() => {
@@ -140,7 +171,11 @@ async function startPendingPdf() {
   render(<OutlookPanePage />);
   await fillStayFactsMatchingAuthorisedOffer();
   fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
-  fireEvent.click(await waitForAllocation('Standard King'));
+  // A successful run selects its allocation already; clicking again would deselect it.
+  const allocation = await waitForAllocation('Standard King');
+  if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
+  // A draft needs a reviewed reply as well as a PDF, so a stale PDF would show up as a draft attempt.
+  fireEvent.change(screen.getByLabelText('Reviewed reply'), { target: { value: AUTHORISED_REPLY_HTML } });
   fireEvent.click(screen.getByRole('button', { name: /Prepare quotation PDF/i }));
   await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalled());
 }
@@ -148,7 +183,9 @@ async function startPendingPdf() {
 async function assertNoNativeDraft() {
   expect(screen.queryByText(/Prepared PDF/i)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-  expect(sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT')).toHaveLength(0);
+  const commands = sendCommandMock.mock.calls.map((call) => call[0]);
+  expect(commands).not.toContain('CREATE_REPLY_DRAFT');
+  expect(commands).not.toContain('ADD_ATTACHMENT_TO_DRAFT');
 }
 
 describe('deferred quote PDF / unavailable cannot mutate a newer session', () => {
@@ -162,12 +199,8 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
       displayed: true,
     });
     quotePdfMutateMock.mockReset();
-    runStepMutateMock.mockReset();
-    runStepMutateMock.mockResolvedValue({
-      status: 'ok',
-      offers: [AUTHORISED_QUOTE_OFFERS[0]!, SECOND_OFFER],
-      reviewedReplyHtml: AUTHORISED_REPLY_HTML,
-    });
+    executeStaffQuoteMutateMock.mockReset();
+    executeStaffQuoteMutateMock.mockImplementation(async (request: StaffQuoteRequest) => readyStaffQuote(request));
   });
 
   afterEach(() => {
@@ -188,11 +221,11 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     await assertNoNativeDraft();
   });
 
-  it('rejects a PDF that returns after the selected offer changes', async () => {
+  it('rejects a PDF that returns after the sales strategy changes', async () => {
     const pending = deferred<typeof AUTHORISED_QUOTE_PDF>();
     quotePdfMutateMock.mockReturnValue(pending.promise);
     await startPendingPdf();
-    fireEvent.click(await waitForAllocation('Standard Twin'));
+    fireEvent.change(screen.getByLabelText('Rate type'), { target: { value: 'Government' } });
     await act(async () => {
       pending.resolve(AUTHORISED_QUOTE_PDF);
       await pending.promise;
@@ -200,17 +233,18 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     await assertNoNativeDraft();
   });
 
-  it('rejects a late results_unavailable after the stay group is edited', async () => {
-    const pending = deferred<{ status: 'integration_unavailable'; reason: string }>();
-    runStepMutateMock.mockReturnValue(pending.promise);
+  it('rejects a late executeStaffQuote result after the stay group is edited', async () => {
+    const pending = deferred<{ status: 'pending' }>();
+    executeStaffQuoteMutateMock.mockReturnValue(pending.promise);
     render(<OutlookPanePage />);
+    await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
     fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '4' } });
     await act(async () => {
-      pending.resolve({ status: 'integration_unavailable', reason: 'stale unavailable' });
+      pending.resolve({ status: 'pending' });
       await pending.promise;
     });
-    expect(screen.queryByText('stale unavailable')).toBeNull();
+    expect(screen.queryByText('executeStaffQuote did not return a ready selected allocation.')).toBeNull();
     expect(screen.queryByText(/Prepared PDF/i)).toBeNull();
   });
 });

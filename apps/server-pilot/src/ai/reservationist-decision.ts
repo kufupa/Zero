@@ -8,14 +8,14 @@ export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property co
 - An explicit instruction to book/confirm with guest name, dates and room: create_reservation_dry_run. It never saves; it only validates the create request.
 - Cold vendor/sales outreach, newsletters, promos, quarantine digests and cold solicitation are spam. OTP codes, bounces, payment notices, OTA relays, job/CV, day-visitor or F&B asks are not spam.
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
-- Cancellations, amendments, invoices, folios and anything else are other (no tools).
+- Amendments and cancellations of an existing booking: workflow=amend or cancel. Fill confirmationNumber exactly as written (e.g. 57291630-1), guestLastName, arrival/departure as stated, requestedChange as one short plain-English line (e.g. 'Change departure from 15 Nov to 17 Nov'). No tools. Invoices, folios, payment queries stay other.
 - Groups of 10+ rooms/delegates or events are other (no tools).
 - Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
 - A request to "assist with"/"book" rooms with dates and guest names is create.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
 export const reservationistDecisionSchema = z.object({
-  workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other']),
+  workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other', 'amend', 'cancel']),
   stayAsk: z
     .object({
       arrivalDate: z.string(),
@@ -50,7 +50,7 @@ const lunaGroupSchema = z.object({
 });
 
 export const lunaAnalysisSchema = z.object({
-  workflow: z.enum(['quote', 'create_booking', 'other']),
+  workflow: z.enum(['quote', 'create_booking', 'other', 'amend', 'cancel']),
   flags: z.array(
     z.enum([
       'conference_or_group',
@@ -97,5 +97,28 @@ export const lunaAnalysisSchema = z.object({
       }),
     )
     .max(8),
+  confirmationNumber: z
+    .preprocess((value) => (typeof value === 'number' ? String(value) : value), z.string().nullish())
+    .describe(
+      'Existing booking confirmation number exactly as written, e.g. 57291630-1. Null if none.',
+    ),
+  guestLastName: z
+    .string()
+    .nullish()
+    .describe('Surname on the existing booking, as stated. Null if not stated.'),
+  arrival: z
+    .string()
+    .nullish()
+    .describe('ISO YYYY-MM-DD arrival on the existing booking, as stated. Null if not stated.'),
+  departure: z
+    .string()
+    .nullish()
+    .describe('ISO YYYY-MM-DD checkout day (exclusive), as stated. Null if not stated.'),
+  requestedChange: z
+    .string()
+    .nullish()
+    .describe(
+      'One short plain-English line describing the requested change, at most 300 characters, card numbers masked. Null if none.',
+    ),
 });
 export type LunaAnalysis = z.infer<typeof lunaAnalysisSchema>;

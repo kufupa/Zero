@@ -96,7 +96,7 @@ describe('quote workflow narrow-pane HTML dump', () => {
     const outFile = path.join(outDir, 'narrow-pane.html');
     writeFileSync(outFile, html);
     expect(container.querySelector('#quote-workflow-narrow')).not.toBeNull();
-    expect(container.textContent).toMatch(/unsynced/i);
+    expect(container.textContent).toMatch(/not finished syncing/i);
     expect(container.textContent).toMatch(/Run next|Prepare quotation PDF|Allocation/i);
   });
 });

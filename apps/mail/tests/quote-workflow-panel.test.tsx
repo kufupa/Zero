@@ -60,13 +60,13 @@ describe('QuoteWorkflowPanel', () => {
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);
-    expect(screen.getByText(/Analysing selected email/i)).toBeDefined();
+    expect(screen.getByText(/Luna is reading the email/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'unsynced' }} />);
-    expect(screen.getByText(/not synced/i)).toBeDefined();
+    expect(screen.getByText(/not finished syncing/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('attachment-dependent')} />);
-    expect(screen.getAllByText(/authorised attachment content is missing/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/rooming-list\.pdf is the document/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('source-failure')} />);
@@ -91,7 +91,7 @@ describe('QuoteWorkflowPanel', () => {
         }), { type: 'analysis_ready', analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] } })}
       />,
     );
-    expect(screen.getByText(/not a quoting request/i)).toBeDefined();
+    expect(screen.getByText(/not a quote request/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Run next/i })).toBeNull();
   });
 
@@ -110,7 +110,7 @@ describe('QuoteWorkflowPanel', () => {
   it('labels missing fields and extracted provenance', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('missing-fields')} />);
     expect(screen.getAllByText('Missing').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Extracted').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Email').length).toBeGreaterThan(0);
   });
 
   it('runs next only when not already running, and shows retry guidance on failure', () => {
@@ -138,14 +138,14 @@ describe('QuoteWorkflowPanel', () => {
 
   it('does not sum alternatives and shows honest missing screenshots', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('ro-vs-bb')} />);
-    expect(screen.getByText(/not included in the selected allocation total/i)).toBeDefined();
+    expect(screen.getByText(/not counted in the total/i)).toBeDefined();
     expect(screen.getAllByText(/No authorised screenshot is tied to this tool run/i).length).toBeGreaterThan(0);
   });
 
   it('labels mailbox analyseSelection unsynced while keeping local requirement cards', () => {
     const session = { ...sessionFromFixture('public-single'), mailboxStatus: 'unsynced' as const };
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText(/Mailbox quoteWorkflow.analyseSelection: unsynced/i)).toBeDefined();
+    expect(screen.getByText(/This email has not finished syncing/i)).toBeDefined();
     expect(screen.queryByText(/Local regex preview/i)).toBeNull();
     expect(screen.getAllByLabelText(/Arrival/i).length).toBeGreaterThan(0);
   });
@@ -185,7 +185,7 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Authorised</p>',
     };
     const first = render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    fireEvent.click(screen.getAllByRole('button').find((el) => (el.textContent ?? '').includes('Allocation'))!);
+    fireEvent.click(screen.getAllByRole('button').find((el) => (el.textContent ?? '').includes('Counted in the total'))!);
     expect(onSelectOffer).toHaveBeenCalled();
     first.unmount();
     session = { ...session, selectedOfferIds: ['st-a'] };
@@ -195,7 +195,8 @@ describe('QuoteWorkflowPanel', () => {
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
     expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
-    expect(screen.getByText(/Combined PDF is blocked/i)).toBeDefined();
+    expect(screen.getByText(/Each date search keeps its own quote and PDF/)).toBeDefined();
+    expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
 
   it('keeps mixed same-date groups selected and blocks a partial PDF', () => {
@@ -221,12 +222,12 @@ describe('QuoteWorkflowPanel', () => {
 
   it('hides Items for you on a clean quote and on unsynced mail', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} />);
-    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.queryByLabelText('Check before sending')).toBeNull();
     expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={{ ...initialQuoteSession(), phase: 'unsynced' }} />);
-    expect(screen.getByText(/not synced/i)).toBeDefined();
-    expect(screen.queryByLabelText('Items for you')).toBeNull();
+    expect(screen.getByText(/not finished syncing/i)).toBeDefined();
+    expect(screen.queryByLabelText('Check before sending')).toBeNull();
     expect(screen.queryByLabelText(/Arrival/i)).toBeNull();
     expect(screen.queryByLabelText('Reviewed reply')).toBeNull();
   });
@@ -245,15 +246,15 @@ describe('QuoteWorkflowPanel', () => {
         onEditReply={onEditReply}
       />,
     );
-    expect(screen.getByLabelText('Items for you')).toBeDefined();
+    expect(screen.getByLabelText('Check before sending')).toBeDefined();
     expect(screen.getByText('How many children, and what ages?')).toBeDefined();
-    expect(screen.getByText('Arrival date is missing for stay group g1.')).toBeDefined();
-    expect(screen.getByText('Needs a reply, not a pricing approval')).toBeDefined();
-    expect(screen.getAllByText('Pricing block — correct the stay facts').length).toBeGreaterThan(0);
+    expect(screen.getByText('Arrival date is missing for Stay 1.')).toBeDefined();
+    expect(screen.getByText('Needs a reply. Not a price decision.')).toBeDefined();
+    expect(screen.getAllByText('Blocks the quote — fix the stay details first').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Secondary questions still need answers/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Mark handled: How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as done: How many children, and what ages?' }));
     expect(onHandle).toHaveBeenCalledWith('question:how many children, and what ages?');
-    fireEvent.click(screen.getByRole('button', { name: 'Source guidance for How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show in email: How many children, and what ages?' }));
     expect(onViewSource).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Edit reply for How many children, and what ages?' }));
     expect(onEditReply).toHaveBeenCalled();
@@ -263,8 +264,8 @@ describe('QuoteWorkflowPanel', () => {
 
     const missing = sessionFromFixture('attachment-dependent');
     render(<QuoteWorkflowPanel session={missing} />);
-    expect(screen.getByText('Unread: rooming-list.pdf')).toBeDefined();
-    expect(screen.getAllByText(/Authorised attachment content is missing/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('Could not read: rooming-list.pdf')).toBeDefined();
+    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
     cleanup();
 
@@ -277,7 +278,7 @@ describe('QuoteWorkflowPanel', () => {
     const handled = sessionFromFixture('missing-fields');
     handled.handledReviewItemIds = ['question:how many children, and what ages?'];
     render(<QuoteWorkflowPanel session={handled} onUndoReviewItem={onUndo} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Undo mark handled: How many children, and what ages?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo mark as done: How many children, and what ages?' }));
     expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
   });
 
@@ -345,4 +346,148 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.change(input, { target: { value: '125.' } });
     expect(input.value).toBe('125.');
   });
+
+  it('gives each date option its own Run button', () => {
+    const onRunStep = vi.fn();
+    const session = staggeredDatesSession();
+    render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} onRunNext={vi.fn()} />);
+    const runs = screen.getAllByRole('button', { name: /^Run Search availability/i }) as HTMLButtonElement[];
+    expect(runs).toHaveLength(2);
+    expect(runs.every((button) => !button.disabled)).toBe(true);
+    fireEvent.click(runs[1]!);
+    expect(onRunStep).toHaveBeenCalledWith(session.steps[1]!.id);
+  });
+
+  it('lists date options with totals and says why a later option waits for the earlier PDF', () => {
+    const onRunStep = vi.fn();
+    const quoted = staggeredDatesWithOptionA();
+    render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
+    expect(screen.getByRole('heading', { name: 'Date options' })).toBeDefined();
+    expect(
+      screen.getByText('This email asks for more than one set of dates. Run each option; Luna keeps every result.'),
+    ).toBeDefined();
+    const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
+    expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);
+    expect(screen.getByText('Finish the PDF for option A first, then run option B.')).toBeDefined();
+    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    expect(runB.disabled).toBe(true);
+    fireEvent.click(runB);
+    expect(onRunStep).not.toHaveBeenCalled();
+  });
+
+  it('removes the wait once option A has its PDF', () => {
+    const withPdf = {
+      ...staggeredDatesWithOptionA(),
+      stayPdfs: {
+        '2026-11-02:2026-11-04': {
+          fileName: 'Quote-rev-a.pdf',
+          bytesBase64: 'JVBERi0xLjQK',
+          pdfHash: 'cd'.repeat(32),
+          revisionId: 'rev-a',
+          totalMinor: 850000,
+        },
+      },
+    };
+    render(<QuoteWorkflowPanel session={withPdf} onRunStep={vi.fn()} onRunNext={vi.fn()} />);
+    expect(screen.queryByText(/Finish the PDF for option A/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' }).textContent).toMatch(
+      /PDF ready/,
+    );
+    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    expect(runB.disabled).toBe(false);
+  });
+
+  it('prepares the PDF for a quoted date option from its own row', () => {
+    const onPreparePdfFor = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={staggeredDatesWithOptionA()}
+        onPreparePdfFor={onPreparePdfFor}
+        onRunStep={vi.fn()}
+        onRunNext={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Prepare PDF for option B' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF for option A' }));
+    expect(onPreparePdfFor).toHaveBeenCalledWith('2026-11-02:2026-11-04');
+  });
 });
+
+const BINDING = {
+  transportId: 't1',
+  mailboxEmail: 'centurion@legacyhotels.co.za',
+  storeId: 'store',
+  folderEntryId: 'inbox',
+  entryId: 'e1',
+  selectionEpoch: 1,
+  scopeEpoch: 1,
+};
+
+/** Two date options (2 Nov and 10 Nov) with no results yet. */
+function staggeredDatesSession() {
+  let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING });
+  session = reduceQuoteSession(session, {
+    type: 'analysis_ready',
+    analysis: {
+      intent: 'quote',
+      groups: loadQuoteFixture('staggered-dates').groups,
+      secondaryAsks: [],
+      alternatives: [],
+    },
+  });
+  return reduceQuoteSession(session, {
+    type: 'staff_source_ready',
+    source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+  });
+}
+
+/** Same two options, with option A (2 Nov) quoted and its PDF not yet built. */
+function staggeredDatesWithOptionA(): QuoteSession {
+  const session = staggeredDatesSession();
+  return reduceQuoteSession(session, {
+    type: 'staff_quote_ready',
+    offer: {
+      id: 'rev-a',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'rev-a',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-02:2026-11-04',
+      coversGroupIds: ['stay-a'],
+      quantity: 1,
+      adults: 1,
+    },
+    staffQuote: {
+      workflowRunId: 'run-a',
+      revisionRef: 'rev-a',
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: 'ab'.repeat(32),
+      selectionEpoch: 1,
+      inputRevision: session.inputRevision,
+      inputDigest: 'digest-a',
+      totalMinor: 850000,
+      currency: 'ZAR',
+      quoteRequestKey: '2026-11-02:2026-11-04',
+      approvedHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+    },
+    selectionEpoch: 1,
+    inputRevision: session.inputRevision,
+  });
+}

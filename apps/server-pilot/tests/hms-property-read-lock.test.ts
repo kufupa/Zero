@@ -1,5 +1,6 @@
 import {
   createPropertyReadLock,
+  isPropertyReadLockDeadline,
   propertyReadLockKey,
   type PropertyReadConnection,
 } from '../src/hms/property-read-lock.js';
@@ -15,6 +16,25 @@ function connection(): PropertyReadConnection {
 }
 
 describe('U8 property-scoped read lock', () => {
+  it('gives up at the acquisition deadline with an error isPropertyReadLockDeadline recognises, and closes the connection', async () => {
+    const handle: PropertyReadConnection = {
+      query: vi.fn(async () => [{ pg_try_advisory_lock: false }]),
+      close: vi.fn(async () => undefined),
+    };
+    const lock = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      connectionFactory: async () => handle,
+    });
+    const failure = await lock.withLock(async () => 'never reached', { deadlineAt: Date.now() + 60 }).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(isPropertyReadLockDeadline(failure)).toBe(true);
+    expect(isPropertyReadLockDeadline(new Error('some other failure'))).toBe(false);
+    expect(handle.close).toHaveBeenCalledOnce();
+  });
+
   it('derives a stable tenant/property advisory key without raw identifiers in output', () => {
     const first = propertyReadLockKey('tenant-centurion', 'HRCEN');
     expect(first).toBe(propertyReadLockKey('tenant-centurion', 'HRCEN'));

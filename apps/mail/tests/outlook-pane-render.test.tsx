@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
@@ -39,6 +39,15 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.
     sessionId: 'session-1',
     transportId: 'transport-1',
     legacyReplySupported: undefined as boolean | undefined,
+    /** When true, executeStaffQuote stays pending until releaseStaffQuote is called. */
+    holdStaffQuote: false,
+    releaseStaffQuote: null as null | (() => void),
+    hmsQueueStatus: null as null | Record<string, unknown>,
+    hmsQueueReads: 0,
+    /** Audit run id and screenshot names that executeStaffQuote returns. */
+    staffQuoteRunId: null as null | string,
+    staffQuoteScreenshots: [] as string[],
+    screenshotReads: [] as string[],
   },
 }));
 
@@ -121,6 +130,11 @@ vi.mock('../hooks/use-connections', () => ({
   }),
 }));
 
+// The amend panel reads the pilot capabilities hook; the pane default is paneSave off.
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => ({ paneSave: false }),
+}));
+
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
@@ -130,11 +144,38 @@ vi.mock('../providers/query-provider', () => ({
         query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
       },
       executeStaffQuote: {
-        mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => ({
-          status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
-          selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
-          arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
-        }),
+        mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
+          if (bridgeMockState.holdStaffQuote) {
+            await new Promise<void>((resolve) => {
+              bridgeMockState.releaseStaffQuote = resolve;
+            });
+          }
+          return {
+            status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
+            selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
+            arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
+            runId: bridgeMockState.staffQuoteRunId,
+            screenshots: [...bridgeMockState.staffQuoteScreenshots],
+          };
+        },
+      },
+      hmsQueueStatus: {
+        query: async () => {
+          bridgeMockState.hmsQueueReads += 1;
+          return bridgeMockState.hmsQueueStatus ?? { state: 'idle', message: '' };
+        },
+      },
+      quoteRunScreenshot: {
+        query: async ({ name }: { runId: string; name: string }) => {
+          bridgeMockState.screenshotReads.push(name);
+          return {
+            status: 'ready',
+            name,
+            mimeType: 'image/png',
+            sizeBytes: 16,
+            dataUrl: `data:image/png;base64,SHOT-${name}`,
+          };
+        },
       },
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
@@ -215,6 +256,13 @@ describe('OutlookPanePage', () => {
     bridgeMockState.sessionId = 'session-1';
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.legacyReplySupported = undefined;
+    bridgeMockState.holdStaffQuote = false;
+    bridgeMockState.releaseStaffQuote = null;
+    bridgeMockState.hmsQueueStatus = null;
+    bridgeMockState.hmsQueueReads = 0;
+    bridgeMockState.staffQuoteRunId = null;
+    bridgeMockState.staffQuoteScreenshots = [];
+    bridgeMockState.screenshotReads = [];
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
@@ -235,7 +283,27 @@ describe('OutlookPanePage', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Send manually in Outlook/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeNull();
-    expect(screen.getByText(/Authorised HMS screenshot unavailable/i)).toBeDefined();
+    expect(screen.queryByText(/No HMS screenshot for this quote/i)).toBeNull();
+  });
+
+  it('says there is no HMS screenshot once a quote completes without a run id', async () => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    expect(await screen.findByText(/No HMS screenshot for this quote/i)).toBeDefined();
+    expect(bridgeMockState.screenshotReads).toEqual([]);
+  });
+
+  it('shows the HMS audit screenshot after the staff quote completes and opens a full-size viewer', async () => {
+    bridgeMockState.staffQuoteRunId = '2026-10-08T10-15-30-125Z-0a1b2c3d';
+    bridgeMockState.staffQuoteScreenshots = ['01-search.png', '02-rates.png', '03-save.png'];
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna did in HMS' }));
+    expect(screen.getByRole('dialog', { name: 'HMS quote screenshots' })).toBeDefined();
+    expect(await screen.findByRole('img', { name: 'HMS screenshot 2 of 3' })).toBeDefined();
+    expect(bridgeMockState.screenshotReads).toContain('02-rates.png');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('opens only the native pairing dialog when the installer is unpaired', async () => {
@@ -247,14 +315,54 @@ describe('OutlookPanePage', () => {
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
+  it('shows HMS queue progress while the staff quote runs and clears it once the run settles', async () => {
+    bridgeMockState.holdStaffQuote = true;
+    bridgeMockState.hmsQueueStatus = {
+      state: 'running',
+      phase: 'Checking the quote rules',
+      phaseIndex: 2,
+      phaseCount: 3,
+      runningForMs: 80_000,
+      message: 'Luna is working in HMS – step 2 of 3: Checking the quote rules.',
+    };
+    render(<OutlookPanePage />);
+    await fillStayFactsMatchingAuthorisedOffer();
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    expect(
+      await screen.findByText(
+        'Luna is working in HMS – step 2 of 3: Checking the quote rules. 1 min 20 s so far.',
+      ),
+    ).toBeDefined();
+    expect(bridgeMockState.hmsQueueReads).toBeGreaterThan(0);
+    await act(async () => {
+      bridgeMockState.releaseStaffQuote?.();
+    });
+    await waitFor(() => expect(screen.queryByText(/Luna is working in HMS/)).toBeNull());
+    expect(
+      screen.getAllByRole('button').some((element) => (element.textContent ?? '').includes('Counted in the total')),
+    ).toBe(true);
+  });
+
+  it('shows Starting the HMS run while the staff quote is pending and the first read is idle', async () => {
+    bridgeMockState.holdStaffQuote = true;
+    render(<OutlookPanePage />);
+    await fillStayFactsMatchingAuthorisedOffer();
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    expect(await screen.findByText('Starting the HMS run…')).toBeDefined();
+    await act(async () => {
+      bridgeMockState.releaseStaffQuote?.();
+    });
+    await waitFor(() => expect(screen.queryByText('Starting the HMS run…')).toBeNull());
+  });
+
   it('renders the Run System Test button', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByRole('button', { name: /Run System Verification/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Run system check/i })).toBeDefined();
   });
 
   it('labels the AI draft card as a sample placeholder', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Extracted suggestions.*review and correct/i)).toBeDefined();
+    expect(screen.getByText(/Luna's suggestions from this email.*Check and correct/i)).toBeDefined();
   });
 
   it('passes the selected store ID when creating a reply draft', async () => {
@@ -400,7 +508,7 @@ describe('OutlookPanePage', () => {
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
     expect(screen.getByRole('status').textContent).toMatch(
-      /Outlook may have completed.*Check Outlook Drafts before retrying/i,
+      /Outlook may have created the draft.*Check Outlook Drafts before retrying/i,
     );
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
@@ -466,7 +574,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(1);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
     fireEvent.click(button);
@@ -585,7 +693,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
     fireEvent.click(button);
@@ -608,7 +716,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(258);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/Too many earlier replies.*check Outlook Drafts/i),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -637,7 +745,7 @@ describe('OutlookPanePage', () => {
     });
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     expect(button.hasAttribute('disabled')).toBe(true);
-    expect(button.textContent).toMatch(/saving/i);
+    expect(button.textContent).toMatch(/creating/i);
 
     await act(async () => finish({ ...draftFolder, entryId: 'draft-1', displayed: true }));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
@@ -658,10 +766,10 @@ describe('OutlookPanePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/saved.*not opened/i);
+      expect(screen.getByRole('status').textContent).toMatch(/saved.*did not open/i);
       expect(screen.getByRole('status').textContent).toMatch(/Outlook blocked the composer/);
       expect(screen.getByRole('status').textContent).toMatch(/original Drafts folder/);
-      expect(screen.getByRole('status').textContent).toMatch(/location.*unverified/i);
+      expect(screen.getByRole('status').textContent).toMatch(/confirm which folder/i);
     });
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
   });

@@ -16,7 +16,7 @@ export function DocumentReview({
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quotation and reply</h3>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Complete reply (staff-editable)
+        Reply to the client (you can edit it)
         <textarea
           id="quote-reviewed-reply"
           aria-label="Reviewed reply"
@@ -35,17 +35,17 @@ export function DocumentReview({
       </button>
       {!pdfReady ? (
         <p className="text-[11px] text-[#64748b]">
-          Select an authorised allocation for every stay group before generating a PDF. Separate date
-          searches do not prove joint availability.
+          Pick a room option for every stay before making the PDF. Separate date searches do not prove
+          that all stays are available together.
         </p>
       ) : null}
       {session.pdf ? (
         <p className="text-[11px] text-[#1e293b]">
-          Prepared PDF {session.pdf.fileName}. Native insert will attach these exact bytes.
+          Prepared PDF {session.pdf.fileName}. The Outlook draft will attach this exact file. For several date options, Create one reply with all date options attaches each option&apos;s PDF.
         </p>
       ) : null}
       {nativeReady ? (
-        <p className="text-[11px] text-emerald-800">Reviewed reply and selected PDF are ready for an unsent Outlook draft.</p>
+        <p className="text-[11px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}
     </section>
   );

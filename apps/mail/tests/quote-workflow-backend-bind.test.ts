@@ -72,7 +72,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.reason).toMatch(/enqueueHmsRead/);
+      expect(result.reason).toMatch(/not available here/);
     }
   });
 
@@ -136,7 +136,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.reason).toMatch(/without offers|do not synthesize/i);
+      expect(result.reason).toMatch(/no room options/i);
     }
   });
 
@@ -155,7 +155,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.reason).toMatch(/not execute party twice/i);
+      expect(result.reason).toMatch(/runs automatically with the quote/i);
     }
     expect(mutate).not.toHaveBeenCalled();
   });
@@ -199,7 +199,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(pdf.status).toBe('unavailable');
     if (pdf.status === 'unavailable') {
-      expect(pdf.reason).toMatch(/mint centsReconciled:true/i);
+      expect(pdf.reason).toMatch(/not connected to this pane yet/i);
     }
   });
 
@@ -214,7 +214,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(minted.status).toBe('unavailable');
     if (minted.status === 'unavailable') {
-      expect(minted.reason).toMatch(/mint centsReconciled:true/i);
+      expect(minted.reason).toMatch(/not connected to this pane yet/i);
     }
   });
 
@@ -354,7 +354,7 @@ describe('quote workflow backend bind', () => {
     });
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.reason).toMatch(/mint centsReconciled:true/i);
+      expect(result.reason).toMatch(/not connected to this pane yet/i);
     }
   });
 });
@@ -420,7 +420,7 @@ describe('staff quote execute/PDF header bind', () => {
     });
     expect(labelled.status).toBe('unavailable');
     if (labelled.status === 'unavailable') {
-      expect(labelled.reason).toMatch(/Room preference "SINGLE"/);
+      expect(labelled.reason).toMatch(/Room type "SINGLE" is not one HMS knows/);
       expect(labelled.reason).toMatch(/DLXTWN/);
     }
     expect(mutate).not.toHaveBeenCalled();
@@ -465,6 +465,26 @@ describe('staff quote execute/PDF header bind', () => {
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
+  });
+
+  it('rejects one executeStaffQuote run that mixes date sets, before any HMS call', async () => {
+    const mutate = vi.fn(async () => readyResult);
+    const mixed = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        { ...stay, roomPreference: 'SKNG' },
+        { ...stay, id: 'g2', arrivalDate: '2026-12-01', departureDate: '2026-12-03', roomPreference: 'SKNG' },
+      ],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(mixed).toEqual({
+      status: 'unavailable',
+      reason: 'Each date range needs its own quote. Run them one at a time.',
+    });
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('rejects a zero total and requires PDF hash to match actual bytes', async () => {

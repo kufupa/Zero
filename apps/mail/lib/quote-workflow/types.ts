@@ -141,6 +141,17 @@ export type LunaAnalysisWire = {
   }>;
 };
 
+/** Server analyse payload `amendment`. Null unless Luna classed the mail as amend or cancel. */
+export type QuoteAmendment = {
+  kind: 'amend' | 'cancel';
+  confirmationNumber: string | null;
+  guestLastName: string | null;
+  /** ISO day as stated in the email. */
+  arrival: string | null;
+  departure: string | null;
+  requestedChange: string | null;
+};
+
 export type QuoteAnalysisSource = 'luna' | 'regex_fallback';
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'invalid_output';
@@ -153,6 +164,8 @@ export type QuoteAnalysis = {
   reviewItems?: QuoteReviewItem[];
   staffActions?: ReservationistStaffAction[];
   luna?: LunaAnalysisWire | null;
+  /** Intent stays other for amend and cancel. This only feeds the HMS lookup panel. */
+  amendment?: QuoteAmendment | null;
   aiUnavailable?: boolean;
   source?: QuoteAnalysisSource;
   fallbackReason?: QuoteWorkflowFallbackReason;
@@ -185,6 +198,10 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
+  /** HMS evidence run for the audit view; null when the run left no screenshots. */
+  runId?: string | null;
+  /** Screenshot file names for runId, in capture order. */
+  screenshots?: string[];
 };
 
 export type StaffQuoteHeader = {
@@ -209,6 +226,23 @@ export function emptyStaffQuoteHeader(): StaffQuoteHeader {
     clientTelephone: '',
   };
 }
+
+/** workstation.quoteRunScreenshot result. dataUrl is a PNG data URL. */
+export type QuoteRunScreenshotResult =
+  | { status: 'ready'; name: string; mimeType: string; sizeBytes: number; dataUrl: string }
+  | { status: 'unavailable'; reason: string };
+
+/** workstation.hmsQueueStatus: this caller's staff quote run. `message` is plain English. */
+export type QueueStatus = {
+  state: 'idle' | 'running' | 'waiting' | 'unavailable';
+  phase?: string;
+  phaseIndex?: number;
+  phaseCount?: number;
+  runningForMs?: number;
+  aheadCount?: number;
+  etaMinutes?: number;
+  message: string;
+};
 
 export type QuoteOfferKind = 'allocation' | 'alternative';
 
@@ -365,6 +399,8 @@ export type QuoteSession = {
   staffQuote: StaffQuoteAllocation | null;
   /** Per-date authentic execute revisions. Combined PDF must not sum these. */
   staffQuotes: Record<string, StaffQuoteAllocation>;
+  /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
+  stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
   staffActions: ReservationistStaffAction[];
   selectedStayKey: string | null;

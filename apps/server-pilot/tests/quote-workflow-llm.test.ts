@@ -1,13 +1,22 @@
 import {
+  amendmentFromAnalysis,
   analyseQuoteSelection,
   buildQuoteWorkflowPrompt,
+  K2_MAPPING,
   mapLlmDecision,
+  QUOTE_WORKFLOW_PROMPT_VERSION,
   quoteWorkflowLlmEnabled,
 } from '../src/ai/quote-workflow-llm.js';
-import { CENTURION_HOTEL_RULES, lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
+import {
+  CENTURION_HOTEL_RULES,
+  lunaAnalysisSchema,
+  reservationistDecisionSchema,
+} from '../src/ai/reservationist-decision.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { LunaModelAdapter } from '../src/ai/bedrock/luna.js';
+import { createHash } from 'node:crypto';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { describe, expect, it } from 'vitest';
 
 const group = {
@@ -63,7 +72,28 @@ function fakeAdapter(output: unknown, seen: ModelInvokeInput[] = []): ModelAdapt
   };
 }
 
+describe('reservationistDecisionSchema', () => {
+  it('takes amend and cancel as workflows, as the hotel rules tell the model to', () => {
+    for (const workflow of ['amend', 'cancel'] as const) {
+      const parsed = reservationistDecisionSchema.parse({
+        workflow,
+        stayAsk: null,
+        missing: [],
+        replyDraft: '',
+        rationale: 'Existing booking.',
+      });
+      expect(parsed.workflow).toBe(workflow);
+    }
+  });
+});
+
 describe('lunaAnalysisSchema', () => {
+  it('reads a confirmation number the model sent as a bare number as text', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel', confirmationNumber: 57291630 })).confirmationNumber).toBe(
+      '57291630',
+    );
+  });
+
   it('accepts rooms_only_group as an info flag', () => {
     expect(lunaAnalysisSchema.parse(analysis({ flags: ['rooms_only_group'] })).flags).toEqual([
       'rooms_only_group',
@@ -79,6 +109,35 @@ describe('lunaAnalysisSchema', () => {
       note: 'x',
     }));
     expect(() => lunaAnalysisSchema.parse(analysis({ tasks: nine }))).toThrow();
+  });
+
+  it('accepts amend and cancel workflows, with amendment fields optional for old payloads', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'amend' })).workflow).toBe('amend');
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' })).workflow).toBe('cancel');
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'amend' })).confirmationNumber).toBe(
+      undefined,
+    );
+  });
+
+  it('keeps the amendment fields the model sends', () => {
+    expect(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'amend',
+          confirmationNumber: '57291630-1',
+          guestLastName: 'Example',
+          arrival: '2026-11-12',
+          departure: '2026-11-17',
+          requestedChange: 'Change departure from 15 Nov to 17 Nov',
+        }),
+      ),
+    ).toMatchObject({
+      confirmationNumber: '57291630-1',
+      guestLastName: 'Example',
+      arrival: '2026-11-12',
+      departure: '2026-11-17',
+      requestedChange: 'Change departure from 15 Nov to 17 Nov',
+    });
   });
 });
 
@@ -117,6 +176,36 @@ describe('buildQuoteWorkflowPrompt', () => {
     const prompt = buildQuoteWorkflowPrompt(selection, { treatAs: 'quote' });
     expect(prompt.system).toMatch(/staff override/i);
     expect(prompt.system).toMatch(/treat this mail as a quote/i);
+  });
+
+  it('asks for amendments and cancellations as amend or cancel, and keeps invoices as other', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection);
+    expect(prompt.system).toMatch(
+      /Amendments and cancellations of an existing booking: workflow=amend or cancel\./,
+    );
+    expect(prompt.system).toMatch(/Invoices, folios, payment queries stay other\./);
+    expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
+  });
+});
+
+describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
+  it('hashes the hotel rules, the mapping and the response schema, so a schema change misses the cache', () => {
+    const withSchema = createHash('sha256')
+      .update(CENTURION_HOTEL_RULES)
+      .update('\n')
+      .update(K2_MAPPING)
+      .update('\n')
+      .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
+      .digest('hex')
+      .slice(0, 16);
+    const promptOnly = createHash('sha256')
+      .update(CENTURION_HOTEL_RULES)
+      .update('\n')
+      .update(K2_MAPPING)
+      .digest('hex')
+      .slice(0, 16);
+    expect(QUOTE_WORKFLOW_PROMPT_VERSION).toBe(withSchema);
+    expect(QUOTE_WORKFLOW_PROMPT_VERSION).not.toBe(promptOnly);
   });
 });
 
@@ -254,6 +343,51 @@ describe('mapLlmDecision', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'other' })));
     expect(mapped.intent).toBe('other');
     expect(mapped.groups).toEqual([]);
+  });
+
+  it('maps amend and cancel to intent other with no groups, so the quote UI stays hidden', () => {
+    for (const workflow of ['amend', 'cancel'] as const) {
+      const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow })));
+      expect(mapped.intent).toBe('other');
+      expect(mapped.groups).toEqual([]);
+    }
+  });
+
+  it('builds the amendment payload for amend and cancel only', () => {
+    expect(
+      amendmentFromAnalysis(
+        lunaAnalysisSchema.parse(
+          analysis({
+            workflow: 'amend',
+            confirmationNumber: '57291630-1',
+            guestLastName: 'Example',
+            arrival: '2026-11-12',
+            departure: '2026-11-17',
+            requestedChange: 'Change departure from 15 Nov to 17 Nov',
+          }),
+        ),
+      ),
+    ).toEqual({
+      kind: 'amend',
+      confirmationNumber: '57291630-1',
+      guestLastName: 'Example',
+      arrival: '2026-11-12',
+      departure: '2026-11-17',
+      requestedChange: 'Change departure from 15 Nov to 17 Nov',
+    });
+    expect(
+      amendmentFromAnalysis(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' }))),
+    ).toEqual({
+      kind: 'cancel',
+      confirmationNumber: null,
+      guestLastName: null,
+      arrival: null,
+      departure: null,
+      requestedChange: null,
+    });
+    expect(
+      amendmentFromAnalysis(lunaAnalysisSchema.parse(analysis({ workflow: 'quote' }))),
+    ).toBeNull();
   });
 
   it('quotes a rooms-only group of 15 with quantity 15 and an info chip', () => {
@@ -414,6 +548,49 @@ describe('analyseQuoteSelection', () => {
     expect(result.source).toBe('luna');
     if (result.source === 'luna') {
       expect(result.analysis.evidence).toEqual([{ field: 'arrival', quote: 'arriving 12 Nov' }]);
+    }
+  });
+
+  it('keeps an amendment confirmation number only when it appears verbatim in the source', async () => {
+    const amendSelection: SyncedQuoteSelection = {
+      ...selection,
+      bodyText: 'Please change booking 57291630-1 so we leave 17 Nov, not 15 Nov.',
+    };
+    const kept = await analyseQuoteSelection({
+      selection: amendSelection,
+      adapter: fakeAdapter(analysis({ workflow: 'amend', confirmationNumber: '57291630-1' })),
+      enabled: true,
+    });
+    const invented = await analyseQuoteSelection({
+      selection: amendSelection,
+      adapter: fakeAdapter(analysis({ workflow: 'amend', confirmationNumber: '99999999-9' })),
+      enabled: true,
+    });
+    expect(kept.source).toBe('luna');
+    if (kept.source === 'luna') expect(kept.analysis.confirmationNumber).toBe('57291630-1');
+    expect(invented.source).toBe('luna');
+    if (invented.source === 'luna') expect(invented.analysis.confirmationNumber).toBeNull();
+  });
+
+  it('masks card numbers in the requested change, caps it at 300 characters and drops impossible dates', async () => {
+    const result = await analyseQuoteSelection({
+      selection,
+      adapter: fakeAdapter(
+        analysis({
+          workflow: 'amend',
+          requestedChange: `Card 4111 1111 1111 1111 ${'x'.repeat(400)}`,
+          arrival: '2026-02-30',
+          departure: '2026-11-17',
+        }),
+      ),
+      enabled: true,
+    });
+    expect(result.source).toBe('luna');
+    if (result.source === 'luna') {
+      expect(result.analysis.requestedChange).not.toMatch(/4111 1111 1111 1111/);
+      expect(result.analysis.requestedChange?.length).toBeLessThanOrEqual(300);
+      expect(result.analysis.arrival).toBeNull();
+      expect(result.analysis.departure).toBe('2026-11-17');
     }
   });
 

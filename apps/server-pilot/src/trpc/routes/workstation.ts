@@ -42,7 +42,25 @@ import type { QuoteRevision, ImportedOffer } from '../../quote-proposal/quote-re
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
 import { aiWorkflowRun, aiDraftGeneration, message } from '../../db/schema/mail.js';
-import { createPostgresPropertyReadLock } from '../../hms/property-read-lock.js';
+import {
+  createPostgresPropertyReadLock,
+  propertyReadLockKey,
+} from '../../hms/property-read-lock.js';
+import {
+  beginQuoteRun,
+  countOtherInFlightQuoteRuns,
+  describeHmsQueueStatus,
+  latestQuoteRunFor,
+  readPropertyLockHolder,
+  type HmsQueueStatus,
+} from '../../hms/property-queue-state.js';
+import {
+  listQuoteRunScreenshots,
+  quoteRunIdFromEvidenceDirectory,
+  QUOTE_RUN_ID_PATTERN,
+  QUOTE_SCREENSHOT_NAME_PATTERN,
+  readQuoteRunScreenshot,
+} from '../../ai/staff-quote-evidence.js';
 import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
@@ -306,8 +324,60 @@ export function resolveLedgerSourceProposal(
   return selected;
 }
 
+export const quoteRunScreenshotInput = z
+  .object({
+    runId: z.string().regex(QUOTE_RUN_ID_PATTERN),
+    name: z.string().regex(QUOTE_SCREENSHOT_NAME_PATTERN),
+  })
+  .strict();
+
 export const workstationRouter = router({
   outlookSync: outlookSyncRouter,
+  /** Own staff quote run status. HMS-free and cheap; the pane polls only while pending. */
+  hmsQueueStatus: mailboxProcedure.query(async ({ ctx }): Promise<HmsQueueStatus> => {
+    const run = latestQuoteRunFor({
+      transportId: ctx.activeTransportId,
+      userId: ctx.sessionUser.id,
+    });
+    const nowMs = Date.now();
+    if (!run || run.phaseIndex > 0) return describeHmsQueueStatus({ run, nowMs });
+    try {
+      const db = getDb();
+      const [holder, otherQuoteRuns] = await Promise.all([
+        readPropertyLockHolder(db, run.lockKey),
+        countOtherInFlightQuoteRuns(db, run.generationId),
+      ]);
+      return describeHmsQueueStatus({ run, nowMs, holder, otherQuoteRuns });
+    } catch {
+      return describeHmsQueueStatus({ nowMs });
+    }
+  }),
+  /** Owner-scoped audit screenshot of a completed staff quote run, returned as a PNG data URL. */
+  quoteRunScreenshot: mailboxProcedure
+    .input(quoteRunScreenshotInput)
+    .query(async ({ input, ctx }) => {
+      const [owned] = await getDb()
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            sql`(${aiWorkflowRun.metrics} -> 'staffQuoteEvidence' ->> 'runId') = ${input.runId}`,
+          ),
+        )
+        .limit(1);
+      const unavailable = { status: 'unavailable' as const, reason: 'quote_run_unavailable' };
+      if (!owned) return unavailable;
+      let outputDir: string;
+      try {
+        outputDir = readInstalledStaffQuoteConfiguration().outputDir;
+      } catch {
+        return unavailable;
+      }
+      return readQuoteRunScreenshot({ outputDir, runId: input.runId, name: input.name });
+    }),
   staffQuoteSource: mailboxProcedure
     .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
     .query(async ({ input, ctx }) => {
@@ -423,102 +493,135 @@ export const workstationRouter = router({
         code: 'PRECONDITION_FAILED',
         message: 'Staff quotation database unavailable',
       });
-    const lock = createPostgresPropertyReadLock({
-      tenantId: config.tenantId,
-      propertyCode: scope.propertyCode,
-      databaseUrl,
+    const evidence: { directory?: string } = {};
+    const queued = beginQuoteRun({
+      generationId,
+      transportId: scope.transportId,
+      userId: scope.userId,
+      lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
     });
-    let revision: QuoteRevision;
     try {
-      revision = await lock.withLock(
-        async () => {
-          const services = getInstalledStaffQuoteServices(
-            {
-              authorizationId: prepared.authorizationId,
-              authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
-              signer: {
-                signerName: ctx.sessionUser.name ?? '',
-                signerEmail: ctx.sessionUser.email,
+      const lock = createPostgresPropertyReadLock({
+        tenantId: config.tenantId,
+        propertyCode: scope.propertyCode,
+        databaseUrl,
+      });
+      let revision: QuoteRevision;
+      try {
+        revision = await lock.withLock(
+          async () => {
+            queued.setPhase(1);
+            const services = getInstalledStaffQuoteServices(
+              {
+                authorizationId: prepared.authorizationId,
+                authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
+                signer: {
+                  signerName: ctx.sessionUser.name ?? '',
+                  signerEmail: ctx.sessionUser.email,
+                },
+                onEvidenceDirectory: (directory) => {
+                  evidence.directory = directory;
+                },
               },
-            },
-            prepared.approval,
-          );
-          return executeStaffQuote(prepared, services, stillCurrent);
-        },
-        { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
-      );
-    } catch (error) {
-      await db
-        .update(aiDraftGeneration)
-        .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
-        .where(eq(aiDraftGeneration.id, generationId));
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: staffQuoteFailureMessage(error),
-      });
-    }
-    const attestation = attestStaffQuote(input, scope, prepared, revision);
-    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
-    const extraTotal = proposal.facts
-      ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
-          (sum, line) => sum + line.totalMinor,
-          0,
-        )
-      : 0;
-    if (!(await stillCurrent()))
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: 'Selected email changed while pricing',
-      });
-    await db.transaction(async (tx) => {
-      await tx
-        .update(aiDraftGeneration)
-        .set({ status: 'succeeded' })
-        .where(eq(aiDraftGeneration.id, generationId));
-      await tx.insert(aiWorkflowRun).values({
-        id: workflowRunId,
-        transportId: scope.transportId,
-        threadId: scope.threadId,
-        triggerMessageId: mail.id,
-        runKind: 'candidate_draft',
-        idempotencyKey: prepared.authorizationId,
-        modelId: 'staff-approved-native',
-        promptVersion: 'staff-quote-v1',
-        state: 'succeeded',
-        executorLane: 'hms',
-        generationId,
-        metrics: {
-          staffQuoteAttestation: { ...attestation, salesStrategy: input.salesStrategy },
-          reservationistResult: {
-            readiness: 'ready_for_staff_review',
-            quoteRevisionIds: [revision.id],
-            quoteRevisions: [revision],
-            proposalFacts: proposal.facts
-              ? [{ ref: 'extras', facts: proposal.facts }]
-              : [],
+              prepared.approval,
+            );
+            return executeStaffQuote(
+              prepared,
+              {
+                ...services,
+                resolveQuoteTask:
+                  services.resolveQuoteTask &&
+                  (async (quoteContext) => {
+                    const resolved = await services.resolveQuoteTask!(quoteContext);
+                    queued.setPhase(2);
+                    return resolved;
+                  }),
+              },
+              stillCurrent,
+            );
           },
-        },
+          { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
+        );
+      } catch (error) {
+        await db
+          .update(aiDraftGeneration)
+          .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
+          .where(eq(aiDraftGeneration.id, generationId));
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: staffQuoteFailureMessage(error),
+        });
+      }
+      queued.setPhase(3);
+      const attestation = attestStaffQuote(input, scope, prepared, revision);
+      const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+      const extraTotal = proposal.facts
+        ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
+            (sum, line) => sum + line.totalMinor,
+            0,
+          )
+        : 0;
+      if (!(await stillCurrent()))
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Selected email changed while pricing',
+        });
+      const runId = evidence.directory
+        ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
+        : null;
+      await db.transaction(async (tx) => {
+        await tx
+          .update(aiDraftGeneration)
+          .set({ status: 'succeeded' })
+          .where(eq(aiDraftGeneration.id, generationId));
+        await tx.insert(aiWorkflowRun).values({
+          id: workflowRunId,
+          transportId: scope.transportId,
+          threadId: scope.threadId,
+          triggerMessageId: mail.id,
+          runKind: 'candidate_draft',
+          idempotencyKey: prepared.authorizationId,
+          modelId: 'staff-approved-native',
+          promptVersion: 'staff-quote-v1',
+          state: 'succeeded',
+          executorLane: 'hms',
+          generationId,
+          metrics: {
+            staffQuoteAttestation: { ...attestation, salesStrategy: input.salesStrategy },
+            reservationistResult: {
+              readiness: 'ready_for_staff_review',
+              quoteRevisionIds: [revision.id],
+              quoteRevisions: [revision],
+              proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+            },
+            ...(runId ? { staffQuoteEvidence: { runId } } : {}),
+          },
+        });
       });
-    });
-    return {
-      status: 'ready' as const,
-      workflowRunId,
-      revisionRef: revision.id,
-      messageId: mail.id,
-      threadId: mail.threadId,
-      factRefs: proposal.factRefs,
-      extrasReviewItems: proposal.extrasReviewItems,
-      selectionEpoch: input.selectionEpoch,
-      inputRevision: input.inputRevision,
-      inputDigest: prepared.inputDigest,
-      totalMinor: revision.totalMinor + extraTotal,
-      currency: revision.currency,
-      arrivalDate: revision.groups[0].arrivalDate,
-      departureDate: revision.groups.at(-1)!.departureDate,
-      description: deriveQuoteLines(revision)
-        .map((l) => l.description)
-        .join('; '),
-    };
+      return {
+        status: 'ready' as const,
+        workflowRunId,
+        revisionRef: revision.id,
+        messageId: mail.id,
+        threadId: mail.threadId,
+        factRefs: proposal.factRefs,
+        extrasReviewItems: proposal.extrasReviewItems,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        inputDigest: prepared.inputDigest,
+        totalMinor: revision.totalMinor + extraTotal,
+        currency: revision.currency,
+        arrivalDate: revision.groups[0].arrivalDate,
+        departureDate: revision.groups.at(-1)!.departureDate,
+        description: deriveQuoteLines(revision)
+          .map((l) => l.description)
+          .join('; '),
+        runId,
+        screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
+      };
+    } finally {
+      queued.end();
+    }
   }),
   prepareBookingDraft: mailboxProcedure
     .input(prepareBookingDraftInput)
