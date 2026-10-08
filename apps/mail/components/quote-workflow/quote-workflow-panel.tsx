@@ -8,6 +8,7 @@ import {
   requestedQuoteKeys,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
+import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
@@ -229,6 +230,7 @@ function StayScopePicker({
 }) {
   const stayKeys = requestedQuoteKeys(session.groups);
   if (stayKeys.length <= 1) return null;
+  const allOptionsReply = completedDateOptions(session).length >= 2;
   const pending = pendingPdfStayKey(session);
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
@@ -285,7 +287,11 @@ function StayScopePicker({
               </button>
             ) : null}
             {selected && hasPdf ? (
-              <p className="text-[11px] text-[#475569]">Use Draft Quotation into Email Reply for this option.</p>
+              <p className="text-[11px] text-[#475569]">
+                {allOptionsReply
+                  ? `Use Draft option ${letter} only below for this option.`
+                  : 'Use Draft Quotation into Email Reply for this option.'}
+              </p>
             ) : null}
           </div>
         );
