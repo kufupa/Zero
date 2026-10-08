@@ -110,6 +110,7 @@ import {
   type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
+import { partyFinderFromTrpc } from '@/lib/quote-workflow/party-lookup';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -208,6 +209,7 @@ type PendingReplyOperation = {
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
+const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 
 function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
   return draft
@@ -1632,6 +1634,7 @@ export default function OutlookPanePage() {
             <QuoteWorkflowPanel
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
+              findParty={PANE_PARTY_FINDER}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);

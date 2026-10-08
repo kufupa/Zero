@@ -10,6 +10,7 @@ import {
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
+import type { PartyFinder } from '@/lib/quote-workflow/party-lookup';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QueueStatus, QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
@@ -17,6 +18,7 @@ import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { DocumentReview } from './document-review';
 import { HmsQueueStatusLine } from './hms-queue-status';
+import { PartyPicker } from './party-picker';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
@@ -130,9 +132,12 @@ function ZarMinorInput({
 function StaffHeaderFields({
   header,
   onPatch,
+  findParty,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+  /** Find in HMS. Null or absent keeps the header as plain text, exactly as before. */
+  findParty?: PartyFinder | null;
 }) {
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
@@ -160,18 +165,53 @@ function StaffHeaderFields({
           aria-label="Company"
           className={fieldClass}
           value={header.company}
-          onChange={(event) => onPatch?.({ company: event.target.value })}
+          onChange={(event) =>
+            onPatch?.({
+              company: event.target.value,
+              // Editing away from the picked name means the pick no longer applies.
+              ...(header.party?.kind === 'company' && event.target.value !== header.party.name
+                ? { party: undefined }
+                : {}),
+            })
+          }
         />
       </label>
+      {findParty ? (
+        <PartyPicker
+          kind="company"
+          name={header.company}
+          party={header.party}
+          find={findParty}
+          onPick={(party) => onPatch?.({ party, company: party.name })}
+          onClear={() => onPatch?.({ party: undefined })}
+        />
+      ) : null}
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         Agency
         <input
           aria-label="Agency"
           className={fieldClass}
           value={header.agency}
-          onChange={(event) => onPatch?.({ agency: event.target.value })}
+          onChange={(event) =>
+            onPatch?.({
+              agency: event.target.value,
+              ...(header.party?.kind === 'agency' && event.target.value !== header.party.name
+                ? { party: undefined }
+                : {}),
+            })
+          }
         />
       </label>
+      {findParty ? (
+        <PartyPicker
+          kind="agency"
+          name={header.agency}
+          party={header.party}
+          find={findParty}
+          onPick={(party) => onPatch?.({ party, agency: party.name })}
+          onClear={() => onPatch?.({ party: undefined })}
+        />
+      ) : null}
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         Attention
         <input
@@ -411,10 +451,13 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
+  findParty,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  /** Find in HMS for the quote header's Company and Agency. Null or absent leaves them as plain text. */
+  findParty?: PartyFinder | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
@@ -546,6 +589,7 @@ export function QuoteWorkflowPanel({
         <StaffHeaderFields
           header={session.staffHeader ?? emptyStaffQuoteHeader()}
           onPatch={onPatchStaffHeader}
+          findParty={findParty}
         />
       ) : null}
       {showWorkspace ? (

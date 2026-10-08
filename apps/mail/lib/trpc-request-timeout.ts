@@ -8,6 +8,8 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     if (routes.includes('quoteWorkflow.analyseSelection')) return 45_000;
     // Browser runs under the hotel lock: a lookup takes about 1-2 minutes, the server bounds it at 5.
     if (routes.includes('paneStayLookup.findStay')) return 6 * 60_000;
+    // The party picker runs the same kind of lookup under the same lock: the server bounds the wait at 20 s and the run at 5 min.
+    if (routes.includes('panePartyLookup.findParty')) return 6 * 60_000;
     // A cancel run is bounded by the server at 20 minutes, so the browser waits slightly longer than that.
     if (routes.includes('paneStayCancel.previewCancel') || routes.includes('paneStayCancel.commitCancel'))
       return 21 * 60_000;
