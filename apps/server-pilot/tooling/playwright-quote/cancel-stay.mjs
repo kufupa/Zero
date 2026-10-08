@@ -22,7 +22,7 @@ import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus,
   normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, squash,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 
@@ -533,21 +533,28 @@ async function clickReasonOk(page) {
   });
 }
 
-// Reads the status after an action. While a dialog is still open over the grid, read the open record only.
-async function readBack(ctx, blocked) {
-  const { page, args, result } = ctx;
-  if (blocked) {
-    result.readbackMethod = 'open-record';
-    const record = await readRecord(page);
-    return record.confirmation === args.confirmation ? squash(record.status) : null;
-  }
-  result.readbackMethod = 're-search';
-  // Never trust a form that was open before the action: re-open the row from a fresh search.
-  const found = await findStay(ctx, { allowOpenRecord: false });
-  if (!found || !found.locator) return null;
-  await openRecord(page, found.locator);
+// The status after a commit. The open form counts only once it reads Cancelled, because HMS keeps the old status while it
+// processes. Otherwise a fresh header search reads the status on the dropdown row for the confirmation.
+async function readCommittedStatus(ctx) {
+  const { page, args } = ctx;
   const record = await readRecord(page);
-  return record.confirmation === args.confirmation ? squash(record.status) : null;
+  const formStatus = record.confirmation === args.confirmation ? squash(record.status) : null;
+  if (isCancelledStatus(formStatus)) return formStatus;
+  await quickActions(page, args.confirmation).type();
+  const probe = await waitForStay(page, args.confirmation, { needRow: true });
+  return probe.row ? squash(probe.row.row.status) : formStatus;
+}
+
+// The processing mask HMS shows while a commit is applied ("Processing request.").
+async function processingVisible(page) {
+  return (await visibleIndexes(page.getByText(/Processing request/i))).length > 0;
+}
+
+function settleIo(ctx) {
+  return {
+    maskVisible: () => processingVisible(ctx.page),
+    readStatus: () => readCommittedStatus(ctx),
+  };
 }
 
 function recordPenalty(result, penalty) {
@@ -645,18 +652,21 @@ async function run(ctx) {
   result.clickedOk = true;
   mark(ctx, 'committed');
   await page.waitForTimeout(1500);
-
+  // HMS shows its "Processing request." mask while the cancel applies, and the open form keeps its old status until the
+  // mask clears (live 0144). Wait for the mask, then poll the status until it reads Cancelled. After 60 s it is unconfirmed.
+  const settled = await settleCancel(settleIo(ctx), { now: () => Date.now(), sleep: (ms) => delay(ms) });
   const windows = await visibleWindowTexts(page);
-  const followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
-  result.followUps = followUps;
-  const reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
+  result.followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
+  result.reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
   const penaltyAfter = parsePenalty(windows);
   if (penaltyAfter) {
     recordPenalty(result, penaltyAfter);
     result.penaltyPending = true;
     await shot(ctx, 'penalty.png');
   }
-  result.statusAfter = await readBack(ctx, followUps.length > 0 || reasonStillOpen);
+  result.statusAfter = settled.statusAfter;
+  result.settle = settled;
+  result.readbackMethod = 'settle';
   await shot(ctx, 'readback.png');
   mark(ctx, 'readback');
   result.outcome = resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });

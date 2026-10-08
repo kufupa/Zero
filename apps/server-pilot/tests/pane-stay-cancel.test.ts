@@ -76,6 +76,7 @@ describe('pane stay cancel', () => {
       statusAfter: null,
       reasons: [],
       penaltyText: null,
+      message: null,
       screenshots: [],
     });
     await expect(commitCancel({ ...stay, reason: 'Duplicate Booking' })).resolves.toMatchObject({
@@ -160,6 +161,7 @@ describe('pane stay cancel', () => {
       statusAfter: 'Reserved',
       reasons: ['Test Reservations', 'Duplicate Booking'],
       penaltyText: null,
+      message: null,
       screenshots: ['found.png', 'cancel-dialog.png'],
     });
     expect(seen).toEqual(['lock']);
@@ -195,6 +197,23 @@ describe('pane stay cancel', () => {
       statusBefore: 'Reserved',
       statusAfter: 'Cancelled',
       penaltyText: 'Cancellation Penalty of 2060.00 may be added to account.',
+    });
+  });
+
+  it('maps cancel_unconfirmed to the operator message, and gives no message to a confirmed cancel', async () => {
+    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.lock = passingLock();
+    paneStayCancelLoaders.spawn = async () =>
+      cliResult({ outcome: 'cancel_unconfirmed', statusBefore: 'Reserved', statusAfter: 'Reserved' });
+    await expect(commitCancel({ ...stay, reason: 'Test Reservations' })).resolves.toMatchObject({
+      outcome: 'cancel_unconfirmed',
+      message: 'HMS may have cancelled this booking. Check HMS before trying again.',
+    });
+    paneStayCancelLoaders.spawn = async () =>
+      cliResult({ outcome: 'cancelled', statusBefore: 'Reserved', statusAfter: 'Cancelled' });
+    await expect(commitCancel({ ...stay, reason: 'Test Reservations' })).resolves.toMatchObject({
+      outcome: 'cancelled',
+      message: null,
     });
   });
 

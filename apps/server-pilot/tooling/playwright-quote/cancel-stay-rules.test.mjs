@@ -5,6 +5,7 @@ import {
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
+  pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
   searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
@@ -545,4 +546,131 @@ test('parsePanelSnapshot reads a cell-split row, falls back to its lines, and re
   assert.equal(parsed.unreadable, 1, 'the header has no confirmation and is not a data row');
   assert.deepEqual(parsed.unreadableRows, [broken]);
   assert.equal(parsePanelSnapshot({ rows: [], unresolved: 2 }).unreadable, 2);
+});
+
+// ---- Post-commit settle: pollUntil and settleCancel on a fake clock (no real sleeping) ----
+
+function fakeClock() {
+  const clock = { t: 0 };
+  clock.now = () => clock.t;
+  clock.sleep = async (ms) => {
+    clock.t += ms;
+  };
+  return clock;
+}
+
+test('pollUntil reads at once, then every interval, and returns the first read that satisfies until', async () => {
+  const clock = fakeClock();
+  const answers = [false, false, false, true];
+  let reads = 0;
+  const result = await pollUntil({
+    read: async () => answers[reads++],
+    until: (value) => value === true,
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.deepEqual(result, { value: true, timedOut: false, polls: 4, elapsedMs: 9000 });
+  assert.equal(clock.t, 9000);
+});
+
+test('pollUntil with a satisfied first read never sleeps', async () => {
+  const clock = fakeClock();
+  const result = await pollUntil({ read: async () => 'Cancelled', until: (v) => v === 'Cancelled', budgetMs: 60000, intervalMs: 3000, now: clock.now, sleep: clock.sleep });
+  assert.deepEqual(result, { value: 'Cancelled', timedOut: false, polls: 1, elapsedMs: 0 });
+  assert.equal(clock.t, 0);
+});
+
+test('pollUntil gives up at the budget: reads at 0, 3, ... 60 s, the last one at 60 s, then timedOut', async () => {
+  const clock = fakeClock();
+  let reads = 0;
+  const result = await pollUntil({
+    read: async () => {
+      reads += 1;
+      return 'Reserved';
+    },
+    until: (value) => value === 'Cancelled',
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.deepEqual(result, { value: 'Reserved', timedOut: true, polls: 21, elapsedMs: 60000 });
+  assert.equal(reads, 21);
+  assert.equal(clock.t, 60000);
+});
+
+test('pollUntil counts a slow read against the budget: the last read starts before 60 s and ends after it', async () => {
+  const clock = fakeClock();
+  const result = await pollUntil({
+    read: async () => {
+      clock.t += 2000;
+      return 'Reserved';
+    },
+    until: (value) => value === 'Cancelled',
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.polls, 13, 'reads start at 0, 5, ..., 60 s');
+  assert.equal(result.elapsedMs, 62000);
+});
+
+test('settleCancel waits for the processing mask to clear, then polls the status until it reads Cancelled', async () => {
+  const clock = fakeClock();
+  const masks = [true, true, false];
+  const statuses = ['Reserved', 'Cancelled'];
+  const settled = await settleCancel(
+    { maskVisible: async () => masks.shift(), readStatus: async () => statuses.shift() },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.deepEqual(settled, {
+    statusAfter: 'Cancelled',
+    cancelled: true,
+    maskCleared: true,
+    maskMs: 6000,
+    statusPolls: 2,
+    statusMs: 3000,
+  });
+  assert.equal(clock.t, 9000);
+});
+
+test('settleCancel reports unconfirmed after 60 s of an unchanged status', async () => {
+  const clock = fakeClock();
+  const settled = await settleCancel(
+    { maskVisible: async () => false, readStatus: async () => 'Reserved' },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled.cancelled, false);
+  assert.equal(settled.statusAfter, 'Reserved');
+  assert.equal(settled.statusPolls, 21);
+  assert.equal(settled.statusMs, 60000);
+  assert.equal(clock.t, 60000);
+});
+
+test('settleCancel keeps polling the status when the mask never clears, so a cancel HMS applied is still seen', async () => {
+  const clock = fakeClock();
+  const settled = await settleCancel(
+    { maskVisible: async () => true, readStatus: async () => 'Cancelled' },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled.maskCleared, false);
+  assert.equal(settled.maskMs, 60000);
+  assert.equal(settled.cancelled, true);
+  assert.equal(settled.statusAfter, 'Cancelled');
+});
+
+test('the settle budget is 60 s and the interval 3 s', () => {
+  assert.equal(SETTLE_BUDGET_MS, 60000);
+  assert.equal(SETTLE_INTERVAL_MS, 3000);
+});
+
+test('cancel-stay.mjs settles a commit through settleCancel, waits for the processing mask, and has no one-shot readback', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /settleCancel\(settleIo\(ctx\)/);
+  assert.match(source, /Processing request/);
+  assert.equal(/readBack\(/.test(source), false);
 });

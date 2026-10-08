@@ -246,6 +246,62 @@ export function resolveOutcome({ mode, statusBefore, statusAfter }) {
   return isCancelledStatus(statusAfter) ? 'cancelled' : 'cancel_unconfirmed';
 }
 
+// After a commit's reason OK HMS shows a "Processing request." mask and keeps the open form's old status until it clears
+// (live 0144: a readback 3.5 s after OK still read Reserved, and the booking was cancelled). settleCancel waits for the
+// mask, then polls the status until it reads Cancelled. Each wait gives up after the budget (60 s), polling every
+// interval (3 s).
+export const SETTLE_BUDGET_MS = 60_000;
+export const SETTLE_INTERVAL_MS = 3_000;
+
+// Calls read() now, then every intervalMs, until until(value) holds. It gives up once budgetMs has passed since the first
+// call, after a last read at the budget. now() and sleep(ms) are injected so the schedule can run on a fake clock.
+export async function pollUntil({ read, until, budgetMs, intervalMs, now = Date.now, sleep }) {
+  const start = now();
+  let polls = 0;
+  for (;;) {
+    polls += 1;
+    const value = await read();
+    const elapsedMs = now() - start;
+    if (until(value)) return { value, timedOut: false, polls, elapsedMs };
+    if (elapsedMs >= budgetMs) return { value, timedOut: true, polls, elapsedMs };
+    await sleep(Math.min(intervalMs, budgetMs - elapsedMs));
+  }
+}
+
+// io: { maskVisible(), readStatus() }. The status is the last one read, so an unconfirmed commit still reports what
+// HMS showed last. A mask that never clears does not stop the status poll: HMS may have cancelled regardless.
+export async function settleCancel(io, {
+  budgetMs = SETTLE_BUDGET_MS,
+  intervalMs = SETTLE_INTERVAL_MS,
+  now = Date.now,
+  sleep,
+}) {
+  const mask = await pollUntil({
+    read: io.maskVisible,
+    until: (visible) => !visible,
+    budgetMs,
+    intervalMs,
+    now,
+    sleep,
+  });
+  const status = await pollUntil({
+    read: io.readStatus,
+    until: (value) => isCancelledStatus(value),
+    budgetMs,
+    intervalMs,
+    now,
+    sleep,
+  });
+  return {
+    statusAfter: status.value,
+    cancelled: !status.timedOut,
+    maskCleared: !mask.timedOut,
+    maskMs: mask.elapsedMs,
+    statusPolls: status.polls,
+    statusMs: status.elapsedMs,
+  };
+}
+
 export function exitCodeFor(outcome) {
   if (OK_OUTCOMES.has(outcome)) return 0;
   if (REFUSED_OUTCOMES.has(outcome)) return 2;

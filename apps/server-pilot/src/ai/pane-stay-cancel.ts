@@ -24,9 +24,21 @@ export type PaneStayCancelResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
+  /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), otherwise null. */
+  message: string | null;
   /** File names only. The files stay in the CLI run directory. */
   screenshots: string[];
 };
+
+// Operator-facing text per outcome. cancel_unconfirmed: the status did not read Cancelled within 60 s after OK, but HMS
+// may have applied the cancel, so the operator checks HMS before anything else.
+export const PANE_CANCEL_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ['cancel_unconfirmed', 'HMS may have cancelled this booking. Check HMS before trying again.'],
+]);
+
+export function paneCancelMessage(outcome: string): string | null {
+  return PANE_CANCEL_MESSAGES.get(outcome) ?? null;
+}
 
 export type PaneStayCancelSpawnInput = {
   mode: PaneStayCancelMode;
@@ -101,6 +113,7 @@ function refused(outcome: string): PaneStayCancelResult {
     statusAfter: null,
     reasons: [],
     penaltyText: null,
+    message: paneCancelMessage(outcome),
     screenshots: [],
   };
 }
@@ -163,6 +176,7 @@ async function runPaneStayCancel(
       statusAfter: spawned.statusAfter,
       reasons: spawned.reasons,
       penaltyText: spawned.penaltyText,
+      message: paneCancelMessage(spawned.outcome),
       screenshots: spawned.screenshots.map((path) => basename(path)),
     };
   } catch {
