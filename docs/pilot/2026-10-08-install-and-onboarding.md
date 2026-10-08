@@ -40,16 +40,16 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 ### Installer
 
-- [ ] Installer: `NavaOutlookSetup.exe`, **version 1.0.14**.
+- [ ] Installer: `NavaOutlookSetup.exe`, **version 1.0.16**.
 - [ ] Download link: `https://nava.legacyhotels.co.za/download/NavaOutlookSetup.exe`
-- [ ] SHA-256 (1.0.14, verified on the server 2026-10-08 05:55 UTC): **`e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df`**. Do not use the hash in the 2026-10-02 security record. It is for 1.0.12.
+- [ ] SHA-256 (1.0.16, verified on the server 2026-10-08 12:40 UTC): **`7b8f97ffc5484a83112a8b688b7ba3d7267e203c3d5a3538eb35611145d4e4c4`**. Do not use the hash in the 2026-10-02 security record. It is for 1.0.12.
 - [ ] The file hash must match the full value before anyone runs it (see Part 1, step 3).
 
 ### Staff PC
 
 - [ ] **Classic Outlook only.** New Outlook is not supported. If Outlook looks new, switch back to Classic first.
 - [ ] Outlook version and Windows type (32-bit or 64-bit) are written down.
-- [ ] **Old 1.0.11 is not in use.** If it is installed, the staff member installs 1.0.14 over it after closing Outlook. Or the operator disables the old client. A website update cannot remove privileges from an old local program.
+- [ ] **Old 1.0.11 is not in use.** If it is installed, the staff member installs 1.0.16 over it after closing Outlook. Or the operator disables the old client. A website update cannot remove privileges from an old local program.
 - [ ] Staff member has saved all drafts in Outlook, and will close Outlook before setup.
 - [ ] Outlook can see the shared mailbox, and saved sent copies are visible.
 - [ ] **Shared mailbox is the default Drafts store** on that Outlook profile. If it is not, **Insert draft in Outlook is refused**. This is by design (see "Known gaps", item 3). Leave the Insert draft step out of the call in that case.
@@ -101,7 +101,7 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 1. Open Windows PowerShell in the Downloads folder.
 2. Run: `Get-FileHash .\NavaOutlookSetup.exe -Algorithm SHA256`
-3. Compare the result with the SHA-256 for 1.0.14: `e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df`.
+3. Compare the result with the SHA-256 for 1.0.16: `7b8f97ffc5484a83112a8b688b7ba3d7267e203c3d5a3538eb35611145d4e4c4`.
 4. If the value does not match, **stop**. Do not run the file. Call the founder.
 
 ### Step 4. Run the installer
@@ -175,10 +175,10 @@ The read-root and folder approvals are separate operator commands. They are in `
 
 | What you see | Likely cause | What to do |
 |---|---|---|
-| The pane is blank | The pane has not loaded. | Close the pane. Reopen it from the Nava tab. Click **Run system check**. Check Classic Outlook and version 1.0.14. If still blank, note the time and what you see (no guest data). Call the operator. |
-| Sign-in fails for an existing staff account | An old 1.0.11 client may still be in use. | Close Outlook. Install 1.0.14 over it. Ask the operator to check the old client is disabled. |
+| The pane is blank | The pane has not loaded. | Close the pane. Reopen it from the Nava tab. Click **Run system check**. Check Classic Outlook and version 1.0.16. If still blank, note the time and what you see (no guest data). Call the operator. |
+| Sign-in fails for an existing staff account | An old 1.0.11 client may still be in use. | Close Outlook. Install 1.0.16 over it. Ask the operator to check the old client is disabled. |
 | Sign-in fails for a new account | Self sign-up is closed. The account may not be verified, or may have no mailbox access. | Operator checks the account is verified and has mailbox access. Do not run `seed-prod`. |
-| Update notice shows in the pane | The installed add-in is old. | Close Outlook. Install 1.0.14. |
+| Update notice shows in the pane | The installed add-in is old. | Close Outlook. Install 1.0.16. |
 | "Staff session expired; sign in again" | The 24-hour session ended. | Sign in again. |
 | "1 quote ahead of yours" or "HMS is busy with another run" | Another quote is running. HMS runs one at a time. | Wait. Do not click **Run next** again. Usually about 5 minutes. |
 | "HMS is busy with another quote or lookup. Try again in a minute." | A quote or find holds the HMS lock. A find waits up to 20 seconds for it, then gives up. | Wait one minute. Try once. |
@@ -189,7 +189,7 @@ The read-root and folder approvals are separate operator commands. They are in `
 | Installer says Outlook is still open | Outlook is not fully closed. | Close Outlook (File, then Exit). Run the installer again. The installer never closes Outlook for you. |
 | Code refused, or code expired | Codes are one use and last 10 minutes. | Operator issues a new code. |
 | **Insert draft in Outlook** is greyed out, or refused with an error | The add-in is old, or the shared mailbox is not the default Drafts store. | Do not work around it. Reply by hand in Outlook. The operator decides next steps. |
-| "This Outlook add-in is too old to attach the PDF" | The add-in is old. | Install 1.0.14. |
+| "This Outlook add-in is too old to attach the PDF" | The add-in is old. | Install 1.0.16. |
 | "Outlook may have created the draft but did not confirm it" | Outlook may have saved the draft already. | Check Outlook **Drafts** before retrying. A retry reuses the same PDF. Do not make two drafts. |
 | "This email has not finished syncing yet" | Sync for that email is not done. | Wait a minute. Select the email again. |
 | "Luna is not connected to this pane yet. Refresh the pane and try again." | The pane has not linked to Luna yet. | Refresh the pane. If it happens again, call the operator. |
@@ -201,7 +201,7 @@ The read-root and folder approvals are separate operator commands. They are in `
 
 These are facts from the repo that differ from, or limit, what the call would otherwise promise.
 
-1. **Installer hash.** The version is 1.0.14. SHA-256 `e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df` (verified on the server).
+1. **Installer hash.** The version is 1.0.16. SHA-256 `7b8f97ffc5484a83112a8b688b7ba3d7267e203c3d5a3538eb35611145d4e4c4` (verified on the server).
 2. **Device code scope.** Device credentials and the one-use code are per Windows user (runbook step 6, and the operator README).
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, the add-in refuses to create the reply draft, by design (runbook, order of operations, step 8). **Insert draft in Outlook is refused on non-default shared mailboxes.** Staff must reply by hand in Outlook for those mailboxes.
 4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE=on`. Cancel commits only for test stays (arrival on or after 2027-01-01).
