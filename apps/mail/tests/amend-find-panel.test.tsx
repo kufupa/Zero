@@ -121,6 +121,11 @@ function lookupTrpc(findStay: ReturnType<typeof vi.fn>, shot: ReturnType<typeof 
   };
 }
 
+/** Staff press the find button. The panel never looks up HMS on its own. */
+function pressFind() {
+  fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
+}
+
 function cancelRun(overrides: Partial<CancelRun> = {}): CancelRun {
   return {
     outcome: 'execution_failure',
@@ -179,10 +184,14 @@ describe('AmendLookupPanel', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('auto-runs one find per email by confirmation number and the email arrival, and says it takes 1–2 minutes', async () => {
+  it('never looks up HMS on its own: staff press the find button, and the wait is said up front', async () => {
     const findStay = vi.fn(NEVER_SETTLES);
     const session = sessionWith(AMEND);
     const { rerender } = render(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(findStay).not.toHaveBeenCalled();
+    expect(screen.getByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeTruthy();
+    pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(screen.getByText('Luna is looking up the booking in HMS… (about 1–2 minutes)')).toBeTruthy();
@@ -193,6 +202,7 @@ describe('AmendLookupPanel', () => {
   it('shows the booking HMS returns and highlights the field that differs', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ departure: '2026-10-13' }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
     expect(screen.getByText(`confirmation number ${CONFIRMATION}`)).toBeTruthy();
     expect(screen.getAllByText(/^Guest wants:/)).toHaveLength(1);
@@ -204,6 +214,7 @@ describe('AmendLookupPanel', () => {
   it('shows rate plan, meal plan and grand total when HMS shows them', async () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
     expect(screen.getByText('Rate plan')).toBeTruthy();
     expect(screen.getByText('BAR')).toBeTruthy();
@@ -216,6 +227,7 @@ describe('AmendLookupPanel', () => {
   it('hides rate plan, meal plan and grand total when HMS does not show them', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ ratePlan: null, mealPlan: null, grandTotal: null }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
     expect(screen.queryByText('Rate plan')).toBeNull();
     expect(screen.queryByText('Meal plan')).toBeNull();
@@ -226,6 +238,7 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found());
     const shot = vi.fn().mockResolvedValue({ status: 'ok', dataUrl: SHOT_PNG });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay, shot)} />);
+    pressFind();
     fireEvent.click(await screen.findByRole('button', { name: 'See the booking in HMS' }));
     expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' });
     const dialog = screen.getByRole('dialog', { name: 'See the booking in HMS' });
@@ -237,6 +250,7 @@ describe('AmendLookupPanel', () => {
   it('explains a booking number HMS does not know, with the next step', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() =>
       expect(
         screen.getByText(
@@ -249,6 +263,7 @@ describe('AmendLookupPanel', () => {
   it('says HMS matched more than one booking', async () => {
     const findStay = vi.fn().mockResolvedValue(AMBIGUOUS);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() =>
       expect(screen.getByText('HMS matched more than one booking for that number. Check HMS directly.')).toBeTruthy(),
     );
@@ -286,12 +301,14 @@ describe('AmendLookupPanel', () => {
   ])('shows the copy for a %s result', async (outcome, message) => {
     const findStay = vi.fn().mockResolvedValue(refusal(outcome));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() => expect(screen.getByText(message)).toBeTruthy());
   });
 
   it('reports a failed find call as a read failure', async () => {
     const findStay = vi.fn().mockRejectedValue(new Error('socket hang up'));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await waitFor(() =>
       expect(screen.getByText('Luna could not read the HMS result. Try again in a minute.')).toBeTruthy(),
     );
@@ -303,6 +320,7 @@ describe('AmendLookupPanel', () => {
       .mockResolvedValueOnce(refusal('execution_failure'))
       .mockResolvedValueOnce(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
     await screen.findByText('Luna could not read the HMS result. Try again in a minute.');
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
@@ -333,6 +351,7 @@ function renderCancel(mocks: CancelMocks) {
     },
   };
   render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} />);
+  pressFind();
   return { preview, commit, shot, findStay };
 }
 

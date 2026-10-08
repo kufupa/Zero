@@ -74,7 +74,6 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const [cancelState, setCancelState] = useState<{ key: string; view: CancelView } | null>(null);
   const mounted = useRef(false);
   const runToken = useRef(0);
-  const autoRunKey = useRef<string | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -118,13 +117,6 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     [],
   );
 
-  // Once per email (thread plus selection epoch), and only when the email carries an HMS booking number.
-  useEffect(() => {
-    if (!key || !threadId || !confirmationNumber || !lookupable) return;
-    if (autoRunKey.current === key) return;
-    autoRunKey.current = key;
-    void runLookup(findClient, confirmationNumber, findArrival, key);
-  }, [confirmationNumber, findArrival, findClient, key, lookupable, runLookup, threadId]);
 
   if (!amendment) return null;
 
@@ -258,6 +250,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         >
           Find this booking in HMS
         </button>
+        <p className="text-[10.5px] text-[#64748b]">Takes about 1–2 minutes. Quotes wait while it runs.</p>
         <div aria-live="polite">
           {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}
         </div>
