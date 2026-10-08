@@ -42,7 +42,9 @@ function deferred() {
 async function seedRequest(db: DB, transportId = 'transport-centurion') {
   const threadId = randomUUID(),
     messageId = randomUUID(),
-    internetMessageId = `<${messageId}@example.invalid>`;
+    // Outlook reports PR_INTERNET_MESSAGE_ID raw (angle brackets, mixed case); ingest stores the canonical form.
+    internetMessageId = `<${messageId.toUpperCase()}@Example.Invalid>`,
+    storedMessageId = `${messageId}@example.invalid`;
   await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
   const [mail] = await db
     .insert(message)
@@ -52,7 +54,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
       threadId,
       direction: 'inbound',
       fromAddress: 'guest@example.invalid',
-      messageIdHeader: internetMessageId,
+      messageIdHeader: storedMessageId,
       textBody: 'Please quote accommodation. Is an airport shuttle available?',
       receivedAt: new Date(),
     })
@@ -81,7 +83,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
     clientEmail: '',
     clientTelephone: '',
   };
-  return { mail, input, internetMessageId };
+  return { mail, input, internetMessageId, storedMessageId };
 }
 
 async function nativeFixture(request: QuoteSourceRecord['request']): Promise<QuoteSourceRecord> {
@@ -193,7 +195,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
         await expect(api.workstation.qualifiedProposalChoices({ internetMessageId: request.internetMessageId }))
           .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
-        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId, internetMessageId: request.internetMessageId })).toBeNull();
+        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId, internetMessageId: request.storedMessageId })).toBeNull();
         expect(nativeRead).not.toHaveBeenCalled();
       });
     });

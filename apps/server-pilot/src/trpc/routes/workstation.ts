@@ -18,6 +18,8 @@ import {
   resolvePriorQuoteForBooking,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
+// Outlook sends the raw Message-ID; ingest stores the canonical form, as analyseSelection already matches.
+import { canonicalInternetMessageId } from '../../ai/quote-workflow-analyse-selection.js';
 import {
   buildRevisionProposalPdf,
   renderImportedProposalHtml,
@@ -478,7 +480,7 @@ export const workstationRouter = router({
         .where(
           and(
             eq(message.transportId, ctx.activeTransportId),
-            eq(message.messageIdHeader, input.internetMessageId),
+            eq(message.messageIdHeader, canonicalInternetMessageId(input.internetMessageId) ?? ''),
           ),
         )
         .limit(2);
@@ -1005,7 +1007,7 @@ export const workstationRouter = router({
         .where(
           and(
             eq(message.transportId, ctx.activeTransportId),
-            eq(message.messageIdHeader, input.internetMessageId),
+            eq(message.messageIdHeader, canonicalInternetMessageId(input.internetMessageId) ?? ''),
           ),
         )
         .limit(2);
