@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import {
@@ -11,10 +11,20 @@ import {
   type HmsFindMatchWire,
   type HmsFindReceiptWire,
 } from '../lib/quote-workflow/amend-find';
+import type { CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
-afterEach(() => cleanup());
+// The panel reads brain.getCapabilities through a query client. Tests set paneSave directly.
+const capabilities = vi.hoisted(() => ({ paneSave: false }));
+vi.mock('@/hooks/use-pilot-capabilities', () => ({
+  usePilotCapabilities: () => capabilities,
+}));
+
+afterEach(() => {
+  cleanup();
+  capabilities.paneSave = false;
+});
 
 const THREAD = 'thread-7';
 const POLL_FAST = { intervalMs: 1, timeoutMs: 10_000 };
@@ -238,5 +248,196 @@ describe('amend find helpers', () => {
 
   it('binds no client when the ai routes are missing', () => {
     expect(amendFindClientFromTrpc({ workstation: {} })).toBeNull();
+  });
+});
+
+const CANCEL_CONFIRMATION = '57291630-1';
+const CANCEL_ARRIVAL = '2027-09-14';
+const CANCEL_DEPARTURE = '2027-09-16';
+const CANCEL: QuoteAmendment = {
+  ...AMEND,
+  kind: 'cancel',
+  confirmationNumber: CANCEL_CONFIRMATION,
+  arrival: CANCEL_ARRIVAL,
+  departure: CANCEL_DEPARTURE,
+  requestedChange: null,
+};
+const RUN_ID = '3f2c9a1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f';
+const PENALTY = 'Cancellation Penalty of 2060.00 may be added to account.';
+const PREVIEW_OK: CancelRun = {
+  outcome: 'preview_ok',
+  statusBefore: 'Reserved',
+  statusAfter: 'Reserved',
+  reasons: ['Test Reservations', 'Duplicate Booking'],
+  penaltyText: PENALTY,
+  screenshots: ['found.png', 'cancel-dialog.png'],
+  runId: RUN_ID,
+};
+const SHOT_PNG = 'data:image/png;base64,iVBORw0KGgo=';
+const NO_SHOT = { status: 'unavailable', reason: 'screenshot_unavailable' };
+
+type CancelMocks = {
+  preview?: ReturnType<typeof vi.fn>;
+  commit?: ReturnType<typeof vi.fn>;
+  shot?: ReturnType<typeof vi.fn>;
+};
+
+/** Renders a cancel email whose booking HMS finds, with the paneStayCancel routes mocked. */
+function renderCancel(mocks: CancelMocks) {
+  const enqueue = vi.fn().mockResolvedValue({ readResultRef: 'hms-read-1' });
+  const read = vi
+    .fn()
+    .mockResolvedValue(foundReceipt(hmsMatch({ arrival: CANCEL_ARRIVAL, departure: CANCEL_DEPARTURE })));
+  const preview = mocks.preview ?? vi.fn();
+  const commit = mocks.commit ?? vi.fn();
+  const shot = mocks.shot ?? vi.fn().mockResolvedValue(NO_SHOT);
+  const trpc = {
+    ...trpcMock(enqueue, read),
+    paneStayCancel: {
+      previewCancel: { mutate: preview },
+      commitCancel: { mutate: commit },
+      paneStayScreenshot: { query: shot },
+    },
+  };
+  render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} timing={POLL_FAST} />);
+  return { preview, commit, shot };
+}
+
+describe('AmendLookupPanel cancel from the pane', () => {
+  it('says cancelling is switched off and gives the HMS steps when the pane save flag is off', async () => {
+    const { preview } = renderCancel({});
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('previews the cancel, shows the HMS fee, then cancels with the chosen reason', async () => {
+    capabilities.paneSave = true;
+    const shot = vi.fn().mockResolvedValue({ status: 'ok', dataUrl: SHOT_PNG });
+    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+    const commit = vi.fn().mockResolvedValue({
+      ...PREVIEW_OK,
+      outcome: 'cancelled',
+      statusAfter: 'Cancelled',
+      screenshots: ['readback.png'],
+    });
+    renderCancel({ preview, commit, shot });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText(`HMS says: ${PENALTY}`)).toBeTruthy();
+    expect(preview).toHaveBeenCalledWith({ confirmation: CANCEL_CONFIRMATION, arrival: CANCEL_ARRIVAL });
+    expect(screen.getByText('Status in HMS: Reserved')).toBeTruthy();
+
+    const commitButton = screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement;
+    expect(commitButton.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+    expect(commitButton.disabled).toBe(false);
+    expect(
+      screen.getByText(
+        `Luna will cancel 57291630-1 for Thabo Mokoena. HMS says: ${PENALTY} This can't be undone from here.`,
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(commitButton);
+    expect(await screen.findByText('Cancelled in HMS – status now Cancelled')).toBeTruthy();
+    expect(commit).toHaveBeenCalledWith({
+      confirmation: CANCEL_CONFIRMATION,
+      arrival: CANCEL_ARRIVAL,
+      reason: 'Duplicate Booking',
+    });
+    await waitFor(() => expect(shot).toHaveBeenLastCalledWith({ runId: RUN_ID, name: 'readback.png' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna saw in HMS' }));
+    const dialog = screen.getByRole('dialog', { name: 'See what Luna saw in HMS' });
+    expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('says so when HMS shows no cancellation fee', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockResolvedValue({ ...PREVIEW_OK, penaltyText: null });
+    renderCancel({ preview });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
+      target: { value: 'Duplicate Booking' },
+    });
+    expect(screen.getByText('HMS showed no cancellation fee.')).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Luna will cancel 57291630-1 for Thabo Mokoena. HMS showed no cancellation fee. This can't be undone from here.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('says the booking is already cancelled in HMS and offers no cancel', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockResolvedValue({
+      ...PREVIEW_OK,
+      outcome: 'already_cancelled',
+      statusBefore: 'Cancelled',
+      statusAfter: 'Cancelled',
+      reasons: [],
+      penaltyText: null,
+      screenshots: [],
+    });
+    renderCancel({ preview });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText('This booking is already cancelled in HMS.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+  });
+
+  it.each([
+    ['refused_not_lab', 'Cancelling from here only works on test bookings right now.'],
+    ['refused_lock_unavailable', 'HMS is busy. Try again in a minute.'],
+    ['execution_failure', "Luna couldn't finish in HMS. Check HMS yourself."],
+    [
+      'refused_flag_off',
+      'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+    ],
+  ])('explains the %s preview result and keeps the preview button', async (outcome, message) => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockResolvedValue({
+      outcome,
+      statusBefore: null,
+      statusAfter: null,
+      reasons: [],
+      penaltyText: null,
+      screenshots: [],
+    });
+    renderCancel({ preview });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+  });
+
+  it('asks for another reason when HMS does not accept the chosen one', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+    const commit = vi.fn().mockResolvedValue({ ...PREVIEW_OK, outcome: 'refused_reason_missing' });
+    renderCancel({ preview, commit });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
+      target: { value: 'Duplicate Booking' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+    expect(await screen.findByText('HMS did not accept that reason. Pick another and try again.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Cancellation reason') as HTMLSelectElement).selectedIndex).toBe(0);
+  });
+
+  it('reports a failed preview call and leaves the preview button in place', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn().mockRejectedValue(new Error('socket hang up'));
+    renderCancel({ preview });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText("Luna couldn't finish in HMS. Check HMS yourself.")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
 });
