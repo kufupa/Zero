@@ -226,10 +226,17 @@ export async function clickInsideSearch(page) {
   if (box) await page.mouse.click(box.x + box.width - 24, box.y + box.height / 2);
 }
 
-// The header Run only. The grid below has its own Run, which would run the grid instead of the quick search.
+// The header Run only. The grid below has its own Run, which would run the grid instead of the quick search. Live HMS
+// marks the header one with stay-360-search-btn; the position check is the fallback.
 const HEADER_BOTTOM = 100;
 
 export async function clickHeaderRun(page) {
+  const marked = page.locator('a.stay-360-search-btn:visible');
+  if ((await marked.count()) === 1) {
+    await marked.click({ force: true });
+    await page.waitForTimeout(1000);
+    return true;
+  }
   const runs = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
   for (const index of await visibleIndexes(runs)) {
     const box = await runs.nth(index).boundingBox();
@@ -242,10 +249,14 @@ export async function clickHeaderRun(page) {
   return false;
 }
 
-// The page actions quick-search.mjs runs for one term.
+// The page actions quick-search.mjs runs for one term. Typing alone only shows the history list ("No previous
+// searches."); the header Run executes the search, so the typed step always ends with it.
 export function quickActions(page, term) {
   return {
-    type: () => typeHeaderSearch(page, term),
+    type: async () => {
+      await typeHeaderSearch(page, term);
+      await clickHeaderRun(page);
+    },
     arrowDown: () => pressArrowDown(page),
     clickInside: () => clickInsideSearch(page),
     headerRun: () => clickHeaderRun(page),
@@ -254,6 +265,15 @@ export function quickActions(page, term) {
 
 async function panelShown(page) {
   return Boolean(await quickPanel(page));
+}
+
+// The panel only holds search results once a search ran: until then it shows the history list ("No previous
+// searches.") with "Records: 0 of 0". Executed means the footer is shown and the history line is not.
+export async function quickPanelExecuted(page) {
+  const panel = await quickPanel(page);
+  if (!panel) return false;
+  const text = await panel.innerText({ timeout: 2000 }).catch(() => '');
+  return /Records:\s*\d+\s+of\s+\d+/i.test(text) && !/No previous searches/i.test(text);
 }
 
 // The quick-search dropdown: the nearest ancestor of its In-House tab that also holds the "Records:" footer.
@@ -266,9 +286,18 @@ export async function quickPanel(page) {
   return (await panel.count()) === 1 ? panel : null;
 }
 
-// Visible leaf texts of the nearest ancestor that shows an HMS date: the dropdown row's cells, in document order.
+// The dropdown row's cell texts, in document order. The live panel is an ExtJS grid: tr.x-grid-row with one td per
+// column, and the dates cell holds "12-OCT-2027<br>13-OCT-2027" (fixtures/stay-lookup/panel-live.html). Leaf elements
+// would miss that cell (its only child is the <br>) and split the highlighted surname, so cells are read whole. The
+// leaf walk below is the fallback for a panel without grid rows.
 async function rowCells(locator) {
   return locator.evaluate((el) => {
+    const gridRow = el.closest('tr.x-grid-row, .x-grid-row, [role="row"]');
+    if (gridRow) {
+      const cells = [...gridRow.querySelectorAll('td, .x-grid-cell, [role="gridcell"]')]
+        .filter((cell) => cell.closest('tr.x-grid-row, .x-grid-row, [role="row"]') === gridRow);
+      if (cells.length > 0) return cells.map((cell) => cell.innerText || cell.textContent || '');
+    }
     const DATE = /\b\d{1,2}-[A-Za-z]{3}-\d{4}\b/;
     const shown = (node) => {
       const box = node.getBoundingClientRect();
@@ -324,13 +353,15 @@ export async function readBalance(page) {
 }
 
 // Polls the open form and the dropdown row. With needRow, only the row counts: a form opened before a commit can be stale.
+// A panel whose search ran without the row ends the wait early (executed): the caller moves on rather than waiting.
 async function waitForStay(page, confirmation, { needRow }) {
   const deadline = Date.now() + QUICK_WAIT_MS;
   for (;;) {
     const open = needRow ? null : await readOpenRecord(page, confirmation);
+    const executed = await quickPanelExecuted(page);
     const row = await readQuickRow(page, confirmation);
-    if (open || row) return { open, row };
-    if (Date.now() >= deadline) return { open, row };
+    if (open || row || executed) return { open, row, executed };
+    if (Date.now() >= deadline) return { open, row, executed };
     await page.waitForTimeout(500);
   }
 }

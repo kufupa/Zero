@@ -19,13 +19,14 @@ import {
   parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 import {
-  findStay, openGuestStay, openRecord, quickActions, readBalance, readRecord, readWindow, setQuickWindow, shot,
+  findStay, openGuestStay, openRecord, quickActions, quickPanel, readBalance, readRecord, readWindow, setQuickWindow, shot,
 } from './cancel-stay.mjs';
 import { driveQuickSearch, windowAction } from './quick-search.mjs';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
+const PANEL_HISTORY = /No previous searches/i;
 
 function newLookupResult(args) {
   return {
@@ -83,13 +84,15 @@ async function readStayFields(ctx) {
   return stay;
 }
 
-// The quick panel is ready once its footer shows the Records count.
+// The quick panel is ready once its footer shows the Records count and its search ran: before that it shows the
+// history list ("No previous searches.", Records: 0 of 0). Returns {panel, executed}; panel is null when none shows.
 async function waitForPanel(page) {
   const deadline = Date.now() + QUICK_WAIT_MS;
   for (;;) {
     const panel = await quickPanel(page);
-    if (panel && PANEL_FOOTER.test(await panel.innerText({ timeout: 2000 }).catch(() => ''))) return panel;
-    if (Date.now() >= deadline) return null;
+    const text = panel ? await panel.innerText({ timeout: 2000 }).catch(() => '') : '';
+    const executed = PANEL_FOOTER.test(text) && !PANEL_HISTORY.test(text);
+    if (executed || Date.now() >= deadline) return { panel: PANEL_FOOTER.test(text) ? panel : null, executed };
     await page.waitForTimeout(500);
   }
 }
@@ -146,28 +149,32 @@ async function runSearchGuest(ctx) {
   await openGuestStay(page);
   await page.waitForTimeout(1500);
   // The surname goes into the header search; quick-search.mjs nudges the panel open. Enter is never pressed.
+  // A panel still showing the history list is enough to read and move its window: the move runs the search.
+  const executedPanel = (state) => state.executed;
   const quick = await driveQuickSearch(quickActions(page, args.lastName), {
     ready: () => waitForPanel(page),
-    done: (panel) => Boolean(panel),
+    done: executedPanel,
   });
   result.quickStages = quick.stages;
-  let panel = quick.result;
-  if (!panel) return failPanel(ctx, 'panel_not_shown');
+  let state = quick.result;
+  if (!state.panel) return failPanel(ctx, 'panel_not_shown');
   let dateWindow = await readWindow(page);
   if (!dateWindow) return failPanel(ctx, 'window_unreadable');
   if (windowAction({ window: dateWindow, arrival: args.arrival, panelShown: true }) === 'move') {
     await setQuickWindow(page, args.arrival);
     const moved = await driveQuickSearch(quickActions(page, args.lastName), {
       ready: () => waitForPanel(page),
-      done: (found) => Boolean(found),
+      done: executedPanel,
     });
     result.quickStages.push(...moved.stages.map((stage) => `window.${stage}`));
-    panel = moved.result;
-    dateWindow = panel ? await readWindow(page) : null;
-    if (!panel || !dateWindow || !windowCovers(dateWindow, args.arrival)) {
+    state = moved.result;
+    dateWindow = state.panel ? await readWindow(page) : null;
+    if (!state.panel || !dateWindow || !windowCovers(dateWindow, args.arrival)) {
       return failPanel(ctx, 'window_not_covering_arrival');
     }
   }
+  if (!state.executed) return failPanel(ctx, 'search_not_executed');
+  const { panel } = state;
   mark(ctx, 'window');
   await shot(ctx, 'panel.png');
   const snapshot = await panel.evaluate(snapshotPanel);

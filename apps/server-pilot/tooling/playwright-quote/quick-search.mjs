@@ -8,14 +8,15 @@ import { windowCovers } from './cancel-stay-rules.mjs';
 export const QUICK_NUDGES = ['arrowDown', 'clickInside', 'headerRun'];
 
 // actions: { type(), arrowDown(), clickInside(), headerRun() }, each a page action. ready() waits for the panel and
-// returns what it found; done(result) says whether that is enough. Returns the last result, the stages that ran, and
-// whether the search is done.
+// returns what it found; done(result) says whether that is enough. A result with executed set is a panel whose search
+// ran (rows, or "There are no records to display"): nudges cannot change it, so none runs. Returns the last result, the
+// stages that ran, and whether the search is done.
 export async function driveQuickSearch(actions, { ready, done }) {
   const stages = ['typed'];
   await actions.type();
   let result = await ready();
   for (const nudge of QUICK_NUDGES) {
-    if (done(result)) break;
+    if (done(result) || result?.executed) break;
     await actions[nudge]();
     stages.push(nudge);
     result = await ready();

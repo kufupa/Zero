@@ -202,3 +202,11 @@ test('pickConfirmationRow takes the exact confirmation, returns null for none, a
   assert.equal(pickConfirmationRow(rows, '99999999-1'), null);
   assert.equal(pickConfirmationRow([...rows, rows[0]], '61143613-1'), AMBIGUOUS);
 });
+
+test('a panel whose search ran without the row stops the nudges: they cannot change an executed result', async () => {
+  const { actions, ready, log } = harness([{ row: null, open: null, executed: true }]);
+  const run = await driveQuickSearch(actions, { ready, done: isDone });
+  assert.deepEqual(log, ['type', 'ready']);
+  assert.deepEqual(run.stages, ['typed']);
+  assert.equal(run.done, false);
+});

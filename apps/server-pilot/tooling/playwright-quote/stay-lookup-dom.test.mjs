@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import * as cheerio from 'cheerio';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
 import {
-  formPairsFromSnapshot, parseDateWindowLabel, parsePanelSnapshot, parseRecordsFooter, searchGuestOutcome,
+  formPairsFromSnapshot, parseDateWindowLabel, parsePanelSnapshot, parseQuickSearchRow, parseRecordsFooter, searchGuestOutcome,
   stayFromFormPairs,
 } from './cancel-stay-rules.mjs';
 import { AMBIGUOUS, pickConfirmationRow, windowAction } from './quick-search.mjs';
@@ -364,4 +364,45 @@ test('surname panel: two rows with the same confirmation are ambiguous, never gu
   const parsed = parsePanelSnapshot(panelFromHtml(twice));
   assert.equal(parsed.rows.length, 2);
   assert.equal(pickConfirmationRow(parsed.rows, '61143613-1'), AMBIGUOUS);
+});
+
+// ---- Live captures (Oct 8 2026, lab stay 61143613-1). panel-live.html is the quick panel after the window moved to
+// Oct 12, 2027; record-form-live.html is the record form region written by stay-lookup --debug-html (user id scrubbed).
+
+test('live panel capture: the ExtJS grid row reads with its split surname highlight and stacked dates', async () => {
+  const html = await fixture('panel-live.html');
+  const snapshot = snapshotPanel(domFromHtml(html).querySelector('.x-panel'));
+  assert.equal(snapshot.window, 'Oct 12, 2027 - Dec 11, 2027');
+  const parsed = parsePanelSnapshot(snapshot);
+  assert.equal(parsed.unreadable, 0);
+  assert.deepEqual(parsed.rows, [{
+    confirmation: '61143613-1', lastName: 'Labtest', firstName: 'Proof', status: 'Reserved',
+    arrival: '2027-10-12', departure: '2027-10-13',
+  }]);
+  const records = parseRecordsFooter(snapshot.footer);
+  assert.deepEqual(records, { shown: 1, total: 1 });
+  assert.equal(searchGuestOutcome({ records, rows: parsed.rows, unreadable: 0 }).outcome, 'ok');
+});
+
+test('live panel capture: the grid cells of the confirmation row parse as a quick row', async () => {
+  const html = await fixture('panel-live.html');
+  const doc = domFromHtml(html);
+  const cells = [...doc.querySelectorAll('tr.x-grid-row td')].map((cell) => cell.innerText);
+  assert.deepEqual(parseQuickSearchRow(cells, '61143613-1'), {
+    confirmation: '61143613-1', lastName: 'Labtest', firstName: 'Proof', status: 'Reserved',
+    arrival: '12-OCT-2027', departure: '13-OCT-2027',
+  });
+});
+
+test('live record form capture: every reported field pairs with its label', async () => {
+  const { stay, conflicts } = stayFromHtml(await fixture('record-form-live.html'));
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual(stay, {
+    ...EXPECTED_STAY,
+    status: 'Reserved',
+    confirmation: '61143613-1',
+    firstName: 'Proof',
+    arrival: '2027-10-12',
+    departure: '2027-10-13',
+  });
 });
