@@ -266,6 +266,8 @@ export async function runPaneStay(input: {
   owner: string;
   previewDigest?: string;
 }): Promise<PaneStayResult> {
+  // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
+  await pruneExpiredPaneRuns(clock());
   const enabled = paneStaySaveLoaders.enabled ?? (() => paneStaySaveEnabled());
   if (!enabled()) {
     return { status: 'refused', reason: 'pane_save_flag_off' };

@@ -416,4 +416,26 @@ describe('pane stay screenshots', () => {
     });
     await expect(stat(runDir)).rejects.toThrow();
   });
+
+  it('a later save run removes an expired run directory even if nobody reads it', async () => {
+    enableSave();
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
+    await writeFile(join(runDir, 'filled.png'), Buffer.from([1]));
+    const runId = randomUUID();
+    let now = 7_000_000;
+    paneStaySaveLoaders.now = () => now;
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed',
+      clickedSave: false,
+      confirmationNumber: '',
+      runId,
+      runDir,
+      screenshots: ['filled.png'],
+    });
+    await runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner() });
+    now += PANE_RUN_TTL_MS + 1;
+    paneStaySaveLoaders.spawn = cliSpawn;
+    await runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner() });
+    await expect(stat(runDir)).rejects.toThrow();
+  });
 });
