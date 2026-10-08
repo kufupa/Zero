@@ -13,6 +13,7 @@ describe('pilot capabilities', () => {
       hotelCategories: true,
       staleDraftWarning: true,
       catchupUpload: false,
+      paneSave: false,
     });
 
     expect(shouldRenderLegacySurface('ai')).toBe(false);

@@ -19,6 +19,16 @@ import {
   staffQuoteGroupsForExpiredPriorRequote,
 } from '../lib/quote-workflow/booking-draft-bind';
 import { bindExecuteStaffQuote } from '../lib/quote-workflow/staff-quote-bind';
+import {
+  paneRefusalMessage,
+  PANE_COMMIT_UNREACHABLE_COPY,
+  PANE_PREVIEW_FAILED_COPY,
+  PANE_SAVE_LAB_GUARD_COPY,
+  paneStayInputForRoom,
+  readPaneSaveFlag,
+  type PaneStayClient,
+  type PaneStayResult,
+} from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type {
   BookingDraftReady,
@@ -286,7 +296,7 @@ describe('booking card copy buttons', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(
       screen.getByText(
-        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+        'Saving in HMS from here is switched off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
       ),
     ).toBeDefined();
   });
@@ -379,6 +389,247 @@ describe('booking card copy buttons', () => {
       vi.advanceTimersByTime(3000);
     });
     expect(screen.queryByText('Copy failed – select the text')).toBeNull();
+  });
+});
+
+const PANE_DIGEST = 'c'.repeat(64);
+const PANE_RUN = '11111111-2222-3333-4444-555555555555';
+const PANE_SAVE_RUN = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+const PREVIEW_OK: PaneStayResult = {
+  status: 'ok',
+  outcome: 'previewed',
+  previewDigest: PANE_DIGEST,
+  runId: PANE_RUN,
+  screenshots: ['availability.png', 'filled.png'],
+};
+const COMMIT_OK: PaneStayResult = {
+  status: 'ok',
+  outcome: 'committed',
+  confirmationNumber: '98765-1',
+  runId: PANE_SAVE_RUN,
+  screenshots: ['filled.png', 'saved.png'],
+};
+const JOHN_SMITH_PREVIEW = `Luna will book John Smith for 2026-11-12 – 2026-11-14, 1 room, rate TAXYZ. Nothing is saved until you press Book in HMS.`;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function paneClient(overrides: Partial<PaneStayClient> = {}) {
+  const preview = vi.fn<PaneStayClient['preview']>().mockResolvedValue(PREVIEW_OK);
+  const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+  const screenshot = vi.fn<PaneStayClient['screenshot']>(async (_runId, name) => `data:image/png;base64,${name}`);
+  const client: PaneStayClient = { preview, commit, screenshot, ...overrides };
+  return { client, preview, commit, screenshot };
+}
+
+// Room 1 has no track, source or guarantee until the staff pick them.
+function pickRoomChoices(index: number) {
+  fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
+  fireEvent.change(screen.getAllByLabelText('Source of business')[index]!, { target: { value: 'E-Mail' } });
+  fireEvent.change(screen.getAllByLabelText('Guarantee')[index]!, { target: { value: 'Confirmation Received' } });
+}
+
+function previewButton(index: number): HTMLButtonElement {
+  return screen.getAllByRole('button', { name: 'Preview in HMS' })[index] as HTMLButtonElement;
+}
+
+function bookButton(index: number): HTMLButtonElement {
+  return screen.getAllByRole('button', { name: 'Book in HMS' })[index] as HTMLButtonElement;
+}
+
+describe('booking card pane save', () => {
+  it('keeps Preview in HMS out of the card while the server flag is off', () => {
+    render(<BookingCards draft={draftReady()} />);
+    expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
+  });
+
+  it('asks for the missing choices before Preview in HMS can run', () => {
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+    expect(screen.getAllByText('Set source of business, track, guarantee before you preview.')).toHaveLength(2);
+    pickRoomChoices(0);
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('previews a room with words while it runs, then shows the summary and unlocks Book in HMS', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockImplementation(() => pending.promise);
+    const { client } = paneClient({ preview });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith({
+      firstName: 'John',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      adults: 1,
+      sourceOfBusiness: 'E-Mail',
+      roomType: 'STQN',
+      ratePlan: 'TAXYZ',
+      track: 'COR',
+      guaranteeType: 'Confirmation Received',
+    });
+    expect(screen.getByRole('status').textContent).toBe('Luna is filling the booking in HMS… (about 2 minutes)');
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    await act(async () => pending.resolve(PREVIEW_OK));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+  });
+
+  it('opens the preview screenshot full size and closes it again', async () => {
+    const { client } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna filled in HMS' }));
+    expect(screen.getByRole('dialog', { name: 'See what Luna filled in HMS' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('asks for a new preview when a field changes after the preview', async () => {
+    const { client } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+    expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+  });
+
+  it('books with the preview digest and shows the confirmation and readback screenshot', async () => {
+    const { client, commit } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'John', track: 'COR' }), PANE_DIGEST);
+    expect(await screen.findByRole('button', { name: 'See what Luna saved in HMS' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+  });
+
+  it('shows the saving wait while Book in HMS runs', async () => {
+    const pending = deferred<PaneStayResult>();
+    const { client } = paneClient({ commit: () => pending.promise });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(screen.getByRole('status').textContent).toBe('Luna is booking this in HMS… (about 2 minutes)');
+    await act(async () => pending.resolve(COMMIT_OK));
+    expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+  });
+
+  it('turns a preview refusal into plain words', async () => {
+    const { client } = paneClient({
+      preview: async () => ({ status: 'refused', reason: 'pane_save_labtest_required' }),
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(PANE_SAVE_LAB_GUARD_COPY)).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+  });
+
+  it('turns a commit refusal into plain words and asks for a new preview', async () => {
+    const { client } = paneClient({
+      commit: async () => ({ status: 'refused', reason: 'osress_reader_parked' }),
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(
+      await screen.findByText(
+        "Luna couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
+      ),
+    ).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+  });
+
+  it('shows the preview-failed copy when the preview call throws', async () => {
+    const { client } = paneClient({
+      preview: async () => {
+        throw new Error('network down');
+      },
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(PANE_PREVIEW_FAILED_COPY)).toBeDefined();
+  });
+
+  it('warns to check HMS when the book call throws after it may have saved', async () => {
+    const { client } = paneClient({
+      commit: async () => {
+        throw new Error('socket closed');
+      },
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText(PANE_COMMIT_UNREACHABLE_COPY)).toBeDefined();
+  });
+});
+
+describe('pane save helpers', () => {
+  it('gives plain words with a next step for every refusal the server can return', () => {
+    const generic = paneRefusalMessage('not_a_known_code');
+    for (const reason of [
+      'pane_save_flag_off',
+      'pane_save_labtest_required',
+      'pane_save_arrival_2027_required',
+      'pane_save_property_mismatch',
+      'osress_reader_parked',
+      'osress_duplicate',
+      'pane_save_preview_required',
+      'pane_save_digest_mismatch',
+      'pane_save_lock_unavailable',
+      'refused_save_blank_required',
+    ]) {
+      expect(paneRefusalMessage(reason)).not.toBe(generic);
+    }
+    expect(paneRefusalMessage('pane_save_labtest_required')).toBe(PANE_SAVE_LAB_GUARD_COPY);
+  });
+
+  it('names the fields still missing from a room', () => {
+    const request = {
+      firstName: 'John',
+      lastName: '',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      adults: 1,
+      roomType: 'STQN',
+      ratePlan: 'TAXYZ',
+    };
+    expect(paneStayInputForRoom(request, { track: '', sourceOfBusiness: 'E-Mail', guaranteeType: '' })).toEqual({
+      stay: null,
+      missing: ['last name', 'track', 'guarantee'],
+    });
+  });
+
+  it('reads the server flag, and reads off when the client has no brain router', async () => {
+    await expect(
+      readPaneSaveFlag({ brain: { getCapabilities: { query: async () => ({ paneSave: true }) } } }),
+    ).resolves.toBe(true);
+    await expect(readPaneSaveFlag({})).resolves.toBe(false);
   });
 });
 

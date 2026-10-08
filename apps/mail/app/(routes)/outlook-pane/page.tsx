@@ -103,6 +103,7 @@ import {
   overlayLunaGroupsFromStaff,
   type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
+import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -189,6 +190,9 @@ type PendingReplyOperation = {
   };
 };
 
+// One client for the pane's life, so screenshot loaders keep their identity across renders.
+const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
+
 export default function OutlookPanePage() {
   const {
     isConnected,
@@ -214,6 +218,17 @@ export default function OutlookPanePage() {
   const [isDraftPending, setIsDraftPending] = useState(false);
   const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
+  const [paneSaveOn, setPaneSaveOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void readPaneSaveFlag(trpcClient).then((on) => {
+      if (alive) setPaneSaveOn(on);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
   // True from the executeStaffQuote call until it settles. Drives the HMS queue poller.
@@ -1466,6 +1481,7 @@ export default function OutlookPanePage() {
 
             <QuoteWorkflowPanel
               session={quoteSession}
+              paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);

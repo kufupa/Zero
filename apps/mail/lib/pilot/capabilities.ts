@@ -10,6 +10,7 @@ export const PILOT_CAPABILITIES = {
   hotelCategories: true,
   staleDraftWarning: true,
   catchupUpload: false,
+  // Pane Preview/Book in HMS stay off until the server flag RESERVATIONIST_PANE_SAVE is on.
   paneSave: false,
 } satisfies PilotCapabilities;
 
