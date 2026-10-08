@@ -10,22 +10,32 @@ Use test emails only in training. Never type real guest names, emails or phone n
 
 Luna is a helper in the Nava pane, inside Outlook. Luna can:
 
-- Read the email you have open.
-- List what the quote needs.
+- Read the email you have open. Luna can also read new emails in advance, so results often appear as soon as you click.
+- List what a quote needs.
 - Run quote searches in HMS. One at a time.
-- Make a PDF of the room option you pick.
+- Make a PDF for the room option you pick.
 - Make an unsent draft reply in Outlook, with the PDF attached.
+- Look up a booking in HMS when you click **Find this booking in HMS**. This is read-only and takes about 1–2 minutes.
 - Show you a screenshot of what it did in HMS.
-- Look up a booking in HMS for change and cancel emails (newer build only).
 
 ---
 
 ## What Luna does NOT do
 
 - **Luna never sends email.** You press Send in Outlook. Every time.
-- **Luna never books or cancels on its own.** Every change in HMS needs a click from you.
-- **Luna never invents prices.** Prices come from HMS. If HMS gives no usable total, Luna says so. It does not guess.
-- **Luna does not save bookings to HMS from the pane yet.** The buttons Preview, Book in HMS and Save draft are greyed out. You copy each field into HMS by hand.
+- **Luna never books, changes or cancels in HMS on its own.** You make every change by hand in HMS.
+- **Luna never invents prices.** Prices come from HMS. If HMS gives no usable total, Luna says so.
+
+---
+
+## Coming soon (built, but not switched on)
+
+These buttons are in the pane but switched off. Your manager will switch them on later.
+
+- **Preview**, **Book in HMS** and **Save draft** on booking emails. They are greyed out. You will see: "Saving from this pane is coming soon. For now, copy each field into HMS."
+- **Preview cancellation** and **Cancel booking in HMS** on cancellation emails. You will see: "Cancelling from here is switched off for now."
+
+Until they are switched on, copy booking fields into HMS by hand, and cancel by hand in HMS (see "Change or cancel email").
 
 ---
 
@@ -33,18 +43,18 @@ Luna is a helper in the Nava pane, inside Outlook. Luna can:
 
 1. Open Classic Outlook.
 2. Click the **Nava** tab, then **Nava Assistant**.
-3. Click an email in Outlook. Luna reads it. This can take a minute.
+3. Click an email in Outlook. Luna reads it. This can take a minute, or it may be ready at once.
 4. Look at the top of the Luna panel. You will see **Luna reads this as**, then one label:
 
 | Label you see | What it means | What to do |
 |---|---|---|
 | **Quote** | The guest wants rooms and a price. | Go to Step 2. |
 | **Booking** | The guest wants a booking made. | Go to "Booking email". |
+| **Change to booking** | The guest wants to change an existing booking. | Go to "Change or cancel email". |
+| **Cancellation** | The guest wants to cancel an existing booking. | Go to "Change or cancel email". |
 | **Other** | Luna is not sure, or it is something else. | Read the note under the label. Handle it by hand if needed. |
-| **Change to booking** (newer build) | The guest wants to change an existing booking. | Go to "Change or cancel email". |
-| **Cancellation** (newer build) | The guest wants to cancel an existing booking. | Go to "Change or cancel email". |
 
-Hold the mouse over a label to read what Luna thinks. In the current build, change and cancel emails show as **Other**, with a note such as "Changing or cancelling a booking is not supported yet." In the newer build, the panel says **Change to an existing booking** or **Cancellation request**.
+Hold the mouse over **Change to booking** or **Cancellation** to read what Luna thinks. For example: "Luna thinks the guest wants to change an existing booking."
 
 If you see **Read without AI**, Luna could not use AI for this email. Check every field by hand.
 
@@ -55,26 +65,25 @@ If you see **Read without AI**, Luna could not use AI for this email. Check ever
 ### 2a. Check the details first
 
 1. Read **Check before sending**. This is Luna's list of things to check.
-2. If you see **Needs your answer**, type the answer into the fields below. Or use "Tell Luna" (see below).
+2. If you see **Needs your answer**, type the answer into the fields below. Or use **Tell Luna** (see "Luna got it wrong?").
 3. Check the stay details: Arrival, Departure, Rooms, Room type, Adults, Children ages, Meal plan, Company or agency, Special requests.
-4. Check the **Quote header**. These exact values go on the PDF:
+4. Check the **Quote header**. The text says: "These exact values go on the PDF. Leave Agency blank if there is none."
    - Rate type: BAR (best available rate) or Government rate.
    - Company, Agency, Attention, Client email, Client telephone.
-   - Dinner allowance, Shuttle requested, Shuttle amount.
-   - Leave **Agency** blank if there is none.
+   - Dinner allowance (ZAR / person / night), Shuttle requested, Shuttle amount (ZAR).
 5. Correct anything wrong. Do this before you run any search.
 
 ### 2b. Run the search
 
 1. Find the box called **Searches in HMS**. It says these searches only read from HMS, and they run one at a time.
-2. Click **Run next**.
-3. Do not click it again. It is greyed out while the run is going.
+2. Click **Run next**. Or click the **Run** button for one stay, for example "Run Search availability 2026-10-16 → 2026-10-18".
+3. **Run next** is greyed out while a run is going. It is also greyed out while a step waits for another option's PDF.
 
-A normal run takes about 5 minutes.
+A normal quote run takes about 5 minutes.
 
 ### 2c. Watch the progress line
 
-A line under the searches tells you what is happening. You will see one of these:
+The progress line appears under the searches while a quote run is going. You will see one of these:
 
 | What the line says | What it means |
 |---|---|
@@ -91,7 +100,7 @@ Keep the pane open, and keep the same email selected, until the run finishes.
 ### 2d. Pick the room option
 
 1. Under **Results**, click the room option you want.
-2. Check **Selected total**.
+2. Check **Selected total**. It does not include alternatives.
 3. Cards marked **Counted in the total** are in the total.
 4. Cards marked **Alternative — not counted in the total** are not in the total.
 
@@ -99,12 +108,12 @@ Keep the pane open, and keep the same email selected, until the run finishes.
 
 ### 2e. See what Luna did in HMS
 
-1. Under **Results**, click the picture with the words **See what Luna did in HMS**.
+1. Click the picture with the words **See what Luna did in HMS**.
 2. Check that the stay, dates, room and total match the email.
 3. Use the arrows (‹ and ›) to see the other screenshots.
 4. Press **Close**, or the Esc key, to go back.
 
-If you see **The HMS screenshot could not be loaded**, check the quoted details and the PDF before you send. If you see **No HMS screenshot for this quote**, or a result card says there is no screenshot, do the same.
+If you see **The HMS screenshot could not be loaded**, or **No HMS screenshot for this quote**, or a result card says there is no screenshot, check the quoted details and the PDF before you send.
 
 ### 2f. Make the PDF
 
@@ -125,24 +134,32 @@ If you see **The HMS screenshot could not be loaded**, check the quoted details 
 
 1. Do not click the button again yet.
 2. Open **Drafts** in Outlook and look for the draft.
-3. Only click **Insert draft in Outlook** again if there is no draft there. This stops you making two drafts.
+3. Only click **Insert draft in Outlook** again if there is no draft there. A retry reuses the same PDF. This stops you making two drafts.
+
+**If you see "Draft saved in Outlook but did not open. Find it in Outlook Drafts.":** open **Drafts** in Outlook and find the draft there.
 
 **If the button is greyed out, or you see "This Outlook add-in is too old to attach the PDF":**
 
 1. Do not try to work around it.
 2. Ask the operator (see "Who to contact").
 
+**Shared mailboxes:** on a shared mailbox that is not the default Drafts store, the pane cannot make the reply draft. The button may be greyed out, or you will see an error. Reply by hand in Outlook, and tell the operator.
+
 ---
 
-## Multi-date quotes (several date ranges in one email)
+## Multi-date quotes (two or more date options in one email)
 
-1. Luna lists each date range under **Which stay to quote**.
-2. Pick one date range. Start with the first one.
-3. Click **Run next**. Wait for the run to finish.
-4. Pick the room option for that stay, then prepare the PDF for that stay.
-5. Each stay keeps its own quote. Luna cannot put two stays into one PDF. The pane says: "A combined PDF is blocked, so prepare the PDF for one stay at a time."
-6. For the other date options, follow the instruction from your founder. Luna's own note says: "Several date options: quote the first, add the others by hand."
-7. Check the price of each stay before you send anything.
+1. Under **Date options**, you will see each option, for example "Option A · 2026-11-02 → 2026-11-04". Each option shows **PDF ready** or **PDF not built**.
+2. Click an option to select it. Click **Run next** (or the **Run** button for that option).
+3. Wait for the run to finish. Pick the room option for that stay.
+4. Click **Prepare PDF for option A**. Each option has its own PDF.
+5. Luna will not start the next option until the current option has its PDF. You will see: "Finish the PDF for option A first, then run option B."
+6. Repeat for each option.
+7. When two or more options have a PDF, the reply buttons show **Create one reply with all date options (A, B)**. Click it to make **one** draft with every option. You will see: "Puts every option you ran into one email draft. Nothing is sent."
+8. To draft one option only, click **Draft option A only**.
+9. In Outlook, check every PDF in the draft. Then press Send yourself.
+
+![Date options with two PDFs ready, and the combined reply buttons under them](img/06-combined-reply.png)
 
 ---
 
@@ -166,7 +183,7 @@ If you see **The HMS screenshot could not be loaded**, check the quoted details 
    - "Company rate not applied: the booking has no company attached. Check the rate in HMS before booking."
    - "Rooms for all stays are not proven to be free together. Check availability in HMS before booking."
    - Near the top of the Booking draft, a rate check line says either "Price matches the email" or "Price differs from the email". If it differs, check the rate in HMS before you book.
-9. The buttons **Preview**, **Book in HMS** and **Save draft** are greyed out. Do not wait for them. Copy the fields into HMS.
+9. **Preview**, **Book in HMS** and **Save draft** are greyed out. This is coming soon. Copy the fields into HMS.
 
 ![Booking draft with a Copy button next to each field](img/03-booking-copy-buttons.png)
 
@@ -174,29 +191,41 @@ If you see **The HMS screenshot could not be loaded**, check the quoted details 
 
 ## Change or cancel email
 
-This part is in the newer build only. If you see "Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.", do the change in HMS yourself.
+Change and cancel emails show the label **Change to booking** or **Cancellation** at the top. The panel below the label is called **Change to an existing booking** or **Cancellation request**.
 
-In the newer build, the panel is called **Change to an existing booking** or **Cancellation request**.
+1. Read the left side, **What the guest asked**: Request, Confirmation, Guest last name, Arrival, Departure. Each one says "From the email".
+2. Click **Find this booking in HMS**.
+   - The button is greyed out if the email has no booking number, or the number is not in the right form (for example 12345-1).
+   - It takes about 1–2 minutes. The text under the button says: "Takes about 1–2 minutes. Quotes wait while it runs."
+   - Do not start a quote while a find is running.
+3. Read the right side, **Booking in HMS now**: Matched on, Guest, Arrival, Departure, Status, Room, Rate plan, Meal plan and Grand total (when HMS shows them).
+4. **Arrival does not match:** if HMS holds the booking on a different arrival date, you will see:
+   - An amber box on the Arrival row, with "Guest wants" and the date from the email.
+   - The line: "The guest mentioned 12 Nov 2026; the booking in HMS arrives 13 Nov 2026."
+   - If HMS will not match the booking on the arrival date, you will see: "HMS shows this booking on another arrival date from the email. Check the dates in HMS directly."
+5. Click **See the booking in HMS** to see the HMS screenshot.
+6. Make the change in HMS yourself. The footer says: "Luna only looks the booking up. Make the change in HMS yourself."
 
-1. Read the left side, **What the guest asked**: Request, Confirmation, Guest last name, Arrival, Departure.
-2. Click **Find this booking in HMS**. Luna looks up the booking. This usually takes under a minute.
-3. Read the right side, **Booking in HMS now**: Matched on, Guest, Arrival, Departure, Status, Room.
-4. An amber box means HMS does not match what the guest asked. Check it.
-5. Make the change in HMS yourself. Luna only looks the booking up.
+![Change to an existing booking panel, after a find](img/05-amend-panel.png)
 
-**Cancellations:**
+**Cancellation emails:** after a successful find, you will see a cancel note, not buttons:
 
-- **Preview cancellation** reads the cancellation fee from HMS. It cancels nothing.
-- **Cancel booking in HMS** is not on for real bookings in this pilot. If you see "Cancelling from here is switched off for now" or "Cancelling from here only works on test bookings right now", cancel by hand in HMS:
-  1. Open the booking number.
-  2. Click **Actions**, then **Cancel Reservation**.
+- "Cancelling from here is switched off for now. Cancel it in HMS: open the booking number, Actions → Cancel Reservation."
+- Cancel by hand in HMS, using those steps.
 
-**If the lookup does not find the booking, you may see:**
+**If the find does not work, you may see:**
 
 - "Luna couldn't find a booking number in the email. Search HMS by name instead."
 - "No booking with that number in HMS. Check the number in the email or search HMS by guest name."
+- "HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name."
 - "HMS matched more than one booking for that number. Check HMS directly."
-- "HMS is busy. Try again in a minute."
+- "HMS is busy with another quote or lookup. Try again in a minute."
+- "Luna could not read the HMS result. Try again in a minute."
+- "Waiting for this email to sync before the HMS lookup can start."
+- "The HMS lookup is not connected in this session. Search HMS by hand."
+- "Luna can't reach HMS right now. Tell the Nava team."
+
+**Amber note on a change or cancel email:** you may also see "Changing or cancelling a booking is not supported yet. Handle it by hand in HMS." You can still use **Find this booking in HMS**. Make every change by hand in HMS.
 
 ---
 
@@ -204,12 +233,12 @@ In the newer build, the panel is called **Change to an existing booking** or **C
 
 ### The type of email is wrong
 
-If Luna says "Luna thinks this is not a quote request, so no quote was started", two buttons appear:
+If Luna says "Luna thinks this is not a quote request, so no quote was started", you will see:
 
 - **This is a quote request**
 - **This is a booking**
 
-Click the one that is right.
+Click the one that is right. The line under the buttons says: "Use if Luna sorted this email wrong."
 
 ### The details are wrong
 
@@ -228,14 +257,16 @@ Click the one that is right.
 
 ## If HMS is busy or not responding
 
-HMS runs one search at a time. Other people may be using it too.
+HMS runs one search at a time. Other people may be using it too. A lookup and a quote cannot run at the same time.
 
 1. **If you see "busy", "ahead of yours" or "Waiting":** wait. Keep the pane open. Do not click **Run next** again.
-2. **If you see "HMS is not responding. Try again in a few minutes.":**
+2. **If you see "HMS is busy with another quote or lookup. Try again in a minute.":** wait one minute. Then try once more.
+3. **If you see "HMS is not responding. Try again in a few minutes.":**
    1. Wait about 5 minutes.
-   2. Try once more: click **Run next** one time.
+   2. Try once more.
    3. If it says "not responding" again, stop. Call the operator. Tell them the time.
-3. Do not keep clicking. Extra clicks do not make HMS faster.
+4. **If you see "Luna can't reach HMS right now. Tell the Nava team.":** tell the operator.
+5. Do not keep clicking. Extra clicks do not make HMS faster.
 
 ---
 
@@ -245,7 +276,7 @@ HMS runs one search at a time. Other people may be using it too.
 - [ ] Rooms, room types, adults and children match the email.
 - [ ] Rate type and company or agency are right.
 - [ ] The total matches HMS (see the screenshot).
-- [ ] The PDF is attached, and it is the right stay.
+- [ ] The PDF is attached, and it is the right stay. For several options, every PDF is right.
 - [ ] The reply text reads right and names the right guest.
 - [ ] Then **you** press Send in Outlook.
 
@@ -255,8 +286,8 @@ HMS runs one search at a time. Other people may be using it too.
 
 | For | Who | Phone |
 |---|---|---|
-| Sign-in problems, device code, pane not working, HMS not responding | Operator: [name] | [number] |
-| How to use Luna, questions, feedback | Founder: [name] | [number] |
-| Antivirus warnings, installer warnings | IT: [name] | [number] |
+| Sign-in problems, device code, pane not working, HMS not responding | **[PLACEHOLDER – operator name]** | **[PLACEHOLDER – operator phone]** |
+| How to use Luna, questions, feedback | **[PLACEHOLDER – founder name]** | **[PLACEHOLDER – founder phone]** |
+| Antivirus warnings, installer warnings | **[PLACEHOLDER – IT contact name]** | **[PLACEHOLDER – IT phone]** |
 
-Fill in the names and numbers before you use this guide.
+**Placeholders:** replace every item in square brackets with a real name and number before you give this guide to staff.
