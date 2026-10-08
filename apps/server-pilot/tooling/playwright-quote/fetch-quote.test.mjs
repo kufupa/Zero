@@ -310,6 +310,7 @@ test('picker references require unique exact normalized names or native codes',(
 test('picker filters only use fields the live HMS pickers expose',()=>{
   assert.deepEqual(quote.pickerFilter('organization',{nativeId:'49'}),{name:'ff_companyid',value:'49'});
   assert.deepEqual(quote.pickerFilter('agency',{nativeId:'290',name:'CWT JNB'}),{name:'ff_travelagencyname',value:'CWT JNB'});
+  assert.deepEqual(quote.pickerFilter('organization',{name:'Provincial Treasury'}),{name:'ff_companyname',value:'Provincial Treasury'});
   assert.deepEqual(quote.pickerFilter('agency',{code:'77218175'}),{name:'ff_iatanumber',value:'77218175'});
   assert.deepEqual(quote.pickerFilter('group',{name:'Conference'}),{name:'ff_groupsname',value:'Conference'});
   assert.throws(()=>quote.pickerFilter('agency',{nativeId:'290'}),/REFERENCE_FILTER_MISSING/);

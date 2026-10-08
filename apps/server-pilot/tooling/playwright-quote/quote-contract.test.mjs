@@ -343,6 +343,13 @@ test('v2 rooms require ids; rate context accepts exactly one of code, name or na
   assert.deepEqual(lookedUp.request.rateContext.organization, { nativeId: '1842' });
   assert.deepEqual(lookedUp.request.rateContext.agency, { nativeId: '91', name: 'CWT JNB' });
 
+  // A stay company typed as blank is not a party: the request is refused rather than priced as public BAR.
+  const blankName = normalizeQuoteRequest(v2(
+    [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
+    { rateContext: { organization: { name: '   ' } } },
+  ));
+  assert.equal(blankName.ok, false);
+
   const agencyIdOnly = normalizeQuoteRequest(v2(
     [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
     { rateContext: { agency: { nativeId: '91' } } },
