@@ -28,10 +28,10 @@ async function fixture(db: Parameters<typeof issueEnrollment>[0]) {
   const code = await issueEnrollment(db, { userId, transportId, storeId });
   await enrollDevice(db, { code, deviceId, storeId, version: '4', secret }, key);
   const handler = createOutlookNativeHandler(db, key);
-  async function signed(route: string, payload: unknown, signingSecret = secret, signingDeviceId = deviceId) {
+  async function signed(route: string, payload: unknown, signingSecret = secret, signingDeviceId = deviceId, clockOffsetMs = 0) {
     const body = JSON.stringify(payload);
     const nonce = await issueChallenge(db, signingDeviceId, key);
-    const timestamp = String(Math.floor(Date.now() / 1000));
+    const timestamp = String(Math.floor((Date.now() + clockOffsetMs) / 1000));
     const signature = createHmac('sha256', Buffer.from(signingSecret, 'base64'))
       .update(['nava-outlook-v4', 'POST', route, createHash('sha256').update(body).digest('hex'), signingDeviceId, timestamp, nonce].join('\n')).digest('hex');
     return handler(new Request(`https://localhost.test${route}`, { method: 'POST', body, headers: {
@@ -78,6 +78,25 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ kind: 'read', storeId, transportId: f.transportId });
     expect((await f.signed(path, { ticket, storeId, transportId: f.transportId, action: 'GET_ACTIVE_EMAIL' })).status).toBe(403);
+  }));
+
+  it('states every grant deadline in the workstation clock so native accepts it despite PC clock drift', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'drafts-folder', kind: 'drafts' });
+    // Native refuses a deadline <= its clock or more than 60 s (reads) / 15 s (writes) beyond it.
+    for (const [clockOffsetMs, action, window] of [[-20_000, 'GET_ACTIVE_EMAIL', 60], [20_000, 'GET_ACTIVE_EMAIL', 60],
+      [-10_000, 'CREATE_DRAFT', 15], [10_000, 'CREATE_DRAFT', 15]] as const) {
+      const operationId = action === 'CREATE_DRAFT' ? op() : undefined;
+      const { ticket } = await f.ticket(action, operationId);
+      const response = await f.signed(path, { ticket, storeId, transportId: f.transportId, action, operationId,
+        ...(operationId ? { destinationFolderId: 'drafts-folder', destinationKind: 'drafts' } : {}) },
+      undefined, undefined, clockOffsetMs);
+      expect(response.status).toBe(200);
+      const deadline = Date.parse((await response.json()).expiresAt);
+      const workstationNow = Date.now() + clockOffsetMs;
+      expect(deadline).toBeGreaterThan(workstationNow);
+      expect(deadline).toBeLessThanOrEqual(workstationNow + window * 1000);
+    }
   }));
 
   it('resolves the exact enrolled store without trusting the first pane request', async () => withTestDb(async (db) => {

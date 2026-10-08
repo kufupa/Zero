@@ -81,6 +81,14 @@ export function createOutlookNativeHandler(db: DB, key: string) {
         }
         throw error;
       }
+      // Native refuses a deadline more than 60 s (reads) or 15 s (writes) ahead of the workstation clock, so a
+      // PC a second behind the server failed every grant. Restate the deadline in the clock native signed with;
+      // the signature check bounds that skew to 60 s and the lifetime native sees never exceeds the server's.
+      const skewMs = Date.now() - Number(request.headers.get('x-nava-timestamp')) * 1000;
+      if (authorized && typeof authorized.expiresAt === 'string')
+        authorized = { ...authorized, expiresAt: new Date(Date.parse(authorized.expiresAt) - skewMs).toISOString() };
+      console.info('outlook_native_authorize', { action: values.action, granted: Boolean(authorized),
+        clockSkewSeconds: Math.round(skewMs / 1000) });
       return authorized ? Response.json(authorized, { headers: { 'cache-control': 'no-store' } })
         : new Response(null, { status: 403, headers: { 'cache-control': 'no-store' } });
     }
