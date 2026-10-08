@@ -94,7 +94,8 @@ export const paneStaySaveLoaders: {
   now: null,
 };
 
-function clock(): number {
+// Shared with the cancel path, so tests drive one clock for both.
+export function paneStayClock(): number {
   return paneStaySaveLoaders.now?.() ?? Date.now();
 }
 
@@ -141,7 +142,8 @@ function previewKey(owner: string, digest: string): string {
   return `${owner}\0${digest}`;
 }
 
-function recordPanePreview(owner: string, digest: string, now: number): void {
+// Shared with the cancel path: owner-scoped, 10-minute TTL, one use. The two paths never hash the same input.
+export function recordPanePreview(owner: string, digest: string, now: number): void {
   for (const [key, expiresAt] of panePreviews) {
     if (expiresAt <= now) panePreviews.delete(key);
   }
@@ -149,7 +151,7 @@ function recordPanePreview(owner: string, digest: string, now: number): void {
 }
 
 // True only for an unexpired grant from the same owner. The grant is consumed either way.
-function takePanePreview(owner: string, digest: string, now: number): boolean {
+export function takePanePreview(owner: string, digest: string, now: number): boolean {
   const key = previewKey(owner, digest);
   const expiresAt = panePreviews.get(key);
   panePreviews.delete(key);
@@ -160,7 +162,7 @@ function takePanePreview(owner: string, digest: string, now: number): boolean {
 type PaneRun = { dir: string; owner: string; expiresAt: number };
 const paneRuns = new Map<string, PaneRun>();
 
-async function pruneExpiredPaneRuns(now: number): Promise<void> {
+export async function pruneExpiredPaneRuns(now: number): Promise<void> {
   for (const [runId, run] of paneRuns) {
     if (run.expiresAt > now) continue;
     paneRuns.delete(runId);
@@ -168,7 +170,12 @@ async function pruneExpiredPaneRuns(now: number): Promise<void> {
   }
 }
 
-function registerPaneRun(input: { runId: string; dir: string; owner: string; now: number }): void {
+export function registerPaneRun(input: {
+  runId: string;
+  dir: string;
+  owner: string;
+  now: number;
+}): void {
   paneRuns.set(input.runId, {
     dir: input.dir,
     owner: input.owner,
@@ -182,7 +189,7 @@ export async function readPaneStayScreenshot(input: {
   name: string;
   owner: string;
 }): Promise<{ status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string }> {
-  await pruneExpiredPaneRuns(clock());
+  await pruneExpiredPaneRuns(paneStayClock());
   if (!PANE_RUN_ID_PATTERN.test(input.runId) || !PANE_SCREENSHOT_NAME_PATTERN.test(input.name)) {
     return { status: 'unavailable', reason: 'screenshot_request_invalid' };
   }
@@ -267,7 +274,7 @@ export async function runPaneStay(input: {
   previewDigest?: string;
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
-  await pruneExpiredPaneRuns(clock());
+  await pruneExpiredPaneRuns(paneStayClock());
   const enabled = paneStaySaveLoaders.enabled ?? (() => paneStaySaveEnabled());
   if (!enabled()) {
     return { status: 'refused', reason: 'pane_save_flag_off' };
@@ -312,7 +319,8 @@ export async function runPaneStay(input: {
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
   const spawned = await lock.withLock(async () => {
     // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-    if (input.mode === 'commit' && !takePanePreview(input.owner, digest, clock())) return null;
+    if (input.mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock()))
+      return null;
     return spawn({
       stay: input.stay,
       stopBefore: input.mode === 'preview' ? 'save' : null,
@@ -326,9 +334,14 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: spawned.outcome };
   }
   const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
-  if (previewed) recordPanePreview(input.owner, digest, clock());
+  if (previewed) recordPanePreview(input.owner, digest, paneStayClock());
   if (spawned.runId && spawned.runDir) {
-    registerPaneRun({ runId: spawned.runId, dir: spawned.runDir, owner: input.owner, now: clock() });
+    registerPaneRun({
+      runId: spawned.runId,
+      dir: spawned.runDir,
+      owner: input.owner,
+      now: paneStayClock(),
+    });
   }
   return {
     status: 'ok',
