@@ -17,10 +17,17 @@ const DEFAULT_DEADLINE_MS = 25_000;
 
 export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
 
+/** The response schema the model fills. Hashed into the version so a schema change also misses the cache. */
+const LUNA_RESPONSE_JSON = JSON.stringify(
+  zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' }),
+);
+
 export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update(CENTURION_HOTEL_RULES)
   .update('\n')
   .update(K2_MAPPING)
+  .update('\n')
+  .update(LUNA_RESPONSE_JSON)
   .digest('hex')
   .slice(0, 16);
 
@@ -188,6 +195,55 @@ function roomsOnlyInfoNeeded(analysis: LunaAnalysis): boolean {
 const VENUE_MANUAL_QUESTION = 'Venue / DDR / delegates / packages: handle manually';
 const ROOMS_ONLY_INFO_QUESTION = 'Rooms-only group: quoting with stated quantity';
 
+export function isAmendOrCancelWorkflow(
+  workflow: LunaAnalysis['workflow'],
+): workflow is 'amend' | 'cancel' {
+  return workflow === 'amend' || workflow === 'cancel';
+}
+
+/** Route payload for an existing-booking change. Null for every other workflow. */
+export type QuoteAmendment = {
+  kind: 'amend' | 'cancel';
+  confirmationNumber: string | null;
+  guestLastName: string | null;
+  arrival: string | null;
+  departure: string | null;
+  requestedChange: string | null;
+};
+
+export function amendmentFromAnalysis(analysis: LunaAnalysis): QuoteAmendment | null {
+  if (!isAmendOrCancelWorkflow(analysis.workflow)) return null;
+  return {
+    kind: analysis.workflow,
+    confirmationNumber: analysis.confirmationNumber ?? null,
+    guestLastName: analysis.guestLastName ?? null,
+    arrival: analysis.arrival ?? null,
+    departure: analysis.departure ?? null,
+    requestedChange: analysis.requestedChange ?? null,
+  };
+}
+
+const REQUESTED_CHANGE_MAX = 300;
+
+/**
+ * Amendment fields are display and lookup hints, so keep only what the source supports:
+ * the confirmation number must appear verbatim, dates must be real ISO days, and the
+ * change line is card-masked and capped rather than failing the whole analysis.
+ */
+function groundedAmendmentFields(
+  analysis: LunaAnalysis,
+  sourceText: string,
+): Pick<LunaAnalysis, 'confirmationNumber' | 'arrival' | 'departure' | 'requestedChange'> {
+  const confirmation = analysis.confirmationNumber?.trim() ?? '';
+  const change = analysis.requestedChange?.trim() ?? '';
+  return {
+    confirmationNumber: confirmation && sourceText.includes(confirmation) ? confirmation : null,
+    arrival: validIsoDate(analysis.arrival ?? null) ?? null,
+    departure: validIsoDate(analysis.departure ?? null) ?? null,
+    requestedChange: change ? maskCardNumbers(change).slice(0, REQUESTED_CHANGE_MAX) : null,
+  };
+}
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
@@ -195,7 +251,8 @@ export function mapLlmDecision(
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
-  if ((analysis.workflow === 'other' || venueOrEventManual(analysis)) && !staffQuote) {
+  const notQuote = analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow);
+  if ((notQuote || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
     if (venueOrEventManual(analysis)) {
       routed.unshift({ field: 'handle_manually', question: VENUE_MANUAL_QUESTION });
@@ -344,6 +401,7 @@ export async function analyseQuoteSelection(input: {
             : item,
         ),
         rateClaims: verbatim(parsed.data.rateClaims),
+        ...groundedAmendmentFields(parsed.data, sourceText),
       },
     };
   } catch (error) {

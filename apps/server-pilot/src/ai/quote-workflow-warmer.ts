@@ -5,6 +5,7 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import {
   analyseCachePath,
   analyseSyncedSelection,
+  canonicalInternetMessageId,
   hashSyncedQuoteSelection,
   isReusableAnalyseCache,
   readAnalyseCache,
@@ -120,8 +121,8 @@ async function runWarm(
     .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId)))
     .limit(1);
   if (!trigger || trigger.direction !== 'inbound') return 'skipped';
-  // Use the stored header so the cache key matches the row the loader reads.
-  const internetMessageId = trigger.messageIdHeader?.trim();
+  // Canonical form, the same key the pane route builds from the id it is sent.
+  const internetMessageId = canonicalInternetMessageId(trigger.messageIdHeader);
   if (!internetMessageId) return failed('no_message_id', started);
   const cacheDir = resolveAnalyseCacheDir(deps.cacheDir ?? null);
   if (!cacheDir) return failed('no_cache_dir', started);

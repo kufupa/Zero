@@ -580,6 +580,104 @@ describe('quoteWorkflow.analyseSelection', () => {
   });
 });
 
+describe('quoteWorkflow.analyseSelection amendment payload', () => {
+  afterEach(() => {
+    quoteWorkflowLoaders.loadSyncedSelection = null;
+    quoteWorkflowLoaders.adapter = null;
+    quoteWorkflowLoaders.llmEnabled = null;
+    quoteWorkflowLoaders.analyseCacheDir = null;
+    quoteWorkflowLoaders.promptVersion = null;
+  });
+
+  function useLuna(output: Record<string, unknown>, bodyText: string) {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Booking change',
+      bodyText,
+      preceding: [],
+      attachments: [],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(output),
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          latencyMs: 1,
+          estimatedCostUsd: 0,
+          rateTableVersion: 't',
+        },
+      }),
+    };
+  }
+
+  function analyseWith(internetMessageId: string, selectionEpoch: number) {
+    return mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId,
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch,
+    });
+  }
+
+  it('returns intent other and an amendment payload for an amend mail', async () => {
+    useLuna(
+      {
+        workflow: 'amend',
+        groups: [],
+        tasks: [{ kind: 'amend', groupIndexes: [], note: 'change departure' }],
+        confirmationNumber: '57291630-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-12',
+        departure: '2026-11-17',
+        requestedChange: 'Change departure from 15 Nov to 17 Nov',
+      },
+      'Please change booking 57291630-1 for Example: leave 17 Nov instead of 15 Nov.',
+    );
+    const result = await analyseWith('<amend-1@x>', 4);
+    expect(result).toMatchObject({
+      status: 'ready',
+      source: 'luna',
+      intent: 'other',
+      workflow: 'amend',
+      groups: [],
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '57291630-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-12',
+        departure: '2026-11-17',
+        requestedChange: 'Change departure from 15 Nov to 17 Nov',
+      },
+    });
+  });
+
+  it('returns a cancel amendment, and a null amendment for a quote', async () => {
+    useLuna(
+      {
+        workflow: 'cancel',
+        groups: [],
+        tasks: [{ kind: 'cancel', groupIndexes: [], note: 'cancel stay' }],
+        confirmationNumber: '57291630-1',
+      },
+      'Please cancel booking 57291630-1.',
+    );
+    const cancelled = await analyseWith('<cancel-1@x>', 5);
+    expect(cancelled).toMatchObject({
+      workflow: 'cancel',
+      intent: 'other',
+      amendment: { kind: 'cancel', confirmationNumber: '57291630-1' },
+    });
+
+    useLuna({}, 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.');
+    const quote = await analyseWith('<quote-1@x>', 6);
+    expect(quote).toMatchObject({ workflow: 'quote', intent: 'quote', amendment: null });
+  });
+});
+
 describe('quoteWorkflow.analyseSelection file cache', () => {
   const cacheLoaders = quoteWorkflowLoaders as typeof quoteWorkflowLoaders & {
     analyseCacheDir: string | null;
@@ -680,6 +778,69 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       preceding: [],
       attachments: [],
     });
+    await analyse();
+    expect(invokes).toBe(2);
+  });
+
+  it('shares one cache file between a bracketed and a bare message id', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    const bracketed = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<Cache-Canon@X>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 21,
+    });
+    const bare = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: 'cache-canon@x',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 22,
+    });
+    expect(invokes).toBe(1);
+    expect(bracketed.status).toBe('ready');
+    expect(bare).toMatchObject({ status: 'ready', source: 'luna', sourceRevision: 22 });
+  });
+
+  it('misses the cache when the prompt version changes', async () => {
+    let invokes = 0;
+    cacheLoaders.adapter = {
+      invoke: async () => {
+        invokes += 1;
+        return {
+          modelId: 'gpt-6-luna',
+          output: lunaOutput(),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        };
+      },
+    };
+    await analyse();
+    cacheLoaders.promptVersion = 'prompt-h5-test-next';
     await analyse();
     expect(invokes).toBe(2);
   });

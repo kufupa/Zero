@@ -34,6 +34,11 @@ describe('staffEquivalentOf', () => {
     ).toBe(true);
   });
 
+  it('keeps amend and cancel out of the staff-equivalent count even with full dates', () => {
+    expect(staffEquivalentOf(analysis({ workflow: 'amend' }))).toBe(false);
+    expect(staffEquivalentOf(analysis({ workflow: 'cancel' }))).toBe(false);
+  });
+
   it('rejects conference, amendment, long stay, other, and missing dates', () => {
     expect(staffEquivalentOf(analysis({ flags: ['conference_or_group'] }))).toBe(false);
     expect(staffEquivalentOf(analysis({ workflow: 'other' }))).toBe(false);

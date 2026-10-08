@@ -8,6 +8,7 @@ import {
 } from '../../ai/quote-workflow-llm.js';
 import {
   analyseSyncedSelection,
+  canonicalInternetMessageId,
   resolveAnalyseCacheDir,
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
@@ -80,11 +81,13 @@ export const quoteWorkflowRouter = router({
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
     .mutation(async ({ input, ctx }) => {
+      // One canonical id for the loader's exact match and for the cache key.
+      const internetMessageId = canonicalInternetMessageId(input.internetMessageId) ?? undefined;
       const loader =
         quoteWorkflowLoaders.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
       const synced = await loader({
         transportId: ctx.activeTransportId,
-        internetMessageId: input.internetMessageId,
+        internetMessageId,
         entryId: input.entryId,
         storeId: input.storeId,
         signal: AbortSignal.timeout(15_000),
@@ -93,7 +96,7 @@ export const quoteWorkflowRouter = router({
         return { status: 'unsynced' as const };
       }
       const { payload, outcome } = await analyseSyncedSelection(synced, {
-        internetMessageId: input.internetMessageId,
+        internetMessageId,
         treatAs: input.treatAs,
         staffNote: input.staffNote,
         selectionEpoch: input.selectionEpoch,

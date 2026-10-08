@@ -7,11 +7,13 @@ import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
 import {
+  amendmentFromAnalysis,
   analyseQuoteSelection,
   mapLlmDecision,
   type QuoteTreatAs,
   type QuoteWorkflowFallbackReason,
 } from './quote-workflow-llm.js';
+import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import type {
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
@@ -70,6 +72,15 @@ export function hashSyncedQuoteSelection(
   return hash.digest('hex');
 }
 
+/**
+ * Same normalisation the ingest writes to message.messageIdHeader (strip <>, unquote,
+ * lowercase). The pane's raw id, the warmer's stored header and the synced loader's
+ * exact match then meet on one key. Null when the id is empty.
+ */
+export function canonicalInternetMessageId(raw: string | null | undefined): string | null {
+  return canonicalMessageId(raw?.trim());
+}
+
 export function analyseCachePath(input: {
   internetMessageId: string;
   sourceHash: string;
@@ -77,7 +88,8 @@ export function analyseCachePath(input: {
   cacheDir: string;
   treatAs?: QuoteTreatAs;
 }): string {
-  const id = input.internetMessageId.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+  const canonical = canonicalInternetMessageId(input.internetMessageId) ?? input.internetMessageId;
+  const id = canonical.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
   const treat = input.treatAs ?? 'auto';
   return join(
     input.cacheDir,
@@ -288,6 +300,7 @@ export async function analyseSyncedSelection(
       aiUnavailable: false as const,
       luna,
       workflow: luna.workflow,
+      amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,
     };
     let cached = false;
@@ -328,6 +341,7 @@ export async function analyseSyncedSelection(
     source: 'regex_fallback' as const,
     fallbackReason: llm.fallbackReason,
     aiUnavailable: true as const,
+    amendment: null,
     sourceRevision: options.selectionEpoch,
   };
   return {
