@@ -5,6 +5,11 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  acquisitionWithin,
+  isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+} from '../hms/property-read-lock.js';
 import type { OsressDuplicateStatus, PaneStayLock } from './pane-stay-save.js';
 
 const execFileAsync = promisify(execFile);
@@ -52,7 +57,12 @@ export type PaneStayFindOutcome = 'found' | 'not_found' | 'ambiguous' | 'executi
 export type PaneStayFindInput = { confirmation: string; arrival?: string };
 
 export type PaneStayFindResult = {
-  outcome: PaneStayFindOutcome | 'refused_flag_off' | 'refused_input_invalid' | 'refused_lock_unavailable';
+  outcome:
+    | PaneStayFindOutcome
+    | 'refused_flag_off'
+    | 'refused_input_invalid'
+    | 'refused_lock_unavailable'
+    | 'refused_lock_busy';
   reason: string | null;
   stay: PaneStayFields | null;
   /** File names only. The files stay in the lookup run directory. */
@@ -214,11 +224,12 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
   let run: PaneStayLookupSpawnResult;
   try {
-    run = await lock.withLock(() =>
-      spawn({ mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null }),
+    run = await lock.withLock(
+      () => spawn({ mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
-  } catch {
-    return refused('execution_failure');
+  } catch (error) {
+    return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
   }
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toFindOutcome(run.outcome);
@@ -261,10 +272,13 @@ export async function guestDatesDuplicateCheckViaCli(
   const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
   let run: PaneStayLookupSpawnResult | null = null;
   try {
-    run = await lock.withLock(() => spawn({ mode: 'search-guest', ...input }));
+    run = await lock.withLock(
+      () => spawn({ mode: 'search-guest', ...input }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
     return run.outcome === 'ok' ? guestDatesVerdict(run.rows, input) : 'duplicate';
-  } catch {
-    return 'duplicate';
+  } catch (error) {
+    return isPropertyReadLockDeadline(error) ? 'busy' : 'duplicate';
   } finally {
     // Panel screenshots show guest names, so this run's directory does not outlive the check.
     if (run?.runDir) await rm(run.runDir, { recursive: true, force: true }).catch(() => {});

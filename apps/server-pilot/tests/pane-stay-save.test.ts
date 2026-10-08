@@ -21,7 +21,7 @@ import {
   readPaneStayScreenshot,
   runPaneStay,
 } from '../src/ai/pane-stay-save.js';
-import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
+import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src/hms/property-read-lock.js';
 
 const labStay = {
   firstName: 'Pat',
@@ -50,6 +50,14 @@ function passingLock(seen: string[] = []): PaneStayLock {
       return fn();
     },
   };
+}
+
+// The error the production lock throws when its acquisition deadline passes while another run holds the lock.
+function busyLockError(): Error {
+  return Object.assign(new Error('property read advisory lock could not be acquired'), {
+    code: 'PROPERTY_READ_LOCK_LOST',
+    cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+  });
 }
 
 function cliSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
@@ -119,6 +127,26 @@ describe('pane stay save guards', () => {
     expect(() =>
       assertLabStayGuard({ lastName: 'Labtestino', arrivalDate: '2027-09-14' }),
     ).toThrow(/labtest/i);
+  });
+
+  it('refuses refused_lock_busy in preview when the property lock stays held past the 20 s wait', async () => {
+    enableSave();
+    paneStaySaveLoaders.lock = {
+      withLock: async () => {
+        throw busyLockError();
+      },
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner() }),
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
+  });
+
+  it('refuses refused_lock_busy in commit when the duplicate check cannot get the lock in time', async () => {
+    enableSave();
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => 'busy';
+    await expect(
+      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner() }),
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
   });
 
   it('refuses an explicit propertyCode for another hotel before any lock or spawn', async () => {

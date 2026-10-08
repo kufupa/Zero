@@ -22,8 +22,18 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+
 const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
 const owner = 'user-ropperman:transport-1';
+
+// The error the production lock throws when its acquisition deadline passes while another run holds the lock.
+function busyLockError(): Error {
+  return Object.assign(new Error('property read advisory lock could not be acquired'), {
+    code: 'PROPERTY_READ_LOCK_LOST',
+    cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+  });
+}
 
 // The digest the spec names: sha256 of the canonical JSON of {confirmation, arrival}, keys in fixed order.
 function digestOf(input: { confirmation: string; arrival: string }): string {
@@ -185,6 +195,19 @@ describe('pane stay cancel', () => {
     await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
       outcome: 'refused_lock_unavailable',
     });
+  });
+
+  it('refuses refused_lock_busy when the property lock stays held past the 20 s wait, with no spawn', async () => {
+    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    paneStayCancelLoaders.lock = {
+      withLock: async () => {
+        throw busyLockError();
+      },
+    };
+    await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({ outcome: 'refused_lock_busy' });
   });
 
   it('digest is sha256 of the canonical confirmation and arrival', () => {

@@ -14,6 +14,7 @@ import {
   paneStayLookupLoaders,
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
+import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { appRouter } from '../src/trpc/router.js';
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
@@ -54,6 +55,14 @@ function passingLock(seen: string[] = []): PaneStayLock {
       return fn();
     },
   };
+}
+
+// The error the production lock throws when its acquisition deadline passes while another run holds the lock.
+function busyLockError(): Error {
+  return Object.assign(new Error('property read advisory lock could not be acquired'), {
+    code: 'PROPERTY_READ_LOCK_LOST',
+    cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+  });
 }
 
 function lookupResult(overrides: Partial<PaneStayLookupSpawnResult> = {}): PaneStayLookupSpawnResult {
@@ -160,6 +169,34 @@ describe('findStay', () => {
     await expect(findStay({ confirmation: '57291630-1' }, { lock: () => null })).resolves.toMatchObject({
       outcome: 'refused_lock_unavailable',
     });
+  });
+
+  it('refuses refused_lock_busy when the property lock stays held past the 20 s wait, with no spawn', async () => {
+    const waits: number[] = [];
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    const busy: PaneStayLock = {
+      withLock: async (_fn, acquisition) => {
+        waits.push(acquisition?.deadlineAt ?? 0);
+        throw busyLockError();
+      },
+    };
+    await expect(findStay({ confirmation: '57291630-1' }, { lock: () => busy })).resolves.toMatchObject({
+      outcome: 'refused_lock_busy',
+    });
+    const waitMs = (waits[0] ?? 0) - Date.now();
+    expect(waitMs).toBeGreaterThan(19_000);
+    expect(waitMs).toBeLessThanOrEqual(20_000);
+  });
+
+  it('reports busy, not duplicate, when the guest-dates check cannot get the property lock in time', async () => {
+    const busy: PaneStayLock = {
+      withLock: async () => {
+        throw busyLockError();
+      },
+    };
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, { lock: () => busy })).resolves.toBe('busy');
   });
 
   it('runs the find CLI under the lock and maps a found stay with its file names', async () => {

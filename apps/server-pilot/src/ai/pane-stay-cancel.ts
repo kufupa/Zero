@@ -1,4 +1,9 @@
 import {
+  acquisitionWithin,
+  isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+} from '../hms/property-read-lock.js';
+import {
   PANE_SCREENSHOT_NAME_PATTERN,
   paneStayClock,
   paneStayPropertyLock,
@@ -199,11 +204,14 @@ async function runPaneStayCancel(
   };
   try {
     await pruneExpiredPaneRuns(paneStayClock());
-    const spawned = await lock.withLock(async () => {
-      // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-      if (mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock())) return null;
-      return spawn(request);
-    });
+    const spawned = await lock.withLock(
+      async () => {
+        // The grant is taken under the lock, so two concurrent commits cannot both spawn.
+        if (mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock())) return null;
+        return spawn(request);
+      },
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
     if (spawned === null) return refused('cancel_preview_required');
     let runId: string | null = null;
     if (spawned.runDir) {
@@ -225,8 +233,8 @@ async function runPaneStayCancel(
       runId,
       previewDigest,
     };
-  } catch {
-    return refused('execution_failure');
+  } catch (error) {
+    return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
   }
 }
 

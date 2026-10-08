@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createPostgresPropertyReadLock } from '../hms/property-read-lock.js';
+import {
+  acquisitionWithin,
+  createPostgresPropertyReadLock,
+  isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+  type PropertyReadLockAcquisitionOptions,
+} from '../hms/property-read-lock.js';
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
 
 const execFileAsync = promisify(execFile);
@@ -43,7 +49,8 @@ export type PaneStay = {
 
 export type PaneStayMode = 'preview' | 'commit';
 
-export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate';
+/** busy: the check could not get the property lock within the pane wait, so nothing was checked. */
+export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate' | 'busy';
 
 export type PaneStaySpawnInput = {
   stay: PaneStay;
@@ -76,7 +83,8 @@ export type PaneStayResult = {
 };
 
 export type PaneStayLock = {
-  withLock: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** Pane runs pass a bounded acquisition, so a busy lock refuses instead of waiting with no end. */
+  withLock: <T>(fn: () => Promise<T>, acquisition?: PropertyReadLockAcquisitionOptions) => Promise<T>;
 };
 
 export const paneStaySaveLoaders: {
@@ -307,6 +315,9 @@ export async function runPaneStay(input: {
     if (status === 'parked') {
       return { status: 'refused', reason: 'osress_reader_parked' };
     }
+    if (status === 'busy') {
+      return { status: 'refused', reason: 'refused_lock_busy' };
+    }
     if (status === 'duplicate') {
       return { status: 'refused', reason: 'osress_duplicate' };
     }
@@ -322,16 +333,25 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
-  const spawned = await lock.withLock(async () => {
-    // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-    if (input.mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock()))
-      return null;
-    return spawn({
-      stay: input.stay,
-      stopBefore: input.mode === 'preview' ? 'save' : null,
-      paneCommit: input.mode === 'commit',
-    });
-  });
+  let spawned: PaneStaySpawnResult | null;
+  try {
+    spawned = await lock.withLock(
+      async () => {
+        // The grant is taken under the lock, so two concurrent commits cannot both spawn.
+        if (input.mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock()))
+          return null;
+        return spawn({
+          stay: input.stay,
+          stopBefore: input.mode === 'preview' ? 'save' : null,
+          paneCommit: input.mode === 'commit',
+        });
+      },
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
+    throw error;
+  }
   if (spawned === null) {
     return { status: 'refused', reason: 'pane_save_preview_required' };
   }
