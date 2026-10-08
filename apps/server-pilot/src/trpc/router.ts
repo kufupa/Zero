@@ -21,6 +21,7 @@ import { catchupRouter } from './routes/catchup.js';
 import { workstationRouter } from './routes/workstation.js';
 import { quoteWorkflowRouter } from './routes/quote-workflow.js';
 import { paneStayCancelRouter } from './routes/pane-stay-cancel.js';
+import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -40,6 +41,7 @@ export const appRouter = router({
   workstation: workstationRouter,
   quoteWorkflow: quoteWorkflowRouter,
   paneStayCancel: paneStayCancelRouter,
+  paneStayLookup: paneStayLookupRouter,
 });
 
 export type AppRouter = typeof appRouter;
