@@ -29,38 +29,36 @@ const hasRow = (probe) => Boolean(probe.row);
 
 // The whole confirmation search (cancel-stay.mjs find, preview and commit). io.drive(term, {needRow, done}) runs one
 // term through the header search with driveQuickSearch. io.panelShown(), io.window() and io.moveWindow() check and move
-// the panel's date window. The order: the typed confirmation; when that finds nothing and the surname is known, the
-// surname, where the row with the exact confirmation is taken; when a panel shows a window that misses arrival, the
-// window moves and the same term is searched again. An open record for the confirmation is never moved.
+// the panel's date window. The order: the typed confirmation; when that finds nothing and a panel shows a window that
+// misses arrival, the window moves first (each window move costs a picker walk, so it is done once) and the confirmation
+// is searched again; when the confirmation is still not found and the surname is known, the surname is searched in that
+// window and the row with the exact confirmation is taken. An open record for the confirmation is never moved.
 export async function runConfirmationSearch(io, { confirmation, lastName = null, arrival = null, allowOpenRecord = true }) {
   const stages = [];
-  let method = 'quick';
-  let term = confirmation;
-  const needRowFor = (current) => !allowOpenRecord || current !== confirmation;
-  let run = await io.drive(confirmation, { needRow: needRowFor(confirmation), done: found });
-  stages.push(...run.stages);
+  const drive = async (term, prefix, done) => {
+    const run = await io.drive(term, { needRow: !allowOpenRecord || term !== confirmation, done });
+    stages.push(...run.stages.map((stage) => (prefix ? `${prefix}.${stage}` : stage)));
+    return run;
+  };
+  let run = await drive(confirmation, '', found);
+  if (run.done) return { probe: run.result, method: 'quick', stages };
   let probe = run.result;
-  if (!run.done && lastName) {
-    term = lastName;
-    run = await io.drive(lastName, { needRow: true, done: hasRow });
-    stages.push(...run.stages.map((stage) => `surname.${stage}`));
-    probe = run.result;
-    if (run.done) method = 'quick_surname';
-  }
   // Lookups without an arrival never move the window.
   if (arrival && !probe.open && (await io.panelShown())) {
     const window = await io.window();
     if (windowAction({ window, arrival, panelShown: true }) === 'move') {
       await io.moveWindow();
-      const moved = await io.drive(term, { needRow: needRowFor(term), done: found });
-      stages.push(...moved.stages.map((stage) => `window.${stage}`));
-      if (found(moved.result)) {
-        probe = moved.result;
-        method = 'quick_calendar';
-      }
+      run = await drive(confirmation, 'window', found);
+      if (run.done) return { probe: run.result, method: 'quick_calendar', stages };
+      probe = run.result;
     }
   }
-  return { probe, method, stages };
+  if (lastName) {
+    run = await drive(lastName, 'surname', hasRow);
+    if (run.done) return { probe: run.result, method: 'quick_surname', stages };
+    probe = run.result;
+  }
+  return { probe, method: 'quick', stages };
 }
 
 // The dropdown row whose confirmation is exactly the wanted one. Null when none, and AMBIGUOUS when more than one matches.

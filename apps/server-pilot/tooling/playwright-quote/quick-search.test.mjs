@@ -210,3 +210,27 @@ test('a panel whose search ran without the row stops the nudges: they cannot cha
   assert.deepEqual(run.stages, ['typed']);
   assert.equal(run.done, false);
 });
+
+test('with a surname and a window that misses arrival, the window moves before the surname is tried', async () => {
+  const { io, calls } = fakeIo({
+    answers: { '61143613-1': [NOTHING, ROW] },
+    window: MISSING_WINDOW,
+    windowAfterMove: COVERING_WINDOW,
+  });
+  const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
+  assert.deepEqual(calls, ['drive:61143613-1:any', 'moveWindow', 'drive:61143613-1:any']);
+  assert.equal(outcome.method, 'quick_calendar');
+  assert.deepEqual(outcome.stages, ['typed', 'window.typed']);
+});
+
+test('when the moved window still lacks the confirmation, the surname is searched in it, once', async () => {
+  const { io, calls } = fakeIo({
+    answers: { '61143613-1': [NOTHING, NOTHING], Labtest: ROW },
+    window: MISSING_WINDOW,
+    windowAfterMove: COVERING_WINDOW,
+  });
+  const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
+  assert.deepEqual(calls, ['drive:61143613-1:any', 'moveWindow', 'drive:61143613-1:any', 'drive:Labtest:row']);
+  assert.equal(outcome.method, 'quick_surname');
+  assert.deepEqual(outcome.probe, ROW);
+});

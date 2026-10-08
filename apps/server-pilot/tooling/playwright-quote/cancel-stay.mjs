@@ -167,10 +167,31 @@ async function openWindowPicker(page) {
   if ((await page.locator(PICKER_OPEN).count()) === 0) throw new Error('DATE_PICKER_NOT_OPEN');
 }
 
+// Steps the open picker by whole months inside the page: one round trip instead of one per month over the CDP tunnel.
+// The arrow is pressed as mouse events (ExtJS repeats on mousedown). The loop in pickArrivalDay re-reads the title and
+// corrects any miss, so this only has to get close.
+async function stepPickerInPage(page, steps) {
+  await page.evaluate(async ({ count, selector }) => {
+    for (let index = 0; index < count; index += 1) {
+      const arrow = [...document.querySelectorAll(selector)].find((node) => node.getClientRects().length > 0);
+      if (!arrow) return;
+      for (const type of ['mousedown', 'mouseup', 'click']) {
+        arrow.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+      }
+      await new Promise((done) => setTimeout(done, 80));
+    }
+  }, { count: Math.abs(steps), selector: steps > 0 ? '.x-datepicker-next' : '.x-datepicker-prev' }).catch(() => {});
+  await page.waitForTimeout(200);
+}
+
 // Moves the open picker to the arrival month and clicks the arrival day.
 async function pickArrivalDay(page, arrival) {
   const title = page.locator(PICKER_TITLE).first();
   let steps = pickerMonthSteps(await title.innerText(), arrival);
+  if (steps !== null && Math.abs(steps) > 1) {
+    await stepPickerInPage(page, steps);
+    steps = pickerMonthSteps(await title.innerText(), arrival);
+  }
   for (let clicks = 0; steps !== 0; clicks += 1) {
     if (steps === null) throw new Error(`DATE_PICKER_TITLE_UNKNOWN:${squash(await title.innerText()).slice(0, 40)}`);
     if (clicks >= MAX_PICKER_CLICKS) throw new Error('DATE_PICKER_MONTH_UNREACHED');
