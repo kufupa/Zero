@@ -70,13 +70,41 @@ import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-function staffQuoteFailureMessage(error: unknown): string {
-  const code =
-    error && typeof error === 'object' && 'code' in error
-      ? String(error.code)
-      : error instanceof Error
-        ? error.message
-        : '';
+const HMS_NOT_RESPONDED_MESSAGE =
+  "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
+const HMS_EXECUTION_CODES = new Set([
+  'EXECUTION_FAILURE',
+  'AUTHENTICATED_SHELL_TIMEOUT',
+  'staff_quote_native_unavailable',
+  'staff_quote_native_capture_unavailable',
+  'native_quote_capture_unavailable',
+  'native_quote_read_unavailable',
+]);
+const HMS_EXECUTION_PHASE = /^(login|hotel_availability|search|details|run|execution)$/;
+
+// Identifiers only: free-text error messages can carry PMS or guest data, so they never reach logs.
+export function staffQuoteFailureCode(error: unknown): string {
+  const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  const candidate = typeof raw === 'string' ? raw : error instanceof Error ? error.message : '';
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
+}
+
+export function staffQuoteFailurePhase(error: unknown): string {
+  const phase = error && typeof error === 'object' && 'phase' in error ? error.phase : undefined;
+  return typeof phase === 'string' && /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown';
+}
+
+export function staffQuoteFailureLog(error: unknown): { code: string; phase: string } {
+  return { code: staffQuoteFailureCode(error), phase: staffQuoteFailurePhase(error) };
+}
+
+function isHmsExecutionFailure(error: unknown, code: string, phase: string): boolean {
+  if (HMS_EXECUTION_CODES.has(code) || HMS_EXECUTION_PHASE.test(phase)) return true;
+  return error instanceof Error && (error.name === 'TimeoutError' || /timeout/i.test(error.message));
+}
+
+export function staffQuoteFailureMessage(error: unknown): string {
+  const code = staffQuoteFailureCode(error);
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',
@@ -95,10 +123,11 @@ function staffQuoteFailureMessage(error: unknown): string {
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',
   };
-  return (
-    actions[code] ??
-    'The requested allocation or rate could not be qualified; review stay inputs and party/rate evidence'
-  );
+  const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
+  if (business) return business;
+  if (isHmsExecutionFailure(error, code, staffQuoteFailurePhase(error)))
+    return HMS_NOT_RESPONDED_MESSAGE;
+  return 'The requested allocation or rate could not be qualified; review stay inputs and party/rate evidence';
 }
 
 export const workstationPingInput = z.object({
@@ -543,6 +572,7 @@ export const workstationRouter = router({
           { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
         );
       } catch (error) {
+        console.warn('staff_quote_failed', staffQuoteFailureLog(error));
         await db
           .update(aiDraftGeneration)
           .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
