@@ -434,6 +434,74 @@ describe('runBackfillCli', () => {
     expect(JSON.parse(logs[0] ?? '{}')).toMatchObject({ code: 'bad_args' });
     expect(load).not.toHaveBeenCalled();
   });
+
+  it('prints the tsx command operators run, not a dist path the build does not emit', async () => {
+    const logs: string[] = [];
+    const code = await runBackfillCli(['--help'], {
+      log: (line) => logs.push(line),
+      loadCandidates: vi.fn(async () => []),
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(logs[0]).toContain('pnpm exec tsx scripts/luna-warm-backfill.ts');
+    expect(logs[0]).not.toContain('dist/');
+  });
+
+  it('exits 1 when every attempt fails, so a scheduled run cannot report success with no mail warmed', async () => {
+    useTriggerRows(['f1', 'f2']);
+    const logs: string[] = [];
+    const load = vi.fn(async () => {
+      throw new Error(`cannot reach ${SECRET_DSN}`);
+    });
+    const { adapter, invoke } = okAdapter();
+    const code = await runBackfillCli([], {
+      log: (line) => logs.push(line),
+      loadCandidates: async () => ['f1', 'f2'].map(candidate),
+      deps: depsFor(load, adapter),
+      env: LLM_ON,
+      now: () => NOW,
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(logs.at(-1) ?? '{}')).toMatchObject({
+      event: 'luna_backfill_done',
+      attempted: 2,
+      failed: 2,
+      stored: 0,
+    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(logs.join('\n')).not.toMatch(/s3cret|postgres:\/\/|db\.internal/);
+  });
+
+  it('exits 0 when some attempts are stored even if others failed', async () => {
+    useTriggerRows(['ok1', 'bad1']);
+    const logs: string[] = [];
+    const load = vi.fn(async (input: { internetMessageId?: string }) => {
+      if (input.internetMessageId?.includes('bad1')) throw new Error('boom');
+      return selection();
+    });
+    const { adapter } = okAdapter();
+    const code = await runBackfillCli([], {
+      log: (line) => logs.push(line),
+      loadCandidates: async () => ['ok1', 'bad1'].map(candidate),
+      deps: depsFor(load, adapter),
+      env: LLM_ON,
+      now: () => NOW,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(logs.at(-1) ?? '{}')).toMatchObject({ stored: 1, failed: 1 });
+  });
+
+  it('exits 0 for an empty window, since nothing was attempted and nothing failed', async () => {
+    const logs: string[] = [];
+    const code = await runBackfillCli([], {
+      log: (line) => logs.push(line),
+      loadCandidates: async () => [],
+      env: LLM_ON,
+      now: () => NOW,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(logs.at(-1) ?? '{}')).toMatchObject({ attempted: 0, failed: 0 });
+  });
 });
 
 describe('redaction helpers', () => {

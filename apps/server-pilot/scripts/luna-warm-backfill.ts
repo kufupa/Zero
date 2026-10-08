@@ -11,8 +11,8 @@
  * Logs carry counts, codes and ms only. Errors are reduced to a code before they
  * are logged, so no message text, body, subject, name or connection string is printed.
  *
- * Run on EC2 from apps/server-pilot after build:
- *   node dist/scripts/luna-warm-backfill.js [--hours 1-72] [--max 1-200] [--dry-run]
+ * Run on EC2 from apps/server-pilot:
+ *   pnpm exec tsx scripts/luna-warm-backfill.ts [--hours 1-72] [--max 1-200] [--dry-run]
  */
 import {
   warmInboundTriageAnalyse,
@@ -39,7 +39,7 @@ export const CONCURRENCY = 2;
 
 const HOUR_MS = 60 * 60 * 1000;
 const USAGE =
-  'usage: node dist/scripts/luna-warm-backfill.js [--hours 1-72, default 48] [--max 1-200, default 150] [--dry-run]';
+  'usage: pnpm exec tsx scripts/luna-warm-backfill.ts [--hours 1-72, default 48] [--max 1-200, default 150] [--dry-run]';
 
 export type BackfillArgs = { hours: number; max: number; dryRun: boolean; help: boolean };
 
@@ -206,6 +206,11 @@ async function defaultLoadCandidates(input: {
   });
 }
 
+/** 1 only when attempts ran and none stored. Partial failures and an empty run exit 0. */
+function backfillExitCode(counts: BackfillCounts): number {
+  return counts.attempted > 0 && counts.failed === counts.attempted ? 1 : 0;
+}
+
 /** Returns the process exit code. Never throws. */
 export async function runBackfillCli(argv: readonly string[], io: BackfillCliIo): Promise<number> {
   const now = io.now ?? Date.now;
@@ -271,7 +276,7 @@ export async function runBackfillCli(argv: readonly string[], io: BackfillCliIo)
         ms: now() - started,
       }),
     );
-    return 0;
+    return backfillExitCode(counts);
   } catch (error) {
     io.log(
       JSON.stringify({
