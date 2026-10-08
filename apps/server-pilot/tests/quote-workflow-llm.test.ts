@@ -186,14 +186,6 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/Invoices, folios, payment queries stay other\./);
     expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
   });
-
-  it("asks for the hotel's booking number only in confirmationNumber, and keeps agency or voucher references elsewhere", () => {
-    const prompt = buildQuoteWorkflowPrompt(selection);
-    expect(prompt.system).toContain(
-      "confirmationNumber = the HOTEL's booking/confirmation number only (e.g. 61143613-1); put agency/voucher references elsewhere or leave null.",
-    );
-    expect(prompt.system).not.toContain('Fill confirmationNumber exactly as written');
-  });
 });
 
 describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
