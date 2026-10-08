@@ -310,6 +310,8 @@ export type QuoteToolStep = {
 export type BookingDraftRoom = {
   groupId: string;
   roomIndex: number;
+  /** The board the approved quote uses. Absent on older payloads, which then copy nothing. */
+  board?: QuoteBoard;
   request: Record<string, unknown>;
   schemaErrors: string[];
 };

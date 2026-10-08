@@ -314,6 +314,22 @@ describe('booking card copy buttons', () => {
     expect(writeText).toHaveBeenCalledWith('COR');
   });
 
+  it('copies the meal plan the quote uses, not the board on the current analysis', () => {
+    const writeText = stubClipboard();
+    const rooms = draftReady().draft.rooms.map((room) => ({ ...room, board: 'bb' as const }));
+    render(<BookingCards draft={draftReady({ rooms })} groups={[{ ...g1, board: 'room_only' }]} />);
+    expect(screen.queryByText('Room only')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Meal plan for room 1' }));
+    expect(writeText).toHaveBeenCalledWith('Bed & breakfast');
+  });
+
+  it('leaves the meal plan unset rather than using the analysis board when the draft has no quoted board', () => {
+    stubClipboard();
+    render(<BookingCards draft={draftReady()} groups={[{ ...g1, board: 'room_only' }]} />);
+    expect(screen.getByRole('button', { name: 'Copy Meal plan for room 1' })).toHaveProperty('disabled', true);
+    expect(screen.queryByText('Room only')).toBeNull();
+  });
+
   function stubExecCommand(result: () => boolean) {
     const execCommand = vi.fn(() => result());
     Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });

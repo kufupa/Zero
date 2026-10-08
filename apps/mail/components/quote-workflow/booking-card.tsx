@@ -198,7 +198,7 @@ export function BookingCards({
             <CopyRow roomIndex={roomIndex} label="Children" value={String(childCount)} />
             <CopyRow roomIndex={roomIndex} label="Room type" value={textValue(request.roomType)} />
             <CopyRow roomIndex={roomIndex} label="Rate code" value={textValue(request.ratePlan)} />
-            <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[group?.board ?? ''] ?? ''} />
+            <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} />
             <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} />
             <CopyRow roomIndex={roomIndex} label="Company or travel agent" value={party} />
