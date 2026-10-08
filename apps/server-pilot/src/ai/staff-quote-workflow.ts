@@ -94,11 +94,28 @@ export function staffQuoteSourceHash(mail: {
     htmlBody: mail.htmlBody,
   });
 }
+/** 'party' sends the stay's company or agency as rate context; 'public' quotes public rates and never sends one. */
+export type StaffQuoteRates = 'party' | 'public';
+
+/** The one party a quote's rate is for. Throws when stays disagree or the header names another party. */
+export function stayParty(input: StaffQuoteInput): string | undefined {
+  const parties = [
+    ...new Set(input.groups.map((g) => g.organisation).filter((v): v is string => v !== undefined)),
+  ];
+  if (parties.length > 1) throw new Error('staff_quote_organisation_mixed');
+  const party = parties[0];
+  const headerParties = [input.company.trim(), input.agency.trim()].filter(Boolean);
+  if (party && headerParties.length > 0 && !headerParties.includes(party))
+    throw new Error('staff_quote_organisation_conflict');
+  return party;
+}
+
 export function prepareStaffQuote(
   input: StaffQuoteInput,
   scope: StaffQuoteScope,
   signer: Pick<RevisionProposalHeader, 'signerName' | 'signerEmail'>,
   signal: AbortSignal,
+  rates: StaffQuoteRates = 'party',
 ) {
   input = staffQuoteInput.parse(input);
   signal.throwIfAborted();
@@ -114,15 +131,7 @@ export function prepareStaffQuote(
     throw new Error('staff_quote_source_changed');
   if (new Set(input.groups.map((g) => g.id)).size !== input.groups.length)
     throw new Error('staff_quote_duplicate_group');
-  // One party per quote. It must be the header's Company or Agency whenever the header names one.
-  const parties = [
-    ...new Set(input.groups.map((g) => g.organisation).filter((v): v is string => v !== undefined)),
-  ];
-  if (parties.length > 1) throw new Error('staff_quote_organisation_mixed');
-  const party = parties[0];
-  const headerParties = [input.company.trim(), input.agency.trim()].filter(Boolean);
-  if (party && headerParties.length > 0 && !headerParties.includes(party))
-    throw new Error('staff_quote_organisation_conflict');
+  const party = rates === 'party' ? stayParty(input) : undefined;
   const dates = new Set(
     input.groups.map((g) => {
       const nights = occupiedDates(g.arrivalDate, g.departureDate);
@@ -233,7 +242,7 @@ export function prepareStaffQuote(
     header,
     inputDigest,
     authorizationId,
-    approval: { context, request, header } satisfies NonNullable<
+    approval: { context, request, header, rates } satisfies NonNullable<
       Parameters<typeof createReservationistBusinessServices>[1]
     >,
   };
@@ -374,3 +383,105 @@ export function attestStaffQuote(
     header: { company: prepared.header.company, agency: prepared.header.agency },
   };
 }
+
+/** Party failures that quote at public rates instead of failing the quote. */
+const STAFF_QUOTE_PARTY_CODES: ReadonlySet<string> = new Set([
+  'business_party_identity_unavailable',
+  'business_party_lookup_unavailable',
+  'business_party_source_unbound',
+  'business_rate_context_unapplied',
+  'staff_quote_party_unavailable',
+  'staff_quote_party_invalid',
+  'staff_quote_party_changed',
+]);
+
+function failureCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error)
+    return String((error as { code: unknown }).code);
+  return error instanceof Error ? error.message : '';
+}
+
+function hasPartyReference(prepared: ReturnType<typeof prepareStaffQuote>): boolean {
+  return (
+    Boolean(prepared.request.rateContext) ||
+    prepared.header.company.trim() !== '' ||
+    prepared.header.agency.trim() !== ''
+  );
+}
+
+/** Kill switch. QUOTE_RATE_CONTEXT=off sends no rate context at all; any other value, or none, keeps it on. */
+export function quoteRateContextEnabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return env.QUOTE_RATE_CONTEXT?.trim().toLowerCase() !== 'off';
+}
+
+/** The plain-English review item that says why a quote is at public rates. */
+export function partyFallbackNote(code: string, name: string): string {
+  const reason =
+    code === 'staff_quote_organisation_mixed'
+      ? 'The stays on this quote name different companies or agencies'
+      : code === 'staff_quote_organisation_conflict'
+        ? `'${name}' does not match the quote header Company or Agency`
+        : code === 'business_rate_context_unapplied' || code === 'business_selected_price_unavailable'
+          ? `HMS has no company or agency rate for '${name}'`
+          : code === 'business_party_identity_unavailable'
+            ? `Luna couldn't find '${name}' in HMS`
+            : `Luna couldn't check '${name}' in HMS`;
+  return `${reason}, so these are public rates. If they have a company or agency rate, quote it in HMS.`;
+}
+
+export type StaffQuoteRunResult = {
+  prepared: ReturnType<typeof prepareStaffQuote>;
+  revision: QuoteRevision;
+  notes: string[];
+};
+
+/**
+ * Quotes with the stay's company or agency when HMS can price it, and at public rates when it cannot. A party
+ * problem never fails the quote on its own: the retry drops every party reference and the result says why.
+ */
+export async function runStaffQuoteWithPartyFallback(options: {
+  input: StaffQuoteInput;
+  rateContextEnabled: boolean;
+  prepare: (rates: StaffQuoteRates) => ReturnType<typeof prepareStaffQuote>;
+  run: (prepared: ReturnType<typeof prepareStaffQuote>) => Promise<QuoteRevision>;
+}): Promise<StaffQuoteRunResult> {
+  const stayName = options.input.groups.find((group) => group.organisation)?.organisation ?? '';
+  if (!options.rateContextEnabled) {
+    const prepared = options.prepare('public');
+    return { prepared, revision: await options.run(prepared), notes: [] };
+  }
+  let prepared: ReturnType<typeof prepareStaffQuote>;
+  try {
+    prepared = options.prepare('party');
+  } catch (error) {
+    const code = failureCode(error);
+    if (code !== 'staff_quote_organisation_conflict' && code !== 'staff_quote_organisation_mixed')
+      throw error;
+    const fallback = options.prepare('public');
+    return {
+      prepared: fallback,
+      revision: await options.run(fallback),
+      notes: [partyFallbackNote(code, stayName)],
+    };
+  }
+  try {
+    return { prepared, revision: await options.run(prepared), notes: [] };
+  } catch (error) {
+    const code = failureCode(error);
+    // No qualified rate with a party sent means the party's rate did not price the stay; public rates may still.
+    const partyShaped = STAFF_QUOTE_PARTY_CODES.has(code) || code === 'business_selected_price_unavailable';
+    if (!partyShaped || !hasPartyReference(prepared)) throw error;
+    const named = (error as { partyName?: unknown }).partyName;
+    const name =
+      typeof named === 'string' && named
+        ? named
+        : stayName || prepared.header.company.trim() || prepared.header.agency.trim();
+    const fallback = options.prepare('public');
+    return {
+      prepared: fallback,
+      revision: await options.run(fallback),
+      notes: [partyFallbackNote(code, name)],
+    };
+  }
+}
+

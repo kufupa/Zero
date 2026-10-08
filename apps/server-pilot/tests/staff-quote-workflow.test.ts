@@ -3,6 +3,8 @@ import {
   prepareStaffQuote,
   executeStaffQuote,
   attestStaffQuote,
+  quoteRateContextEnabled,
+  runStaffQuoteWithPartyFallback,
 } from '../src/ai/staff-quote-workflow.js';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
@@ -38,13 +40,14 @@ const input = () =>
       },
     ],
   });
-async function fixture(value: ReturnType<typeof input> = input()) {
+async function fixture(value: ReturnType<typeof input> = input(), rates: 'party' | 'public' = 'party') {
   const confirmed = value,
     prepared = prepareStaffQuote(
       confirmed,
       scope,
       { signerName: 'Staff', signerEmail: 'staff@example.test' },
       new AbortController().signal,
+      rates,
     ),
     calls: any[] = [];
   const options = {
@@ -316,6 +319,208 @@ describe('stay company or agency reaches the native rate context', () => {
       search: { salesStrategy: 'Preset' },
       rateContext: { organization: { nativeId: '42', name: 'Provincial Treasury' } },
     });
+  });
+});
+
+describe('stay company or agency falls back to public rates and says why', () => {
+  const signer = { signerName: 'Staff', signerEmail: 'staff@example.test' };
+  const stayWith = (organisation: string | undefined, header: Record<string, unknown> = {}) => {
+    const base = input();
+    return staffQuoteInput.parse({
+      ...base,
+      ...header,
+      groups: [{ ...base.groups[0], ...(organisation === undefined ? {} : { organisation }) }],
+    });
+  };
+  const noMatch = async (kind: 'organization' | 'bookingAgency', name: string) => ({
+    kind,
+    query: name,
+    ref: 'party:none',
+    sha256: 'e'.repeat(64),
+    observedAt: new Date().toISOString(),
+    outcome: 'no_match' as const,
+    candidates: [],
+  });
+  const resolved = async (kind: 'organization' | 'bookingAgency', name: string) => ({
+    kind,
+    query: name,
+    ref: 'party:acme',
+    sha256: 'd'.repeat(64),
+    observedAt: new Date().toISOString(),
+    outcome: 'resolved' as const,
+    candidates: [{ nativeId: '42', displayName: name, kind }],
+  });
+  const note = (reason: string) =>
+    `${reason}, so these are public rates. If they have a company or agency rate, quote it in HMS.`;
+
+  /** The route's shape: the party attempt, then the public retry. HMS applies a company rate only when `applied`. */
+  async function quote(
+    value: ReturnType<typeof input>,
+    options: {
+      readParty?: (kind: 'organization' | 'bookingAgency', name: string) => Promise<any>;
+      applied?: boolean;
+      enabled?: boolean;
+    } = {},
+  ) {
+    // The runner prepares each attempt itself; the fixture only supplies the HMS boundary.
+    const f = await fixture(value, 'public');
+    const read = f.options.readQuote;
+    if (options.applied) {
+      f.options.readQuote = async (request: any) => {
+        const source = await read(request);
+        for (const group of source.result.groups)
+          for (const option of group.options)
+            option.appliedContext = { organization: { id: '42', code: '42', name: 'Acme Ltd' } };
+        return source;
+      };
+    }
+    const result = await runStaffQuoteWithPartyFallback({
+      input: value,
+      rateContextEnabled: options.enabled ?? true,
+      prepare: (rates) => prepareStaffQuote(value, scope, signer, new AbortController().signal, rates),
+      run: (prepared) =>
+        executeStaffQuote(
+          prepared,
+          createReservationistBusinessServices(
+            { ...f.options, authorizationId: prepared.authorizationId, readParty: options.readParty } as any,
+            prepared.approval,
+          ),
+          async () => true,
+        ),
+    });
+    return { ...result, calls: f.calls };
+  }
+
+  it('quotes public rates with a note when HMS has no exact match for the stay company', async () => {
+    const result = await quote(stayWith('Acme Ltd'), { readParty: noMatch });
+    expect(result.notes).toEqual([note("Luna couldn't find 'Acme Ltd' in HMS")]);
+    expect(result.revision.totalMinor).toBeGreaterThan(0);
+    // The party attempt stopped before any HMS price read; the two public reads followed.
+    expect(result.calls).toHaveLength(2);
+    expect(result.calls.every((request) => request.rateContext === undefined)).toBe(true);
+  });
+
+  it('quotes public rates with a note when HMS applies no company rate, and never fails the quote for it', async () => {
+    const result = await quote(stayWith('Acme Ltd'), { readParty: resolved });
+    expect(result.notes).toEqual([note("HMS has no company or agency rate for 'Acme Ltd'")]);
+    expect(result.calls).toHaveLength(3);
+    expect(result.calls[0]?.rateContext).toEqual({ organization: { nativeId: '42', name: 'Acme Ltd' } });
+    expect(result.calls.slice(1).every((request) => request.rateContext === undefined)).toBe(true);
+  });
+
+  it('falls back to public rates when the company rate has no qualified room for the stay', async () => {
+    const f = await fixture(stayWith('Acme Ltd'), 'public');
+    const read = f.options.readQuote;
+    f.options.readQuote = async (request: any) => {
+      const source = await read(request);
+      // Only the party attempt carries rate context, so only it finds the company rate unavailable.
+      if (request.rateContext)
+        for (const group of source.result.groups)
+          for (const option of group.options) option.availability = 'unavailable';
+      return source;
+    };
+    const result = await runStaffQuoteWithPartyFallback({
+      input: stayWith('Acme Ltd'),
+      rateContextEnabled: true,
+      prepare: (rates) => prepareStaffQuote(stayWith('Acme Ltd'), scope, signer, new AbortController().signal, rates),
+      run: (prepared) =>
+        executeStaffQuote(
+          prepared,
+          createReservationistBusinessServices(
+            { ...f.options, authorizationId: prepared.authorizationId, readParty: resolved } as any,
+            prepared.approval,
+          ),
+          async () => true,
+        ),
+    });
+    expect(result.notes).toEqual([note("HMS has no company or agency rate for 'Acme Ltd'")]);
+    expect(f.calls.slice(1).every((request) => request.rateContext === undefined)).toBe(true);
+  });
+
+  it('keeps the company rate, with no note, when HMS applies it', async () => {
+    const result = await quote(stayWith('Acme Ltd'), { readParty: resolved, applied: true });
+    expect(result.notes).toEqual([]);
+    expect(result.calls[0]?.rateContext).toEqual({ organization: { nativeId: '42', name: 'Acme Ltd' } });
+    expect(result.prepared.request.rateContext).toEqual({ organization: { name: 'Acme Ltd' } });
+  });
+
+  it('keeps the header company on the public retry and a Government quote Government', async () => {
+    const base = input();
+    const value = staffQuoteInput.parse({ ...base, salesStrategy: 'Government', company: 'Provincial Treasury' });
+    const result = await quote(value, { readParty: noMatch });
+    expect(result.notes).toEqual([note("Luna couldn't find 'Provincial Treasury' in HMS")]);
+    expect(result.prepared.header.company).toBe('Provincial Treasury');
+    expect(
+      result.calls.every((request) => request.search.salesStrategy === 'Government' && request.rateContext === undefined),
+    ).toBe(true);
+  });
+
+  it('quotes public rates with a note when the stay company conflicts with the header', async () => {
+    const result = await quote(stayWith('Acme Ltd', { company: 'Other Company' }));
+    expect(result.notes).toEqual([note("'Acme Ltd' does not match the quote header Company or Agency")]);
+    expect(result.calls.every((request) => request.rateContext === undefined)).toBe(true);
+  });
+
+  it('quotes public rates with a note when two stays name different companies', async () => {
+    const base = input();
+    const value = staffQuoteInput.parse({
+      ...base,
+      groups: [
+        { ...base.groups[0], organisation: 'Acme Ltd' },
+        { ...base.groups[0], id: 'second', organisation: 'Travel Desk' },
+      ],
+    });
+    const result = await quote(value);
+    expect(result.notes).toEqual([note('The stays on this quote name different companies or agencies')]);
+  });
+
+  it('turns rate context off with QUOTE_RATE_CONTEXT=off: no party is read and none is sent', async () => {
+    const readParty = vi.fn(resolved);
+    const result = await quote(stayWith('Acme Ltd'), { readParty, enabled: false });
+    expect(readParty).not.toHaveBeenCalled();
+    expect(result.notes).toEqual([]);
+    expect(result.calls.every((request) => request.rateContext === undefined)).toBe(true);
+  });
+
+  it('reads no party and adds no note when no company is named', async () => {
+    const readParty = vi.fn(resolved);
+    const result = await quote(input(), { readParty });
+    expect(readParty).not.toHaveBeenCalled();
+    expect(result.notes).toEqual([]);
+  });
+
+  it('does not hide a failure that is not about the party', async () => {
+    const boom = new Error('native reader unreachable');
+    const value = stayWith('Acme Ltd');
+    await expect(
+      runStaffQuoteWithPartyFallback({
+        input: value,
+        rateContextEnabled: true,
+        prepare: (rates) => prepareStaffQuote(value, scope, signer, new AbortController().signal, rates),
+        run: async () => {
+          throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it('prepares public rates with no rate context, whatever stay company is named', () => {
+    const prepared = prepareStaffQuote(
+      stayWith('Acme Ltd', { company: 'Other Company' }),
+      scope,
+      signer,
+      new AbortController().signal,
+      'public',
+    );
+    expect(prepared.approval.rates).toBe('public');
+    expect(prepared.request).not.toHaveProperty('rateContext');
+  });
+
+  it('reads the kill switch: rate context is on unless QUOTE_RATE_CONTEXT is off', () => {
+    expect(quoteRateContextEnabled({})).toBe(true);
+    expect(quoteRateContextEnabled({ QUOTE_RATE_CONTEXT: 'on' })).toBe(true);
+    expect(quoteRateContextEnabled({ QUOTE_RATE_CONTEXT: 'off' })).toBe(false);
+    expect(quoteRateContextEnabled({ QUOTE_RATE_CONTEXT: ' OFF ' })).toBe(false);
   });
 });
 

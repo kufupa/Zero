@@ -6,6 +6,8 @@ import {
   executeStaffQuote,
   attestStaffQuote,
   buildStaffProposalFacts,
+  quoteRateContextEnabled,
+  runStaffQuoteWithPartyFallback,
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
@@ -363,11 +365,13 @@ export const workstationRouter = router({
     const signal = AbortSignal.timeout(20 * 60000);
     let prepared: ReturnType<typeof prepareStaffQuote>;
     try {
+      // Validates every input; the party attempt and its public-rates retry are prepared below.
       prepared = prepareStaffQuote(
         input,
         scope,
         { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
         signal,
+        'public',
       );
     } catch {
       throw new TRPCError({
@@ -428,25 +432,33 @@ export const workstationRouter = router({
       propertyCode: scope.propertyCode,
       databaseUrl,
     });
-    let revision: QuoteRevision;
-    try {
-      revision = await lock.withLock(
+    const runQuote = (candidate: ReturnType<typeof prepareStaffQuote>) =>
+      lock.withLock(
         async () => {
           const services = getInstalledStaffQuoteServices(
             {
-              authorizationId: prepared.authorizationId,
-              authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
+              authorizationId: candidate.authorizationId,
+              authorizeContext: async (c) => c === candidate.context && (await stillCurrent()),
               signer: {
                 signerName: ctx.sessionUser.name ?? '',
                 signerEmail: ctx.sessionUser.email,
               },
             },
-            prepared.approval,
+            candidate.approval,
           );
-          return executeStaffQuote(prepared, services, stillCurrent);
+          return executeStaffQuote(candidate, services, stillCurrent);
         },
-        { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
+        { signal, deadlineAt: candidate.context.input.clock.deadlineAt },
       );
+    const signer = { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email };
+    let quoted: Awaited<ReturnType<typeof runStaffQuoteWithPartyFallback>>;
+    try {
+      quoted = await runStaffQuoteWithPartyFallback({
+        input,
+        rateContextEnabled: quoteRateContextEnabled(),
+        prepare: (rates) => prepareStaffQuote(input, scope, signer, signal, rates),
+        run: runQuote,
+      });
     } catch (error) {
       await db
         .update(aiDraftGeneration)
@@ -457,8 +469,16 @@ export const workstationRouter = router({
         message: staffQuoteFailureMessage(error),
       });
     }
-    const attestation = attestStaffQuote(input, scope, prepared, revision);
-    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    // The quote that was priced, including a public-rates retry: its authorization and digest are the ones recorded.
+    const { prepared: used, revision, notes } = quoted;
+    if (used.inputDigest !== prepared.inputDigest) {
+      await db
+        .update(aiDraftGeneration)
+        .set({ promptHash: used.inputDigest })
+        .where(eq(aiDraftGeneration.id, generationId));
+    }
+    const attestation = attestStaffQuote(input, scope, used, revision);
+    const proposal = buildStaffProposalFacts(input, scope, used, revision);
     const extraTotal = proposal.facts
       ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
           (sum, line) => sum + line.totalMinor,
@@ -481,7 +501,7 @@ export const workstationRouter = router({
         threadId: scope.threadId,
         triggerMessageId: mail.id,
         runKind: 'candidate_draft',
-        idempotencyKey: prepared.authorizationId,
+        idempotencyKey: used.authorizationId,
         modelId: 'staff-approved-native',
         promptVersion: 'staff-quote-v1',
         state: 'succeeded',
@@ -507,10 +527,10 @@ export const workstationRouter = router({
       messageId: mail.id,
       threadId: mail.threadId,
       factRefs: proposal.factRefs,
-      extrasReviewItems: proposal.extrasReviewItems,
+      extrasReviewItems: [...proposal.extrasReviewItems, ...notes],
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
-      inputDigest: prepared.inputDigest,
+      inputDigest: used.inputDigest,
       totalMinor: revision.totalMinor + extraTotal,
       currency: revision.currency,
       arrivalDate: revision.groups[0].arrivalDate,
