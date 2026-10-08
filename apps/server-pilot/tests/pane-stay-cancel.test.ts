@@ -77,6 +77,9 @@ describe('pane stay cancel', () => {
       reasons: [],
       penaltyText: null,
       message: null,
+      arrivalMismatch: false,
+      requestedArrival: null,
+      hmsArrival: null,
       screenshots: [],
     });
     await expect(commitCancel({ ...stay, reason: 'Duplicate Booking' })).resolves.toMatchObject({
@@ -162,6 +165,9 @@ describe('pane stay cancel', () => {
       reasons: ['Test Reservations', 'Duplicate Booking'],
       penaltyText: null,
       message: null,
+      arrivalMismatch: false,
+      requestedArrival: '2027-09-14',
+      hmsArrival: null,
       screenshots: ['found.png', 'cancel-dialog.png'],
     });
     expect(seen).toEqual(['lock']);

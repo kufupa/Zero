@@ -26,6 +26,10 @@ export type PaneStayCancelResult = {
   penaltyText: string | null;
   /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), otherwise null. */
   message: string | null;
+  /** The arrival was a hint: HMS holds another date for this booking. Both dates are returned for the pane's text. */
+  arrivalMismatch: boolean;
+  requestedArrival: string | null;
+  hmsArrival: string | null;
   /** File names only. The files stay in the CLI run directory. */
   screenshots: string[];
 };
@@ -54,6 +58,9 @@ export type PaneStayCancelSpawnResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
+  arrivalMismatch?: boolean;
+  requestedArrival?: string | null;
+  hmsArrival?: string | null;
   screenshots: string[];
 };
 
@@ -114,6 +121,9 @@ function refused(outcome: string): PaneStayCancelResult {
     reasons: [],
     penaltyText: null,
     message: paneCancelMessage(outcome),
+    arrivalMismatch: false,
+    requestedArrival: null,
+    hmsArrival: null,
     screenshots: [],
   };
 }
@@ -143,6 +153,9 @@ async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCa
     statusAfter: result.statusAfter ?? null,
     reasons: result.reasons ?? [],
     penaltyText: result.penaltyText ?? null,
+    arrivalMismatch: result.arrivalMismatch,
+    requestedArrival: result.requestedArrival,
+    hmsArrival: result.hmsArrival,
     screenshots: result.screenshots ?? [],
   };
 }
@@ -177,6 +190,9 @@ async function runPaneStayCancel(
       reasons: spawned.reasons,
       penaltyText: spawned.penaltyText,
       message: paneCancelMessage(spawned.outcome),
+      arrivalMismatch: spawned.arrivalMismatch === true,
+      requestedArrival: spawned.requestedArrival ?? input.arrival ?? null,
+      hmsArrival: spawned.hmsArrival ?? null,
       screenshots: spawned.screenshots.map((path) => basename(path)),
     };
   } catch {

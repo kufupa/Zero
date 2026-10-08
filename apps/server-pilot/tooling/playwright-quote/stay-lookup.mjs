@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  checkCdpEnv, formPairsFromSnapshot, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
+  arrivalReport, checkCdpEnv, formPairsFromSnapshot, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
   parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 import {
@@ -39,6 +39,9 @@ function newLookupResult(args) {
     lastName: args.lastName,
     findMethod: null,
     quickStages: [],
+    arrivalMismatch: false,
+    requestedArrival: args.arrival ?? null,
+    hmsArrival: null,
     stay: null,
     conflicts: [],
     records: null,
@@ -140,6 +143,8 @@ async function runFind(ctx) {
   mark(ctx, 'opened');
   const verdict = stayIdentityVerdict(args, result.stay);
   setOutcome(result, verdict.outcome, verdict.reason);
+  // The arrival is a hint: a different arrival in HMS is reported with both dates, never treated as a mismatch to refuse.
+  Object.assign(result, arrivalReport(args, result.stay?.arrival ?? null));
 }
 
 async function runSearchGuest(ctx) {

@@ -27,12 +27,28 @@ export async function driveQuickSearch(actions, { ready, done }) {
 const found = (probe) => Boolean(probe.open || probe.row);
 const hasRow = (probe) => Boolean(probe.row);
 
+// ISO date plus a number of days (UTC, so no daylight saving shifts).
+export function addDaysIso(iso, days) {
+  const date = new Date(`${iso}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+// The two 60-day windows that cover arrival plus or minus 60 days: one starting 60 days before arrival (it ends on the
+// arrival) and one starting on the arrival (it ends 60 days after it). The panel windows are 60 days long.
+export function windowStartsAround(arrival, days = 60) {
+  return [addDaysIso(arrival, -days), arrival];
+}
+
 // The whole confirmation search (cancel-stay.mjs find, preview and commit). io.drive(term, {needRow, done}) runs one
-// term through the header search with driveQuickSearch. io.panelShown(), io.window() and io.moveWindow() check and move
-// the panel's date window. The order: the typed confirmation; when that finds nothing and a panel shows a window that
-// misses arrival, the window moves first (each window move costs a picker walk, so it is done once) and the confirmation
-// is searched again; when the confirmation is still not found and the surname is known, the surname is searched in that
-// window and the row with the exact confirmation is taken. An open record for the confirmation is never moved.
+// term through the header search with driveQuickSearch. io.panelShown() says whether a panel is showing, and
+// io.moveWindow(startIso) moves the panel's date window to start on that day. The order:
+//   1. the confirmation in the default window;
+//   2. when it is not there and arrival is known, the confirmation in each window of windowStartsAround(arrival);
+//   3. when it is still not there and the surname is known, the surname, where the row with the exact confirmation
+//      is taken.
+// The arrival is only a hint for the windows. The match is on the confirmation number alone. An open record for the
+// confirmation is used as it stands and never moves the window.
 export async function runConfirmationSearch(io, { confirmation, lastName = null, arrival = null, allowOpenRecord = true }) {
   const stages = [];
   const drive = async (term, prefix, done) => {
@@ -43,12 +59,10 @@ export async function runConfirmationSearch(io, { confirmation, lastName = null,
   let run = await drive(confirmation, '', found);
   if (run.done) return { probe: run.result, method: 'quick', stages };
   let probe = run.result;
-  // Lookups without an arrival never move the window.
-  if (arrival && !probe.open && (await io.panelShown())) {
-    const window = await io.window();
-    if (windowAction({ window, arrival, panelShown: true }) === 'move') {
-      await io.moveWindow();
-      run = await drive(confirmation, 'window', found);
+  if (arrival && (await io.panelShown())) {
+    for (const start of windowStartsAround(arrival)) {
+      await io.moveWindow(start);
+      run = await drive(confirmation, `window.${start}`, found);
       if (run.done) return { probe: run.result, method: 'quick_calendar', stages };
       probe = run.result;
     }

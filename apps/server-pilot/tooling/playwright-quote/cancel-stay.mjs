@@ -20,8 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus,
-  normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
+  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
+  isCancelledStatus, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
   parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
@@ -44,6 +44,9 @@ function newResult(args) {
     reason: args.reason,
     lastName: args.lastName ?? null,
     quickStages: [],
+    arrivalMismatch: false,
+    requestedArrival: args.arrival ?? null,
+    hmsArrival: null,
     statusBefore: null,
     statusAfter: null,
     balance: null,
@@ -401,8 +404,7 @@ async function locateQuick(ctx, { allowOpenRecord }) {
       done,
     }),
     panelShown: () => panelShown(page),
-    window: () => readWindow(page),
-    moveWindow: () => setQuickWindow(page, args.arrival),
+    moveWindow: (startIso) => setQuickWindow(page, startIso),
   };
   const { probe, method, stages } = await runConfirmationSearch(io, {
     confirmation: conf,
@@ -579,7 +581,9 @@ async function run(ctx) {
   if (found.row) {
     // Quick-search row: guard and status come from the dropdown, before any record is opened.
     result.statusBefore = squash(found.row.status);
-    const rowVerdict = identityCheck(args, found.row);
+    // The arrival is a hint here: a different arrival is reported, and the record check below decides for a write.
+    Object.assign(result, arrivalReport(args, hmsDateToIso(found.row.arrival)));
+    const rowVerdict = identityCheck(args, found.row, { arrivalHint: true });
     if (!rowVerdict.ok) {
       result.outcome = rowVerdict.outcome;
       result.refusal = rowVerdict.reason;
@@ -599,7 +603,9 @@ async function run(ctx) {
   await shot(ctx, 'opened.png');
   mark(ctx, 'opened');
 
-  const verdict = identityCheck(args, record);
+  Object.assign(result, arrivalReport(args, hmsDateToIso(record.arrival)));
+  // Preview is not a write, so the arrival is a hint there. Commit keeps the arrival match.
+  const verdict = identityCheck(args, record, { arrivalHint: args.mode === 'preview' });
   if (!verdict.ok) {
     result.outcome = verdict.outcome;
     result.refusal = verdict.reason;

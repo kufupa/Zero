@@ -11,6 +11,9 @@ import {
   stayFromFormPairs,
 } from './cancel-stay-rules.mjs';
 import { AMBIGUOUS, pickConfirmationRow, windowAction } from './quick-search.mjs';
+import {
+  arrivalReport, identityCheck, stayIdentityVerdict,
+} from './cancel-stay-rules.mjs';
 
 // ---- A DOM adapter over cheerio: the members the snapshot functions use, with innerText approximated. ----
 
@@ -405,4 +408,37 @@ test('live record form capture: every reported field pairs with its label', asyn
     arrival: '2027-10-12',
     departure: '2027-10-13',
   });
+});
+
+// ---- Live captures (61143613-1): a requested arrival that differs from HMS is a hint, not a refusal ----
+
+test('live record: a requested arrival of 13-OCT is reported against HMS 12-OCT, and the stay is still found', async () => {
+  const { stay } = stayFromHtml(await fixture('record-form-live.html'));
+  assert.equal(stay.confirmation, '61143613-1');
+  assert.equal(stay.arrival, '2027-10-12');
+  const args = { confirmation: '61143613-1', arrival: '2027-10-13' };
+  assert.deepEqual(stayIdentityVerdict(args, stay), { outcome: 'found', reason: null });
+  assert.deepEqual(arrivalReport(args, stay.arrival), {
+    arrivalMismatch: true,
+    requestedArrival: '2027-10-13',
+    hmsArrival: '2027-10-12',
+  });
+});
+
+test('live record: a write still needs the arrival to match, and a preview takes it as a hint', async () => {
+  const { stay } = stayFromHtml(await fixture('record-form-live.html'));
+  const record = { confirmation: stay.confirmation, lastName: stay.lastName, arrival: '12-OCT-2027' };
+  const args = { confirmation: '61143613-1', arrival: '2027-10-13' };
+  assert.deepEqual(identityCheck(args, record), { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' });
+  assert.deepEqual(identityCheck(args, record, { arrivalHint: true }), { ok: true, outcome: null, reason: null });
+});
+
+test('live panel: the row is picked by confirmation alone, and its arrival is reported against the request', async () => {
+  const snapshot = snapshotPanel(domFromHtml(await fixture('panel-live.html')).body);
+  const parsed = parsePanelSnapshot(snapshot);
+  const row = pickConfirmationRow(parsed.rows, '61143613-1');
+  assert.notEqual(row, null);
+  assert.notEqual(row, AMBIGUOUS);
+  assert.equal(row.arrival, '2027-10-12');
+  assert.equal(arrivalReport({ arrival: '2027-10-13' }, row.arrival).arrivalMismatch, true);
 });

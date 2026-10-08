@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
-  identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
+  arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
   pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
@@ -414,11 +414,11 @@ test('stayFromFormPairs leaves a field null when two different values conflict, 
   assert.equal(stay.adults, 2, 'the same value twice is not a conflict');
 });
 
-test('stayIdentityVerdict finds the requested confirmation and arrival, and never guesses otherwise', () => {
+test('stayIdentityVerdict matches the confirmation only: a different arrival is a hint, never a rejection', () => {
   const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, stay), { outcome: 'found', reason: null });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-14' }, stay), { outcome: 'found', reason: null });
-  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-15' }, stay), { outcome: 'ambiguous', reason: 'arrival_mismatch' });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-15' }, stay), { outcome: 'found', reason: null });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '11110906-1', arrival: null }, stay), { outcome: 'ambiguous', reason: 'confirmation_mismatch' });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, { confirmation: null }), { outcome: 'execution_failure', reason: 'form_unreadable' });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, null), { outcome: 'execution_failure', reason: 'form_unreadable' });
@@ -489,7 +489,7 @@ test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cance
   }
   assert.match(source, /runConfirmationSearch\(io, \{/);
   assert.match(source, /driveQuickSearch\(quickActions\(page, term\)/);
-  assert.match(source, /moveWindow: \(\) => setQuickWindow\(page, args\.arrival\)/);
+  assert.match(source, /moveWindow: \(startIso\) => setQuickWindow\(page, startIso\)/);
   assert.match(source, /if \(!args\.arrival\) return null;/);
 });
 
@@ -673,4 +673,32 @@ test('cancel-stay.mjs settles a commit through settleCancel, waits for the proce
   assert.match(source, /settleCancel\(settleIo\(ctx\)/);
   assert.match(source, /Processing request/);
   assert.equal(/readBack\(/.test(source), false);
+});
+
+// ---- Arrival is a hint: identityCheck (write guard) and arrivalReport ----
+
+test('identityCheck keeps the arrival match for a write, and takes it as a hint when arrivalHint is set', () => {
+  const args = { confirmation: '61143613-1', arrival: '2027-10-12' };
+  const record = { confirmation: '61143613-1', lastName: 'Labtest', arrival: '13-OCT-2027' };
+  assert.deepEqual(identityCheck(args, record), { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' });
+  assert.deepEqual(identityCheck(args, record, { arrivalHint: true }), { ok: true, outcome: null, reason: null });
+  const wrongConf = { ...record, confirmation: '57291630-1' };
+  assert.equal(identityCheck(args, wrongConf, { arrivalHint: true }).outcome, 'refused_identity_mismatch', 'the confirmation always matches');
+  const realGuest = { ...record, lastName: 'Smith' };
+  assert.equal(identityCheck(args, realGuest, { arrivalHint: true }).outcome, 'refused_not_lab', 'the lab rules always apply');
+});
+
+test('arrivalReport says when the booking arrives on another day than the one asked about, with both dates', () => {
+  assert.deepEqual(arrivalReport({ arrival: '2027-10-12' }, '2027-10-13'), {
+    arrivalMismatch: true,
+    requestedArrival: '2027-10-12',
+    hmsArrival: '2027-10-13',
+  });
+  assert.deepEqual(arrivalReport({ arrival: '2027-10-12' }, '2027-10-12'), {
+    arrivalMismatch: false,
+    requestedArrival: '2027-10-12',
+    hmsArrival: '2027-10-12',
+  });
+  assert.equal(arrivalReport({ arrival: '2027-10-12' }, null).arrivalMismatch, false, 'an unreadable HMS arrival is not a mismatch');
+  assert.equal(arrivalReport({ arrival: null }, '2027-10-13').arrivalMismatch, false, 'no requested arrival, no mismatch');
 });

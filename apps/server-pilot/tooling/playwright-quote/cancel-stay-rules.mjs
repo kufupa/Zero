@@ -188,12 +188,26 @@ export function labGuard({ lastName, arrival }) {
 }
 
 // Full identity check on the opened record. The lab guard runs first, so a real guest is always refused as not_lab.
-export function identityCheck(args, record) {
+// The lab guard and the confirmation always apply. The arrival must match for a write (commit). With arrivalHint the
+// requested arrival is only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
+export function identityCheck(args, record, { arrivalHint = false } = {}) {
   const lab = labGuard(record);
   if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
   if (squash(record.confirmation) !== args.confirmation) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'confirmation' };
-  if (lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
+  if (!arrivalHint && lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
   return { ok: true, outcome: null, reason: null };
+}
+
+// The arrival the operator asked about (requestedArrival, possibly a date the guest proposed) against the arrival HMS
+// holds for the booking (hmsArrival, ISO). arrivalMismatch is true only when both are known and differ.
+export function arrivalReport(args, hmsArrival) {
+  const requestedArrival = args.arrival ?? null;
+  const hms = hmsArrival ?? null;
+  return {
+    arrivalMismatch: Boolean(requestedArrival && hms && hms !== requestedArrival),
+    requestedArrival,
+    hmsArrival: hms,
+  };
 }
 
 export function isCancelledStatus(status) {
@@ -470,10 +484,11 @@ export function stayFromFormPairs(pairs) {
 
 // The record or row must show the requested confirmation, and the requested arrival when one was given.
 // A missing confirmation means the form was not read, so the run is a failure rather than a mismatch.
+// The record or row must show the requested confirmation, and only that: the arrival is a hint, so a different arrival is
+// reported by arrivalReport rather than refused.
 export function stayIdentityVerdict(args, stay) {
   if (!stay || !stay.confirmation) return { outcome: 'execution_failure', reason: 'form_unreadable' };
   if (squash(stay.confirmation) !== args.confirmation) return { outcome: 'ambiguous', reason: 'confirmation_mismatch' };
-  if (args.arrival && stay.arrival !== args.arrival) return { outcome: 'ambiguous', reason: 'arrival_mismatch' };
   return { outcome: 'found', reason: null };
 }
 
