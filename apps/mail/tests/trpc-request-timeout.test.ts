@@ -61,4 +61,22 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.screenshot?batch=1')).toBe(5_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.paneStayScreenshot?batch=1')).toBe(5_000);
   });
+  it('gives the staff quote run screenshot and proposal choices 60 seconds for the background trace', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteRunScreenshot?batch=1')).toBe(60_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedProposalChoices?batch=1')).toBe(
+      60_000,
+    );
+  });
+  it('takes the 60 second deadline for a batch that includes the screenshot or choices route', () => {
+    expect(
+      trpcRequestTimeoutMs('/api/trpc/workstation.quoteRunScreenshot,workstation.foo?batch=1'),
+    ).toBe(60_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/drafts.list,workstation.qualifiedProposalChoices')).toBe(
+      60_000,
+    );
+  });
+  it('does not extend unrelated workstation routes by name similarity', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteRunScreenshotLater')).toBe(5_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedProposalChoicesX')).toBe(5_000);
+  });
 });
