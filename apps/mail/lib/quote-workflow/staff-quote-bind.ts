@@ -379,7 +379,25 @@ export function allocationFromStaffQuote(
   };
 }
 
-export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
+/**
+ * The dinner-allowance groups for one quote. The header holds ids from every date option, but the server
+ * caps the list at 8 and charges only the listed groups, so each quote keeps just its own ids. An empty
+ * list is kept on purpose: an omitted list would charge every group.
+ */
+function dinnerAllowanceGroupIdsFor(
+  header: StaffQuoteHeader,
+  quoteGroupIds?: readonly string[],
+): string[] | undefined {
+  const ids = header.dinnerAllowanceGroupIds;
+  if (!ids?.length) return undefined;
+  const inQuote = quoteGroupIds ? new Set(quoteGroupIds) : null;
+  return [...new Set(ids)].filter((id) => !inQuote || inQuote.has(id));
+}
+
+export function approvedExecuteHeader(
+  header: StaffQuoteHeader,
+  quoteGroupIds?: readonly string[],
+): Pick<
   ExecuteStaffQuoteInput,
   | 'salesStrategy'
   | 'company'
@@ -396,6 +414,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   if (!salesStrategy) {
     throw new Error('Choose the rate type (BAR or Government) before running the quote.');
   }
+  const dinnerGroupIds = dinnerAllowanceGroupIdsFor(header, quoteGroupIds);
   return {
     salesStrategy,
     company: header.company.trim(),
@@ -406,9 +425,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
     ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
       ? {
           dinnerAllowanceMinor: header.dinnerAllowanceMinor,
-          ...(header.dinnerAllowanceGroupIds?.length
-            ? { dinnerAllowanceGroupIds: [...header.dinnerAllowanceGroupIds] }
-            : {}),
+          ...(dinnerGroupIds ? { dinnerAllowanceGroupIds: dinnerGroupIds } : {}),
         }
       : {}),
     ...(header.shuttleRequested ? { shuttleRequested: true } : {}),
@@ -434,7 +451,10 @@ export async function bindExecuteStaffQuote(args: {
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
-    const header = approvedExecuteHeader(args.header);
+    const header = approvedExecuteHeader(
+      args.header,
+      prepared.ok.map((group) => group.id),
+    );
     const result = await args.mutate({
       messageId: args.source.messageId,
       sourceHash: args.source.sourceHash,

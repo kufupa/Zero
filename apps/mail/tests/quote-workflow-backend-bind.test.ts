@@ -483,6 +483,43 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('sends each date option only its own dinner groups, within the server cap of 8 ids', async () => {
+    const optionA = ['a1', 'a2', 'a3', 'a4', 'a5'];
+    const optionB = ['b1', 'b2', 'b3', 'b4', 'b5'];
+    const optionC = ['c1'];
+    const groupsFor = (ids: string[], arrivalDate: string, departureDate: string) =>
+      ids.map((id) => ({ ...stay, id, arrivalDate, departureDate, roomPreference: 'STWN' as const }));
+    const header = {
+      ...government,
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: [...optionA, ...optionB, 'a1'],
+    };
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const runs = [
+      groupsFor(optionA, '2026-11-12', '2026-11-14'),
+      groupsFor(optionB, '2026-11-20', '2026-11-22'),
+      groupsFor(optionC, '2026-11-28', '2026-11-30'),
+    ];
+    for (const groups of runs) {
+      const result = await bindExecuteStaffQuote({
+        mutate,
+        source,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups,
+        header,
+      });
+      expect(result.status).toBe('ok');
+    }
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({ dinnerAllowanceGroupIds: optionA });
+    expect(mutate.mock.calls[1]?.[0]).toMatchObject({ dinnerAllowanceGroupIds: optionB });
+    // Option C took no B&B fallback. An empty list charges nothing; an omitted list would charge every group.
+    expect(mutate.mock.calls[2]?.[0]).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: [],
+    });
+  });
+
   it('rejects one executeStaffQuote run that mixes date sets, before any HMS call', async () => {
     const mutate = vi.fn(async () => readyResult);
     const mixed = await bindExecuteStaffQuote({
