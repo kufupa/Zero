@@ -26,7 +26,8 @@ async function fixture(db: Parameters<typeof devicePolicy.issueEnrollment>[0]) {
   async function read(sourceFolderId = 'new-descendant') {
     const input = { deviceId, paneChallenge, transportId, storeId, action: 'GET_EMAIL_BY_ENTRY_ID', resources: ['message'], sourceFolderId };
     const { ticket } = await issueBridgeTicket(db, auth, new Headers(), input);
-    return authorizeNative(db, deviceId, { ...input, ticket });
+    // A Deleted Items source is never auto-approved, so only a read root can grant this read.
+    return authorizeNative(db, deviceId, { ...input, ticket, sourceKind: 'deleted' });
   }
   return { approval, read, auth, paneChallenge, sessionId, userId, transportId, deviceId };
 }

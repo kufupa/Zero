@@ -24,6 +24,8 @@ const mutationActions = new Set(['CREATE_DRAFT', 'UPDATE_DRAFT', 'CREATE_REPLY_D
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ', 'CREATE_FOLDER', 'MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const moveActions = new Set(['MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const createdDraftActions = new Set(['CREATE_DRAFT', 'CREATE_REPLY_DRAFT']);
+/** Kinds only an operator approves; moves and folder creation require one of them. */
+const operatorFolderKinds = new Set(['inbox', 'triage', 'spam']);
 const itemReadActions = new Set(['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64',
   'GET_CONVERSATION_THREAD']);
 const itemMutationActions = new Set(['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
@@ -215,17 +217,23 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     }
     if (!await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId,
       input.storeId, true)) return null;
+    const autoDrafts = createdDraftActions.has(input.action) && input.destinationKind === 'drafts' && isToken(input.destinationFolderId);
+    // Two draft requests can both upgrade the same automatic 'read' Drafts row. Take its write lock before the
+    // shared folder lock below, so they queue instead of deadlocking.
+    if (autoDrafts) await tx.select({ folderId: outlookApprovedFolder.folderId }).from(outlookApprovedFolder)
+      .where(and(eq(outlookApprovedFolder.transportId, input.transportId), eq(outlookApprovedFolder.storeId, input.storeId),
+        eq(outlookApprovedFolder.folderId, input.destinationFolderId!))).for('update');
     const folderRows = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
       .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
         eq(outlookApprovedFolder.transportId, input.transportId))).for('share');
-    // Same enrolled store only (isDeviceAuthorized above); reads and Drafts only. Moves and folder creation never auto-approve.
+    // Same enrolled store only (isDeviceAuthorized above). Reads and draft creation self-approve; other
+    // mutations, moves and folder creation still need operator-approved rows.
     const autoApprovals = new Map<string, 'read' | 'drafts'>();
-    if (!moveActions.has(input.action) && input.action !== 'CREATE_FOLDER' && input.sourceFolderId
+    if ((readActions.has(input.action) || createdDraftActions.has(input.action)) && input.sourceFolderId
       && !folderRows.some((row) => row.folderId === input.sourceFolderId)
       && !['deleted', 'outbox', 'deleted-child', 'outbox-child'].includes(input.sourceKind ?? '')) autoApprovals.set(input.sourceFolderId, 'read');
     const destinationRow = folderRows.find((row) => row.folderId === input.destinationFolderId);
-    if (createdDraftActions.has(input.action) && input.destinationKind === 'drafts' && input.destinationFolderId
-      && (!destinationRow || destinationRow.kind === 'read')) autoApprovals.set(input.destinationFolderId, 'drafts');
+    if (autoDrafts && (!destinationRow || destinationRow.kind === 'read')) autoApprovals.set(input.destinationFolderId!, 'drafts');
     for (const [folderId, kind] of autoApprovals) {
       const existing = folderRows.find((row) => row.folderId === folderId);
       // Only a 'read' -> 'drafts' upgrade can reach an existing row.
@@ -233,14 +241,19 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
       else folderRows.push({ folderId, kind });
     }
     const approved = (id: string | undefined, kind?: string) => folderRows.some((row) => row.folderId === id && (!kind || row.kind === kind));
+    const operatorApproved = (id: string | undefined) => folderRows.some((row) => row.folderId === id && operatorFolderKinds.has(row.kind));
     const approvedReadRoots = readActions.has(input.action)
       ? await getApprovedReadRoots(tx as DB, deviceId, ticket.userId, ticket.transportId, input.storeId, true) : [];
     // Root policies authorize only reads; ancestry is independently verified on the native STA.
     if (input.sourceFolderId && !approved(input.sourceFolderId) && !approvedReadRoots.length) return null;
+    // Mark read, category, flag and draft edits keep needing more than an automatic 'read' grant.
+    if (mutationActions.has(input.action) && !createdDraftActions.has(input.action) && input.sourceFolderId
+      && !folderRows.some((row) => row.folderId === input.sourceFolderId && row.kind !== 'read')) return null;
     // DB kind must match native's observed kind; a Drafts source approval is never a move destination.
     if (input.destinationFolderId && !approved(input.destinationFolderId, input.destinationKind)) return null;
-    // Moves need operator-approved rows; an automatic 'read' grant never satisfies a move source or destination.
-    if (moveActions.has(input.action) && (!folderRows.some((row) => row.folderId === input.sourceFolderId && row.kind !== 'read')
+    // Moves and folder creation need operator inbox/triage/spam rows; automatic 'read'/'drafts' rows never qualify.
+    if (input.action === 'CREATE_FOLDER' && !operatorApproved(input.sourceFolderId)) return null;
+    if (moveActions.has(input.action) && (!operatorApproved(input.sourceFolderId)
       || !approved(input.destinationFolderId, input.destinationKind))) return null;
     const scopeHash = hash(JSON.stringify([input.action, input.storeId, input.transportId, input.operationId,
       input.resources ?? [], input.sourceFolderId ?? null, input.destinationFolderId ?? null]));
@@ -300,7 +313,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
           const currentFolders = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
             .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
               eq(outlookApprovedFolder.transportId, input.transportId)));
-          if (!currentFolders.some((row) => row.folderId === input.sourceFolderId && row.kind !== 'read')
+          if (!currentFolders.some((row) => row.folderId === input.sourceFolderId && operatorFolderKinds.has(row.kind))
             || !currentFolders.some((row) => row.folderId === input.destinationFolderId && row.kind === input.destinationKind)) return null;
           const consentChallenge = randomBytes(32).toString('base64url');
           const claimed = await tx.update(outlookBridgeTicket).set({ consumedAt: sql`clock_timestamp()`,
@@ -333,7 +346,14 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
         }).returning({ folderId: outlookApprovedFolder.folderId })
         : await tx.insert(outlookApprovedFolder).values(values).onConflictDoNothing()
           .returning({ folderId: outlookApprovedFolder.folderId });
-      for (const row of written) autoApproved.push({ folderId: row.folderId, kind });
+      if (written.length) { autoApproved.push({ folderId, kind }); continue; }
+      // Another writer won this row: authorize against the stored kind, never the proposed one.
+      const [winner] = await tx.select({ kind: outlookApprovedFolder.kind }).from(outlookApprovedFolder)
+        .where(and(eq(outlookApprovedFolder.transportId, input.transportId), eq(outlookApprovedFolder.storeId, input.storeId),
+          eq(outlookApprovedFolder.folderId, folderId))).limit(1);
+      if (!winner || kind === 'drafts' && winner.kind !== 'drafts') throw ticketExpiredDuringTransaction;
+      const row = folderRows.find((candidate) => candidate.folderId === folderId);
+      if (row) row.kind = winner.kind;
     }
     const claimed = await tx.update(outlookBridgeTicket).set({ consumedAt: new Date() })
       .where(and(eq(outlookBridgeTicket.ticketHash, ticket.ticketHash), isNull(outlookBridgeTicket.consumedAt),

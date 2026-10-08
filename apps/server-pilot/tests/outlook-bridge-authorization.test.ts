@@ -385,14 +385,18 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       const wrongStore = await f.ticket(action, operationId, declared);
       expect((await f.signed(path, { ticket: wrongStore.ticket, action, operationId, storeId: 'different-store',
         transportId: f.transportId, ...declared })).status).toBe(403);
-      // Another store's Drafts approval never leaks in; the observed folder gets only an automatic read grant.
+      // Another store's Drafts approval never leaks in: a read gets only an automatic read grant, a draft edit is refused.
       const wrongFolder = await f.ticket(action, operationId, { resources: ['actual-draft-item'], sourceFolderId: 'other-drafts' });
       const wrongFolderResponse = await f.signed(path, { ticket: wrongFolder.ticket, action, operationId, storeId,
         transportId: f.transportId, resources: ['actual-draft-item'], sourceFolderId: 'other-drafts' });
-      expect(wrongFolderResponse.status).toBe(200);
-      const wrongFolderBody = await wrongFolderResponse.json() as { approvedFolderIds: unknown[] };
-      expect(wrongFolderBody.approvedFolderIds).toEqual(expect.arrayContaining([{ folderId: 'other-drafts', kind: 'read' }]));
-      expect(wrongFolderBody.approvedFolderIds).not.toContainEqual({ folderId: 'other-drafts', kind: 'drafts' });
+      if (action === 'GET_EMAIL_BY_ENTRY_ID') {
+        expect(wrongFolderResponse.status).toBe(200);
+        const wrongFolderBody = await wrongFolderResponse.json() as { approvedFolderIds: unknown[] };
+        expect(wrongFolderBody.approvedFolderIds).toEqual(expect.arrayContaining([{ folderId: 'other-drafts', kind: 'read' }]));
+        expect(wrongFolderBody.approvedFolderIds).not.toContainEqual({ folderId: 'other-drafts', kind: 'drafts' });
+      } else {
+        expect(wrongFolderResponse.status).toBe(403);
+      }
       const { ticket } = await f.ticket(action, operationId, declared);
       const response = await f.signed(path, { ticket, action, operationId, storeId,
         transportId: f.transportId, ...declared });
@@ -552,6 +556,47 @@ describe.skipIf(!TEST_DB_AVAILABLE)('signed Outlook bridge authorization', () =>
       transportId: f.transportId, sourceFolderId: 'unapproved-parent' })).status).toBe(403);
     expect(await db.select().from(outlookApprovedFolder).where(eq(outlookApprovedFolder.transportId, f.transportId))).toHaveLength(0);
     expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
+  }));
+  it('never lets automatic read or Drafts rows authorize item changes, folder creation, or moves', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'operator-triage', kind: 'triage' });
+    const read = await f.ticket('GET_ACTIVE_EMAIL', undefined, { sourceFolderId: 'auto-read' });
+    expect((await f.signed(path, { ticket: read.ticket, action: 'GET_ACTIVE_EMAIL', storeId,
+      transportId: f.transportId, sourceFolderId: 'auto-read' })).status).toBe(200);
+    const draftOperation = op();
+    const draft = await f.ticket('CREATE_DRAFT', draftOperation);
+    expect((await f.signed(path, { ticket: draft.ticket, action: 'CREATE_DRAFT', operationId: draftOperation, storeId,
+      transportId: f.transportId, destinationFolderId: 'auto-drafts', destinationKind: 'drafts' })).status).toBe(200);
+    for (const action of ['MARK_EMAIL_READ', 'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'UPDATE_DRAFT']) {
+      const operationId = op(), declared = { resources: ['mail-1'], sourceFolderId: 'auto-read' };
+      const { ticket } = await f.ticket(action, operationId, declared);
+      expect((await f.signed(path, { ticket, action, operationId, storeId, transportId: f.transportId, ...declared })).status).toBe(403);
+    }
+    for (const parent of ['auto-read', 'auto-drafts']) {
+      const operationId = op();
+      const { ticket } = await f.ticket('CREATE_FOLDER', operationId, { sourceFolderId: parent });
+      expect((await f.signed(path, { ticket, action: 'CREATE_FOLDER', operationId, storeId,
+        transportId: f.transportId, sourceFolderId: parent })).status).toBe(403);
+    }
+    for (const sourceFolderId of ['auto-read', 'auto-drafts']) {
+      const operationId = op(), declared = { resources: ['mail-1'], sourceFolderId, destinationFolderId: 'operator-triage' };
+      const { ticket } = await f.ticket('MOVE_EMAIL', operationId, declared);
+      expect((await f.signed(path, { ticket, action: 'MOVE_EMAIL', operationId, storeId,
+        transportId: f.transportId, ...declared, destinationKind: 'triage' })).status).toBe(403);
+    }
+    expect(await db.select().from(outlookMoveReceipt).where(eq(outlookMoveReceipt.transportId, f.transportId))).toHaveLength(0);
+  }));
+  it('authorizes against the stored kind when an operator wins the Drafts row first', async () => withTestDb(async (db) => {
+    const f = await fixture(db);
+    const draftOperation = op();
+    const draft = await f.ticket('CREATE_DRAFT', draftOperation);
+    // An operator kind on the observed folder is never upgraded to, or reported as, drafts.
+    await provisionApprovedFolder(db, { storeId, transportId: f.transportId, folderId: 'contested', kind: 'inbox' });
+    expect((await f.signed(path, { ticket: draft.ticket, action: 'CREATE_DRAFT', operationId: draftOperation, storeId,
+      transportId: f.transportId, destinationFolderId: 'contested', destinationKind: 'drafts' })).status).toBe(403);
+    const [row] = await db.select({ kind: outlookApprovedFolder.kind }).from(outlookApprovedFolder)
+      .where(eq(outlookApprovedFolder.folderId, 'contested'));
+    expect(row?.kind).toBe('inbox');
   }));
   it('auto-approves only the real Drafts destination and upgrades only its automatic read grant', async () => withTestDb(async (db) => {
     const f = await fixture(db);
