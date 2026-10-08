@@ -172,7 +172,7 @@ These are facts from the repo that differ from, or limit, what the call would ot
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, reply drafts are refused on purpose (runbook, order of operations, step 8). "Insert draft in Outlook" may not work for those staff.
 4. **Change and cancel.** Only in branch `feat/luna-v4-a`. Cancelling from the pane is switched off, or works only on test bookings.
 5. **Multi-date quotes.** The pane blocks one combined PDF. Luna's own note says "quote the first, add the others by hand."
-6. **Badges.** The code shows only Quote, Booking and Other labels. It has no Change or Cancel label.
+6. **Badges.** The Change to booking and Cancellation labels need the amendment field from `feat/luna-v4-a`. Until that is merged, change and cancel emails show Other.
 7. **Windows is not tested here.** The repo's own onboarding doc says Linux tests and source reading do not prove Windows Outlook behaviour. The first real PC is the test.
 
 ---

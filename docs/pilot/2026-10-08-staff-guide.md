@@ -41,8 +41,10 @@ Luna is a helper in the Nava pane, inside Outlook. Luna can:
 | **Quote** | The guest wants rooms and a price. | Go to Step 2. |
 | **Booking** | The guest wants a booking made. | Go to "Booking email". |
 | **Other** | Luna is not sure, or it is something else. | Read the note under the label. Handle it by hand if needed. |
+| **Change to booking** (newer build) | The guest wants to change an existing booking. | Go to "Change or cancel email". |
+| **Cancellation** (newer build) | The guest wants to cancel an existing booking. | Go to "Change or cancel email". |
 
-Change and cancel emails do not get their own label yet. You may see **Other**, with a note such as "Changing or cancelling a booking is not supported yet." In the newer build, the panel says **Change to an existing booking** or **Cancellation request**. See "Change or cancel email".
+Hold the mouse over a label to read what Luna thinks. In the current build, change and cancel emails show as **Other**, with a note such as "Changing or cancelling a booking is not supported yet." In the newer build, the panel says **Change to an existing booking** or **Cancellation request**.
 
 If you see **Read without AI**, Luna could not use AI for this email. Check every field by hand.
 
