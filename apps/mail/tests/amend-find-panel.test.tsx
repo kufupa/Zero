@@ -211,6 +211,22 @@ describe('AmendLookupPanel', () => {
     expect(document.querySelector('[data-field="guest"]')?.getAttribute('data-differs')).toBe('false');
   });
 
+  it('says what the guest mentioned and when HMS holds the booking, when the arrivals differ', async () => {
+    const findStay = vi.fn().mockResolvedValue({
+      ...found({ arrival: '2026-10-13', departure: '2026-10-14' }),
+      arrivalMismatch: true,
+      requestedArrival: '2026-10-12',
+      hmsArrival: '2026-10-13',
+    });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
+    await waitFor(() =>
+      expect(
+        screen.getByText('The guest mentioned 12 Oct 2026; the booking in HMS arrives 13 Oct 2026.'),
+      ).toBeTruthy(),
+    );
+  });
+
   it('shows rate plan, meal plan and grand total when HMS shows them', async () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);

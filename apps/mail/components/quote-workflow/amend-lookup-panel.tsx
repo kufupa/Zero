@@ -18,6 +18,7 @@ import {
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
+  arrivalMismatchNote,
   formatStayDate,
   isHmsConfirmation,
   runHmsFind,
@@ -217,6 +218,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
               <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
+              {found?.arrivalMismatch ? (
+                <p className="text-[11px] font-semibold text-amber-900">
+                  {arrivalMismatchNote(found.arrivalMismatch)}
+                </p>
+              ) : null}
               <HmsRow field="status" label="Status" value={stayText(stay.status) ?? 'Not shown'} />
               <HmsRow field="room" label="Room" value={stayText(stay.roomType) ?? 'Not shown'} />
               {ratePlan ? <HmsRow field="rate-plan" label="Rate plan" value={ratePlan} /> : null}

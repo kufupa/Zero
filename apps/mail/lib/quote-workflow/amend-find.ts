@@ -66,6 +66,10 @@ export type FindStayReply = {
   /** PNG file names. record.png is the booking itself. */
   screenshots: string[];
   runId: string | null;
+  /** The arrival is a hint: HMS may hold another day. The record is still returned, with both dates. */
+  arrivalMismatch?: boolean;
+  requestedArrival?: string | null;
+  hmsArrival?: string | null;
 };
 
 export type ScreenshotInput = { runId: string; name: string };
@@ -96,8 +100,22 @@ export function amendFindClientFromTrpc(trpc: unknown): AmendFindClient | null {
   };
 }
 
+/** The email's arrival and the arrival HMS holds, when they differ. */
+export type ArrivalMismatch = { requested: string; hms: string };
+
+/** One sentence for the pane: what the guest mentioned, and when HMS holds the booking. */
+export function arrivalMismatchNote(mismatch: ArrivalMismatch): string {
+  return `The guest mentioned ${formatStayDate(mismatch.requested)}; the booking in HMS arrives ${formatStayDate(mismatch.hms)}.`;
+}
+
 export type HmsFindRun =
-  | { kind: 'found'; stay: StayRecordWire; runId: string | null; screenshots: string[] }
+  | {
+      kind: 'found';
+      stay: StayRecordWire;
+      runId: string | null;
+      screenshots: string[];
+      arrivalMismatch: ArrivalMismatch | null;
+    }
   | { kind: 'not_found' }
   | { kind: 'ambiguous' }
   | { kind: 'error'; message: string };
@@ -130,7 +148,13 @@ export async function runHmsFind(options: {
   switch (reply.outcome) {
     case 'found':
       if (!reply.stay) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
-      return { kind: 'found', stay: reply.stay, runId: reply.runId, screenshots: reply.screenshots };
+      return {
+        kind: 'found',
+        stay: reply.stay,
+        runId: reply.runId,
+        screenshots: reply.screenshots,
+        arrivalMismatch: arrivalMismatchFrom(reply),
+      };
     case 'not_found':
       return { kind: 'not_found' };
     case 'ambiguous':
@@ -196,6 +220,13 @@ export function formatStayDate(value: string): string {
 function isoDay(value: string): string {
   const match = /^\d{4}-\d{2}-\d{2}/.exec(value.trim());
   return match ? match[0] : value.trim();
+}
+
+/** The mismatch from a found reply, when the server reports both dates. */
+function arrivalMismatchFrom(reply: FindStayReply): ArrivalMismatch | null {
+  if (reply.arrivalMismatch !== true) return null;
+  if (!reply.requestedArrival || !reply.hmsArrival) return null;
+  return { requested: reply.requestedArrival, hms: reply.hmsArrival };
 }
 
 /** The arrival as HMS takes it: a real ISO day, else null. Same test as the server's find route. */
