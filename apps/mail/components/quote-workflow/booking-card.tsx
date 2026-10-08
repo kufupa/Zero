@@ -491,6 +491,9 @@ export function BookingCards({
       {draft.draft.rooms.map((room) => {
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = choices[key] ?? { track: '', sourceOfBusiness: '', guaranteeType: '' };
+        // Once Book in HMS is running or has booked this room, its choices are frozen so the card cannot show a new value beside the saved one.
+        const commitStatus = saves[key]?.commit?.status;
+        const locked = commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
         const group = groups.find((item) => item.id === room.groupId);
@@ -520,6 +523,7 @@ export function BookingCards({
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
                 Source of business
                 <select
+                  disabled={locked}
                   aria-label="Source of business"
                   className={fieldClass}
                   value={choice.sourceOfBusiness}
@@ -544,6 +548,7 @@ export function BookingCards({
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
                 Track
                 <select
+                  disabled={locked}
                   aria-label="Track"
                   className={fieldClass}
                   value={choice.track}
@@ -568,6 +573,7 @@ export function BookingCards({
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
                 Guarantee
                 <select
+                  disabled={locked}
                   aria-label="Guarantee"
                   className={fieldClass}
                   value={choice.guaranteeType}

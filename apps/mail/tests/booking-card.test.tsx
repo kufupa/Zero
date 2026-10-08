@@ -523,6 +523,21 @@ describe('booking card pane save', () => {
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
   });
 
+  it('freezes the source, track and guarantee choices once Book in HMS has run', async () => {
+    const { client } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    const [booked, other] = Array.from(document.querySelectorAll('article'));
+    const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
+    expect(bookedSelects).toHaveLength(3);
+    for (const select of bookedSelects) expect(select.disabled).toBe(true);
+    for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
+  });
+
   it('shows the saving wait while Book in HMS runs', async () => {
     const pending = deferred<PaneStayResult>();
     const { client } = paneClient({ commit: () => pending.promise });
