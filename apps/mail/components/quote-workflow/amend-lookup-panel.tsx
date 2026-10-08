@@ -66,6 +66,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
   const lookupable = confirmationNumber !== null && isHmsConfirmation(confirmationNumber);
+  // The email's arrival rides with the find so HMS quick search covers that day. runHmsFind drops a non-date.
+  const findArrival = amendment?.arrival ?? null;
 
   const [lookup, setLookup] = useState<LookupState | null>(null);
   const [paneSave, setPaneSave] = useState(false);
@@ -97,11 +99,20 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   }, [trpc]);
 
   const runLookup = useCallback(
-    async (activeClient: AmendFindClient | null, activeConfirmation: string, activeKey: string) => {
+    async (
+      activeClient: AmendFindClient | null,
+      activeConfirmation: string,
+      activeArrival: string | null,
+      activeKey: string,
+    ) => {
       const token = ++runToken.current;
       const isCurrent = () => mounted.current && runToken.current === token;
       setLookup({ key: activeKey, status: { phase: 'running' } });
-      const run = await runHmsFind({ client: activeClient, confirmation: activeConfirmation });
+      const run = await runHmsFind({
+        client: activeClient,
+        confirmation: activeConfirmation,
+        arrival: activeArrival,
+      });
       if (isCurrent()) setLookup({ key: activeKey, status: { phase: 'done', run } });
     },
     [],
@@ -112,8 +123,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     if (!key || !threadId || !confirmationNumber || !lookupable) return;
     if (autoRunKey.current === key) return;
     autoRunKey.current = key;
-    void runLookup(findClient, confirmationNumber, key);
-  }, [confirmationNumber, findClient, key, lookupable, runLookup, threadId]);
+    void runLookup(findClient, confirmationNumber, findArrival, key);
+  }, [confirmationNumber, findArrival, findClient, key, lookupable, runLookup, threadId]);
 
   if (!amendment) return null;
 
@@ -240,7 +251,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           className={buttonClass}
           disabled={!canLookUp || running}
           onClick={() => {
-            if (key && threadId && confirmationNumber && lookupable) void runLookup(findClient, confirmationNumber, key);
+            if (key && threadId && confirmationNumber && lookupable) {
+              void runLookup(findClient, confirmationNumber, findArrival, key);
+            }
           }}
         >
           Find this booking in HMS

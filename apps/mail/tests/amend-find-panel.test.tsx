@@ -179,12 +179,12 @@ describe('AmendLookupPanel', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('auto-runs one find per email by confirmation number only, and says it takes 1–2 minutes', async () => {
+  it('auto-runs one find per email by confirmation number and the email arrival, and says it takes 1–2 minutes', async () => {
     const findStay = vi.fn(NEVER_SETTLES);
     const session = sessionWith(AMEND);
     const { rerender } = render(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
     await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION });
+    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(screen.getByText('Luna is looking up the booking in HMS… (about 1–2 minutes)')).toBeTruthy();
     rerender(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
     expect(findStay).toHaveBeenCalledTimes(1);
@@ -521,11 +521,33 @@ describe('amend find helpers', () => {
     expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' });
   });
 
-  it('sends the confirmation number alone, never an arrival date', async () => {
+  it('sends the confirmation number alone when the email gives no arrival', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
     const client: AmendFindClient = { findStay, screenshot: vi.fn() };
     await runHmsFind({ client, confirmation: CONFIRMATION });
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION });
+  });
+
+  it('sends the email arrival with the confirmation only when it is a real ISO day', async () => {
+    const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
+    const client: AmendFindClient = { findStay, screenshot: vi.fn() };
+    await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenLastCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-02-31' });
+    expect(findStay).toHaveBeenLastCalledWith({ confirmation: CONFIRMATION });
+  });
+
+  it('says HMS shows another arrival when it refuses the record on arrival_mismatch', async () => {
+    const mismatch: FindStayReply = {
+      outcome: 'ambiguous',
+      reason: 'arrival_mismatch',
+      stay: null,
+      screenshots: [],
+      runId: null,
+    };
+    const client: AmendFindClient = { findStay: vi.fn().mockResolvedValue(mismatch), screenshot: vi.fn() };
+    const run = await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(run).toEqual({ kind: 'error', message: AMEND_FIND_COPY.arrivalDiffers });
   });
 
   it('reports unavailable when no client is bound', async () => {

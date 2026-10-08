@@ -15,6 +15,7 @@ export const AMEND_FIND_COPY = {
   notExact:
     'HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
+  arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
   busy: 'HMS is busy. Try again in a minute.',
   readFailed: 'Luna could not read the HMS result. Try again in a minute.',
   unavailable: 'The HMS lookup is not connected in this session. Search HMS by hand.',
@@ -50,9 +51,13 @@ export type StayRecordWire = {
   organization: string | null;
 };
 
-export type FindStayInput = { confirmation: string };
+/** The email's arrival, when it is a real ISO day, moves HMS quick search to cover that day. */
+export type FindStayInput = { confirmation: string; arrival?: string };
 
-/** paneStayLookup.findStay. Refusals and failures carry no stay. The arrival is never sent. */
+/**
+ * paneStayLookup.findStay. Refusals and failures carry no stay. With an arrival sent, HMS refuses a record that
+ * starts on another day: outcome ambiguous with reason arrival_mismatch.
+ */
 export type FindStayReply = {
   outcome: string;
   reason: string | null;
@@ -98,18 +103,26 @@ export type HmsFindRun =
 
 /**
  * The only HMS call the amend pane makes for a look-up: one read-only find by the exact confirmation number.
- * The arrival is not sent. An amendment may ask for a different arrival, so HMS must match on the number alone.
+ * The email's arrival is sent too when it is a real ISO day. HMS quick search covers only about two months from
+ * today, so the arrival moves its window to reach later stays. HMS then also needs the record to start that day,
+ * so a different arrival comes back as arrival_mismatch rather than as a found stay.
  */
 export async function runHmsFind(options: {
   /** Null when the paneStayLookup routes are not bound. The run then fails with the unavailable copy. */
   client: AmendFindClient | null;
   confirmation: string;
+  /** The email's arrival. Anything that is not a real ISO day is left out. */
+  arrival?: string | null;
 }): Promise<HmsFindRun> {
   const client = options.client;
   if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  const arrival = sendableArrival(options.arrival);
+  const input: FindStayInput = arrival
+    ? { confirmation: options.confirmation, arrival }
+    : { confirmation: options.confirmation };
   let reply: FindStayReply;
   try {
-    reply = await client.findStay({ confirmation: options.confirmation });
+    reply = await client.findStay(input);
   } catch {
     return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
   }
@@ -120,6 +133,9 @@ export async function runHmsFind(options: {
     case 'not_found':
       return { kind: 'not_found' };
     case 'ambiguous':
+      if (reply.reason === 'arrival_mismatch') {
+        return { kind: 'error', message: AMEND_FIND_COPY.arrivalDiffers };
+      }
       return { kind: 'ambiguous' };
     case 'refused_input_invalid':
       return { kind: 'error', message: AMEND_FIND_COPY.notExact };
@@ -177,6 +193,14 @@ export function formatStayDate(value: string): string {
 function isoDay(value: string): string {
   const match = /^\d{4}-\d{2}-\d{2}/.exec(value.trim());
   return match ? match[0] : value.trim();
+}
+
+/** The arrival as HMS takes it: a real ISO day, else null. Same test as the server's find route. */
+export function sendableArrival(value: string | null | undefined): string | null {
+  const day = (value ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const date = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === day ? day : null;
 }
 
 function nameWords(name: string): string[] {
