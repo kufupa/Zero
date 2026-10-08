@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import {
   allocationTotal,
+  amendmentOf,
   canCreatePdf,
   optionLetter,
   pendingPdfStayKey,
@@ -448,7 +449,7 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'non_quote') {
     return (
       <div className="flex flex-col gap-3">
-        <WorkflowBadge analysis={session.analysis} amendmentKind={session.analysis?.amendment?.kind} />
+        <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
         <NeedsAnswerList missing={session.analysis?.luna?.missing} />
         {(session.reviewItems ?? [])
@@ -500,7 +501,7 @@ export function QuoteWorkflowPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <WorkflowBadge analysis={session.analysis} amendmentKind={session.analysis?.amendment?.kind} />
+      <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
       <TellLunaBox onStaffNote={onStaffNote} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       {session.phase === 'failed' ? (
