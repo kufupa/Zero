@@ -562,7 +562,7 @@ describe('searchGuest', () => {
         stay: null,
         rows: [
           SEARCH_ROW,
-          { ...SEARCH_ROW, confirmation: '46184892-1', status: 'Cancelled', arrival: null, departure: null },
+          { ...SEARCH_ROW, confirmation: '46184892-1', status: 'Cancelled' },
           { ...SEARCH_ROW, confirmation: '   ' },
           null as never,
         ],
@@ -582,7 +582,7 @@ describe('searchGuest', () => {
       outcome: 'ok',
       rows: [
         SEARCH_ROW,
-        { confirmation: '46184892-1', firstName: 'Ana', lastName: 'Labtest', status: 'Cancelled', arrival: null, departure: null },
+        { ...SEARCH_ROW, confirmation: '46184892-1', status: 'Cancelled' },
       ],
       screenshots: ['panel.png'],
       runId: 'run-search-1',
@@ -590,6 +590,36 @@ describe('searchGuest', () => {
     expect(seen).toEqual(['lock', 'spawn']);
     expect(calls).toEqual([{ mode: 'search-guest', ...DUP_QUERY }]);
     expect(registered).toEqual({ runId: 'run-search-1', dir: '/tmp/pane-lookup-s' });
+  });
+
+  it('returns only the rows on the requested arrival, and on the requested departure when one is given', async () => {
+    const row = (confirmation: string, arrival: string, departure: string | null) => ({
+      confirmation,
+      lastName: 'Labtest',
+      firstName: 'Guest',
+      status: 'Reserved',
+      arrival,
+      departure,
+    });
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({
+        outcome: 'ok',
+        stay: null,
+        rows: [
+          row('1-1', '2027-09-14', '2027-09-15'),
+          row('1-2', '2027-09-20', '2027-09-21'),
+          row('1-3', '2027-09-14', '2027-09-17'),
+          row('1-4', '2027-09-14', null),
+        ],
+        screenshots: [],
+      });
+    const onArrival = await searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }, { lock: () => passingLock() });
+    expect(onArrival.rows.map((item) => item.confirmation)).toEqual(['1-1', '1-3', '1-4']);
+    const onDates = await searchGuest(
+      { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15' },
+      { lock: () => passingLock() },
+    );
+    expect(onDates.rows.map((item) => item.confirmation)).toEqual(['1-1']);
   });
 
   it('passes no departure to the CLI when the search has none', async () => {

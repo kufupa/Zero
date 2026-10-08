@@ -330,6 +330,13 @@ function toPanelRows(raw: unknown): PaneStayPanelRow[] {
   });
 }
 
+// Only rows on the requested arrival, and on the requested departure when one is given. A row whose departure is not
+// shown cannot be confirmed for a departure search, so it is left out of that search.
+function rowsOnRequestedDates(rows: PaneStayPanelRow[], query: GuestSearchQuery): PaneStayPanelRow[] {
+  return rows.filter((row) => row.arrival === query.arrival
+    && (query.departure === undefined || row.departure === query.departure));
+}
+
 // Read-only surname search on one arrival day (and optionally one departure), under the session hotel's property
 // lock. Same lock, spawn and refusals as findStay. Rows come back only for an ok read.
 export async function searchGuest(
@@ -366,7 +373,7 @@ export async function searchGuest(
   const outcome = toSearchOutcome(run.outcome);
   return {
     outcome,
-    rows: outcome === 'ok' ? toPanelRows(run.rows) : [],
+    rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), input) : [],
     screenshots: run.screenshots.map((path) => basename(path)),
     runId: run.runId ?? null,
   };
