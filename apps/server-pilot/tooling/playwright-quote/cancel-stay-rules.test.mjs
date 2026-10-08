@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, hmsDateToIso, identityCheck, isCancelledStatus,
-  labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parseIsoDate,
-  parseLookupArgs, parsePanelRows, parsePenalty, parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight,
-  resolveOutcome, sameStayRows, searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
+  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
+  identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
+  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
+  parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
+  searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -275,18 +276,25 @@ const GUEST = ['--mode', 'search-guest', '--out', '/tmp/stay-lookup'];
 
 test('parseLookupArgs accepts find by confirmation with an optional arrival', () => {
   assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', '57291630-1']).args, {
-    mode: 'find', confirmation: '57291630-1', arrival: null, lastName: null, departure: null, out: '/tmp/stay-lookup',
+    mode: 'find', confirmation: '57291630-1', arrival: null, lastName: null, departure: null, out: '/tmp/stay-lookup', debugHtml: false,
   });
   assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', ' 57291630-1 ', '--arrival', '2027-09-14']).args, {
-    mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14', lastName: null, departure: null, out: '/tmp/stay-lookup',
+    mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14', lastName: null, departure: null, out: '/tmp/stay-lookup', debugHtml: false,
   });
 });
 
 test('parseLookupArgs accepts search-guest with surname, arrival and an optional departure', () => {
   assert.deepEqual(parseLookupArgs([...GUEST, '--last-name', "  O'Neil-Jones ", '--arrival', '2027-09-14', '--departure', '2027-09-15']).args, {
-    mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup',
+    mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup', debugHtml: false,
   });
   assert.equal(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14']).ok, true);
+});
+
+test('parseLookupArgs takes --debug-html as a switch in either mode, once, and never as a value', () => {
+  assert.equal(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--debug-html']).args.debugHtml, true);
+  assert.equal(parseLookupArgs([...GUEST, '--debug-html', '--last-name', 'Labtest', '--arrival', '2027-09-14']).args.debugHtml, true);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--debug-html', '--debug-html']).error, /Repeated argument: --debug-html/);
+  assert.match(parseLookupArgs([...FIND, '--out', '--debug-html', '--confirmation', '57291630-1']).error, /Missing value for --out/);
 });
 
 test('parseLookupArgs refuses flags that do not belong to the mode, and missing or repeated values', () => {
@@ -471,4 +479,59 @@ test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cance
   }
   assert.match(source, /dateWindow && args\.arrival && !windowCovers/);
   assert.match(source, /if \(!args\.arrival\) return null;/);
+});
+
+// ---- Snapshot pairing and panel parsing (pure: the DOM is covered by stay-lookup-dom.test.mjs) ----
+
+const label = (text, rows, forId = '') => ({ kind: 'label', text, forId, rows });
+const field = (value, rows, id = '', name = '') => ({ kind: 'field', id, name, value, rows });
+
+test('formPairsFromSnapshot pairs an input by its for attribute, then by the nearest earlier label in a shared row', () => {
+  const entries = [
+    label('Status:', [1], 'f-status'),
+    field('Cancelled', [1], 'f-status', 'status'),
+    label('Nights:', [2]),
+    field('1', [3, 2], '', 'nights'),
+    label('Room Type:', [4]),
+    label('Room Type for Charge:', [5]),
+    field('STQN', [6, 4], '', 'roomtype'),
+    field('', [5], '', 'roomtypecharge'),
+  ];
+  assert.deepEqual(formPairsFromSnapshot(entries), [
+    { label: 'Status:', value: 'Cancelled', name: 'status' },
+    { label: 'Nights:', value: '1', name: 'nights' },
+    { label: 'Room Type:', value: 'STQN', name: 'roomtype' },
+  ]);
+});
+
+test('formPairsFromSnapshot never pairs across rows, never lets an unknown label claim an input, and claims a label once', () => {
+  const entries = [
+    label('Adults:', [1]),
+    label('Walk In:', [1]),
+    field('2', [1], '', 'adults'),
+    label('Arrival Date:', [2]),
+    field('14-SEP-2027', [3], '', 'arrivaldate'),
+    label('Balance:', [4]),
+    field('0.00', [4], '', 'balance'),
+    field('9.99', [4], '', 'stray'),
+  ];
+  const pairs = formPairsFromSnapshot(entries);
+  assert.deepEqual(pairs.map((pair) => pair.label), ['Adults:', 'Balance:']);
+  assert.equal(pairs[0].value, '2');
+  assert.equal(pairs.some((pair) => pair.name === 'arrivaldate'), false, 'the label is in another row');
+});
+
+test('parsePanelSnapshot reads a cell-split row, falls back to its lines, and returns the cells of an unreadable row', () => {
+  const cellRow = {
+    cells: ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027\n15-SEP-2027'],
+    lines: ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027', '15-SEP-2027'],
+  };
+  const linesOnly = { cells: [], lines: ['46184891-1', 'Labtest, Ana', 'Reserved', '14-SEP-2027', '15-SEP-2027'] };
+  const broken = { cells: ['57291630-1', 'Labtest, Nava'], lines: ['57291630-1', 'Labtest, Nava'] };
+  const header = { cells: ['Conf', 'Guest', 'Status'], lines: ['Conf', 'Guest', 'Status'] };
+  const parsed = parsePanelSnapshot({ rows: [cellRow, linesOnly, broken, header], unresolved: 0, footer: 'Records: 2 of 3' });
+  assert.deepEqual(parsed.rows.map((row) => row.confirmation), ['57291630-1', '46184891-1']);
+  assert.equal(parsed.unreadable, 1, 'the header has no confirmation and is not a data row');
+  assert.deepEqual(parsed.unreadableRows, [broken]);
+  assert.equal(parsePanelSnapshot({ rows: [], unresolved: 2 }).unreadable, 2);
 });

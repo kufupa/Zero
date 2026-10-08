@@ -257,7 +257,9 @@ export function checkCdpEnv(env) {
 
 const LOOKUP_MODES = new Set(['find', 'search-guest']);
 const LOOKUP_VALUE_FLAGS = new Set(['--mode', '--confirmation', '--arrival', '--departure', '--last-name', '--out']);
-// Flags each mode accepts besides --mode and --out.
+// Switches with no value. --debug-html writes the form or panel HTML into the run directory.
+const LOOKUP_SWITCHES = new Set(['--debug-html']);
+// Flags each mode accepts besides --mode, --out and the switches.
 const LOOKUP_MODE_FLAGS = {
   find: new Set(['--confirmation', '--arrival']),
   'search-guest': new Set(['--last-name', '--arrival', '--departure']),
@@ -270,9 +272,16 @@ export function parseLookupArgs(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (LOOKUP_SWITCHES.has(flag)) {
+      if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
+      values.set(flag, true);
+      continue;
+    }
     if (!LOOKUP_VALUE_FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
     const value = argv[index + 1];
-    if (value === undefined || LOOKUP_VALUE_FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (value === undefined || LOOKUP_VALUE_FLAGS.has(value) || LOOKUP_SWITCHES.has(value)) {
+      return refuse(`Missing value for ${flag}`);
+    }
     if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
     values.set(flag, value);
     index += 1;
@@ -281,9 +290,11 @@ export function parseLookupArgs(argv) {
   if (!LOOKUP_MODES.has(mode)) return refuse('--mode must be find or search-guest');
   if (!values.has('--out')) return refuse('Required: --out');
   const accepted = LOOKUP_MODE_FLAGS[mode];
-  const stray = [...values.keys()].find((flag) => flag !== '--mode' && flag !== '--out' && !accepted.has(flag));
+  const stray = [...values.keys()].find((flag) => !['--mode', '--out', ...LOOKUP_SWITCHES].includes(flag)
+    && !accepted.has(flag));
   if (stray) return refuse(`${stray} is not valid with --mode ${mode}`);
   const out = values.get('--out');
+  const debugHtml = values.get('--debug-html') === true;
   let arrival = null;
   if (values.has('--arrival')) {
     arrival = parseIsoDate(values.get('--arrival'));
@@ -293,7 +304,11 @@ export function parseLookupArgs(argv) {
     if (!values.has('--confirmation')) return refuse('Required: --confirmation');
     const confirmation = values.get('--confirmation').trim();
     if (!/^\d+-\d+$/.test(confirmation)) return refuse('--confirmation must look like 57291630-1');
-    return { ok: true, exitCode: 0, args: { mode, confirmation, arrival, lastName: null, departure: null, out } };
+    return {
+      ok: true,
+      exitCode: 0,
+      args: { mode, confirmation, arrival, lastName: null, departure: null, out, debugHtml },
+    };
   }
   if (!values.has('--last-name')) return refuse('Required: --last-name');
   if (!values.has('--arrival')) return refuse('Required: --arrival');
@@ -305,7 +320,11 @@ export function parseLookupArgs(argv) {
     if (!departure) return refuse('--departure must be a real calendar date, YYYY-MM-DD');
     if (departure <= arrival) return refuse('--departure must be after --arrival');
   }
-  return { ok: true, exitCode: 0, args: { mode, confirmation: null, arrival, lastName, departure, out } };
+  return {
+    ok: true,
+    exitCode: 0,
+    args: { mode, confirmation: null, arrival, lastName, departure, out, debugHtml },
+  };
 }
 
 export function lookupExitCode(outcome) {
@@ -395,28 +414,56 @@ export function parseRecordsFooter(text) {
   return shown <= total ? { shown, total } : null;
 }
 
-// Each raw row is the visible leaf texts of one dropdown row. A row without exactly one confirmation, or that
-// parseQuickSearchRow cannot read, counts as unreadable; the caller fails closed on any unreadable row.
+// One dropdown row from its cell texts (a text may span lines). Null unless exactly one line is a confirmation and
+// parseQuickSearchRow reads the rest of the row.
+function parseDropdownRow(cellTexts) {
+  const confirmations = cellLines(cellTexts).filter((cell) => CONFIRMATION_TOKEN.test(cell));
+  return confirmations.length === 1 ? parseQuickSearchRow(cellTexts, confirmations[0]) : null;
+}
+
+function toPanelRow(row) {
+  return {
+    confirmation: row.confirmation,
+    lastName: row.lastName,
+    firstName: row.firstName,
+    status: row.status,
+    arrival: hmsDateToIso(row.arrival),
+    departure: row.departure ? hmsDateToIso(row.departure) : null,
+  };
+}
+
+// Each raw row is the cell texts of one dropdown row. A row that does not parse counts as unreadable; the caller
+// fails closed on any unreadable row.
 export function parsePanelRows(rawRows) {
   const rows = [];
   let unreadable = 0;
   for (const cells of rawRows ?? []) {
-    const confirmations = cellLines(cells).filter((cell) => CONFIRMATION_TOKEN.test(cell));
-    const row = confirmations.length === 1 ? parseQuickSearchRow(cells, confirmations[0]) : null;
-    if (!row) {
-      unreadable += 1;
-      continue;
-    }
-    rows.push({
-      confirmation: row.confirmation,
-      lastName: row.lastName,
-      firstName: row.firstName,
-      status: row.status,
-      arrival: hmsDateToIso(row.arrival),
-      departure: row.departure ? hmsDateToIso(row.departure) : null,
-    });
+    const row = parseDropdownRow(cells);
+    if (row) rows.push(toPanelRow(row));
+    else unreadable += 1;
   }
   return { rows, unreadable };
+}
+
+// Snapshot from snapshotPanel (stay-lookup-dom.mjs). A candidate is a data row when one of its cell or line texts is a
+// confirmation. Its cells are read first; when they do not parse, its lines are read. A row that parses neither way is
+// unreadable and its texts come back for the dump. Each unresolved confirmation leaf is unreadable too.
+export function parsePanelSnapshot(snapshot) {
+  const rows = [];
+  const unreadableRows = [];
+  let unreadable = snapshot?.unresolved ?? 0;
+  for (const candidate of snapshot?.rows ?? []) {
+    const texts = [...cellLines(candidate.cells), ...cellLines(candidate.lines)];
+    if (!texts.some((text) => CONFIRMATION_TOKEN.test(text))) continue;
+    const row = parseDropdownRow(candidate.cells) ?? parseDropdownRow(candidate.lines);
+    if (row) {
+      rows.push(toPanelRow(row));
+    } else {
+      unreadable += 1;
+      unreadableRows.push(candidate);
+    }
+  }
+  return { rows, unreadable, unreadableRows };
 }
 
 // Every panel row must be read, and the footer must account for all of them. Capped panels are not complete.
@@ -434,4 +481,40 @@ export function sameStayRows(rows, { lastName, arrival, departure = null }) {
   return rows.filter((row) => row.lastName.toLowerCase() === surname
     && row.arrival === arrival
     && (departure === null || row.departure === departure));
+}
+
+// Entries from snapshotRecordForm to {label, value, name} pairs. An input whose id is some label's for attribute takes
+// that label. Any other input takes the nearest earlier known label whose innermost row is one of the input's rows;
+// unknown labels never claim an input, and a label is claimed once. A label with no input is simply not paired.
+export function formPairsFromSnapshot(entries) {
+  const known = (entry) => entry.kind === 'label' && formLabelKey(entry.text) !== null;
+  const labelByFor = new Map();
+  entries.forEach((entry, index) => {
+    if (known(entry) && entry.forId && !labelByFor.has(entry.forId)) labelByFor.set(entry.forId, index);
+  });
+  const claimed = new Set();
+  const labelOf = new Map();
+  entries.forEach((entry, index) => {
+    if (entry.kind !== 'field' || !entry.id || !labelByFor.has(entry.id)) return;
+    const labelIndex = labelByFor.get(entry.id);
+    if (claimed.has(labelIndex)) return;
+    labelOf.set(index, labelIndex);
+    claimed.add(labelIndex);
+  });
+  entries.forEach((field, index) => {
+    if (field.kind !== 'field' || labelOf.has(index)) return;
+    for (let labelIndex = index - 1; labelIndex >= 0; labelIndex -= 1) {
+      const label = entries[labelIndex];
+      if (!known(label) || claimed.has(labelIndex) || label.rows.length === 0) continue;
+      if (!field.rows.includes(label.rows[0])) continue;
+      labelOf.set(index, labelIndex);
+      claimed.add(labelIndex);
+      break;
+    }
+  });
+  return [...labelOf].map(([fieldIndex, labelIndex]) => ({
+    label: entries[labelIndex].text,
+    value: entries[fieldIndex].value,
+    name: entries[fieldIndex].name,
+  }));
 }

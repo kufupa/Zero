@@ -3,23 +3,25 @@
 // find: header search by confirmation. One matching row is opened and its record form read; no row is not_found.
 // search-guest: header search by surname, with the panel window moved to cover --arrival first. Every panel row is
 // read and none is opened. A capped panel (Records: N of M with N < M) is ambiguous_capped.
-// Usage: node stay-lookup.mjs --mode find --confirmation 57291630-1 [--arrival 2027-09-14] --out <dir>
-//        node stay-lookup.mjs --mode search-guest --last-name Labtest --arrival 2027-09-14 [--departure 2027-09-15] --out <dir>
+// Usage: node stay-lookup.mjs --mode find --confirmation 57291630-1 [--arrival 2027-09-14] --out <dir> [--debug-html]
+//        node stay-lookup.mjs --mode search-guest --last-name Labtest --arrival 2027-09-14 [--departure 2027-09-15] --out <dir> [--debug-html]
 // Exit: 0 found|not_found|ok; 1 ambiguous|ambiguous_capped|execution_failure (also writes failure.png); 2 usage.
-// Writes result.json and screenshots (record.png, panel.png, failure.png) into --out.
+// Writes result.json and screenshots (record.png, panel.png, failure.png) into --out. An unreadable panel is dumped to
+// panel.html; --debug-html also writes record-form.html (find) and panel.html (search) on every run.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  checkCdpEnv, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelRows, parseRecordsFooter, sameStayRows,
-  searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
+  checkCdpEnv, formPairsFromSnapshot, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
+  parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 import {
   clickRunIfShown, findStay, openGuestStay, openRecord, quickPanel, readBalance, readRecord, readWindow,
   searchConfirmation, setQuickWindow, shot,
 } from './cancel-stay.mjs';
+import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
@@ -40,6 +42,7 @@ function newLookupResult(args) {
     rows: [],
     matches: [],
     unreadable: 0,
+    unreadableRows: [],
     screenshots: [],
     error: null,
     timings: {},
@@ -55,37 +58,14 @@ function setOutcome(result, outcome, reason = null) {
   result.reason = reason;
 }
 
-// Visible labels and the visible input each one labels: the input named by the for attribute, else the first
-// visible input after the label in the same table row. Read-only.
-async function readFormPairs(page) {
-  return page.evaluate(() => {
-    const shown = (node) => {
-      const box = node.getBoundingClientRect();
-      return box.width > 0 && box.height > 0;
-    };
-    const nodes = [...document.querySelectorAll('label, input, textarea')];
-    const pairs = [];
-    nodes.forEach((label, index) => {
-      if (label.tagName !== 'LABEL' || !shown(label)) return;
-      let field = label.htmlFor ? document.getElementById(label.htmlFor) : null;
-      if (field && !shown(field)) field = null;
-      for (let next = index + 1; !field && next < nodes.length; next += 1) {
-        const candidate = nodes[next];
-        if (candidate.tagName === 'LABEL') break;
-        if (!shown(candidate)) continue;
-        if (candidate.closest('tr') !== label.closest('tr')) break;
-        field = candidate;
-      }
-      if (field) pairs.push({ label: label.innerText || label.textContent || '', value: field.value ?? '' });
-    });
-    return pairs;
-  });
-}
-
-// The labelled fields first. The named inputs that readRecord already trusts fill any field the labels did not
-// give, and the balance comes from readBalance. A field with conflicting labelled values is never filled.
-async function readStayFields(page, result) {
-  const { stay, conflicts } = stayFromFormPairs(await readFormPairs(page));
+// The labelled fields first (see formPairsFromSnapshot). The named inputs that readRecord already trusts fill any field
+// the labels did not give, and the balance comes from readBalance. A field with conflicting labelled values is never
+// filled. Debug mode writes the form region to record-form.html.
+async function readStayFields(ctx) {
+  const { page, args, result } = ctx;
+  const snapshot = await page.evaluate(snapshotRecordForm, args.debugHtml);
+  if (snapshot.region) await writeFile(join(ctx.dir, 'record-form.html'), snapshot.region);
+  const { stay, conflicts } = stayFromFormPairs(formPairsFromSnapshot(snapshot.entries));
   const named = await readRecord(page);
   const fallback = {
     confirmation: squash(named.confirmation),
@@ -112,42 +92,15 @@ async function waitForPanel(page) {
   }
 }
 
-// Every dropdown row as its visible leaf texts, plus the footer. A confirmation leaf whose row cannot be resolved
-// is counted as unresolved, so it cannot slip past the footer count. Read-only.
-async function readPanelRows(panel) {
-  return panel.evaluate((root) => {
-    const DATE = /\b\d{1,2}-[A-Za-z]{3}-\d{4}\b/;
-    const CONFIRMATION = /^\d+-\d+$/;
-    const shown = (node) => {
-      const box = node.getBoundingClientRect();
-      return box.width > 0 && box.height > 0;
-    };
-    const rows = [];
-    const seen = new Set();
-    let unresolved = 0;
-    for (const leaf of root.querySelectorAll('*')) {
-      if (leaf.children.length !== 0 || !shown(leaf)) continue;
-      if (!CONFIRMATION.test((leaf.innerText || '').trim())) continue;
-      let row = leaf;
-      while (row && row !== root && !DATE.test(row.innerText || '')) row = row.parentElement;
-      if (!row || row === root) {
-        unresolved += 1;
-        continue;
-      }
-      if (seen.has(row)) continue;
-      seen.add(row);
-      rows.push([...row.querySelectorAll('*')]
-        .filter((node) => node.children.length === 0 && shown(node))
-        .map((node) => node.innerText || ''));
-    }
-    const footer = /Records:\s*\d+\s+of\s+\d+/i.exec(root.innerText || '');
-    return { rows, unresolved, footer: footer ? footer[0] : '' };
-  });
-}
-
 async function failPanel(ctx, reason) {
   await shot(ctx, 'panel.png').catch(() => {});
   setOutcome(ctx.result, 'execution_failure', reason);
+}
+
+// The panel's outer HTML, for an offline re-test of the row parser. Written on failure, or on every run with --debug-html.
+async function dumpPanelHtml(ctx, panel) {
+  const html = await panel.evaluate((root) => root.outerHTML).catch(() => '');
+  if (html) await writeFile(join(ctx.dir, 'panel.html'), html);
 }
 
 async function runFind(ctx) {
@@ -177,7 +130,7 @@ async function runFind(ctx) {
     }
   }
   if (found.locator) await openRecord(page, found.locator);
-  result.stay = await readStayFields(page, result);
+  result.stay = await readStayFields(ctx);
   await shot(ctx, 'record.png');
   mark(ctx, 'opened');
   const verdict = stayIdentityVerdict(args, result.stay);
@@ -208,15 +161,17 @@ async function runSearchGuest(ctx) {
   }
   mark(ctx, 'window');
   await shot(ctx, 'panel.png');
-  const raw = await readPanelRows(panel);
-  const records = parseRecordsFooter(raw.footer);
-  const parsed = parsePanelRows(raw.rows);
+  const snapshot = await panel.evaluate(snapshotPanel);
+  const parsed = parsePanelSnapshot(snapshot);
+  const records = parseRecordsFooter(snapshot.footer);
   result.records = records;
   result.rows = parsed.rows;
-  result.unreadable = parsed.unreadable + raw.unresolved;
+  result.unreadable = parsed.unreadable;
+  result.unreadableRows = parsed.unreadableRows;
   result.matches = sameStayRows(parsed.rows, args);
-  const verdict = searchGuestOutcome({ records, rows: parsed.rows, unreadable: result.unreadable });
+  const verdict = searchGuestOutcome({ records, rows: parsed.rows, unreadable: parsed.unreadable });
   setOutcome(result, verdict.outcome, verdict.reason);
+  if (args.debugHtml || verdict.outcome !== 'ok') await dumpPanelHtml(ctx, panel);
   mark(ctx, 'read');
 }
 
