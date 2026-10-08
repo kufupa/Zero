@@ -8,6 +8,8 @@ const HMS_RETRY =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
 const GENERIC =
   'The requested allocation or rate could not be qualified; review stay inputs and party/rate evidence';
+const COMBINATION =
+  "HMS couldn't price this exact combination of rooms, guests and meals. Try one room type or B&B first, or quote this one in HMS.";
 
 function coded(code: string, phase?: string): Error {
   return Object.assign(new Error(code), { code, ...(phase ? { phase } : {}) });
@@ -34,10 +36,19 @@ describe('staffQuoteFailureMessage', () => {
     );
   });
 
+  it('maps native capture scope and completeness failures to the plain combination message', () => {
+    expect(
+      staffQuoteFailureMessage(new Error('native_quote_capture_scope_or_completeness_invalid')),
+    ).toBe(COMBINATION);
+    expect(staffQuoteFailureMessage(new Error('native_quote_capture_oversized'))).toBe(COMBINATION);
+  });
+
+  it('keeps the PR #40 HMS retry message for native capture unavailable', () => {
+    expect(staffQuoteFailureMessage(new Error('native_quote_capture_unavailable'))).toBe(HMS_RETRY);
+  });
+
   it('falls back to the generic message for unrecognised codes', () => {
-    expect(staffQuoteFailureMessage(new Error('native_quote_capture_scope_or_completeness_invalid'))).toBe(
-      GENERIC,
-    );
+    expect(staffQuoteFailureMessage(new Error('native_quote_owner_scope_mismatch'))).toBe(GENERIC);
     expect(staffQuoteFailureMessage(new Error('toString'))).toBe(GENERIC);
   });
 });
