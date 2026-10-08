@@ -705,10 +705,7 @@ export const workstationRouter = router({
             ).catch(() => undefined);
           })
           .finally(() => queued.end());
-        registerPendingStaffQuote(
-          [workflowRunId, ...(runId ? [runId] : [])],
-          pending,
-        );
+        registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
         return summary();
       }
       await persistRun();
@@ -950,6 +947,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
       const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const, choices: [] };
+      await awaitPendingStaffQuote(mail.id);
       const runs = await getDb()
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)

@@ -588,6 +588,21 @@ describe('workstation.executeStaffQuote provisional trace (QUOTE_TRACE_ASYNC)', 
     logged.mockRestore();
   });
 
+  it('the quote choices for a message wait for a provisional run to finish before listing it', async () => {
+    vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
+    await seedRun(['group-1-availability-results.png']);
+    hoisted.db = fakeDb({}).db;
+    const capture = provisionalCapture();
+    await caller().workstation.executeStaffQuote(quoteInput);
+
+    const choices = caller().workstation.qualifiedProposalChoices({
+      internetMessageId: mail.messageIdHeader,
+    });
+    await expect(returnsBeforeFinish(choices)).resolves.toBe('still-waiting');
+    capture.finish();
+    await expect(choices).resolves.toMatchObject({ messageId: mail.id });
+  });
+
   it('a screenshot for a provisional run waits for its trace to finish before it is read', async () => {
     vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
     await seedRun(['group-1-availability-results.png']);
