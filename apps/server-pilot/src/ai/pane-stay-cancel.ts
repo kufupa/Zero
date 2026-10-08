@@ -188,6 +188,11 @@ async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCa
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     throw runError ?? new Error('pane_cancel_no_result');
   }
+  // A failed CLI run writes result.json and does not throw, so it is logged here, as the lookup spawner does.
+  if ((result.outcome ?? 'execution_failure') === 'execution_failure') {
+    const cliError = (result as { error?: string }).error ?? 'pane_cancel_execution_failure';
+    warnPaneStaySpawnFailed(input.mode, new Error(cliError));
+  }
   return {
     outcome: result.outcome ?? 'execution_failure',
     statusBefore: result.statusBefore ?? null,

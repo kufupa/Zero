@@ -27,6 +27,25 @@ import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lo
 const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
 const owner = 'user-ropperman:transport-1';
 
+// Replaces the cancel CLI process for the real defaultSpawn. Null keeps the real execFile.
+const cliFake = vi.hoisted(() => ({
+  run: null as null | ((argv: string[]) => Promise<void>),
+}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const execFile = (...args: unknown[]) => {
+    const [file, argv, , callback] = args as [string, string[], unknown, (error: unknown) => void];
+    if (!cliFake.run || file !== 'node') {
+      return (actual.execFile as unknown as (...rest: unknown[]) => unknown)(...args);
+    }
+    cliFake.run(argv).then(
+      () => callback(null),
+      (error: unknown) => callback(error),
+    );
+  };
+  return { ...actual, execFile };
+});
+
 // The error the production lock throws when its acquisition deadline passes while another run holds the lock.
 function busyLockError(): Error {
   return Object.assign(new Error('property read advisory lock could not be acquired'), {
@@ -429,6 +448,40 @@ describe('pane stay cancel', () => {
       runId: null,
       previewDigest: null,
     });
+  });
+
+  it('logs a CLI run that finished as execution_failure, with the same message cleanup as the lookup spawner', async () => {
+    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.lock = passingLock();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runDirs: string[] = [];
+    cliFake.run = async (argv) => {
+      const dir = argv[argv.indexOf('--out') + 1]!;
+      runDirs.push(dir);
+      await writeFile(
+        join(dir, 'result.json'),
+        JSON.stringify({
+          outcome: 'execution_failure',
+          error: `Command failed: node cancel-stay.mjs --confirmation ${stay.confirmation}\nHMS refused ${stay.confirmation}`,
+        }),
+      );
+      throw Object.assign(new Error('Command failed'), { code: 2 });
+    };
+    try {
+      await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
+        outcome: 'execution_failure',
+      });
+      expect(warn).toHaveBeenCalledWith('pane_stay_spawn_failed', {
+        mode: 'preview',
+        code: 'Error',
+        msg: 'HMS refused <n>',
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(stay.confirmation);
+    } finally {
+      cliFake.run = null;
+      warn.mockRestore();
+      await Promise.all(runDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    }
   });
 
   it('builds CLI args with --reason only for commit and always the run directory', () => {
