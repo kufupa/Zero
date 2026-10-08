@@ -1,9 +1,22 @@
 # Luna v4 pilot: morning handoff (2026-10-08)
 
-Final state at 05:00 UTC. Prod HEAD **`a19a260b`**, health green, deploys frozen. Call 08:00 UK = 07:00 UTC.
+Final state at 06:48 UTC. Prod HEAD **`f80777c0`** (morning wave 6, PR #47), health green, deploys frozen. Call 08:00 UK = 07:00 UTC.
 
 Pilot docs: [staff guide](../../pilot/2026-10-08-staff-guide.md) · [install + onboarding](../../pilot/2026-10-08-install-and-onboarding.md) · [call script](../../pilot/2026-10-08-call-script.md)
 PRs tonight: [#37](https://github.com/kufupa/Zero/pull/37) · [#38](https://github.com/kufupa/Zero/pull/38) · [#39](https://github.com/kufupa/Zero/pull/39) · [#40](https://github.com/kufupa/Zero/pull/40) · [#41](https://github.com/kufupa/Zero/pull/41) · [#42](https://github.com/kufupa/Zero/pull/42)
+
+
+## 0. Morning sprint (Plan v5, 05:50–06:48 UTC)
+
+| Item | Result |
+|---|---|
+| **Change/cancel: find by guest name** (89% of change emails have no HMS number) | ✅ LIVE. Prefilled surname + dates → "Search HMS" → pick the booking. Prod smoke: found the lab booking in 30s. Number-only refs are tried as `<n>-1`. |
+| **Dinner-B&B under BAR** (HMS has no BAR dinner rate; only Government has NGOVDB) | ✅ LIVE. Clear "no rate for this meal plan" message + one-click "Quote as B&B + dinner allowance". The PDF is blocked until staff enter the allowance. |
+| **Quote ~44s faster** (`QUOTE_TRACE_ASYNC`) | 🟡 Deployed **OFF**. Review: don't switch it on during the call (screenshot/PDF client timeouts). Turn on after the call, once the timeouts are raised. |
+| **Agency/company picker** (party on 70% of quotes) | ❌ Not shipped. Draft PR #48. Live party lookup for "Tourvest Travel Services" / "Tourvest" returned `no_match`. Next: find which HMS profile type and search these agencies live under. |
+| Installer SHA-256 | ✅ `e5e8a99b89f77aa2b88b933e249598afcfd7073c029bfa6ffadb070e9b07b5df` (in the install doc) |
+| Live API checks | ✅ Tell Luna corrected the dates; Treat-as quote/booking switched the workflow |
+| Multi-room quotes | ✅ 2 rooms B&B quotes fine (live). Only dinner under BAR failed (now handled). |
 
 ## 1. TL;DR
 
@@ -104,5 +117,5 @@ PRs tonight: [#37](https://github.com/kufupa/Zero/pull/37) · [#38](https://gith
 - Warmer: on for new mail, 60/h cap. **Proven live:** 10 of 12 overnight emails warmed automatically (`luna_warm_ok` is in the rotated `ai-worker-out-*.log` files; `pm2 logs` only shows the current process). Backfill re-run at 05:00 (2 new) and again at about 06:30 for morning mail.
 - `launch-readiness NOT_READY outboundBacklogEmpty` is pre-existing; every deploy exits 1 at that check after a successful restart.
 - Before every deploy: `ssm-run-command.sh 'chmod u+w /home/ubuntu/repos/zero/.husky/_/h'` (husky EACCES hit once).
-- **Rollback** (Runbook D): `git branch -f rollback/<SHA> <SHA>` → `GIT_BRANCH=rollback/<SHA> bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh` → deploy-ec2 via SSM. Targets: `a19a260b` (now) · `2ef04602` (W4) · `586a81c8` (W3) · `2d6ff252` (W2) · `8e572b17` (W1) · `b22ece75` (before tonight; **quotes broken there**).
+- **Rollback** (Runbook D): `git branch -f rollback/<SHA> <SHA>` → `GIT_BRANCH=rollback/<SHA> bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh` → deploy-ec2 via SSM. Targets: `f80777c0` (now) · `a19a260b` (05:00) · `2ef04602` (W4) · `586a81c8` (W3) · `2d6ff252` (W2) · `8e572b17` (W1) · `b22ece75` (before tonight; **quotes broken there**).
 - Housekeeping: remove the overnight Stop hook (`.claude/settings.local.json` + `.claude/hooks/` in the centurion-dashboard-tools worktree).
