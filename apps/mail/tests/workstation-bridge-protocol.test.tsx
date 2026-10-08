@@ -31,7 +31,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { useState } from 'react';
 
-const { security, ticketMutate } = vi.hoisted(() => ({
+const { security, ticketMutate, reportMutate } = vi.hoisted(() => ({
   security: {
     userId: null as string | null,
     createdAt: new Date().toISOString(),
@@ -40,6 +40,7 @@ const { security, ticketMutate } = vi.hoisted(() => ({
     isLoading: false,
   },
   ticketMutate: vi.fn(),
+  reportMutate: vi.fn(),
 }));
 
 vi.mock('../lib/auth-client', () => ({
@@ -60,7 +61,7 @@ vi.mock('../hooks/use-connections', () => ({
 }));
 
 vi.mock('../providers/query-provider', () => ({
-  trpcClient: { workstation: { bridgeTicket: { mutate: ticketMutate } } },
+  trpcClient: { workstation: { bridgeTicket: { mutate: ticketMutate }, reportBridgeFailure: { mutate: reportMutate } } },
 }));
 
 it('separates pane navigation cancellation from staff logout',()=>{expect(createBridgeRequest('CLEAR_NAVIGATION',{}).action).toBe('CLEAR_NAVIGATION');expect(createBridgeRequest('CLEAR_SESSION',{}).action).toBe('CLEAR_SESSION');});
@@ -353,6 +354,8 @@ function BridgeProbe() {
     sendCommand,
     pairDevice,
     refreshAuthorization,
+    authorizationUnavailable,
+    selectionOutsideMailbox,
   } = useOutlookBridge();
   const [errorCode, setErrorCode] = useState('');
   renderedSubjects.push(activeEmail?.subject ?? '');
@@ -370,6 +373,23 @@ function BridgeProbe() {
         {supportsAction('CREATE_REPLY_DRAFT') ? 'yes' : 'no'}
       </span>
       <span data-testid="bridge-error-code">{errorCode}</span>
+      <span data-testid="auth-unavailable">{authorizationUnavailable ? 'yes' : 'no'}</span>
+      <span data-testid="outside-mailbox">{selectionOutsideMailbox ? 'yes' : 'no'}</span>
+      <button
+        type="button"
+        onClick={() => {
+          void sendCommand('CREATE_REPLY_DRAFT', {
+            entryIds: ['mail-1'],
+            folderEntryId: 'folder-inbox',
+            operationId: createOperationId(),
+          }).then(
+            () => setErrorCode('draft-succeeded'),
+            () => setErrorCode('draft-failed'),
+          );
+        }}
+      >
+        Create reply draft
+      </button>
       <button
         type="button"
         onClick={() => {
@@ -466,7 +486,7 @@ const nativeMessages = () => {
   );
 };
 
-function respondV4(request: TestBridgeRequest, data: unknown, success = true) {
+function respondV4(request: TestBridgeRequest, data: unknown, success = true, error = 'Ticket denied') {
   act(() => {
     for (const listener of listeners.get('message') ?? []) {
       listener({
@@ -476,7 +496,7 @@ function respondV4(request: TestBridgeRequest, data: unknown, success = true) {
           action: request.action,
           success,
           data,
-          error: success ? null : 'Ticket denied',
+          error: success ? null : error,
         }),
       });
     }
@@ -497,6 +517,8 @@ describe('v4 staff-authorized Outlook navigation', () => {
     security.createdAt = new Date().toISOString();
     security.isLoading = false;
     ticketMutate.mockReset();
+    reportMutate.mockReset();
+    reportMutate.mockResolvedValue(undefined);
     ticketMutate.mockResolvedValue({
       ticket: 'one-use',
       storeId: 'store-approved',
@@ -1818,5 +1840,80 @@ describe('v4 staff-authorized Outlook navigation', () => {
     await waitFor(() =>
       expect(screen.getByTestId('subject').textContent).toBe('Authorized selection'),
     );
+  });
+
+  function capabilities(supportedActions: string[]) {
+    return {
+      bridgeProtocolVersion: 4, addinVersion: '1.0.15', outlookVersion: '16.0',
+      runtime: 'Classic Outlook for Windows', newOutlookSupported: false,
+      interactiveProfileRequired: true, maxPageSize: 200, maxFolderDepth: 64,
+      maxFolderCount: 5000, maxFolderSnapshotItems: 5000, supportedActions,
+    };
+  }
+
+  it('re-reads the selected email after a draft write so later clicks keep reaching the pane', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities(['GET_ACTIVE_EMAIL', 'CREATE_REPLY_DRAFT']));
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    const before = nativeMessages().length;
+    fireEvent.click(screen.getByRole('button', { name: 'Create reply draft' }));
+    respondV4(await waitForBridgeRequest('CREATE_REPLY_DRAFT', before), { draftId: 'draft-1' });
+    await waitFor(() => expect(screen.getByTestId('bridge-error-code').textContent).toBe('draft-succeeded'));
+    const createAt = nativeMessages().findIndex((message) => message.action === 'CREATE_REPLY_DRAFT');
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL', createAt + 1), {
+      entryId: 'after-draft', storeId: 'store-approved', folderEntryId: 'folder-inbox',
+      subject: 'Refreshed after draft', senderEmail: 'guest@example.com', senderName: 'Guest',
+      receivedTime: '2026-09-17', bodyText: 'Approved', bodyHtml: '',
+    });
+    await waitFor(() => expect(screen.getByTestId('subject').textContent).toBe('Refreshed after draft'));
+  });
+
+  it('keeps navigation and flags a selection in another Outlook store instead of denying it', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities(['GET_ACTIVE_EMAIL']));
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null, false,
+      'Selected email is unavailable. An explicit matching Outlook store is required. Reason: COMException: not found');
+    await waitFor(() => expect(screen.getByTestId('outside-mailbox').textContent).toBe('yes'));
+    expect(screen.getByTestId('auth-unavailable').textContent).toBe('no');
+    expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(1);
+    expect(nativeMessages().map((message) => message.action)).not.toContain('CLEAR_NAVIGATION');
+    expect(reportMutate).toHaveBeenCalledWith(expect.objectContaining({ action: 'GET_ACTIVE_EMAIL' }));
+  });
+
+  it('still invalidates navigation and re-registers on other GET_ACTIVE_EMAIL native failures', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities(['GET_ACTIVE_EMAIL']));
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null, false, 'Outlook denied the read');
+    await waitFor(() =>
+      expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(2),
+    );
+    expect(nativeMessages().map((message) => message.action)).toContain('CLEAR_NAVIGATION');
+    expect(screen.getByTestId('outside-mailbox').textContent).toBe('no');
+  });
+
+  it('reports an empty native selection as a diagnostic without denying navigation', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<BridgeProbe />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities(['GET_ACTIVE_EMAIL']));
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    await waitFor(() =>
+      expect(reportMutate).toHaveBeenCalledWith({ action: 'ACTIVE_EMAIL_EMPTY', message: 'native returned no selected email' }),
+    );
+    expect(nativeMessages().filter((message) => message.action === 'REGISTER_NAVIGATION')).toHaveLength(1);
   });
 });

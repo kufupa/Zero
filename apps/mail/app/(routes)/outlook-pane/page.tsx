@@ -75,7 +75,7 @@ const TOUR_SLIDES: TourSlide[] = [
 ];
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
-import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
+import { reportBridgeFailure, useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
@@ -229,6 +229,7 @@ export default function OutlookPanePage() {
     updateRequired,
     requiresRelogin,
     authorizationUnavailable,
+    selectionOutsideMailbox,
     supportsAction,
     sendCommand,
     pairDevice,
@@ -325,7 +326,16 @@ export default function OutlookPanePage() {
     draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
   );
 
+  const noConnectionEntry = useRef<string | null>(null);
   useEffect(() => {
+    // Diagnostics only, once per selected entry: a granted selection that cannot bind to a mailbox.
+    if (
+      currentScope && activeEmail?.entryId && (!activeConnection?.id || !activeConnection.email) &&
+      noConnectionEntry.current !== activeEmail.entryId
+    ) {
+      noConnectionEntry.current = activeEmail.entryId;
+      reportBridgeFailure('PANE_NO_CONNECTION', { message: 'activeConnection missing id/email' });
+    }
     if (!currentScope || !activeEmail?.entryId || !activeConnection?.id || !activeConnection.email) return;
     dispatchQuote({
       type: 'selection',
@@ -1384,6 +1394,15 @@ export default function OutlookPanePage() {
             <Button type="button" size="sm" onClick={refreshAuthorization}>
               Try again
             </Button>
+          </div>
+        )}
+        {selectionOutsideMailbox && (
+          <div role="status" className="m-3 mb-0 rounded-sm border border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-700">
+            <p>
+              {activeConnection?.email
+                ? `This email isn't in ${activeConnection.email}. Pick an email from the ${activeConnection.email} inbox.`
+                : "This email isn't in the connected mailbox. Pick an email from its inbox."}
+            </p>
           </div>
         )}
 
