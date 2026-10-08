@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
-import { loadCreateRequest, loadCreateToolSchema, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
+import { loadCreateRequest, loadCreateToolSchema, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -21,7 +21,8 @@ const REQUIRED = [
   'guaranteetype',
 ];
 
-function outDir() {
+// Shared proof directory for manual runs. The pane passes --out with a per-run directory instead.
+function defaultOutDir() {
   const root = fileURLToPath(new URL('../../../../.private/create-screen/proof/', import.meta.url));
   return root;
 }
@@ -182,6 +183,12 @@ async function main() {
     return;
   }
   const shopMode = parseShop(argv);
+  const out = parseOutDir(argv);
+  if (!out.ok) {
+    process.stderr.write(`${out.error}\n`);
+    process.exitCode = out.exitCode;
+    return;
+  }
   const actions = stayActions(stop.stopBefore);
   const loaded = await loadCreateRequest(argv);
   if (!loaded.ok) {
@@ -190,7 +197,7 @@ async function main() {
     return;
   }
   const stay = loaded.request;
-  const dir = outDir();
+  const dir = out.outDir ?? defaultOutDir();
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const url = new URL(process.env.HMS_STAGEHAND_CDP_URL);
   if (!['http:', 'ws:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {

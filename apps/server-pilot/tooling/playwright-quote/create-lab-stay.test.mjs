@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadCreateRequest, parseShop, parseStopBefore, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
+import { loadCreateRequest, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
 
 function requiredRequest(extra = {}) {
   return {
@@ -111,6 +111,14 @@ test('room and track descriptions normalize to codes', async () => {
   assert.equal(loaded.ok, true, loaded.error);
   assert.equal(loaded.request.roomType, 'STQN');
   assert.equal(loaded.request.track, 'BAR');
+});
+
+test('--out takes one absolute directory; absent means the shared proof directory', () => {
+  assert.deepEqual(parseOutDir(['--request', 'r.json']), { ok: true, exitCode: 0, outDir: null });
+  assert.deepEqual(parseOutDir(['--out', '/tmp/pane-stay-run']), { ok: true, exitCode: 0, outDir: '/tmp/pane-stay-run' });
+  assert.equal(parseOutDir(['--out', 'relative/dir']).ok, false);
+  assert.equal(parseOutDir(['--out']).ok, false);
+  assert.equal(parseOutDir(['--out', '--pane-commit']).ok, false);
 });
 
 test('--stop-before availability fills stay fields only', () => {
