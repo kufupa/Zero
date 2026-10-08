@@ -667,6 +667,37 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('does not carry a preview over to another booking picked from the name search', async () => {
+    capabilities.paneSave = true;
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA, ROW_CANCELLED], screenshots: [], runId: null });
+    const findStay = vi
+      .fn()
+      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []))
+      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+    const trpc = {
+      ...lookupTrpc(findStay, undefined, search),
+      paneStayCancel: {
+        previewCancel: { mutate: preview },
+        commitCancel: { mutate: vi.fn() },
+        paneStayScreenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
+      },
+    };
+    render(<AmendLookupPanel session={sessionWith({ ...CANCEL, confirmationNumber: null })} trpc={trpc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS (about 1 minute)' }));
+    const bookings = () => within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button');
+    await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    fireEvent.click(bookings()[0] as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    expect(await screen.findByText(`HMS says: ${PENALTY}`)).toBeTruthy();
+
+    fireEvent.click(bookings()[1] as HTMLButtonElement);
+    await waitFor(() => expect(findStay).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
+    expect(screen.queryByText(`HMS says: ${PENALTY}`)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+  });
+
   it('says so when HMS shows no cancellation fee', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue({ ...PREVIEW_OK, penaltyText: null });

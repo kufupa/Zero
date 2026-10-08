@@ -91,7 +91,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const [lookup, setLookup] = useState<LookupState | null>(null);
   const [search, setSearch] = useState<SearchState | null>(null);
   const [paneSave, setPaneSave] = useState(false);
-  const [cancelState, setCancelState] = useState<{ key: string; view: CancelView } | null>(null);
+  // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
+  const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
   const mounted = useRef(false);
   const runToken = useRef(0);
   const searchToken = useRef(0);
@@ -184,33 +185,37 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
 
   const searchHint = !searchClient ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
 
+  // The cancel view belongs to the booking it was started for: one email can show several bookings in turn.
+  const cancelScope = key && foundNumber ? `${key}|${foundNumber}` : null;
+  const cancelView = cancelScope ? (cancelViews[cancelScope] ?? null) : null;
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
-  const cancelView = cancelState && key && cancelState.key === key ? cancelState.view : null;
   const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
   const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
   const canPreviewCancel = Boolean(paneSave && cancelClient && cancelInput && key);
 
   const previewCancel = async () => {
-    if (!key || !cancelClient || !cancelInput) return;
-    setCancelState({ key, view: { kind: 'previewing' } });
+    if (!cancelScope || !cancelClient || !cancelInput) return;
+    const scope = cancelScope;
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
     try {
       const run = await cancelClient.previewCancel(cancelInput);
-      setCancelState({ key, view: viewAfterPreview(run, cancelInput.confirmation) });
+      setCancelViews((prev) => ({ ...prev, [scope]: viewAfterPreview(run, cancelInput.confirmation) }));
     } catch {
-      setCancelState({ key, view: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } });
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
     }
   };
 
   // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
   const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
-    if (!key || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
-    setCancelState({ key, view: { kind: 'committing', run: ready.run, reason: ready.reason } });
+    if (!cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
+    const scope = cancelScope;
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run, reason: ready.reason } }));
     try {
       const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason, previewDigest });
-      setCancelState({ key, view: viewAfterCommit(run, ready.run, cancelInput.confirmation) });
+      setCancelViews((prev) => ({ ...prev, [scope]: viewAfterCommit(run, ready.run, cancelInput.confirmation) }));
     } catch {
-      setCancelState({ key, view: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } });
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
     }
   };
 
@@ -221,11 +226,12 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       : AMEND_FIND_COPY.footer;
 
   const chooseReason = (reason: string) => {
-    if (!key) return;
-    setCancelState((prev) => {
-      if (!prev || prev.key !== key || prev.view.kind !== 'ready') return prev;
-      const view = prev.view;
-      return { key, view: { ...view, reason } };
+    if (!cancelScope) return;
+    const scope = cancelScope;
+    setCancelViews((prev) => {
+      const view = prev[scope];
+      if (!view || view.kind !== 'ready') return prev;
+      return { ...prev, [scope]: { ...view, reason } };
     });
   };
 
