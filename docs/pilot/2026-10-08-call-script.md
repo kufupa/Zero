@@ -9,7 +9,7 @@ For the founder running the call at about 08:00 UK (09:00 in South Africa).
 - **Staff member:** hands on the keyboard. One person at a time.
 - **Note-taker:** writes down the feedback answers.
 
-**Before the call:** finish the checklist in `2026-10-08-install-and-onboarding.md`. This includes the full SHA-256 for installer 1.0.14 (still TBC), and filling in the contact placeholders. Send the staff guide (`2026-10-08-staff-guide.md`) to the staff member beforehand.
+**Before the call:** finish the checklist in `2026-10-08-install-and-onboarding.md`. This includes checking the installer 1.0.14 SHA-256 (in the install doc) and filling in the contact placeholders. Send the staff guide (`2026-10-08-staff-guide.md`) to the staff member beforehand.
 
 **Test data only.** Use test emails and test stays. Agree with the hotel before the call that test quote runs in HMS are acceptable. Each quote run and each find uses HMS.
 
