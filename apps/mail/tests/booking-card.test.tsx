@@ -20,10 +20,13 @@ import {
 } from '../lib/quote-workflow/booking-draft-bind';
 import { bindExecuteStaffQuote } from '../lib/quote-workflow/staff-quote-bind';
 import {
+  commitOutcome,
   paneRefusalMessage,
+  paneUnconfirmedMessage,
   PANE_COMMIT_UNREACHABLE_COPY,
   PANE_PREVIEW_FAILED_COPY,
   PANE_SAVE_LAB_GUARD_COPY,
+  PANE_SAVE_UNCONFIRMED_REASON,
   paneStayInputForRoom,
   readPaneSaveFlag,
   type PaneStayClient,
@@ -562,6 +565,35 @@ describe('booking card pane save', () => {
     expect(previewButton(0)).toHaveProperty('disabled', false);
   });
 
+  it('after an unconfirmed save, says HMS may have saved it, keeps Book locked and shows the HMS screenshot', async () => {
+    const { client } = paneClient({
+      commit: async () => ({
+        status: 'refused',
+        reason: 'pane_save_unconfirmed',
+        runId: PANE_SAVE_RUN,
+        screenshots: ['saved.png'],
+      }),
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(
+      await screen.findByText(
+        'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+      ),
+    ).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'See what Luna saved in HMS' })).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(screen.queryByText(/Booked in HMS/)).toBeNull();
+    // Only a fresh Preview unlocks Book again.
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+  });
+
   it('shows the preview-failed copy when the preview call throws', async () => {
     const { client } = paneClient({
       preview: async () => {
@@ -603,10 +635,51 @@ describe('pane save helpers', () => {
       'pane_save_digest_mismatch',
       'pane_save_lock_unavailable',
       'refused_save_blank_required',
+      'pane_save_unconfirmed',
     ]) {
       expect(paneRefusalMessage(reason)).not.toBe(generic);
     }
     expect(paneRefusalMessage('pane_save_labtest_required')).toBe(PANE_SAVE_LAB_GUARD_COPY);
+  });
+
+  const johnSmith = { firstName: 'John', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' };
+
+  it('says HMS may have saved the booking, with the guest and dates to check', () => {
+    expect(paneUnconfirmedMessage(johnSmith)).toBe(
+      'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+    );
+    expect(paneRefusalMessage(PANE_SAVE_UNCONFIRMED_REASON, johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
+    expect(PANE_SAVE_UNCONFIRMED_REASON).toBe('pane_save_unconfirmed');
+  });
+
+  it('maps a refused unconfirmed save to that copy and keeps the run for its screenshot', () => {
+    expect(
+      commitOutcome(
+        { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON, runId: 'run-1', screenshots: ['saved.png'] },
+        johnSmith,
+      ),
+    ).toEqual({
+      ok: false,
+      message: paneUnconfirmedMessage(johnSmith),
+      runId: 'run-1',
+      screenshots: ['saved.png'],
+    });
+  });
+
+  it('never reads an answer without a booking number as a plain failure', () => {
+    for (const result of [
+      { status: 'ok' as const, outcome: 'save_failed', confirmationNumber: '' },
+      { status: 'ok' as const, outcome: 'save_unconfirmed', confirmationNumber: '' },
+      { status: 'ok' as const, outcome: 'execution_failure', confirmationNumber: '' },
+    ]) {
+      const outcome = commitOutcome(result, johnSmith);
+      expect(outcome).toMatchObject({ ok: false, message: paneUnconfirmedMessage(johnSmith) });
+      expect(outcome.ok ? '' : outcome.message).not.toMatch(/failed|did not save|nothing was saved/i);
+    }
+    expect(commitOutcome({ status: 'ok', outcome: 'committed', confirmationNumber: '61143613-1' })).toMatchObject({
+      ok: true,
+      confirmationNumber: '61143613-1',
+    });
   });
 
   it('names the fields still missing from a room', () => {

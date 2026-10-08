@@ -34,7 +34,20 @@ const REFUSAL_COPY: Record<string, string> = {
 
 const REFUSED_FALLBACK = 'Luna stopped before saving anything. Check HMS, then book by hand.';
 
-export function paneRefusalMessage(reason: string | undefined): string {
+// The server's refusal for a save that may have booked the stay although no number came back.
+export const PANE_SAVE_UNCONFIRMED_REASON = 'pane_save_unconfirmed';
+
+export type PaneStayGuest = Pick<PaneStayInput, 'firstName' | 'lastName' | 'arrival' | 'departure'>;
+
+// HMS may already hold the booking, so this never reads as a plain failure. Staff check HMS first.
+export function paneUnconfirmedMessage(stay?: PaneStayGuest): string {
+  const guest = stay ? `${stay.firstName} ${stay.lastName}` : 'this guest';
+  const dates = stay ? `${stay.arrival} – ${stay.departure}` : 'these dates';
+  return `HMS may have saved this booking. Check HMS for ${guest} ${dates} before trying again.`;
+}
+
+export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGuest): string {
+  if (reason === PANE_SAVE_UNCONFIRMED_REASON) return paneUnconfirmedMessage(stay);
   return (reason && REFUSAL_COPY[reason]) || REFUSED_FALLBACK;
 }
 
@@ -213,20 +226,16 @@ export function previewOutcome(result: PaneStayResult): PreviewOutcome {
 
 export type CommitOutcome =
   | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[] }
-  | { ok: false; message: string };
+  | { ok: false; message: string; runId?: string; screenshots: string[] };
 
-export function commitOutcome(result: PaneStayResult): CommitOutcome {
-  if (result.status === 'refused') return { ok: false, message: paneRefusalMessage(result.reason) };
-  if (result.outcome === 'committed' && result.confirmationNumber) {
-    return {
-      ok: true,
-      confirmationNumber: result.confirmationNumber,
-      runId: result.runId,
-      screenshots: result.screenshots ?? [],
-    };
+export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): CommitOutcome {
+  const screenshots = result.screenshots ?? [];
+  if (result.status === 'refused') {
+    return { ok: false, message: paneRefusalMessage(result.reason, stay), runId: result.runId, screenshots };
   }
-  return {
-    ok: false,
-    message: 'HMS did not confirm the booking. Check HMS for this guest before booking again.',
-  };
+  if (result.outcome === 'committed' && result.confirmationNumber) {
+    return { ok: true, confirmationNumber: result.confirmationNumber, runId: result.runId, screenshots };
+  }
+  // Any other answer may still mean HMS saved the booking, so it is never a plain failure.
+  return { ok: false, message: paneUnconfirmedMessage(stay), runId: result.runId, screenshots };
 }

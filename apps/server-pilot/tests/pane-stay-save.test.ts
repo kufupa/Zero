@@ -439,3 +439,59 @@ describe('pane stay screenshots', () => {
     await expect(stat(runDir)).rejects.toThrow();
   });
 });
+
+describe('pane stay unconfirmed saves', () => {
+  it('a commit with no booking number is refused as pane_save_unconfirmed, keeps its run, and spends the grant', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    await writeFile(join(runDir, 'saved.png'), png);
+    const runId = randomUUID();
+    paneStaySaveLoaders.spawn = async (input) =>
+      input.paneCommit
+        ? {
+            outcome: 'save_unconfirmed',
+            clickedSave: true,
+            confirmationNumber: '',
+            runId,
+            runDir,
+            screenshots: ['saved.png'],
+          }
+        : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
+    try {
+      const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+      const previewDigest = preview.previewDigest as string;
+      await expect(
+        runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      ).resolves.toEqual({
+        status: 'refused',
+        reason: 'pane_save_unconfirmed',
+        runId,
+        screenshots: ['saved.png'],
+      });
+      await expect(readPaneStayScreenshot({ runId, name: 'saved.png', owner })).resolves.toEqual({
+        status: 'ok',
+        dataUrl: `data:image/png;base64,${png.toString('base64')}`,
+      });
+      await expect(
+        runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a save_failed from the CLI gets the same rule: it is never a plain failure', async () => {
+    enableSave();
+    const owner = freshOwner();
+    paneStaySaveLoaders.spawn = async (input) =>
+      input.paneCommit
+        ? { outcome: 'save_failed', clickedSave: true, confirmationNumber: '' }
+        : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(
+      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest as string }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+  });
+});

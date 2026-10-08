@@ -177,7 +177,7 @@ type PreviewView =
 type CommitView =
   | { status: 'running'; key: string }
   | { status: 'booked'; key: string; confirmationNumber: string; runId?: string; screenshots: string[] }
-  | { status: 'refused'; key: string; message: string };
+  | { status: 'refused'; key: string; message: string; runId?: string; screenshots?: string[] };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
 
@@ -308,6 +308,7 @@ function RoomSave({
   }
 
   const previewShot = fresh?.runId ? pickScreenshot(fresh.screenshots, PREVIEW_SHOT) : null;
+  const refusedShot = commit?.status === 'refused' ? pickScreenshot(commit.screenshots ?? [], SAVED_SHOT) : null;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {preview?.status === 'running' ? (
@@ -344,9 +345,19 @@ function RoomSave({
         </p>
       ) : null}
       {commit?.status === 'refused' ? (
-        <p role="alert" className="text-[11.5px] text-amber-900">
-          {commit.message}
-        </p>
+        <>
+          <p role="alert" className="text-[11.5px] text-amber-900">
+            {commit.message}
+          </p>
+          {commit.runId && refusedShot ? (
+            <PaneScreenshot
+              caption="See what Luna saved in HMS"
+              runId={commit.runId}
+              name={refusedShot}
+              screenshot={screenshot}
+            />
+          ) : null}
+        </>
       ) : null}
       <div className="flex flex-wrap gap-2">
         <button
@@ -433,7 +444,7 @@ export function BookingCards({
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const outcome = commitOutcome(await pane.commit(stay, previewDigest));
+      const outcome = commitOutcome(await pane.commit(stay, previewDigest), stay);
       commit = outcome.ok
         ? {
             status: 'booked',
@@ -442,7 +453,13 @@ export function BookingCards({
             runId: outcome.runId,
             screenshots: outcome.screenshots,
           }
-        : { status: 'refused', key, message: outcome.message };
+        : {
+            status: 'refused',
+            key,
+            message: outcome.message,
+            runId: outcome.runId,
+            screenshots: outcome.screenshots,
+          };
     } catch {
       commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY };
     }
