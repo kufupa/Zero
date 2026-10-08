@@ -353,6 +353,19 @@ describe('pane stay cancel', () => {
     expect(calls.map((call) => call.mode)).toEqual(['preview', 'commit', 'preview']);
   });
 
+  it('a reason HMS does not accept keeps the preview grant, so staff can pick another reason', async () => {
+    enableCancel({ commit: { outcome: 'refused_reason_missing' } });
+    const preview = await previewCancel({ ...stay, owner });
+    const previewDigest = preview.previewDigest ?? undefined;
+    await expect(
+      commitCancel({ ...stay, owner, reason: 'Wrong reason', previewDigest }),
+    ).resolves.toMatchObject({ outcome: 'refused_reason_missing' });
+    enableCancel();
+    await expect(
+      commitCancel({ ...stay, owner, reason: 'Duplicate Booking', previewDigest }),
+    ).resolves.toMatchObject({ outcome: 'cancelled' });
+  });
+
   it('passes already_cancelled through and issues no grant for it', async () => {
     const calls = enableCancel({
       preview: {

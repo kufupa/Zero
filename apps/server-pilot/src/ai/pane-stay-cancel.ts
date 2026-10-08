@@ -239,6 +239,10 @@ async function runPaneStayCancel(
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
     if (spawned === null) return refused('cancel_preview_required');
+    // HMS refused the reason before it clicked cancel, so nothing was cancelled: the grant stays usable for another reason.
+    if (mode === 'commit' && spawned.outcome === 'refused_reason_missing') {
+      recordPanePreview(input.owner, digest, paneStayClock());
+    }
     let runId: string | null = null;
     if (spawned.runDir) {
       runId = randomUUID();
