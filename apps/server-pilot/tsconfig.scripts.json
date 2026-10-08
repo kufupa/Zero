@@ -1,9 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "rootDir": ".",
-    "outDir": "dist"
-  },
-  "include": ["scripts/luna-warm-backfill.ts"],
-  "exclude": ["node_modules", "dist", "tests"]
-}

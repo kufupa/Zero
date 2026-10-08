@@ -14,7 +14,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.scripts.json",
+    "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "worker": "node dist/mail/ingest/worker.js",
     "ai-worker": "node dist/ai/worker.js",
