@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -231,7 +232,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   try {
     ({ stdout } = await execFileAsync('node', args, {
       timeout: 20 * 60_000,
-      env: { ...process.env },
+      env: paneStaySpawnEnv(),
     }));
   } finally {
     await rm(requestPath, { force: true });
@@ -349,6 +350,7 @@ export async function runPaneStay(input: {
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
+    warnPaneStaySpawnFailed('save', error);
     throw error;
   }
   if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };

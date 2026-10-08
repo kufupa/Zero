@@ -20,6 +20,7 @@ import { execFile } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { tmpdir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
@@ -171,7 +172,7 @@ async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCa
   try {
     await execFileAsync('node', buildCancelStayArgs(input, dir), {
       timeout: CANCEL_TIMEOUT_MS,
-      env: { ...process.env },
+      env: paneStaySpawnEnv(),
     });
   } catch (error) {
     // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
@@ -268,7 +269,9 @@ async function runPaneStayCancel(
       previewDigest,
     };
   } catch (error) {
-    return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
+    if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
+    warnPaneStaySpawnFailed('cancel', error);
+    return refused('execution_failure');
   }
 }
 
