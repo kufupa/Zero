@@ -122,6 +122,20 @@ describe('analyseQuoteSources', () => {
     });
   });
 
+  it.each([
+    { note: 'Departure changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+    { note: 'Check-out changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+    { note: 'Arrival changed from 2027-11-12 to 2027-11-11.', arrivalDate: '2027-11-11', departureDate: '2027-11-14' },
+    { note: 'Arrival 2027-11-12. Departure changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+  ])('applies an old-to-new staff correction only to the field it names: $note', ({ note, arrivalDate, departureDate }) => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: note,
+    });
+    expect(analysis.groups[0]).toMatchObject({ arrivalDate, departureDate, adults: 2 });
+  });
+
   it('reads two dates in a staff note in reading order, mixing date formats', () => {
     const analysis = analyseQuoteSources({
       subject: 'Quote request',

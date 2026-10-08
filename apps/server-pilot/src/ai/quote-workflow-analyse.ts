@@ -108,21 +108,42 @@ function cueBefore(text: string, from: number, to: number): 'arrival' | 'departu
   return arrival > departure ? 'arrival' : 'departure';
 }
 
+const FROM_AT_END = /\bfrom\s*$/i;
+const TO_BETWEEN = /^[\s,]*\bto\b[\s,]*$/i;
+
 /**
- * Dates in a staff note. A label names the field a date corrects. Unlabelled dates fill
- * whichever slot is still open, in reading order.
+ * Dates in a staff note. A label names the field a date corrects. "<field> changed from OLD to
+ * NEW" sets that field to NEW and never uses OLD. Unlabelled dates fill whichever slot is still
+ * open, in reading order, after the labelled and corrected dates are placed.
  */
 function staffNoteDates(note: string): { arrivalDate?: string; departureDate?: string } {
+  const mentions = dateMentions(note);
+  const oldDates = new Set<number>();
+  const correctedField = new Map<number, 'arrival' | 'departure'>();
+  let cursor = 0;
+  mentions.forEach((mention, index) => {
+    const next = mentions[index + 1];
+    const from = note.slice(cursor, mention.start).match(FROM_AT_END);
+    if (from && next && TO_BETWEEN.test(note.slice(mention.end, next.start))) {
+      const field = cueBefore(note, cursor, cursor + (from.index ?? 0));
+      if (field) {
+        oldDates.add(index);
+        correctedField.set(index + 1, field);
+      }
+    }
+    cursor = mention.end;
+  });
   const named: { arrivalDate?: string; departureDate?: string } = {};
   const unlabelled: string[] = [];
-  let cursor = 0;
-  for (const mention of dateMentions(note)) {
-    const cue = cueBefore(note, cursor, mention.start);
+  cursor = 0;
+  mentions.forEach((mention, index) => {
+    const cue = correctedField.get(index) ?? cueBefore(note, cursor, mention.start);
     cursor = mention.end;
+    if (oldDates.has(index)) return;
     if (cue === 'arrival' && !named.arrivalDate) named.arrivalDate = mention.iso;
     else if (cue === 'departure' && !named.departureDate) named.departureDate = mention.iso;
     else unlabelled.push(mention.iso);
-  }
+  });
   for (const iso of unlabelled) {
     if (!named.arrivalDate) named.arrivalDate = iso;
     else if (!named.departureDate) named.departureDate = iso;
