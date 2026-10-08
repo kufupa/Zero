@@ -30,12 +30,18 @@ declare global {
 }
 
 /** Diagnostics only: tells the server where Outlook refused, without changing any denial handling. */
-function reportBridgeFailure(action: string, error: unknown) {
+export function reportBridgeFailure(action: string, error: unknown) {
   const failure = error as { code?: unknown; message?: unknown } | null;
   void Promise.resolve().then(() => trpcClient.workstation.reportBridgeFailure.mutate({ action,
     ...(typeof failure?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(failure.code) ? { code: failure.code } : {}),
     message: String(failure?.message ?? 'unknown').slice(0, 300) })).catch(() => undefined);
 }
+
+/** Native 1.0.15+ appends this to its denial when the selected item is in another Outlook store. */
+const isOtherStoreError = (error: unknown) =>
+  String((error as { message?: unknown } | null)?.message).includes(
+    'An explicit matching Outlook store is required',
+  );
 
 export type WorkstationInfo = {
   bridgeProtocolVersion: number;
@@ -172,6 +178,7 @@ export function useOutlookBridge() {
   const [updateRequired, setUpdateRequired] = useState(false);
   const [requiresRelogin, setRequiresRelogin] = useState(false);
   const [authorizationUnavailable, setAuthorizationUnavailable] = useState(false);
+  const [selectionOutsideMailbox, setSelectionOutsideMailbox] = useState(false);
   const [consentInProgress, setConsentInProgress] = useState(false);
   const pending = useRef(new Map<string, Pending>());
   const activeMailRequests = useRef(0);
@@ -205,6 +212,7 @@ export function useOutlookBridge() {
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
   const loadMailRef = useRef<(generation: number) => Promise<void>>(async () => {});
+  const readActiveEmailRef = useRef<() => Promise<boolean>>(async () => false);
 
   const wakeIdleWaiters = useCallback(() => {
     for (const wake of idleWaiters.current) wake();
@@ -580,6 +588,8 @@ export function useOutlookBridge() {
         );
       } catch (error) {
         reportBridgeFailure(action, error);
+        // A selection in another store is not a denial; keep the grant and let the reader say so.
+        if (action === 'GET_ACTIVE_EMAIL' && isOtherStoreError(error)) throw error;
         if (navigation.current === registered) {
           invalidateNavigation();
           if (++failedNativeAuthorizations.current <= 1) {
@@ -698,6 +708,10 @@ export function useOutlookBridge() {
           }
         }
       }
+      // Native stops selection events after a draft write until the grant renews, so re-read now.
+      // Skipped while a move confirmation is open; the move's own reload covers that case.
+      if (MUTATIONS.has(action) && !moveConsent.current)
+        void readActiveEmailRef.current().catch(() => undefined);
       return result;
       } finally {
         if (waitingForMail && --activeMailRequests.current === 0) wakeIdleWaiters();
@@ -707,6 +721,51 @@ export function useOutlookBridge() {
     },
     [invalidateNavigation, nativeRequest, registerNavigation, wakeIdleWaiters],
   );
+
+  // Reads the selected email for the newest selection only, so a slow reply
+  // cannot overwrite a later click. Resolves true when this read was applied.
+  // Any read native answers proves the grant works; a click back in Inbox must lift the retry banner.
+  const clearAuthorizationFailures = () => {
+    setAuthorizationUnavailable(false);
+    deniedTickets.current = 0;
+    failedNativeAuthorizations.current = 0;
+  };
+  readActiveEmailRef.current = async () => {
+    const registered = navigation.current;
+    if (!registered) return false;
+    const requestSelection = ++selection.current;
+    const isCurrent = () =>
+      navigation.current === registered && selection.current === requestSelection;
+    try {
+      const data = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
+        'GET_ACTIVE_EMAIL',
+        {},
+      );
+      const parsed = WorkstationEmailPayloadSchema.safeParse(data);
+      // Diagnostics only: names the missing field or schema path, never values.
+      if (data === null)
+        reportBridgeFailure('ACTIVE_EMAIL_EMPTY', { message: 'native returned no selected email' });
+      else if (!parsed.success)
+        reportBridgeFailure('GET_ACTIVE_EMAIL', { message: `email schema: ${parsed.error.issues.map((issue) => issue.path.join('.')).join(',')}` });
+      else if (!parsed.data.internetMessageId)
+        reportBridgeFailure('ACTIVE_EMAIL_NO_MESSAGE_ID', { message: 'selected email has no Internet Message-ID' });
+      if (!isCurrent()) return false;
+      setActiveEmail(parsed.success ? parsed.data : null);
+      setActiveEmailOwner(currentScope.current);
+      setSelectionOutsideMailbox(false);
+      clearAuthorizationFailures();
+      return true;
+    } catch (error) {
+      if (!isOtherStoreError(error)) throw error;
+      if (isCurrent()) {
+        setActiveEmail(null);
+        setSelectionOutsideMailbox(true);
+        // Native answered under a live grant, so authorization itself is healthy again.
+        clearAuthorizationFailures();
+      }
+      return false;
+    }
+  };
 
   loadMailRef.current = async (generation: number) => {
     const registered = navigation.current;
@@ -727,19 +786,11 @@ export function useOutlookBridge() {
       }
       setCapabilities(parsed.data);
       setCapabilitiesOwner(currentScope.current);
-      const requestSelection = ++selection.current;
-      const data = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
-        'GET_ACTIVE_EMAIL',
-        {},
-      );
       if (
+        await readActiveEmailRef.current() &&
         epoch.current === generation &&
-        navigation.current === registered &&
-        selection.current === requestSelection
+        navigation.current === registered
       ) {
-        const parsedEmail = WorkstationEmailPayloadSchema.safeParse(data);
-        setActiveEmail(parsedEmail.success ? parsedEmail.data : null);
-        setActiveEmailOwner(currentScope.current);
         setAuthorizationUnavailable(false);
         deniedTickets.current = 0;
         failedNativeAuthorizations.current = 0;
@@ -781,25 +832,8 @@ export function useOutlookBridge() {
           result.version !== BRIDGE_PROTOCOL_VERSION
         )
           return;
-        const activeNavigation = navigation.current;
-        const requestSelection = ++selection.current;
         setActiveEmail(null);
-        void sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
-          'GET_ACTIVE_EMAIL',
-          {},
-        )
-          .then((data) => {
-            if (
-              !mounted ||
-              navigation.current !== activeNavigation ||
-              selection.current !== requestSelection
-            )
-              return;
-            const parsed = WorkstationEmailPayloadSchema.safeParse(data);
-            setActiveEmail(parsed.success ? parsed.data : null);
-            setActiveEmailOwner(currentScope.current);
-          })
-          .catch(() => undefined);
+        void readActiveEmailRef.current().catch(() => undefined);
         return;
       }
       const request = pending.current.get(result.requestId);
@@ -862,6 +896,7 @@ export function useOutlookBridge() {
     setAuthorizationUnavailable(false);
     if (hadSetup) clearPending(false);
     setActiveEmail(null);
+    setSelectionOutsideMailbox(false);
     setCapabilities(null);
     if (
       scopeKey &&
@@ -908,6 +943,7 @@ export function useOutlookBridge() {
   return {
     isConnected,
     authorizationUnavailable,
+    selectionOutsideMailbox,
     consentInProgress,
     activeEmail: activeEmailOwner === scopeKey ? activeEmail : null,
     workstationInfo,
