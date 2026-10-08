@@ -195,6 +195,9 @@ jobs:
               tests/outlook-device-enrollment.test.ts \
               tests/outlook-bridge-authorization.test.ts \
               tests/outlook-security-retention.test.ts
+          # The pane's quote/lookup source routes match synced mail by Message-ID; never prove them only on fixtures.
+          MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
+            tests/staff-quote-route.test.ts
           MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED=1 pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
             tests/rocketseed-returned-copy-reconciliation.test.ts \
             tests/outbound-delivery-outcome.test.ts \
