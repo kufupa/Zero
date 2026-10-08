@@ -37,6 +37,24 @@ function anonymousCaller() {
 }
 
 describe('Workstation tRPC Router Contract', () => {
+  it('logs native bridge refusals with EntryID-like tokens masked and rejects anonymous callers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const caller = appRouter.createCaller({ auth: null as never, reqHeaders: new Headers(),
+        sessionUser: { id: 'user-ropperman', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
+        activeTransportId: 'transport-centurion', accessRole: 'member' } as never);
+      await expect(caller.workstation.reportBridgeFailure({ action: 'GET_CAPABILITIES', code: 'NATIVE_DENIED',
+        message: 'Observed folder 00000000AABBCCDDEEFF00112233445566778899 was not server-approved.' }))
+        .resolves.toEqual({ logged: true });
+      expect(warn).toHaveBeenCalledWith('outlook_bridge_native_failure', { transportId: 'transport-centurion',
+        action: 'GET_CAPABILITIES', code: 'NATIVE_DENIED', message: 'Observed folder <id> was not server-approved.' });
+      await expect(anonymousCaller().workstation.reportBridgeFailure({ action: 'PING', message: 'x' }))
+        .rejects.toBeInstanceOf(TRPCError);
+      await expect(caller.workstation.reportBridgeFailure({ action: 'get capabilities', message: 'x' }))
+        .rejects.toBeInstanceOf(TRPCError);
+    } finally { warn.mockRestore(); }
+  });
+
   it('does not invent an Outlook product version when the caller omits it', () => {
     expect(workstationPingInput.parse({}).outlookVersion).toBe('unknown');
   });

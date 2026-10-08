@@ -571,6 +571,11 @@ export function useOutlookBridge() {
           },
         );
       } catch (error) {
+        // Diagnostics only: never let reporting change the denial handling below.
+        const failure = error as Error & { code?: string };
+        void Promise.resolve().then(() => trpcClient.workstation.reportBridgeFailure.mutate({ action,
+          ...(typeof failure?.code === 'string' ? { code: failure.code.slice(0, 64) } : {}),
+          message: String(failure?.message ?? 'unknown').slice(0, 300) })).catch(() => undefined);
         if (navigation.current === registered) {
           invalidateNavigation();
           if (++failedNativeAuthorizations.current <= 1) {
