@@ -49,6 +49,8 @@ export const staffQuoteInput = z
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
     dinnerAllowanceMinor: z.number().int().positive().optional(),
+    // The groups that took the B&B fallback. The allowance charges only these groups' guests; absent means every group.
+    dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
     shuttleRequested: z.boolean().optional(),
     shuttleMinor: z.number().int().positive().optional(),
   })
@@ -258,8 +260,10 @@ export function buildStaffProposalFacts(
   const extrasReviewItems: string[] = [];
   const first = input.groups[0]!;
   const dates = occupiedDates(first.arrivalDate, first.departureDate);
-  if (input.dinnerAllowanceMinor && input.dinnerAllowanceMinor > 0) {
-    const persons = buildStayPersons(input);
+  const allowanceIds = input.dinnerAllowanceGroupIds;
+  const allowanceGroups = allowanceIds ? input.groups.filter((group) => allowanceIds.includes(group.id)) : input.groups;
+  if (input.dinnerAllowanceMinor && input.dinnerAllowanceMinor > 0 && allowanceGroups.length) {
+    const persons = buildStayPersons({ ...input, groups: allowanceGroups });
     const units = persons.length * dates.length;
     extras.push({
       id: 'dinner-allowance',

@@ -467,6 +467,59 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('sends the group ids the dinner allowance belongs to, so the server charges only those guests', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: { ...government, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['g1'] },
+    });
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: ['g1'],
+    });
+  });
+
+  it('sends each date option only its own dinner groups, within the server cap of 8 ids', async () => {
+    const optionA = ['a1', 'a2', 'a3', 'a4', 'a5'];
+    const optionB = ['b1', 'b2', 'b3', 'b4', 'b5'];
+    const optionC = ['c1'];
+    const groupsFor = (ids: string[], arrivalDate: string, departureDate: string) =>
+      ids.map((id) => ({ ...stay, id, arrivalDate, departureDate, roomPreference: 'STWN' as const }));
+    const header = {
+      ...government,
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: [...optionA, ...optionB, 'a1'],
+    };
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const runs = [
+      groupsFor(optionA, '2026-11-12', '2026-11-14'),
+      groupsFor(optionB, '2026-11-20', '2026-11-22'),
+      groupsFor(optionC, '2026-11-28', '2026-11-30'),
+    ];
+    for (const groups of runs) {
+      const result = await bindExecuteStaffQuote({
+        mutate,
+        source,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups,
+        header,
+      });
+      expect(result.status).toBe('ok');
+    }
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({ dinnerAllowanceGroupIds: optionA });
+    expect(mutate.mock.calls[1]?.[0]).toMatchObject({ dinnerAllowanceGroupIds: optionB });
+    // Option C took no B&B fallback. An empty list charges nothing; an omitted list would charge every group.
+    expect(mutate.mock.calls[2]?.[0]).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: [],
+    });
+  });
+
   it('rejects one executeStaffQuote run that mixes date sets, before any HMS call', async () => {
     const mutate = vi.fn(async () => readyResult);
     const mixed = await bindExecuteStaffQuote({
@@ -565,5 +618,57 @@ describe('staff quote execute/PDF header bind', () => {
       expectedTotalMinor: 850000,
     });
     expect(missingAgency.status).toBe('unavailable');
+  });
+});
+
+describe('staff quote no-matching-rate flag', () => {
+  const source = { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+  const stay = {
+    id: 'g1',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    quantity: 1,
+    adults: 1,
+    childrenAges: [] as number[],
+    board: 'dinner_bb' as const,
+    specialRequests: [] as string[],
+    fields: {},
+  };
+  const header = {
+    salesStrategy: 'BAR' as const,
+    company: '',
+    agency: '',
+    attention: '',
+    clientEmail: '',
+    clientTelephone: '',
+  };
+
+  it('flags only the clean HMS no-match, so the pane can offer the B&B fallback', async () => {
+    const noMatch = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw new Error(
+          'HMS has no rate for this meal plan under BAR. For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.',
+        );
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header,
+    });
+    expect(noMatch).toMatchObject({ status: 'unavailable', noMatchingRate: true });
+
+    const otherFailure = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw new Error("HMS didn't respond as expected.");
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header,
+    });
+    expect(otherFailure.status).toBe('unavailable');
+    expect(otherFailure).not.toHaveProperty('noMatchingRate', true);
   });
 });

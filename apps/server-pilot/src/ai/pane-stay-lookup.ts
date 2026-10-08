@@ -77,9 +77,28 @@ export type PaneStayFindResult = {
 
 export type GuestDatesQuery = { lastName: string; arrival: string; departure: string };
 
+/** A surname search on one arrival day, optionally narrowed to one departure day. */
+export type GuestSearchQuery = { lastName: string; arrival: string; departure?: string };
+
 export type PaneStayLookupSpawnInput =
   | { mode: 'find'; confirmation: string; arrival: string | null }
-  | ({ mode: 'search-guest' } & GuestDatesQuery);
+  | ({ mode: 'search-guest' } & GuestSearchQuery);
+
+export type PaneStayGuestSearchOutcome = 'ok' | 'ambiguous_capped' | 'execution_failure';
+
+export type PaneStayGuestSearchResult = {
+  outcome:
+    | PaneStayGuestSearchOutcome
+    | 'refused_flag_off'
+    | 'refused_input_invalid'
+    | 'refused_lock_unavailable'
+    | 'refused_lock_busy';
+  /** Complete only for an ok read. A capped or failed read reports no rows, so nothing can be picked from a partial list. */
+  rows: PaneStayPanelRow[];
+  /** File names only. The files stay in the lookup run directory. */
+  screenshots: string[];
+  runId: string | null;
+};
 
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayLookupSpawnResult = {
@@ -125,6 +144,13 @@ function isRealIsoDate(value: string): boolean {
 
 function isConfirmation(value: string): boolean {
   return /^\d+-\d+$/.test(value);
+}
+
+/** Surname as the search takes it. Starts and ends on a letter, so it can never read as a CLI flag. */
+export const GUEST_SURNAME_PATTERN = /^\p{L}[\p{L} '-]*\p{L}$/u;
+
+export function isGuestSurname(value: string): boolean {
+  return value.length >= 2 && value.length <= 40 && GUEST_SURNAME_PATTERN.test(value);
 }
 
 export function buildStayLookupArgs(input: PaneStayLookupSpawnInput, outDir: string): string[] {
@@ -267,6 +293,87 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
     arrivalMismatch: run.arrivalMismatch === true,
     requestedArrival: run.requestedArrival ?? input.arrival ?? null,
     hmsArrival: run.hmsArrival ?? stay?.arrival ?? null,
+    screenshots: run.screenshots.map((path) => basename(path)),
+    runId: run.runId ?? null,
+  };
+}
+
+function refusedSearch(outcome: PaneStayGuestSearchResult['outcome']): PaneStayGuestSearchResult {
+  return { outcome, rows: [], screenshots: [], runId: null };
+}
+
+const SEARCH_OUTCOMES: ReadonlySet<string> = new Set(['ok', 'ambiguous_capped', 'execution_failure']);
+
+function toSearchOutcome(raw: string): PaneStayGuestSearchOutcome {
+  return SEARCH_OUTCOMES.has(raw) ? (raw as PaneStayGuestSearchOutcome) : 'execution_failure';
+}
+
+// Keeps the row fields the pane shows. A row with no confirmation number cannot be opened, so it is dropped.
+function toPanelRows(raw: unknown): PaneStayPanelRow[] {
+  if (!Array.isArray(raw)) return [];
+  const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+  const day = (value: unknown): string | null =>
+    typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+  return raw.flatMap((row: Record<string, unknown> | null) => {
+    const confirmation = text(row?.confirmation);
+    if (!row || !confirmation) return [];
+    return [
+      {
+        confirmation,
+        lastName: text(row.lastName),
+        firstName: text(row.firstName),
+        status: text(row.status),
+        arrival: day(row.arrival),
+        departure: day(row.departure),
+      },
+    ];
+  });
+}
+
+// Only rows on the requested arrival, and on the requested departure when one is given. A row whose departure is not
+// shown cannot be confirmed for a departure search, so it is left out of that search.
+function rowsOnRequestedDates(rows: PaneStayPanelRow[], query: GuestSearchQuery): PaneStayPanelRow[] {
+  return rows.filter((row) => row.arrival === query.arrival
+    && (query.departure === undefined || row.departure === query.departure));
+}
+
+// Read-only surname search on one arrival day (and optionally one departure), under the session hotel's property
+// lock. Same lock, spawn and refusals as findStay. Rows come back only for an ok read.
+export async function searchGuest(
+  input: GuestSearchQuery,
+  deps: PaneStayLookupDeps,
+): Promise<PaneStayGuestSearchResult> {
+  const enabled = paneStayLookupLoaders.enabled ?? (() => paneStayLookupEnabled());
+  if (!enabled()) return refusedSearch('refused_flag_off');
+  if (!isGuestSurname(input.lastName) || !isRealIsoDate(input.arrival)) return refusedSearch('refused_input_invalid');
+  if (input.departure !== undefined && (!isRealIsoDate(input.departure) || input.departure <= input.arrival)) {
+    return refusedSearch('refused_input_invalid');
+  }
+  const lock = deps.lock();
+  if (!lock) return refusedSearch('refused_lock_unavailable');
+  const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
+  let run: PaneStayLookupSpawnResult;
+  try {
+    run = await lock.withLock(
+      () =>
+        spawn({
+          mode: 'search-guest',
+          lastName: input.lastName,
+          arrival: input.arrival,
+          ...(input.departure !== undefined ? { departure: input.departure } : {}),
+        }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return refusedSearch('refused_lock_busy');
+    warnPaneStaySpawnFailed('search-guest', error);
+    return refusedSearch('execution_failure');
+  }
+  if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
+  const outcome = toSearchOutcome(run.outcome);
+  return {
+    outcome,
+    rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), input) : [],
     screenshots: run.screenshots.map((path) => basename(path)),
     runId: run.runId ?? null,
   };

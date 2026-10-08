@@ -168,6 +168,22 @@ export async function saveEvidence(directory, name, value) {
   await writeFile(join(directory,name), typeof value === 'string' ? value : JSON.stringify(value,null,2)+'\n', { mode: 0o600 });
 }
 
+/** Only the exact value 'on' enables the provisional quote capture. Anything else stays sequential. */
+export function quoteTraceAsyncEnabled(env = process.env) {
+  return env?.QUOTE_TRACE_ASYNC === 'on';
+}
+
+/**
+ * The quote capture as it stands before the trace is finished: audit status 'pending', no trace
+ * hash. Returns null unless the outcome is still a quote after the screenshot contract. It reads
+ * audit state only; the trace is still stopped and sanitized by audit.finish() afterwards.
+ */
+export function provisionalQuoteCapture({result,audit,directory,started,now=Date.now()}) {
+  if(result?.outcome!=='quote') return null;
+  const provisional=applyQuoteScreenshotContract({...result,audit:audit.snapshot(),elapsedMs:now-started,evidenceDirectory:directory});
+  return provisional.outcome==='quote'?provisional:null;
+}
+
 export function normalizePrice(displayed, currency) {
   if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) return null;
   const symbol=/^[R$€£]/.exec(displayed)?.[0];
@@ -779,7 +795,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
     screenshots:copiedShots};
 }
 
-export async function fetchQuote({requestPath,outputDir,env=process.env,video=false}) {
+export async function fetchQuote({requestPath,outputDir,env=process.env,video=false,onCaptured}) {
   process.umask(0o077);
   const root=resolve(fileURLToPath(new URL('../../../../',import.meta.url)),'.private/playwright-quote');
   const outputRoot=resolve(outputDir??root);
@@ -819,6 +835,10 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       await audit.checkpoint('hotel-availability');
       result=await runInPage(page,request,directory,event,audit.checkpoint);
       event(`result_${result.outcome}`);
+      if(onCaptured&&quoteTraceAsyncEnabled(env)) {
+        const provisional=provisionalQuoteCapture({result,audit,directory,started});
+        if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
+      }
     }
   } catch(error) {
     result=executionFailure(error,phase,secret);

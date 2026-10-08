@@ -8,12 +8,12 @@ import type { QuoteAmendment } from './types';
 
 export const AMEND_FIND_COPY = {
   looking: 'Luna is looking up the booking in HMS… (about 1–2 minutes)',
-  noNumber: "Luna couldn't find a booking number in the email. Search HMS by name instead.",
+  noNumber: "Luna couldn't find a booking number in the email. Find the booking by guest name below.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
   notFound:
-    'No booking with that number in HMS. Check the number in the email or search HMS by guest name.',
+    'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
   notExact:
-    'HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name.',
+    'HMS needs one exact booking number from the latest email. Check the email or find the booking by guest name below.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
   arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
   busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
@@ -24,6 +24,13 @@ export const AMEND_FIND_COPY = {
   unreachable: "Luna can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
   footer: 'Luna only looks the booking up. Make the change in HMS yourself.',
+  searchIntro: 'The email has no HMS booking number, so find the booking by surname and arrival day.',
+  searchButton: 'Search HMS (about 1 minute)',
+  searching: 'Luna is searching HMS by guest name… (about 1 minute)',
+  searchCapped: 'Many matches — add the departure date.',
+  searchInvalid: 'Check the surname and dates, then search again.',
+  searchFailed: 'Luna could not read the HMS search. Try again in a minute.',
+  searchPick: 'Pick a booking to see it in HMS above.',
 } as const;
 
 /** HMS confirmation numbers look like 57291630-1. findStay takes no other form. */
@@ -31,9 +38,20 @@ export function isHmsConfirmation(value: string): boolean {
   return /^\d+-\d+$/.test(value);
 }
 
+/**
+ * The HMS number the find uses for an email number. A dash form is taken as written. Digits alone (6 to 10) are
+ * read as the first stay of that booking, so -1 is added. Anything else, such as an agency reference, is null.
+ */
+export function hmsNumberFor(value: string | null | undefined): string | null {
+  const number = value?.trim() ?? '';
+  if (isHmsConfirmation(number)) return number;
+  if (/^\d{6,10}$/.test(number)) return `${number}-1`;
+  return null;
+}
+
 /** The note for an email number HMS cannot take: an agency or voucher reference, say. It names the number. */
 export function notHmsNumberNote(value: string): string {
-  return `The number in the email (${value}) looks like the agent's own reference, not an HMS booking number. Search HMS by guest name.`;
+  return `The number in the email (${value}) looks like the agent's own reference, not an HMS booking number. Find the booking by guest name below.`;
 }
 
 /** One Guest Stay as findStay returns it. Each field is null when HMS does not show it. Dates are ISO days. */
@@ -248,6 +266,106 @@ export function sendableArrival(value: string | null | undefined): string | null
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
   const date = new Date(`${day}T00:00:00Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === day ? day : null;
+}
+
+/** One row of a guest-name search, as paneStayLookup.searchGuest returns it. Dates are ISO days or null. */
+export type GuestSearchRow = {
+  confirmation: string;
+  lastName: string;
+  firstName: string;
+  status: string;
+  arrival: string | null;
+  departure: string | null;
+};
+
+export type GuestSearchInput = { lastName: string; arrival: string; departure?: string };
+
+/** paneStayLookup.searchGuest. rows are complete only for outcome ok. */
+export type GuestSearchReply = {
+  outcome: string;
+  rows: GuestSearchRow[];
+  screenshots: string[];
+  runId: string | null;
+};
+
+export type AmendSearchClient = {
+  searchGuest: (input: GuestSearchInput) => Promise<GuestSearchReply>;
+};
+
+type TrpcPaneStayLookupSearchRoute = {
+  paneStayLookup?: { searchGuest?: { mutate: (input: GuestSearchInput) => Promise<GuestSearchReply> } };
+};
+
+/** Binds paneStayLookup.searchGuest off a tRPC client. Null when the route is missing. */
+export function amendSearchClientFromTrpc(trpc: unknown): AmendSearchClient | null {
+  if (!trpc || typeof trpc !== 'object') return null;
+  const search = (trpc as TrpcPaneStayLookupSearchRoute).paneStayLookup?.searchGuest;
+  if (!search) return null;
+  return { searchGuest: (input) => search.mutate(input) };
+}
+
+/** Same surname rule as the server: 2 to 40 letters, spaces, apostrophes or hyphens, starting and ending on a letter. */
+export function isSearchSurname(value: string): boolean {
+  return value.length >= 2 && value.length <= 40 && /^\p{L}[\p{L} '-]*\p{L}$/u.test(value);
+}
+
+export type HmsSearchRun =
+  | { kind: 'rows'; rows: GuestSearchRow[] }
+  | { kind: 'none'; lastName: string; arrival: string }
+  | { kind: 'capped' }
+  | { kind: 'error'; message: string };
+
+/** One plain sentence for a search that matched nothing. The surname and arrival are the ones searched. */
+export function noSearchMatchCopy(lastName: string, arrival: string): string {
+  return `No booking for ${lastName} arriving ${formatStayDate(arrival)} in HMS. Check the spelling or dates.`;
+}
+
+/**
+ * The guest-name search. The surname and arrival are required; a departure, when given, must fall after the arrival.
+ * Only an ok read with rows is a list. A capped read has no list to pick from, so it says to add the departure.
+ */
+export async function runHmsSearch(options: {
+  /** Null when the paneStayLookup route is not bound. The run then fails with the unavailable copy. */
+  client: AmendSearchClient | null;
+  lastName: string;
+  arrival: string | null | undefined;
+  departure?: string | null;
+}): Promise<HmsSearchRun> {
+  const client = options.client;
+  if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  const lastName = options.lastName.trim().replace(/\s+/g, ' ');
+  const arrival = sendableArrival(options.arrival);
+  const departureText = (options.departure ?? '').trim();
+  const departure = departureText ? sendableArrival(departureText) : null;
+  if (!isSearchSurname(lastName) || !arrival) return { kind: 'error', message: AMEND_FIND_COPY.searchInvalid };
+  if (departureText && (!departure || departure <= arrival)) {
+    return { kind: 'error', message: AMEND_FIND_COPY.searchInvalid };
+  }
+  const input: GuestSearchInput = departure ? { lastName, arrival, departure } : { lastName, arrival };
+  let reply: GuestSearchReply | undefined;
+  try {
+    reply = await client.searchGuest(input);
+  } catch {
+    // Same rule as the find: a failed call reads the same whatever failed, and its raw message is never shown.
+    return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  }
+  if (!reply) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  switch (reply.outcome) {
+    case 'ok':
+      return reply.rows.length > 0 ? { kind: 'rows', rows: reply.rows } : { kind: 'none', lastName, arrival };
+    case 'ambiguous_capped':
+      return { kind: 'capped' };
+    case 'refused_input_invalid':
+      return { kind: 'error', message: AMEND_FIND_COPY.searchInvalid };
+    case 'refused_lock_busy':
+      return { kind: 'error', message: AMEND_FIND_COPY.busy };
+    case 'refused_lock_unavailable':
+      return { kind: 'error', message: AMEND_FIND_COPY.unreachable };
+    case 'refused_flag_off':
+      return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+    default:
+      return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  }
 }
 
 function nameWords(name: string): string[] {

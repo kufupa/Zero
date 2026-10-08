@@ -195,7 +195,8 @@ Change and cancel emails show the label **Change to booking** or **Cancellation*
 
 1. Read the left side, **What the guest asked**: Request, Confirmation, Guest last name, Arrival, Departure. Each one says "From the email".
 2. Click **Find this booking in HMS**.
-   - The button is greyed out if the email has no booking number, or the number is not in the right form (for example 12345-1).
+   - The button is greyed out if the email has no HMS booking number, for example an agency or voucher reference such as 9999SH999999. A number of 6 to 10 digits, such as 57291630, is read as its first stay, 57291630-1.
+   - If the email has no HMS booking number, Luna offers 'Find by guest name': check the surname and dates, press Search HMS (about 1 minute), then pick the booking.
    - It takes about 1–2 minutes. The text under the button says: "Takes about 1–2 minutes. Quotes wait while it runs."
    - Do not start a quote while a find is running.
 3. Read the right side, **Booking in HMS now**: Matched on, Guest, Arrival, Departure, Status, Room, Rate plan, Meal plan and Grand total (when HMS shows them).
@@ -215,15 +216,22 @@ Change and cancel emails show the label **Change to booking** or **Cancellation*
 
 **If the find does not work, you may see:**
 
-- "Luna couldn't find a booking number in the email. Search HMS by name instead."
-- "No booking with that number in HMS. Check the number in the email or search HMS by guest name."
-- "HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name."
+- "Luna couldn't find a booking number in the email. Find the booking by guest name below."
+- "No booking with that number in HMS. Check the number in the email or find the booking by guest name below."
+- "HMS needs one exact booking number from the latest email. Check the email or find the booking by guest name below."
 - "HMS matched more than one booking for that number. Check HMS directly."
 - "HMS is busy with another quote or lookup. Try again in a minute."
 - "Luna could not read the HMS result. Try again in a minute."
 - "Waiting for this email to sync before the HMS lookup can start."
 - "The HMS lookup is not connected in this session. Search HMS by hand."
 - "Luna can't reach HMS right now. Tell the Nava team."
+
+**If Find by guest name does not find the booking, you may see:**
+
+- "No booking for Mokoena arriving 12 Oct 2026 in HMS. Check the spelling or dates."
+- "Many matches — add the departure date."
+- "Check the surname and dates, then search again."
+- "Luna could not read the HMS search. Try again in a minute."
 
 **Note on a change or cancel email:** you may see "Luna can find the booking; make the change in HMS yourself." This means the same thing as the panel. Use **Find this booking in HMS**, then make every change by hand in HMS.
 

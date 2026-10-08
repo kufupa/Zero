@@ -83,6 +83,11 @@ export async function createAudit(directory, {video=false,trace=true,secrets=[]}
         event(`checkpoint_${name}`);
       } catch {fail('CHECKPOINT_FAILED');throw new Error('CHECKPOINT_FAILED');}
     },
+    // Read-only view for a provisional capture: no trace stop, sanitize or hash yet.
+    snapshot() {
+      return structuredClone({...report,status:'pending',
+        trace:report.trace.status==='disabled'?report.trace:{status:'pending'}});
+    },
     async finish() {
       if(finished) return report;
       finished=true;
