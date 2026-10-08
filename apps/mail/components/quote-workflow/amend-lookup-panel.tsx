@@ -206,6 +206,12 @@ export function AmendLookupPanel({
     }
   };
 
+  // Cancel mail the pane can preview says so; otherwise the look-up footer stays.
+  const footer =
+    amendment.kind === 'cancel' && match && confirmationNumber && canPreviewCancel
+      ? AMEND_CANCEL_COPY.footerPreview
+      : AMEND_FIND_COPY.footer;
+
   const chooseReason = (reason: string) => {
     if (!key) return;
     setCancelState((prev) => {
@@ -289,7 +295,7 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
-      <p className={captionClass}>{AMEND_FIND_COPY.footer}</p>
+      <p className={captionClass}>{footer}</p>
     </section>
   );
 }

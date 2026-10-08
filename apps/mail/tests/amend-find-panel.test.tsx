@@ -440,4 +440,33 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(await screen.findByText("Luna couldn't finish in HMS. Check HMS yourself.")).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
+
+  it('says Luna can preview, not only look up, when cancel mail can be previewed', async () => {
+    capabilities.paneSave = true;
+    renderCancel({});
+    await screen.findByRole('button', { name: 'Preview cancellation' });
+    expect(
+      screen.getByText(
+        'Luna can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeNull();
+  });
+
+  it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {
+    renderCancel({});
+    await screen.findByText(
+      'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+    );
+    expect(screen.getByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+  });
+
+  it('keeps the look-up footer on amend mail even when the pane save flag is on', () => {
+    capabilities.paneSave = true;
+    render(
+      <AmendLookupPanel session={sessionWith(AMEND)} trpc={trpcMock(vi.fn(NEVER_SETTLES), vi.fn())} timing={POLL_FAST} />,
+    );
+    expect(screen.getByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.queryByText(/Luna can preview the cancellation/)).toBeNull();
+  });
 });

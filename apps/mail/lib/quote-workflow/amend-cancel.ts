@@ -10,6 +10,8 @@ export const AMEND_CANCEL_COPY = {
   preview: 'Preview cancellation',
   previewHint:
     'Luna opens the cancel screen in HMS and reads any cancellation fee. Nothing is cancelled.',
+  footerPreview:
+    'Luna can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
   previewing: 'Luna is reading the cancel screen in HMS… (usually under a minute)',
   reasonLabel: 'Cancellation reason',
   reasonPlaceholder: 'Choose a reason',
