@@ -234,7 +234,7 @@ const LUNA_UNAVAILABLE_ITEM = {
   id: 'luna-unavailable',
   kind: 'question' as const,
   rank: 'secondary' as const,
-  text: 'Luna is unavailable, so the stay details come from the email text. Check the dates and room count below, or add a note with corrections.',
+  text: 'Luna is unavailable, so the stay details come from the email text. Check the dates and room count below. Edit the room count directly, since a note cannot change it. A note can still correct dates and adults.',
   sourceLabel: 'Selected message',
   blocking: false as const,
 };

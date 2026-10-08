@@ -820,6 +820,32 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     }
   });
 
+  it('tells staff to edit the room count directly, since a note cannot change it', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 23,
+      treatAs: 'create_booking',
+      staffNote: '3 rooms',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      const item = result.reviewItems?.find((row) => row.id === 'luna-unavailable');
+      expect(item?.text).toMatch(/Edit the room count directly/);
+      expect(item?.text).not.toMatch(/add a note with corrections/);
+      expect(result.groups[0]?.quantity).toBe(1);
+    }
+  });
+
   it('keeps a stay group when treat-as quote is applied to a mail with no quote keyword', async () => {
     cacheLoaders.llmEnabled = () => false;
     cacheLoaders.loadSyncedSelection = async () => ({
