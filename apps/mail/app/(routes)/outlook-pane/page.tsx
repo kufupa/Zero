@@ -222,6 +222,10 @@ export default function OutlookPanePage() {
     fetchStatus: () =>
       bindHmsQueueStatus(staffQuoteFromTrpc(trpcClient).workstation.hmsQueueStatus?.query),
   });
+  const trackStaffQuoteRun = <T,>(run: Promise<T>): Promise<T> => {
+    setQuoteRunPending(true);
+    return run.finally(() => setQuoteRunPending(false));
+  };
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
@@ -946,14 +950,15 @@ export default function OutlookPanePage() {
         sessionHeader: session.staffHeader,
         staffEdited: hasStaffStayEdits(session),
       });
-      return bindExecuteStaffQuote({
+      const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
         selectionEpoch,
         inputRevision,
         groups,
         header,
-      }).then((remote) => {
+      });
+      return trackStaffQuoteRun(run).then((remote) => {
         if (remote.status !== 'ok') {
           toast.warning(remote.reason);
           return;
@@ -1043,15 +1048,15 @@ export default function OutlookPanePage() {
     }
     const stayGroups = groupsForQuoteStep(quoteSession, step);
     const staff = staffQuoteFromTrpc(trpcClient);
-    setQuoteRunPending(true);
-    void bindExecuteStaffQuote({
+    const run = bindExecuteStaffQuote({
       mutate: staff.workstation.executeStaffQuote?.mutate,
       source,
       selectionEpoch,
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
-    }).then((remote) => {
+    });
+    void trackStaffQuoteRun(run).then((remote) => {
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1096,7 +1101,7 @@ export default function OutlookPanePage() {
           });
         });
       }
-    }).finally(() => setQuoteRunPending(false));
+    });
   };
 
   return (
