@@ -653,7 +653,7 @@ describe('quote session', () => {
     expect(parseChildrenAges('5,')).toEqual([5]);
     expect(parseChildrenAges('0')).toEqual([0]);
     expect(formatQuoteStepInputs({ organisation: 'Treasury', quoteRequestKey: '2026-12-01:2026-12-03' })).toMatch(
-      /Organisation Treasury/,
+      /Company Treasury/,
     );
   });
 
@@ -976,9 +976,9 @@ describe('quote session staff review items', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'document_failure',
-          text: 'Unread: rooming-list.pdf',
+          text: 'Could not read: rooming-list.pdf',
           filename: 'rooming-list.pdf',
-          sourceLabel: 'Unread attachment',
+          sourceLabel: 'Attachment',
           reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
           blocking: false,
         }),
@@ -1171,8 +1171,8 @@ describe('quote session staff review items', () => {
       'document:attachment:att-2:rooming-list.pdf',
     ]);
     expect(items.map((item) => item.text)).toEqual([
-      'Unread: rooming-list.pdf',
-      'Unread: rooming-list.pdf',
+      'Could not read: rooming-list.pdf',
+      'Could not read: rooming-list.pdf',
     ]);
   });
 

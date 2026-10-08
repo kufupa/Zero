@@ -17,8 +17,12 @@ export function ItemsForYou({
 }) {
   if (!openItems.length && !handledItems.length) return null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3" aria-label="Items for you">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Items for you</h3>
+    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3" aria-label="Check before sending">
+      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Check before sending</h3>
+      <p className="text-[11px] text-[#64748b]">
+        Luna found these. Clear each one before you send the reply. Show in email finds the line in the email.
+        Edit reply opens the reply box. Mark as done hides the item here only.
+      </p>
       {openItems.map((item) => (
         <div key={item.id} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
           <p className="text-[12.5px] font-semibold text-[#1e293b]">{item.text}</p>
@@ -28,16 +32,16 @@ export function ItemsForYou({
             {item.filename ? ` · ${item.filename}` : ''}
           </p>
           <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
-            {item.blocking ? 'Pricing block — correct the stay facts' : 'Needs a reply, not a pricing approval'}
+            {item.blocking ? 'Blocks the quote — fix the stay details first' : 'Needs a reply. Not a price decision.'}
           </p>
           <div className="flex flex-wrap gap-1">
             <button
               type="button"
               className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-              aria-label={`Source guidance for ${item.text}`}
+              aria-label={`Show in email: ${item.text}`}
               onClick={() => onViewSource?.(item)}
             >
-              Source guidance
+              Show in email
             </button>
             {item.kind === 'question' || item.kind === 'analysis_failure' ? (
               <button
@@ -53,10 +57,10 @@ export function ItemsForYou({
               <button
                 type="button"
                 className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-                aria-label={`Mark handled: ${item.text}`}
+                aria-label={`Mark as done: ${item.text}`}
                 onClick={() => onHandle?.(item.id)}
               >
-                Mark handled
+                Mark as done
               </button>
             ) : null}
           </div>
@@ -64,11 +68,11 @@ export function ItemsForYou({
       ))}
       {handledItems.map((item) => (
         <div key={`handled-${item.id}`} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
-          <p className="text-[11px] text-[#64748b]">Handled: {item.text}</p>
+          <p className="text-[11px] text-[#64748b]">Done: {item.text}</p>
           <button
             type="button"
             className="h-7 self-start rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-            aria-label={`Undo mark handled: ${item.text}`}
+            aria-label={`Undo mark as done: ${item.text}`}
             onClick={() => onUndo?.(item.id)}
           >
             Undo

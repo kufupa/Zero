@@ -345,7 +345,7 @@ export default function OutlookPanePage() {
       .catch((error: unknown) => {
         if (cancelled) return;
         const message =
-          error instanceof Error && error.message.trim() ? error.message : 'analyseSelection rejected';
+          error instanceof Error && error.message.trim() ? error.message : 'Luna could not read this email. Select it again and try again.';
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', message });
       });
@@ -454,7 +454,7 @@ export default function OutlookPanePage() {
             },
           });
         } else if (notice === 'mismatch') {
-          toast.warning('Stay dates do not match the earlier quote — run Quote again');
+          toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
         return;
       }
@@ -636,10 +636,10 @@ export default function OutlookPanePage() {
       results.serverPing = srv?.status === 'ok';
 
       setTestResults(results);
-      toast.success('System Verification Complete!');
+      toast.success('System check complete.');
     } catch (err) {
       setTestResults(results);
-      toast.error(`Verification error: ${err instanceof Error ? err.message : 'unknown error'}`);
+      toast.error(`System check failed: ${err instanceof Error ? err.message : 'unknown error'}. Try again.`);
     } finally {
       setTesting(false);
     }
@@ -689,7 +689,7 @@ export default function OutlookPanePage() {
       if (expiredOutcomeConfirmationKey.current !== key) {
         expiredOutcomeConfirmationKey.current = key;
         toast.error(
-          `${replyLabel}The safe retry window has expired. Check Outlook Drafts before starting a new operation.`,
+          `${replyLabel}The retry window has closed. Check Outlook Drafts, then click again to continue.`,
         );
         return;
       }
@@ -702,7 +702,7 @@ export default function OutlookPanePage() {
       if (expiredOutcomeConfirmationKey.current !== key) {
         expiredOutcomeConfirmationKey.current = key;
         toast.error(
-          `${replyLabel}The pane has more expired reply outcomes than it can safely track individually. Check Outlook Drafts before starting a new operation. Click again after checking to proceed.`,
+          `${replyLabel}Too many earlier replies have an unknown result. Check Outlook Drafts, then click again to continue.`,
         );
         return;
       }
@@ -716,7 +716,7 @@ export default function OutlookPanePage() {
       if (unresolvedReplyConfirmationKey.current !== key) {
         unresolvedReplyConfirmationKey.current = key;
         toast.error(
-          `${replyLabel}An earlier Outlook draft may have completed before the pane changed. Check Outlook Drafts; click again after checking to start a new draft.`,
+          `${replyLabel}An earlier draft may have been created before the pane changed. Check Outlook Drafts, then click again to start a new draft.`,
         );
         return;
       }
@@ -727,13 +727,13 @@ export default function OutlookPanePage() {
     }
     if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
       toast.error(
-        `${replyLabel}Too many replies have unresolved outcomes. Check Outlook Drafts before refreshing the pane or starting another reply.`,
+        `${replyLabel}Too many replies have an unknown result. Check Outlook Drafts before refreshing the pane or starting another reply.`,
       );
       return;
     }
 
     if (!startedScope || transportLoading || !activeConnection?.email) {
-      toast.error('Sign in and select an authorized mailbox before attaching a quotation.');
+      toast.error('Sign in and select your mailbox before creating the draft.');
       return;
     }
     if (!activeEmail.storeId || !activeEmail.folderEntryId) {
@@ -744,14 +744,14 @@ export default function OutlookPanePage() {
     }
 
     if (!supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
-      toast.error('This Outlook add-in cannot attach a quotation PDF. Update to protocol v4.');
+      toast.error('This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.');
       return;
     }
 
     const reviewedDraft = requireReviewedNativeDraft(quoteSession);
     if (!reviewedDraft) {
       toast.error(
-        'Review the quotation PDF and complete reply before creating an unsent Outlook draft. Sample pane rates are not used.',
+        'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
       );
       return;
     }
@@ -797,7 +797,7 @@ export default function OutlookPanePage() {
           selected.storeId !== activeEmail.storeId ||
           selected.folderEntryId !== activeEmail.folderEntryId) {
           if (!attempt.replyPayload) replyRetries.current.delete(key);
-          toast.error('Selected Outlook email changed while preparing the quotation. Select it again.');
+          toast.error('You switched emails while the PDF was being made. Select the email again, then retry.');
           return;
         }
       }
@@ -860,13 +860,13 @@ export default function OutlookPanePage() {
         replyResult?.composerWarning,
         replyResult?.draftPlacementWarning,
         replyResult?.folderPlacementWarning,
-        replyResult?.locationUnverified ? 'Draft location is unverified.' : null,
+        replyResult?.locationUnverified ? 'Could not confirm which folder the draft is in.' : null,
       ].filter(Boolean);
       const summary = opened
-        ? 'Outlook draft opened in composer.'
+        ? 'Draft opened in Outlook. Check it, then send it yourself.'
         : replyResult?.entryId
-          ? 'Outlook draft saved but not opened in composer.'
-          : 'Outlook accepted the reply request; draft and composer status unconfirmed.';
+          ? 'Draft saved in Outlook but did not open. Find it in Outlook Drafts.'
+          : 'Outlook accepted the request, but could not confirm the draft. Check Outlook Drafts before trying again.';
       const message = [summary, ...details].join(' ');
       setDraftStatus({ key, message });
       if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
@@ -893,12 +893,12 @@ export default function OutlookPanePage() {
         ((timedOut || navigationInterrupted) && mayHaveReachedOutlook)
       ) {
         const message =
-          'Outlook may have completed the operation, but did not confirm it. Check Outlook Drafts before retrying; any retry will reuse the same operation ID and PDF.';
+          'Outlook may have created the draft but did not confirm it. Check Outlook Drafts before retrying. A retry reuses the same PDF.';
         setDraftStatus({ key, message });
         toast.error(`${replyLabel}${message}`);
       } else {
         toast.error(
-          `${replyLabel}Could not insert draft: ${err instanceof Error ? err.message : 'unknown error'}`,
+          `${replyLabel}Could not create the draft: ${err instanceof Error ? err.message : 'unknown error'}`,
         );
       }
     } finally {
@@ -915,7 +915,7 @@ export default function OutlookPanePage() {
     const source = session.staffSource;
     const binding = session.binding;
     if (luna?.workflow !== 'create_booking' || !source || !binding) {
-      toast.warning('Stay facts are not ready for a re-quote.');
+      toast.warning('Stay details are not ready to re-quote. Check the dates and rooms first.');
       return;
     }
     const selectionEpoch = binding.selectionEpoch;
@@ -1005,18 +1005,18 @@ export default function OutlookPanePage() {
           (activeEmail?.senderName ?? 'Guest').split(' ')[0] || 'Guest',
         ),
       });
-      toast.warning('Fixture preview is not live inventory and cannot create a native draft.');
+      toast.warning('This is sample data, not live HMS rooms, so no draft can be made.');
       return;
     }
     if (step.kind === 'party_lookup') {
       dispatchQuote({
         type: 'results_unavailable',
         stepId: step.id,
-        reason: 'executeStaffQuote resolves party internally. Do not execute party twice.',
+        reason: 'The company lookup runs automatically with the quote. No need to run it separately.',
         selectionEpoch,
         inputRevision,
       });
-      toast.warning('executeStaffQuote resolves party internally. Do not execute party twice.');
+      toast.warning('The company lookup runs automatically with the quote. No need to run it separately.');
       return;
     }
     const source = quoteSession.staffSource;
@@ -1024,11 +1024,11 @@ export default function OutlookPanePage() {
       dispatchQuote({
         type: 'results_unavailable',
         stepId: step.id,
-        reason: 'staffQuoteSource has not resolved messageId/threadId/sourceHash.',
+        reason: 'The selected email is not ready yet. Wait a moment, then select it again.',
         selectionEpoch,
         inputRevision,
       });
-      toast.warning('staffQuoteSource has not resolved messageId/threadId/sourceHash.');
+      toast.warning('The selected email is not ready yet. Wait a moment, then select it again.');
       return;
     }
     const stayGroups = groupsForQuoteStep(quoteSession, step);
@@ -1440,7 +1440,9 @@ export default function OutlookPanePage() {
             </div>
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-              {activeEmail ? 'Extracted suggestions — review and correct before running' : 'Sample placeholder — not live AI output'}
+              {activeEmail
+                ? "Luna's suggestions from this email. Check and correct them before running searches."
+                : 'Sample data, not from a live email.'}
             </p>}
 
             <QuoteWorkflowPanel
@@ -1466,23 +1468,23 @@ export default function OutlookPanePage() {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
                 toast.message(
                   item.filename
-                    ? `Source guidance: selected message lists ${item.filename}. Filenames are not document bytes. This does not open the attachment.`
-                    : 'Source guidance: selected Outlook message above. This does not open a separate source viewer.',
+                    ? `Luna found this in the selected email. It lists the file ${item.filename}. A file name does not show what is inside, so open the attachment in Outlook to read it.`
+                    : 'The selected email is shown at the top of this pane. Open it in Outlook for the full text.',
                 );
               }}
               onPreparePdf={() => {
                 if (!canCreatePdf(quoteSession)) {
-                  toast.warning('Select an authorised allocation with source evidence before generating a PDF.');
+                  toast.warning('Pick a room option from the HMS results before making the PDF.');
                   return;
                 }
                 if (isQuoteFixturePreview() || quoteSession.evidence?.kind !== 'authorised') {
-                  toast.warning('Fixture preview cannot prepare an insertable PDF.');
+                  toast.warning('This is sample data, so no PDF can be made. Open a live email to continue.');
                   return;
                 }
                 const source = quoteSession.staffSource;
                 const staffQuote = staffQuoteForStay(quoteSession);
                 if (!source || !staffQuote || staffQuote.totalMinor <= 0) {
-                  toast.warning('qualifiedQuoteProposalPdf needs workflowRunId, revisionRef and server sourceHash.');
+                  toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
                   return;
                 }
                 const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
@@ -1491,7 +1493,7 @@ export default function OutlookPanePage() {
                 const staff = staffQuoteFromTrpc(trpcClient);
                 const header = staffQuote.approvedHeader;
                 if (!header) {
-                  toast.warning('qualifiedQuoteProposalPdf needs the approved executeStaffQuote company/agency header.');
+                  toast.warning('The quote header was not saved with this quote. Run the search again, then prepare the PDF.');
                   return;
                 }
                 void bindQualifiedStaffProposalPdf({
@@ -1534,10 +1536,10 @@ export default function OutlookPanePage() {
             <div className="flex flex-col gap-2.5">
                 <div className="overflow-hidden rounded-sm border border-amber-200 bg-amber-50 px-2.5 py-2">
                   <p className="text-[11px] font-semibold text-amber-900">
-                    Authorised HMS screenshot unavailable
+                    No HMS screenshot for this quote
                   </p>
                   <p className="text-[11px] text-amber-800">
-                    No screenshot is attached to this quote result. Review the quoted details and PDF.
+                    No screenshot is attached to this quote. Check the quoted details and PDF before sending.
                   </p>
                 </div>
 
@@ -1550,11 +1552,11 @@ export default function OutlookPanePage() {
                   className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
                 >
                   <Send className="mr-1.5 h-3.5 w-3.5" />
-                  {isDraftPending ? 'Saving Outlook draft…' : 'Draft Quotation into Email Reply'}
+                  {isDraftPending ? 'Creating the Outlook draft. Please wait…' : 'Insert draft in Outlook'}
                 </Button>
                 <p className="text-center text-[11px] text-[#64748b]">
-                  Review the reply and PDF, then Send manually in Outlook. Nava never sends from
-                  this pane.
+                  Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook.
+                  Nava never sends from this pane.
                 </p>
 
                 {/* Status Message */}
@@ -1604,17 +1606,20 @@ export default function OutlookPanePage() {
                 className="h-8 w-full border-[#cbd5e1] text-xs font-medium text-[#475569] hover:bg-[#f8fafc]"
               >
                 <RefreshCw className={`mr-2 h-3.5 w-3.5 ${testing ? 'animate-spin' : ''}`} />
-                Run System Verification
+                {testing ? 'Checking Outlook and the Nava server…' : 'Run system check'}
               </Button>
+              <p className="mt-1 text-center text-[11px] text-[#64748b]">
+                Checks that Outlook, the selected email and the Nava server all respond.
+              </p>
             </div>
 
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
               <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
-                  Diagnostic Verification
+                  System check results
                 </p>
                 <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>1. C# VSTO Bridge Handshake</span>
+                  <span>1. Outlook add-in connected</span>
                   {testResults.bridge ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   ) : (
@@ -1622,7 +1627,7 @@ export default function OutlookPanePage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>2. Active Email Inspection</span>
+                  <span>2. Selected email readable</span>
                   {testResults.activeEmail ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   ) : (
@@ -1630,7 +1635,7 @@ export default function OutlookPanePage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>3. Folder Table Query</span>
+                  <span>3. Outlook folders readable</span>
                   {testResults.folderTable ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   ) : (
@@ -1638,7 +1643,7 @@ export default function OutlookPanePage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>4. TRPC Server Ping</span>
+                  <span>4. Nava server reachable</span>
                   {testResults.serverPing ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   ) : (

@@ -224,7 +224,7 @@ describe('booking cards', () => {
       />,
     );
     expect(screen.getByText(/R1,700/)).toBeDefined();
-    expect(screen.getByText(/mismatch/i)).toBeDefined();
+    expect(screen.getByText(/differs from the email/i)).toBeDefined();
   });
 
   it('shows party_rate_not_applied on the booking draft', () => {
@@ -233,7 +233,7 @@ describe('booking cards', () => {
         session={quotedSession(draftReady({ flags: ['party_rate_not_applied'] }))}
       />,
     );
-    expect(screen.getByText('party_rate_not_applied')).toBeDefined();
+    expect(screen.getByText(/Company rate not applied/)).toBeDefined();
   });
 
   it('disables Save with the coming-next copy', () => {
@@ -241,14 +241,14 @@ describe('booking cards', () => {
     const save = screen.getByRole('button', { name: /save/i });
     expect(save).toHaveProperty('disabled', true);
     expect(
-      screen.getByText('Saving from the pane is coming next — copy into HMS'),
+      screen.getByText('Saving from this pane is coming soon. For now, copy each field into HMS.'),
     ).toBeDefined();
   });
 
   it('disables Preview and Commit while pane save stays behind the flag', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getByRole('button', { name: 'Preview' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Commit' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Book in HMS' })).toHaveProperty('disabled', true);
   });
 
   it('keeps track/source/guarantee selects local-only', () => {
@@ -285,7 +285,7 @@ describe('booking card copy buttons', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(
       screen.getByText(
-        'Saving in HMS from here is switched off for now. Click Copy next to each field and paste it into HMS Guest Stay.',
+        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
       ),
     ).toBeDefined();
   });
@@ -434,7 +434,7 @@ describe('expired prior re-quote', () => {
   };
 
   it('exposes the re-quote label and expired toast copy', () => {
-    expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote same stay');
+    expect(EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL).toBe('Re-quote this stay');
     expect(expiredPriorQuoteToastMessage()).toMatch(/expired/i);
   });
 

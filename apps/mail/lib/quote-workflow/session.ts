@@ -94,7 +94,7 @@ export function planQuoteSteps(groups: StayGroupRequirement[], selectedStayKey: 
       shareKey: key,
       retryGuidance: active
         ? undefined
-        : 'Select this date scope to quote. Other stays stay unfinished.',
+        : 'Select this stay to quote it. The other stays are not quoted yet.',
     });
   }
   return steps;
@@ -118,28 +118,24 @@ export function parseChildrenAges(raw: string): number[] {
 export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
   const bits: string[] = [];
   if (typeof inputs.organisation === 'string' && inputs.organisation.trim()) {
-    bits.push(`Organisation ${inputs.organisation.trim()}`);
+    bits.push(`Company ${inputs.organisation.trim()}`);
   }
   if (typeof inputs.quoteRequestKey === 'string') {
     bits.push(`Dates ${inputs.quoteRequestKey.replace(':', ' → ')}`);
   }
-  if (Array.isArray(inputs.groupIds) && inputs.groupIds.length) {
-    bits.push(`Stay groups ${inputs.groupIds.map(String).join(', ')}`);
-  }
   if (Array.isArray(inputs.groups)) {
-    for (const raw of inputs.groups) {
+    for (const [index, raw] of inputs.groups.entries()) {
       if (!raw || typeof raw !== 'object') continue;
       const group = raw as Record<string, unknown>;
-      const id = typeof group.id === 'string' ? group.id : '?';
       const qty = typeof group.quantity === 'number' ? group.quantity : 1;
       const room = typeof group.roomPreference === 'string' && group.roomPreference.trim()
         ? group.roomPreference
-        : 'room';
-      const adults = typeof group.adults === 'number' ? `${group.adults} adults` : 'occupancy unset';
-      bits.push(`${id}: ${qty} × ${room}, ${adults}`);
+        : 'any room';
+      const adults = typeof group.adults === 'number' ? `${group.adults} adults` : 'adults not set';
+      bits.push(`Stay ${index + 1}: ${qty} × ${room}, ${adults}`);
     }
   }
-  return bits.length ? bits.join(' · ') : 'No current inputs';
+  return bits.length ? bits.join(' · ') : 'Nothing to search yet';
 }
 
 export function canRunQuoteStep(
@@ -654,7 +650,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         kind: 'analysis_failure' as const,
         rank: 'unread_source' as const,
         text: action.message,
-        sourceLabel: 'Selected message',
+        sourceLabel: 'This email',
         blocking: false,
       };
       return {
