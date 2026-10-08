@@ -99,7 +99,7 @@ Keep the pane open, and keep the same email selected, until the run finishes.
 
 ### 2d. Pick the room option
 
-1. Under **Results**, click the room option you want.
+1. Under **Results**, a successful run already selects the room option it found. Check it is the one you want. To change it, click the option you want. Clicking the selected option again clears the selection and turns off PDF creation.
 2. Check **Selected total**. It does not include alternatives.
 3. Cards marked **Counted in the total** are in the total.
 4. Cards marked **Alternative — not counted in the total** are not in the total.
@@ -150,12 +150,12 @@ If you see **The HMS screenshot could not be loaded**, or **No HMS screenshot fo
 ## Multi-date quotes (two or more date options in one email)
 
 1. Under **Date options**, you will see each option, for example "Option A · 2026-11-02 → 2026-11-04". Each option shows **PDF ready** or **PDF not built**.
-2. Click an option to select it. Click **Run next** (or the **Run** button for that option).
+2. Click **Run next**, or the **Run Search availability** button for that option. Clicking an option under **Date options** only selects it.
 3. Wait for the run to finish. Pick the room option for that stay.
 4. Click **Prepare PDF for option A**. Each option has its own PDF.
-5. Luna will not start the next option until the current option has its PDF. You will see: "Finish the PDF for option A first, then run option B."
+5. Luna will not start the next option until the current option has its PDF. You will see: "Option A has no PDF yet. Prepare its PDF before running another option."
 6. Repeat for each option.
-7. When two or more options have a PDF, the reply buttons show **Create one reply with all date options (A, B)**. Click it to make **one** draft with every option. You will see: "Puts every option you ran into one email draft. Nothing is sent."
+7. When two or more options have a PDF, the reply buttons show **Create one reply with all date options (A, B)**. Click it to make **one** draft with every option. You will see: "Puts every option you ran into one email draft. Nothing is sent." Edit the reply box above the buttons first if you need to; the draft uses your edits while the options stay the same.
 8. To draft one option only, click **Draft option A only**.
 9. In Outlook, check every PDF in the draft. Then press Send yourself.
 

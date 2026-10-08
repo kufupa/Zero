@@ -75,10 +75,10 @@ Say: "Each person signs in with their own account. The pane asks you to sign in 
 3. If the test email has more than one date option, staff clicks the option first, under **Date options**. Each option needs its own run and PDF.
 4. Staff clicks **Run next**, once.
 5. Everyone watches the progress line. Use the wait for the feedback questions (below).
-6. When the run finishes, staff clicks a room option under **Results**.
+6. When the run finishes, check the room option that **Results** already selected. Staff clicks another option only to change it.
 7. Staff opens **See what Luna did in HMS**.
 8. Staff clicks **Prepare quotation PDF**. For more than one option, staff clicks **Prepare PDF for option A** instead.
-9. Staff clicks **Insert draft in Outlook**. For more than one option with a PDF, staff clicks **Create one reply with all date options** instead.
+9. Staff clicks **Insert draft in Outlook**. For more than one option with a PDF, staff clicks **Create one reply with all date options** instead. Staff can edit the combined reply box first.
 10. Staff checks the draft in Outlook. **Do not press Send on the call.** Say: "This is where you would press Send. Today we stop here."
 
 **Check first:** if **Insert draft in Outlook** is greyed out or refused, skip step 9 and say why. The shared mailbox may not be the default Drafts store (see "Known gaps" in the install doc).
