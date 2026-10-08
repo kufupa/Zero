@@ -1,6 +1,7 @@
 import type {
   ApprovedStayGroup,
   PartyLookupRef,
+  QuoteAmendment,
   QuoteAnalysis,
   QuoteEvidenceProvenance,
   QuoteOffer,
@@ -16,6 +17,14 @@ import type {
 import { emptyStaffQuoteHeader } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 import { approvedExecuteHeader } from './staff-quote-bind';
+
+/**
+ * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
+ * that keeps analysis. The workflow badge takes its kind: amendmentKind={amendmentOf(session)?.kind ?? null}.
+ */
+export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
+  return session.analysis?.amendment ?? null;
+}
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
   return {
