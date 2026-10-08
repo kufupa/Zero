@@ -16,9 +16,10 @@ export const AMEND_FIND_COPY = {
     'HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
   arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
-  busy: 'HMS is busy. Try again in a minute.',
+  busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
   readFailed: 'Luna could not read the HMS result. Try again in a minute.',
   unavailable: 'The HMS lookup is not connected in this session. Search HMS by hand.',
+  unreachable: "Luna can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
   footer: 'Luna only looks the booking up. Make the change in HMS yourself.',
 } as const;
@@ -139,8 +140,10 @@ export async function runHmsFind(options: {
       return { kind: 'ambiguous' };
     case 'refused_input_invalid':
       return { kind: 'error', message: AMEND_FIND_COPY.notExact };
-    case 'refused_lock_unavailable':
+    case 'refused_lock_busy':
       return { kind: 'error', message: AMEND_FIND_COPY.busy };
+    case 'refused_lock_unavailable':
+      return { kind: 'error', message: AMEND_FIND_COPY.unreachable };
     case 'refused_flag_off':
       return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
     default:

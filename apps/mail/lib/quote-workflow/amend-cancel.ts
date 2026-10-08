@@ -68,8 +68,10 @@ export function cancelOutcomeNote(outcome: string, confirmation: string): string
       return cancelSwitchedOffNote(confirmation);
     case 'refused_not_lab':
       return AMEND_CANCEL_COPY.testOnly;
-    case 'refused_lock_unavailable':
+    case 'refused_lock_busy':
       return AMEND_FIND_COPY.busy;
+    case 'refused_lock_unavailable':
+      return AMEND_FIND_COPY.unreachable;
     case 'cancel_unconfirmed':
       return AMEND_CANCEL_COPY.unconfirmed;
     default:

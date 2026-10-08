@@ -26,8 +26,9 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_preview_required:
     'This preview has expired or was already used. Press Preview in HMS again.',
   pane_save_digest_mismatch: 'The booking changed after the preview. Press Preview in HMS again.',
-  pane_save_lock_unavailable:
-    'HMS is busy or not reachable right now. Nothing was saved. Try again in a few minutes.',
+  pane_save_lock_unavailable: "Luna can't reach HMS right now. Nothing was saved. Tell the Nava team.",
+  refused_lock_busy:
+    'HMS is busy with another quote or lookup. Nothing was saved. Try again in a minute.',
   refused_save_blank_required:
     'HMS still has a blank required field. Nothing was saved. Fill in every field, then preview again.',
 };

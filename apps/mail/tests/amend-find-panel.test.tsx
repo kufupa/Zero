@@ -294,7 +294,8 @@ describe('AmendLookupPanel', () => {
   });
 
   it.each([
-    ['refused_lock_unavailable', 'HMS is busy. Try again in a minute.'],
+    ['refused_lock_busy', 'HMS is busy with another quote or lookup. Try again in a minute.'],
+    ['refused_lock_unavailable', "Luna can't reach HMS right now. Tell the Nava team."],
     ['refused_flag_off', 'The HMS lookup is not connected in this session. Search HMS by hand.'],
     ['refused_input_invalid', AMEND_FIND_COPY.notExact],
     ['execution_failure', 'Luna could not read the HMS result. Try again in a minute.'],
@@ -438,7 +439,8 @@ describe('AmendLookupPanel cancel from the pane', () => {
 
   it.each([
     ['refused_not_lab', 'Cancelling from here only works on test bookings right now.'],
-    ['refused_lock_unavailable', 'HMS is busy. Try again in a minute.'],
+    ['refused_lock_busy', 'HMS is busy with another quote or lookup. Try again in a minute.'],
+    ['refused_lock_unavailable', "Luna can't reach HMS right now. Tell the Nava team."],
     ['execution_failure', "Luna couldn't finish in HMS. Check HMS yourself."],
     [
       'refused_flag_off',

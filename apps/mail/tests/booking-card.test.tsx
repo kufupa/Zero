@@ -634,6 +634,7 @@ describe('pane save helpers', () => {
       'pane_save_preview_required',
       'pane_save_digest_mismatch',
       'pane_save_lock_unavailable',
+      'refused_lock_busy',
       'refused_save_blank_required',
       'pane_save_unconfirmed',
     ]) {
