@@ -78,6 +78,7 @@ import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progr
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
@@ -1438,6 +1439,8 @@ export default function OutlookPanePage() {
                 </span>
               )}
             </div>
+
+            <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
               {activeEmail ? 'Extracted suggestions — review and correct before running' : 'Sample placeholder — not live AI output'}
