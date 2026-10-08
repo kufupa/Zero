@@ -225,7 +225,7 @@ Change and cancel emails show the label **Change to booking** or **Cancellation*
 - "The HMS lookup is not connected in this session. Search HMS by hand."
 - "Luna can't reach HMS right now. Tell the Nava team."
 
-**Amber note on a change or cancel email:** you may also see "Changing or cancelling a booking is not supported yet. Handle it by hand in HMS." You can still use **Find this booking in HMS**. Make every change by hand in HMS.
+**Note on a change or cancel email:** you may see "Luna can find the booking; make the change in HMS yourself." This means the same thing as the panel. Use **Find this booking in HMS**, then make every change by hand in HMS.
 
 ---
 

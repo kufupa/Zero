@@ -75,7 +75,7 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 ### Build and test data
 
-- [ ] The pane build is wave 2 or later. On a change email, the **Find this booking in HMS** button is there.
+- [ ] The pane build is wave 2 or later, with the note-copy fix. On a change email, the **Find this booking in HMS** button is there, and no amber note says "not supported yet".
 - [ ] The test email has synced. Luna says "This email has not finished syncing yet" until it has.
 - [ ] Test emails are ready: one quote, one booking, one change email. Use test stays only.
 - [ ] Contact placeholders are filled in (see "Who to contact" below).
@@ -193,7 +193,7 @@ The read-root and folder approvals are separate operator commands. They are in `
 | "Outlook may have created the draft but did not confirm it" | Outlook may have saved the draft already. | Check Outlook **Drafts** before retrying. A retry reuses the same PDF. Do not make two drafts. |
 | "This email has not finished syncing yet" | Sync for that email is not done. | Wait a minute. Select the email again. |
 | "Luna is not connected to this pane yet. Refresh the pane and try again." | The pane has not linked to Luna yet. | Refresh the pane. If it happens again, call the operator. |
-| An amber note "Changing or cancelling a booking is not supported yet." appears on a change email | The same email also carries the change flag (see "Known gaps", item 5). | The **Find this booking in HMS** button still works. Make every change by hand in HMS. |
+| An amber note "Changing or cancelling a booking is not supported yet." appears next to the change panel | The build is older than the note-copy fix (see "Known gaps", item 5). | Check the build includes the fix. The note should read "Luna can find the booking; make the change in HMS yourself." The **Find this booking in HMS** button works either way. Make every change by hand in HMS. |
 
 ---
 
@@ -205,7 +205,7 @@ These are facts from the repo that differ from, or limit, what the call would ot
 2. **Device code scope.** Device credentials and the one-use code are per Windows user (runbook step 6, and the operator README).
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, the add-in refuses to create the reply draft, by design (runbook, order of operations, step 8). **Insert draft in Outlook is refused on non-default shared mailboxes.** Staff must reply by hand in Outlook for those mailboxes.
 4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE=on`. Cancel commits only for test stays (arrival on or after 2027-01-01).
-5. **Amber note with the change panel.** The server can set the `amendment_or_cancel` flag on a change or cancel email. The "not supported yet" note then shows next to the change panel. The panel itself still works. Decide before the call: fix the flag handling, or brief staff to ignore the note.
+5. **Amber note with the change panel: fixed in code.** The server can set the `amendment_or_cancel` flag on a change or cancel email. While the change panel is on screen, the amber list no longer says "not supported yet". It reads "Luna can find the booking; make the change in HMS yourself." Confirm the build includes this fix before the call.
 6. **Multi-date.** The combined reply attaches one PDF per completed option. It is one email draft, not one PDF.
 7. **Windows is not tested here.** The repo's own onboarding doc says Linux tests and source reading do not prove Windows Outlook behaviour. The first real PC is the test.
 8. **Instant pane depends on a server flag.** `LUNA_ANALYSE_WARMER=on` is set in the pm2 deploy config. Without it, results are not pre-read.
