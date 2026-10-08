@@ -101,7 +101,7 @@ PRs tonight: [#37](https://github.com/kufupa/Zero/pull/37) · [#38](https://gith
 
 - One HMS browser for everything: quotes and lookups queue (lock waits 20s, then "HMS is busy").
 - `hms-ai-worker` is off by design. Not needed: all HMS work uses the borrowed-Chrome scripts.
-- Warmer: on for new mail, 60/h cap.
+- Warmer: on for new mail, 60/h cap. **Proven live:** 10 of 12 overnight emails warmed automatically (`luna_warm_ok` is in the rotated `ai-worker-out-*.log` files; `pm2 logs` only shows the current process). Backfill re-run at 05:00 (2 new) and again at about 06:30 for morning mail.
 - `launch-readiness NOT_READY outboundBacklogEmpty` is pre-existing; every deploy exits 1 at that check after a successful restart.
 - Before every deploy: `ssm-run-command.sh 'chmod u+w /home/ubuntu/repos/zero/.husky/_/h'` (husky EACCES hit once).
 - **Rollback** (Runbook D): `git branch -f rollback/<SHA> <SHA>` → `GIT_BRANCH=rollback/<SHA> bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh` → deploy-ec2 via SSM. Targets: `a19a260b` (now) · `2ef04602` (W4) · `586a81c8` (W3) · `2d6ff252` (W2) · `8e572b17` (W1) · `b22ece75` (before tonight; **quotes broken there**).
