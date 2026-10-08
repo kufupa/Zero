@@ -20,6 +20,10 @@ export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
 export const PANE_RUN_TTL_MS = 30 * 60_000;
 export const PANE_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const PANE_SCREENSHOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
+// A commit that returns no booking number may still have booked the stay. Both outcomes reach the pane as
+// pane_save_unconfirmed, never as a plain failure, so staff check HMS before they press Book again.
+export const PANE_SAVE_UNCONFIRMED = 'pane_save_unconfirmed';
+const UNCONFIRMED_SAVE_OUTCOMES = new Set(['save_unconfirmed', 'save_failed']);
 
 export type PaneStay = {
   firstName: string;
@@ -332,6 +336,23 @@ export async function runPaneStay(input: {
   }
   if (/^refused/i.test(spawned.outcome)) {
     return { status: 'refused', reason: spawned.outcome };
+  }
+  if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
+    // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
+    if (spawned.runId && spawned.runDir) {
+      registerPaneRun({
+        runId: spawned.runId,
+        dir: spawned.runDir,
+        owner: input.owner,
+        now: paneStayClock(),
+      });
+    }
+    return {
+      status: 'refused',
+      reason: PANE_SAVE_UNCONFIRMED,
+      runId: spawned.runId,
+      screenshots: spawned.screenshots ?? [],
+    };
   }
   const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
   if (previewed) recordPanePreview(input.owner, digest, paneStayClock());
