@@ -376,10 +376,15 @@ export type QuoteSession = {
   /** Staff "Tell Luna" note re-submitted as top-priority evidence. */
   staffNote: string | null;
   /**
-   * inputRevision when the in-flight analyseSelection request started. If it has moved
-   * by the time the result lands, staff edited during the run, so their edits are kept.
+   * Bumped only by stay/group edits (patch_group, restored groups). Header edits bump
+   * inputRevision but not this, so they never make a Tell Luna result look stale.
    */
-  analysisStartRevision?: number | null;
+  stayRevision: number;
+  /**
+   * stayRevision when the in-flight analyseSelection request started. If it has moved by
+   * the time the result lands, staff edited stays during the run, so their edits are kept.
+   */
+  analysisStartStayRevision?: number | null;
 };
 
 export type QuoteSessionAction =

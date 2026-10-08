@@ -240,7 +240,8 @@ export function initialQuoteSession(): QuoteSession {
     bookingDraft: null,
     treatAs: null,
     staffNote: null,
-    analysisStartRevision: null,
+    stayRevision: 1,
+    analysisStartStayRevision: null,
   };
 }
 
@@ -553,11 +554,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         phase: 'analysing',
         errorMessage: null,
-        analysisStartRevision: session.inputRevision,
+        analysisStartStayRevision: session.stayRevision,
       };
     case 'analysis_ready': {
       const staffEditedDuringRun =
-        session.analysisStartRevision != null && session.analysisStartRevision !== session.inputRevision;
+        session.analysisStartStayRevision != null && session.analysisStartStayRevision !== session.stayRevision;
       const loadingDone = session.phase === 'analysing' ? 'requirements' : session.phase;
       if (staffEditedDuringRun) {
         // Staff corrected stay fields after this run started. Keep their groups and take
@@ -570,7 +571,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           ...session,
           phase: loadingDone,
           analysis: action.analysis,
-          analysisStartRevision: null,
+          analysisStartStayRevision: null,
           staffActions,
           staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
           reviewItems,
@@ -584,7 +585,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return {
           ...session,
           phase: loadingDone,
-          analysisStartRevision: null,
+          analysisStartStayRevision: null,
           reviewItems: projectQuoteReviewItems(
             session.analysis,
             session.groups,
@@ -600,7 +601,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
-          analysisStartRevision: null,
+          analysisStartStayRevision: null,
           analysis: action.analysis,
           groups: [],
           reviewItems: unreadItems,
@@ -622,7 +623,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return {
         ...(requirementsChanged ? clearDownstream(session) : session),
         phase: 'requirements',
-        analysisStartRevision: null,
+        analysisStartStayRevision: null,
         analysis: action.analysis,
         groups: action.analysis.groups,
         inputRevision: session.inputRevision + (requirementsChanged ? 1 : 0),
@@ -765,6 +766,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           ? { ...session.staffHeader, ...action.approvedHeader }
           : session.staffHeader,
         groups: action.groups?.length ? action.groups : session.groups,
+        stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
@@ -811,6 +813,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         groups,
         inputRevision: session.inputRevision + 1,
+        stayRevision: session.stayRevision + 1,
         phase: 'requirements',
         steps: planQuoteSteps(groups, session.selectedStayKey),
         selectedStayKey: session.selectedStayKey && groups.some((group) => stayKeyForGroup(group) === session.selectedStayKey)
