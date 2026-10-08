@@ -220,7 +220,7 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     const pending = deferred<typeof AUTHORISED_QUOTE_PDF>();
     quotePdfMutateMock.mockReturnValue(pending.promise);
     await startPendingPdf();
-    fireEvent.change(screen.getByLabelText('Sales strategy'), { target: { value: 'Government' } });
+    fireEvent.change(screen.getByLabelText('Rate type'), { target: { value: 'Government' } });
     await act(async () => {
       pending.resolve(AUTHORISED_QUOTE_PDF);
       await pending.promise;

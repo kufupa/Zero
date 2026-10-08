@@ -134,8 +134,8 @@ function readyStaffQuote(request: StaffQuoteRequest) {
 async function fillStayFacts(arrival: string, departure: string) {
   fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: arrival } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: departure } });
-  fireEvent.change(screen.getByLabelText('Board'), { target: { value: 'bb' } });
-  fireEvent.change(screen.getByLabelText('Quantity'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Meal plan'), { target: { value: 'bb' } });
+  fireEvent.change(screen.getByLabelText('Rooms'), { target: { value: '1' } });
   fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '1' } });
 }
 
