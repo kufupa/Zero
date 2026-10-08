@@ -45,8 +45,9 @@ describe('procedure-specific request deadlines', () => {
     ).toBe(60_000);
     expect(trpcRequestTimeoutMs('/api/trpc/%ZZ')).toBe(5_000);
   });
-  it('gives a browser lookup six minutes, longer than its five-minute server bound', () => {
+  it('gives a browser find and guest-name search six minutes, longer than their five-minute server bound', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.findStay?batch=1')).toBe(360_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.searchGuest?batch=1')).toBe(360_000);
   });
   it('gives cancel preview and commit 21 minutes, longer than the 20-minute server bound', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.previewCancel?batch=1')).toBe(1_260_000);
