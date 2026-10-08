@@ -467,6 +467,22 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('sends the group ids the dinner allowance belongs to, so the server charges only those guests', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: { ...government, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['g1'] },
+    });
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceGroupIds: ['g1'],
+    });
+  });
+
   it('rejects one executeStaffQuote run that mixes date sets, before any HMS call', async () => {
     const mutate = vi.fn(async () => readyResult);
     const mixed = await bindExecuteStaffQuote({

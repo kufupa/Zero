@@ -66,6 +66,7 @@ export type ExecuteStaffQuoteInput = {
   clientEmail: string;
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceGroupIds?: string[];
   shuttleRequested?: boolean;
   shuttleMinor?: number;
 };
@@ -387,6 +388,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
   | 'clientEmail'
   | 'clientTelephone'
   | 'dinnerAllowanceMinor'
+  | 'dinnerAllowanceGroupIds'
   | 'shuttleRequested'
   | 'shuttleMinor'
 > {
@@ -402,7 +404,12 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
     clientEmail: header.clientEmail.trim(),
     clientTelephone: header.clientTelephone.trim(),
     ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
-      ? { dinnerAllowanceMinor: header.dinnerAllowanceMinor }
+      ? {
+          dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+          ...(header.dinnerAllowanceGroupIds?.length
+            ? { dinnerAllowanceGroupIds: [...header.dinnerAllowanceGroupIds] }
+            : {}),
+        }
       : {}),
     ...(header.shuttleRequested ? { shuttleRequested: true } : {}),
     ...(header.shuttleMinor && header.shuttleMinor > 0 ? { shuttleMinor: header.shuttleMinor } : {}),

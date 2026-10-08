@@ -2184,4 +2184,12 @@ describe('staff dinner B&B fallback', () => {
       before,
     );
   });
+
+  it('records which groups fell back, so the allowance can be charged to those guests only', () => {
+    const after = reduceQuoteSession(dinnerSession(), {
+      type: 'staff_dinner_bb_fallback',
+      groupIds: ['g1'],
+    });
+    expect(after.staffHeader.dinnerAllowanceGroupIds).toEqual(['g1']);
+  });
 });

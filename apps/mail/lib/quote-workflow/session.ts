@@ -866,7 +866,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { board: 'bb' } }),
         session,
       );
-      return { ...patched, staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true } };
+      // The allowance is for the groups that fell back, so the header keeps their ids for the quote run to scope it.
+      const dinnerAllowanceGroupIds = [
+        ...new Set([...(patched.staffHeader.dinnerAllowanceGroupIds ?? []), ...action.groupIds]),
+      ];
+      return {
+        ...patched,
+        staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds },
+      };
     }
     case 'patch_group': {
       const groups = session.groups.map((group) =>

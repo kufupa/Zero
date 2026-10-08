@@ -214,6 +214,8 @@ export type StaffQuoteHeader = {
   dinnerAllowanceMinor?: number;
   /** Set when a dinner quote fell back to B&B: staff must enter the allowance; never priced by us. */
   dinnerAllowanceRequired?: boolean;
+  /** The groups that took the B&B fallback. The allowance is charged only to these groups' guests. */
+  dinnerAllowanceGroupIds?: string[];
   shuttleRequested?: boolean;
   shuttleMinor?: number;
 };
