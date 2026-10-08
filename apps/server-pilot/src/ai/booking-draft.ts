@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compareRateClaim, type RateComparison } from '../quote-proposal/rate-check.js';
-import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
+import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
 export type BookingDraftDefaults = {
@@ -12,9 +12,14 @@ export type BookingDraftDefaults = {
 
 export type BookingDraftMissing = { field: string; question: string };
 
+/** The quoted board in the pane's meal-plan vocabulary. */
+export type QuotedBoard = 'room_only' | 'bb' | 'dinner_bb' | 'unknown';
+
 export type BookingDraftRoom = {
   groupId: string;
   roomIndex: number;
+  /** The board the approved quote uses, so staff copy the meal plan that matches the rate. */
+  board: QuotedBoard;
   request: Record<string, unknown>;
   schemaErrors: string[];
 };
@@ -107,6 +112,13 @@ function normalizeClaimAmount(raw: string): { amount: string; precision: number 
   const amount = raw.replace(/ZAR/gi, '').replace(/R/gi, '').replace(/,/g, '').replace(/\s/g, '');
   const fraction = amount.split('.')[1];
   return { amount, precision: fraction?.length ?? 0 };
+}
+
+function quotedBoard(board: Board): QuotedBoard {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'breakfast') return 'bb';
+  if (board === 'dinner_bed_breakfast') return 'dinner_bb';
+  return 'unknown';
 }
 
 function comparisonTarget(revision: QuoteRevision, extraTotalMinor = 0) {
@@ -260,6 +272,7 @@ export async function buildBookingDrafts(input: {
       rooms.push({
         groupId: group.id,
         roomIndex,
+        board: quotedBoard(group.board),
         request: built.request,
         schemaErrors: result.ok ? [] : result.errors.map((error) => String(error)),
       });

@@ -1072,7 +1072,7 @@ export default function OutlookPanePage() {
           messageId: source.messageId,
           selectionEpoch,
           inputRevision,
-          analysis: luna,
+          analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
         }).then((draftRemote) => {
           if (draftRemote.status !== 'ok') {
             toast.warning(draftRemote.reason);

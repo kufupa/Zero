@@ -1842,6 +1842,117 @@ describe('quote session staff review items', () => {
   });
 });
 
+describe('Tell Luna runs racing staff stay edits', () => {
+  const twoAdultsTwoRooms = { ...quoteAnalysis.groups[0]!, adults: 2, quantity: 2 };
+
+  it('keeps stay edits made after Tell Luna was submitted while the run is in flight', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    const late = { ...quoteAnalysis, groups: [twoAdultsTwoRooms] };
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: late });
+    expect(session.groups[0]?.adults).toBe(9);
+    expect(session.groups[0]?.quantity).toBe(1);
+    expect(session.analysis).toEqual(late);
+    expect(session.phase).toBe('requirements');
+    expect(session.staffNote).toBe('2 twins');
+  });
+
+  it('still applies the Tell Luna note result when staff only edit the header during the run', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: 'arrive 1 Dec, leave 3 Dec' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, {
+      type: 'patch_staff_header',
+      header: { company: 'Staff Co', agency: 'XYZ TRAVEL' },
+    });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...twoAdultsTwoRooms, arrivalDate: '2026-12-01', departureDate: '2026-12-03' }],
+      },
+    });
+    expect(session.groups[0]?.arrivalDate).toBe('2026-12-01');
+    expect(session.groups[0]?.departureDate).toBe('2026-12-03');
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.phase).toBe('requirements');
+    expect(session.staffHeader.company).toBe('Staff Co');
+    expect(session.staffHeader.agency).toBe('XYZ TRAVEL');
+    expect(session.staffNote).toBe('arrive 1 Dec, leave 3 Dec');
+  });
+
+  it('keeps stay groups restored by a re-quote when a Tell Luna run lands afterwards', () => {
+    let session = withStaffSource(analysisReady());
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: 'arrive 1 Dec, leave 3 Dec' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    const restored = { ...twoAdultsTwoRooms, arrivalDate: '2026-12-01', departureDate: '2026-12-03' };
+    const stayKey = '2026-12-01:2026-12-03';
+    const offer: QuoteOffer = {
+      ...authorisedOffer,
+      id: 'rev-1',
+      sourceRef: 'rev-1',
+      nightly: [],
+      stayTotalMinor: 850000,
+      quoteRequestKey: stayKey,
+      coversGroupIds: ['g1'],
+      quantity: 2,
+    };
+    session = reduceQuoteSession(session, {
+      type: 'staff_quote_ready',
+      offer,
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: session.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: stayKey,
+        approvedHeader: emptyHeader(),
+      },
+      selectionEpoch: 1,
+      inputRevision: session.inputRevision,
+      groups: [restored],
+    });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...quoteAnalysis, groups: [twoAdultsTwoRooms] },
+    });
+    expect(session.groups[0]?.arrivalDate).toBe('2026-12-01');
+    expect(session.groups[0]?.departureDate).toBe('2026-12-03');
+  });
+
+  it('applies the Tell Luna result when staff did not edit during the run', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...quoteAnalysis, groups: [twoAdultsTwoRooms] },
+    });
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.groups[0]?.quantity).toBe(2);
+    expect(session.phase).toBe('requirements');
+  });
+
+  it('finishes the loading state when a re-run after earlier stay edits applies no note', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(session.phase).toBe('requirements');
+    expect(session.groups[0]?.adults).toBe(9);
+  });
+});
+
 function lunaQuote(over: Partial<LunaAnalysisWire> = {}): LunaAnalysisWire {
   return {
     workflow: 'quote',
