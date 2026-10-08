@@ -444,6 +444,89 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('passes a stay company or agency to executeStaffQuote, and leaves the field out when blank', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const named = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN', organisation: ' Provincial Treasury ' }],
+      header: government,
+    });
+    expect(named.status).toBe('ok');
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      groups: [expect.objectContaining({ organisation: 'Provincial Treasury' })],
+    });
+    const blank = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN', organisation: '  ' }],
+      header: government,
+    });
+    expect(blank.status).toBe('ok');
+    const sent = mutate.mock.calls[1]?.[0] as { groups: Array<Record<string, unknown>> };
+    expect(sent.groups[0]).not.toHaveProperty('organisation');
+  });
+
+  it('accepts a stay company when the header names none or names it as the agency', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const headerless = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN', organisation: 'Provincial Treasury' }],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(headerless.status).toBe('ok');
+    const asAgency = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN', organisation: 'Travel Desk' }],
+      header: government,
+    });
+    expect(asAgency.status).toBe('ok');
+  });
+
+  it('refuses a stay company the quote header does not name, before any native call', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN', organisation: 'Other Company' }],
+      header: government,
+    });
+    expect(result).toEqual({
+      status: 'unavailable',
+      reason: 'The company or agency on this stay must match the quote header Company or Agency.',
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('refuses one quote whose stays name different companies', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        { ...stay, roomPreference: 'STWN', organisation: 'Provincial Treasury' },
+        { ...stay, id: 'g2', roomPreference: 'SKNG', organisation: 'Travel Desk' },
+      ],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result.status).toBe('unavailable');
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('sends staff-confirmed dinner and shuttle extras on executeStaffQuote', async () => {
     const mutate = vi.fn(async () => readyResult);
     const result = await bindExecuteStaffQuote({
