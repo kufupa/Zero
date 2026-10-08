@@ -7,7 +7,11 @@ import {
   QUOTE_WORKFLOW_PROMPT_VERSION,
   quoteWorkflowLlmEnabled,
 } from '../src/ai/quote-workflow-llm.js';
-import { CENTURION_HOTEL_RULES, lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
+import {
+  CENTURION_HOTEL_RULES,
+  lunaAnalysisSchema,
+  reservationistDecisionSchema,
+} from '../src/ai/reservationist-decision.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { LunaModelAdapter } from '../src/ai/bedrock/luna.js';
@@ -68,7 +72,28 @@ function fakeAdapter(output: unknown, seen: ModelInvokeInput[] = []): ModelAdapt
   };
 }
 
+describe('reservationistDecisionSchema', () => {
+  it('takes amend and cancel as workflows, as the hotel rules tell the model to', () => {
+    for (const workflow of ['amend', 'cancel'] as const) {
+      const parsed = reservationistDecisionSchema.parse({
+        workflow,
+        stayAsk: null,
+        missing: [],
+        replyDraft: '',
+        rationale: 'Existing booking.',
+      });
+      expect(parsed.workflow).toBe(workflow);
+    }
+  });
+});
+
 describe('lunaAnalysisSchema', () => {
+  it('reads a confirmation number the model sent as a bare number as text', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel', confirmationNumber: 57291630 })).confirmationNumber).toBe(
+      '57291630',
+    );
+  });
+
   it('accepts rooms_only_group as an info flag', () => {
     expect(lunaAnalysisSchema.parse(analysis({ flags: ['rooms_only_group'] })).flags).toEqual([
       'rooms_only_group',

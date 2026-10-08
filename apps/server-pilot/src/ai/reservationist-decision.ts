@@ -15,7 +15,7 @@ export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property co
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
 export const reservationistDecisionSchema = z.object({
-  workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other']),
+  workflow: z.enum(['quote', 'create', 'skip', 'spam', 'other', 'amend', 'cancel']),
   stayAsk: z
     .object({
       arrivalDate: z.string(),
@@ -98,8 +98,7 @@ export const lunaAnalysisSchema = z.object({
     )
     .max(8),
   confirmationNumber: z
-    .string()
-    .nullish()
+    .preprocess((value) => (typeof value === 'number' ? String(value) : value), z.string().nullish())
     .describe(
       'Existing booking confirmation number exactly as written, e.g. 57291630-1. Null if none.',
     ),
