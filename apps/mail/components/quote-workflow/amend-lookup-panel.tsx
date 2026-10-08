@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { usePilotCapabilities } from '@/hooks/use-pilot-capabilities';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
+  amendCapabilitiesFromTrpc,
   cancelConfirmLine,
   cancelFeeSentence,
   cancelManualSteps,
@@ -85,7 +85,7 @@ export function AmendLookupPanel({
   const mounted = useRef(false);
   const runToken = useRef(0);
   const autoRunKey = useRef<string | null>(null);
-  const { paneSave } = usePilotCapabilities();
+  const [paneSave, setPaneSave] = useState(false);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
   const [cancelState, setCancelState] = useState<{ key: string; view: CancelView } | null>(null);
 
@@ -95,6 +95,21 @@ export function AmendLookupPanel({
       mounted.current = false;
     };
   }, []);
+
+  // Cancelling stays off until the server says the pane save flag is on.
+  useEffect(() => {
+    const readCapabilities = amendCapabilitiesFromTrpc(trpc);
+    if (!readCapabilities) return;
+    let live = true;
+    readCapabilities()
+      .then((reply) => {
+        if (live) setPaneSave(reply.paneSave === true);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [trpc]);
 
   const runLookup = useCallback(
     async (activeClient: AmendFindClient | null, activeThread: string, activeKey: string) => {

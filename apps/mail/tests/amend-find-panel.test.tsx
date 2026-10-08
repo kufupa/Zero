@@ -15,11 +15,8 @@ import type { CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
-// The panel reads brain.getCapabilities through a query client. Tests set paneSave directly.
+// brain.getCapabilities answers with this flag. Tests set it before rendering.
 const capabilities = vi.hoisted(() => ({ paneSave: false }));
-vi.mock('@/hooks/use-pilot-capabilities', () => ({
-  usePilotCapabilities: () => capabilities,
-}));
 
 afterEach(() => {
   cleanup();
@@ -69,6 +66,9 @@ function trpcMock(enqueue: ReturnType<typeof vi.fn>, read: ReturnType<typeof vi.
     ai: {
       enqueueHmsRead: { mutate: enqueue },
       readHmsReceipt: { query: read },
+    },
+    brain: {
+      getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) },
     },
   };
 }
