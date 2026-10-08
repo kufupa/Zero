@@ -388,6 +388,11 @@ export type QuoteSession = {
   treatAs: 'quote' | 'create_booking' | null;
   /** Staff "Tell Luna" note re-submitted as top-priority evidence. */
   staffNote: string | null;
+  /**
+   * inputRevision when the in-flight analyseSelection request started. If it has moved
+   * by the time the result lands, staff edited during the run, so their edits are kept.
+   */
+  analysisStartRevision?: number | null;
 };
 
 export type QuoteSessionAction =

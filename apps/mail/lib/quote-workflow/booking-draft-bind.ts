@@ -26,10 +26,10 @@ export type BoundPrepareBookingDraft =
   | { status: 'unavailable'; reason: string }
   | { status: 'ok'; payload: BookingDraftReady };
 
-function rejectionReason(error: unknown, label: string): string {
+function rejectionReason(error: unknown): string {
   return error instanceof Error && error.message.trim()
     ? error.message
-    : `${label} failed.`;
+    : 'The request did not finish. Refresh the pane and try again.';
 }
 
 export async function bindPrepareBookingDraft(args: {
@@ -45,7 +45,7 @@ export async function bindPrepareBookingDraft(args: {
   if (!args.mutate) {
     return {
       status: 'unavailable',
-      reason: 'Client has no workstation.prepareBookingDraft.',
+      reason: 'The booking draft cannot be prepared from this pane yet. Refresh the pane and try again.',
     };
   }
   try {
@@ -61,7 +61,7 @@ export async function bindPrepareBookingDraft(args: {
       const reason =
         result && typeof result === 'object' && 'reason' in result && typeof result.reason === 'string'
           ? result.reason
-          : 'prepareBookingDraft did not return a ready draft.';
+          : 'HMS did not return a booking draft. Check the quote, then try again.';
       return { status: 'unavailable', reason };
     }
     const ready = result as { status: 'ready' } & BookingDraftReady;
@@ -73,11 +73,11 @@ export async function bindPrepareBookingDraft(args: {
     ) {
       return {
         status: 'unavailable',
-        reason: 'prepareBookingDraft result is stale against the current selection.',
+        reason: 'The booking draft is out of date because the selection changed. Select the email again.',
       };
     }
     if (!ready.draft || !Array.isArray(ready.draft.rooms) || !ready.options) {
-      return { status: 'unavailable', reason: 'prepareBookingDraft omitted draft rooms or options.' };
+      return { status: 'unavailable', reason: 'HMS returned an incomplete booking draft. Try again.' };
     }
     return {
       status: 'ok',
@@ -91,7 +91,7 @@ export async function bindPrepareBookingDraft(args: {
       },
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'prepareBookingDraft') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -176,7 +176,7 @@ export async function bindUsePriorQuoteForBooking(args: {
   analysis: LunaAnalysisWire;
 }): Promise<BoundUsePriorQuoteForBooking> {
   if (!args.mutate) {
-    return { status: 'unavailable', reason: 'Client has no workstation.usePriorQuoteForBooking.' };
+    return { status: 'unavailable', reason: 'Earlier quotes cannot be reused from this pane yet. Refresh the pane and try again.' };
   }
   try {
     const result = await args.mutate({
@@ -192,7 +192,7 @@ export async function bindUsePriorQuoteForBooking(args: {
       const reason =
         result && typeof result === 'object' && 'reason' in result && typeof result.reason === 'string'
           ? result.reason
-          : 'usePriorQuoteForBooking did not return a ready draft.';
+          : 'HMS did not return a booking draft from the earlier quote. Try again.';
       return { status: 'unavailable', reason };
     }
     if (
@@ -203,7 +203,7 @@ export async function bindUsePriorQuoteForBooking(args: {
     ) {
       return {
         status: 'unavailable',
-        reason: 'usePriorQuoteForBooking result is stale against the current selection.',
+        reason: 'The earlier quote no longer matches the selected email. Select the email again.',
       };
     }
     return {
@@ -226,7 +226,7 @@ export async function bindUsePriorQuoteForBooking(args: {
       },
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'usePriorQuoteForBooking') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -245,10 +245,10 @@ export type PriorStaffQuoteRequoteRow = {
   revisionRef: string;
 };
 
-export const EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL = 'Re-quote same stay';
+export const EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL = 'Re-quote this stay';
 
 export function expiredPriorQuoteToastMessage(): string {
-  return 'This quote expired — re-quote the same stay or run Quote again';
+  return 'This quote has expired. Re-quote the same stay, or run the search again.';
 }
 
 /** Prefer a matching expired revision over unrelated stay mismatches on the same thread. */
@@ -334,7 +334,7 @@ export async function bindGetPriorStaffQuoteRequote(args: {
   | { status: 'ok'; payload: PriorStaffQuoteRequotePayload }
 > {
   if (!args.query) {
-    return { status: 'unavailable', reason: 'Client has no workstation.getPriorStaffQuoteRequote.' };
+    return { status: 'unavailable', reason: 'Earlier quotes cannot be loaded from this pane yet. Refresh the pane and try again.' };
   }
   try {
     const result = await args.query({
@@ -348,11 +348,11 @@ export async function bindGetPriorStaffQuoteRequote(args: {
         reason:
           result && typeof result === 'object' && 'reason' in result && typeof result.reason === 'string'
             ? result.reason
-            : 'getPriorStaffQuoteRequote did not return stored groups.',
+            : 'The earlier quote could not be loaded. Run the search again.',
       };
     }
     return { status: 'ok', payload: result.payload };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'getPriorStaffQuoteRequote') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
   }
 }

@@ -1,53 +1,363 @@
 'use client';
 
-import { useState } from 'react';
-import type { BookingDraftReady, BookingRateCheck } from '@/lib/quote-workflow/types';
+import { useEffect, useState } from 'react';
+import type { BookingDraftReady, BookingRateCheck, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import {
+  commitOutcome,
+  PANE_COMMIT_UNREACHABLE_COPY,
+  PANE_PREVIEW_FAILED_COPY,
+  paneStayInputForRoom,
+  paneStayKey,
+  previewOutcome,
+  type PaneStayClient,
+  type PaneStayInput,
+} from '@/lib/quote-workflow/pane-stay-bind';
 
 const fieldClass =
   'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+
+const COPIED_MS = 1500;
+
+const BOARD_LABELS: Record<string, string | undefined> = {
+  room_only: 'Room only',
+  bb: 'Bed & breakfast',
+  dinner_bb: 'Dinner, bed & breakfast',
+};
+
+const BOOKING_FLAG_COPY: Record<string, string | undefined> = {
+  party_rate_not_applied:
+    'Company rate not applied: the booking has no company attached. Check the rate in HMS before booking.',
+  joint_inventory_unproven:
+    'Rooms for all stays are not proven to be free together. Check availability in HMS before booking.',
+};
+
+const RATE_CHECK_REASON_COPY: Record<string, string | undefined> = {
+  ambiguous_stay: 'the email has more than one stay',
+  ambiguous_basis: 'it is unclear whether the rate is per room or for the whole stay',
+  amount_precision: 'the amount format is unclear',
+  amount_overflow: 'the amount is too large to compare',
+  incompatible_scope_currency_or_tax: 'the rate is in a different currency or tax basis',
+  invalid_contract: 'the rate agreement could not be read',
+  invalid_target: 'the quoted total could not be matched',
+  nightly_target_unavailable: 'no nightly rate is available to compare',
+  not_a_price_agreement: 'the email gives a budget, not a price',
+  rounding_boundary_unknown: 'the rounding is too close to call',
+  source_missing: 'the email does not show where the rate came from',
+};
 
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function guestLabel(request: Record<string, unknown>): string {
-  return [textValue(request.firstName), textValue(request.lastName)].filter(Boolean).join(' ');
+function countValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  const count = Number(value);
+  return Number.isFinite(count) ? String(count) : '';
 }
 
-function occupancyLabel(request: Record<string, unknown>): string {
-  const adults = typeof request.adults === 'number' ? request.adults : Number(request.adults) || 0;
-  const childAges = Array.isArray(request.childAges) ? request.childAges : [];
-  const adultsPart = `${adults} adult${adults === 1 ? '' : 's'}`;
-  if (!childAges.length) return adultsPart;
-  return `${adultsPart} · ${childAges.length} child${childAges.length === 1 ? '' : 'ren'}`;
+function nightsBetween(arrival: string, departure: string): string {
+  const start = Date.parse(`${arrival}T00:00:00Z`);
+  const end = Date.parse(`${departure}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return '';
+  const nights = Math.round((end - start) / 86_400_000);
+  return nights > 0 ? String(nights) : '';
+}
+
+async function writeClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
     return (
       <p className="rounded-xs border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
-        Price match
-        {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+        Price matches the email
+        {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
       </p>
     );
   }
   if (check.status === 'mismatch') {
     return (
       <p className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-        Price mismatch: {check.claimQuote}
-        {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+        Price differs from the email: {check.claimQuote}
+        {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
       </p>
     );
   }
+  const why = check.reason ? RATE_CHECK_REASON_COPY[check.reason] : undefined;
   return (
     <p className="rounded-xs border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
-      Cannot check{check.reason ? `: ${check.reason}` : ''}
-      {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+      Could not compare with the email{why ? `: ${why}` : ''}
+      {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
     </p>
   );
 }
 
-export function BookingCards({ draft }: { draft: BookingDraftReady }) {
+function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: number; value: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), COPIED_MS);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  return (
+    <button
+      type="button"
+      disabled={!value}
+      aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for room ${roomIndex}`}
+      onClick={() => {
+        void writeClipboard(value).then((ok) => {
+          if (ok) setCopied(true);
+        });
+      }}
+      className="h-6 shrink-0 rounded-xs border border-[#cbd5e1] bg-white px-2 text-[11px] font-semibold text-[#0066cc] disabled:text-[#94a3b8]"
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function CopyRow({ label, roomIndex, value }: { label: string; roomIndex: number; value: string }) {
+  return (
+    <div className="flex items-center gap-2 text-[12px]">
+      <span className="w-32 shrink-0 text-[11.5px] font-semibold text-[#475569]">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-[#1e293b]">{value || 'Not set'}</span>
+      <CopyButton label={label} roomIndex={roomIndex} value={value} />
+    </div>
+  );
+}
+
+const PREVIEW_SHOT = 'filled.png';
+const SAVED_SHOT = 'saved.png';
+const PANE_BUTTON =
+  'h-8 rounded-xs border border-[#0066cc] bg-[#0066cc] px-3 text-[12px] font-semibold text-white disabled:border-[#cbd5e1] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]';
+
+type PreviewView =
+  | { status: 'running'; key: string }
+  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
+  | { status: 'refused'; key: string; message: string };
+
+type CommitView =
+  | { status: 'running'; key: string }
+  | { status: 'booked'; key: string; confirmationNumber: string; runId?: string; screenshots: string[] }
+  | { status: 'refused'; key: string; message: string };
+
+type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
+
+function pickScreenshot(names: string[], preferred: string): string | null {
+  if (names.includes(preferred)) return preferred;
+  return names.length ? names[names.length - 1]! : null;
+}
+
+// Thumbnail of one HMS run screenshot. Press it for the full-size view.
+function PaneScreenshot({
+  caption,
+  runId,
+  name,
+  screenshot,
+}: {
+  caption: string;
+  runId: string;
+  name: string;
+  screenshot: PaneStayClient['screenshot'];
+}) {
+  // undefined = still loading, null = not available, string = PNG data URL.
+  const [src, setSrc] = useState<string | null | undefined>(undefined);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setSrc(undefined);
+    screenshot(runId, name).then(
+      (url) => {
+        if (alive) setSrc(url);
+      },
+      () => {
+        if (alive) setSrc(null);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [runId, name, screenshot]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  if (src === undefined) return <p className="text-[11px] text-[#64748b]">Loading the HMS screenshot…</p>;
+  if (src === null) {
+    return (
+      <p className="text-[11px] text-amber-800">The HMS screenshot is no longer available. Check HMS directly.</p>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex w-fit flex-col items-start gap-1 rounded-xs border border-[#cbd5e1] bg-white p-1"
+      >
+        <img src={src} alt="" className="max-h-24 w-auto" />
+        <span className="text-[11px] font-semibold text-[#0066cc]">{caption}</span>
+      </button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={caption}
+          className="fixed inset-0 z-50 flex flex-col gap-2 overflow-auto bg-black/80 p-4"
+        >
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="h-8 rounded-xs bg-white px-3 text-[12px] font-semibold text-[#1e293b]"
+            >
+              Close
+            </button>
+          </div>
+          <img src={src} alt={caption} className="w-full bg-white" />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// Preview and Book for one room. Book unlocks only for the preview of these exact fields.
+function RoomSave({
+  stay,
+  missing,
+  save,
+  screenshot,
+  onPreview,
+  onBook,
+}: {
+  stay: PaneStayInput | null;
+  missing: string[];
+  save: RoomSaveState;
+  screenshot: PaneStayClient['screenshot'];
+  onPreview: (stay: PaneStayInput) => void;
+  onBook: (stay: PaneStayInput, previewDigest: string) => void;
+}) {
+  const { preview, commit } = save;
+  const key = stay ? paneStayKey(stay) : null;
+  const busy = preview?.status === 'running' || commit?.status === 'running';
+  const fresh = stay && preview?.status === 'ready' && preview.key === key ? preview : null;
+  const changed = preview?.status === 'ready' && preview.key !== key;
+
+  if (commit?.status === 'booked') {
+    const savedShot = pickScreenshot(commit.screenshots, SAVED_SHOT);
+    return (
+      <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+        <p className="text-[12.5px] font-semibold text-emerald-800">
+          {`Booked in HMS – confirmation ${commit.confirmationNumber}`}
+        </p>
+        {commit.runId && savedShot ? (
+          <PaneScreenshot
+            caption="See what Luna saved in HMS"
+            runId={commit.runId}
+            name={savedShot}
+            screenshot={screenshot}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
+  const previewShot = fresh?.runId ? pickScreenshot(fresh.screenshots, PREVIEW_SHOT) : null;
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      {preview?.status === 'running' ? (
+        <p role="status" className="text-[11.5px] text-[#334155]">
+          Luna is filling the booking in HMS… (about 2 minutes)
+        </p>
+      ) : null}
+      {preview?.status === 'refused' ? (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          {preview.message}
+        </p>
+      ) : null}
+      {changed ? (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          You changed the booking – preview again.
+        </p>
+      ) : null}
+      {fresh && stay && fresh.runId && previewShot ? (
+        <PaneScreenshot
+          caption="See what Luna filled in HMS"
+          runId={fresh.runId}
+          name={previewShot}
+          screenshot={screenshot}
+        />
+      ) : null}
+      {fresh && stay ? (
+        <p className="text-[12px] text-[#1e293b]">
+          {`Luna will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press Book in HMS.`}
+        </p>
+      ) : null}
+      {commit?.status === 'running' ? (
+        <p role="status" className="text-[11.5px] text-[#334155]">
+          Luna is booking this in HMS… (about 2 minutes)
+        </p>
+      ) : null}
+      {commit?.status === 'refused' ? (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          {commit.message}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={!stay || busy}
+          onClick={() => {
+            if (stay) onPreview(stay);
+          }}
+          className={PANE_BUTTON}
+        >
+          Preview in HMS
+        </button>
+        <button
+          type="button"
+          disabled={!fresh || busy}
+          onClick={() => {
+            if (stay && fresh) onBook(stay, fresh.digest);
+          }}
+          className={PANE_BUTTON}
+        >
+          Book in HMS
+        </button>
+      </div>
+      <p className="text-[11px] text-[#64748b]">
+        {stay
+          ? 'Luna fills the booking in HMS and checks availability. Nothing is saved.'
+          : `Set ${missing.join(', ')} before you preview.`}
+      </p>
+    </div>
+  );
+}
+
+export function BookingCards({
+  draft,
+  groups = [],
+  paneSave = null,
+}: {
+  draft: BookingDraftReady;
+  groups?: StayGroupRequirement[];
+  /** Set only when the server pane save flag is on. Without it the card stays copy-only. */
+  paneSave?: PaneStayClient | null;
+}) {
+  const client = paneSave;
   const [choices, setChoices] = useState<Record<string, { track: string; sourceOfBusiness: string; guaranteeType: string }>>(
     () =>
       Object.fromEntries(
@@ -65,16 +375,63 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
       ),
   );
 
+  const [saves, setSaves] = useState<Record<string, RoomSaveState>>({});
+
+  function patchSave(roomKey: string, patch: RoomSaveState) {
+    setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
+  }
+
+  async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
+    const key = paneStayKey(stay);
+    patchSave(roomKey, { preview: { status: 'running', key }, commit: undefined });
+    let preview: PreviewView;
+    try {
+      const outcome = previewOutcome(await pane.preview(stay));
+      preview = outcome.ok
+        ? { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
+        : { status: 'refused', key, message: outcome.message };
+    } catch {
+      preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
+    }
+    patchSave(roomKey, { preview });
+  }
+
+  async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
+    const key = paneStayKey(stay);
+    patchSave(roomKey, { commit: { status: 'running', key } });
+    let commit: CommitView;
+    try {
+      const outcome = commitOutcome(await pane.commit(stay, previewDigest));
+      commit = outcome.ok
+        ? {
+            status: 'booked',
+            key,
+            confirmationNumber: outcome.confirmationNumber,
+            runId: outcome.runId,
+            screenshots: outcome.screenshots,
+          }
+        : { status: 'refused', key, message: outcome.message };
+    } catch {
+      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY };
+    }
+    // A refused save invalidates the preview, so Book stays locked until the staff preview again.
+    patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined });
+  }
+
   return (
     <section className="flex flex-col gap-2">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Booking draft</h3>
-      <p className="text-[11px] text-[#64748b]">Quoted room and rate codes. Track, source and guarantee stay local until pane save ships.</p>
+      <p className="text-[11px] text-[#64748b]">
+        {client
+          ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
+          : 'Saving in HMS from here is switched off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
+      </p>
       {draft.draft.rateCheck.map((check, index) => (
         <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
       ))}
       {draft.draft.flags.map((flag) => (
         <p key={flag} className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-          {flag}
+          {BOOKING_FLAG_COPY[flag] ?? 'Check this booking detail in HMS before booking.'}
         </p>
       ))}
       {draft.draft.missing.map((item) => (
@@ -85,118 +442,154 @@ export function BookingCards({ draft }: { draft: BookingDraftReady }) {
       {draft.draft.rooms.map((room) => {
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = choices[key] ?? { track: '', sourceOfBusiness: '', guaranteeType: '' };
-        const party = textValue(room.request.agency) || textValue(room.request.organization);
-        const guest = guestLabel(room.request);
+        const request = room.request;
+        const built = paneStayInputForRoom(request, choice);
+        const group = groups.find((item) => item.id === room.groupId);
+        const arrival = textValue(request.arrival);
+        const departure = textValue(request.departure);
+        const childCount = Array.isArray(request.childAges) ? request.childAges.length : 0;
+        const party = textValue(request.agency) || textValue(request.organization);
+        const roomIndex = room.roomIndex;
         return (
           <article
             key={key}
             className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3"
           >
-            <h4 className="text-[12.5px] font-bold text-[#1e293b]">Room {room.roomIndex}</h4>
-            <p className="text-[11px] text-[#64748b]">
-              {textValue(room.request.arrival)} → {textValue(room.request.departure)}
-            </p>
-            <p className="text-[12px] text-[#1e293b]">
-              {textValue(room.request.roomType)} · {textValue(room.request.ratePlan)}
-            </p>
-            {party ? <p className="text-[12px] font-semibold text-[#1e293b]">{party}</p> : null}
-            {guest ? <p className="text-[12px] text-[#1e293b]">{guest}</p> : null}
-            <p className="text-[11px] text-[#64748b]">{occupancyLabel(room.request)}</p>
-            <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-              Track
-              <select
-                aria-label="Track"
-                className={fieldClass}
-                value={choice.track}
-                onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    [key]: { ...choice, track: event.target.value },
-                  }))
-                }
-              >
-                <option value="">Select track</option>
-                {draft.options.track.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-              Source of business
-              <select
-                aria-label="Source of business"
-                className={fieldClass}
-                value={choice.sourceOfBusiness}
-                onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    [key]: { ...choice, sourceOfBusiness: event.target.value },
-                  }))
-                }
-              >
-                <option value="">Select source</option>
-                {draft.options.sourceOfBusiness.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-              Guarantee
-              <select
-                aria-label="Guarantee"
-                className={fieldClass}
-                value={choice.guaranteeType}
-                onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    [key]: { ...choice, guaranteeType: event.target.value },
-                  }))
-                }
-              >
-                <option value="">Select guarantee</option>
-                {draft.options.guaranteeType.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <h4 className="text-[12.5px] font-bold text-[#1e293b]">Room {roomIndex}</h4>
+            <CopyRow roomIndex={roomIndex} label="Arrival" value={arrival} />
+            <CopyRow roomIndex={roomIndex} label="Departure" value={departure} />
+            <CopyRow roomIndex={roomIndex} label="Nights" value={nightsBetween(arrival, departure)} />
+            <CopyRow roomIndex={roomIndex} label="Adults" value={countValue(request.adults)} />
+            <CopyRow roomIndex={roomIndex} label="Children" value={String(childCount)} />
+            <CopyRow roomIndex={roomIndex} label="Room type" value={textValue(request.roomType)} />
+            <CopyRow roomIndex={roomIndex} label="Rate code" value={textValue(request.ratePlan)} />
+            <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[group?.board ?? ''] ?? ''} />
+            <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} />
+            <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} />
+            <CopyRow roomIndex={roomIndex} label="Company or travel agent" value={party} />
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                Source of business
+                <select
+                  aria-label="Source of business"
+                  className={fieldClass}
+                  value={choice.sourceOfBusiness}
+                  onChange={(event) =>
+                    setChoices((current) => ({
+                      ...current,
+                      [key]: { ...choice, sourceOfBusiness: event.target.value },
+                    }))
+                  }
+                >
+                  <option value="">Select source</option>
+                  {draft.options.sourceOfBusiness.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Source of business" roomIndex={roomIndex} value={choice.sourceOfBusiness} />
+            </div>
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                Track
+                <select
+                  aria-label="Track"
+                  className={fieldClass}
+                  value={choice.track}
+                  onChange={(event) =>
+                    setChoices((current) => ({
+                      ...current,
+                      [key]: { ...choice, track: event.target.value },
+                    }))
+                  }
+                >
+                  <option value="">Select track</option>
+                  {draft.options.track.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Track" roomIndex={roomIndex} value={choice.track} />
+            </div>
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                Guarantee
+                <select
+                  aria-label="Guarantee"
+                  className={fieldClass}
+                  value={choice.guaranteeType}
+                  onChange={(event) =>
+                    setChoices((current) => ({
+                      ...current,
+                      [key]: { ...choice, guaranteeType: event.target.value },
+                    }))
+                  }
+                >
+                  <option value="">Select guarantee</option>
+                  {draft.options.guaranteeType.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Guarantee" roomIndex={roomIndex} value={choice.guaranteeType} />
+            </div>
+            <CopyRow
+              roomIndex={roomIndex}
+              label="Special requests"
+              value={(group?.specialRequests ?? []).join('; ')}
+            />
             {room.schemaErrors.map((error) => (
               <p key={error} className="text-[11px] text-amber-800">
                 {error}
               </p>
             ))}
+            {client ? (
+              <RoomSave
+                stay={built.stay}
+                missing={built.missing}
+                save={saves[key] ?? {}}
+                screenshot={client.screenshot}
+                onPreview={(stay) => void previewRoom(key, client, stay)}
+                onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+              />
+            ) : null}
           </article>
         );
       })}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled
-          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-        >
-          Preview
-        </button>
-        <button
-          type="button"
-          disabled
-          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-        >
-          Commit
-        </button>
-        <button
-          type="button"
-          disabled
-          className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-        >
-          Save
-        </button>
-      </div>
-      <p className="text-[11px] text-[#64748b]">Saving from the pane is coming next — copy into HMS</p>
+      {client ? null : (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled
+              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              disabled
+              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+            >
+              Book in HMS
+            </button>
+            <button
+              type="button"
+              disabled
+              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
+            >
+              Save draft
+            </button>
+          </div>
+          <p className="text-[11px] text-[#64748b]">Saving from this pane is coming soon. For now, copy each field into HMS.</p>
+        </>
+      )}
     </section>
   );
 }

@@ -9,7 +9,7 @@ import type {
 const PRICING_FIELDS: Array<{ key: string; label: string }> = [
   { key: 'arrivalDate', label: 'Arrival date' },
   { key: 'departureDate', label: 'Departure date' },
-  { key: 'adults', label: 'Adult occupancy' },
+  { key: 'adults', label: 'Number of adults' },
 ];
 
 function isActualQuestionClause(text: string): boolean {
@@ -26,14 +26,15 @@ export function notNoise(item: QuoteReviewItem): boolean {
 export function pricingReviewItems(groups: StayGroupRequirement[]): QuoteReviewItem[] {
   const items: QuoteReviewItem[] = [];
   for (const group of groups) {
+    const stayNo = groups.indexOf(group) + 1;
     for (const field of PRICING_FIELDS) {
       if (group.fields[field.key] === 'missing') {
         items.push({
           id: `pricing:${group.id}:${field.key}`,
           kind: 'pricing_fact',
           rank: 'pricing',
-          text: `${field.label} is missing for stay group ${group.id}.`,
-          sourceLabel: `Stay group ${group.id}`,
+          text: `${field.label} is missing for Stay ${stayNo}.`,
+          sourceLabel: `Stay ${stayNo}`,
           blocking: true,
         });
       }
@@ -43,8 +44,8 @@ export function pricingReviewItems(groups: StayGroupRequirement[]): QuoteReviewI
         id: `pricing:${group.id}:board`,
         kind: 'pricing_fact',
         rank: 'pricing',
-        text: `Board is unknown for stay group ${group.id}.`,
-        sourceLabel: `Stay group ${group.id}`,
+        text: `Meal plan is not stated for Stay ${stayNo}.`,
+        sourceLabel: `Stay ${stayNo}`,
         blocking: true,
       });
     }
@@ -70,8 +71,8 @@ export function documentFailureItems(documents: QuoteDocumentFailure[]): QuoteRe
     id: documentFailureIdentity(document),
     kind: 'document_failure',
     rank: 'unread_source',
-    text: `Unread: ${document.filename}`,
-    sourceLabel: document.sourceKind === 'email' ? 'Unread email source' : 'Unread attachment',
+    text: `Could not read: ${document.filename}`,
+    sourceLabel: document.sourceKind === 'email' ? 'Email text' : 'Attachment',
     filename: document.filename,
     reason: document.reason,
     sourceRef: document.sourceRef,
@@ -87,7 +88,7 @@ export function questionReviewItems(analysis: QuoteAnalysis | null): QuoteReview
     kind: 'question',
     rank: 'secondary',
     text: text.trim(),
-    sourceLabel: 'Selected message',
+    sourceLabel: 'This email',
     blocking: false,
   }));
 }
@@ -106,8 +107,8 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       action.sourceKind === 'attachment'
         ? action.filename ?? 'Attachment'
         : action.sourceKind === 'message'
-          ? 'Selected message'
-          : action.filename ?? 'Selected message';
+          ? 'This email'
+          : action.filename ?? 'This email';
     const kind =
       action.kind === 'pricing_fact'
         ? 'pricing_fact'
@@ -121,7 +122,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       rank,
       text:
         action.kind === 'business_document_failure' && action.filename
-          ? `Unread: ${action.filename}`
+          ? `Could not read: ${action.filename}`
           : action.text.trim(),
       sourceLabel,
       sourceRef: action.sourceRef,

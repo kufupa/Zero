@@ -17,7 +17,14 @@ const FIELD_EVIDENCE_ALIASES: Record<string, string[]> = {
 
 function Provenance({ value }: { value?: string }) {
   if (!value) return null;
-  const label = value === 'staff_corrected' ? 'Staff' : value === 'missing' ? 'Missing' : 'Extracted';
+  const label =
+    value === 'staff_corrected'
+      ? 'Your note'
+      : value === 'missing'
+        ? 'Missing'
+        : value === 'defaulted'
+          ? 'Default'
+          : 'Email';
   return (
     <span className="ml-1 rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
       {label}
@@ -40,7 +47,7 @@ function FieldEvidence({ quotes }: { quotes: Array<{ quote: string; source?: 'st
   return (
     <>
       <span className="ml-1 rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
-        {fromStaff ? 'staff note' : 'AI suggestion'}
+        {fromStaff ? 'Your note' : 'Email'}
       </span>
       {quotes.map((item) => (
         <p key={item.quote} className="font-normal text-[11px] text-[#64748b]">
@@ -65,7 +72,7 @@ export function RequirementCard({
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">
-        Stay group {index + 1}
+        Stay {index + 1}
       </h3>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         <span>
@@ -96,7 +103,7 @@ export function RequirementCard({
         <FieldEvidence quotes={quotesFor('departureDate', evidence)} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Quantity
+        Rooms
         <input
           type="number"
           min={1}
@@ -107,14 +114,14 @@ export function RequirementCard({
         <FieldEvidence quotes={quotesFor('quantity', evidence)} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Room preference
+        Room type
         <select
           className={fieldClass}
           value={group.roomPreference ?? ''}
           onChange={(event) => onPatch?.(group.id, { roomPreference: event.target.value })}
         >
           <option value="">Any room type — no stated preference</option>
-          {group.roomPreference && !['STWN','STQN','SKNG','EXKNG','DLXTWN','DLXQN','DLXKNG','LUXKNG','SUITE'].includes(group.roomPreference) && <option value={group.roomPreference}>Requested: {group.roomPreference} — choose a room type</option>}
+          {group.roomPreference && !['STWN','STQN','SKNG','EXKNG','DLXTWN','DLXQN','DLXKNG','LUXKNG','SUITE'].includes(group.roomPreference) && <option value={group.roomPreference}>Email asked for {group.roomPreference} — pick a room type</option>}
           <option value="STWN">Standard Twin</option><option value="STQN">Standard Queen</option><option value="SKNG">Standard King</option>
           <option value="EXKNG">Executive King</option><option value="DLXTWN">Deluxe Twin</option><option value="DLXQN">Deluxe Queen</option>
           <option value="DLXKNG">Deluxe King</option><option value="LUXKNG">Luxury King</option><option value="SUITE">Suite</option>
@@ -137,7 +144,7 @@ export function RequirementCard({
         <FieldEvidence quotes={quotesFor('adults', evidence)} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Children ages (comma separated)
+        Children ages (separate with commas)
         <input
           className={fieldClass}
           aria-label="Children ages"
@@ -152,10 +159,10 @@ export function RequirementCard({
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         <span>
-          Board
+          Meal plan
           {group.fields.board === 'defaulted' ? (
             <span className="ml-1 text-[11px] font-normal normal-case tracking-normal text-[#64748b]">
-              usual
+              Default
             </span>
           ) : (
             <Provenance value={group.fields.board} />
@@ -163,13 +170,13 @@ export function RequirementCard({
         </span>
         <select
           className={fieldClass}
-          aria-label="Board"
+          aria-label="Meal plan"
           value={group.board}
           onChange={(event) =>
             onPatch?.(group.id, { board: event.target.value as StayGroupRequirement['board'] })
           }
         >
-          <option value="unknown">Unknown / missing</option>
+          <option value="unknown">Not stated yet</option>
           <option value="room_only">Room only</option>
           <option value="bb">Bed &amp; breakfast</option>
           <option value="dinner_bb">Dinner, bed &amp; breakfast</option>
@@ -177,10 +184,10 @@ export function RequirementCard({
         <FieldEvidence quotes={quotesFor('board', evidence)} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Organisation / agency
+        Company or agency
         <input
           className={fieldClass}
-          aria-label="Organisation / agency"
+          aria-label="Company or agency"
           value={group.organisation ?? ''}
           onChange={(event) => onPatch?.(group.id, { organisation: event.target.value })}
         />

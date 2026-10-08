@@ -82,17 +82,17 @@ describe('quote workflow scenario matrix', () => {
     session.selectedOfferIds = ['bb-1'];
     render(<QuoteWorkflowPanel session={session} />);
     const body = document.body.textContent ?? '';
-    expect(body).toMatch(/Selected allocation total/);
+    expect(body).toMatch(/Selected total/);
     expect(body).toMatch(/140/);
-    expect(body).not.toMatch(/Selected allocation total[^\n]*4[\s\u00a0,]?040/);
-    expect(body).toMatch(/Alternative — not included in the selected allocation total/);
+    expect(body).not.toMatch(/Selected total[^\n]*4[\s\u00a0,]?040/);
+    expect(body).toMatch(/Alternative — not counted in the total/);
   });
 
   it('warns that staggered date searches do not prove joint availability', () => {
     const session = sessionFromFixture('staggered-dates');
     session.selectedOfferIds = session.offers.map((offer) => offer.id);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getAllByText(/do not prove joint availability/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/do not prove that all stays are available together/i).length).toBeGreaterThan(0);
   });
 
   it('expands varying nightly prices', () => {

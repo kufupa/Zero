@@ -235,7 +235,7 @@ describe('OutlookPanePage', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Send manually in Outlook/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Open Full-Screen \(1000×800\)/i })).toBeNull();
-    expect(screen.getByText(/Authorised HMS screenshot unavailable/i)).toBeDefined();
+    expect(screen.getByText(/No HMS screenshot for this quote/i)).toBeDefined();
   });
 
   it('opens only the native pairing dialog when the installer is unpaired', async () => {
@@ -249,12 +249,12 @@ describe('OutlookPanePage', () => {
 
   it('renders the Run System Test button', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByRole('button', { name: /Run System Verification/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Run system check/i })).toBeDefined();
   });
 
   it('labels the AI draft card as a sample placeholder', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Extracted suggestions.*review and correct/i)).toBeDefined();
+    expect(screen.getByText(/Luna's suggestions from this email.*Check and correct/i)).toBeDefined();
   });
 
   it('passes the selected store ID when creating a reply draft', async () => {
@@ -400,7 +400,7 @@ describe('OutlookPanePage', () => {
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
     expect(screen.getByRole('status').textContent).toMatch(
-      /Outlook may have completed.*Check Outlook Drafts before retrying/i,
+      /Outlook may have created the draft.*Check Outlook Drafts before retrying/i,
     );
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
@@ -466,7 +466,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(1);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
     fireEvent.click(button);
@@ -585,7 +585,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/safe retry window.*expired.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
     fireEvent.click(button);
@@ -608,7 +608,7 @@ describe('OutlookPanePage', () => {
 
     expect(createReplyCalls()).toHaveLength(258);
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringMatching(/expired reply outcomes.*check Outlook Drafts.*new operation/i),
+      expect.stringMatching(/Too many earlier replies.*check Outlook Drafts/i),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -637,7 +637,7 @@ describe('OutlookPanePage', () => {
     });
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     expect(button.hasAttribute('disabled')).toBe(true);
-    expect(button.textContent).toMatch(/saving/i);
+    expect(button.textContent).toMatch(/creating/i);
 
     await act(async () => finish({ ...draftFolder, entryId: 'draft-1', displayed: true }));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
@@ -658,10 +658,10 @@ describe('OutlookPanePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/saved.*not opened/i);
+      expect(screen.getByRole('status').textContent).toMatch(/saved.*did not open/i);
       expect(screen.getByRole('status').textContent).toMatch(/Outlook blocked the composer/);
       expect(screen.getByRole('status').textContent).toMatch(/original Drafts folder/);
-      expect(screen.getByRole('status').textContent).toMatch(/location.*unverified/i);
+      expect(screen.getByRole('status').textContent).toMatch(/confirm which folder/i);
     });
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
   });

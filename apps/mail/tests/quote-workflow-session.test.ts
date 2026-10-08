@@ -653,7 +653,7 @@ describe('quote session', () => {
     expect(parseChildrenAges('5,')).toEqual([5]);
     expect(parseChildrenAges('0')).toEqual([0]);
     expect(formatQuoteStepInputs({ organisation: 'Treasury', quoteRequestKey: '2026-12-01:2026-12-03' })).toMatch(
-      /Organisation Treasury/,
+      /Company Treasury/,
     );
   });
 
@@ -976,9 +976,9 @@ describe('quote session staff review items', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'document_failure',
-          text: 'Unread: rooming-list.pdf',
+          text: 'Could not read: rooming-list.pdf',
           filename: 'rooming-list.pdf',
-          sourceLabel: 'Unread attachment',
+          sourceLabel: 'Attachment',
           reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
           blocking: false,
         }),
@@ -1171,8 +1171,8 @@ describe('quote session staff review items', () => {
       'document:attachment:att-2:rooming-list.pdf',
     ]);
     expect(items.map((item) => item.text)).toEqual([
-      'Unread: rooming-list.pdf',
-      'Unread: rooming-list.pdf',
+      'Could not read: rooming-list.pdf',
+      'Could not read: rooming-list.pdf',
     ]);
   });
 
@@ -1839,6 +1839,47 @@ describe('quote session staff review items', () => {
       extrasReviewItems: [],
     });
     expect(s.reviewItems.some((item) => item.sourceLabel === 'Quote extras')).toBe(false);
+  });
+});
+
+describe('Tell Luna runs racing staff stay edits', () => {
+  const twoAdultsTwoRooms = { ...quoteAnalysis.groups[0]!, adults: 2, quantity: 2 };
+
+  it('keeps stay edits made after Tell Luna was submitted while the run is in flight', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    const late = { ...quoteAnalysis, groups: [twoAdultsTwoRooms] };
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: late });
+    expect(session.groups[0]?.adults).toBe(9);
+    expect(session.groups[0]?.quantity).toBe(1);
+    expect(session.analysis).toEqual(late);
+    expect(session.phase).toBe('requirements');
+    expect(session.staffNote).toBe('2 twins');
+  });
+
+  it('applies the Tell Luna result when staff did not edit during the run', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'staff_note', staffNote: '2 twins' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...quoteAnalysis, groups: [twoAdultsTwoRooms] },
+    });
+    expect(session.groups[0]?.adults).toBe(2);
+    expect(session.groups[0]?.quantity).toBe(2);
+    expect(session.phase).toBe('requirements');
+  });
+
+  it('finishes the loading state when a re-run after earlier stay edits applies no note', () => {
+    let session = analysisReady();
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { adults: 9 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(session.phase).toBe('requirements');
+    expect(session.groups[0]?.adults).toBe(9);
   });
 });
 
