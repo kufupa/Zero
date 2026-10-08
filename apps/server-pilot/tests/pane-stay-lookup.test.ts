@@ -7,11 +7,14 @@ import {
   findStay,
   guestDatesDuplicateCheckViaCli,
   guestDatesVerdict,
+  type GuestSearchQuery,
+  isGuestSurname,
   type PaneStayFields,
   type PaneStayLookupSpawnInput,
   type PaneStayLookupSpawnResult,
   paneStayLookupEnabled,
   paneStayLookupLoaders,
+  searchGuest,
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
@@ -487,5 +490,221 @@ describe('paneStayLookup router', () => {
     await expect(
       mailboxCaller().paneStayLookup.screenshot({ runId, name: '../record.png' } as never),
     ).rejects.toThrow();
+  });
+});
+
+const SEARCH_ROW = {
+  confirmation: '46184891-1',
+  firstName: 'Ana',
+  lastName: 'Labtest',
+  status: 'Reserved',
+  arrival: '2027-09-14',
+  departure: '2027-09-15',
+};
+
+describe('searchGuest', () => {
+  it('accepts letters, spaces, apostrophes and hyphens in a 2 to 40 character surname, and nothing else', () => {
+    for (const ok of ["O'Brien", 'Smith-Jones', 'De la Rey', 'Müller', 'Li']) expect(isGuestSurname(ok)).toBe(true);
+    for (const bad of ['L', '', '-Labtest', 'Labtest-', 'Labtest2', 'Labtest.', 'A'.repeat(41)]) {
+      expect(isGuestSurname(bad)).toBe(false);
+    }
+  });
+
+  it('refuses bad input before any lock or spawn: surname shape, real ISO dates, departure after arrival', async () => {
+    const seen: string[] = [];
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    const bad: GuestSearchQuery[] = [
+      { lastName: 'X', arrival: '2027-09-14' },
+      { lastName: '-Smith', arrival: '2027-09-14' },
+      { lastName: 'Labtest', arrival: '2027-02-30' },
+      { lastName: 'Labtest', arrival: '14-SEP-2027' },
+      { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-14' },
+      { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-13' },
+    ];
+    for (const input of bad) {
+      await expect(searchGuest(input, { lock: () => passingLock(seen) })).resolves.toEqual({
+        outcome: 'refused_input_invalid',
+        rows: [],
+        screenshots: [],
+        runId: null,
+      });
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it('refuses refused_flag_off with no spawn, and refused_lock_unavailable when no lock can be made', async () => {
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    vi.stubEnv('PANE_STAY_LOOKUP', 'off');
+    await expect(searchGuest(DUP_QUERY, { lock: () => passingLock() })).resolves.toMatchObject({
+      outcome: 'refused_flag_off',
+      rows: [],
+    });
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    await expect(searchGuest(DUP_QUERY, { lock: () => null })).resolves.toMatchObject({
+      outcome: 'refused_lock_unavailable',
+      rows: [],
+    });
+  });
+
+  it('runs the search CLI under the lock and returns the complete rows of an ok read, dropping rows with no confirmation', async () => {
+    const seen: string[] = [];
+    const calls: PaneStayLookupSpawnInput[] = [];
+    let registered: { runId: string; dir: string } | null = null;
+    paneStayLookupLoaders.spawn = async (input) => {
+      seen.push('spawn');
+      calls.push(input);
+      return lookupResult({
+        outcome: 'ok',
+        stay: null,
+        rows: [
+          SEARCH_ROW,
+          { ...SEARCH_ROW, confirmation: '46184892-1', status: 'Cancelled', arrival: null, departure: null },
+          { ...SEARCH_ROW, confirmation: '   ' },
+          null as never,
+        ],
+        screenshots: ['/tmp/pane-lookup-s/panel.png'],
+        runId: 'run-search-1',
+        runDir: '/tmp/pane-lookup-s',
+      });
+    };
+    await expect(
+      searchGuest(DUP_QUERY, {
+        lock: () => passingLock(seen),
+        onRun: (run) => {
+          registered = run;
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: 'ok',
+      rows: [
+        SEARCH_ROW,
+        { confirmation: '46184892-1', firstName: 'Ana', lastName: 'Labtest', status: 'Cancelled', arrival: null, departure: null },
+      ],
+      screenshots: ['panel.png'],
+      runId: 'run-search-1',
+    });
+    expect(seen).toEqual(['lock', 'spawn']);
+    expect(calls).toEqual([{ mode: 'search-guest', ...DUP_QUERY }]);
+    expect(registered).toEqual({ runId: 'run-search-1', dir: '/tmp/pane-lookup-s' });
+  });
+
+  it('passes no departure to the CLI when the search has none', async () => {
+    const calls: PaneStayLookupSpawnInput[] = [];
+    paneStayLookupLoaders.spawn = async (input) => {
+      calls.push(input);
+      return lookupResult({ outcome: 'ok', stay: null, rows: [], screenshots: [] });
+    };
+    await expect(searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }, { lock: () => passingLock() })).resolves.toEqual({
+      outcome: 'ok',
+      rows: [],
+      screenshots: [],
+      runId: null,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ mode: 'search-guest', lastName: 'Labtest', arrival: '2027-09-14' });
+    expect(calls[0]).not.toHaveProperty('departure');
+  });
+
+  it('reports ambiguous_capped with no rows, so a partial list is never picked from', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ outcome: 'ambiguous_capped', stay: null, rows: [SEARCH_ROW], screenshots: [] });
+    await expect(searchGuest(DUP_QUERY, { lock: () => passingLock() })).resolves.toEqual({
+      outcome: 'ambiguous_capped',
+      rows: [],
+      screenshots: [],
+      runId: null,
+    });
+  });
+
+  it('refuses refused_lock_busy when the property lock stays held, and maps a spawn failure or an unknown outcome to execution_failure', async () => {
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    const busy: PaneStayLock = {
+      withLock: async () => {
+        throw busyLockError();
+      },
+    };
+    await expect(searchGuest(DUP_QUERY, { lock: () => busy })).resolves.toMatchObject({
+      outcome: 'refused_lock_busy',
+      rows: [],
+    });
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('CDP unreachable');
+    };
+    await expect(searchGuest(DUP_QUERY, { lock: () => passingLock() })).resolves.toMatchObject({
+      outcome: 'execution_failure',
+      rows: [],
+    });
+    paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'found', rows: [SEARCH_ROW], screenshots: [] });
+    await expect(searchGuest(DUP_QUERY, { lock: () => passingLock() })).resolves.toEqual({
+      outcome: 'execution_failure',
+      rows: [],
+      screenshots: [],
+      runId: null,
+    });
+  });
+});
+
+describe('paneStayLookup.searchGuest route', () => {
+  it('returns the rows of an ok read, and serves its panel screenshot to the owner who ran it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pane-lookup-search-test-'));
+    cleanupDirs.push(dir);
+    const runId = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f70819203';
+    await writeFile(join(dir, 'panel.png'), Buffer.from('panel-bytes'));
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ outcome: 'ok', stay: null, rows: [SEARCH_ROW], runId, runDir: dir, screenshots: [join(dir, 'panel.png')] });
+
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15' }),
+    ).resolves.toEqual({ outcome: 'ok', rows: [SEARCH_ROW], screenshots: ['panel.png'], runId });
+    await expect(mailboxCaller().paneStayLookup.screenshot({ runId, name: 'panel.png' })).resolves.toEqual({
+      status: 'ok',
+      dataUrl: `data:image/png;base64,${Buffer.from('panel-bytes').toString('base64')}`,
+    });
+  });
+
+  it('returns ambiguous_capped with no rows, and the refusals with no rows', async () => {
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ outcome: 'ambiguous_capped', stay: null, rows: [SEARCH_ROW], screenshots: [] });
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }),
+    ).resolves.toEqual({ outcome: 'ambiguous_capped', rows: [], screenshots: [], runId: null });
+
+    paneStayLookupLoaders.lock = { withLock: async () => { throw busyLockError(); } };
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }),
+    ).resolves.toMatchObject({ outcome: 'refused_lock_busy', rows: [] });
+
+    vi.stubEnv('PANE_STAY_LOOKUP', 'off');
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }),
+    ).resolves.toMatchObject({ outcome: 'refused_flag_off', rows: [] });
+  });
+
+  it('rejects a bad surname, a bad date, or an extra key before any run, and refuses a departure before arrival', async () => {
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    const caller = mailboxCaller().paneStayLookup;
+    await expect(caller.searchGuest({ lastName: 'L', arrival: '2027-09-14' })).rejects.toThrow();
+    await expect(caller.searchGuest({ lastName: 'Labtest1', arrival: '2027-09-14' })).rejects.toThrow();
+    await expect(caller.searchGuest({ lastName: '-Labtest', arrival: '2027-09-14' })).rejects.toThrow();
+    await expect(caller.searchGuest({ lastName: 'Labtest', arrival: '14-SEP-2027' })).rejects.toThrow();
+    await expect(caller.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14', departure: 'soon' })).rejects.toThrow();
+    await expect(
+      caller.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14', propertyCode: 'OTHER' } as never),
+    ).rejects.toThrow();
+    await expect(caller.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-13' })).resolves.toMatchObject({
+      outcome: 'refused_input_invalid',
+      rows: [],
+    });
   });
 });
