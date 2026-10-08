@@ -10,7 +10,8 @@
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
 // recorded and left open; OK is never clicked on it.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"]
+// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest]
+// --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -21,8 +22,9 @@ import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus,
   normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, squash, windowCovers,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, squash,
 } from './cancel-stay-rules.mjs';
+import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -40,6 +42,8 @@ function newResult(args) {
     arrival: args.arrival,
     mode: args.mode,
     reason: args.reason,
+    lastName: args.lastName ?? null,
+    quickStages: [],
     statusBefore: null,
     statusAfter: null,
     balance: null,
@@ -110,11 +114,21 @@ export async function openGuestStay(page) {
   }
 }
 
-export async function searchConfirmation(page, confirmation) {
-  const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+// The header search. Typing goes through the keyboard, so the search sees each key rather than one fill event.
+function headerSearch(page) {
+  return page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+}
+
+export async function typeHeaderSearch(page, text) {
+  const search = headerSearch(page);
   await search.click({ force: true });
-  await search.fill(confirmation);
-  await page.waitForTimeout(800);
+  await search.fill('');
+  await search.pressSequentially(text, { delay: 40 });
+  await page.waitForTimeout(500);
+}
+
+export async function searchConfirmation(page, confirmation) {
+  await typeHeaderSearch(page, confirmation);
 }
 
 async function runSearch(page) {
@@ -201,13 +215,45 @@ export async function setQuickWindow(page, arrival) {
   await page.waitForTimeout(600);
 }
 
-// Enter is never pressed in the header search: with one match it opens the record and closes the dropdown.
-export async function clickRunIfShown(page) {
-  const run = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
-  if ((await run.count()) === 0) return false;
-  await run.first().click({ force: true });
-  await page.waitForTimeout(1000);
-  return true;
+// Quick-search nudges. ArrowDown from inside the field opens the list of a search that has text; a click at the right of
+// the field reopens it. Enter is never pressed: with one match it opens the record and closes the dropdown.
+export async function pressArrowDown(page) {
+  await headerSearch(page).press('ArrowDown');
+}
+
+export async function clickInsideSearch(page) {
+  const box = await headerSearch(page).boundingBox();
+  if (box) await page.mouse.click(box.x + box.width - 24, box.y + box.height / 2);
+}
+
+// The header Run only. The grid below has its own Run, which would run the grid instead of the quick search.
+const HEADER_BOTTOM = 100;
+
+export async function clickHeaderRun(page) {
+  const runs = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
+  for (const index of await visibleIndexes(runs)) {
+    const box = await runs.nth(index).boundingBox();
+    if (box && box.y < HEADER_BOTTOM) {
+      await runs.nth(index).click({ force: true });
+      await page.waitForTimeout(1000);
+      return true;
+    }
+  }
+  return false;
+}
+
+// The page actions quick-search.mjs runs for one term.
+export function quickActions(page, term) {
+  return {
+    type: () => typeHeaderSearch(page, term),
+    arrowDown: () => pressArrowDown(page),
+    clickInside: () => clickInsideSearch(page),
+    headerRun: () => clickHeaderRun(page),
+  };
+}
+
+async function panelShown(page) {
+  return Boolean(await quickPanel(page));
 }
 
 // The quick-search dropdown: the nearest ancestor of its In-House tab that also holds the "Records:" footer.
@@ -289,40 +335,43 @@ async function waitForStay(page, confirmation, { needRow }) {
   }
 }
 
-// The header search types the confirmation only. An open record for it is used as it stands. Otherwise the
-// dropdown row is used; when the panel window does not cover arrival, its calendar icon moves the window first.
-// The grid window picker is the last resort. Returns {method, locator, row, open}: row is the dropdown row
-// (guarded before anything opens), open is the open record form, and locator is the row or grid cell to click.
-// Lookups without --arrival (stay-lookup.mjs find) never move the window; the cancel path always has arrival.
+// The header search types the confirmation. When no panel answers, quick-search.mjs nudges it (ArrowDown, a click inside
+// the field, the header Run). When the confirmation is still not in a panel and the surname is known, the surname is
+// typed and the row with the exact confirmation is taken. A panel whose window does not cover arrival is moved by its
+// calendar icon and searched again. An open record for the confirmation is used as it stands; a row is guarded before
+// anything opens. Returns {method, locator, row, open} or null.
+async function locateQuick(ctx, { allowOpenRecord }) {
+  const { page, args, result } = ctx;
+  const conf = args.confirmation;
+  const io = {
+    drive: (term, { needRow, done }) => driveQuickSearch(quickActions(page, term), {
+      ready: () => waitForStay(page, conf, { needRow }),
+      done,
+    }),
+    panelShown: () => panelShown(page),
+    window: () => readWindow(page),
+    moveWindow: () => setQuickWindow(page, args.arrival),
+  };
+  const { probe, method, stages } = await runConfirmationSearch(io, {
+    confirmation: conf,
+    lastName: args.lastName ?? null,
+    arrival: args.arrival ?? null,
+    allowOpenRecord,
+  });
+  result.quickStages = stages;
+  const source = chooseStaySource({ confirmation: conf, open: probe.open, row: probe.row, allowOpen: allowOpenRecord });
+  if (source === 'open_record') return { method: 'open_record', locator: null, row: null, open: probe.open };
+  if (source === 'row') return { method, locator: probe.row.locator, row: probe.row.row, open: null };
+  return null;
+}
+
+// The quick search first. The grid window picker is the last resort, and only for lookups that have an arrival.
+// Returns {method, locator, row, open}: row is the dropdown row (guarded before anything opens), open is the open
+// record form, and locator is the row or grid cell to click.
 export async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) {
   const { page, args } = ctx;
-  await searchConfirmation(page, args.confirmation);
-  let probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
-  if (!probe.open && !probe.row && (await clickRunIfShown(page))) {
-    probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
-  }
-  const source = chooseStaySource({
-    confirmation: args.confirmation,
-    open: probe.open,
-    row: probe.row,
-    allowOpen: allowOpenRecord,
-  });
-  if (source === 'open_record') return { method: 'open_record', locator: null, row: null, open: probe.open };
-  if (source === 'row') {
-    let found = probe.row;
-    let method = 'quick';
-    const dateWindow = await readWindow(page);
-    if (dateWindow && args.arrival && !windowCovers(dateWindow, args.arrival)) {
-      await setQuickWindow(page, args.arrival);
-      await searchConfirmation(page, args.confirmation);
-      const moved = await waitForStay(page, args.confirmation, { needRow: true });
-      if (moved.row) {
-        found = moved.row;
-        method = 'quick_calendar';
-      }
-    }
-    return { method, locator: found.locator, row: found.row, open: null };
-  }
+  const quick = await locateQuick(ctx, { allowOpenRecord });
+  if (quick) return quick;
   if (!args.arrival) return null;
   await searchConfirmation(page, args.confirmation);
   await setArrivalWindow(page, args.arrival);

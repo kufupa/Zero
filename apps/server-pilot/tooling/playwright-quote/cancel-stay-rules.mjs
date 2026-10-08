@@ -7,7 +7,8 @@ export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason']);
+// --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
+const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name']);
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);
 const OK_OUTCOMES = new Set(['preview_ok', 'cancelled', 'already_cancelled']);
@@ -155,7 +156,20 @@ export function parseCancelArgs(argv) {
   if (!MODES.has(mode)) return refuse('--mode must be preview or commit');
   const reason = squash(values.get('--reason') ?? DEFAULT_REASON);
   if (!reason) return refuse('--reason must not be empty');
-  return { ok: true, exitCode: 0, args: { confirmation, arrival, mode, reason, out: values.get('--out') } };
+  const lastName = optionalSurname(values);
+  if (lastName === false) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
+  return {
+    ok: true,
+    exitCode: 0,
+    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName },
+  };
+}
+
+// The optional --last-name: its squashed surname, null when absent, or false when present but not a surname.
+function optionalSurname(values) {
+  if (!values.has('--last-name')) return null;
+  const lastName = squash(values.get('--last-name'));
+  return GUEST_SURNAME.test(lastName) ? lastName : false;
 }
 
 // Refuses before any browser work when the requested arrival is not a 2027+ lab stay.
@@ -261,7 +275,7 @@ const LOOKUP_VALUE_FLAGS = new Set(['--mode', '--confirmation', '--arrival', '--
 const LOOKUP_SWITCHES = new Set(['--debug-html']);
 // Flags each mode accepts besides --mode, --out and the switches.
 const LOOKUP_MODE_FLAGS = {
-  find: new Set(['--confirmation', '--arrival']),
+  find: new Set(['--confirmation', '--arrival', '--last-name']),
   'search-guest': new Set(['--last-name', '--arrival', '--departure']),
 };
 const LOOKUP_OK_OUTCOMES = new Set(['found', 'not_found', 'ok']);
@@ -304,10 +318,12 @@ export function parseLookupArgs(argv) {
     if (!values.has('--confirmation')) return refuse('Required: --confirmation');
     const confirmation = values.get('--confirmation').trim();
     if (!/^\d+-\d+$/.test(confirmation)) return refuse('--confirmation must look like 57291630-1');
+    const lastName = optionalSurname(values);
+    if (lastName === false) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
     return {
       ok: true,
       exitCode: 0,
-      args: { mode, confirmation, arrival, lastName: null, departure: null, out, debugHtml },
+      args: { mode, confirmation, arrival, lastName, departure: null, out, debugHtml },
     };
   }
   if (!values.has('--last-name')) return refuse('Required: --last-name');

@@ -29,7 +29,15 @@ test('parseCancelArgs accepts the documented usage and defaults the reason', () 
     mode: 'preview',
     reason: 'Test Reservations',
     out: '/tmp/cancel-stay-proof',
+    lastName: null,
   });
+});
+
+test('parseCancelArgs takes an optional --last-name surname and refuses anything that is not one', () => {
+  assert.equal(parseCancelArgs(argv({ '--last-name': ' Labtest ' })).args.lastName, 'Labtest');
+  assert.equal(parseCancelArgs(argv()).args.lastName, null);
+  assert.match(parseCancelArgs(argv({ '--last-name': 'Labtest, Proof' })).error, /--last-name must be a surname/);
+  assert.match(parseCancelArgs(argv({ '--last-name': '--mode' })).error, /Missing value for --last-name/);
 });
 
 test('parseCancelArgs accepts commit mode and an explicit reason', () => {
@@ -298,7 +306,8 @@ test('parseLookupArgs takes --debug-html as a switch in either mode, once, and n
 });
 
 test('parseLookupArgs refuses flags that do not belong to the mode, and missing or repeated values', () => {
-  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest']).error, /--last-name is not valid with --mode find/);
+  assert.equal(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest']).args.lastName, 'Labtest', 'find takes an optional surname');
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest, Nava']).error, /--last-name must be a surname/);
   assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--departure', '2027-09-15']).error, /--departure is not valid/);
   assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14', '--confirmation', '57291630-1']).error, /--confirmation is not valid with --mode search-guest/);
   assert.match(parseLookupArgs([...FIND]).error, /Required: --confirmation/);
@@ -474,10 +483,12 @@ test('stay-lookup.mjs is read-only: no Enter, no Save, Actions, Cancel or OK cli
 
 test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cancel flow is unchanged', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
-  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'clickRunIfShown', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
-    assert.match(source, new RegExp(`export async function ${name}\\(`), name);
+  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'typeHeaderSearch', 'clickHeaderRun', 'pressArrowDown', 'clickInsideSearch', 'quickActions', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
+    assert.match(source, new RegExp(`export (async )?function ${name}\\(`), name);
   }
-  assert.match(source, /dateWindow && args\.arrival && !windowCovers/);
+  assert.match(source, /runConfirmationSearch\(io, \{/);
+  assert.match(source, /driveQuickSearch\(quickActions\(page, term\)/);
+  assert.match(source, /moveWindow: \(\) => setQuickWindow\(page, args\.arrival\)/);
   assert.match(source, /if \(!args\.arrival\) return null;/);
 });
 

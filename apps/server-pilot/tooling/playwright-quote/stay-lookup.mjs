@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Read-only Guest Stay lookups in the borrowed Chrome. Never saves, cancels, opens Actions or presses Enter.
-// find: header search by confirmation. One matching row is opened and its record form read; no row is not_found.
+// find: header search by confirmation (quick-search.mjs nudges and, with --last-name, a surname retry). One matching row is
+// opened and its record form read; no row is not_found.
 // search-guest: header search by surname, with the panel window moved to cover --arrival first. Every panel row is
 // read and none is opened. A capped panel (Records: N of M with N < M) is ambiguous_capped.
-// Usage: node stay-lookup.mjs --mode find --confirmation 57291630-1 [--arrival 2027-09-14] --out <dir> [--debug-html]
+// Usage: node stay-lookup.mjs --mode find --confirmation 57291630-1 [--arrival 2027-09-14] [--last-name Labtest] --out <dir> [--debug-html]
 //        node stay-lookup.mjs --mode search-guest --last-name Labtest --arrival 2027-09-14 [--departure 2027-09-15] --out <dir> [--debug-html]
 // Exit: 0 found|not_found|ok; 1 ambiguous|ambiguous_capped|execution_failure (also writes failure.png); 2 usage.
 // Writes result.json and screenshots (record.png, panel.png, failure.png) into --out. An unreadable panel is dumped to
@@ -18,9 +19,9 @@ import {
   parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 import {
-  clickRunIfShown, findStay, openGuestStay, openRecord, quickPanel, readBalance, readRecord, readWindow,
-  searchConfirmation, setQuickWindow, shot,
+  findStay, openGuestStay, openRecord, quickActions, readBalance, readRecord, readWindow, setQuickWindow, shot,
 } from './cancel-stay.mjs';
+import { driveQuickSearch, windowAction } from './quick-search.mjs';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
 
 const QUICK_WAIT_MS = 8000;
@@ -36,6 +37,7 @@ function newLookupResult(args) {
     departure: args.departure,
     lastName: args.lastName,
     findMethod: null,
+    quickStages: [],
     stay: null,
     conflicts: [],
     records: null,
@@ -143,17 +145,24 @@ async function runSearchGuest(ctx) {
   mark(ctx, 'login');
   await openGuestStay(page);
   await page.waitForTimeout(1500);
-  // The header search takes a surname as well as a confirmation. Enter is never pressed: it would open a record.
-  await searchConfirmation(page, args.lastName);
-  let panel = await waitForPanel(page);
-  if (!panel && (await clickRunIfShown(page))) panel = await waitForPanel(page);
+  // The surname goes into the header search; quick-search.mjs nudges the panel open. Enter is never pressed.
+  const quick = await driveQuickSearch(quickActions(page, args.lastName), {
+    ready: () => waitForPanel(page),
+    done: (panel) => Boolean(panel),
+  });
+  result.quickStages = quick.stages;
+  let panel = quick.result;
   if (!panel) return failPanel(ctx, 'panel_not_shown');
   let dateWindow = await readWindow(page);
   if (!dateWindow) return failPanel(ctx, 'window_unreadable');
-  if (!windowCovers(dateWindow, args.arrival)) {
+  if (windowAction({ window: dateWindow, arrival: args.arrival, panelShown: true }) === 'move') {
     await setQuickWindow(page, args.arrival);
-    await searchConfirmation(page, args.lastName);
-    panel = await waitForPanel(page);
+    const moved = await driveQuickSearch(quickActions(page, args.lastName), {
+      ready: () => waitForPanel(page),
+      done: (found) => Boolean(found),
+    });
+    result.quickStages.push(...moved.stages.map((stage) => `window.${stage}`));
+    panel = moved.result;
     dateWindow = panel ? await readWindow(page) : null;
     if (!panel || !dateWindow || !windowCovers(dateWindow, args.arrival)) {
       return failPanel(ctx, 'window_not_covering_arrival');

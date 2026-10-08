@@ -116,6 +116,8 @@ export function snapshotPanel(root) {
       lines: textOf(block).split(/\t|\n/),
     });
   }
-  const footer = (root.innerText || root.textContent || '').match(/Records:\s*\d+\s+of\s+\d+/i);
-  return { rows, unresolved, footer: footer ? footer[0] : '' };
+  const text = root.innerText || root.textContent || '';
+  const footer = text.match(/Records:\s*\d+\s+of\s+\d+/i);
+  const window = text.match(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/);
+  return { rows, unresolved, footer: footer ? footer[0] : '', window: window ? window[0] : '' };
 }

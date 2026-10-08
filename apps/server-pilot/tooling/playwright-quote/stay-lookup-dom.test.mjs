@@ -7,8 +7,10 @@ import { readFile } from 'node:fs/promises';
 import * as cheerio from 'cheerio';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
 import {
-  formPairsFromSnapshot, parsePanelSnapshot, parseRecordsFooter, searchGuestOutcome, stayFromFormPairs,
+  formPairsFromSnapshot, parseDateWindowLabel, parsePanelSnapshot, parseRecordsFooter, searchGuestOutcome,
+  stayFromFormPairs,
 } from './cancel-stay-rules.mjs';
+import { AMBIGUOUS, pickConfirmationRow, windowAction } from './quick-search.mjs';
 
 // ---- A DOM adapter over cheerio: the members the snapshot functions use, with innerText approximated. ----
 
@@ -325,4 +327,41 @@ test('panel: a confirmation outside any row is counted as unresolved, so the sea
   const snapshot = panelFromHtml(orphan);
   assert.equal(snapshot.unresolved, 1);
   assert.equal(parsePanelSnapshot(snapshot).unreadable, 1);
+});
+
+// ---- Surname search: the exact-confirmation row and the window decision, from the live-modeled panel ----
+
+test('surname panel fixture: the row with the exact confirmation is picked, and the window decides whether to move', async () => {
+  const html = await fixture('panel-surname.html');
+  const snapshot = panelFromHtml(html);
+  const parsed = parsePanelSnapshot(snapshot);
+  assert.equal(parsed.unreadable, 0);
+  assert.deepEqual(parseRecordsFooter(snapshot.footer), { shown: 2, total: 2 });
+  const proof = pickConfirmationRow(parsed.rows, '61143613-1');
+  assert.deepEqual(proof, {
+    confirmation: '61143613-1',
+    lastName: 'Labtest',
+    firstName: 'Proof',
+    status: 'Reserved',
+    arrival: '2027-10-12',
+    departure: '2027-10-13',
+  });
+  assert.equal(pickConfirmationRow(parsed.rows, '99999999-1'), null, 'a confirmation the panel does not show is not picked');
+  const window = parseDateWindowLabel(snapshot.window);
+  assert.deepEqual(window, { from: '2027-10-12', to: '2027-12-11' });
+  assert.equal(windowAction({ window, arrival: '2027-10-12', panelShown: true }), 'keep');
+  assert.equal(windowAction({ window, arrival: '2026-10-08', panelShown: true }), 'move');
+});
+
+test('surname panel: two rows with the same confirmation are ambiguous, never guessed', () => {
+  const twice = `<html><body><div id="quick-panel">
+    <table class="x-grid-item"><tbody>
+      <tr class="x-grid-row"><td>61143613-1</td><td><span>Labtest</span>, Proof</td><td>Reserved</td><td>12-OCT-2027</td></tr>
+      <tr class="x-grid-row"><td>61143613-1</td><td><span>Labtest</span>, Proof</td><td>Reserved</td><td>12-OCT-2027</td></tr>
+    </tbody></table>
+    <div class="x-footer">Records: 2 of 2</div>
+  </div></body></html>`;
+  const parsed = parsePanelSnapshot(panelFromHtml(twice));
+  assert.equal(parsed.rows.length, 2);
+  assert.equal(pickConfirmationRow(parsed.rows, '61143613-1'), AMBIGUOUS);
 });
