@@ -568,6 +568,13 @@ function applyGroupPatch(
   return { ...group, ...patch, id: group.id, fields };
 }
 
+/** A B&B fallback for dinner needs a staff-entered per-person allowance before any PDF; never price it here. */
+export function dinnerAllowanceStillRequired(
+  header: Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor'>,
+): boolean {
+  return Boolean(header.dinnerAllowanceRequired) && !(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0);
+}
+
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
   switch (action.type) {
     case 'reset':
@@ -853,6 +860,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     case 'analysis_unsupported':
       return { ...session, phase: 'unsupported', errorMessage: action.message };
+    case 'staff_dinner_bb_fallback': {
+      if (!action.groupIds.length) return session;
+      const patched = action.groupIds.reduce<QuoteSession>(
+        (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { board: 'bb' } }),
+        session,
+      );
+      return { ...patched, staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true } };
+    }
     case 'patch_group': {
       const groups = session.groups.map((group) =>
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,

@@ -212,6 +212,8 @@ export type StaffQuoteHeader = {
   clientEmail: string;
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
+  /** Set when a dinner quote fell back to B&B: staff must enter the allowance; never priced by us. */
+  dinnerAllowanceRequired?: boolean;
   shuttleRequested?: boolean;
   shuttleMinor?: number;
 };
@@ -457,6 +459,7 @@ export type QuoteSessionAction =
   | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
+  | { type: 'staff_dinner_bb_fallback'; groupIds: string[] }
   | {
       type: 'results_ready';
       offers: QuoteOffer[];

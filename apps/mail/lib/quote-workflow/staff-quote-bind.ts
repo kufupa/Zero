@@ -347,8 +347,11 @@ export async function bindStaffActions(args: {
   }
 }
 
+/** Must match NATIVE_NO_MATCHING_RATE_PREFIX in apps/server-pilot/src/trpc/routes/workstation.ts. */
+const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
+
 export type BoundExecuteStaffQuote =
-  | { status: 'unavailable'; reason: string }
+  | { status: 'unavailable'; reason: string; noMatchingRate?: boolean }
   | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
 
 export function allocationFromStaffQuote(
@@ -492,7 +495,12 @@ export async function bindExecuteStaffQuote(args: {
         : [],
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error) };
+    const reason = rejectionReason(error);
+    return {
+      status: 'unavailable',
+      reason,
+      noMatchingRate: reason.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX),
+    };
   }
 }
 

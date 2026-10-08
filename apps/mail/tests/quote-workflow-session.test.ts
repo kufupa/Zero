@@ -17,6 +17,7 @@ import {
   staffSourceReady,
   analysisRetryKey,
   hasStaffStayEdits,
+  dinnerAllowanceStillRequired,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import type {
@@ -2145,3 +2146,42 @@ function lunaQuote(over: Partial<LunaAnalysisWire> = {}): LunaAnalysisWire {
     ...over,
   };
 }
+
+describe('staff dinner B&B fallback', () => {
+  const dinnerSession = () =>
+    ({
+      ...initialQuoteSession(),
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 1,
+          adults: 2,
+          childrenAges: [],
+          board: 'dinner_bb',
+          specialRequests: [],
+          fields: {},
+        },
+      ],
+    }) as unknown as ReturnType<typeof initialQuoteSession>;
+
+  it('moves dinner groups to B&B and requires a staff-entered allowance without inventing a price', () => {
+    const before = dinnerSession();
+    const after = reduceQuoteSession(before, {
+      type: 'staff_dinner_bb_fallback',
+      groupIds: ['g1'],
+    });
+    expect(after.groups[0]?.board).toBe('bb');
+    expect(after.staffHeader.dinnerAllowanceRequired).toBe(true);
+    expect(after.staffHeader.dinnerAllowanceMinor).toBeUndefined();
+    expect(after.inputRevision).toBe(before.inputRevision + 1);
+    expect(dinnerAllowanceStillRequired(after.staffHeader)).toBe(true);
+    expect(
+      dinnerAllowanceStillRequired({ ...after.staffHeader, dinnerAllowanceMinor: 45_000 }),
+    ).toBe(false);
+    expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
+      before,
+    );
+  });
+});
