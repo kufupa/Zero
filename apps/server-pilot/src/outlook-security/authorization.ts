@@ -24,6 +24,8 @@ const mutationActions = new Set(['CREATE_DRAFT', 'UPDATE_DRAFT', 'CREATE_REPLY_D
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ', 'CREATE_FOLDER', 'MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const moveActions = new Set(['MOVE_EMAIL', 'MOVE_TO_SPAM']);
 const createdDraftActions = new Set(['CREATE_DRAFT', 'CREATE_REPLY_DRAFT']);
+/** Kinds only an operator approves; moves and folder creation require one of them. */
+const operatorFolderKinds = new Set(['inbox', 'triage', 'spam']);
 const itemReadActions = new Set(['GET_EMAIL_BY_ENTRY_ID', 'GET_ATTACHMENT_METADATA', 'READ_ATTACHMENT_BASE64',
   'GET_CONVERSATION_THREAD']);
 const itemMutationActions = new Set(['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT',
@@ -161,7 +163,8 @@ function validResourceScope(input: NativeScopeInput): boolean {
   // A selected item is observed only after GET_ACTIVE_EMAIL reaches native; the pane may not know its source yet.
   if (input.action === 'GET_ACTIVE_EMAIL' && input.resources?.length && !isToken(input.sourceFolderId)) return false;
   if (input.action === 'GET_FOLDER_EMAILS' && !isToken(input.sourceFolderId)) return false;
-  if (['deleted', 'outbox', 'deleted-child', 'outbox-child'].includes(input.destinationKind ?? '')) return false;
+  // 'read' is an automatic source grant only; it must never satisfy a destination kind.
+  if (['deleted', 'outbox', 'deleted-child', 'outbox-child', 'read'].includes(input.destinationKind ?? '')) return false;
   if (input.action === 'MOVE_EMAIL' && input.destinationKind !== 'triage' && input.destinationKind !== 'inbox') return false;
   if (input.action === 'MOVE_TO_SPAM' && input.destinationKind !== 'spam') return false;
   return true;
@@ -173,6 +176,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     || input.nativeBatchConsent === true && (!moveActions.has(input.action)
       || !/^[A-Za-z0-9_-]{43}$/.test(input.nativeBatchConsentChallenge ?? ''))
     || input.nativeBatchConsent !== true && input.nativeBatchConsentChallenge !== undefined) return null;
+  const autoApproved: { folderId: string; kind: string }[] = [];
   const result = await db.transaction(async (tx) => {
     const [ticket] = await tx.select().from(outlookBridgeTicket)
       .where(and(eq(outlookBridgeTicket.ticketHash, hash(input.ticket)), eq(outlookBridgeTicket.deviceId, deviceId),
@@ -213,17 +217,44 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     }
     if (!await isDeviceAuthorized(tx as DB, deviceId, ticket.userId, ticket.transportId,
       input.storeId, true)) return null;
+    const autoDrafts = createdDraftActions.has(input.action) && input.destinationKind === 'drafts' && isToken(input.destinationFolderId);
+    // Two draft requests can both upgrade the same automatic 'read' Drafts row. Take its write lock before the
+    // shared folder lock below, so they queue instead of deadlocking.
+    if (autoDrafts) await tx.select({ folderId: outlookApprovedFolder.folderId }).from(outlookApprovedFolder)
+      .where(and(eq(outlookApprovedFolder.transportId, input.transportId), eq(outlookApprovedFolder.storeId, input.storeId),
+        eq(outlookApprovedFolder.folderId, input.destinationFolderId!))).for('update');
     const folderRows = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
       .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
         eq(outlookApprovedFolder.transportId, input.transportId))).for('share');
+    // Same enrolled store only (isDeviceAuthorized above). Reads and draft creation self-approve; other
+    // mutations, moves and folder creation still need operator-approved rows.
+    const autoApprovals = new Map<string, 'read' | 'drafts'>();
+    if ((readActions.has(input.action) || createdDraftActions.has(input.action)) && input.sourceFolderId
+      && !folderRows.some((row) => row.folderId === input.sourceFolderId)
+      && !['deleted', 'outbox', 'deleted-child', 'outbox-child'].includes(input.sourceKind ?? '')) autoApprovals.set(input.sourceFolderId, 'read');
+    const destinationRow = folderRows.find((row) => row.folderId === input.destinationFolderId);
+    if (autoDrafts && (!destinationRow || destinationRow.kind === 'read')) autoApprovals.set(input.destinationFolderId!, 'drafts');
+    for (const [folderId, kind] of autoApprovals) {
+      const existing = folderRows.find((row) => row.folderId === folderId);
+      // Only a 'read' -> 'drafts' upgrade can reach an existing row.
+      if (existing) existing.kind = kind;
+      else folderRows.push({ folderId, kind });
+    }
     const approved = (id: string | undefined, kind?: string) => folderRows.some((row) => row.folderId === id && (!kind || row.kind === kind));
+    const operatorApproved = (id: string | undefined) => folderRows.some((row) => row.folderId === id && operatorFolderKinds.has(row.kind));
     const approvedReadRoots = readActions.has(input.action)
       ? await getApprovedReadRoots(tx as DB, deviceId, ticket.userId, ticket.transportId, input.storeId, true) : [];
     // Root policies authorize only reads; ancestry is independently verified on the native STA.
     if (input.sourceFolderId && !approved(input.sourceFolderId) && !approvedReadRoots.length) return null;
+    // Mark read, category, flag and draft edits keep needing more than an automatic 'read' grant.
+    if (mutationActions.has(input.action) && !createdDraftActions.has(input.action) && input.sourceFolderId
+      && !folderRows.some((row) => row.folderId === input.sourceFolderId && row.kind !== 'read')) return null;
     // DB kind must match native's observed kind; a Drafts source approval is never a move destination.
     if (input.destinationFolderId && !approved(input.destinationFolderId, input.destinationKind)) return null;
-    if (moveActions.has(input.action) && (!approved(input.sourceFolderId) || !approved(input.destinationFolderId, input.destinationKind))) return null;
+    // Moves and folder creation need operator inbox/triage/spam rows; automatic 'read'/'drafts' rows never qualify.
+    if (input.action === 'CREATE_FOLDER' && !operatorApproved(input.sourceFolderId)) return null;
+    if (moveActions.has(input.action) && (!operatorApproved(input.sourceFolderId)
+      || !approved(input.destinationFolderId, input.destinationKind))) return null;
     const scopeHash = hash(JSON.stringify([input.action, input.storeId, input.transportId, input.operationId,
       input.resources ?? [], input.sourceFolderId ?? null, input.destinationFolderId ?? null]));
     // A batch approval cannot silently change native-observed folder kinds,
@@ -282,7 +313,7 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
           const currentFolders = await tx.select({ folderId: outlookApprovedFolder.folderId, kind: outlookApprovedFolder.kind })
             .from(outlookApprovedFolder).where(and(eq(outlookApprovedFolder.storeId, input.storeId),
               eq(outlookApprovedFolder.transportId, input.transportId)));
-          if (!currentFolders.some((row) => row.folderId === input.sourceFolderId)
+          if (!currentFolders.some((row) => row.folderId === input.sourceFolderId && operatorFolderKinds.has(row.kind))
             || !currentFolders.some((row) => row.folderId === input.destinationFolderId && row.kind === input.destinationKind)) return null;
           const consentChallenge = randomBytes(32).toString('base64url');
           const claimed = await tx.update(outlookBridgeTicket).set({ consumedAt: sql`clock_timestamp()`,
@@ -304,6 +335,25 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
           operationId: input.operationId!, scopeHash, count: input.resources!.length,
           approvedAt: sql`clock_timestamp()` });
       }
+    }
+    // Persist automatic grants only after every check: an earlier null return would commit them for a refused request.
+    for (const [folderId, kind] of autoApprovals) {
+      const values = { transportId: input.transportId, storeId: input.storeId, folderId, kind };
+      const written = kind === 'drafts'
+        ? await tx.insert(outlookApprovedFolder).values(values).onConflictDoUpdate({
+          target: [outlookApprovedFolder.transportId, outlookApprovedFolder.storeId, outlookApprovedFolder.folderId],
+          set: { kind: 'drafts' }, where: eq(outlookApprovedFolder.kind, 'read'),
+        }).returning({ folderId: outlookApprovedFolder.folderId })
+        : await tx.insert(outlookApprovedFolder).values(values).onConflictDoNothing()
+          .returning({ folderId: outlookApprovedFolder.folderId });
+      if (written.length) { autoApproved.push({ folderId, kind }); continue; }
+      // Another writer won this row: authorize against the stored kind, never the proposed one.
+      const [winner] = await tx.select({ kind: outlookApprovedFolder.kind }).from(outlookApprovedFolder)
+        .where(and(eq(outlookApprovedFolder.transportId, input.transportId), eq(outlookApprovedFolder.storeId, input.storeId),
+          eq(outlookApprovedFolder.folderId, folderId))).limit(1);
+      if (!winner || kind === 'drafts' && winner.kind !== 'drafts') throw ticketExpiredDuringTransaction;
+      const row = folderRows.find((candidate) => candidate.folderId === folderId);
+      if (row) row.kind = winner.kind;
     }
     const claimed = await tx.update(outlookBridgeTicket).set({ consumedAt: new Date() })
       .where(and(eq(outlookBridgeTicket.ticketHash, ticket.ticketHash), isNull(outlookBridgeTicket.consumedAt),
@@ -335,6 +385,9 @@ export async function authorizeNative(db: DB, deviceId: string, input: NativeSco
     if (error === ticketExpiredDuringTransaction) return null;
     throw error;
   });
+  // Logged after COMMIT only; a rolled-back request leaves no approval and logs nothing. Folder ids are hashed.
+  if (result !== null) for (const row of autoApproved) console.info('outlook_folder_auto_approved', { transportId: input.transportId,
+    kind: row.kind, action: input.action, folder: hash(row.folderId).slice(0, 8) });
   if (result instanceof NativeBatchConsentRequiredError) throw result;
   return result;
 }
