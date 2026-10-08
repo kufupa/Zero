@@ -11,8 +11,8 @@
  * Logs carry counts, codes and ms only. Errors are reduced to a code before they
  * are logged, so no message text, body, subject, name or connection string is printed.
  *
- * Run on EC2 from apps/server-pilot after build:
- *   node dist/scripts/luna-warm-backfill.js [--hours 1-72] [--max 1-200] [--dry-run]
+ * Run on EC2 from apps/server-pilot:
+ *   pnpm exec tsx scripts/luna-warm-backfill.ts [--hours 1-72] [--max 1-200] [--dry-run]
  */
 import {
   warmInboundTriageAnalyse,
@@ -39,7 +39,7 @@ export const CONCURRENCY = 2;
 
 const HOUR_MS = 60 * 60 * 1000;
 const USAGE =
-  'usage: node dist/scripts/luna-warm-backfill.js [--hours 1-72, default 48] [--max 1-200, default 150] [--dry-run]';
+  'usage: pnpm exec tsx scripts/luna-warm-backfill.ts [--hours 1-72, default 48] [--max 1-200, default 150] [--dry-run]';
 
 export type BackfillArgs = { hours: number; max: number; dryRun: boolean; help: boolean };
 

@@ -434,6 +434,18 @@ describe('runBackfillCli', () => {
     expect(JSON.parse(logs[0] ?? '{}')).toMatchObject({ code: 'bad_args' });
     expect(load).not.toHaveBeenCalled();
   });
+
+  it('prints the tsx command operators run, not a dist path the build does not emit', async () => {
+    const logs: string[] = [];
+    const code = await runBackfillCli(['--help'], {
+      log: (line) => logs.push(line),
+      loadCandidates: vi.fn(async () => []),
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(logs[0]).toContain('pnpm exec tsx scripts/luna-warm-backfill.ts');
+    expect(logs[0]).not.toContain('dist/');
+  });
 });
 
 describe('redaction helpers', () => {
