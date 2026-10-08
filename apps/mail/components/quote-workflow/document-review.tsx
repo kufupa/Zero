@@ -41,7 +41,7 @@ export function DocumentReview({
       ) : null}
       {session.pdf ? (
         <p className="text-[11px] text-[#1e293b]">
-          Prepared PDF {session.pdf.fileName}. The Outlook draft will attach this exact file.
+          Prepared PDF {session.pdf.fileName}. The Outlook draft will attach this exact file. For several date options, Create one reply with all date options attaches each option&apos;s PDF.
         </p>
       ) : null}
       {nativeReady ? (

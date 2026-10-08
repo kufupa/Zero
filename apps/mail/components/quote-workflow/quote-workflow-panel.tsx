@@ -450,7 +450,7 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
-        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
+        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />
         <NeedsAnswerList missing={session.analysis?.luna?.missing} />
         {(session.reviewItems ?? [])
           .filter((item) => item.kind === 'document_failure')
@@ -527,7 +527,7 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <>
-          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
+          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />
           <NeedsAnswerList missing={session.analysis?.luna?.missing} />
           <ItemsForYou
             openItems={openItems}
@@ -577,7 +577,7 @@ export function QuoteWorkflowPanel({
             Selected total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
             Alternatives are not added to this total.
             {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
-              ? ' Each date search keeps its own quote. A combined PDF is blocked, so prepare the PDF for one stay at a time.'
+              ? ' Each date search keeps its own quote and PDF. Once two or more options are finished, Create one reply with all date options puts them in one draft.'
               : ''}
           </p>
           {session.offers.map((offer) => {
