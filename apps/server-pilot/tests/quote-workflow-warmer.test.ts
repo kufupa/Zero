@@ -307,6 +307,18 @@ describe('inbound triage analyse warmer', () => {
     );
   });
 
+  it('a spent hourly cap stops before the mail is loaded, so no S3 or PDF work runs', async () => {
+    vi.mocked(getDb).mockReturnValue(triggerDb({ direction: 'inbound', messageIdHeader: MESSAGE_ID }));
+    const load = vi.fn(async () => selection());
+    const adapter = okAdapter();
+    const env = { ...FLAG_ON, LUNA_ANALYSE_WARMER_MAX_PER_HOUR: '0' };
+    expect(
+      await warmInboundTriageAnalyse(run(), deps({ loadSyncedSelection: load, adapter: adapter as never, cacheDir }), env),
+    ).toBe('failed');
+    expect(load).not.toHaveBeenCalled();
+    expect(adapter.invoke).not.toHaveBeenCalled();
+  });
+
   it('a disabled Luna logs code disabled and does not spend a cap slot', async () => {
     const adapter = okAdapter();
     const env = { ...FLAG_ON, LUNA_ANALYSE_WARMER_MAX_PER_HOUR: '1' };

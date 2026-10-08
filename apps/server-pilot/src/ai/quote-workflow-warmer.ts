@@ -87,6 +87,12 @@ function releaseSlot(): void {
 /** Model-call start times in the last hour. Cache hits and skips do not count. */
 let modelCallStarts: number[] = [];
 
+/** Read-only: whether a model call could still start this hour. Takes no slot. */
+function modelCallBudgetLeft(max: number, nowMs: number): boolean {
+  modelCallStarts = modelCallStarts.filter((started) => nowMs - started < HOUR_MS);
+  return modelCallStarts.length < max;
+}
+
 function takeModelCallSlot(max: number, nowMs: number): boolean {
   modelCallStarts = modelCallStarts.filter((started) => nowMs - started < HOUR_MS);
   if (modelCallStarts.length >= max) return false;
@@ -126,6 +132,8 @@ async function runWarm(
   if (!internetMessageId) return failed('no_message_id', started);
   const cacheDir = resolveAnalyseCacheDir(deps.cacheDir ?? null);
   if (!cacheDir) return failed('no_cache_dir', started);
+  // The cap is read before any mail is loaded, so a spent cap costs no S3 or PDF work.
+  if (!modelCallBudgetLeft(analyseWarmerMaxPerHour(env), Date.now())) return failed('cap', started);
   const load = deps.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
   const synced = await load({
     transportId: run.transportId,
