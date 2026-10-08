@@ -448,7 +448,7 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'non_quote') {
     return (
       <div className="flex flex-col gap-3">
-        <WorkflowBadge analysis={session.analysis} />
+        <WorkflowBadge analysis={session.analysis} amendmentKind={session.analysis?.amendment?.kind} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} />
         <NeedsAnswerList missing={session.analysis?.luna?.missing} />
         {(session.reviewItems ?? [])
@@ -500,7 +500,7 @@ export function QuoteWorkflowPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <WorkflowBadge analysis={session.analysis} />
+      <WorkflowBadge analysis={session.analysis} amendmentKind={session.analysis?.amendment?.kind} />
       <TellLunaBox onStaffNote={onStaffNote} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       {session.phase === 'failed' ? (
