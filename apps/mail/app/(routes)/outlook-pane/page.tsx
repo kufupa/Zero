@@ -87,6 +87,10 @@ import {
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import {
+  completedDateOptions,
+  requireMultiOptionDraft,
+} from '@/lib/quote-workflow/multi-option-draft';
+import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
@@ -117,15 +121,20 @@ import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
   analysisRetryKey,
+  canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
+  evidenceMatchesSession,
   groupsForQuoteStep,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
+  optionLetter,
   pickNextRunnableStep,
+  quoteRunBlockReason,
   reduceQuoteSession,
-  staffQuoteForStay,
+  requestedQuoteKeys,
+  staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from './outlook-pane-sign-in';
@@ -165,10 +174,14 @@ function confirmNewReplyAfterUncertainOutcome(): boolean {
   } catch { return false; }
 }
 
+/** 'selected' is one date option's reply; 'all' is one reply carrying every completed option. */
+type ReplyDraftScope = 'selected' | 'all';
+
 type PendingReplyOperation = {
   operationId: string;
   startedAt: number;
-  pdf?: { fileName: string; pdfBase64: string };
+  scope: ReplyDraftScope;
+  pdfs?: Array<{ fileName: string; pdfBase64: string }>;
   reviewedHtml?: string;
   replyPayload?: {
     operationId: string;
@@ -180,18 +193,28 @@ type PendingReplyOperation = {
     openInComposer: boolean;
   };
   draftLocation?: MailLocation;
-  attachmentPayload?: {
+  attachmentPayloads?: Array<{
     operationId: string;
     entryId: string;
     storeId: string;
     folderEntryId: string;
     fileName: string;
     base64Data: string;
-  };
+  }>;
+  attachmentsAdded?: number;
 };
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
+
+function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
+  return draft
+    ? {
+        html: draft.html,
+        attachments: [{ fileName: draft.pdf.fileName, pdfBase64: draft.pdf.pdfBase64 }],
+      }
+    : null;
+}
 
 export default function OutlookPanePage() {
   const {
@@ -289,6 +312,7 @@ export default function OutlookPanePage() {
     sender: string;
     senderEmail: string;
     planName: string;
+    previewHtml?: string;
   } | null>(null);
 
   const showDraftPreview = Boolean(
@@ -679,7 +703,7 @@ export default function OutlookPanePage() {
   const currentSender = activeEmail?.senderName || 'David Miller';
   const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
 
-  const handleInsertAiDraft = async () => {
+  const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected') => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
     const startedScope = currentScope;
     const startedScopeEpoch = contextRevision.current.scopeEpoch;
@@ -778,10 +802,26 @@ export default function OutlookPanePage() {
       return;
     }
 
-    const reviewedDraft = requireReviewedNativeDraft(quoteSession);
+    if (previousAttempt && previousAttempt.scope !== scope) {
+      // An attempt that may already have reached Outlook is retried with its own button only.
+      if (previousAttempt.replyPayload) {
+        toast.error(
+          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Retry it with its own button, or check Drafts first.`,
+        );
+        return;
+      }
+      replyRetries.current.delete(key);
+      previousAttempt = undefined;
+    }
+    const reviewedDraft =
+      scope === 'all'
+        ? requireMultiOptionDraft(quoteSession)
+        : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
     if (!reviewedDraft) {
       toast.error(
-        'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
+        scope === 'all'
+          ? `${replyLabel}Prepare a PDF for each date option first. Each PDF must match its own run.`
+          : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
       );
       return;
     }
@@ -789,22 +829,27 @@ export default function OutlookPanePage() {
     replyInFlight.current = true;
     setIsDraftPending(true);
     setDraftStatus(null);
-    const attempt = previousAttempt ?? { operationId: createOperationId(), startedAt: now };
+    const attempt: PendingReplyOperation = previousAttempt ?? {
+      operationId: createOperationId(),
+      startedAt: now,
+      scope,
+    };
     replyRetries.current.set(key, attempt);
 
     // Before CREATE is submitted, staff may update the review. Once it may
     // have reached Outlook, retries must replay the exact original pair.
     if (!attempt.replyPayload) {
       attempt.reviewedHtml = reviewedDraft.html;
-      attempt.pdf = { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
+      attempt.pdfs = reviewedDraft.attachments.map((item) => ({
+        fileName: item.fileName,
+        pdfBase64: item.pdfBase64,
+      }));
     }
     const quotationHtml = attempt.reviewedHtml ?? reviewedDraft.html;
     let draftCreated = false;
 
     try {
-      const pdf =
-        attempt.pdf ??
-        { fileName: reviewedDraft.pdf.fileName, pdfBase64: reviewedDraft.pdf.pdfBase64 };
+      const pdfs = attempt.pdfs ?? reviewedDraft.attachments;
       if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
         // No new Outlook command has started for this click. A delayed quotation
         // cannot create or retry a reply for a selection that changed away
@@ -812,7 +857,7 @@ export default function OutlookPanePage() {
         if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
         return;
       }
-      attempt.pdf = pdf;
+      attempt.pdfs = pdfs;
       if (!attempt.draftLocation) {
         // Renewal may suppress selection events while Outlook is busy. A PDF
         // generated for A must not turn into a reply to A after staff select B.
@@ -859,17 +904,25 @@ export default function OutlookPanePage() {
         );
       }
       attempt.draftLocation = replyResult;
-      const attachmentPayload = attempt.attachmentPayload ?? {
-        operationId: createOperationId(),
-        entryId: replyResult.entryId,
-        storeId: replyResult.storeId,
-        folderEntryId: replyResult.folderEntryId,
-        fileName: pdf.fileName,
-        base64Data: pdf.pdfBase64,
-      };
-      attempt.attachmentPayload = attachmentPayload;
-      await sendCommand('ADD_ATTACHMENT_TO_DRAFT', attachmentPayload);
-      if (!sameStaffScope()) return;
+      const attachmentPayloads =
+        attempt.attachmentPayloads ??
+        pdfs.map((item) => ({
+          operationId: createOperationId(),
+          entryId: replyResult.entryId,
+          storeId: replyResult.storeId,
+          folderEntryId: replyResult.folderEntryId,
+          fileName: item.fileName,
+          base64Data: item.pdfBase64,
+        }));
+      attempt.attachmentPayloads = attachmentPayloads;
+      // Each PDF keeps its own operation ID. A retry resumes at the first PDF Outlook has not confirmed.
+      const alreadyAdded = attempt.attachmentsAdded ?? 0;
+      for (const [index, payload] of attachmentPayloads.entries()) {
+        if (index < alreadyAdded) continue;
+        await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
+        attempt.attachmentsAdded = index + 1;
+        if (!sameStaffScope()) return;
+      }
       replyRetries.current.delete(key);
       // A successful draft for B does not resolve an expired or unknown
       // outcome for A. Those per-message sets are in memory only; preserve
@@ -883,7 +936,8 @@ export default function OutlookPanePage() {
         subject: currentSubject,
         sender: currentSender,
         senderEmail: currentSenderEmail,
-        planName: pdf.fileName,
+        planName: pdfs.map((item) => item.fileName).join(', '),
+        ...(attempt.scope === 'all' ? { previewHtml: quotationHtml } : {}),
       });
       const opened = replyResult.displayed === true;
       const details = [
@@ -1020,6 +1074,11 @@ export default function OutlookPanePage() {
   const runQuoteStep = (stepId: string) => {
     const step = quoteSession.steps.find((item) => item.id === stepId);
     if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    const waiting = quoteRunBlockReason(quoteSession, step);
+    if (waiting) {
+      toast.warning(waiting);
+      return;
+    }
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
@@ -1119,6 +1178,93 @@ export default function OutlookPanePage() {
       }
     });
   };
+
+  /**
+   * Builds the quotation PDF for one date option from that option's own run.
+   * A null stayKey means the selected option (the "Prepare quotation PDF" button).
+   */
+  const preparePdfFor = (stayKey: string | null) => {
+    const session = quoteSessionRef.current;
+    const key = stayKey ?? session.selectedStayKey;
+    const quote = key ? (session.staffQuotes[key] ?? null) : null;
+    const source = session.staffSource;
+    const authorised =
+      staffSourceReady(session) &&
+      session.evidence?.kind === 'authorised' &&
+      evidenceMatchesSession(session);
+    if (!quote || !key) {
+      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
+      return;
+    }
+    if (isQuoteFixturePreview() || !authorised) {
+      toast.warning('This is sample data, so no PDF can be made. Open a live email to continue.');
+      return;
+    }
+    if (key === session.selectedStayKey && !canCreatePdf(session)) {
+      toast.warning('Pick a room option from the HMS results before making the PDF.');
+      return;
+    }
+    if (!source || quote.totalMinor <= 0) {
+      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
+      return;
+    }
+    const header = quote.approvedHeader;
+    if (!header) {
+      toast.warning('The quote header was not saved with this quote. Run the search again, then prepare the PDF.');
+      return;
+    }
+    if (key !== session.selectedStayKey) dispatchQuote({ type: 'select_stay_key', stayKey: key });
+    const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+    const inputRevision = session.inputRevision;
+    const selectedOfferIds = [quote.revisionRef];
+    const staff = staffQuoteFromTrpc(trpcClient);
+    void bindQualifiedStaffProposalPdf({
+      mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
+      input: {
+        workflowRunId: quote.workflowRunId,
+        revisionRef: quote.revisionRef,
+        messageId: source.messageId,
+        outlookEmail: session.binding?.mailboxEmail ?? '',
+        factRefs: quote.factRefs,
+        company: header.company,
+        agency: header.agency,
+        attention: header.attention,
+        clientEmail: header.clientEmail,
+        clientTelephone: header.clientTelephone,
+      },
+      expectedTotalMinor: quote.totalMinor,
+    }).then((remote) => {
+      if (remote.status === 'unavailable') {
+        toast.warning(remote.reason);
+        return;
+      }
+      dispatchQuote({
+        type: 'pdf_ready',
+        pdf: {
+          fileName: remote.pdf.fileName,
+          bytesBase64: remote.pdf.pdfBase64,
+          pdfHash: remote.pdf.pdfHash,
+          revisionId: remote.pdf.revisionId,
+          totalMinor: remote.pdf.totalMinor,
+        },
+        selectionEpoch,
+        inputRevision,
+        selectedOfferIds,
+      });
+    });
+  };
+
+  // One reply for every completed date option (two or more PDFs); per-option Draft stays available.
+  const dateOptionLetters = completedDateOptions(quoteSession).map((option) => option.letter);
+  const allOptionsDraft = dateOptionLetters.length >= 2;
+  const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
+  const selectedIndex = quoteSession.selectedStayKey
+    ? requestedQuoteKeys(quoteSession.groups).indexOf(quoteSession.selectedStayKey)
+    : -1;
+  const selectedOptionLabel =
+    selectedIndex >= 0
+      ? `Draft option ${optionLetter(selectedIndex)} only`
+      : 'Draft the selected option only';
 
   return (
     <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
@@ -1514,79 +1660,47 @@ export default function OutlookPanePage() {
                     : 'The selected email is shown at the top of this pane. Open it in Outlook for the full text.',
                 );
               }}
-              onPreparePdf={() => {
-                if (!canCreatePdf(quoteSession)) {
-                  toast.warning('Pick a room option from the HMS results before making the PDF.');
-                  return;
-                }
-                if (isQuoteFixturePreview() || quoteSession.evidence?.kind !== 'authorised') {
-                  toast.warning('This is sample data, so no PDF can be made. Open a live email to continue.');
-                  return;
-                }
-                const source = quoteSession.staffSource;
-                const staffQuote = staffQuoteForStay(quoteSession);
-                if (!source || !staffQuote || staffQuote.totalMinor <= 0) {
-                  toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
-                  return;
-                }
-                const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
-                const inputRevision = quoteSession.inputRevision;
-                const selectedOfferIds = [...quoteSession.selectedOfferIds];
-                const staff = staffQuoteFromTrpc(trpcClient);
-                const header = staffQuote.approvedHeader;
-                if (!header) {
-                  toast.warning('The quote header was not saved with this quote. Run the search again, then prepare the PDF.');
-                  return;
-                }
-                void bindQualifiedStaffProposalPdf({
-                  mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-                  input: {
-                    workflowRunId: staffQuote.workflowRunId,
-                    revisionRef: staffQuote.revisionRef,
-                    messageId: source.messageId,
-                    outlookEmail: quoteSession.binding?.mailboxEmail ?? '',
-                    factRefs: staffQuote.factRefs,
-                    company: header.company,
-                    agency: header.agency,
-                    attention: header.attention,
-                    clientEmail: header.clientEmail,
-                    clientTelephone: header.clientTelephone,
-                  },
-                  expectedTotalMinor: staffQuote.totalMinor,
-                }).then((remote) => {
-                  if (remote.status === 'unavailable') {
-                    toast.warning(remote.reason);
-                    return;
-                  }
-                  dispatchQuote({
-                    type: 'pdf_ready',
-                    pdf: {
-                      fileName: remote.pdf.fileName,
-                      bytesBase64: remote.pdf.pdfBase64,
-                      pdfHash: remote.pdf.pdfHash,
-                      revisionId: remote.pdf.revisionId,
-                      totalMinor: remote.pdf.totalMinor,
-                    },
-                    selectionEpoch,
-                    inputRevision,
-                    selectedOfferIds,
-                  });
-                });
-              }}
+              onPreparePdf={() => preparePdfFor(null)}
+              onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
             />
 
             <div className="flex flex-col gap-2.5">
                 {/* Draft Quotation into Outlook Reply Button */}
                 <Button
                   type="button"
-                  aria-label="Insert Draft in Outlook"
-                  onClick={handleInsertAiDraft}
+                  aria-label={allOptionsDraft ? allOptionsLabel : 'Insert Draft in Outlook'}
+                  onClick={() => handleInsertAiDraft(allOptionsDraft ? 'all' : 'selected')}
                   disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
                   className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
                 >
                   <Send className="mr-1.5 h-3.5 w-3.5" />
-                  {isDraftPending ? 'Creating the Outlook draft. Please wait…' : 'Insert draft in Outlook'}
+                  {isDraftPending
+                    ? 'Creating the Outlook draft. Please wait…'
+                    : allOptionsDraft
+                      ? allOptionsLabel
+                      : 'Insert draft in Outlook'}
                 </Button>
+                {allOptionsDraft ? (
+                  <p className="text-center text-[11px] text-[#64748b]">
+                    Puts every option you ran into one email draft. Nothing is sent.
+                  </p>
+                ) : null}
+                {allOptionsDraft ? (
+                  <Button
+                    type="button"
+                    aria-label={selectedOptionLabel}
+                    onClick={() => handleInsertAiDraft('selected')}
+                    disabled={
+                      !activeEmail ||
+                      !supportsAction('CREATE_REPLY_DRAFT') ||
+                      isDraftPending ||
+                      !canCreateNativeDraft(quoteSession)
+                    }
+                    className="shadow-xs h-9 w-full rounded-sm border border-[#1a4332] bg-white text-xs font-semibold text-[#1a4332] transition-colors hover:bg-[#eaf4ee] disabled:opacity-50"
+                  >
+                    {selectedOptionLabel}
+                  </Button>
+                ) : null}
                 <p className="text-center text-[11px] text-[#64748b]">
                   Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook.
                   Nava never sends from this pane.
@@ -1617,7 +1731,9 @@ export default function OutlookPanePage() {
                         Dismiss
                       </button>
                     </div>
-                    {quoteSession.reviewedReplyHtml ? (
+                    {draftedDetails.previewHtml ? (
+                      <div dangerouslySetInnerHTML={{ __html: draftedDetails.previewHtml }} />
+                    ) : quoteSession.reviewedReplyHtml ? (
                       <div dangerouslySetInnerHTML={{ __html: quoteSession.reviewedReplyHtml }} />
                     ) : (
                       <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>

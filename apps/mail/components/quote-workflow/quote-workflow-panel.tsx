@@ -1,5 +1,14 @@
 import { Fragment, useEffect, useState } from 'react';
-import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } from '@/lib/quote-workflow/session';
+import {
+  allocationTotal,
+  canCreatePdf,
+  optionLetter,
+  pendingPdfStayKey,
+  quoteRunBlockReason,
+  requestedQuoteKeys,
+  staffSourceReady,
+} from '@/lib/quote-workflow/session';
+import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type { QueueStatus, QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
@@ -220,37 +229,84 @@ function StaffHeaderFields({
   );
 }
 
+/** Date options summary: one row per date option with its dates, total, PDF state, and actions. */
 function StayScopePicker({
-  stayKeys,
-  selectedStayKey,
+  session,
   onSelect,
+  onPreparePdf,
 }: {
-  stayKeys: string[];
-  selectedStayKey: string | null;
+  session: QuoteSession;
   onSelect?: (stayKey: string) => void;
+  onPreparePdf?: (stayKey: string) => void;
 }) {
+  const stayKeys = requestedQuoteKeys(session.groups);
   if (stayKeys.length <= 1) return null;
+  const allOptionsReply = completedDateOptions(session).length >= 2;
+  const pending = pendingPdfStayKey(session);
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Which stay to quote</h3>
+      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Date options</h3>
       <p className="text-[11px] text-[#64748b]">
-        Quote one stay at a time. The other stays stay listed but not quoted yet. Results are not combined.
+        This email asks for more than one set of dates. Run each option; Luna keeps every result.
       </p>
-      {stayKeys.map((key) => (
-        <button
-          key={key}
-          type="button"
-          aria-pressed={selectedStayKey === key}
-          aria-label={`Select date scope ${key.replace(':', ' to ')}`}
-          className={`h-8 rounded-xs border px-2 text-left text-[12px] font-semibold ${
-            selectedStayKey === key ? 'border-[#1a4332] bg-[#eaf4ee] text-[#1e293b]' : 'border-[#cbd5e1] bg-white text-[#1e293b]'
-          }`}
-          onClick={() => onSelect?.(key)}
-        >
-          {key.replace(':', ' → ')}
-          {selectedStayKey === key ? ' · selected' : ' · not quoted yet, click to quote'}
-        </button>
-      ))}
+      {pending ? (
+        <p className="text-[11px] text-amber-800">
+          Option {optionLetter(stayKeys.indexOf(pending))} has no PDF yet. Prepare its PDF before running another option.
+        </p>
+      ) : null}
+      {stayKeys.map((key, index) => {
+        const letter = optionLetter(index);
+        const selected = session.selectedStayKey === key;
+        const quote = session.staffQuotes[key];
+        const hasPdf = Boolean(session.stayPdfs[key]);
+        const step = session.steps.find((item) => item.shareKey === key);
+        const status = quote
+          ? `Quoted ${money(quote.totalMinor)} · ${hasPdf ? 'PDF ready' : 'PDF not built'}`
+          : step?.status === 'failed'
+            ? 'Search failed. Run this option again.'
+            : step?.status === 'running'
+              ? 'Running now.'
+              : 'Not run yet.';
+        return (
+          <div
+            key={key}
+            className={`flex flex-col gap-1 rounded-xs border p-2 ${
+              selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
+            }`}
+          >
+            <button
+              type="button"
+              aria-pressed={selected}
+              aria-label={`Select date scope ${key.replace(':', ' to ')}`}
+              className="flex flex-col gap-0.5 text-left text-[12px] font-semibold text-[#1e293b]"
+              onClick={() => onSelect?.(key)}
+            >
+              <span>
+                Option {letter} · {key.replace(':', ' → ')}
+                {selected ? ' · selected' : ''}
+              </span>
+              <span className="text-[11px] font-normal text-[#475569]">{status}</span>
+            </button>
+            {quote && !hasPdf ? (
+              <button
+                type="button"
+                disabled={!onPreparePdf}
+                onClick={() => onPreparePdf?.(key)}
+                className="h-7 self-start rounded-sm border border-[#1a4332] bg-white px-2 text-[11px] font-semibold text-[#1a4332] disabled:opacity-40"
+              >
+                Prepare PDF for option {letter}
+              </button>
+            ) : null}
+            {selected && hasPdf ? (
+              <p className="text-[11px] text-[#475569]">
+                {allOptionsReply
+                  ? `Use Draft option ${letter} only below for this option.`
+                  : 'Use Insert draft in Outlook for this option.'}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -342,6 +398,7 @@ export function QuoteWorkflowPanel({
   onSelectOffer,
   onReplyChange,
   onPreparePdf,
+  onPreparePdfFor,
   onHandleReviewItem,
   onUndoReviewItem,
   onViewSource,
@@ -363,6 +420,7 @@ export function QuoteWorkflowPanel({
   onSelectOffer?: (offerId: string) => void;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
+  onPreparePdfFor?: (stayKey: string) => void;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   onViewSource?: (item: QuoteReviewItem) => void;
@@ -490,11 +548,7 @@ export function QuoteWorkflowPanel({
         />
       ) : null}
       {showWorkspace ? (
-        <StayScopePicker
-          stayKeys={requestedQuoteKeys(session.groups)}
-          selectedStayKey={session.selectedStayKey}
-          onSelect={onSelectStayKey}
-        />
+        <StayScopePicker session={session} onSelect={onSelectStayKey} onPreparePdf={onPreparePdfFor} />
       ) : null}
       {session.groups.map((group, index) => (
         <RequirementCard
@@ -511,6 +565,7 @@ export function QuoteWorkflowPanel({
           runningStepId={session.runningStepId}
           onRunNext={onRunNext}
           onRunStep={onRunStep}
+          blockReason={(step) => quoteRunBlockReason(session, step)}
         />
       ) : null}
       {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}

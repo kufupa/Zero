@@ -456,7 +456,7 @@ export function BookingCards({
       <p className="text-[11px] text-[#64748b]">
         {client
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
-          : 'Saving in HMS from here is switched off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
+          : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
       {draft.draft.rateCheck.map((check, index) => (
         <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />

@@ -63,8 +63,14 @@ export function stayKeyForGroup(group: StayGroupRequirement): string {
   return `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`;
 }
 
-export function planQuoteSteps(groups: StayGroupRequirement[], selectedStayKey: string | null = null): QuoteToolStep[] {
-  const steps: QuoteToolStep[] = [];
+/**
+ * One search step per date option. Every option is runnable; serial order is enforced by
+ * canRunQuoteStep (one run at a time). Options already in `doneStaffQuotes` start succeeded.
+ */
+export function planQuoteSteps(
+  groups: StayGroupRequirement[],
+  doneStaffQuotes: Readonly<Record<string, StaffQuoteAllocation>> = {},
+): QuoteToolStep[] {
   const byDates = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
     const key = stayKeyForGroup(group);
@@ -72,38 +78,59 @@ export function planQuoteSteps(groups: StayGroupRequirement[], selectedStayKey: 
     list.push(group);
     byDates.set(key, list);
   }
-  const keys = [...byDates.keys()];
-  const selected = selectedStayKey && byDates.has(selectedStayKey)
-    ? selectedStayKey
-    : keys.length === 1
-      ? keys[0]!
-      : null;
-  for (const [key, grouped] of byDates) {
-    const active = selected === key;
-    steps.push({
-      id: `quote-stay-${key}`,
-      kind: 'quote_stay',
-      title: `Search availability ${key.replace(':', ' → ')}`,
-      inputs: {
-        quoteRequestKey: key,
-        groupIds: grouped.map((group) => group.id),
-        groups: grouped.map(toApprovedStayGroup),
-      },
-      dependsOn: [],
-      status: active ? 'ready' : 'queued',
-      shareKey: key,
-      retryGuidance: active
-        ? undefined
-        : 'Select this stay to quote it. The other stays are not quoted yet.',
-    });
-  }
-  return steps;
+  return [...byDates].map(([key, grouped]): QuoteToolStep => ({
+    id: `quote-stay-${key}`,
+    kind: 'quote_stay',
+    title: `Search availability ${key.replace(':', ' → ')}`,
+    inputs: {
+      quoteRequestKey: key,
+      groupIds: grouped.map((group) => group.id),
+      groups: grouped.map(toApprovedStayGroup),
+    },
+    dependsOn: [],
+    status: doneStaffQuotes[key] ? 'succeeded' : 'ready',
+    shareKey: key,
+  }));
 }
 
 export function requestedQuoteKeys(groups: StayGroupRequirement[]): string[] {
   return [
     ...new Set(groups.map((group) => `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`)),
   ];
+}
+
+/** Option label for the Nth date option in groups order: A, B, C. */
+export function optionLetter(index: number): string {
+  return index >= 0 && index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
+}
+
+/**
+ * First date option that has a staff quote but no PDF yet. The server issues a PDF only for
+ * the latest staff-approved run (workstation.qualifiedQuoteProposalPdf), so the next run waits.
+ */
+export function pendingPdfStayKey(
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs'>,
+): string | null {
+  return (
+    requestedQuoteKeys(session.groups).find(
+      (key) => Boolean(session.staffQuotes[key]) && !session.stayPdfs[key],
+    ) ?? null
+  );
+}
+
+/** Plain-English reason this date option must wait, or null when it may run. */
+export function quoteRunBlockReason(
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs'>,
+  step: QuoteToolStep,
+): string | null {
+  if (step.kind !== 'quote_stay' || !step.shareKey) return null;
+  const pending = pendingPdfStayKey(session);
+  if (!pending || pending === step.shareKey) return null;
+  const keys = requestedQuoteKeys(session.groups);
+  const pendingLetter = optionLetter(keys.indexOf(pending));
+  const targetIndex = keys.indexOf(step.shareKey);
+  if (targetIndex < 0) return `Finish the PDF for option ${pendingLetter} first, then run this option.`;
+  return `Finish the PDF for option ${pendingLetter} first, then run option ${optionLetter(targetIndex)}.`;
 }
 
 export function parseChildrenAges(raw: string): number[] {
@@ -227,6 +254,7 @@ export function initialQuoteSession(): QuoteSession {
     staffSource: null,
     staffQuote: null,
     staffQuotes: {},
+    stayPdfs: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     selectedStayKey: null,
@@ -387,7 +415,12 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     partyLookup: null,
     staffQuote: null,
     staffQuotes: {},
+    stayPdfs: {},
     bookingDraft: null,
+    // Results are gone, so every date option is runnable again.
+    steps: session.steps.map((step) =>
+      step.kind === 'quote_stay' ? { ...step, status: 'ready' as const, retryGuidance: undefined } : step,
+    ),
   };
 }
 
@@ -616,8 +649,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const sourceKey = reviewSourceKey({ ...session, analysis: action.analysis });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
       const requirementsChanged = session.analysis !== null && JSON.stringify(session.groups) !== JSON.stringify(action.analysis.groups);
+      const base = requirementsChanged ? clearDownstream(session) : session;
       return {
-        ...(requirementsChanged ? clearDownstream(session) : session),
+        ...base,
         phase: 'requirements',
         analysisStartStayRevision: null,
         analysis: action.analysis,
@@ -626,7 +660,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         selectedStayKey,
         steps: session.runningStepId && !requirementsChanged
           ? session.steps
-          : planQuoteSteps(action.analysis.groups, selectedStayKey),
+          : planQuoteSteps(action.analysis.groups, base.staffQuotes),
         staffActions: action.analysis.staffActions ?? session.staffActions,
         staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
         reviewItems,
@@ -714,18 +748,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'select_stay_key': {
       if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
       if (session.selectedStayKey === action.stayKey) return session;
+      // Every option keeps its result. The newly selected option exposes only its own authority and PDF.
+      const quote = session.staffQuotes[action.stayKey] ?? null;
       return {
         ...session,
         selectedStayKey: action.stayKey,
-        selectedOfferIds: [],
-        offers: [],
-        pdf: null,
-        staffQuote: null,
-        staffQuotes: {},
-        evidence: null,
-        steps: planQuoteSteps(session.groups, action.stayKey),
-        runningStepId: null,
-        bookingDraft: null,
+        staffQuote: quote,
+        selectedOfferIds: quote ? [quote.revisionRef] : [],
+        pdf: session.stayPdfs[action.stayKey] ?? null,
+        bookingDraft:
+          quote && session.bookingDraft?.revisionRef === quote.revisionRef ? session.bookingDraft : null,
       };
     }
     case 'staff_quote_ready': {
@@ -741,14 +773,25 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const stayKey = action.offer.quoteRequestKey;
       const staffQuote = { ...action.staffQuote, quoteRequestKey: stayKey };
       const stayCount = requestedQuoteKeys(session.groups).length;
+      // A new run replaces only this option's result and PDF. Other options keep theirs.
+      const stayPdfs = { ...session.stayPdfs };
+      delete stayPdfs[stayKey];
       return {
         ...session,
         phase: stayCount > 1 ? 'tools' : 'results',
-        offers: [action.offer],
+        offers: [
+          ...session.offers.filter(
+            (offer) =>
+              offer.id !== action.offer.id &&
+              !(offer.kind === 'allocation' && offer.quoteRequestKey === stayKey),
+          ),
+          action.offer,
+        ],
         selectedOfferIds: [action.offer.id],
         selectedStayKey: stayKey,
         staffQuote,
-        staffQuotes: { [stayKey]: staffQuote },
+        staffQuotes: { ...session.staffQuotes, [stayKey]: staffQuote },
+        stayPdfs,
         pdf: null,
         evidence: {
           kind: 'authorised',
@@ -764,8 +807,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         groups: action.groups?.length ? action.groups : session.groups,
         stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
-        steps: planQuoteSteps(session.groups, stayKey).map((step) =>
-          step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
+        steps: session.steps.map((step) =>
+          step.shareKey === stayKey ? { ...step, status: 'succeeded' as const, retryGuidance: undefined } : step,
         ),
         bookingDraft: null,
       };
@@ -811,7 +854,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         inputRevision: session.inputRevision + 1,
         stayRevision: session.stayRevision + 1,
         phase: 'requirements',
-        steps: planQuoteSteps(groups, session.selectedStayKey),
+        steps: planQuoteSteps(groups),
         selectedStayKey: session.selectedStayKey && groups.some((group) => stayKeyForGroup(group) === session.selectedStayKey)
           ? session.selectedStayKey
           : requestedQuoteKeys(groups).length === 1
@@ -892,17 +935,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
+      // A failed option marks only its own step. Results for the other date options stay.
       return {
         ...session,
         phase: 'tools',
         runningStepId: null,
-        offers: [],
-        selectedOfferIds: [],
-        pdf: null,
-        staffQuote: null,
-        staffQuotes: {},
-        evidence: null,
-        bookingDraft: null,
         errorMessage: action.reason,
         steps: session.steps.map((step) =>
           step.id === action.stepId
@@ -931,14 +968,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             : step,
         ),
       };
-    case 'pdf_ready':
+    case 'pdf_ready': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
       if (!sameSelectedOfferIds(action.selectedOfferIds, session.selectedOfferIds)) {
         return session;
       }
-      return { ...session, pdf: action.pdf, phase: 'review' };
+      const stayKey = session.selectedStayKey;
+      return {
+        ...session,
+        pdf: action.pdf,
+        phase: 'review',
+        stayPdfs: stayKey ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
+      };
+    }
     case 'set_reviewed_reply':
       return { ...session, reviewedReplyHtml: action.html };
     case 'select_offers':

@@ -6,7 +6,7 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   amendment_or_cancel: 'Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.',
   long_stay: 'Stay over 30 nights: split it into shorter stays by hand.',
   discount_or_negotiation: 'Discount asked for: your decision is needed.',
-  multi_date: 'Several date options: quote the first, add the others by hand.',
+  multi_date: "Several date options: run each one. Build each option's PDF before running the next.",
   extras: 'Extras asked for (shuttle or dinner): add these by hand.',
   mixed_request: 'Several requests in one email: check each one.',
   attachment_unread: 'An attachment could not be read. Open it in Outlook and check it.',

@@ -345,4 +345,148 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.change(input, { target: { value: '125.' } });
     expect(input.value).toBe('125.');
   });
+
+  it('gives each date option its own Run button', () => {
+    const onRunStep = vi.fn();
+    const session = staggeredDatesSession();
+    render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} onRunNext={vi.fn()} />);
+    const runs = screen.getAllByRole('button', { name: /^Run Search availability/i }) as HTMLButtonElement[];
+    expect(runs).toHaveLength(2);
+    expect(runs.every((button) => !button.disabled)).toBe(true);
+    fireEvent.click(runs[1]!);
+    expect(onRunStep).toHaveBeenCalledWith(session.steps[1]!.id);
+  });
+
+  it('lists date options with totals and says why a later option waits for the earlier PDF', () => {
+    const onRunStep = vi.fn();
+    const quoted = staggeredDatesWithOptionA();
+    render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
+    expect(screen.getByRole('heading', { name: 'Date options' })).toBeDefined();
+    expect(
+      screen.getByText('This email asks for more than one set of dates. Run each option; Luna keeps every result.'),
+    ).toBeDefined();
+    const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
+    expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);
+    expect(screen.getByText('Finish the PDF for option A first, then run option B.')).toBeDefined();
+    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    expect(runB.disabled).toBe(true);
+    fireEvent.click(runB);
+    expect(onRunStep).not.toHaveBeenCalled();
+  });
+
+  it('removes the wait once option A has its PDF', () => {
+    const withPdf = {
+      ...staggeredDatesWithOptionA(),
+      stayPdfs: {
+        '2026-11-02:2026-11-04': {
+          fileName: 'Quote-rev-a.pdf',
+          bytesBase64: 'JVBERi0xLjQK',
+          pdfHash: 'cd'.repeat(32),
+          revisionId: 'rev-a',
+          totalMinor: 850000,
+        },
+      },
+    };
+    render(<QuoteWorkflowPanel session={withPdf} onRunStep={vi.fn()} onRunNext={vi.fn()} />);
+    expect(screen.queryByText(/Finish the PDF for option A/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' }).textContent).toMatch(
+      /PDF ready/,
+    );
+    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    expect(runB.disabled).toBe(false);
+  });
+
+  it('prepares the PDF for a quoted date option from its own row', () => {
+    const onPreparePdfFor = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={staggeredDatesWithOptionA()}
+        onPreparePdfFor={onPreparePdfFor}
+        onRunStep={vi.fn()}
+        onRunNext={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Prepare PDF for option B' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF for option A' }));
+    expect(onPreparePdfFor).toHaveBeenCalledWith('2026-11-02:2026-11-04');
+  });
 });
+
+const BINDING = {
+  transportId: 't1',
+  mailboxEmail: 'centurion@legacyhotels.co.za',
+  storeId: 'store',
+  folderEntryId: 'inbox',
+  entryId: 'e1',
+  selectionEpoch: 1,
+  scopeEpoch: 1,
+};
+
+/** Two date options (2 Nov and 10 Nov) with no results yet. */
+function staggeredDatesSession() {
+  let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING });
+  session = reduceQuoteSession(session, {
+    type: 'analysis_ready',
+    analysis: {
+      intent: 'quote',
+      groups: loadQuoteFixture('staggered-dates').groups,
+      secondaryAsks: [],
+      alternatives: [],
+    },
+  });
+  return reduceQuoteSession(session, {
+    type: 'staff_source_ready',
+    source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+  });
+}
+
+/** Same two options, with option A (2 Nov) quoted and its PDF not yet built. */
+function staggeredDatesWithOptionA(): QuoteSession {
+  const session = staggeredDatesSession();
+  return reduceQuoteSession(session, {
+    type: 'staff_quote_ready',
+    offer: {
+      id: 'rev-a',
+      kind: 'allocation',
+      roomCode: 'SKNG',
+      roomLabel: 'Standard King',
+      board: 'bb',
+      rateCode: 'BAR',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 850000,
+      observedAt: '2026-10-05T12:00:00Z',
+      sourceRef: 'rev-a',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: '2026-11-02:2026-11-04',
+      coversGroupIds: ['stay-a'],
+      quantity: 1,
+      adults: 1,
+    },
+    staffQuote: {
+      workflowRunId: 'run-a',
+      revisionRef: 'rev-a',
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: 'ab'.repeat(32),
+      selectionEpoch: 1,
+      inputRevision: session.inputRevision,
+      inputDigest: 'digest-a',
+      totalMinor: 850000,
+      currency: 'ZAR',
+      quoteRequestKey: '2026-11-02:2026-11-04',
+      approvedHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+    },
+    selectionEpoch: 1,
+    inputRevision: session.inputRevision,
+  });
+}

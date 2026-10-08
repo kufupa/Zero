@@ -399,6 +399,8 @@ export type QuoteSession = {
   staffQuote: StaffQuoteAllocation | null;
   /** Per-date authentic execute revisions. Combined PDF must not sum these. */
   staffQuotes: Record<string, StaffQuoteAllocation>;
+  /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
+  stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
   staffActions: ReservationistStaffAction[];
   selectedStayKey: string | null;

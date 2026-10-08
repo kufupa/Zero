@@ -296,7 +296,7 @@ describe('booking card copy buttons', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(
       screen.getByText(
-        'Saving in HMS from here is switched off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
       ),
     ).toBeDefined();
   });

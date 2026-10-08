@@ -467,6 +467,26 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('rejects one executeStaffQuote run that mixes date sets, before any HMS call', async () => {
+    const mutate = vi.fn(async () => readyResult);
+    const mixed = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        { ...stay, roomPreference: 'SKNG' },
+        { ...stay, id: 'g2', arrivalDate: '2026-12-01', departureDate: '2026-12-03', roomPreference: 'SKNG' },
+      ],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(mixed).toEqual({
+      status: 'unavailable',
+      reason: 'Distinct stays need separate executeStaffQuote calls.',
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('rejects a zero total and requires PDF hash to match actual bytes', async () => {
     const mutateQuote = vi.fn(async () => ({ ...readyResult, totalMinor: 0 }));
     const zero = await bindExecuteStaffQuote({
