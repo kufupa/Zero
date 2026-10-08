@@ -104,11 +104,13 @@ import {
 } from '@/lib/quote-workflow/booking-draft-bind';
 import {
   bindExecuteStaffQuote,
+  bindHmsQueueStatus,
   bindQualifiedStaffProposalPdf,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
 } from '@/lib/quote-workflow/staff-quote-bind';
+import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
   analysisRetryKey,
@@ -212,6 +214,13 @@ export default function OutlookPanePage() {
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
+  // True from the executeStaffQuote call until it settles. Drives the HMS queue poller.
+  const [quoteRunPending, setQuoteRunPending] = useState(false);
+  const hmsQueue = useHmsQueueStatus({
+    pending: quoteRunPending,
+    fetchStatus: () =>
+      bindHmsQueueStatus(staffQuoteFromTrpc(trpcClient).workstation.hmsQueueStatus?.query),
+  });
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
@@ -1033,6 +1042,7 @@ export default function OutlookPanePage() {
     }
     const stayGroups = groupsForQuoteStep(quoteSession, step);
     const staff = staffQuoteFromTrpc(trpcClient);
+    setQuoteRunPending(true);
     void bindExecuteStaffQuote({
       mutate: staff.workstation.executeStaffQuote?.mutate,
       source,
@@ -1085,7 +1095,7 @@ export default function OutlookPanePage() {
           });
         });
       }
-    });
+    }).finally(() => setQuoteRunPending(false));
   };
 
   return (
@@ -1463,6 +1473,7 @@ export default function OutlookPanePage() {
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
               onStaffNote={(staffNote) => dispatchQuote({ type: 'staff_note', staffNote })}
+              hmsQueue={{ pending: quoteRunPending, status: hmsQueue }}
               onEditReply={() => document.getElementById('quote-reviewed-reply')?.focus()}
               onViewSource={(item) => {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });

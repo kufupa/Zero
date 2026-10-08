@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { allocationTotal, canCreatePdf, requestedQuoteKeys, staffSourceReady } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
-import type { QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type { QueueStatus, QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
 import { DocumentReview } from './document-review';
+import { HmsQueueStatusLine } from './hms-queue-status';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
@@ -344,6 +345,7 @@ export function QuoteWorkflowPanel({
   onSelectStayKey,
   onTreatAs,
   onStaffNote,
+  hmsQueue,
 }: {
   session: QuoteSession;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
@@ -360,6 +362,8 @@ export function QuoteWorkflowPanel({
   onSelectStayKey?: (stayKey: string) => void;
   onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
+  /** HMS queue progress for the staff quote run in flight. */
+  hmsQueue?: { pending: boolean; status: QueueStatus | null };
 }) {
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Luna will read it and list what the quote needs.</StatusNote>;
@@ -498,6 +502,7 @@ export function QuoteWorkflowPanel({
           onRunStep={onRunStep}
         />
       ) : null}
+      {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
       {session.offers.length ? (
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Results</h3>

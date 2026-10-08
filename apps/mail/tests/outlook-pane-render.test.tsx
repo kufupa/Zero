@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
@@ -39,6 +39,11 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.
     sessionId: 'session-1',
     transportId: 'transport-1',
     legacyReplySupported: undefined as boolean | undefined,
+    /** When true, executeStaffQuote stays pending until releaseStaffQuote is called. */
+    holdStaffQuote: false,
+    releaseStaffQuote: null as null | (() => void),
+    hmsQueueStatus: null as null | Record<string, unknown>,
+    hmsQueueReads: 0,
   },
 }));
 
@@ -130,11 +135,24 @@ vi.mock('../providers/query-provider', () => ({
         query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
       },
       executeStaffQuote: {
-        mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => ({
-          status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
-          selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
-          arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
-        }),
+        mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
+          if (bridgeMockState.holdStaffQuote) {
+            await new Promise<void>((resolve) => {
+              bridgeMockState.releaseStaffQuote = resolve;
+            });
+          }
+          return {
+            status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
+            selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
+            arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
+          };
+        },
+      },
+      hmsQueueStatus: {
+        query: async () => {
+          bridgeMockState.hmsQueueReads += 1;
+          return bridgeMockState.hmsQueueStatus ?? { state: 'idle', message: '' };
+        },
       },
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
@@ -215,6 +233,10 @@ describe('OutlookPanePage', () => {
     bridgeMockState.sessionId = 'session-1';
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.legacyReplySupported = undefined;
+    bridgeMockState.holdStaffQuote = false;
+    bridgeMockState.releaseStaffQuote = null;
+    bridgeMockState.hmsQueueStatus = null;
+    bridgeMockState.hmsQueueReads = 0;
   });
 
   it('renders Nava AI Reservationist title and connection status', () => {
@@ -245,6 +267,46 @@ describe('OutlookPanePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Pair Outlook Device/i }));
     expect(pairDeviceMock).toHaveBeenCalledTimes(1);
     expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('shows HMS queue progress while the staff quote runs and clears it once the run settles', async () => {
+    bridgeMockState.holdStaffQuote = true;
+    bridgeMockState.hmsQueueStatus = {
+      state: 'running',
+      phase: 'Checking the quote rules',
+      phaseIndex: 2,
+      phaseCount: 3,
+      runningForMs: 80_000,
+      message: 'Luna is working in HMS – step 2 of 3: Checking the quote rules.',
+    };
+    render(<OutlookPanePage />);
+    await fillStayFactsMatchingAuthorisedOffer();
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    expect(
+      await screen.findByText(
+        'Luna is working in HMS – step 2 of 3: Checking the quote rules. 1 min 20 s so far.',
+      ),
+    ).toBeDefined();
+    expect(bridgeMockState.hmsQueueReads).toBeGreaterThan(0);
+    await act(async () => {
+      bridgeMockState.releaseStaffQuote?.();
+    });
+    await waitFor(() => expect(screen.queryByText(/Luna is working in HMS/)).toBeNull());
+    expect(
+      screen.getAllByRole('button').some((element) => (element.textContent ?? '').includes('Counted in the total')),
+    ).toBe(true);
+  });
+
+  it('shows Starting the HMS run while the staff quote is pending and the first read is idle', async () => {
+    bridgeMockState.holdStaffQuote = true;
+    render(<OutlookPanePage />);
+    await fillStayFactsMatchingAuthorisedOffer();
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    expect(await screen.findByText('Starting the HMS run…')).toBeDefined();
+    await act(async () => {
+      bridgeMockState.releaseStaffQuote?.();
+    });
+    await waitFor(() => expect(screen.queryByText('Starting the HMS run…')).toBeNull());
   });
 
   it('renders the Run System Test button', () => {

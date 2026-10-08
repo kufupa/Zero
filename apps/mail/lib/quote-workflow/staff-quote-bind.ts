@@ -5,6 +5,7 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import type {
+  QueueStatus,
   QuoteOffer,
   ReservationistStaffAction,
   StaffQuoteAllocation,
@@ -564,9 +565,23 @@ export async function bindQualifiedStaffProposalPdf(args: {
   }
 }
 
+/**
+ * Reads the caller's staff quote run status. A missing query (older server) or a
+ * failed read resolves to null, so the poller keeps its last good status.
+ */
+export async function bindHmsQueueStatus(query?: () => Promise<QueueStatus>): Promise<QueueStatus | null> {
+  if (!query) return null;
+  try {
+    return (await query()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
+  hmsQueueStatus?: { query: () => Promise<QueueStatus> };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {

@@ -210,6 +210,18 @@ export function emptyStaffQuoteHeader(): StaffQuoteHeader {
   };
 }
 
+/** workstation.hmsQueueStatus: this caller's staff quote run. `message` is plain English. */
+export type QueueStatus = {
+  state: 'idle' | 'running' | 'waiting' | 'unavailable';
+  phase?: string;
+  phaseIndex?: number;
+  phaseCount?: number;
+  runningForMs?: number;
+  aheadCount?: number;
+  etaMinutes?: number;
+  message: string;
+};
+
 export type QuoteOfferKind = 'allocation' | 'alternative';
 
 export type QuoteNight = { date: string; amountMinor: number };
