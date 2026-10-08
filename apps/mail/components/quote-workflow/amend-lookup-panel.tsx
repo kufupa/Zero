@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { usePilotCapabilities } from '@/hooks/use-pilot-capabilities';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
+  amendCapabilitiesFromTrpc,
   cancelConfirmLine,
   cancelFeeSentence,
   cancelManualSteps,
   cancelSwitchedOffNote,
-  isCancelConfirmation,
   isoDayOf,
   viewAfterCommit,
   viewAfterPreview,
@@ -17,29 +16,24 @@ import {
 } from '@/lib/quote-workflow/amend-cancel';
 import {
   AMEND_FIND_COPY,
-  AMEND_FIND_INTERVAL_MS,
-  AMEND_FIND_TIMEOUT_MS,
   amendDiffs,
   amendFindClientFromTrpc,
-  amendFindOutcome,
-  enqueueFailureCopy,
   formatStayDate,
-  knownFactValue,
-  matchedOnLabel,
-  outcomeNote,
-  pollHmsFindReceipt,
+  isHmsConfirmation,
+  runHmsFind,
+  stayGuest,
+  stayText,
   type AmendDiff,
   type AmendFindClient,
-  type AmendFindOutcome,
+  type HmsFindRun,
+  type ScreenshotInput,
+  type ScreenshotReply,
+  type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
+import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 
-export type AmendLookupTiming = { intervalMs: number; timeoutMs: number };
-
-type LookupStatus =
-  | { phase: 'running' }
-  | { phase: 'done'; outcome: AmendFindOutcome }
-  | { phase: 'error'; message: string };
+type LookupStatus = { phase: 'running' } | { phase: 'done'; run: HmsFindRun };
 
 type LookupState = { key: string; status: LookupStatus };
 
@@ -60,34 +54,25 @@ const selectClass =
   'rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
 
 /**
- * Amend and cancel mail: shows what the guest asked beside the booking HMS returns for the
- * exact confirmation number. Renders nothing unless the analysis carries an amendment.
+ * Amend and cancel mail: shows what the guest asked beside the booking HMS returns for the exact
+ * confirmation number. Renders nothing unless the analysis carries an amendment.
  */
-export function AmendLookupPanel({
-  session,
-  trpc,
-  timing,
-}: {
-  session: QuoteSession;
-  trpc: unknown;
-  timing?: AmendLookupTiming;
-}) {
-  const amendment = session.analysis?.amendment ?? null;
-  const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
-  const intervalMs = timing?.intervalMs ?? AMEND_FIND_INTERVAL_MS;
-  const timeoutMs = timing?.timeoutMs ?? AMEND_FIND_TIMEOUT_MS;
+export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trpc: unknown }) {
+  const amendment = amendmentOf(session);
+  const findClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
+  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
   const threadId = session.staffSource?.threadId.trim() || null;
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
+  const lookupable = confirmationNumber !== null && isHmsConfirmation(confirmationNumber);
 
   const [lookup, setLookup] = useState<LookupState | null>(null);
+  const [paneSave, setPaneSave] = useState(false);
+  const [cancelState, setCancelState] = useState<{ key: string; view: CancelView } | null>(null);
   const mounted = useRef(false);
   const runToken = useRef(0);
   const autoRunKey = useRef<string | null>(null);
-  const { paneSave } = usePilotCapabilities();
-  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
-  const [cancelState, setCancelState] = useState<{ key: string; view: CancelView } | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -96,75 +81,66 @@ export function AmendLookupPanel({
     };
   }, []);
 
+  // Cancelling stays off until the server says the pane save flag is on.
+  useEffect(() => {
+    const readCapabilities = amendCapabilitiesFromTrpc(trpc);
+    if (!readCapabilities) return;
+    let live = true;
+    readCapabilities()
+      .then((reply) => {
+        if (live) setPaneSave(reply.paneSave === true);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [trpc]);
+
   const runLookup = useCallback(
-    async (activeClient: AmendFindClient | null, activeThread: string, activeKey: string) => {
+    async (activeClient: AmendFindClient | null, activeConfirmation: string, activeKey: string) => {
       const token = ++runToken.current;
       const isCurrent = () => mounted.current && runToken.current === token;
-      const finish = (status: LookupStatus) => {
-        if (isCurrent()) setLookup({ key: activeKey, status });
-      };
       setLookup({ key: activeKey, status: { phase: 'running' } });
-      if (!activeClient) {
-        finish({ phase: 'error', message: AMEND_FIND_COPY.unavailable });
-        return;
-      }
-      let started: { readResultRef: string };
-      try {
-        started = await activeClient.enqueueHmsRead({
-          threadId: activeThread,
-          toolId: 'hms_find_reservation',
-        });
-      } catch (error) {
-        finish({ phase: 'error', message: enqueueFailureCopy(error) });
-        return;
-      }
-      const poll = await pollHmsFindReceipt({
-        readHmsReceipt: activeClient.readHmsReceipt,
-        threadId: activeThread,
-        readResultRef: started.readResultRef,
-        intervalMs,
-        timeoutMs,
-        isCurrent,
-      });
-      if (poll.kind === 'receipt') finish({ phase: 'done', outcome: amendFindOutcome(poll.receipt) });
-      else if (poll.kind === 'timeout') finish({ phase: 'error', message: AMEND_FIND_COPY.busy });
-      else if (poll.kind === 'error') finish({ phase: 'error', message: AMEND_FIND_COPY.readFailed });
+      const run = await runHmsFind({ client: activeClient, confirmation: activeConfirmation });
+      if (isCurrent()) setLookup({ key: activeKey, status: { phase: 'done', run } });
     },
-    [intervalMs, timeoutMs],
+    [],
   );
 
-  // Once per email (thread plus selection epoch), and only when Luna found a booking number.
+  // Once per email (thread plus selection epoch), and only when the email carries an HMS booking number.
   useEffect(() => {
-    if (!key || !threadId || !confirmationNumber) return;
+    if (!key || !threadId || !confirmationNumber || !lookupable) return;
     if (autoRunKey.current === key) return;
     autoRunKey.current = key;
-    void runLookup(client, threadId, key);
-  }, [client, confirmationNumber, key, runLookup, threadId]);
+    void runLookup(findClient, confirmationNumber, key);
+  }, [confirmationNumber, findClient, key, lookupable, runLookup, threadId]);
 
   if (!amendment) return null;
 
   const status = lookup && key && lookup.key === key ? lookup.status : null;
   const running = status?.phase === 'running';
-  const match = status?.phase === 'done' && status.outcome.kind === 'found' ? status.outcome.match : null;
-  const diff: AmendDiff = match ? amendDiffs(amendment, match) : {};
-  const outcomeText = status?.phase === 'done' ? outcomeNote(status.outcome) : null;
-  const canLookUp = Boolean(key && threadId && confirmationNumber);
+  const found = status?.phase === 'done' && status.run.kind === 'found' ? status.run : null;
+  const stay: StayRecordWire | null = found?.stay ?? null;
+  const diff: AmendDiff = stay ? amendDiffs(amendment, stay) : {};
+  const canLookUp = Boolean(key && threadId && lookupable);
 
   let note: { tone: 'info' | 'warn'; text: string } | null = null;
   if (running) note = { tone: 'info', text: AMEND_FIND_COPY.looking };
-  else if (status?.phase === 'error') note = { tone: 'warn', text: status.message };
-  else if (outcomeText) note = { tone: 'warn', text: outcomeText };
+  else if (status?.phase === 'done' && status.run.kind === 'error')
+    note = { tone: 'warn', text: status.run.message };
+  else if (status?.phase === 'done' && status.run.kind === 'not_found')
+    note = { tone: 'warn', text: AMEND_FIND_COPY.notFound };
+  else if (status?.phase === 'done' && status.run.kind === 'ambiguous')
+    note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
   else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
+  else if (!lookupable) note = { tone: 'warn', text: AMEND_FIND_COPY.notExact };
   else if (!threadId) note = { tone: 'info', text: AMEND_FIND_COPY.waitingThread };
-
-  const knownArrival = match ? knownFactValue(match.arrival) : null;
-  const knownDeparture = match ? knownFactValue(match.departure) : null;
 
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
   const cancelView = cancelState && key && cancelState.key === key ? cancelState.view : null;
-  const cancelArrival = isoDayOf(knownArrival) ?? isoDayOf(amendment.arrival);
+  const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
   const cancelInput =
-    confirmationNumber && cancelArrival && isCancelConfirmation(confirmationNumber)
+    confirmationNumber && lookupable && cancelArrival
       ? { confirmation: confirmationNumber, arrival: cancelArrival }
       : null;
   const canPreviewCancel = Boolean(paneSave && cancelClient && cancelInput && key);
@@ -180,16 +156,24 @@ export function AmendLookupPanel({
     }
   };
 
+  // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
   const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
-    if (!key || !cancelClient || !cancelInput || !ready.reason) return;
+    const previewDigest = ready.run.previewDigest;
+    if (!key || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
     setCancelState({ key, view: { kind: 'committing', run: ready.run, reason: ready.reason } });
     try {
-      const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason });
+      const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason, previewDigest });
       setCancelState({ key, view: viewAfterCommit(run, ready.run, cancelInput.confirmation) });
     } catch {
       setCancelState({ key, view: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } });
     }
   };
+
+  // Cancel mail the pane can preview says so; otherwise the look-up footer stays.
+  const footer =
+    amendment.kind === 'cancel' && stay && confirmationNumber && canPreviewCancel
+      ? AMEND_CANCEL_COPY.footerPreview
+      : AMEND_FIND_COPY.footer;
 
   const chooseReason = (reason: string) => {
     if (!key) return;
@@ -199,6 +183,10 @@ export function AmendLookupPanel({
       return { key, view: { ...view, reason } };
     });
   };
+
+  const ratePlan = stayText(stay?.ratePlan);
+  const mealPlan = stayText(stay?.mealPlan);
+  const grandTotal = stayText(stay?.grandTotal);
 
   return (
     <section aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
@@ -216,28 +204,30 @@ export function AmendLookupPanel({
         </div>
         <div className="flex flex-col gap-2">
           <p className={headingClass}>Booking in HMS now</p>
-          {match ? (
+          {stay ? (
             <>
               <HmsRow
                 field="matched"
                 label="Matched on"
-                value={`${matchedOnLabel(match)} ${confirmationNumber ?? ''}`.trim()}
+                value={`confirmation number ${confirmationNumber ?? ''}`.trim()}
               />
-              <HmsRow field="guest" label="Guest" value={knownFactValue(match.label) ?? 'Not shown'} wants={diff.guest} />
-              <HmsRow
-                field="arrival"
-                label="Arrival"
-                value={knownArrival ? formatStayDate(knownArrival) : 'Not shown'}
-                wants={diff.arrival}
-              />
-              <HmsRow
-                field="departure"
-                label="Departure"
-                value={knownDeparture ? formatStayDate(knownDeparture) : 'Not shown'}
-                wants={diff.departure}
-              />
-              <HmsRow field="status" label="Status" value={knownFactValue(match.status) ?? 'Not shown'} />
-              <HmsRow field="room" label="Room" value={knownFactValue(match.roomType) ?? 'Not shown'} />
+              <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} />
+              <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
+              <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
+              <HmsRow field="status" label="Status" value={stayText(stay.status) ?? 'Not shown'} />
+              <HmsRow field="room" label="Room" value={stayText(stay.roomType) ?? 'Not shown'} />
+              {ratePlan ? <HmsRow field="rate-plan" label="Rate plan" value={ratePlan} /> : null}
+              {mealPlan ? <HmsRow field="meal-plan" label="Meal plan" value={mealPlan} /> : null}
+              {grandTotal ? <HmsRow field="grand-total" label="Grand total" value={grandTotal} /> : null}
+              {found ? (
+                <RunScreenshot
+                  load={findClient?.screenshot ?? null}
+                  runId={found.runId}
+                  name={found.screenshots.includes('record.png') ? 'record.png' : null}
+                  label={AMEND_FIND_COPY.seeBooking}
+                  alt="What Luna saw on the HMS booking record"
+                />
+              ) : null}
             </>
           ) : (
             <p className="text-[11.5px] text-[#64748b]">{running ? 'Looking up…' : 'Nothing shown yet.'}</p>
@@ -250,7 +240,7 @@ export function AmendLookupPanel({
           className={buttonClass}
           disabled={!canLookUp || running}
           onClick={() => {
-            if (key && threadId) void runLookup(client, threadId, key);
+            if (key && threadId && confirmationNumber && lookupable) void runLookup(findClient, confirmationNumber, key);
           }}
         >
           Find this booking in HMS
@@ -259,13 +249,13 @@ export function AmendLookupPanel({
           {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}
         </div>
       </div>
-      {amendment.kind === 'cancel' && match && confirmationNumber ? (
+      {amendment.kind === 'cancel' && stay && confirmationNumber ? (
         <CancelSection
           view={cancelView}
           canPreview={canPreviewCancel}
           offNote={paneSave ? cancelManualSteps(confirmationNumber) : cancelSwitchedOffNote(confirmationNumber)}
           confirmation={confirmationNumber}
-          guestName={knownFactValue(match.label) ?? amendment.guestLastName ?? 'this guest'}
+          guestName={stayGuest(stay) ?? amendment.guestLastName ?? 'this guest'}
           client={cancelClient}
           onPreview={() => void previewCancel()}
           onReason={chooseReason}
@@ -274,9 +264,14 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
-      <p className={captionClass}>{AMEND_FIND_COPY.footer}</p>
+      <p className={captionClass}>{footer}</p>
     </section>
   );
+}
+
+function shownDate(value: string | null): string {
+  const text = stayText(value);
+  return text ? formatStayDate(text) : 'Not shown';
 }
 
 function AskRow({ label, value }: { label: string; value: string }) {
@@ -408,17 +403,39 @@ function CancelSection({
 }
 
 function CancelScreenshot({ client, run }: { client: AmendCancelClient | null; run: CancelRun }) {
-  const runId = run.runId ?? null;
-  const name = run.screenshots.at(-1) ?? null;
+  return (
+    <RunScreenshot
+      load={client?.paneStayScreenshot ?? null}
+      runId={run.runId}
+      name={run.screenshots.at(-1) ?? null}
+      label={AMEND_CANCEL_COPY.seeScreenshot}
+      alt="What Luna saw on the HMS cancel screen"
+    />
+  );
+}
+
+/** One screenshot of a run as a thumbnail, with a full-size overlay. Renders nothing until the bytes load. */
+function RunScreenshot({
+  load,
+  runId,
+  name,
+  label,
+  alt,
+}: {
+  load: ((input: ScreenshotInput) => Promise<ScreenshotReply>) | null;
+  runId: string | null;
+  name: string | null;
+  label: string;
+  alt: string;
+}) {
   const [image, setImage] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setImage(null);
-    if (!client || !runId || !name) return;
+    if (!load || !runId || !name) return;
     let live = true;
-    client
-      .paneStayScreenshot({ runId, name })
+    load({ runId, name })
       .then((reply) => {
         if (live && reply.status === 'ok') setImage(reply.dataUrl);
       })
@@ -426,27 +443,23 @@ function CancelScreenshot({ client, run }: { client: AmendCancelClient | null; r
     return () => {
       live = false;
     };
-  }, [client, name, runId]);
+  }, [load, name, runId]);
 
   if (!image) return null;
   return (
     <>
       <button type="button" onClick={() => setOpen(true)} className="flex items-center gap-2 self-start text-left">
         <img src={image} alt="" className="h-16 w-auto rounded-xs border border-[#e2e8f0]" />
-        <span className="text-[11.5px] font-medium text-[#0066cc]">{AMEND_CANCEL_COPY.seeScreenshot}</span>
+        <span className="text-[11.5px] font-medium text-[#0066cc]">{label}</span>
       </button>
       {open ? (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={AMEND_CANCEL_COPY.seeScreenshot}
+          aria-label={label}
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/80 p-4"
         >
-          <img
-            src={image}
-            alt="What Luna saw on the HMS cancel screen"
-            className="max-h-[85vh] max-w-full rounded-sm bg-white"
-          />
+          <img src={image} alt={alt} className="max-h-[85vh] max-w-full rounded-sm bg-white" />
           <button type="button" className={buttonClass} onClick={() => setOpen(false)}>
             Close
           </button>

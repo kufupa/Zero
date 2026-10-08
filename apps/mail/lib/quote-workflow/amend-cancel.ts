@@ -1,4 +1,4 @@
-import { AMEND_FIND_COPY } from './amend-find';
+import { AMEND_FIND_COPY, type ScreenshotInput, type ScreenshotReply } from './amend-find';
 
 /**
  * Cancel from the pane for amend and cancel mail. Luna opens the HMS cancel screen through the
@@ -10,6 +10,8 @@ export const AMEND_CANCEL_COPY = {
   preview: 'Preview cancellation',
   previewHint:
     'Luna opens the cancel screen in HMS and reads any cancellation fee. Nothing is cancelled.',
+  footerPreview:
+    'Luna can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
   previewing: 'Luna is reading the cancel screen in HMS… (usually under a minute)',
   reasonLabel: 'Cancellation reason',
   reasonPlaceholder: 'Choose a reason',
@@ -20,6 +22,7 @@ export const AMEND_CANCEL_COPY = {
   switchedOff: 'Cancelling from here is switched off for now.',
   testOnly: 'Cancelling from here only works on test bookings right now.',
   reasonRefused: 'HMS did not accept that reason. Pick another and try again.',
+  previewAgain: 'Preview the cancellation again first.',
   unconfirmed: "Luna couldn't confirm the cancellation in HMS. Check HMS yourself.",
   failed: "Luna couldn't finish in HMS. Check HMS yourself.",
 } as const;
@@ -32,11 +35,6 @@ export function cancelManualSteps(confirmation: string): string {
 /** Shown when cancelling from the pane is off: says so, then gives the HMS steps. */
 export function cancelSwitchedOffNote(confirmation: string): string {
   return `${AMEND_CANCEL_COPY.switchedOff} ${cancelManualSteps(confirmation)}`;
-}
-
-/** Only an HMS confirmation number such as 57291630-1 can be cancelled from the pane. */
-export function isCancelConfirmation(value: string): boolean {
-  return /^\d+-\d+$/.test(value);
 }
 
 /** The ISO day at the start of a date, or null when it has none. */
@@ -84,9 +82,10 @@ export function cancelledText(statusAfter: string | null): string {
 }
 
 export type CancelInput = { confirmation: string; arrival: string };
-export type CancelCommitInput = CancelInput & { reason: string };
+/** The previewDigest of the preview that must come back with the commit. The server refuses without it. */
+export type CancelCommitInput = CancelInput & { reason: string; previewDigest: string };
 
-/** One paneStayCancel result. runId is absent until the server returns it, so no thumbnail loads. */
+/** One paneStayCancel result. previewDigest is set only by a preview_ok, and a commit must send it back. */
 export type CancelRun = {
   outcome: string;
   statusBefore: string | null;
@@ -94,13 +93,9 @@ export type CancelRun = {
   reasons: string[];
   penaltyText: string | null;
   screenshots: string[];
-  runId?: string;
+  runId: string | null;
+  previewDigest: string | null;
 };
-
-export type CancelScreenshotInput = { runId: string; name: string };
-export type CancelScreenshotReply =
-  | { status: 'ok'; dataUrl: string }
-  | { status: 'unavailable'; reason: string };
 
 export type CancelView =
   | { kind: 'idle'; note: string | null }
@@ -112,7 +107,8 @@ export type CancelView =
 export function viewAfterPreview(run: CancelRun, confirmation: string): CancelView {
   switch (run.outcome) {
     case 'preview_ok':
-      return { kind: 'ready', run, reason: '', note: null };
+      if (run.previewDigest) return { kind: 'ready', run, reason: '', note: null };
+      return { kind: 'idle', note: AMEND_CANCEL_COPY.failed };
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     default:
@@ -132,6 +128,9 @@ export function viewAfterCommit(
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     case 'refused_reason_missing':
       return { kind: 'ready', run: preview, reason: '', note: AMEND_CANCEL_COPY.reasonRefused };
+    case 'cancel_preview_required':
+    case 'cancel_digest_mismatch':
+      return { kind: 'idle', note: AMEND_CANCEL_COPY.previewAgain };
     default:
       return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation) };
   }
@@ -140,7 +139,7 @@ export function viewAfterCommit(
 export type AmendCancelClient = {
   previewCancel: (input: CancelInput) => Promise<CancelRun>;
   commitCancel: (input: CancelCommitInput) => Promise<CancelRun>;
-  paneStayScreenshot: (input: CancelScreenshotInput) => Promise<CancelScreenshotReply>;
+  paneStayScreenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
 };
 
 type TrpcPaneStayCancelRoutes = {
@@ -148,10 +147,27 @@ type TrpcPaneStayCancelRoutes = {
     previewCancel?: { mutate: (input: CancelInput) => Promise<CancelRun> };
     commitCancel?: { mutate: (input: CancelCommitInput) => Promise<CancelRun> };
     paneStayScreenshot?: {
-      query: (input: CancelScreenshotInput) => Promise<CancelScreenshotReply>;
+      query: (input: ScreenshotInput) => Promise<ScreenshotReply>;
     };
   };
 };
+
+export type PaneCapabilitiesReply = { paneSave?: boolean };
+
+type TrpcCapabilityRoutes = {
+  brain?: { getCapabilities?: { query: () => Promise<PaneCapabilitiesReply> } };
+};
+
+/**
+ * Reads brain.getCapabilities off the tRPC client the panel already receives, so the panel needs no
+ * react-query context. Null when the route is missing; cancelling then stays switched off.
+ */
+export function amendCapabilitiesFromTrpc(trpc: unknown): (() => Promise<PaneCapabilitiesReply>) | null {
+  if (!trpc || typeof trpc !== 'object') return null;
+  const route = (trpc as TrpcCapabilityRoutes).brain?.getCapabilities;
+  if (!route) return null;
+  return () => route.query();
+}
 
 /** Binds the three paneStayCancel routes off a tRPC client. Null when any of them is missing. */
 export function amendCancelClientFromTrpc(trpc: unknown): AmendCancelClient | null {

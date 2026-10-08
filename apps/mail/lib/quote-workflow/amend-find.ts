@@ -1,15 +1,13 @@
 import type { QuoteAmendment } from './types';
 
 /**
- * HMS lookup for amend and cancel mail (Phase 1). It uses only the read-only find tool,
- * which takes an exact confirmation or external reference. Nothing here changes HMS.
+ * HMS lookup for amend and cancel mail. Luna reads one booking by its exact confirmation number through
+ * paneStayLookup.findStay: a read-only browser run under the session hotel's lock, about 1-2 minutes.
+ * The panel calls runHmsFind and nothing else, so the transport can change here. Nothing here changes HMS.
  */
 
-export const AMEND_FIND_INTERVAL_MS = 2_000;
-export const AMEND_FIND_TIMEOUT_MS = 90_000;
-
 export const AMEND_FIND_COPY = {
-  looking: 'Luna is looking up the booking in HMS… (usually under a minute)',
+  looking: 'Luna is looking up the booking in HMS… (about 1–2 minutes)',
   noNumber: "Luna couldn't find a booking number in the email. Search HMS by name instead.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
   notFound:
@@ -17,180 +15,149 @@ export const AMEND_FIND_COPY = {
   notExact:
     'HMS needs one exact booking number from the latest email. Check the email or search HMS by guest name.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
-  unconfirmed: 'Luna could not confirm this booking in HMS. Search HMS by guest name.',
   busy: 'HMS is busy. Try again in a minute.',
   readFailed: 'Luna could not read the HMS result. Try again in a minute.',
-  startFailed: 'Luna could not start the HMS lookup. Try again in a minute.',
   unavailable: 'The HMS lookup is not connected in this session. Search HMS by hand.',
+  seeBooking: 'See the booking in HMS',
   footer: 'Luna only looks the booking up. Make the change in HMS yourself.',
 } as const;
 
-type WireFact<T> = { state: string; value: T | null };
+/** HMS confirmation numbers look like 57291630-1. findStay takes no other form. */
+export function isHmsConfirmation(value: string): boolean {
+  return /^\d+-\d+$/.test(value);
+}
 
-/** One reservation match in an hms_find_reservation receipt. Only the fields the panel shows. */
-export type HmsFindMatchWire = {
-  reservationRef: string | null;
-  label: WireFact<string>;
-  referenceKind: WireFact<'confirmation' | 'external'>;
-  status: WireFact<string>;
-  arrival: WireFact<string>;
-  departure: WireFact<string>;
-  roomType: WireFact<string>;
+/** One Guest Stay as findStay returns it. Each field is null when HMS does not show it. Dates are ISO days. */
+export type StayRecordWire = {
+  status: string | null;
+  confirmation: string | null;
+  lastName: string | null;
+  firstName: string | null;
+  arrival: string | null;
+  departure: string | null;
+  nights: number | null;
+  adults: number | null;
+  children: number | null;
+  roomType: string | null;
+  ratePlan: string | null;
+  mealPlan: string | null;
+  averageRate: string | null;
+  grandTotal: string | null;
+  balance: string | null;
+  sourceOfBusiness: string | null;
+  guaranteeType: string | null;
+  bookingAgency: string | null;
+  organization: string | null;
 };
 
-export type HmsFindReceiptWire = {
-  readResultRef: string;
-  result: {
-    status: 'ok' | 'partial' | 'not_found' | 'unverified_negative' | 'ambiguous' | 'manual_required';
-    issues: Array<{ code: string }>;
-    data: { matches: HmsFindMatchWire[]; matchCount: number } | null;
-  };
+export type FindStayInput = { confirmation: string };
+
+/** paneStayLookup.findStay. Refusals and failures carry no stay. The arrival is never sent. */
+export type FindStayReply = {
+  outcome: string;
+  reason: string | null;
+  stay: StayRecordWire | null;
+  /** PNG file names. record.png is the booking itself. */
+  screenshots: string[];
+  runId: string | null;
 };
 
-export type EnqueueHmsFindInput = { threadId: string; toolId: 'hms_find_reservation' };
-export type ReadHmsReceiptInput = { threadId: string; readResultRef: string };
+export type ScreenshotInput = { runId: string; name: string };
+export type ScreenshotReply = { status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string };
 
 export type AmendFindClient = {
-  enqueueHmsRead: (input: EnqueueHmsFindInput) => Promise<{ readResultRef: string }>;
-  readHmsReceipt: (input: ReadHmsReceiptInput) => Promise<HmsFindReceiptWire>;
+  findStay: (input: FindStayInput) => Promise<FindStayReply>;
+  screenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
 };
 
-type TrpcAiRoutes = {
-  ai?: {
-    enqueueHmsRead?: { mutate: (input: EnqueueHmsFindInput) => Promise<{ readResultRef: string }> };
-    readHmsReceipt?: { query: (input: ReadHmsReceiptInput) => Promise<HmsFindReceiptWire> };
+type TrpcPaneStayLookupRoutes = {
+  paneStayLookup?: {
+    findStay?: { mutate: (input: FindStayInput) => Promise<FindStayReply> };
+    screenshot?: { query: (input: ScreenshotInput) => Promise<ScreenshotReply> };
   };
 };
 
-/** Binds ai.enqueueHmsRead and ai.readHmsReceipt off a tRPC client. Null when either route is missing. */
+/** Binds paneStayLookup.findStay and paneStayLookup.screenshot off a tRPC client. Null when either is missing. */
 export function amendFindClientFromTrpc(trpc: unknown): AmendFindClient | null {
   if (!trpc || typeof trpc !== 'object') return null;
-  const ai = (trpc as TrpcAiRoutes).ai;
-  const enqueue = ai?.enqueueHmsRead;
-  const receipt = ai?.readHmsReceipt;
-  if (!enqueue || !receipt) return null;
+  const routes = (trpc as TrpcPaneStayLookupRoutes).paneStayLookup;
+  const find = routes?.findStay;
+  const shot = routes?.screenshot;
+  if (!find || !shot) return null;
   return {
-    enqueueHmsRead: (input) => enqueue.mutate(input),
-    readHmsReceipt: (input) => receipt.query(input),
+    findStay: (input) => find.mutate(input),
+    screenshot: (input) => shot.query(input),
   };
 }
 
-export type PollOutcome =
-  | { kind: 'receipt'; receipt: HmsFindReceiptWire }
-  | { kind: 'timeout' }
-  | { kind: 'error'; message: string }
-  | { kind: 'stopped' };
-
-export type PollOptions = {
-  readHmsReceipt: (input: ReadHmsReceiptInput) => Promise<HmsFindReceiptWire>;
-  threadId: string;
-  readResultRef: string;
-  /** False once the panel unmounts or a newer lookup supersedes this one. */
-  isCurrent: () => boolean;
-  intervalMs?: number;
-  timeoutMs?: number;
-  wait?: (ms: number) => Promise<void>;
-  now?: () => number;
-};
-
-/** Poll ai.readHmsReceipt until a receipt arrives, the window closes, or the lookup is superseded. */
-export async function pollHmsFindReceipt(options: PollOptions): Promise<PollOutcome> {
-  const intervalMs = options.intervalMs ?? AMEND_FIND_INTERVAL_MS;
-  const timeoutMs = options.timeoutMs ?? AMEND_FIND_TIMEOUT_MS;
-  const wait = options.wait ?? sleep;
-  const now = options.now ?? Date.now;
-  const startedAt = now();
-  for (;;) {
-    await wait(intervalMs);
-    if (!options.isCurrent()) return { kind: 'stopped' };
-    try {
-      const receipt = await options.readHmsReceipt({
-        threadId: options.threadId,
-        readResultRef: options.readResultRef,
-      });
-      return { kind: 'receipt', receipt };
-    } catch (error) {
-      if (!isReceiptPending(error)) return { kind: 'error', message: errorText(error) };
-    }
-    if (!options.isCurrent()) return { kind: 'stopped' };
-    if (now() - startedAt >= timeoutMs) return { kind: 'timeout' };
-  }
-}
-
-/** Plain-English copy for a failed enqueueHmsRead. The client sees the server message text. */
-export function enqueueFailureCopy(error: unknown): string {
-  const text = errorText(error);
-  if (text.includes('READ_CANDIDATE_NOT_EXACT') || text.includes('exact trigger candidate')) {
-    return AMEND_FIND_COPY.notExact;
-  }
-  if (text.includes('HMS_READ_RELEASE_UNAVAILABLE')) return AMEND_FIND_COPY.busy;
-  return AMEND_FIND_COPY.startFailed;
-}
-
-export type AmendFindOutcome =
-  | { kind: 'found'; match: HmsFindMatchWire }
+export type HmsFindRun =
+  | { kind: 'found'; stay: StayRecordWire; runId: string | null; screenshots: string[] }
   | { kind: 'not_found' }
   | { kind: 'ambiguous' }
-  | { kind: 'unconfirmed' }
-  | { kind: 'busy' };
+  | { kind: 'error'; message: string };
 
-const BUSY_ISSUE_CODES = new Set(['TIMEOUT', 'SOURCE_UNAVAILABLE', 'ROLE_UNAVAILABLE']);
-
-export function amendFindOutcome(receipt: HmsFindReceiptWire): AmendFindOutcome {
-  const { result } = receipt;
-  if (result.issues.some((issue) => BUSY_ISSUE_CODES.has(issue.code))) return { kind: 'busy' };
-  if (result.status === 'not_found') return { kind: 'not_found' };
-  if (result.status === 'ambiguous') return { kind: 'ambiguous' };
-  if (result.status !== 'ok' && result.status !== 'partial') return { kind: 'unconfirmed' };
-  const data = result.data;
-  const [first] = data?.matches ?? [];
-  if (!data || !first) return { kind: 'not_found' };
-  if (data.matchCount > 1) return { kind: 'ambiguous' };
-  return { kind: 'found', match: first };
-}
-
-/** The outcome note for the status area, or null when the found booking is shown instead. */
-export function outcomeNote(outcome: AmendFindOutcome): string | null {
-  switch (outcome.kind) {
+/**
+ * The only HMS call the amend pane makes for a look-up: one read-only find by the exact confirmation number.
+ * The arrival is not sent. An amendment may ask for a different arrival, so HMS must match on the number alone.
+ */
+export async function runHmsFind(options: {
+  /** Null when the paneStayLookup routes are not bound. The run then fails with the unavailable copy. */
+  client: AmendFindClient | null;
+  confirmation: string;
+}): Promise<HmsFindRun> {
+  const client = options.client;
+  if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  let reply: FindStayReply;
+  try {
+    reply = await client.findStay({ confirmation: options.confirmation });
+  } catch {
+    return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+  }
+  switch (reply.outcome) {
     case 'found':
-      return null;
+      if (!reply.stay) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+      return { kind: 'found', stay: reply.stay, runId: reply.runId, screenshots: reply.screenshots };
     case 'not_found':
-      return AMEND_FIND_COPY.notFound;
+      return { kind: 'not_found' };
     case 'ambiguous':
-      return AMEND_FIND_COPY.ambiguous;
-    case 'unconfirmed':
-      return AMEND_FIND_COPY.unconfirmed;
-    case 'busy':
-      return AMEND_FIND_COPY.busy;
+      return { kind: 'ambiguous' };
+    case 'refused_input_invalid':
+      return { kind: 'error', message: AMEND_FIND_COPY.notExact };
+    case 'refused_lock_unavailable':
+      return { kind: 'error', message: AMEND_FIND_COPY.busy };
+    case 'refused_flag_off':
+      return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+    default:
+      return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
   }
 }
 
-/** A fact's value when HMS knows it, else null. */
-export function knownFactValue(fact: WireFact<string>): string | null {
-  if (fact.state !== 'known' || typeof fact.value !== 'string') return null;
-  const value = fact.value.trim();
-  return value || null;
+/** A stay field's text when HMS shows it, else null. */
+export function stayText(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  return text ? text : null;
 }
 
-export function matchedOnLabel(match: HmsFindMatchWire): string {
-  return match.referenceKind.value === 'external' ? 'external reference' : 'confirmation number';
+/** The guest's name as HMS shows it: first name, then surname. Null when neither is shown. */
+export function stayGuest(stay: StayRecordWire): string | null {
+  return [stayText(stay.firstName), stayText(stay.lastName)].filter(Boolean).join(' ') || null;
 }
 
 export type AmendDiff = { guest?: string; arrival?: string; departure?: string };
 
 /** Fields where the guest's email and HMS disagree. Values are display-ready. */
-export function amendDiffs(amendment: QuoteAmendment, match: HmsFindMatchWire): AmendDiff {
+export function amendDiffs(amendment: QuoteAmendment, stay: StayRecordWire): AmendDiff {
   const diff: AmendDiff = {};
-  const hmsArrival = knownFactValue(match.arrival);
+  const hmsArrival = stayText(stay.arrival);
   if (amendment.arrival && hmsArrival && isoDay(amendment.arrival) !== isoDay(hmsArrival)) {
     diff.arrival = formatStayDate(amendment.arrival);
   }
-  const hmsDeparture = knownFactValue(match.departure);
+  const hmsDeparture = stayText(stay.departure);
   if (amendment.departure && hmsDeparture && isoDay(amendment.departure) !== isoDay(hmsDeparture)) {
     diff.departure = formatStayDate(amendment.departure);
   }
   const lastName = amendment.guestLastName?.trim() ?? '';
-  const hmsName = knownFactValue(match.label);
+  const hmsName = stayGuest(stay);
   if (lastName && hmsName && !nameWords(hmsName).includes(lastName.toLowerCase())) {
     diff.guest = lastName;
   }
@@ -214,18 +181,4 @@ function isoDay(value: string): string {
 
 function nameWords(name: string): string[] {
   return name.toLowerCase().split(/[\s,.]+/).filter(Boolean);
-}
-
-function isReceiptPending(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { message, data } = error as { message?: unknown; data?: { code?: unknown } | null };
-  return message === 'READ_RECEIPT_NOT_FOUND' || data?.code === 'NOT_FOUND';
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

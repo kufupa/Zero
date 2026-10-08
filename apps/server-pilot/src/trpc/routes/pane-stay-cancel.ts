@@ -13,6 +13,7 @@ const arrival = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 // strict(): no propertyCode or other key reaches the module. The lock is always the session hotel.
 const previewCancelInput = z.object({ confirmation, arrival }).strict();
 
+// previewDigest is the digest the preview returned for this same stay. Required, as on the save path.
 const commitCancelInput = z
   .object({
     confirmation,
@@ -23,10 +24,11 @@ const commitCancelInput = z
       .min(1)
       .max(120)
       .refine((value) => !value.startsWith('-'), 'reason must not start with -'),
+    previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
 
-// Screenshot of a save run: only a run id this server issued to this owner, and a PNG name from the run.
+// Screenshot of a run: only a run id this server issued to this owner, and a PNG name from the run.
 const paneStayScreenshotInput = z
   .object({
     runId: z.string().regex(PANE_RUN_ID_PATTERN),
@@ -34,20 +36,25 @@ const paneStayScreenshotInput = z
   })
   .strict();
 
+// Owner of every run and grant. The same string the save path and the screenshot reader use.
+function paneOwner(ctx: { sessionUser: { id: string }; activeTransportId: string }): string {
+  return `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+}
+
 export const paneStayCancelRouter = router({
   previewCancel: mailboxProcedure
     .input(previewCancelInput)
-    .mutation(async ({ input }) => previewCancel(input)),
+    .mutation(async ({ input, ctx }) => previewCancel({ ...input, owner: paneOwner(ctx) })),
   commitCancel: mailboxProcedure
     .input(commitCancelInput)
-    .mutation(async ({ input }) => commitCancel(input)),
+    .mutation(async ({ input, ctx }) => commitCancel({ ...input, owner: paneOwner(ctx) })),
   paneStayScreenshot: mailboxProcedure
     .input(paneStayScreenshotInput)
     .query(async ({ input, ctx }) =>
       readPaneStayScreenshot({
         runId: input.runId,
         name: input.name,
-        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+        owner: paneOwner(ctx),
       }),
     ),
 });
