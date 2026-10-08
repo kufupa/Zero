@@ -105,8 +105,23 @@ function isHmsExecutionFailure(error: unknown, code: string, phase: string): boo
   return error instanceof Error && (error.name === 'TimeoutError' || /timeout/i.test(error.message));
 }
 
-export function staffQuoteFailureMessage(error: unknown): string {
+export const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
+
+/** Clean HMS no-match: name the strategy, and offer the dinner fallback only when dinner was requested. */
+export function nativeNoMatchingRateMessage(context: { salesStrategy?: string; dinnerRequested?: boolean }): string {
+  const strategy = context.salesStrategy ?? 'the selected rate type';
+  const next = context.dinnerRequested
+    ? 'For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.'
+    : 'Try another meal plan or rate type.';
+  return `${NATIVE_NO_MATCHING_RATE_PREFIX}${strategy}. ${next}`;
+}
+
+export function staffQuoteFailureMessage(
+  error: unknown,
+  context: { salesStrategy?: string; dinnerRequested?: boolean } = {},
+): string {
   const code = staffQuoteFailureCode(error);
+  if (code === 'native_quote_no_matching_rate') return nativeNoMatchingRateMessage(context);
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',
@@ -583,7 +598,10 @@ export const workstationRouter = router({
           .where(eq(aiDraftGeneration.id, generationId));
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: staffQuoteFailureMessage(error),
+          message: staffQuoteFailureMessage(error, {
+            salesStrategy: input.salesStrategy,
+            dinnerRequested: input.groups.some((group) => group.board === 'dinner_bb'),
+          }),
         });
       }
       queued.setPhase(3);
