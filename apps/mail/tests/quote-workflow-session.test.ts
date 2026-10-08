@@ -10,6 +10,7 @@ import {
   parseChildrenAges,
   pickNextRunnableStep,
   planQuoteSteps,
+  quoteRunBlockReason,
   reduceQuoteSession,
   selectionDigest,
   buildQuoteStepInputs,
@@ -22,8 +23,11 @@ import type {
   LunaAnalysisWire,
   QuoteAnalysis,
   QuoteOffer,
+  QuotePdf,
   QuoteReviewItem,
   QuoteSelectionBinding,
+  QuoteSessionAction,
+  QuoteToolStep,
 } from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
@@ -941,6 +945,76 @@ function analysisReady(analysis = quoteAnalysis) {
   );
 }
 
+const STAY_A = '2026-11-12:2026-11-14';
+const STAY_B = '2026-12-01:2026-12-03';
+
+function twoDateAnalysis(): QuoteAnalysis {
+  return {
+    intent: 'quote',
+    groups: [
+      quoteAnalysis.groups[0]!,
+      { ...quoteAnalysis.groups[0]!, id: 'g2', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    ],
+    secondaryAsks: [],
+    alternatives: [],
+  };
+}
+
+function twoDateSession() {
+  return withStaffSource(analysisReady(twoDateAnalysis()));
+}
+
+function stepFor(session: { steps: QuoteToolStep[] }, stayKey: string): QuoteToolStep {
+  return session.steps.find((step) => step.shareKey === stayKey)!;
+}
+
+function staffQuoteFor(
+  stayKey: string,
+  revisionRef: string,
+  totalMinor: number,
+  inputRevision: number,
+): QuoteSessionAction {
+  return {
+    type: 'staff_quote_ready',
+    offer: {
+      ...authorisedOffer,
+      id: revisionRef,
+      sourceRef: revisionRef,
+      nightly: [],
+      stayTotalMinor: totalMinor,
+      quoteRequestKey: stayKey,
+      coversGroupIds: [stayKey === STAY_A ? 'g1' : 'g2'],
+    },
+    staffQuote: {
+      workflowRunId: `run-${revisionRef}`,
+      revisionRef,
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: STAFF_HASH,
+      selectionEpoch: 1,
+      inputRevision,
+      inputDigest: `digest-${revisionRef}`,
+      totalMinor,
+      currency: 'ZAR',
+      quoteRequestKey: stayKey,
+      approvedHeader: emptyHeader(),
+    },
+    selectionEpoch: 1,
+    inputRevision,
+  };
+}
+
+function quotePdf(revisionId: string, totalMinor = 850000): QuotePdf {
+  return {
+    fileName: `Quote-${revisionId}.pdf`,
+    bytesBase64: 'JVBERi0xLjQK',
+    pdfHash: 'cd'.repeat(32),
+    revisionId,
+    totalMinor,
+  };
+}
+
 describe('quote session staff review items', () => {
   it('projects a clean selected quote with no Items for you', () => {
     const s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
@@ -1408,10 +1482,115 @@ describe('quote session staff review items', () => {
     });
     expect(Object.keys(s.staffQuotes)).toEqual(['2026-11-12:2026-11-14']);
     const switched = reduceQuoteSession(s, { type: 'select_stay_key', stayKey: '2026-12-01:2026-12-03' });
+    // Option A's result stays for later; the unrun option B gets no authority from it.
     expect(switched.staffQuote).toBeNull();
-    expect(switched.staffQuotes).toEqual({});
-    expect(switched.offers).toEqual([]);
+    expect(Object.keys(switched.staffQuotes)).toEqual(['2026-11-12:2026-11-14']);
+    expect(switched.offers.map((offer) => offer.id)).toEqual(['rev-a']);
+    expect(switched.selectedOfferIds).toEqual([]);
     expect(switched.pdf).toBeNull();
+  });
+
+  it('keeps option A when option B runs, and B waits until A has its PDF', () => {
+    let s = twoDateSession();
+    expect(s.steps.map((step) => step.status)).toEqual(['ready', 'ready']);
+    expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, stepFor(s, STAY_A).id)).toBe(false);
+    expect(pickNextRunnableStep(s.steps, null)?.shareKey).toBe(STAY_A);
+
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
+    expect(stepFor(s, STAY_A).status).toBe('succeeded');
+    expect(stepFor(s, STAY_B).status).toBe('ready');
+    expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBe(
+      'Finish the PDF for option A first, then run option B.',
+    );
+
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: quotePdf('rev-a'),
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      selectedOfferIds: ['rev-a'],
+    });
+    expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
+
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_B, 'rev-b', 920000, s.inputRevision));
+    expect(stepFor(s, STAY_A).status).toBe('succeeded');
+    expect(stepFor(s, STAY_B).status).toBe('succeeded');
+    expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
+    expect(s.stayPdfs[STAY_A]?.revisionId).toBe('rev-a');
+    expect(s.offers.map((offer) => offer.id).sort()).toEqual(['rev-a', 'rev-b']);
+    expect(s.selectedStayKey).toBe(STAY_B);
+    expect(s.pdf).toBeNull();
+  });
+
+  it('selecting a date option keeps every result and shows only that option PDF', () => {
+    let s = twoDateSession();
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: quotePdf('rev-a'),
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      selectedOfferIds: ['rev-a'],
+    });
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_B, 'rev-b', 920000, s.inputRevision));
+
+    const toA = reduceQuoteSession(s, { type: 'select_stay_key', stayKey: STAY_A });
+    expect(Object.keys(toA.staffQuotes).sort()).toEqual([STAY_A, STAY_B]);
+    expect(toA.offers.map((offer) => offer.id).sort()).toEqual(['rev-a', 'rev-b']);
+    expect(toA.staffQuote?.revisionRef).toBe('rev-a');
+    expect(toA.selectedOfferIds).toEqual(['rev-a']);
+    expect(toA.pdf?.revisionId).toBe('rev-a');
+    expect(stepFor(toA, STAY_A).status).toBe('succeeded');
+    expect(stepFor(toA, STAY_B).status).toBe('succeeded');
+    const reviewed = reduceQuoteSession(toA, { type: 'set_reviewed_reply', html: '<p>Reply for A</p>' });
+    expect(canCreateNativeDraft(reviewed)).toBe(true);
+
+    const toB = reduceQuoteSession(toA, { type: 'select_stay_key', stayKey: STAY_B });
+    expect(toB.staffQuote?.revisionRef).toBe('rev-b');
+    expect(toB.pdf).toBeNull();
+    expect(canCreateNativeDraft(reduceQuoteSession(toB, { type: 'set_reviewed_reply', html: '<p>B</p>' }))).toBe(false);
+
+    // Re-reading the same email must not reopen option A.
+    const reread = reduceQuoteSession(toB, { type: 'analysis_ready', analysis: twoDateAnalysis() });
+    expect(stepFor(reread, STAY_A).status).toBe('succeeded');
+    expect(Object.keys(reread.staffQuotes).sort()).toEqual([STAY_A, STAY_B]);
+  });
+
+  it('a failed later option keeps the earlier option result', () => {
+    let s = twoDateSession();
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
+    s = reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: quotePdf('rev-a'),
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      selectedOfferIds: ['rev-a'],
+    });
+    const stepB = stepFor(s, STAY_B).id;
+    s = reduceQuoteSession(s, { type: 'step_running', stepId: stepB });
+    s = reduceQuoteSession(s, {
+      type: 'results_unavailable',
+      stepId: stepB,
+      reason: 'HMS did not answer. Run option B again.',
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    expect(stepFor(s, STAY_B).status).toBe('failed');
+    expect(stepFor(s, STAY_A).status).toBe('succeeded');
+    expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
+    expect(s.stayPdfs[STAY_A]).toBeDefined();
+    expect(s.errorMessage).toBe('HMS did not answer. Run option B again.');
+    expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
+    expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, null)).toBe(true);
+  });
+
+  it('a header change clears every date result and makes each option runnable again', () => {
+    let s = twoDateSession();
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Acme' } });
+    expect(s.staffQuotes).toEqual({});
+    expect(s.stayPdfs).toEqual({});
+    expect(s.steps.map((step) => step.status)).toEqual(['ready', 'ready']);
   });
 
   it('keeps the full reply on repricing but requires a reviewed current PDF', () => {
