@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck, isCancelledStatus,
-  labGuard, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parseIsoDate, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, windowCovers,
+  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, hmsDateToIso, identityCheck, isCancelledStatus,
+  labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parseIsoDate,
+  parseLookupArgs, parsePanelRows, parsePenalty, parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight,
+  resolveOutcome, sameStayRows, searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -265,4 +266,209 @@ test('cancel-stay.mjs never presses Enter in the header search and scopes the ro
   assert.match(source, /ancestor::\*\[contains\(\., "Records:"\)\]\[1\]/);
   assert.match(source, /In\.\?House/);
   assert.match(source, /readBalance\(page\)/);
+});
+
+// ---- Read-only lookups (stay-lookup.mjs) ----
+
+const FIND = ['--mode', 'find', '--out', '/tmp/stay-lookup'];
+const GUEST = ['--mode', 'search-guest', '--out', '/tmp/stay-lookup'];
+
+test('parseLookupArgs accepts find by confirmation with an optional arrival', () => {
+  assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', '57291630-1']).args, {
+    mode: 'find', confirmation: '57291630-1', arrival: null, lastName: null, departure: null, out: '/tmp/stay-lookup',
+  });
+  assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', ' 57291630-1 ', '--arrival', '2027-09-14']).args, {
+    mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14', lastName: null, departure: null, out: '/tmp/stay-lookup',
+  });
+});
+
+test('parseLookupArgs accepts search-guest with surname, arrival and an optional departure', () => {
+  assert.deepEqual(parseLookupArgs([...GUEST, '--last-name', "  O'Neil-Jones ", '--arrival', '2027-09-14', '--departure', '2027-09-15']).args, {
+    mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup',
+  });
+  assert.equal(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14']).ok, true);
+});
+
+test('parseLookupArgs refuses flags that do not belong to the mode, and missing or repeated values', () => {
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest']).error, /--last-name is not valid with --mode find/);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--departure', '2027-09-15']).error, /--departure is not valid/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14', '--confirmation', '57291630-1']).error, /--confirmation is not valid with --mode search-guest/);
+  assert.match(parseLookupArgs([...FIND]).error, /Required: --confirmation/);
+  assert.match(parseLookupArgs(['--mode', 'find', '--confirmation', '57291630-1']).error, /Required: --out/);
+  assert.match(parseLookupArgs(['--mode', 'cancel', '--out', '/tmp/x']).error, /--mode must be find or search-guest/);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--confirmation', '11110906-1']).error, /Repeated argument/);
+  assert.match(parseLookupArgs([...FIND, '--confirmation']).error, /Missing value for --confirmation/);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--preview']).error, /Unknown argument/);
+});
+
+test('parseLookupArgs validates confirmation, dates and surname before any browser work', () => {
+  assert.match(parseLookupArgs([...FIND, '--confirmation', 'ABC']).error, /must look like 57291630-1/);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--arrival', '2027-02-30']).error, /--arrival must be a real calendar date/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '14-SEP-2027']).error, /--arrival must be a real calendar date/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest']).error, /Required: --arrival/);
+  assert.match(parseLookupArgs([...GUEST, '--arrival', '2027-09-14']).error, /Required: --last-name/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest, Nava', '--arrival', '2027-09-14']).error, /must be a surname/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Lab3', '--arrival', '2027-09-14']).error, /must be a surname/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14', '--departure', '2027-09-14']).error, /after --arrival/);
+  assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14', '--departure', '2027-09-13']).error, /after --arrival/);
+});
+
+test('lookupExitCode is 0 for found, not_found and ok; every other outcome is 1', () => {
+  for (const outcome of ['found', 'not_found', 'ok']) assert.equal(lookupExitCode(outcome), 0, outcome);
+  for (const outcome of ['ambiguous', 'ambiguous_capped', 'execution_failure', null]) assert.equal(lookupExitCode(outcome), 1, String(outcome));
+});
+
+test('formLabelKey maps on-screen record labels and ignores the required-field dot and unmapped labels', () => {
+  assert.equal(formLabelKey('Confirmation Number:•'), 'confirmation');
+  assert.equal(formLabelKey('Source Of Business:'), 'sourceOfBusiness');
+  assert.equal(formLabelKey('Primary Booking Agency:•'), 'bookingAgency');
+  assert.equal(formLabelKey('Organization:'), 'organization');
+  assert.equal(formLabelKey('Room Type:'), 'roomType');
+  assert.equal(formLabelKey('Room Type for Charge:'), null);
+  assert.equal(formLabelKey('Child 0 - 02:'), null);
+  assert.equal(formLabelKey(''), null);
+});
+
+const FORM_FROM_FAILURE_PNG = [
+  { label: 'Status:', value: 'Cancelled' },
+  { label: 'Confirmation Number:•', value: '57291630-1' },
+  { label: 'Last Name:', value: 'Labtest' },
+  { label: 'First Name:', value: 'Nava' },
+  { label: 'Arrival Date:', value: '14-SEP-2027' },
+  { label: 'Departure Date:', value: '15-SEP-2027' },
+  { label: 'Nights:', value: '1' },
+  { label: 'Adults:', value: '1' },
+  { label: 'Children:', value: '0' },
+  { label: 'Child 0 - 02:', value: '0' },
+  { label: 'Room Type:', value: 'STQN' },
+  { label: 'Room Type for Charge:', value: '' },
+  { label: 'Rate Plan:', value: 'BAR' },
+  { label: 'Meal Plan:', value: 'Bed & Breakfast R' },
+  { label: 'Guarantee Type:', value: 'Non-Guaranteed Indi...' },
+  { label: 'Source Of Business:', value: 'Walk in' },
+  { label: 'Primary Booking Agency:•', value: '' },
+  { label: 'Organization:•', value: '' },
+  { label: 'Average Rate:', value: '2,060.00' },
+  { label: 'Grand Total:', value: '2,060.00' },
+  { label: 'Balance:', value: '0.00' },
+];
+
+test('stayFromFormPairs maps the record form labels to typed fields', () => {
+  const { stay, conflicts } = stayFromFormPairs(FORM_FROM_FAILURE_PNG);
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual(stay, {
+    status: 'Cancelled',
+    confirmation: '57291630-1',
+    lastName: 'Labtest',
+    firstName: 'Nava',
+    arrival: '2027-09-14',
+    departure: '2027-09-15',
+    nights: 1,
+    adults: 1,
+    children: 0,
+    roomType: 'STQN',
+    ratePlan: 'BAR',
+    mealPlan: 'Bed & Breakfast R',
+    averageRate: '2060.00',
+    grandTotal: '2060.00',
+    balance: '0.00',
+    sourceOfBusiness: 'Walk in',
+    guaranteeType: 'Non-Guaranteed Indi...',
+    bookingAgency: null,
+    organization: null,
+  });
+});
+
+test('stayFromFormPairs leaves a field null when two different values conflict, and ignores blanks', () => {
+  const { stay, conflicts } = stayFromFormPairs([
+    { label: 'Status:', value: 'Reserved' },
+    { label: 'Status:', value: 'Cancelled' },
+    { label: 'Status:', value: '  ' },
+    { label: 'Nights:', value: 'one' },
+    { label: 'Balance:', value: '' },
+    { label: 'Adults:', value: '2' },
+    { label: 'Adults:', value: '2' },
+  ]);
+  assert.deepEqual(conflicts, ['status']);
+  assert.equal(stay.status, null);
+  assert.equal(stay.nights, null, 'a non-numeric count is not guessed');
+  assert.equal(stay.balance, null);
+  assert.equal(stay.adults, 2, 'the same value twice is not a conflict');
+});
+
+test('stayIdentityVerdict finds the requested confirmation and arrival, and never guesses otherwise', () => {
+  const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, stay), { outcome: 'found', reason: null });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-14' }, stay), { outcome: 'found', reason: null });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-15' }, stay), { outcome: 'ambiguous', reason: 'arrival_mismatch' });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '11110906-1', arrival: null }, stay), { outcome: 'ambiguous', reason: 'confirmation_mismatch' });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, { confirmation: null }), { outcome: 'execution_failure', reason: 'form_unreadable' });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, null), { outcome: 'execution_failure', reason: 'form_unreadable' });
+});
+
+test('parseRecordsFooter reads the shown and matched counts and rejects anything else', () => {
+  assert.deepEqual(parseRecordsFooter('Records: 1 of 1'), { shown: 1, total: 1 });
+  assert.deepEqual(parseRecordsFooter('Sep 14, 2027 - Nov 13, 2027\nRecords:  10 of 25'), { shown: 10, total: 25 });
+  assert.equal(parseRecordsFooter('Records: 3 of 2'), null, 'shown above total is impossible');
+  assert.equal(parseRecordsFooter('no footer here'), null);
+  assert.equal(parseRecordsFooter(''), null);
+});
+
+test('parsePanelRows reads every dropdown row and counts the rows it cannot read exactly', () => {
+  const parsed = parsePanelRows([
+    ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027', '15-SEP-2027'],
+    ['46184891-1', 'Labtest, Ana', 'Reserved', '14-SEP-2027'],
+    ['57291630-1', '46184891-1', 'Labtest, Nava', 'Reserved', '14-SEP-2027'],
+    ['11110906-1', 'Labtest', 'Reserved', '14-SEP-2027'],
+  ]);
+  assert.deepEqual(parsed, {
+    rows: [
+      { confirmation: '57291630-1', lastName: 'Labtest', firstName: 'Nava', status: 'Cancelled', arrival: '2027-09-14', departure: '2027-09-15' },
+      { confirmation: '46184891-1', lastName: 'Labtest', firstName: 'Ana', status: 'Reserved', arrival: '2027-09-14', departure: null },
+    ],
+    unreadable: 2,
+  });
+  assert.deepEqual(parsePanelRows([]), { rows: [], unreadable: 0 });
+});
+
+test('searchGuestOutcome is ok only when the footer accounts for every row read', () => {
+  assert.deepEqual(searchGuestOutcome({ records: { shown: 0, total: 0 }, rows: [], unreadable: 0 }), { outcome: 'ok', reason: null });
+  assert.deepEqual(searchGuestOutcome({ records: { shown: 1, total: 1 }, rows: [{}], unreadable: 0 }), { outcome: 'ok', reason: null });
+  assert.deepEqual(searchGuestOutcome({ records: { shown: 10, total: 25 }, rows: Array(10).fill({}), unreadable: 0 }), { outcome: 'ambiguous_capped', reason: 'records_capped' });
+  assert.deepEqual(searchGuestOutcome({ records: null, rows: [], unreadable: 0 }), { outcome: 'execution_failure', reason: 'records_footer_missing' });
+  assert.deepEqual(searchGuestOutcome({ records: { shown: 2, total: 2 }, rows: [{}], unreadable: 1 }), { outcome: 'execution_failure', reason: 'rows_unreadable' });
+  assert.deepEqual(searchGuestOutcome({ records: { shown: 2, total: 2 }, rows: [{}], unreadable: 0 }), { outcome: 'execution_failure', reason: 'row_count_mismatch' });
+});
+
+test('sameStayRows matches surname without case, arrival, and departure when given', () => {
+  const rows = [
+    { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15', status: 'Reserved' },
+    { lastName: 'LABTEST', arrival: '2027-09-14', departure: '2027-09-16', status: 'Reserved' },
+    { lastName: 'Labtest', arrival: '2027-09-15', departure: '2027-09-16', status: 'Reserved' },
+    { lastName: 'Labtests', arrival: '2027-09-14', departure: '2027-09-15', status: 'Reserved' },
+  ];
+  assert.deepEqual(sameStayRows(rows, { lastName: 'labtest', arrival: '2027-09-14', departure: '2027-09-15' }), [rows[0]]);
+  assert.deepEqual(sameStayRows(rows, { lastName: 'Labtest', arrival: '2027-09-14', departure: null }), [rows[0], rows[1]]);
+});
+
+test('stay-lookup.mjs is read-only: no Enter, no Save, Actions, Cancel or OK clicks, no browser.close', async () => {
+  const source = await readFile(new URL('./stay-lookup.mjs', import.meta.url), 'utf8');
+  assert.equal(/press\('Enter'\)/.test(source), false);
+  assert.equal(/browser\.close\s*\(/.test(source), false);
+  assert.equal(/=== 'OK'/.test(source), false);
+  const clicks = source.split('\n').filter((line) => /\.click\(/.test(line));
+  assert.deepEqual(clicks.filter((line) => /Save|Actions|Cancel|OK|Reservation|delete|Remove/i.test(line)), []);
+  assert.match(source, /from '\.\/cancel-stay\.mjs'/);
+  assert.match(source, /from '\.\/cancel-stay-rules\.mjs'/);
+  assert.match(source, /process\.argv\[1\] && resolve\(process\.argv\[1\]\) === fileURLToPath\(import\.meta\.url\)/);
+  for (const name of ['record.png', 'panel.png', 'failure.png', 'result.json']) assert.ok(source.includes(name), name);
+});
+
+test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cancel flow is unchanged', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'clickRunIfShown', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
+    assert.match(source, new RegExp(`export async function ${name}\\(`), name);
+  }
+  assert.match(source, /dateWindow && args\.arrival && !windowCovers/);
+  assert.match(source, /if \(!args\.arrival\) return null;/);
 });
