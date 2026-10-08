@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createPostgresPropertyReadLock } from '../hms/property-read-lock.js';
+import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
 
 const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
@@ -168,7 +169,7 @@ async function pruneExpiredPaneRuns(now: number): Promise<void> {
   }
 }
 
-function registerPaneRun(input: { runId: string; dir: string; owner: string; now: number }): void {
+export function registerPaneRun(input: { runId: string; dir: string; owner: string; now: number }): void {
   paneRuns.set(input.runId, {
     dir: input.dir,
     owner: input.owner,
@@ -340,3 +341,18 @@ export async function runPaneStay(input: {
     screenshots: spawned.screenshots ?? [],
   };
 }
+
+// PANE_STAY_DUP_CHECK=off keeps the commit duplicate reader parked (commit refused). Any other value runs the check.
+export function paneStayDupCheckMode(env: NodeJS.Dict<string> = process.env): 'cli' | 'off' {
+  return env.PANE_STAY_DUP_CHECK === 'off' ? 'off' : 'cli';
+}
+
+// Wired at module init. The check takes the same property lock as save and cancel (the save loader's lock when a
+// test sets one). It runs before the save lock is taken, never nested inside it.
+paneStaySaveLoaders.osressGuestDatesSearch =
+  paneStayDupCheckMode() === 'cli'
+    ? (input) =>
+        guestDatesDuplicateCheckViaCli(input, {
+          lock: () => paneStaySaveLoaders.lock ?? paneStayPropertyLock(),
+        })
+    : null;

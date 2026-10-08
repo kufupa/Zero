@@ -79,7 +79,8 @@ export function windowCovers(window, arrivalIso) {
 // Reads one quick-search row from its cell texts in document order. Returns null unless the row has exactly
 // one confirmation (equal to the expected one), exactly one "Last, First" guest, a status word after the guest,
 // and HMS dates (arrival first, departure second). Dates stay in HMS form; identityCheck converts them.
-export function parseQuickSearchRow(cellTexts, confirmation) {
+// Non-empty squashed lines of the raw cell texts, in order. A cell whose text spans lines yields one entry per line.
+function cellLines(cellTexts) {
   const cells = [];
   for (const raw of cellTexts ?? []) {
     for (const line of String(raw ?? '').split('\n')) {
@@ -87,6 +88,11 @@ export function parseQuickSearchRow(cellTexts, confirmation) {
       if (cell) cells.push(cell);
     }
   }
+  return cells;
+}
+
+export function parseQuickSearchRow(cellTexts, confirmation) {
+  const cells = cellLines(cellTexts);
   const expected = squash(confirmation);
   const confirmations = cells.filter((cell) => CONFIRMATION_TOKEN.test(cell));
   if (confirmations.length !== 1 || confirmations[0] !== expected) return null;
@@ -245,4 +251,187 @@ export function checkCdpEnv(env) {
   }
   if (env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') return { ok: false, error: 'BORROWED_REQUIRED', href: null };
   return { ok: true, error: null, href: url.href };
+}
+
+// ---- Read-only lookups (stay-lookup.mjs): find by confirmation, search-guest by surname. ----
+
+const LOOKUP_MODES = new Set(['find', 'search-guest']);
+const LOOKUP_VALUE_FLAGS = new Set(['--mode', '--confirmation', '--arrival', '--departure', '--last-name', '--out']);
+// Flags each mode accepts besides --mode and --out.
+const LOOKUP_MODE_FLAGS = {
+  find: new Set(['--confirmation', '--arrival']),
+  'search-guest': new Set(['--last-name', '--arrival', '--departure']),
+};
+const LOOKUP_OK_OUTCOMES = new Set(['found', 'not_found', 'ok']);
+// Surname typed into the header search: starts with a letter; letters, apostrophe, dot, hyphen and space after.
+const GUEST_SURNAME = /^\p{L}[\p{L}'’. -]{0,59}$/u;
+
+export function parseLookupArgs(argv) {
+  const values = new Map();
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (!LOOKUP_VALUE_FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
+    const value = argv[index + 1];
+    if (value === undefined || LOOKUP_VALUE_FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
+    values.set(flag, value);
+    index += 1;
+  }
+  const mode = values.get('--mode');
+  if (!LOOKUP_MODES.has(mode)) return refuse('--mode must be find or search-guest');
+  if (!values.has('--out')) return refuse('Required: --out');
+  const accepted = LOOKUP_MODE_FLAGS[mode];
+  const stray = [...values.keys()].find((flag) => flag !== '--mode' && flag !== '--out' && !accepted.has(flag));
+  if (stray) return refuse(`${stray} is not valid with --mode ${mode}`);
+  const out = values.get('--out');
+  let arrival = null;
+  if (values.has('--arrival')) {
+    arrival = parseIsoDate(values.get('--arrival'));
+    if (!arrival) return refuse('--arrival must be a real calendar date, YYYY-MM-DD');
+  }
+  if (mode === 'find') {
+    if (!values.has('--confirmation')) return refuse('Required: --confirmation');
+    const confirmation = values.get('--confirmation').trim();
+    if (!/^\d+-\d+$/.test(confirmation)) return refuse('--confirmation must look like 57291630-1');
+    return { ok: true, exitCode: 0, args: { mode, confirmation, arrival, lastName: null, departure: null, out } };
+  }
+  if (!values.has('--last-name')) return refuse('Required: --last-name');
+  if (!values.has('--arrival')) return refuse('Required: --arrival');
+  const lastName = squash(values.get('--last-name'));
+  if (!GUEST_SURNAME.test(lastName)) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
+  let departure = null;
+  if (values.has('--departure')) {
+    departure = parseIsoDate(values.get('--departure'));
+    if (!departure) return refuse('--departure must be a real calendar date, YYYY-MM-DD');
+    if (departure <= arrival) return refuse('--departure must be after --arrival');
+  }
+  return { ok: true, exitCode: 0, args: { mode, confirmation: null, arrival, lastName, departure, out } };
+}
+
+export function lookupExitCode(outcome) {
+  return LOOKUP_OK_OUTCOMES.has(outcome) ? 0 : 1;
+}
+
+// Record form labels as shown on screen, mapped to the stay fields the lookup reports. Anything else is ignored.
+const FORM_FIELD_BY_LABEL = new Map([
+  ['status', 'status'],
+  ['confirmation number', 'confirmation'],
+  ['last name', 'lastName'],
+  ['first name', 'firstName'],
+  ['arrival date', 'arrival'],
+  ['departure date', 'departure'],
+  ['nights', 'nights'],
+  ['adults', 'adults'],
+  ['children', 'children'],
+  ['room type', 'roomType'],
+  ['rate plan', 'ratePlan'],
+  ['meal plan', 'mealPlan'],
+  ['average rate', 'averageRate'],
+  ['grand total', 'grandTotal'],
+  ['balance', 'balance'],
+  ['source of business', 'sourceOfBusiness'],
+  ['guarantee type', 'guaranteeType'],
+  ['primary booking agency', 'bookingAgency'],
+  ['organization', 'organization'],
+]);
+export const STAY_FIELDS = [...FORM_FIELD_BY_LABEL.values()];
+const STAY_COUNT_FIELDS = new Set(['nights', 'adults', 'children']);
+const STAY_MONEY_FIELDS = new Set(['averageRate', 'grandTotal', 'balance']);
+const STAY_DATE_FIELDS = new Set(['arrival', 'departure']);
+
+// "Confirmation Number:" (with its required-field dot) reads as "confirmation number". Unmapped labels return null.
+export function formLabelKey(label) {
+  const text = squash(label).toLowerCase().replace(/^[^a-z]+/, '').replace(/[^a-z]+$/, '');
+  return FORM_FIELD_BY_LABEL.get(text) ?? null;
+}
+
+function coerceStayField(field, text) {
+  if (STAY_COUNT_FIELDS.has(field)) return /^\d+$/.test(text) ? Number(text) : null;
+  if (STAY_MONEY_FIELDS.has(field)) return parseBalanceValue(text);
+  if (STAY_DATE_FIELDS.has(field)) return hmsDateToIso(text);
+  return text;
+}
+
+// pairs: [{label, value}] read from the open record. A field is null when no visible input carries it, or when
+// two different non-empty values appear for it (listed in conflicts). Counts are numbers, money is decimal text,
+// dates are ISO.
+export function stayFromFormPairs(pairs) {
+  const texts = new Map(STAY_FIELDS.map((field) => [field, new Set()]));
+  for (const pair of pairs ?? []) {
+    const field = formLabelKey(pair?.label);
+    if (!field) continue;
+    const text = squash(pair.value);
+    if (text) texts.get(field).add(text);
+  }
+  const stay = {};
+  const conflicts = [];
+  for (const field of STAY_FIELDS) {
+    const values = [...texts.get(field)];
+    if (values.length > 1) {
+      conflicts.push(field);
+      stay[field] = null;
+    } else {
+      stay[field] = values.length === 1 ? coerceStayField(field, values[0]) : null;
+    }
+  }
+  return { stay, conflicts };
+}
+
+// The record or row must show the requested confirmation, and the requested arrival when one was given.
+// A missing confirmation means the form was not read, so the run is a failure rather than a mismatch.
+export function stayIdentityVerdict(args, stay) {
+  if (!stay || !stay.confirmation) return { outcome: 'execution_failure', reason: 'form_unreadable' };
+  if (squash(stay.confirmation) !== args.confirmation) return { outcome: 'ambiguous', reason: 'confirmation_mismatch' };
+  if (args.arrival && stay.arrival !== args.arrival) return { outcome: 'ambiguous', reason: 'arrival_mismatch' };
+  return { outcome: 'found', reason: null };
+}
+
+// "Records: 1 of 1" in the quick panel footer: rows shown and rows matched. Null when absent or impossible.
+export function parseRecordsFooter(text) {
+  const match = /Records:\s*(\d+)\s+of\s+(\d+)/i.exec(squash(text));
+  if (!match) return null;
+  const shown = Number(match[1]);
+  const total = Number(match[2]);
+  return shown <= total ? { shown, total } : null;
+}
+
+// Each raw row is the visible leaf texts of one dropdown row. A row without exactly one confirmation, or that
+// parseQuickSearchRow cannot read, counts as unreadable; the caller fails closed on any unreadable row.
+export function parsePanelRows(rawRows) {
+  const rows = [];
+  let unreadable = 0;
+  for (const cells of rawRows ?? []) {
+    const confirmations = cellLines(cells).filter((cell) => CONFIRMATION_TOKEN.test(cell));
+    const row = confirmations.length === 1 ? parseQuickSearchRow(cells, confirmations[0]) : null;
+    if (!row) {
+      unreadable += 1;
+      continue;
+    }
+    rows.push({
+      confirmation: row.confirmation,
+      lastName: row.lastName,
+      firstName: row.firstName,
+      status: row.status,
+      arrival: hmsDateToIso(row.arrival),
+      departure: row.departure ? hmsDateToIso(row.departure) : null,
+    });
+  }
+  return { rows, unreadable };
+}
+
+// Every panel row must be read, and the footer must account for all of them. Capped panels are not complete.
+export function searchGuestOutcome({ records, rows, unreadable }) {
+  if (!records) return { outcome: 'execution_failure', reason: 'records_footer_missing' };
+  if (records.shown < records.total) return { outcome: 'ambiguous_capped', reason: 'records_capped' };
+  if (unreadable > 0) return { outcome: 'execution_failure', reason: 'rows_unreadable' };
+  if (rows.length !== records.shown) return { outcome: 'execution_failure', reason: 'row_count_mismatch' };
+  return { outcome: 'ok', reason: null };
+}
+
+// Rows for the same guest on the same dates: surname (case-insensitive), arrival, and departure when given.
+export function sameStayRows(rows, { lastName, arrival, departure = null }) {
+  const surname = squash(lastName).toLowerCase();
+  return rows.filter((row) => row.lastName.toLowerCase() === surname
+    && row.arrival === arrival
+    && (departure === null || row.departure === departure));
 }

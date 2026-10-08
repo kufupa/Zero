@@ -12,6 +12,7 @@
 // recorded and left open; OK is never clicked on it.
 // Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"]
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
+// Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +63,7 @@ function mark(ctx, name) {
   ctx.result.timings[name] = Date.now() - ctx.started;
 }
 
-async function shot(ctx, name) {
+export async function shot(ctx, name) {
   const path = join(ctx.dir, name);
   await ctx.page.screenshot({ path, fullPage: true });
   ctx.result.screenshots.push(path);
@@ -78,7 +79,7 @@ async function visibleIndexes(locator) {
 }
 
 // Visible input wins over hidden duplicates of the same name.
-async function readRecord(page) {
+export async function readRecord(page) {
   return page.evaluate(() => {
     const value = (name) => {
       const input = [...document.querySelectorAll(`input[name="${name}"]`)].find((el) => el.getClientRects().length);
@@ -102,14 +103,14 @@ async function visibleWindowTexts(page) {
     .map((node) => (node.innerText || '').replace(/\s+/g, ' ').trim()));
 }
 
-async function openGuestStay(page) {
+export async function openGuestStay(page) {
   await page.locator('a.app-menu-trigger:visible').click();
   for (const name of ['Front Desk', 'Guest Stay']) {
     await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
   }
 }
 
-async function searchConfirmation(page, confirmation) {
+export async function searchConfirmation(page, confirmation) {
   const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
   await search.click({ force: true });
   await search.fill(confirmation);
@@ -133,7 +134,7 @@ async function lowestWindowLabel(page) {
   return best;
 }
 
-async function readWindow(page) {
+export async function readWindow(page) {
   const label = await lowestWindowLabel(page);
   return label ? parseDateWindowLabel(await label.locator.innerText()) : null;
 }
@@ -193,7 +194,7 @@ async function setArrivalWindow(page, arrival) {
 }
 
 // Quick-search window: the calendar icon opens the picker and the arrival day moves the window.
-async function setQuickWindow(page, arrival) {
+export async function setQuickWindow(page, arrival) {
   await openWindowPicker(page);
   await pickArrivalDay(page, arrival);
   await clickApplyIfShown(page);
@@ -201,7 +202,7 @@ async function setQuickWindow(page, arrival) {
 }
 
 // Enter is never pressed in the header search: with one match it opens the record and closes the dropdown.
-async function clickRunIfShown(page) {
+export async function clickRunIfShown(page) {
   const run = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
   if ((await run.count()) === 0) return false;
   await run.first().click({ force: true });
@@ -211,7 +212,7 @@ async function clickRunIfShown(page) {
 
 // The quick-search dropdown: the nearest ancestor of its In-House tab that also holds the "Records:" footer.
 // The record header and the grid are outside it, so the row lookup below cannot match them.
-async function quickPanel(page) {
+export async function quickPanel(page) {
   const tabs = page.getByText(/^In.?House$/);
   const shownTabs = await visibleIndexes(tabs);
   if (shownTabs.length === 0) return null;
@@ -259,7 +260,7 @@ async function readOpenRecord(page, confirmation) {
 }
 
 // Balance on the open record ("Balance: 0.00 ZAR"): the input beside the Balance label. Null when unreadable.
-async function readBalance(page) {
+export async function readBalance(page) {
   const labels = page.getByText(/^Balance:?$/);
   for (const index of await visibleIndexes(labels)) {
     const candidates = await labels.nth(index).evaluate((label) => {
@@ -292,7 +293,8 @@ async function waitForStay(page, confirmation, { needRow }) {
 // dropdown row is used; when the panel window does not cover arrival, its calendar icon moves the window first.
 // The grid window picker is the last resort. Returns {method, locator, row, open}: row is the dropdown row
 // (guarded before anything opens), open is the open record form, and locator is the row or grid cell to click.
-async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) {
+// Lookups without --arrival (stay-lookup.mjs find) never move the window; the cancel path always has arrival.
+export async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) {
   const { page, args } = ctx;
   await searchConfirmation(page, args.confirmation);
   let probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
@@ -310,7 +312,7 @@ async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) 
     let found = probe.row;
     let method = 'quick';
     const dateWindow = await readWindow(page);
-    if (dateWindow && !windowCovers(dateWindow, args.arrival)) {
+    if (dateWindow && args.arrival && !windowCovers(dateWindow, args.arrival)) {
       await setQuickWindow(page, args.arrival);
       await searchConfirmation(page, args.confirmation);
       const moved = await waitForStay(page, args.confirmation, { needRow: true });
@@ -321,6 +323,7 @@ async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) 
     }
     return { method, locator: found.locator, row: found.row, open: null };
   }
+  if (!args.arrival) return null;
   await searchConfirmation(page, args.confirmation);
   await setArrivalWindow(page, args.arrival);
   if (evidence) await shot(ctx, 'window.png');
@@ -339,7 +342,7 @@ async function findRow(page, confirmation) {
   return hits.length === 1 ? rows.nth(hits[0]) : null;
 }
 
-async function openRecord(page, row) {
+export async function openRecord(page, row) {
   await row.click({ force: true });
   await page.locator('input[name="confirmationnumber"]:visible').first().waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
