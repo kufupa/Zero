@@ -942,13 +942,13 @@ export const workstationRouter = router({
   reportBridgeFailure: mailboxProcedure
     .input(z.object({
       action: z.string().regex(/^[A-Z_]{1,64}$/),
-      code: z.string().max(64).optional(),
+      code: z.string().regex(/^[A-Z0-9_]{1,64}$/).optional(),
       message: z.string().max(300),
     }).strict())
     .mutation(({ input, ctx }) => {
       const mask = (text: string) => text.replace(/[A-Za-z0-9+/=_-]{24,}/g, '<id>').slice(0, 200);
       console.warn('outlook_bridge_native_failure', { transportId: ctx.activeTransportId, action: input.action,
-        code: input.code ? mask(input.code) : null, message: mask(input.message) });
+        code: input.code ?? null, message: mask(input.message) });
       return { logged: true };
     }),
   bridgeTicket: publicProcedure

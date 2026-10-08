@@ -33,7 +33,7 @@ declare global {
 function reportBridgeFailure(action: string, error: unknown) {
   const failure = error as { code?: unknown; message?: unknown } | null;
   void Promise.resolve().then(() => trpcClient.workstation.reportBridgeFailure.mutate({ action,
-    ...(typeof failure?.code === 'string' ? { code: failure.code.slice(0, 64) } : {}),
+    ...(typeof failure?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(failure.code) ? { code: failure.code } : {}),
     message: String(failure?.message ?? 'unknown').slice(0, 300) })).catch(() => undefined);
 }
 
