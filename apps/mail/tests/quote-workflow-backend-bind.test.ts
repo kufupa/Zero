@@ -619,6 +619,55 @@ describe('staff quote execute/PDF header bind', () => {
     });
     expect(missingAgency.status).toBe('unavailable');
   });
+  it('gives plain re-quote copy when the PDF run is no longer recorded or its evidence expired', async () => {
+    const input = {
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      messageId: 'mail-1',
+      outlookEmail: 'centurion@legacyhotels.co.za',
+      factRefs: [],
+      company: 'Provincial Treasury',
+      agency: '',
+      attention: '',
+      clientEmail: '',
+      clientTelephone: '',
+    };
+    const serverMessages = ['Proposal source not found', 'Proposal evidence expired during conversion'];
+    for (const message of serverMessages) {
+      const result = await bindQualifiedStaffProposalPdf({
+        mutate: async () => {
+          throw new Error(message);
+        },
+        input,
+        expectedTotalMinor: 850000,
+      });
+      expect(result).toEqual({
+        status: 'unavailable',
+        reason: 'This quote has expired. Run the quote again.',
+      });
+    }
+  });
+  it('keeps other PDF failure messages as the server sent them', async () => {
+    const result = await bindQualifiedStaffProposalPdf({
+      mutate: async () => {
+        throw new Error('GOTENBERG_URL missing');
+      },
+      input: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        messageId: 'mail-1',
+        outlookEmail: 'centurion@legacyhotels.co.za',
+        factRefs: [],
+        company: 'Provincial Treasury',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      expectedTotalMinor: 850000,
+    });
+    expect(result).toEqual({ status: 'unavailable', reason: 'GOTENBERG_URL missing' });
+  });
 });
 
 describe('staff quote no-matching-rate flag', () => {

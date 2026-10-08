@@ -22,6 +22,12 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
       routes.includes('workstation.usePriorQuoteForBooking')
     )
       return 60_000;
+    // With QUOTE_TRACE_ASYNC the screenshot/choices wait for the background trace (about 45s).
+    if (
+      routes.includes('workstation.quoteRunScreenshot') ||
+      routes.includes('workstation.qualifiedProposalChoices')
+    )
+      return 60_000;
   } catch {
     // Malformed URLs do not receive an extended deadline.
   }

@@ -140,6 +140,21 @@ function rejectionReason(error: unknown): string {
     : 'The request did not finish. Refresh the pane and try again.';
 }
 
+export const EXPIRED_STAFF_QUOTE_COPY = 'This quote has expired. Run the quote again.';
+
+/** workstation.qualifiedQuoteProposalPdf messages for a quote run that is unrecorded or expired. */
+const EXPIRED_STAFF_QUOTE_SERVER_MESSAGES = new Set([
+  'Proposal source not found',
+  'Proposal evidence expired during conversion',
+]);
+
+/** Plain staff copy for a PDF rejection; expired or unrecorded runs get the re-quote copy. */
+export function qualifiedPdfFailureReason(error: unknown): string {
+  if (error instanceof Error && EXPIRED_STAFF_QUOTE_SERVER_MESSAGES.has(error.message.trim()))
+    return EXPIRED_STAFF_QUOTE_COPY;
+  return rejectionReason(error);
+}
+
 function knownNativeCode(raw: string): string | null {
   const code = raw.trim().toUpperCase();
   return KNOWN_NATIVE_ROOM_CODES.has(code) ? code : null;
@@ -604,7 +619,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       },
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error) };
+    return { status: 'unavailable', reason: qualifiedPdfFailureReason(error) };
   }
 }
 

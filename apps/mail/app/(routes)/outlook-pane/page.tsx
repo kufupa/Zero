@@ -1380,9 +1380,9 @@ export default function OutlookPanePage() {
         )}
         {isConnected && workstationInfo?.paired && authorizationUnavailable && !requiresRelogin && (
           <div role="status" className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
-            <p>Select an approved Outlook folder to continue. Nava will retry automatically.</p>
+            <p>Nava is connecting to this mailbox. If this stays, open an email in your Inbox.</p>
             <Button type="button" size="sm" onClick={refreshAuthorization}>
-              Refresh Outlook authorization
+              Try again
             </Button>
           </div>
         )}
