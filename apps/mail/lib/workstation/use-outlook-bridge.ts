@@ -724,6 +724,12 @@ export function useOutlookBridge() {
 
   // Reads the selected email for the newest selection only, so a slow reply
   // cannot overwrite a later click. Resolves true when this read was applied.
+  // Any read native answers proves the grant works; a click back in Inbox must lift the retry banner.
+  const clearAuthorizationFailures = () => {
+    setAuthorizationUnavailable(false);
+    deniedTickets.current = 0;
+    failedNativeAuthorizations.current = 0;
+  };
   readActiveEmailRef.current = async () => {
     const registered = navigation.current;
     if (!registered) return false;
@@ -747,12 +753,15 @@ export function useOutlookBridge() {
       setActiveEmail(parsed.success ? parsed.data : null);
       setActiveEmailOwner(currentScope.current);
       setSelectionOutsideMailbox(false);
+      clearAuthorizationFailures();
       return true;
     } catch (error) {
       if (!isOtherStoreError(error)) throw error;
       if (isCurrent()) {
         setActiveEmail(null);
         setSelectionOutsideMailbox(true);
+        // Native answered under a live grant, so authorization itself is healthy again.
+        clearAuthorizationFailures();
       }
       return false;
     }
