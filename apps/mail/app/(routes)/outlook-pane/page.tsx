@@ -129,6 +129,7 @@ import {
   dinnerAllowanceStillRequired,
   evidenceMatchesSession,
   groupsForQuoteStep,
+  quoteRunIsCurrent,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
@@ -1162,7 +1163,15 @@ export default function OutlookPanePage() {
             duration: 60_000,
             action: {
               label: 'Quote as B&B + dinner allowance',
-              onClick: () => quoteAsBbWithDinnerAllowance(step.id, dinnerGroupIds),
+              onClick: () => {
+                // The offer belongs to the run that made it. If staff have since moved to another email or edited
+                // the inputs, it is stale and must not patch the current quote.
+                if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
+                  toast.warning('That quote has changed. Run the quote again to quote as B&B.');
+                  return;
+                }
+                quoteAsBbWithDinnerAllowance(step.id, dinnerGroupIds);
+              },
             },
           });
         } else {

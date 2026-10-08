@@ -575,6 +575,14 @@ export function dinnerAllowanceStillRequired(
   return Boolean(header.dinnerAllowanceRequired) && !(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0);
 }
 
+/** A quote run and the actions it offers belong to one selection and one input revision. Once either moves on, they are stale. */
+export function quoteRunIsCurrent(
+  session: Pick<QuoteSession, 'binding' | 'inputRevision'>,
+  run: { selectionEpoch: number; inputRevision: number },
+): boolean {
+  return (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch && session.inputRevision === run.inputRevision;
+}
+
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
   switch (action.type) {
     case 'reset':

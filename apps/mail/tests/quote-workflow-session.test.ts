@@ -11,6 +11,7 @@ import {
   pickNextRunnableStep,
   planQuoteSteps,
   quoteRunBlockReason,
+  quoteRunIsCurrent,
   reduceQuoteSession,
   selectionDigest,
   buildQuoteStepInputs,
@@ -2183,6 +2184,17 @@ describe('staff dinner B&B fallback', () => {
     expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
       before,
     );
+  });
+
+  it('treats a quote run as current only while its selection epoch and input revision are still the session', () => {
+    const session = {
+      ...initialQuoteSession(),
+      inputRevision: 3,
+      binding: { selectionEpoch: 2 },
+    } as unknown as ReturnType<typeof initialQuoteSession>;
+    expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 3 })).toBe(true);
+    expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 2 })).toBe(false);
+    expect(quoteRunIsCurrent(session, { selectionEpoch: 1, inputRevision: 3 })).toBe(false);
   });
 
   it('records which groups fell back, so the allowance can be charged to those guests only', () => {
