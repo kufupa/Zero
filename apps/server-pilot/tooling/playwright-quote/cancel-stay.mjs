@@ -110,11 +110,19 @@ async function visibleWindowTexts(page) {
     .map((node) => (node.innerText || '').replace(/\s+/g, ' ').trim()));
 }
 
-export async function openGuestStay(page) {
+// On the EC2 browser (no tunnel latency) a Guest Stay click made while Front Desk is still expanding is dropped and the
+// screen never opens. Wait for the header search, and click Guest Stay again if it has not appeared.
+export async function openGuestStay(page, { attempts = 3, waitMs = 8000 } = {}) {
+  const node = (name) => page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) });
   await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of ['Front Desk', 'Guest Stay']) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
+  await node('Front Desk').click();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await page.waitForTimeout(800);
+    await node('Guest Stay').click();
+    const opened = await headerSearch(page).waitFor({ state: 'visible', timeout: waitMs }).then(() => true, () => false);
+    if (opened) return;
   }
+  throw new Error('GUEST_STAY_NOT_OPENED');
 }
 
 // The header search. Typing goes through the keyboard, so the search sees each key rather than one fill event.
