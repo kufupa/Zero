@@ -223,6 +223,27 @@ describe('buildBookingDrafts', () => {
     expect(draft.rateCheck[0]).toMatchObject({ status: 'cannot_check', reason: 'ambiguous_stay' });
   });
 
+  it.each([
+    ['room_only', 'room_only'],
+    ['breakfast', 'bb'],
+    ['dinner_bed_breakfast', 'dinner_bb'],
+  ] as const)(
+    'gives each draft room the quoted %s board as %s, not the analysis board',
+    async (quoted, expected) => {
+      const revision = await agencyRevision();
+      revision.groups[0]!.board = quoted;
+      const draft = await buildBookingDrafts({
+        analysis: analysis(),
+        revision,
+        defaults: COMPLETE_DEFAULTS,
+        messageId: 'message-1',
+        validate: validateCreate,
+      });
+      expect(draft.rooms.length).toBeGreaterThan(0);
+      expect(draft.rooms.map((room) => room.board)).toEqual(draft.rooms.map(() => expected));
+    },
+  );
+
   it('assigns guest names from the luna group with the same stay dates, not array index', async () => {
     const revision = await agencyRevision();
     revision.groups[0]!.arrivalDate = '2026-12-01';

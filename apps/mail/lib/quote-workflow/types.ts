@@ -310,6 +310,8 @@ export type QuoteToolStep = {
 export type BookingDraftRoom = {
   groupId: string;
   roomIndex: number;
+  /** The board the approved quote uses. Absent on older payloads, which then copy nothing. */
+  board?: QuoteBoard;
   request: Record<string, unknown>;
   schemaErrors: string[];
 };
@@ -377,6 +379,16 @@ export type QuoteSession = {
   treatAs: 'quote' | 'create_booking' | null;
   /** Staff "Tell Luna" note re-submitted as top-priority evidence. */
   staffNote: string | null;
+  /**
+   * Bumped only by stay/group edits (patch_group, restored groups). Header edits bump
+   * inputRevision but not this, so they never make a Tell Luna result look stale.
+   */
+  stayRevision: number;
+  /**
+   * stayRevision when the in-flight analyseSelection request started. If it has moved by
+   * the time the result lands, staff edited stays during the run, so their edits are kept.
+   */
+  analysisStartStayRevision?: number | null;
 };
 
 export type QuoteSessionAction =

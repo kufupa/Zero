@@ -8,9 +8,12 @@ import { toast } from 'sonner';
 import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
-const { sendCommandMock, quotePdfMutateMock, sessionState } = vi.hoisted(() => ({
+const { sendCommandMock, quotePdfMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
+  prepareDraftMutateMock: vi.fn(),
+  // Tests opt in to a Luna read-out (e.g. create_booking); null keeps the default analysis.
+  analyseOverride: { current: null as ((input: unknown) => Promise<unknown>) | null },
   sessionState: {
     userId: 'staff-1',
     sessionId: 'session-1',
@@ -126,6 +129,7 @@ vi.mock('../providers/query-provider', () => ({
           description: 'Selected allocation',
         }),
       },
+      prepareBookingDraft: { mutate: prepareDraftMutateMock },
       qualifiedQuoteProposalPdf: {
         mutate: async () => AUTHORISED_QUOTE_PDF,
       },
@@ -135,7 +139,7 @@ vi.mock('../providers/query-provider', () => ({
     },
     quoteWorkflow: {
       analyseSelection: {
-        mutate: async () => ({
+        mutate: async (input: unknown) => analyseOverride.current?.(input) ?? ({
           status: 'ready' as const,
           intent: 'quote' as const,
           groups: [
@@ -197,6 +201,58 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Review the quotation PDF')));
     expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
   });
+  it('prepares the booking draft from the staff-edited stay dates, not the raw Luna read-out', async () => {
+    analyseOverride.current = async () => ({
+      status: 'ready' as const,
+      intent: 'quote' as const,
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 1,
+          adults: 1,
+          childrenAges: [],
+          board: 'bb' as const,
+          specialRequests: [],
+          fields: { arrivalDate: 'extracted' as const, departureDate: 'extracted' as const, adults: 'extracted' as const },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      luna: {
+        workflow: 'create_booking',
+        flags: [],
+        groups: [
+          {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'bb',
+            roomPreference: null,
+            guestNames: [],
+          },
+        ],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    render(<OutlookPanePage />);
+    fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: '2026-11-13' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    await waitFor(() => expect(prepareDraftMutateMock).toHaveBeenCalledTimes(1));
+    const sent = prepareDraftMutateMock.mock.calls[0]?.[0] as {
+      analysis: { groups: Array<{ arrival: string | null; departure: string | null }> };
+    };
+    expect(sent.analysis.groups[0]).toEqual(expect.objectContaining({ arrival: '2026-11-13', departure: '2026-11-14' }));
+  });
+
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionState.userId = 'staff-1';
@@ -207,6 +263,9 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
     sessionState.requiresRelogin = false;
     sessionState.nativeSelectedEntryId = '001';
+    analyseOverride.current = null;
+    prepareDraftMutateMock.mockReset();
+    prepareDraftMutateMock.mockResolvedValue({ status: 'unavailable', reason: 'not under test' });
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',

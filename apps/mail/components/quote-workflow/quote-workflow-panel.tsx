@@ -560,7 +560,7 @@ export function QuoteWorkflowPanel({
           ))}
         </section>
       ) : null}
-      {session.bookingDraft ? <BookingCards draft={session.bookingDraft} /> : null}
+      {session.bookingDraft ? <BookingCards draft={session.bookingDraft} groups={session.groups} /> : null}
       {showReply ? (
         <DocumentReview session={session} onReplyChange={onReplyChange} onPreparePdf={onPreparePdf} />
       ) : null}

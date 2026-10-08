@@ -1,6 +1,7 @@
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
+import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -73,6 +74,78 @@ describe('analyseQuoteSources', () => {
         bodyText: 'Thank you for your help yesterday.',
       }).intent,
     ).toBe('other');
+  });
+
+  it.each(['quote', 'create_booking'] as const)(
+    'keeps a stay group for a staff %s override when no quote keyword matches',
+    (treatAs) => {
+      const analysis = analyseQuoteSources({
+        subject: 'Reservation',
+        bodyText: 'Please reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+        treatAs,
+      });
+      expect(analysis.intent).toBe('quote');
+      expect(analysis.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+        adults: 2,
+      });
+    },
+  );
+
+  it('lets a staff note arrival correction replace only the arrival it names', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Arrival is now 2027-11-13',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-13',
+      departureDate: '2027-11-14',
+      adults: 2,
+    });
+    expect(analysis.groups[0]?.fields).toMatchObject({
+      arrivalDate: 'staff_corrected',
+      departureDate: 'extracted',
+    });
+  });
+
+  it('lets a staff note departure correction replace only the departure it names', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Departure is now 2027-11-15',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-12',
+      departureDate: '2027-11-15',
+    });
+  });
+
+  it.each([
+    { note: 'Departure changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+    { note: 'Check-out changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+    { note: 'Arrival changed from 2027-11-12 to 2027-11-11.', arrivalDate: '2027-11-11', departureDate: '2027-11-14' },
+    { note: 'Arrival 2027-11-12. Departure changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
+  ])('applies an old-to-new staff correction only to the field it names: $note', ({ note, arrivalDate, departureDate }) => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: note,
+    });
+    expect(analysis.groups[0]).toMatchObject({ arrivalDate, departureDate, adults: 2 });
+  });
+
+  it('reads two dates in a staff note in reading order, mixing date formats', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      staffNote: 'Stay 13 November 2027 to 2027-11-15',
+    });
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-13',
+      departureDate: '2027-11-15',
+    });
   });
 });
 
@@ -688,6 +761,140 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(result.source).toBe('regex_fallback');
       expect(result.intent).toBe('quote');
       expect(result.workflow).toBe('quote');
+    }
+  });
+
+  it('keeps a booking override on the quote workspace when Luna is unavailable', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 21,
+      treatAs: 'create_booking',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.intent).toBe('quote');
+      expect(result.workflow).toBe('create_booking');
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+      });
+      // The pane reads the booking choice from luna.workflow; the carrier must pass the
+      // server booking-draft schema so the pane can send it back.
+      expect(result.luna?.workflow).toBe('create_booking');
+      expect(lunaAnalysisSchema.safeParse(result.luna).success).toBe(true);
+    }
+  });
+
+  it('tells staff what to check when a regex-fallback override is shown', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 22,
+      treatAs: 'create_booking',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.reviewItems?.map((item) => item.text)).toContainEqual(
+        expect.stringMatching(/^Luna is unavailable.*Check the dates and room count below/),
+      );
+    }
+  });
+
+  it('tells staff to edit the room count directly, since a note cannot change it', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote and reserve',
+      bodyText: 'Please quote and reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 23,
+      treatAs: 'create_booking',
+      staffNote: '3 rooms',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      const item = result.reviewItems?.find((row) => row.id === 'luna-unavailable');
+      expect(item?.text).toMatch(/Edit the room count directly/);
+      expect(item?.text).not.toMatch(/add a note with corrections/);
+      expect(result.groups[0]?.quantity).toBe(1);
+    }
+  });
+
+  it('keeps a stay group when treat-as quote is applied to a mail with no quote keyword', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Reservation',
+      bodyText: 'Please reserve 2027-11-12 to 2027-11-14 for 2 adults.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 23,
+      treatAs: 'quote',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.intent).toBe('quote');
+      expect(result.groups).toHaveLength(1);
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-12',
+        departureDate: '2027-11-14',
+      });
+    }
+  });
+
+  it('applies a staff note arrival correction without mixing in the email dates', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-h5@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 24,
+      staffNote: 'Arrival is now 2027-11-13',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.groups[0]).toMatchObject({
+        arrivalDate: '2027-11-13',
+        departureDate: '2027-11-14',
+      });
     }
   });
 
