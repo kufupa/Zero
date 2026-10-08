@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -204,7 +205,7 @@ async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLo
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir), {
       timeout: LOOKUP_TIMEOUT_MS,
-      env: { ...process.env },
+      env: paneStaySpawnEnv(),
     });
   } catch (error) {
     // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
@@ -216,6 +217,10 @@ async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLo
   } catch {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     throw runError ?? new Error('pane_lookup_no_result');
+  }
+  if ((result.outcome ?? 'execution_failure') === 'execution_failure') {
+    const cliError = (result as { error?: string }).error ?? 'pane_lookup_execution_failure';
+    warnPaneStaySpawnFailed(input.mode, new Error(cliError));
   }
   return {
     outcome: result.outcome ?? 'execution_failure',
@@ -248,7 +253,9 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
-    return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
+    if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
+    warnPaneStaySpawnFailed('find', error);
+    return refused('execution_failure');
   }
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toFindOutcome(run.outcome);
