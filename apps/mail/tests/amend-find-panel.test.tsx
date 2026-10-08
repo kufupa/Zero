@@ -8,6 +8,7 @@ import {
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
+  notHmsNumberNote,
   runHmsFind,
   type AmendFindClient,
   type FindStayReply,
@@ -285,17 +286,23 @@ describe('AmendLookupPanel', () => {
     );
   });
 
-  it('does not look up a booking number HMS cannot take', () => {
+  it('does not look up an agent reference HMS cannot take: the number is named and the find stays disabled', () => {
     const findStay = vi.fn();
     render(
       <AmendLookupPanel
-        session={sessionWith({ ...AMEND, confirmationNumber: 'CEN-88412' })}
+        session={sessionWith({ ...AMEND, confirmationNumber: '9999SH999999' })}
         trpc={lookupTrpc(findStay)}
       />,
     );
-    expect(findStay).not.toHaveBeenCalled();
-    expect(screen.getByText(AMEND_FIND_COPY.notExact)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The number in the email (9999SH999999) looks like the agent's own reference, not an HMS booking number. Search HMS by guest name.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    pressFind();
+    expect(findStay).not.toHaveBeenCalled();
   });
 
   it('disables the manual lookup and says why when the email has no booking number', () => {
@@ -306,6 +313,7 @@ describe('AmendLookupPanel', () => {
     expect(
       screen.getByText("Luna couldn't find a booking number in the email. Search HMS by name instead."),
     ).toBeTruthy();
+    expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
     expect(findStay).not.toHaveBeenCalled();
   });
 
@@ -322,13 +330,14 @@ describe('AmendLookupPanel', () => {
     await waitFor(() => expect(screen.getByText(message)).toBeTruthy());
   });
 
-  it('reports a failed find call as a read failure', async () => {
-    const findStay = vi.fn().mockRejectedValue(new Error('socket hang up'));
+  it('maps a failed find call to plain copy and never shows the raw error', async () => {
+    const findStay = vi
+      .fn()
+      .mockRejectedValue(new Error('[{"code":"invalid_string","path":["confirmation"]}] socket hang up'));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
-    await waitFor(() =>
-      expect(screen.getByText('Luna could not read the HMS result. Try again in a minute.')).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText("Luna couldn't look this up. Search HMS yourself.")).toBeTruthy());
+    expect(screen.queryByText(/invalid_string|socket hang up/)).toBeNull();
   });
 
   it('runs the find again when staff press the button after a failed result', async () => {
@@ -600,6 +609,33 @@ describe('amend find helpers', () => {
     const client: AmendFindClient = { findStay: vi.fn().mockResolvedValue(mismatch), screenshot: vi.fn() };
     const run = await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(run).toEqual({ kind: 'error', message: AMEND_FIND_COPY.arrivalDiffers });
+  });
+
+  it('never sends a number that is not an HMS booking number, and names the one it refused', async () => {
+    const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
+    const client: AmendFindClient = { findStay, screenshot: vi.fn() };
+    await expect(runHmsFind({ client, confirmation: '9999SH999999' })).resolves.toEqual({
+      kind: 'error',
+      message: notHmsNumberNote('9999SH999999'),
+    });
+    await expect(runHmsFind({ client, confirmation: 'CEN-88412' })).resolves.toMatchObject({ kind: 'error' });
+    expect(findStay).not.toHaveBeenCalled();
+  });
+
+  it('turns a rejected or empty find call into the plain lookup-failed copy', async () => {
+    const rejecting: AmendFindClient = { findStay: vi.fn().mockRejectedValue(new Error('boom')), screenshot: vi.fn() };
+    await expect(runHmsFind({ client: rejecting, confirmation: CONFIRMATION })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.lookupFailed,
+    });
+    const empty: AmendFindClient = {
+      findStay: vi.fn().mockResolvedValue(undefined as unknown as FindStayReply),
+      screenshot: vi.fn(),
+    };
+    await expect(runHmsFind({ client: empty, confirmation: CONFIRMATION })).resolves.toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.lookupFailed,
+    });
   });
 
   it('reports unavailable when no client is bound', async () => {
