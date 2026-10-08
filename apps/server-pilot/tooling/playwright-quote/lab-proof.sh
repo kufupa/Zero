@@ -13,7 +13,7 @@
 # Steps, in order. Each writes $OUT/<step>/ (result.json, stdout.txt, stderr.txt, PNGs). The run stops at
 # the first step that is not as expected. $OUT/summary.json is written on every exit.
 #   1-preview         create-lab-stay --stop-before save                 expect previewed
-#   2-commit          create-lab-stay --pane-commit                      expect committed <CONF>
+#   2-commit          create-lab-stay --pane-commit                      expect committed <CONF>; save_unconfirmed stops
 #   3-find            cancel-stay --mode preview                         expect preview_ok, Reserved/Confirmed
 #   4-cancel-preview  cancel-stay --mode preview                         expect preview_ok, penaltyText kept
 #   5-cancel-commit   cancel-stay --mode commit --reason "Test Reservations"  expect cancelled
@@ -67,7 +67,7 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
 # Request and lab guard: lastName Labtest, arrival a real date on or after 2027-01-01.
 [[ -f "$REQUEST_ARG" ]] || die "request file not found: $REQUEST_ARG"
 REQUEST="$(cd "$(dirname "$REQUEST_ARG")" && pwd)/$(basename "$REQUEST_ARG")"
-ARRIVAL="$(node -e '
+GUARD_LINE="$(node -e '
   const fs = require("node:fs");
   const req = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   const lastName = typeof req.lastName === "string" ? req.lastName.trim() : "";
@@ -76,8 +76,12 @@ ARRIVAL="$(node -e '
   const real = date !== null && !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === arrival;
   if (!/^labtest$/i.test(lastName)) { console.error("lab guard: lastName must be Labtest"); process.exit(2); }
   if (!real || arrival < "2027-01-01") { console.error("lab guard: arrival must be a real date on or after 2027-01-01"); process.exit(2); }
-  process.stdout.write(arrival);
+  const departure = typeof req.departure === "string" ? req.departure : "";
+  const guest = [req.firstName, req.lastName].filter((part) => typeof part === "string" && part.trim()).join(" ");
+  process.stdout.write([arrival, departure, guest].join("\x1f"));
 ' -- "$REQUEST")" || die "request refused by the lab guard"
+# Unit separator: a non-whitespace IFS keeps empty fields in place.
+IFS=$'\x1f' read -r ARRIVAL DEPARTURE GUEST <<<"$GUARD_LINE" || true
 
 # Playwright 1.63.0 must resolve the way the CLIs resolve it (createRequire from the stagehand manifest).
 [[ -f "$SCRIPT_DIR/../stagehand/package.json" ]] || die "missing apps/server-pilot/tooling/stagehand/package.json"
@@ -207,6 +211,9 @@ if [[ "$LAST_CODE" -eq 0 && "$COMMIT_OUTCOME" == committed && "$CONF_FOUND" =~ ^
   log_step 2-commit committed 1 ""
 else
   log_step 2-commit committed 0 "outcome=${COMMIT_OUTCOME:-none}"
+  if [[ "$COMMIT_OUTCOME" == save_unconfirmed ]]; then
+    stop_at 2-commit "HMS may have saved this booking. Check HMS for $GUEST $ARRIVAL – $DEPARTURE before trying again."
+  fi
   stop_at 2-commit "no confirmation number (last line '${LAST_LINE:-empty}', exit $LAST_CODE). HMS may hold a Proof Labtest booking arriving $ARRIVAL: check HMS before any retry."
 fi
 echo "lab-proof: booked as $CONF"

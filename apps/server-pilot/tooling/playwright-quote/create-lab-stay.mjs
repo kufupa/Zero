@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
 import { loadCreateRequest, loadCreateToolSchema, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
+import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -326,15 +327,18 @@ async function main() {
       return;
     }
     await clickTip(page, '^Save');
-    await page.waitForTimeout(2500);
-    const confirmation = await page.locator('input[name="confirmationnumber"]').inputValue().catch(() => '');
-    result.confirmationNumber = confirmation.trim();
-    result.saved = Boolean(result.confirmationNumber);
+    // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
+    // save_unconfirmed, never a failed save: HMS may already have booked the stay.
+    const save = await waitForSaveConfirmation(page);
     result.clickedSave = true;
+    result.confirmationNumber = save.confirmationNumber;
+    result.saved = save.confirmed;
+    result.saveReason = save.reason;
+    if (save.confirmed) result.statusAfterSave = await readSettledStatus(page);
     result.message = await readMessage(page);
     await shot(page, dir, 'saved.png');
     if (!result.saved) {
-      result.outcome = 'save_failed';
+      result.outcome = 'save_unconfirmed';
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
       process.stdout.write(`${result.outcome}\n`);
       return;
