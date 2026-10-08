@@ -21,6 +21,7 @@ import {
   arrivalMismatchNote,
   formatStayDate,
   isHmsConfirmation,
+  notHmsNumberNote,
   runHmsFind,
   stayGuest,
   stayText,
@@ -137,7 +138,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   else if (status?.phase === 'done' && status.run.kind === 'ambiguous')
     note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
   else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
-  else if (!lookupable) note = { tone: 'warn', text: AMEND_FIND_COPY.notExact };
+  else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber) };
   else if (!threadId) note = { tone: 'info', text: AMEND_FIND_COPY.waitingThread };
 
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
@@ -256,6 +257,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         >
           Find this booking in HMS
         </button>
+        {lookupable ? null : <p className="text-[10.5px] font-semibold text-amber-900">{AMEND_FIND_COPY.noHmsNumber}</p>}
         <p className="text-[10.5px] text-[#64748b]">Takes about 1–2 minutes. Quotes wait while it runs.</p>
         <div aria-live="polite">
           {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}

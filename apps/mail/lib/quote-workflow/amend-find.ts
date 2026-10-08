@@ -18,6 +18,8 @@ export const AMEND_FIND_COPY = {
   arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
   busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
   readFailed: 'Luna could not read the HMS result. Try again in a minute.',
+  lookupFailed: "Luna couldn't look this up. Search HMS yourself.",
+  noHmsNumber: 'No HMS booking number found in the email.',
   unavailable: 'The HMS lookup is not connected in this session. Search HMS by hand.',
   unreachable: "Luna can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
@@ -27,6 +29,11 @@ export const AMEND_FIND_COPY = {
 /** HMS confirmation numbers look like 57291630-1. findStay takes no other form. */
 export function isHmsConfirmation(value: string): boolean {
   return /^\d+-\d+$/.test(value);
+}
+
+/** The note for an email number HMS cannot take: an agency or voucher reference, say. It names the number. */
+export function notHmsNumberNote(value: string): string {
+  return `The number in the email (${value}) looks like the agent's own reference, not an HMS booking number. Search HMS by guest name.`;
 }
 
 /** One Guest Stay as findStay returns it. Each field is null when HMS does not show it. Dates are ISO days. */
@@ -135,16 +142,22 @@ export async function runHmsFind(options: {
 }): Promise<HmsFindRun> {
   const client = options.client;
   if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  // The server takes only the HMS form. Anything else, such as an agency or voucher reference, is never sent.
+  if (!isHmsConfirmation(options.confirmation)) {
+    return { kind: 'error', message: notHmsNumberNote(options.confirmation) };
+  }
   const arrival = sendableArrival(options.arrival);
   const input: FindStayInput = arrival
     ? { confirmation: options.confirmation, arrival }
     : { confirmation: options.confirmation };
-  let reply: FindStayReply;
+  let reply: FindStayReply | undefined;
   try {
     reply = await client.findStay(input);
   } catch {
-    return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+    // Any failed call (a tRPC error, a timeout, a dropped socket) reads the same. The raw message is never shown.
+    return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
   }
+  if (!reply) return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
   switch (reply.outcome) {
     case 'found':
       if (!reply.stay) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
