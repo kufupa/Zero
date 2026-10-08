@@ -32,6 +32,8 @@ const groupSchema = z
       .min(1)
       .max(8)
       .optional(),
+    // The company or agency the stay's rate is for. Absent means public rates, as before.
+    organisation: z.string().trim().min(1).max(256).optional(),
   })
   .strict();
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
@@ -112,6 +114,15 @@ export function prepareStaffQuote(
     throw new Error('staff_quote_source_changed');
   if (new Set(input.groups.map((g) => g.id)).size !== input.groups.length)
     throw new Error('staff_quote_duplicate_group');
+  // One party per quote. It must be the header's Company or Agency whenever the header names one.
+  const parties = [
+    ...new Set(input.groups.map((g) => g.organisation).filter((v): v is string => v !== undefined)),
+  ];
+  if (parties.length > 1) throw new Error('staff_quote_organisation_mixed');
+  const party = parties[0];
+  const headerParties = [input.company.trim(), input.agency.trim()].filter(Boolean);
+  if (party && headerParties.length > 0 && !headerParties.includes(party))
+    throw new Error('staff_quote_organisation_conflict');
   const dates = new Set(
     input.groups.map((g) => {
       const nights = occupiedDates(g.arrivalDate, g.departureDate);
@@ -150,6 +161,15 @@ export function prepareStaffQuote(
       },
       details: 'full',
       maxOptionsPerGroup: 50,
+      // A named agency is searched as the agency; any other named party as the company.
+      ...(party
+        ? {
+            rateContext:
+              input.agency.trim() === party
+                ? { agency: { name: party } }
+                : { organization: { name: party } },
+          }
+        : {}),
     };
   const inputDigest = quoteDigest({
       input,

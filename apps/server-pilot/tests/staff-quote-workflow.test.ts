@@ -38,8 +38,8 @@ const input = () =>
       },
     ],
   });
-async function fixture() {
-  const confirmed = input(),
+async function fixture(value: ReturnType<typeof input> = input()) {
+  const confirmed = value,
     prepared = prepareStaffQuote(
       confirmed,
       scope,
@@ -230,3 +230,92 @@ describe('staff-approved quotation beneath native guards', () => {
     ).rejects.toThrow('selected_price');
   });
 });
+
+describe('stay company or agency reaches the native rate context', () => {
+  const withStay = (
+    group: Record<string, unknown>,
+    header: Record<string, unknown> = {},
+  ): ReturnType<typeof input> => {
+    const base = input();
+    return staffQuoteInput.parse({ ...base, ...header, groups: [{ ...base.groups[0], ...group }] });
+  };
+  const prepare = (value: ReturnType<typeof input>) =>
+    prepareStaffQuote(
+      value,
+      scope,
+      { signerName: 'Staff', signerEmail: 'staff@example.test' },
+      new AbortController().signal,
+    );
+
+  it('carries a named stay company or agency into the native request, and only when one is named', () => {
+    expect(
+      prepare(withStay({ organisation: 'Provincial Treasury' }, { company: 'Provincial Treasury' })).request
+        .rateContext,
+    ).toEqual({ organization: { name: 'Provincial Treasury' } });
+    expect(
+      prepare(withStay({ organisation: 'Travel Desk' }, { agency: 'Travel Desk' })).request.rateContext,
+    ).toEqual({ agency: { name: 'Travel Desk' } });
+    expect(prepare(withStay({ organisation: 'Provincial Treasury' })).request.rateContext).toEqual({
+      organization: { name: 'Provincial Treasury' },
+    });
+    expect(prepare(input()).request).not.toHaveProperty('rateContext');
+  });
+
+  it('refuses a stay company the quote header does not name, and one quote whose stays disagree', () => {
+    expect(() =>
+      prepare(withStay({ organisation: 'Provincial Treasury' }, { company: 'Other Company' })),
+    ).toThrow('staff_quote_organisation_conflict');
+    const base = input();
+    const mixed = staffQuoteInput.parse({
+      ...base,
+      groups: [
+        { ...base.groups[0], organisation: 'Provincial Treasury' },
+        { ...base.groups[0], id: 'second', organisation: 'Travel Desk' },
+      ],
+    });
+    expect(() => prepare(mixed)).toThrow('staff_quote_organisation_mixed');
+  });
+
+  it('resolves a stay company through party lookup before the native read, and refuses without it', async () => {
+    const stay = withStay({ organisation: 'Provincial Treasury' });
+    const refused = await fixture(stay);
+    await expect(
+      executeStaffQuote(
+        refused.prepared,
+        createReservationistBusinessServices(refused.options, refused.prepared.approval),
+        async () => true,
+      ),
+    ).rejects.toThrow('party_lookup');
+    expect(refused.calls).toHaveLength(0);
+
+    const resolved = await fixture(stay);
+    const read = resolved.options.readQuote;
+    resolved.options.readQuote = async (request: any) => {
+      const source = await read(request);
+      for (const group of source.result.groups)
+        for (const option of group.options)
+          option.appliedContext = { organization: { id: '42', code: '42', name: 'Provincial Treasury' } };
+      return source;
+    };
+    const readParty = async (kind: 'organization' | 'bookingAgency', name: string) => ({
+      kind,
+      query: name,
+      ref: 'party:treasury',
+      sha256: 'd'.repeat(64),
+      observedAt: new Date().toISOString(),
+      outcome: 'resolved' as const,
+      candidates: [{ nativeId: '42', displayName: name, kind }],
+    });
+    const revision = await executeStaffQuote(
+      resolved.prepared,
+      createReservationistBusinessServices({ ...resolved.options, readParty } as any, resolved.prepared.approval),
+      async () => true,
+    );
+    expect(revision.totalMinor).toBeGreaterThan(0);
+    expect(resolved.calls[0]).toMatchObject({
+      search: { salesStrategy: 'Preset' },
+      rateContext: { organization: { nativeId: '42', name: 'Provincial Treasury' } },
+    });
+  });
+});
+
