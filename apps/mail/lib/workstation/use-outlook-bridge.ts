@@ -29,6 +29,14 @@ declare global {
   }
 }
 
+/** Diagnostics only: tells the server where Outlook refused, without changing any denial handling. */
+function reportBridgeFailure(action: string, error: unknown) {
+  const failure = error as { code?: unknown; message?: unknown } | null;
+  void Promise.resolve().then(() => trpcClient.workstation.reportBridgeFailure.mutate({ action,
+    ...(typeof failure?.code === 'string' ? { code: failure.code.slice(0, 64) } : {}),
+    message: String(failure?.message ?? 'unknown').slice(0, 300) })).catch(() => undefined);
+}
+
 export type WorkstationInfo = {
   bridgeProtocolVersion: number;
   addinVersion: string;
@@ -571,11 +579,7 @@ export function useOutlookBridge() {
           },
         );
       } catch (error) {
-        // Diagnostics only: never let reporting change the denial handling below.
-        const failure = error as Error & { code?: string };
-        void Promise.resolve().then(() => trpcClient.workstation.reportBridgeFailure.mutate({ action,
-          ...(typeof failure?.code === 'string' ? { code: failure.code.slice(0, 64) } : {}),
-          message: String(failure?.message ?? 'unknown').slice(0, 300) })).catch(() => undefined);
+        reportBridgeFailure(action, error);
         if (navigation.current === registered) {
           invalidateNavigation();
           if (++failedNativeAuthorizations.current <= 1) {
@@ -715,6 +719,9 @@ export function useOutlookBridge() {
       if (epoch.current !== generation || navigation.current !== registered) return;
       const parsed = BridgeCapabilitiesSchema.safeParse(raw);
       if (!parsed.success || parsed.data.bridgeProtocolVersion !== BRIDGE_PROTOCOL_VERSION) {
+        reportBridgeFailure('GET_CAPABILITIES', parsed.success
+          ? { message: `protocol ${parsed.data.bridgeProtocolVersion}` }
+          : { message: `capabilities schema: ${parsed.error.issues.map((issue) => issue.path.join('.')).join(',')}` });
         setUpdateRequired(true);
         return;
       }
@@ -737,8 +744,9 @@ export function useOutlookBridge() {
         deniedTickets.current = 0;
         failedNativeAuthorizations.current = 0;
       }
-    } catch {
+    } catch (error) {
       /* Denied grants fail closed; the navigation renewal will recover if still signed in. */
+      reportBridgeFailure('LOAD_MAIL', error);
     }
   };
 
