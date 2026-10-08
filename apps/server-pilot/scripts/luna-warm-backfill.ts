@@ -206,6 +206,11 @@ async function defaultLoadCandidates(input: {
   });
 }
 
+/** 1 only when attempts ran and none stored. Partial failures and an empty run exit 0. */
+function backfillExitCode(counts: BackfillCounts): number {
+  return counts.attempted > 0 && counts.failed === counts.attempted ? 1 : 0;
+}
+
 /** Returns the process exit code. Never throws. */
 export async function runBackfillCli(argv: readonly string[], io: BackfillCliIo): Promise<number> {
   const now = io.now ?? Date.now;
@@ -271,7 +276,7 @@ export async function runBackfillCli(argv: readonly string[], io: BackfillCliIo)
         ms: now() - started,
       }),
     );
-    return 0;
+    return backfillExitCode(counts);
   } catch (error) {
     io.log(
       JSON.stringify({
