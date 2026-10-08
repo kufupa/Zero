@@ -54,6 +54,13 @@ import {
   readPropertyLockHolder,
   type HmsQueueStatus,
 } from '../../hms/property-queue-state.js';
+import {
+  listQuoteRunScreenshots,
+  quoteRunIdFromEvidenceDirectory,
+  QUOTE_RUN_ID_PATTERN,
+  QUOTE_SCREENSHOT_NAME_PATTERN,
+  readQuoteRunScreenshot,
+} from '../../ai/staff-quote-evidence.js';
 import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
@@ -317,6 +324,13 @@ export function resolveLedgerSourceProposal(
   return selected;
 }
 
+export const quoteRunScreenshotInput = z
+  .object({
+    runId: z.string().regex(QUOTE_RUN_ID_PATTERN),
+    name: z.string().regex(QUOTE_SCREENSHOT_NAME_PATTERN),
+  })
+  .strict();
+
 export const workstationRouter = router({
   outlookSync: outlookSyncRouter,
   /** Own staff quote run status. HMS-free and cheap; the pane polls only while pending. */
@@ -338,6 +352,32 @@ export const workstationRouter = router({
       return describeHmsQueueStatus({ nowMs });
     }
   }),
+  /** Owner-scoped audit screenshot of a completed staff quote run, returned as a PNG data URL. */
+  quoteRunScreenshot: mailboxProcedure
+    .input(quoteRunScreenshotInput)
+    .query(async ({ input, ctx }) => {
+      const [owned] = await getDb()
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            sql`(${aiWorkflowRun.metrics} -> 'staffQuoteEvidence' ->> 'runId') = ${input.runId}`,
+          ),
+        )
+        .limit(1);
+      const unavailable = { status: 'unavailable' as const, reason: 'quote_run_unavailable' };
+      if (!owned) return unavailable;
+      let outputDir: string;
+      try {
+        outputDir = readInstalledStaffQuoteConfiguration().outputDir;
+      } catch {
+        return unavailable;
+      }
+      return readQuoteRunScreenshot({ outputDir, runId: input.runId, name: input.name });
+    }),
   staffQuoteSource: mailboxProcedure
     .input(z.object({ internetMessageId: z.string().min(1).max(1024) }).strict())
     .query(async ({ input, ctx }) => {
@@ -453,6 +493,7 @@ export const workstationRouter = router({
         code: 'PRECONDITION_FAILED',
         message: 'Staff quotation database unavailable',
       });
+    const evidence: { directory?: string } = {};
     const queued = beginQuoteRun({
       generationId,
       transportId: scope.transportId,
@@ -477,6 +518,9 @@ export const workstationRouter = router({
                 signer: {
                   signerName: ctx.sessionUser.name ?? '',
                   signerEmail: ctx.sessionUser.email,
+                },
+                onEvidenceDirectory: (directory) => {
+                  evidence.directory = directory;
                 },
               },
               prepared.approval,
@@ -522,6 +566,9 @@ export const workstationRouter = router({
           code: 'PRECONDITION_FAILED',
           message: 'Selected email changed while pricing',
         });
+      const runId = evidence.directory
+        ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
+        : null;
       await db.transaction(async (tx) => {
         await tx
           .update(aiDraftGeneration)
@@ -547,6 +594,7 @@ export const workstationRouter = router({
               quoteRevisions: [revision],
               proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
             },
+            ...(runId ? { staffQuoteEvidence: { runId } } : {}),
           },
         });
       });
@@ -568,6 +616,8 @@ export const workstationRouter = router({
         description: deriveQuoteLines(revision)
           .map((l) => l.description)
           .join('; '),
+        runId,
+        screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
       };
     } finally {
       queued.end();
