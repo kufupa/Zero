@@ -474,19 +474,22 @@ async function readReasonList(page, dialog) {
   return { items, texts, reasons: normalizeReasons(texts) };
 }
 
-// Dismisses the reason dialog without confirming: Escape collapses the open list or closes the window,
-// then the dialog's own Cancel button or close tool. Never OK.
+// Dismisses the reason dialog without confirming: Escape collapses the open list, a second Escape closes the window,
+// and the window's close tool is the last resort. No button inside the dialog is ever clicked (never OK, and not its
+// Cancel either, whose label is too close to the cancel action itself). Throws when the dialog stays open.
 async function closeCancelDialog(page, dialog) {
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForTimeout(300);
-  if ((await dialog.count()) > 0) {
-    const cancel = dialog.locator('.x-btn:visible').filter({ hasText: /^Cancel$/ });
-    const close = dialog.locator('.x-tool-close:visible');
-    if ((await cancel.count()) === 1) await cancel.first().click({ force: true });
-    else if ((await close.count()) >= 1) await close.first().click({ force: true });
-    else throw new Error('CANCEL_DIALOG_CLOSE_MISSING');
+  for (let attempt = 0; attempt < 2 && (await dialog.count()) > 0; attempt += 1) {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(400);
   }
-  await page.waitForTimeout(800);
+  if ((await dialog.count()) > 0) {
+    const close = dialog.locator('.x-tool-close:visible, .x-tool-close-default:visible');
+    if ((await close.count()) === 0) throw new Error('CANCEL_DIALOG_CLOSE_MISSING');
+    await close.first().click({ force: true });
+    await page.waitForTimeout(600);
+  }
+  if ((await dialog.count()) > 0) throw new Error('CANCEL_DIALOG_STILL_OPEN');
+  await page.waitForTimeout(400);
 }
 
 // Clicks the OK paired with Cancel inside the single visible Cancellation Reason window.
