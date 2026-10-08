@@ -145,7 +145,7 @@ describe('OutlookPane Onboarding Flow', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Run System Verification/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Run system check/i }));
     await waitFor(() =>
       expect(pingMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -168,7 +168,7 @@ describe('OutlookPane Onboarding Flow', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Run System Verification/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Run system check/i }));
     await waitFor(() =>
       expect(pingMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({

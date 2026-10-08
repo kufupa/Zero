@@ -5,7 +5,9 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import type {
+  QueueStatus,
   QuoteOffer,
+  QuoteRunScreenshotResult,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -84,6 +86,9 @@ export type ExecuteStaffQuoteResult = {
   arrivalDate: string;
   departureDate: string;
   description: string;
+  /** Optional so a pane built before the server change still parses the result. */
+  runId?: string | null;
+  screenshots?: string[];
 };
 
 export type StaffQuoteSourceResult =
@@ -128,8 +133,10 @@ export async function sha256HexOfBytes(bytes: Uint8Array): Promise<string | null
   return [...new Uint8Array(digest)].map((n) => n.toString(16).padStart(2, '0')).join('');
 }
 
-function rejectionReason(error: unknown, label: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : `${label} rejected`;
+function rejectionReason(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : 'The request did not finish. Refresh the pane and try again.';
 }
 
 function knownNativeCode(raw: string): string | null {
@@ -180,13 +187,13 @@ export function staffQuoteGroupsFromStay(
   const out: StaffQuoteGroupInput[] = [];
   for (const group of groups) {
     if (!group.arrivalDate || !group.departureDate) {
-      return { error: 'Arrival and departure dates are required before executeStaffQuote.' };
+      return { error: 'Enter the arrival and departure dates before running the quote.' };
     }
     if (group.board === 'unknown') {
-      return { error: 'Board is unknown. Correct the stay facts before executeStaffQuote.' };
+      return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
-      return { error: 'Quantity and adult occupancy are required before executeStaffQuote.' };
+      return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
     const rooms = resolveNativeRoomCodes({
       roomPreference: group.roomPreference,
@@ -194,7 +201,7 @@ export function staffQuoteGroupsFromStay(
     });
     if (rooms.status === 'unresolved') {
       return {
-        error: `Room preference "${rooms.label}" is not a native room code. Correct it to one of ${[...KNOWN_NATIVE_ROOM_CODES].join(', ')}.`,
+        error: `Room type "${rooms.label}" is not one HMS knows. Choose one of: ${[...KNOWN_NATIVE_ROOM_CODES].join(', ')}.`,
       };
     }
     out.push({
@@ -210,7 +217,7 @@ export function staffQuoteGroupsFromStay(
   }
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {
-    return { error: 'Distinct stays need separate executeStaffQuote calls.' };
+    return { error: 'Each date range needs its own quote. Run them one at a time.' };
   }
   return { ok: out };
 }
@@ -267,12 +274,12 @@ export async function bindStaffQuoteSource(args: {
 }): Promise<BoundStaffSource> {
   const internetMessageId = args.internetMessageId?.trim();
   if (!internetMessageId) {
-    return { kind: 'unavailable', reason: 'staffQuoteSource needs the selected internetMessageId.' };
+    return { kind: 'unavailable', reason: 'The selected email is not ready yet. Select it again.' };
   }
   if (!args.query) {
     return {
       kind: 'unavailable',
-      reason: 'Client has no workstation.staffQuoteSource. Snapshot still pending.',
+      reason: 'The email is not ready for quoting yet. Wait a moment, then select it again.',
     };
   }
   try {
@@ -284,14 +291,14 @@ export async function bindStaffQuoteSource(args: {
       !result.threadId?.trim() ||
       !SOURCE_HASH.test(result.sourceHash)
     ) {
-      return { kind: 'unavailable', reason: 'staffQuoteSource did not return a server-resolved sourceHash.' };
+      return { kind: 'unavailable', reason: 'The email could not be verified. Select it again.' };
     }
     return {
       kind: 'ready',
       source: { messageId: result.messageId, threadId: result.threadId, sourceHash: result.sourceHash },
     };
   } catch (error) {
-    return { kind: 'unavailable', reason: rejectionReason(error, 'staffQuoteSource') };
+    return { kind: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -305,10 +312,10 @@ export async function bindStaffActions(args: {
   threadId?: string;
 }): Promise<BoundStaffActions> {
   if (!args.threadId?.trim()) {
-    return { kind: 'unavailable', reason: 'staffActions need the server-resolved threadId.' };
+    return { kind: 'unavailable', reason: 'Actions for this email are not ready yet. Select it again.' };
   }
   if (!args.list && !args.get) {
-    return { kind: 'unavailable', reason: 'Client has no drafts.list/get for staffActions.' };
+    return { kind: 'unavailable', reason: 'Email actions cannot be loaded from this pane yet. Refresh the pane and try again.' };
   }
   try {
     if (args.list) {
@@ -336,7 +343,7 @@ export async function bindStaffActions(args: {
     }
     return { kind: 'ready', actions: [] };
   } catch (error) {
-    return { kind: 'unavailable', reason: rejectionReason(error, 'staffActions') };
+    return { kind: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -352,7 +359,7 @@ export function allocationFromStaffQuote(
     id: result.revisionRef,
     kind: 'allocation',
     roomCode: '',
-    roomLabel: result.description.trim() || 'Selected allocation',
+    roomLabel: result.description.trim() || 'Selected room option',
     board: groups[0]?.board === 'unknown' ? 'bb' : groups[0]?.board ?? 'bb',
     rateCode: '',
     currency: 'ZAR',
@@ -382,7 +389,7 @@ export function approvedExecuteHeader(header: StaffQuoteHeader): Pick<
 > {
   const salesStrategy = header.salesStrategy === 'Government' ? 'Government' : header.salesStrategy === 'BAR' ? 'BAR' : null;
   if (!salesStrategy) {
-    throw new Error('executeStaffQuote needs an explicit staff-approved BAR or Government salesStrategy.');
+    throw new Error('Choose the rate type (BAR or Government) before running the quote.');
   }
   return {
     salesStrategy,
@@ -411,7 +418,7 @@ export async function bindExecuteStaffQuote(args: {
     return {
       status: 'unavailable',
       reason:
-        'Client has no workstation.executeStaffQuote. Do not call enqueueHmsRead or execute party separately.',
+        'Quoting is not connected to this pane yet. Refresh the pane and try again.',
     };
   }
   const prepared = staffQuoteGroupsFromStay(args.groups);
@@ -427,28 +434,28 @@ export async function bindExecuteStaffQuote(args: {
       ...header,
     });
     if (!result || typeof result !== 'object') {
-      return { status: 'unavailable', reason: 'executeStaffQuote returned an empty result.' };
+      return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
     }
     if ('alternatives' in result && Array.isArray(result.alternatives) && result.alternatives.length) {
-      return { status: 'unavailable', reason: 'executeStaffQuote returned alternatives. One selected allocation is required.' };
+      return { status: 'unavailable', reason: 'HMS returned several room options. Pick one, then try again.' };
     }
     if (result.status !== 'ready' || !('workflowRunId' in result)) {
-      return { status: 'unavailable', reason: 'executeStaffQuote did not return a ready selected allocation.' };
+      return { status: 'unavailable', reason: 'HMS did not return a room option that can be booked. Try again.' };
     }
     if (result.selectionEpoch !== args.selectionEpoch || result.inputRevision !== args.inputRevision) {
-      return { status: 'unavailable', reason: 'executeStaffQuote result is stale against the current input revision.' };
+      return { status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.' };
     }
     if (result.messageId !== args.source.messageId) {
-      return { status: 'unavailable', reason: 'executeStaffQuote result messageId does not match staffQuoteSource.' };
+      return { status: 'unavailable', reason: 'The quote does not match the selected email. Select the email again, then run it again.' };
     }
     if (typeof result.workflowRunId !== 'string' || !result.workflowRunId.trim()) {
-      return { status: 'unavailable', reason: 'executeStaffQuote omitted workflowRunId.' };
+      return { status: 'unavailable', reason: 'HMS did not return a quote reference. Try again.' };
     }
     if (typeof result.revisionRef !== 'string' || !result.revisionRef.trim()) {
-      return { status: 'unavailable', reason: 'executeStaffQuote omitted revisionRef.' };
+      return { status: 'unavailable', reason: 'HMS did not return a quote revision. Try again.' };
     }
     if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor <= 0) {
-      return { status: 'unavailable', reason: 'executeStaffQuote total is not an authentic ZAR minor amount greater than 0.' };
+      return { status: 'unavailable', reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.' };
     }
     const staffQuote: StaffQuoteAllocation = {
       workflowRunId: result.workflowRunId,
@@ -471,6 +478,10 @@ export async function bindExecuteStaffQuote(args: {
         clientEmail: header.clientEmail,
         clientTelephone: header.clientTelephone,
       },
+      runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
+      screenshots: Array.isArray(result.screenshots)
+        ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+        : [],
     };
     return {
       status: 'ok',
@@ -481,7 +492,7 @@ export async function bindExecuteStaffQuote(args: {
         : [],
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'executeStaffQuote') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -498,13 +509,13 @@ export async function bindQualifiedStaffProposalPdf(args: {
     return {
       status: 'unavailable',
       reason:
-        'Client has no workstation.qualifiedQuoteProposalPdf. Do not invent a second PDF engine or mint centsReconciled:true.',
+        'PDF creation is not connected to this pane yet. Refresh the pane and try again.',
     };
   }
   if (typeof args.input.company !== 'string' || typeof args.input.agency !== 'string') {
     return {
       status: 'unavailable',
-      reason: 'qualifiedQuoteProposalPdf company/agency must equal approved executeStaffQuote input.',
+      reason: 'The company or agency on the PDF does not match the quote. Run the quote again.',
     };
   }
   try {
@@ -536,7 +547,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
     ) {
       return {
         status: 'unavailable',
-        reason: 'qualifiedQuoteProposalPdf omitted real bytes/hash/revision identity or total does not match the selected revision.',
+        reason: 'The PDF could not be checked against the quote. Try again.',
       };
     }
     const bytes = bytesFromBase64(pdf.pdfBase64);
@@ -544,7 +555,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
     if (!bytes?.length || actualHash !== pdf.pdfHash) {
       return {
         status: 'unavailable',
-        reason: 'qualifiedQuoteProposalPdf hash does not match the actual PDF bytes.',
+        reason: 'The PDF file did not match its check code. Try again.',
       };
     }
     return {
@@ -558,13 +569,49 @@ export async function bindQualifiedStaffProposalPdf(args: {
       },
     };
   } catch (error) {
-    return { status: 'unavailable', reason: rejectionReason(error, 'qualifiedQuoteProposalPdf') };
+    return { status: 'unavailable', reason: rejectionReason(error) };
+  }
+}
+
+/**
+ * Reads one audit screenshot of a staff quote run. A missing query, a failed read,
+ * or a response that is not a PNG/JPEG data URL resolves to unavailable.
+ */
+export async function bindQuoteRunScreenshot(args: {
+  query?: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
+  runId: string;
+  name: string;
+}): Promise<QuoteRunScreenshotResult> {
+  if (!args.query) return { status: 'unavailable', reason: 'not_connected' };
+  try {
+    const result = await args.query({ runId: args.runId, name: args.name });
+    if (result?.status === 'ready' && result.dataUrl.startsWith('data:image/')) return result;
+    return { status: 'unavailable', reason: result?.status === 'unavailable' ? result.reason : 'invalid_response' };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error) };
+  }
+}
+
+/**
+ * Reads the caller's staff quote run status. A missing query (older server) or a
+ * failed read resolves to null, so the poller keeps its last good status.
+ */
+export async function bindHmsQueueStatus(query?: () => Promise<QueueStatus>): Promise<QueueStatus | null> {
+  if (!query) return null;
+  try {
+    return (await query()) ?? null;
+  } catch {
+    return null;
   }
 }
 
 type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
+  hmsQueueStatus?: { query: () => Promise<QueueStatus> };
+  quoteRunScreenshot?: {
+    query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
+  };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {

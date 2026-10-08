@@ -198,7 +198,7 @@ describe('Outlook pane quote proposal PDF', () => {
     view.rerender(<OutlookPanePage />);
     await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Review the quotation PDF')));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Make the PDF and finish the reply')));
     expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
   });
   it('prepares the booking draft from the staff-edited stay dates, not the raw Luna read-out', async () => {
@@ -353,7 +353,7 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('GET_ACTIVE_EMAIL', {}));
     expect(sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT')).toHaveLength(0);
-    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/selected.*Outlook.*changed/i));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/switched emails while the PDF/i));
   });
 
   it('checks the actual selection again before retrying an uncertain reply with its original operation ID', async () => {
@@ -383,7 +383,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(sendCommandMock.mock.calls.filter(([action]) =>
       action === 'GET_ACTIVE_EMAIL')).toHaveLength(2));
     expect(sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
-    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/selected.*Outlook.*changed/i));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/switched emails while the PDF/i));
     expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
 
     sessionState.nativeSelectedEntryId = '001';

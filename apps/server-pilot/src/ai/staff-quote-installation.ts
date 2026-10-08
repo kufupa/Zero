@@ -49,7 +49,10 @@ export type StaffQuoteInstallationConfiguration = z.infer<typeof configurationSc
 export type InstalledStaffQuoteServiceOptions = Pick<
   BusinessOptions,
   'authorizationId' | 'authorizeContext' | 'signer'
->;
+> & {
+  /** Reports the private evidence directory of a completed capture run. */
+  onEvidenceDirectory?: (evidenceDirectory: string) => void;
+};
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -550,6 +553,7 @@ export function getInstalledStaffQuoteServices(
         evidenceDirectory?: string;
       };
       if (!result.evidenceDirectory) throw new Error('staff_quote_native_capture_unavailable');
+      options.onEvidenceDirectory?.(result.evidenceDirectory);
       return { stdout: 'Evidence: ' + result.evidenceDirectory + '\n' };
     },
   });

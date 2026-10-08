@@ -18,8 +18,16 @@ export function WorkflowBadge({ analysis }: { analysis: QuoteAnalysis | null }) 
   if (!label && !analysis.aiUnavailable) return null;
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {label ? <span className={chipClass}>{label}</span> : null}
-      {analysis.aiUnavailable ? <span className={mutedChipClass}>AI unavailable</span> : null}
+      {label ? (
+        <>
+          <span className="text-[10.5px] text-[#64748b]">Luna reads this as</span>
+          <span className={chipClass}>{label}</span>
+        </>
+      ) : null}
+      {analysis.aiUnavailable ? <span className={mutedChipClass}>Read without AI</span> : null}
+      {analysis.aiUnavailable ? (
+        <span className="text-[10.5px] text-[#64748b]">Check every field by hand.</span>
+      ) : null}
     </div>
   );
 }

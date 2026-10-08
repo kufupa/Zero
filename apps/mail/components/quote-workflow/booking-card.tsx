@@ -15,6 +15,27 @@ const BOARD_LABELS: Record<string, string | undefined> = {
   dinner_bb: 'Dinner, bed & breakfast',
 };
 
+const BOOKING_FLAG_COPY: Record<string, string | undefined> = {
+  party_rate_not_applied:
+    'Company rate not applied: the booking has no company attached. Check the rate in HMS before booking.',
+  joint_inventory_unproven:
+    'Rooms for all stays are not proven to be free together. Check availability in HMS before booking.',
+};
+
+const RATE_CHECK_REASON_COPY: Record<string, string | undefined> = {
+  ambiguous_stay: 'the email has more than one stay',
+  ambiguous_basis: 'it is unclear whether the rate is per room or for the whole stay',
+  amount_precision: 'the amount format is unclear',
+  amount_overflow: 'the amount is too large to compare',
+  incompatible_scope_currency_or_tax: 'the rate is in a different currency or tax basis',
+  invalid_contract: 'the rate agreement could not be read',
+  invalid_target: 'the quoted total could not be matched',
+  nightly_target_unavailable: 'no nightly rate is available to compare',
+  not_a_price_agreement: 'the email gives a budget, not a price',
+  rounding_boundary_unknown: 'the rounding is too close to call',
+  source_missing: 'the email does not show where the rate came from',
+};
+
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -66,23 +87,24 @@ function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
     return (
       <p className="rounded-xs border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
-        Price match
-        {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+        Price matches the email
+        {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
       </p>
     );
   }
   if (check.status === 'mismatch') {
     return (
       <p className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-        Price mismatch: {check.claimQuote}
-        {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+        Price differs from the email: {check.claimQuote}
+        {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
       </p>
     );
   }
+  const why = check.reason ? RATE_CHECK_REASON_COPY[check.reason] : undefined;
   return (
     <p className="rounded-xs border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
-      Cannot check{check.reason ? `: ${check.reason}` : ''}
-      {check.assumedTaxBasis ? ' · assumes VAT-inclusive' : ''}
+      Could not compare with the email{why ? `: ${why}` : ''}
+      {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
     </p>
   );
 }
@@ -160,14 +182,14 @@ export function BookingCards({
     <section className="flex flex-col gap-2">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Booking draft</h3>
       <p className="text-[11px] text-[#64748b]">
-        Saving in HMS from here is switched off for now. Click Copy next to each field and paste it into HMS Guest Stay.
+        Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.
       </p>
       {draft.draft.rateCheck.map((check, index) => (
         <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
       ))}
       {draft.draft.flags.map((flag) => (
         <p key={flag} className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-          {flag}
+          {BOOKING_FLAG_COPY[flag] ?? 'Check this booking detail in HMS before booking.'}
         </p>
       ))}
       {draft.draft.missing.map((item) => (
@@ -300,17 +322,17 @@ export function BookingCards({
           disabled
           className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
         >
-          Commit
+          Book in HMS
         </button>
         <button
           type="button"
           disabled
           className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
         >
-          Save
+          Save draft
         </button>
       </div>
-      <p className="text-[11px] text-[#64748b]">Saving from the pane is coming next — copy into HMS</p>
+      <p className="text-[11px] text-[#64748b]">Saving from this pane is coming soon. For now, copy each field into HMS.</p>
     </section>
   );
 }
