@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, hmsDateToIso, identityCheck, isCancelledStatus,
-  labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parseIsoDate,
-  parseLookupArgs, parsePanelRows, parsePenalty, parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight,
-  resolveOutcome, sameStayRows, searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
+  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
+  arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
+  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
+  pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
+  parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
+  searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -28,7 +30,15 @@ test('parseCancelArgs accepts the documented usage and defaults the reason', () 
     mode: 'preview',
     reason: 'Test Reservations',
     out: '/tmp/cancel-stay-proof',
+    lastName: null,
   });
+});
+
+test('parseCancelArgs takes an optional --last-name surname and refuses anything that is not one', () => {
+  assert.equal(parseCancelArgs(argv({ '--last-name': ' Labtest ' })).args.lastName, 'Labtest');
+  assert.equal(parseCancelArgs(argv()).args.lastName, null);
+  assert.match(parseCancelArgs(argv({ '--last-name': 'Labtest, Proof' })).error, /--last-name must be a surname/);
+  assert.match(parseCancelArgs(argv({ '--last-name': '--mode' })).error, /Missing value for --last-name/);
 });
 
 test('parseCancelArgs accepts commit mode and an explicit reason', () => {
@@ -275,22 +285,30 @@ const GUEST = ['--mode', 'search-guest', '--out', '/tmp/stay-lookup'];
 
 test('parseLookupArgs accepts find by confirmation with an optional arrival', () => {
   assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', '57291630-1']).args, {
-    mode: 'find', confirmation: '57291630-1', arrival: null, lastName: null, departure: null, out: '/tmp/stay-lookup',
+    mode: 'find', confirmation: '57291630-1', arrival: null, lastName: null, departure: null, out: '/tmp/stay-lookup', debugHtml: false,
   });
   assert.deepEqual(parseLookupArgs([...FIND, '--confirmation', ' 57291630-1 ', '--arrival', '2027-09-14']).args, {
-    mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14', lastName: null, departure: null, out: '/tmp/stay-lookup',
+    mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14', lastName: null, departure: null, out: '/tmp/stay-lookup', debugHtml: false,
   });
 });
 
 test('parseLookupArgs accepts search-guest with surname, arrival and an optional departure', () => {
   assert.deepEqual(parseLookupArgs([...GUEST, '--last-name', "  O'Neil-Jones ", '--arrival', '2027-09-14', '--departure', '2027-09-15']).args, {
-    mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup',
+    mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup', debugHtml: false,
   });
   assert.equal(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14']).ok, true);
 });
 
+test('parseLookupArgs takes --debug-html as a switch in either mode, once, and never as a value', () => {
+  assert.equal(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--debug-html']).args.debugHtml, true);
+  assert.equal(parseLookupArgs([...GUEST, '--debug-html', '--last-name', 'Labtest', '--arrival', '2027-09-14']).args.debugHtml, true);
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--debug-html', '--debug-html']).error, /Repeated argument: --debug-html/);
+  assert.match(parseLookupArgs([...FIND, '--out', '--debug-html', '--confirmation', '57291630-1']).error, /Missing value for --out/);
+});
+
 test('parseLookupArgs refuses flags that do not belong to the mode, and missing or repeated values', () => {
-  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest']).error, /--last-name is not valid with --mode find/);
+  assert.equal(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest']).args.lastName, 'Labtest', 'find takes an optional surname');
+  assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--last-name', 'Labtest, Nava']).error, /--last-name must be a surname/);
   assert.match(parseLookupArgs([...FIND, '--confirmation', '57291630-1', '--departure', '2027-09-15']).error, /--departure is not valid/);
   assert.match(parseLookupArgs([...GUEST, '--last-name', 'Labtest', '--arrival', '2027-09-14', '--confirmation', '57291630-1']).error, /--confirmation is not valid with --mode search-guest/);
   assert.match(parseLookupArgs([...FIND]).error, /Required: --confirmation/);
@@ -396,11 +414,11 @@ test('stayFromFormPairs leaves a field null when two different values conflict, 
   assert.equal(stay.adults, 2, 'the same value twice is not a conflict');
 });
 
-test('stayIdentityVerdict finds the requested confirmation and arrival, and never guesses otherwise', () => {
+test('stayIdentityVerdict matches the confirmation only: a different arrival is a hint, never a rejection', () => {
   const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, stay), { outcome: 'found', reason: null });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-14' }, stay), { outcome: 'found', reason: null });
-  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-15' }, stay), { outcome: 'ambiguous', reason: 'arrival_mismatch' });
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: '2027-09-15' }, stay), { outcome: 'found', reason: null });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '11110906-1', arrival: null }, stay), { outcome: 'ambiguous', reason: 'confirmation_mismatch' });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, { confirmation: null }), { outcome: 'execution_failure', reason: 'form_unreadable' });
   assert.deepEqual(stayIdentityVerdict({ confirmation: '57291630-1', arrival: null }, null), { outcome: 'execution_failure', reason: 'form_unreadable' });
@@ -466,9 +484,221 @@ test('stay-lookup.mjs is read-only: no Enter, no Save, Actions, Cancel or OK cli
 
 test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cancel flow is unchanged', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
-  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'clickRunIfShown', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
-    assert.match(source, new RegExp(`export async function ${name}\\(`), name);
+  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'typeHeaderSearch', 'clickHeaderRun', 'pressArrowDown', 'clickInsideSearch', 'quickActions', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
+    assert.match(source, new RegExp(`export (async )?function ${name}\\(`), name);
   }
-  assert.match(source, /dateWindow && args\.arrival && !windowCovers/);
+  assert.match(source, /runConfirmationSearch\(io, \{/);
+  assert.match(source, /driveQuickSearch\(quickActions\(page, term\)/);
+  assert.match(source, /moveWindow: \(startIso\) => setQuickWindow\(page, startIso\)/);
   assert.match(source, /if \(!args\.arrival\) return null;/);
+});
+
+// ---- Snapshot pairing and panel parsing (pure: the DOM is covered by stay-lookup-dom.test.mjs) ----
+
+const label = (text, rows, forId = '') => ({ kind: 'label', text, forId, rows });
+const field = (value, rows, id = '', name = '') => ({ kind: 'field', id, name, value, rows });
+
+test('formPairsFromSnapshot pairs an input by its for attribute, then by the nearest earlier label in a shared row', () => {
+  const entries = [
+    label('Status:', [1], 'f-status'),
+    field('Cancelled', [1], 'f-status', 'status'),
+    label('Nights:', [2]),
+    field('1', [3, 2], '', 'nights'),
+    label('Room Type:', [4]),
+    label('Room Type for Charge:', [5]),
+    field('STQN', [6, 4], '', 'roomtype'),
+    field('', [5], '', 'roomtypecharge'),
+  ];
+  assert.deepEqual(formPairsFromSnapshot(entries), [
+    { label: 'Status:', value: 'Cancelled', name: 'status' },
+    { label: 'Nights:', value: '1', name: 'nights' },
+    { label: 'Room Type:', value: 'STQN', name: 'roomtype' },
+  ]);
+});
+
+test('formPairsFromSnapshot never pairs across rows, never lets an unknown label claim an input, and claims a label once', () => {
+  const entries = [
+    label('Adults:', [1]),
+    label('Walk In:', [1]),
+    field('2', [1], '', 'adults'),
+    label('Arrival Date:', [2]),
+    field('14-SEP-2027', [3], '', 'arrivaldate'),
+    label('Balance:', [4]),
+    field('0.00', [4], '', 'balance'),
+    field('9.99', [4], '', 'stray'),
+  ];
+  const pairs = formPairsFromSnapshot(entries);
+  assert.deepEqual(pairs.map((pair) => pair.label), ['Adults:', 'Balance:']);
+  assert.equal(pairs[0].value, '2');
+  assert.equal(pairs.some((pair) => pair.name === 'arrivaldate'), false, 'the label is in another row');
+});
+
+test('parsePanelSnapshot reads a cell-split row, falls back to its lines, and returns the cells of an unreadable row', () => {
+  const cellRow = {
+    cells: ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027\n15-SEP-2027'],
+    lines: ['57291630-1', 'Labtest, Nava', 'Cancelled', '14-SEP-2027', '15-SEP-2027'],
+  };
+  const linesOnly = { cells: [], lines: ['46184891-1', 'Labtest, Ana', 'Reserved', '14-SEP-2027', '15-SEP-2027'] };
+  const broken = { cells: ['57291630-1', 'Labtest, Nava'], lines: ['57291630-1', 'Labtest, Nava'] };
+  const header = { cells: ['Conf', 'Guest', 'Status'], lines: ['Conf', 'Guest', 'Status'] };
+  const parsed = parsePanelSnapshot({ rows: [cellRow, linesOnly, broken, header], unresolved: 0, footer: 'Records: 2 of 3' });
+  assert.deepEqual(parsed.rows.map((row) => row.confirmation), ['57291630-1', '46184891-1']);
+  assert.equal(parsed.unreadable, 1, 'the header has no confirmation and is not a data row');
+  assert.deepEqual(parsed.unreadableRows, [broken]);
+  assert.equal(parsePanelSnapshot({ rows: [], unresolved: 2 }).unreadable, 2);
+});
+
+// ---- Post-commit settle: pollUntil and settleCancel on a fake clock (no real sleeping) ----
+
+function fakeClock() {
+  const clock = { t: 0 };
+  clock.now = () => clock.t;
+  clock.sleep = async (ms) => {
+    clock.t += ms;
+  };
+  return clock;
+}
+
+test('pollUntil reads at once, then every interval, and returns the first read that satisfies until', async () => {
+  const clock = fakeClock();
+  const answers = [false, false, false, true];
+  let reads = 0;
+  const result = await pollUntil({
+    read: async () => answers[reads++],
+    until: (value) => value === true,
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.deepEqual(result, { value: true, timedOut: false, polls: 4, elapsedMs: 9000 });
+  assert.equal(clock.t, 9000);
+});
+
+test('pollUntil with a satisfied first read never sleeps', async () => {
+  const clock = fakeClock();
+  const result = await pollUntil({ read: async () => 'Cancelled', until: (v) => v === 'Cancelled', budgetMs: 60000, intervalMs: 3000, now: clock.now, sleep: clock.sleep });
+  assert.deepEqual(result, { value: 'Cancelled', timedOut: false, polls: 1, elapsedMs: 0 });
+  assert.equal(clock.t, 0);
+});
+
+test('pollUntil gives up at the budget: reads at 0, 3, ... 60 s, the last one at 60 s, then timedOut', async () => {
+  const clock = fakeClock();
+  let reads = 0;
+  const result = await pollUntil({
+    read: async () => {
+      reads += 1;
+      return 'Reserved';
+    },
+    until: (value) => value === 'Cancelled',
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.deepEqual(result, { value: 'Reserved', timedOut: true, polls: 21, elapsedMs: 60000 });
+  assert.equal(reads, 21);
+  assert.equal(clock.t, 60000);
+});
+
+test('pollUntil counts a slow read against the budget: the last read starts before 60 s and ends after it', async () => {
+  const clock = fakeClock();
+  const result = await pollUntil({
+    read: async () => {
+      clock.t += 2000;
+      return 'Reserved';
+    },
+    until: (value) => value === 'Cancelled',
+    budgetMs: 60000,
+    intervalMs: 3000,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.polls, 13, 'reads start at 0, 5, ..., 60 s');
+  assert.equal(result.elapsedMs, 62000);
+});
+
+test('settleCancel waits for the processing mask to clear, then polls the status until it reads Cancelled', async () => {
+  const clock = fakeClock();
+  const masks = [true, true, false];
+  const statuses = ['Reserved', 'Cancelled'];
+  const settled = await settleCancel(
+    { maskVisible: async () => masks.shift(), readStatus: async () => statuses.shift() },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.deepEqual(settled, {
+    statusAfter: 'Cancelled',
+    cancelled: true,
+    maskCleared: true,
+    maskMs: 6000,
+    statusPolls: 2,
+    statusMs: 3000,
+  });
+  assert.equal(clock.t, 9000);
+});
+
+test('settleCancel reports unconfirmed after 60 s of an unchanged status', async () => {
+  const clock = fakeClock();
+  const settled = await settleCancel(
+    { maskVisible: async () => false, readStatus: async () => 'Reserved' },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled.cancelled, false);
+  assert.equal(settled.statusAfter, 'Reserved');
+  assert.equal(settled.statusPolls, 21);
+  assert.equal(settled.statusMs, 60000);
+  assert.equal(clock.t, 60000);
+});
+
+test('settleCancel keeps polling the status when the mask never clears, so a cancel HMS applied is still seen', async () => {
+  const clock = fakeClock();
+  const settled = await settleCancel(
+    { maskVisible: async () => true, readStatus: async () => 'Cancelled' },
+    { now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled.maskCleared, false);
+  assert.equal(settled.maskMs, 60000);
+  assert.equal(settled.cancelled, true);
+  assert.equal(settled.statusAfter, 'Cancelled');
+});
+
+test('the settle budget is 60 s and the interval 3 s', () => {
+  assert.equal(SETTLE_BUDGET_MS, 60000);
+  assert.equal(SETTLE_INTERVAL_MS, 3000);
+});
+
+test('cancel-stay.mjs settles a commit through settleCancel, waits for the processing mask, and has no one-shot readback', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /settleCancel\(settleIo\(ctx\)/);
+  assert.match(source, /Processing request/);
+  assert.equal(/readBack\(/.test(source), false);
+});
+
+// ---- Arrival is a hint: identityCheck (write guard) and arrivalReport ----
+
+test('identityCheck keeps the arrival match for a write, and takes it as a hint when arrivalHint is set', () => {
+  const args = { confirmation: '61143613-1', arrival: '2027-10-12' };
+  const record = { confirmation: '61143613-1', lastName: 'Labtest', arrival: '13-OCT-2027' };
+  assert.deepEqual(identityCheck(args, record), { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' });
+  assert.deepEqual(identityCheck(args, record, { arrivalHint: true }), { ok: true, outcome: null, reason: null });
+  const wrongConf = { ...record, confirmation: '57291630-1' };
+  assert.equal(identityCheck(args, wrongConf, { arrivalHint: true }).outcome, 'refused_identity_mismatch', 'the confirmation always matches');
+  const realGuest = { ...record, lastName: 'Smith' };
+  assert.equal(identityCheck(args, realGuest, { arrivalHint: true }).outcome, 'refused_not_lab', 'the lab rules always apply');
+});
+
+test('arrivalReport says when the booking arrives on another day than the one asked about, with both dates', () => {
+  assert.deepEqual(arrivalReport({ arrival: '2027-10-12' }, '2027-10-13'), {
+    arrivalMismatch: true,
+    requestedArrival: '2027-10-12',
+    hmsArrival: '2027-10-13',
+  });
+  assert.deepEqual(arrivalReport({ arrival: '2027-10-12' }, '2027-10-12'), {
+    arrivalMismatch: false,
+    requestedArrival: '2027-10-12',
+    hmsArrival: '2027-10-12',
+  });
+  assert.equal(arrivalReport({ arrival: '2027-10-12' }, null).arrivalMismatch, false, 'an unreadable HMS arrival is not a mismatch');
+  assert.equal(arrivalReport({ arrival: null }, '2027-10-13').arrivalMismatch, false, 'no requested arrival, no mismatch');
 });

@@ -65,6 +65,10 @@ export type PaneStayFindResult = {
     | 'refused_lock_busy';
   reason: string | null;
   stay: PaneStayFields | null;
+  /** The arrival is a hint: a different HMS arrival is reported with both dates, never refused. */
+  arrivalMismatch: boolean;
+  requestedArrival: string | null;
+  hmsArrival: string | null;
   /** File names only. The files stay in the lookup run directory. */
   screenshots: string[];
   runId: string | null;
@@ -82,6 +86,9 @@ export type PaneStayLookupSpawnResult = {
   reason: string | null;
   stay: PaneStayFields | null;
   rows: PaneStayPanelRow[];
+  arrivalMismatch?: boolean;
+  requestedArrival?: string | null;
+  hmsArrival?: string | null;
   screenshots: string[];
   runId?: string;
   runDir?: string;
@@ -141,7 +148,16 @@ export function buildStayLookupArgs(input: PaneStayLookupSpawnInput, outDir: str
 }
 
 function refused(outcome: PaneStayFindResult['outcome']): PaneStayFindResult {
-  return { outcome, reason: null, stay: null, screenshots: [], runId: null };
+  return {
+    outcome,
+    reason: null,
+    stay: null,
+    arrivalMismatch: false,
+    requestedArrival: null,
+    hmsArrival: null,
+    screenshots: [],
+    runId: null,
+  };
 }
 
 const FIND_OUTCOMES: ReadonlySet<string> = new Set(['found', 'not_found', 'ambiguous', 'execution_failure']);
@@ -206,6 +222,9 @@ async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLo
     reason: result.reason ?? null,
     stay: result.stay ?? null,
     rows: result.rows ?? [],
+    arrivalMismatch: result.arrivalMismatch,
+    requestedArrival: result.requestedArrival,
+    hmsArrival: result.hmsArrival,
     screenshots: result.screenshots ?? [],
     runId,
     runDir: dir,
@@ -233,10 +252,14 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   }
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toFindOutcome(run.outcome);
+  const stay = outcome === 'found' ? toPaneStayFields(run.stay) : null;
   return {
     outcome,
     reason: run.reason,
-    stay: outcome === 'found' ? toPaneStayFields(run.stay) : null,
+    stay,
+    arrivalMismatch: run.arrivalMismatch === true,
+    requestedArrival: run.requestedArrival ?? input.arrival ?? null,
+    hmsArrival: run.hmsArrival ?? stay?.arrival ?? null,
     screenshots: run.screenshots.map((path) => basename(path)),
     runId: run.runId ?? null,
   };

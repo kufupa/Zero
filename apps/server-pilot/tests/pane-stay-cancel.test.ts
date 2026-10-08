@@ -129,6 +129,10 @@ describe('pane stay cancel', () => {
       statusAfter: null,
       reasons: [],
       penaltyText: null,
+      message: null,
+      arrivalMismatch: false,
+      requestedArrival: null,
+      hmsArrival: null,
       screenshots: [],
       runId: null,
       previewDigest: null,
@@ -233,6 +237,10 @@ describe('pane stay cancel', () => {
       statusAfter: 'Reserved',
       reasons: ['Test Reservations', 'Duplicate Booking'],
       penaltyText: null,
+      message: null,
+      arrivalMismatch: false,
+      requestedArrival: '2027-09-14',
+      hmsArrival: null,
       screenshots: ['found.png', 'cancel-dialog.png'],
       runId: null,
       previewDigest: digestOf(stay),
@@ -363,6 +371,37 @@ describe('pane stay cancel', () => {
       commitCancel({ ...stay, owner, reason: 'Duplicate Booking', previewDigest: digestOf(stay) }),
     ).resolves.toMatchObject({ outcome: 'cancel_preview_required' });
     expect(calls.map((call) => call.mode)).toEqual(['preview']);
+  });
+
+  it('maps cancel_unconfirmed to the operator message, and gives no message to a confirmed cancel', async () => {
+    enableCancel({ commit: { outcome: 'cancel_unconfirmed', statusAfter: 'Reserved' } });
+    const first = await previewCancel({ ...stay, owner });
+    await expect(
+      commitCancel({ ...stay, owner, reason: 'Test Reservations', previewDigest: first.previewDigest ?? undefined }),
+    ).resolves.toMatchObject({
+      outcome: 'cancel_unconfirmed',
+      message: 'HMS may have cancelled this booking. Check HMS before trying again.',
+    });
+    enableCancel();
+    const second = await previewCancel({ ...stay, owner });
+    await expect(
+      commitCancel({ ...stay, owner, reason: 'Test Reservations', previewDigest: second.previewDigest ?? undefined }),
+    ).resolves.toMatchObject({ outcome: 'cancelled', message: null });
+  });
+
+  it('passes already_cancelled through from the CLI', async () => {
+    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.lock = passingLock();
+    paneStayCancelLoaders.spawn = async () =>
+      cliResult({
+        outcome: 'already_cancelled',
+        statusBefore: 'Cancelled',
+        statusAfter: 'Cancelled',
+      });
+    await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'already_cancelled',
+      statusAfter: 'Cancelled',
+    });
   });
 
   it('maps a failed run to execution_failure instead of throwing', async () => {

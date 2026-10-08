@@ -1,0 +1,153 @@
+<!doctype html>
+<!-- SYNTHETIC fixture: laid out from luna-v3-code .private/stay-lookup/0057-find/record.png (stay 57291630-1, Labtest,
+     Nava, 14-SEP-2027 to 15-SEP-2027). The labels that came back null in that live run are plain elements, not <label>
+     (the old pairing only read <label>), with their fields in nested trigger or field-wrap tables. Replace this file with
+     record-form.html from a --debug-html live run. The assertions in stay-lookup-dom.test.mjs hold for the same stay. -->
+<html>
+<head><meta charset="utf-8"><title>Guest Stay</title></head>
+<body>
+<div id="record-view" class="x-panel">
+  <table class="x-table-layout"><tbody>
+    <tr>
+      <td class="x-table-layout-cell" id="top">
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-status">Status:</label></td>
+          <td class="x-form-item-body"><input id="f-status" name="status" value="Cancelled" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-conf">Confirmation Number:&bull;</label></td>
+          <td class="x-form-item-body"><input id="f-conf" name="confirmationnumber" value="57291630-1" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Last Property:</label></td>
+          <td class="x-form-item-body"><input name="lastproperty" value="" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-balance">Balance:</label></td>
+          <td class="x-form-item-body"><input id="f-balance" name="balance" value="0.00" readonly> <button class="x-btn">ZAR</button></td>
+        </tr></tbody></table>
+      </td>
+    </tr>
+    <tr>
+      <td class="x-table-layout-cell" id="stay-left">
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Primary Booking Agency:&bull;</label></td>
+          <td class="x-form-item-body"><input name="ta1" value="" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Organization:&bull;</label></td>
+          <td class="x-form-item-body"><input name="company" value="" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-arr">Arrival Date:</label></td>
+          <td class="x-form-item-body"><input id="f-arr" name="arrivaldate" value="14-SEP-2027" readonly> <button class="x-btn">Tue</button></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Nights:</label></td>
+          <td class="x-form-item-body"><input name="nights" value="1" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><div class="x-form-item-label-text">Departure Date:</div></td>
+          <td class="x-form-item-body">
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input type="hidden" name="departuredate" value="2027-09-15"></td>
+            </tr></tbody></table>
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input name="departuredate" value="15-SEP-2027" readonly></td>
+              <td class="x-form-trigger"><span class="x-form-trigger-icon">&#9660;</span></td>
+            </tr></tbody></table>
+            <button class="x-btn">Wed</button>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Adults:</label></td>
+          <td class="x-form-item-body"><input name="adults" value="1" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Child 0 - 02:</label></td>
+          <td class="x-form-item-body"><input name="child02" value="0" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><span class="x-form-item-label-text">Children:</span></td>
+          <td class="x-form-item-body">
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input name="children" value="0" readonly></td>
+              <td class="x-form-trigger"><span class="x-form-trigger-icon">&#9650;</span></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-source">Source Of Business:</label></td>
+          <td class="x-form-item-body"><input id="f-source" name="sourceofbusinessdesc" value="Walk in" readonly> <span class="x-form-trigger-icon">&#9660;</span></td>
+        </tr></tbody></table>
+      </td>
+      <td class="x-table-layout-cell" id="stay-middle">
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-guarantee">Guarantee Type:</label></td>
+          <td class="x-form-item-body"><input id="f-guarantee" name="guaranteetype" value="Non-Guaranteed Individual" readonly> <span class="x-form-trigger-icon">&#9660;</span></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><span class="x-form-item-label-text">Room Type:</span></td>
+          <td class="x-form-item-body">
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input name="roomtype" value="STQN" readonly></td>
+              <td class="x-form-trigger"><span class="x-form-trigger-icon">&#9660;</span></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label>Room Type for Charge:</label></td>
+          <td class="x-form-item-body"><input name="roomtypecharge" value="" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><div class="x-form-item-label-text">Rate Plan:</div></td>
+          <td class="x-form-item-body">
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input name="rateplan" value="BAR" readonly></td>
+              <td class="x-form-trigger"><span class="x-form-info">i</span></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><span class="x-form-item-label-text">Meal Plan:</span></td>
+          <td class="x-form-item-body">
+            <table class="x-form-trigger-wrap"><tbody><tr>
+              <td><input name="mealplan" value="Bed &amp; Breakfast R" readonly></td>
+              <td class="x-form-trigger"><span class="x-form-trigger-icon">&#9660;</span></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><span class="x-form-item-label-text">Average Rate:</span></td>
+          <td class="x-form-item-body">
+            <table class="x-form-field-wrap"><tbody><tr>
+              <td><input name="averagerate" value="2,060.00" readonly></td>
+              <td><button class="x-btn">ZAR</button></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><span class="x-form-item-label-text">Grand Total:</span></td>
+          <td class="x-form-item-body">
+            <table class="x-form-field-wrap"><tbody><tr>
+              <td><input name="grandtotal" value="2,060.00" readonly></td>
+              <td><button class="x-btn">ZAR</button></td>
+            </tr></tbody></table>
+          </td>
+        </tr></tbody></table>
+      </td>
+      <td class="x-table-layout-cell" id="guest">
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-last">Last Name:</label></td>
+          <td class="x-form-item-body"><input id="f-last" name="lastname" value="Labtest" readonly></td>
+        </tr></tbody></table>
+        <table class="x-form-item"><tbody><tr>
+          <td class="x-form-item-label"><label for="f-first">First Name:</label></td>
+          <td class="x-form-item-body"><input id="f-first" name="firstname" value="Nava" readonly></td>
+        </tr></tbody></table>
+      </td>
+    </tr>
+  </tbody></table>
+</div>
+</body>
+</html>

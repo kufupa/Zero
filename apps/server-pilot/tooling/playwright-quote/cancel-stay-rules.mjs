@@ -7,7 +7,8 @@ export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason']);
+// --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
+const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name']);
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);
 const OK_OUTCOMES = new Set(['preview_ok', 'cancelled', 'already_cancelled']);
@@ -155,7 +156,20 @@ export function parseCancelArgs(argv) {
   if (!MODES.has(mode)) return refuse('--mode must be preview or commit');
   const reason = squash(values.get('--reason') ?? DEFAULT_REASON);
   if (!reason) return refuse('--reason must not be empty');
-  return { ok: true, exitCode: 0, args: { confirmation, arrival, mode, reason, out: values.get('--out') } };
+  const lastName = optionalSurname(values);
+  if (lastName === false) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
+  return {
+    ok: true,
+    exitCode: 0,
+    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName },
+  };
+}
+
+// The optional --last-name: its squashed surname, null when absent, or false when present but not a surname.
+function optionalSurname(values) {
+  if (!values.has('--last-name')) return null;
+  const lastName = squash(values.get('--last-name'));
+  return GUEST_SURNAME.test(lastName) ? lastName : false;
 }
 
 // Refuses before any browser work when the requested arrival is not a 2027+ lab stay.
@@ -174,12 +188,26 @@ export function labGuard({ lastName, arrival }) {
 }
 
 // Full identity check on the opened record. The lab guard runs first, so a real guest is always refused as not_lab.
-export function identityCheck(args, record) {
+// The lab guard and the confirmation always apply. The arrival must match for a write (commit). With arrivalHint the
+// requested arrival is only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
+export function identityCheck(args, record, { arrivalHint = false } = {}) {
   const lab = labGuard(record);
   if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
   if (squash(record.confirmation) !== args.confirmation) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'confirmation' };
-  if (lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
+  if (!arrivalHint && lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
   return { ok: true, outcome: null, reason: null };
+}
+
+// The arrival the operator asked about (requestedArrival, possibly a date the guest proposed) against the arrival HMS
+// holds for the booking (hmsArrival, ISO). arrivalMismatch is true only when both are known and differ.
+export function arrivalReport(args, hmsArrival) {
+  const requestedArrival = args.arrival ?? null;
+  const hms = hmsArrival ?? null;
+  return {
+    arrivalMismatch: Boolean(requestedArrival && hms && hms !== requestedArrival),
+    requestedArrival,
+    hmsArrival: hms,
+  };
 }
 
 export function isCancelledStatus(status) {
@@ -232,6 +260,62 @@ export function resolveOutcome({ mode, statusBefore, statusAfter }) {
   return isCancelledStatus(statusAfter) ? 'cancelled' : 'cancel_unconfirmed';
 }
 
+// After a commit's reason OK HMS shows a "Processing request." mask and keeps the open form's old status until it clears
+// (live 0144: a readback 3.5 s after OK still read Reserved, and the booking was cancelled). settleCancel waits for the
+// mask, then polls the status until it reads Cancelled. Each wait gives up after the budget (60 s), polling every
+// interval (3 s).
+export const SETTLE_BUDGET_MS = 60_000;
+export const SETTLE_INTERVAL_MS = 3_000;
+
+// Calls read() now, then every intervalMs, until until(value) holds. It gives up once budgetMs has passed since the first
+// call, after a last read at the budget. now() and sleep(ms) are injected so the schedule can run on a fake clock.
+export async function pollUntil({ read, until, budgetMs, intervalMs, now = Date.now, sleep }) {
+  const start = now();
+  let polls = 0;
+  for (;;) {
+    polls += 1;
+    const value = await read();
+    const elapsedMs = now() - start;
+    if (until(value)) return { value, timedOut: false, polls, elapsedMs };
+    if (elapsedMs >= budgetMs) return { value, timedOut: true, polls, elapsedMs };
+    await sleep(Math.min(intervalMs, budgetMs - elapsedMs));
+  }
+}
+
+// io: { maskVisible(), readStatus() }. The status is the last one read, so an unconfirmed commit still reports what
+// HMS showed last. A mask that never clears does not stop the status poll: HMS may have cancelled regardless.
+export async function settleCancel(io, {
+  budgetMs = SETTLE_BUDGET_MS,
+  intervalMs = SETTLE_INTERVAL_MS,
+  now = Date.now,
+  sleep,
+}) {
+  const mask = await pollUntil({
+    read: io.maskVisible,
+    until: (visible) => !visible,
+    budgetMs,
+    intervalMs,
+    now,
+    sleep,
+  });
+  const status = await pollUntil({
+    read: io.readStatus,
+    until: (value) => isCancelledStatus(value),
+    budgetMs,
+    intervalMs,
+    now,
+    sleep,
+  });
+  return {
+    statusAfter: status.value,
+    cancelled: !status.timedOut,
+    maskCleared: !mask.timedOut,
+    maskMs: mask.elapsedMs,
+    statusPolls: status.polls,
+    statusMs: status.elapsedMs,
+  };
+}
+
 export function exitCodeFor(outcome) {
   if (OK_OUTCOMES.has(outcome)) return 0;
   if (REFUSED_OUTCOMES.has(outcome)) return 2;
@@ -257,9 +341,11 @@ export function checkCdpEnv(env) {
 
 const LOOKUP_MODES = new Set(['find', 'search-guest']);
 const LOOKUP_VALUE_FLAGS = new Set(['--mode', '--confirmation', '--arrival', '--departure', '--last-name', '--out']);
-// Flags each mode accepts besides --mode and --out.
+// Switches with no value. --debug-html writes the form or panel HTML into the run directory.
+const LOOKUP_SWITCHES = new Set(['--debug-html']);
+// Flags each mode accepts besides --mode, --out and the switches.
 const LOOKUP_MODE_FLAGS = {
-  find: new Set(['--confirmation', '--arrival']),
+  find: new Set(['--confirmation', '--arrival', '--last-name']),
   'search-guest': new Set(['--last-name', '--arrival', '--departure']),
 };
 const LOOKUP_OK_OUTCOMES = new Set(['found', 'not_found', 'ok']);
@@ -270,9 +356,16 @@ export function parseLookupArgs(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (LOOKUP_SWITCHES.has(flag)) {
+      if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
+      values.set(flag, true);
+      continue;
+    }
     if (!LOOKUP_VALUE_FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
     const value = argv[index + 1];
-    if (value === undefined || LOOKUP_VALUE_FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (value === undefined || LOOKUP_VALUE_FLAGS.has(value) || LOOKUP_SWITCHES.has(value)) {
+      return refuse(`Missing value for ${flag}`);
+    }
     if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
     values.set(flag, value);
     index += 1;
@@ -281,9 +374,11 @@ export function parseLookupArgs(argv) {
   if (!LOOKUP_MODES.has(mode)) return refuse('--mode must be find or search-guest');
   if (!values.has('--out')) return refuse('Required: --out');
   const accepted = LOOKUP_MODE_FLAGS[mode];
-  const stray = [...values.keys()].find((flag) => flag !== '--mode' && flag !== '--out' && !accepted.has(flag));
+  const stray = [...values.keys()].find((flag) => !['--mode', '--out', ...LOOKUP_SWITCHES].includes(flag)
+    && !accepted.has(flag));
   if (stray) return refuse(`${stray} is not valid with --mode ${mode}`);
   const out = values.get('--out');
+  const debugHtml = values.get('--debug-html') === true;
   let arrival = null;
   if (values.has('--arrival')) {
     arrival = parseIsoDate(values.get('--arrival'));
@@ -293,7 +388,13 @@ export function parseLookupArgs(argv) {
     if (!values.has('--confirmation')) return refuse('Required: --confirmation');
     const confirmation = values.get('--confirmation').trim();
     if (!/^\d+-\d+$/.test(confirmation)) return refuse('--confirmation must look like 57291630-1');
-    return { ok: true, exitCode: 0, args: { mode, confirmation, arrival, lastName: null, departure: null, out } };
+    const lastName = optionalSurname(values);
+    if (lastName === false) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
+    return {
+      ok: true,
+      exitCode: 0,
+      args: { mode, confirmation, arrival, lastName, departure: null, out, debugHtml },
+    };
   }
   if (!values.has('--last-name')) return refuse('Required: --last-name');
   if (!values.has('--arrival')) return refuse('Required: --arrival');
@@ -305,7 +406,11 @@ export function parseLookupArgs(argv) {
     if (!departure) return refuse('--departure must be a real calendar date, YYYY-MM-DD');
     if (departure <= arrival) return refuse('--departure must be after --arrival');
   }
-  return { ok: true, exitCode: 0, args: { mode, confirmation: null, arrival, lastName, departure, out } };
+  return {
+    ok: true,
+    exitCode: 0,
+    args: { mode, confirmation: null, arrival, lastName, departure, out, debugHtml },
+  };
 }
 
 export function lookupExitCode(outcome) {
@@ -379,10 +484,11 @@ export function stayFromFormPairs(pairs) {
 
 // The record or row must show the requested confirmation, and the requested arrival when one was given.
 // A missing confirmation means the form was not read, so the run is a failure rather than a mismatch.
+// The record or row must show the requested confirmation, and only that: the arrival is a hint, so a different arrival is
+// reported by arrivalReport rather than refused.
 export function stayIdentityVerdict(args, stay) {
   if (!stay || !stay.confirmation) return { outcome: 'execution_failure', reason: 'form_unreadable' };
   if (squash(stay.confirmation) !== args.confirmation) return { outcome: 'ambiguous', reason: 'confirmation_mismatch' };
-  if (args.arrival && stay.arrival !== args.arrival) return { outcome: 'ambiguous', reason: 'arrival_mismatch' };
   return { outcome: 'found', reason: null };
 }
 
@@ -395,28 +501,56 @@ export function parseRecordsFooter(text) {
   return shown <= total ? { shown, total } : null;
 }
 
-// Each raw row is the visible leaf texts of one dropdown row. A row without exactly one confirmation, or that
-// parseQuickSearchRow cannot read, counts as unreadable; the caller fails closed on any unreadable row.
+// One dropdown row from its cell texts (a text may span lines). Null unless exactly one line is a confirmation and
+// parseQuickSearchRow reads the rest of the row.
+function parseDropdownRow(cellTexts) {
+  const confirmations = cellLines(cellTexts).filter((cell) => CONFIRMATION_TOKEN.test(cell));
+  return confirmations.length === 1 ? parseQuickSearchRow(cellTexts, confirmations[0]) : null;
+}
+
+function toPanelRow(row) {
+  return {
+    confirmation: row.confirmation,
+    lastName: row.lastName,
+    firstName: row.firstName,
+    status: row.status,
+    arrival: hmsDateToIso(row.arrival),
+    departure: row.departure ? hmsDateToIso(row.departure) : null,
+  };
+}
+
+// Each raw row is the cell texts of one dropdown row. A row that does not parse counts as unreadable; the caller
+// fails closed on any unreadable row.
 export function parsePanelRows(rawRows) {
   const rows = [];
   let unreadable = 0;
   for (const cells of rawRows ?? []) {
-    const confirmations = cellLines(cells).filter((cell) => CONFIRMATION_TOKEN.test(cell));
-    const row = confirmations.length === 1 ? parseQuickSearchRow(cells, confirmations[0]) : null;
-    if (!row) {
-      unreadable += 1;
-      continue;
-    }
-    rows.push({
-      confirmation: row.confirmation,
-      lastName: row.lastName,
-      firstName: row.firstName,
-      status: row.status,
-      arrival: hmsDateToIso(row.arrival),
-      departure: row.departure ? hmsDateToIso(row.departure) : null,
-    });
+    const row = parseDropdownRow(cells);
+    if (row) rows.push(toPanelRow(row));
+    else unreadable += 1;
   }
   return { rows, unreadable };
+}
+
+// Snapshot from snapshotPanel (stay-lookup-dom.mjs). A candidate is a data row when one of its cell or line texts is a
+// confirmation. Its cells are read first; when they do not parse, its lines are read. A row that parses neither way is
+// unreadable and its texts come back for the dump. Each unresolved confirmation leaf is unreadable too.
+export function parsePanelSnapshot(snapshot) {
+  const rows = [];
+  const unreadableRows = [];
+  let unreadable = snapshot?.unresolved ?? 0;
+  for (const candidate of snapshot?.rows ?? []) {
+    const texts = [...cellLines(candidate.cells), ...cellLines(candidate.lines)];
+    if (!texts.some((text) => CONFIRMATION_TOKEN.test(text))) continue;
+    const row = parseDropdownRow(candidate.cells) ?? parseDropdownRow(candidate.lines);
+    if (row) {
+      rows.push(toPanelRow(row));
+    } else {
+      unreadable += 1;
+      unreadableRows.push(candidate);
+    }
+  }
+  return { rows, unreadable, unreadableRows };
 }
 
 // Every panel row must be read, and the footer must account for all of them. Capped panels are not complete.
@@ -434,4 +568,40 @@ export function sameStayRows(rows, { lastName, arrival, departure = null }) {
   return rows.filter((row) => row.lastName.toLowerCase() === surname
     && row.arrival === arrival
     && (departure === null || row.departure === departure));
+}
+
+// Entries from snapshotRecordForm to {label, value, name} pairs. An input whose id is some label's for attribute takes
+// that label. Any other input takes the nearest earlier known label whose innermost row is one of the input's rows;
+// unknown labels never claim an input, and a label is claimed once. A label with no input is simply not paired.
+export function formPairsFromSnapshot(entries) {
+  const known = (entry) => entry.kind === 'label' && formLabelKey(entry.text) !== null;
+  const labelByFor = new Map();
+  entries.forEach((entry, index) => {
+    if (known(entry) && entry.forId && !labelByFor.has(entry.forId)) labelByFor.set(entry.forId, index);
+  });
+  const claimed = new Set();
+  const labelOf = new Map();
+  entries.forEach((entry, index) => {
+    if (entry.kind !== 'field' || !entry.id || !labelByFor.has(entry.id)) return;
+    const labelIndex = labelByFor.get(entry.id);
+    if (claimed.has(labelIndex)) return;
+    labelOf.set(index, labelIndex);
+    claimed.add(labelIndex);
+  });
+  entries.forEach((field, index) => {
+    if (field.kind !== 'field' || labelOf.has(index)) return;
+    for (let labelIndex = index - 1; labelIndex >= 0; labelIndex -= 1) {
+      const label = entries[labelIndex];
+      if (!known(label) || claimed.has(labelIndex) || label.rows.length === 0) continue;
+      if (!field.rows.includes(label.rows[0])) continue;
+      labelOf.set(index, labelIndex);
+      claimed.add(labelIndex);
+      break;
+    }
+  });
+  return [...labelOf].map(([fieldIndex, labelIndex]) => ({
+    label: entries[labelIndex].text,
+    value: entries[fieldIndex].value,
+    name: entries[fieldIndex].name,
+  }));
 }

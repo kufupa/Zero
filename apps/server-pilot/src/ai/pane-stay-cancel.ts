@@ -46,13 +46,29 @@ export type PaneStayCancelResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
-  /** PNG file names only. Fetch the bytes with paneStayCancel.paneStayScreenshot({ runId, name }). */
+  /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), otherwise null. */
+  message: string | null;
+  /** The arrival was a hint: HMS holds another date for this booking. Both dates are returned for the pane's text. */
+  arrivalMismatch: boolean;
+  requestedArrival: string | null;
+  hmsArrival: string | null;
+  /** PNG file names only. The files stay in the CLI run directory. Fetch the bytes with paneStayCancel.paneStayScreenshot({ runId, name }). */
   screenshots: string[];
   /** Screenshot directory id for paneStayScreenshot. Null when no CLI run wrote files. */
   runId: string | null;
   /** Set only when a preview finished as preview_ok. Commit sends it back with the same stay. */
   previewDigest: string | null;
 };
+
+// Operator-facing text per outcome. cancel_unconfirmed: the status did not read Cancelled within 60 s after OK, but HMS
+// may have applied the cancel, so the operator checks HMS before anything else.
+export const PANE_CANCEL_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ['cancel_unconfirmed', 'HMS may have cancelled this booking. Check HMS before trying again.'],
+]);
+
+export function paneCancelMessage(outcome: string): string | null {
+  return PANE_CANCEL_MESSAGES.get(outcome) ?? null;
+}
 
 export type PaneStayCancelSpawnInput = {
   mode: PaneStayCancelMode;
@@ -68,6 +84,9 @@ export type PaneStayCancelSpawnResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
+  arrivalMismatch?: boolean;
+  requestedArrival?: string | null;
+  hmsArrival?: string | null;
   screenshots: string[];
   /** Absolute directory the CLI wrote result.json and the PNGs to. Absent when no run wrote files. */
   runDir?: string;
@@ -136,6 +155,10 @@ function refused(outcome: string): PaneStayCancelResult {
     statusAfter: null,
     reasons: [],
     penaltyText: null,
+    message: paneCancelMessage(outcome),
+    arrivalMismatch: false,
+    requestedArrival: null,
+    hmsArrival: null,
     screenshots: [],
     runId: null,
     previewDigest: null,
@@ -170,6 +193,9 @@ async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCa
     statusAfter: result.statusAfter ?? null,
     reasons: result.reasons ?? [],
     penaltyText: result.penaltyText ?? null,
+    arrivalMismatch: result.arrivalMismatch,
+    requestedArrival: result.requestedArrival,
+    hmsArrival: result.hmsArrival,
     screenshots: result.screenshots ?? [],
     runDir: dir,
   };
@@ -227,6 +253,10 @@ async function runPaneStayCancel(
       statusAfter: spawned.statusAfter,
       reasons: spawned.reasons,
       penaltyText: spawned.penaltyText,
+      message: paneCancelMessage(spawned.outcome),
+      arrivalMismatch: spawned.arrivalMismatch === true,
+      requestedArrival: spawned.requestedArrival ?? input.arrival ?? null,
+      hmsArrival: spawned.hmsArrival ?? null,
       screenshots: spawned.screenshots
         .map((path) => basename(path))
         .filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)),

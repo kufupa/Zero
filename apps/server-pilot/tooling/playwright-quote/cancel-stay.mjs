@@ -10,7 +10,8 @@
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
 // recorded and left open; OK is never clicked on it.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"]
+// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest]
+// --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -19,10 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, identityCheck, isCancelledStatus,
-  normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, squash, windowCovers,
+  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
+  isCancelledStatus, normalizeReasons, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
+import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -40,6 +42,11 @@ function newResult(args) {
     arrival: args.arrival,
     mode: args.mode,
     reason: args.reason,
+    lastName: args.lastName ?? null,
+    quickStages: [],
+    arrivalMismatch: false,
+    requestedArrival: args.arrival ?? null,
+    hmsArrival: null,
     statusBefore: null,
     statusAfter: null,
     balance: null,
@@ -110,11 +117,21 @@ export async function openGuestStay(page) {
   }
 }
 
-export async function searchConfirmation(page, confirmation) {
-  const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+// The header search. Typing goes through the keyboard, so the search sees each key rather than one fill event.
+function headerSearch(page) {
+  return page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+}
+
+export async function typeHeaderSearch(page, text) {
+  const search = headerSearch(page);
   await search.click({ force: true });
-  await search.fill(confirmation);
-  await page.waitForTimeout(800);
+  await search.fill('');
+  await search.pressSequentially(text, { delay: 40 });
+  await page.waitForTimeout(500);
+}
+
+export async function searchConfirmation(page, confirmation) {
+  await typeHeaderSearch(page, confirmation);
 }
 
 async function runSearch(page) {
@@ -153,10 +170,31 @@ async function openWindowPicker(page) {
   if ((await page.locator(PICKER_OPEN).count()) === 0) throw new Error('DATE_PICKER_NOT_OPEN');
 }
 
+// Steps the open picker by whole months inside the page: one round trip instead of one per month over the CDP tunnel.
+// The arrow is pressed as mouse events (ExtJS repeats on mousedown). The loop in pickArrivalDay re-reads the title and
+// corrects any miss, so this only has to get close.
+async function stepPickerInPage(page, steps) {
+  await page.evaluate(async ({ count, selector }) => {
+    for (let index = 0; index < count; index += 1) {
+      const arrow = [...document.querySelectorAll(selector)].find((node) => node.getClientRects().length > 0);
+      if (!arrow) return;
+      for (const type of ['mousedown', 'mouseup', 'click']) {
+        arrow.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+      }
+      await new Promise((done) => setTimeout(done, 80));
+    }
+  }, { count: Math.abs(steps), selector: steps > 0 ? '.x-datepicker-next' : '.x-datepicker-prev' }).catch(() => {});
+  await page.waitForTimeout(200);
+}
+
 // Moves the open picker to the arrival month and clicks the arrival day.
 async function pickArrivalDay(page, arrival) {
   const title = page.locator(PICKER_TITLE).first();
   let steps = pickerMonthSteps(await title.innerText(), arrival);
+  if (steps !== null && Math.abs(steps) > 1) {
+    await stepPickerInPage(page, steps);
+    steps = pickerMonthSteps(await title.innerText(), arrival);
+  }
   for (let clicks = 0; steps !== 0; clicks += 1) {
     if (steps === null) throw new Error(`DATE_PICKER_TITLE_UNKNOWN:${squash(await title.innerText()).slice(0, 40)}`);
     if (clicks >= MAX_PICKER_CLICKS) throw new Error('DATE_PICKER_MONTH_UNREACHED');
@@ -201,13 +239,65 @@ export async function setQuickWindow(page, arrival) {
   await page.waitForTimeout(600);
 }
 
-// Enter is never pressed in the header search: with one match it opens the record and closes the dropdown.
-export async function clickRunIfShown(page) {
-  const run = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
-  if ((await run.count()) === 0) return false;
-  await run.first().click({ force: true });
-  await page.waitForTimeout(1000);
-  return true;
+// Quick-search nudges. ArrowDown from inside the field opens the list of a search that has text; a click at the right of
+// the field reopens it. Enter is never pressed: with one match it opens the record and closes the dropdown.
+export async function pressArrowDown(page) {
+  await headerSearch(page).press('ArrowDown');
+}
+
+export async function clickInsideSearch(page) {
+  const box = await headerSearch(page).boundingBox();
+  if (box) await page.mouse.click(box.x + box.width - 24, box.y + box.height / 2);
+}
+
+// The header Run only. The grid below has its own Run, which would run the grid instead of the quick search. Live HMS
+// marks the header one with stay-360-search-btn; the position check is the fallback.
+const HEADER_BOTTOM = 100;
+
+export async function clickHeaderRun(page) {
+  const marked = page.locator('a.stay-360-search-btn:visible');
+  if ((await marked.count()) === 1) {
+    await marked.click({ force: true });
+    await page.waitForTimeout(1000);
+    return true;
+  }
+  const runs = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ });
+  for (const index of await visibleIndexes(runs)) {
+    const box = await runs.nth(index).boundingBox();
+    if (box && box.y < HEADER_BOTTOM) {
+      await runs.nth(index).click({ force: true });
+      await page.waitForTimeout(1000);
+      return true;
+    }
+  }
+  return false;
+}
+
+// The page actions quick-search.mjs runs for one term. Typing alone only shows the history list ("No previous
+// searches."); the header Run executes the search, so the typed step always ends with it.
+export function quickActions(page, term) {
+  return {
+    type: async () => {
+      await typeHeaderSearch(page, term);
+      await clickHeaderRun(page);
+    },
+    arrowDown: () => pressArrowDown(page),
+    clickInside: () => clickInsideSearch(page),
+    headerRun: () => clickHeaderRun(page),
+  };
+}
+
+async function panelShown(page) {
+  return Boolean(await quickPanel(page));
+}
+
+// The panel only holds search results once a search ran: until then it shows the history list ("No previous
+// searches.") with "Records: 0 of 0". Executed means the footer is shown and the history line is not.
+export async function quickPanelExecuted(page) {
+  const panel = await quickPanel(page);
+  if (!panel) return false;
+  const text = await panel.innerText({ timeout: 2000 }).catch(() => '');
+  return /Records:\s*\d+\s+of\s+\d+/i.test(text) && !/No previous searches/i.test(text);
 }
 
 // The quick-search dropdown: the nearest ancestor of its In-House tab that also holds the "Records:" footer.
@@ -220,9 +310,18 @@ export async function quickPanel(page) {
   return (await panel.count()) === 1 ? panel : null;
 }
 
-// Visible leaf texts of the nearest ancestor that shows an HMS date: the dropdown row's cells, in document order.
+// The dropdown row's cell texts, in document order. The live panel is an ExtJS grid: tr.x-grid-row with one td per
+// column, and the dates cell holds "12-OCT-2027<br>13-OCT-2027" (fixtures/stay-lookup/panel-live.html). Leaf elements
+// would miss that cell (its only child is the <br>) and split the highlighted surname, so cells are read whole. The
+// leaf walk below is the fallback for a panel without grid rows.
 async function rowCells(locator) {
   return locator.evaluate((el) => {
+    const gridRow = el.closest('tr.x-grid-row, .x-grid-row, [role="row"]');
+    if (gridRow) {
+      const cells = [...gridRow.querySelectorAll('td, .x-grid-cell, [role="gridcell"]')]
+        .filter((cell) => cell.closest('tr.x-grid-row, .x-grid-row, [role="row"]') === gridRow);
+      if (cells.length > 0) return cells.map((cell) => cell.innerText || cell.textContent || '');
+    }
     const DATE = /\b\d{1,2}-[A-Za-z]{3}-\d{4}\b/;
     const shown = (node) => {
       const box = node.getBoundingClientRect();
@@ -278,51 +377,55 @@ export async function readBalance(page) {
 }
 
 // Polls the open form and the dropdown row. With needRow, only the row counts: a form opened before a commit can be stale.
+// A panel whose search ran without the row ends the wait early (executed): the caller moves on rather than waiting.
 async function waitForStay(page, confirmation, { needRow }) {
   const deadline = Date.now() + QUICK_WAIT_MS;
   for (;;) {
     const open = needRow ? null : await readOpenRecord(page, confirmation);
+    const executed = await quickPanelExecuted(page);
     const row = await readQuickRow(page, confirmation);
-    if (open || row) return { open, row };
-    if (Date.now() >= deadline) return { open, row };
+    if (open || row || executed) return { open, row, executed };
+    if (Date.now() >= deadline) return { open, row, executed };
     await page.waitForTimeout(500);
   }
 }
 
-// The header search types the confirmation only. An open record for it is used as it stands. Otherwise the
-// dropdown row is used; when the panel window does not cover arrival, its calendar icon moves the window first.
-// The grid window picker is the last resort. Returns {method, locator, row, open}: row is the dropdown row
-// (guarded before anything opens), open is the open record form, and locator is the row or grid cell to click.
-// Lookups without --arrival (stay-lookup.mjs find) never move the window; the cancel path always has arrival.
+// The header search types the confirmation. When no panel answers, quick-search.mjs nudges it (ArrowDown, a click inside
+// the field, the header Run). When the confirmation is still not in a panel and the surname is known, the surname is
+// typed and the row with the exact confirmation is taken. A panel whose window does not cover arrival is moved by its
+// calendar icon and searched again. An open record for the confirmation is used as it stands; a row is guarded before
+// anything opens. Returns {method, locator, row, open} or null.
+async function locateQuick(ctx, { allowOpenRecord }) {
+  const { page, args, result } = ctx;
+  const conf = args.confirmation;
+  const io = {
+    drive: (term, { needRow, done }) => driveQuickSearch(quickActions(page, term), {
+      ready: () => waitForStay(page, conf, { needRow }),
+      done,
+    }),
+    panelShown: () => panelShown(page),
+    moveWindow: (startIso) => setQuickWindow(page, startIso),
+  };
+  const { probe, method, stages } = await runConfirmationSearch(io, {
+    confirmation: conf,
+    lastName: args.lastName ?? null,
+    arrival: args.arrival ?? null,
+    allowOpenRecord,
+  });
+  result.quickStages = stages;
+  const source = chooseStaySource({ confirmation: conf, open: probe.open, row: probe.row, allowOpen: allowOpenRecord });
+  if (source === 'open_record') return { method: 'open_record', locator: null, row: null, open: probe.open };
+  if (source === 'row') return { method, locator: probe.row.locator, row: probe.row.row, open: null };
+  return null;
+}
+
+// The quick search first. The grid window picker is the last resort, and only for lookups that have an arrival.
+// Returns {method, locator, row, open}: row is the dropdown row (guarded before anything opens), open is the open
+// record form, and locator is the row or grid cell to click.
 export async function findStay(ctx, { evidence = false, allowOpenRecord = true } = {}) {
   const { page, args } = ctx;
-  await searchConfirmation(page, args.confirmation);
-  let probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
-  if (!probe.open && !probe.row && (await clickRunIfShown(page))) {
-    probe = await waitForStay(page, args.confirmation, { needRow: !allowOpenRecord });
-  }
-  const source = chooseStaySource({
-    confirmation: args.confirmation,
-    open: probe.open,
-    row: probe.row,
-    allowOpen: allowOpenRecord,
-  });
-  if (source === 'open_record') return { method: 'open_record', locator: null, row: null, open: probe.open };
-  if (source === 'row') {
-    let found = probe.row;
-    let method = 'quick';
-    const dateWindow = await readWindow(page);
-    if (dateWindow && args.arrival && !windowCovers(dateWindow, args.arrival)) {
-      await setQuickWindow(page, args.arrival);
-      await searchConfirmation(page, args.confirmation);
-      const moved = await waitForStay(page, args.confirmation, { needRow: true });
-      if (moved.row) {
-        found = moved.row;
-        method = 'quick_calendar';
-      }
-    }
-    return { method, locator: found.locator, row: found.row, open: null };
-  }
+  const quick = await locateQuick(ctx, { allowOpenRecord });
+  if (quick) return quick;
   if (!args.arrival) return null;
   await searchConfirmation(page, args.confirmation);
   await setArrivalWindow(page, args.arrival);
@@ -394,19 +497,22 @@ async function readReasonList(page, dialog) {
   return { items, texts, reasons: normalizeReasons(texts) };
 }
 
-// Dismisses the reason dialog without confirming: Escape collapses the open list or closes the window,
-// then the dialog's own Cancel button or close tool. Never OK.
+// Dismisses the reason dialog without confirming: Escape collapses the open list, a second Escape closes the window,
+// and the window's close tool is the last resort. No button inside the dialog is ever clicked (never OK, and not its
+// Cancel either, whose label is too close to the cancel action itself). Throws when the dialog stays open.
 async function closeCancelDialog(page, dialog) {
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForTimeout(300);
-  if ((await dialog.count()) > 0) {
-    const cancel = dialog.locator('.x-btn:visible').filter({ hasText: /^Cancel$/ });
-    const close = dialog.locator('.x-tool-close:visible');
-    if ((await cancel.count()) === 1) await cancel.first().click({ force: true });
-    else if ((await close.count()) >= 1) await close.first().click({ force: true });
-    else throw new Error('CANCEL_DIALOG_CLOSE_MISSING');
+  for (let attempt = 0; attempt < 2 && (await dialog.count()) > 0; attempt += 1) {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(400);
   }
-  await page.waitForTimeout(800);
+  if ((await dialog.count()) > 0) {
+    const close = dialog.locator('.x-tool-close:visible, .x-tool-close-default:visible');
+    if ((await close.count()) === 0) throw new Error('CANCEL_DIALOG_CLOSE_MISSING');
+    await close.first().click({ force: true });
+    await page.waitForTimeout(600);
+  }
+  if ((await dialog.count()) > 0) throw new Error('CANCEL_DIALOG_STILL_OPEN');
+  await page.waitForTimeout(400);
 }
 
 // Clicks the OK paired with Cancel inside the single visible Cancellation Reason window.
@@ -429,21 +535,28 @@ async function clickReasonOk(page) {
   });
 }
 
-// Reads the status after an action. While a dialog is still open over the grid, read the open record only.
-async function readBack(ctx, blocked) {
-  const { page, args, result } = ctx;
-  if (blocked) {
-    result.readbackMethod = 'open-record';
-    const record = await readRecord(page);
-    return record.confirmation === args.confirmation ? squash(record.status) : null;
-  }
-  result.readbackMethod = 're-search';
-  // Never trust a form that was open before the action: re-open the row from a fresh search.
-  const found = await findStay(ctx, { allowOpenRecord: false });
-  if (!found || !found.locator) return null;
-  await openRecord(page, found.locator);
+// The status after a commit. The open form counts only once it reads Cancelled, because HMS keeps the old status while it
+// processes. Otherwise a fresh header search reads the status on the dropdown row for the confirmation.
+async function readCommittedStatus(ctx) {
+  const { page, args } = ctx;
   const record = await readRecord(page);
-  return record.confirmation === args.confirmation ? squash(record.status) : null;
+  const formStatus = record.confirmation === args.confirmation ? squash(record.status) : null;
+  if (isCancelledStatus(formStatus)) return formStatus;
+  await quickActions(page, args.confirmation).type();
+  const probe = await waitForStay(page, args.confirmation, { needRow: true });
+  return probe.row ? squash(probe.row.row.status) : formStatus;
+}
+
+// The processing mask HMS shows while a commit is applied ("Processing request.").
+async function processingVisible(page) {
+  return (await visibleIndexes(page.getByText(/Processing request/i))).length > 0;
+}
+
+function settleIo(ctx) {
+  return {
+    maskVisible: () => processingVisible(ctx.page),
+    readStatus: () => readCommittedStatus(ctx),
+  };
 }
 
 function recordPenalty(result, penalty) {
@@ -468,7 +581,9 @@ async function run(ctx) {
   if (found.row) {
     // Quick-search row: guard and status come from the dropdown, before any record is opened.
     result.statusBefore = squash(found.row.status);
-    const rowVerdict = identityCheck(args, found.row);
+    // The arrival is a hint here: a different arrival is reported, and the record check below decides for a write.
+    Object.assign(result, arrivalReport(args, hmsDateToIso(found.row.arrival)));
+    const rowVerdict = identityCheck(args, found.row, { arrivalHint: true });
     if (!rowVerdict.ok) {
       result.outcome = rowVerdict.outcome;
       result.refusal = rowVerdict.reason;
@@ -488,7 +603,9 @@ async function run(ctx) {
   await shot(ctx, 'opened.png');
   mark(ctx, 'opened');
 
-  const verdict = identityCheck(args, record);
+  Object.assign(result, arrivalReport(args, hmsDateToIso(record.arrival)));
+  // Preview is not a write, so the arrival is a hint there. Commit keeps the arrival match.
+  const verdict = identityCheck(args, record, { arrivalHint: args.mode === 'preview' });
   if (!verdict.ok) {
     result.outcome = verdict.outcome;
     result.refusal = verdict.reason;
@@ -541,18 +658,21 @@ async function run(ctx) {
   result.clickedOk = true;
   mark(ctx, 'committed');
   await page.waitForTimeout(1500);
-
+  // HMS shows its "Processing request." mask while the cancel applies, and the open form keeps its old status until the
+  // mask clears (live 0144). Wait for the mask, then poll the status until it reads Cancelled. After 60 s it is unconfirmed.
+  const settled = await settleCancel(settleIo(ctx), { now: () => Date.now(), sleep: (ms) => delay(ms) });
   const windows = await visibleWindowTexts(page);
-  const followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
-  result.followUps = followUps;
-  const reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
+  result.followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
+  result.reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
   const penaltyAfter = parsePenalty(windows);
   if (penaltyAfter) {
     recordPenalty(result, penaltyAfter);
     result.penaltyPending = true;
     await shot(ctx, 'penalty.png');
   }
-  result.statusAfter = await readBack(ctx, followUps.length > 0 || reasonStillOpen);
+  result.statusAfter = settled.statusAfter;
+  result.settle = settled;
+  result.readbackMethod = 'settle';
   await shot(ctx, 'readback.png');
   mark(ctx, 'readback');
   result.outcome = resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });

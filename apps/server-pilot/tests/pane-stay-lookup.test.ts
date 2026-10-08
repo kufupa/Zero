@@ -124,6 +124,9 @@ describe('findStay', () => {
       outcome: 'refused_flag_off',
       reason: null,
       stay: null,
+      arrivalMismatch: false,
+      requestedArrival: null,
+      hmsArrival: null,
       screenshots: [],
       runId: null,
     });
@@ -224,6 +227,9 @@ describe('findStay', () => {
       outcome: 'found',
       reason: null,
       stay: STAY,
+      arrivalMismatch: false,
+      requestedArrival: '2027-09-14',
+      hmsArrival: '2027-09-14',
       screenshots: ['record.png'],
       runId: '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab',
     });
@@ -231,6 +237,20 @@ describe('findStay', () => {
     expect(registered).toEqual({
       runId: '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab',
       dir: '/tmp/pane-lookup-3f2b9c1e-6a4d-4b8e-9f00-1234567890ab',
+    });
+  });
+
+  it('the arrival is a hint: a date-change request for another day still finds the booking, and both dates are reported', async () => {
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ arrivalMismatch: true, requestedArrival: '2027-10-13', hmsArrival: '2027-10-12' });
+    await expect(
+      findStay({ confirmation: '61143613-1', arrival: '2027-10-13' }, { lock: () => passingLock() }),
+    ).resolves.toMatchObject({
+      outcome: 'found',
+      arrivalMismatch: true,
+      requestedArrival: '2027-10-13',
+      hmsArrival: '2027-10-12',
     });
   });
 
@@ -264,6 +284,9 @@ describe('findStay', () => {
       outcome: 'execution_failure',
       reason: null,
       stay: null,
+      arrivalMismatch: false,
+      requestedArrival: null,
+      hmsArrival: null,
       screenshots: [],
       runId: null,
     });
@@ -439,6 +462,9 @@ describe('paneStayLookup router', () => {
       outcome: 'found',
       reason: null,
       stay: STAY,
+      arrivalMismatch: false,
+      requestedArrival: null,
+      hmsArrival: '2027-09-14',
       screenshots: ['record.png'],
       runId: null,
     });
