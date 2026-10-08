@@ -52,6 +52,10 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.previewCancel?batch=1')).toBe(1_260_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.commitCancel?batch=1')).toBe(1_260_000);
   });
+  it('gives preview and commit of a pane save 27 minutes, past the duplicate read and the 20-minute save bound', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.previewStay?batch=1')).toBe(1_620_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.commitStay?batch=1')).toBe(1_620_000);
+  });
   it('keeps the screenshot reads short', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.screenshot?batch=1')).toBe(5_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.paneStayScreenshot?batch=1')).toBe(5_000);

@@ -11,6 +11,9 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     // A cancel run is bounded by the server at 20 minutes, so the browser waits slightly longer than that.
     if (routes.includes('paneStayCancel.previewCancel') || routes.includes('paneStayCancel.commitCancel'))
       return 21 * 60_000;
+    // A pane save runs the duplicate read (up to 5 minutes) and the save (up to 20) under the hotel lock.
+    if (routes.includes('quoteWorkflow.previewStay') || routes.includes('quoteWorkflow.commitStay'))
+      return 27 * 60_000;
     if (
       routes.includes('workstation.qualifiedQuoteProposalPdf') ||
       routes.includes('workstation.quoteProposalPdf') ||
