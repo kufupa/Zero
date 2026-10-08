@@ -68,9 +68,13 @@ export async function login(page, secret) {
 
 export async function openHotelAvailability(page) {
   await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of ['Front Desk', 'Availability', 'Hotel Availability']) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
+  const node = (name) => page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) });
+  await node('Front Desk').click();
+  for (let attempt = 0; attempt < 4 && !(await node('Hotel Availability').count()); attempt += 1) {
+    await node('Availability').click();
+    await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
+  await node('Hotel Availability').click();
   await page.locator('input[name="startdate"]:visible').waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
 }
