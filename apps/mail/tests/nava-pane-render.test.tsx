@@ -640,4 +640,24 @@ describe('NavaPane screen states', () => {
     await settle();
     expect(container).toMatchSnapshot();
   });
+
+  it('diagnostics: the connection step after a successful server ping', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
+    expect(await screen.findByText(/API server pinged at/)).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('tour: the first slide of the feature tour, opened once the server ping succeeds', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
+    await screen.findByText(/API server pinged at/);
+    fireEvent.click(screen.getByRole('button', { name: 'Next: 60-Second Feature Tour' }));
+    expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
 });

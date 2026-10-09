@@ -439,6 +439,313 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
 </div>
 `;
 
+exports[`NavaPane screen states > diagnostics: the connection step after a successful server ping 1`] = `
+<div>
+  <div
+    class="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+  >
+    <div
+      class="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]"
+    >
+      <header
+        class="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5"
+      >
+        <div
+          class="flex items-center gap-2"
+        >
+          <span
+            class="flex h-5 w-5 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white"
+          >
+            N
+          </span>
+          <div>
+            <h1
+              class="text-[13px] font-bold text-[#1e293b]"
+            >
+              Nava Reservationist
+            </h1>
+          </div>
+        </div>
+        <div
+          class="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]"
+        >
+          <span
+            class="h-2 w-2 rounded-full animate-pulse bg-emerald-600"
+          />
+          <span>
+            Centurion
+          </span>
+          <span
+            class="sr-only"
+          >
+            Connected to Classic Outlook (16.0; product/build unknown)
+          </span>
+        </div>
+      </header>
+      <p
+        class="mx-3 mt-2 text-[11px] text-slate-600"
+      >
+        Update the Outlook add-in to enable automatic email copying.
+      </p>
+      <div
+        class="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs"
+      >
+        <div
+          class="flex items-center gap-1 font-semibold text-[#1e293b]"
+        >
+          <span
+            class="text-[11px] text-[#64748b]"
+          >
+            Step
+          </span>
+        </div>
+        <div
+          class="flex items-center gap-1"
+        >
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            1. Welcome
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors bg-[#1a4332] font-semibold text-white"
+            type="button"
+          >
+            2. Connection
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            3. Tour
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            4. Quote Tool
+          </button>
+        </div>
+      </div>
+      <div
+        class="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-4 duration-150"
+      >
+        <div
+          class="my-auto flex flex-col items-center text-center"
+        >
+          <div
+            class="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]"
+          >
+            <svg
+              class="lucide lucide-network h-6 w-6"
+              fill="none"
+              height="24"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="6"
+                rx="1"
+                width="6"
+                x="16"
+                y="16"
+              />
+              <rect
+                height="6"
+                rx="1"
+                width="6"
+                x="2"
+                y="16"
+              />
+              <rect
+                height="6"
+                rx="1"
+                width="6"
+                x="9"
+                y="2"
+              />
+              <path
+                d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+              />
+              <path
+                d="M12 12V8"
+              />
+            </svg>
+          </div>
+          <h1
+            class="text-base font-bold text-[#1e293b]"
+          >
+            Connecting to Nava Services
+          </h1>
+          <p
+            class="mt-1 text-xs text-[#64748b]"
+          >
+            Verifying connection to Nava server and workstation environment.
+          </p>
+          <div
+            class="my-5 w-full space-y-3 text-left"
+          >
+            <div
+              class="flex items-start gap-2.5 rounded-sm border p-3 border-emerald-200 bg-emerald-50/50"
+            >
+              <svg
+                class="lucide lucide-circle-check h-4 w-4 shrink-0 text-emerald-600"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  d="m9 12 2 2 4-4"
+                />
+              </svg>
+              <div
+                class="flex-1"
+              >
+                <div
+                  class="flex items-center justify-between"
+                >
+                  <span
+                    class="text-xs font-semibold text-[#1e293b]"
+                  >
+                    Nava Server Connection
+                  </span>
+                  <span
+                    class="text-[10px] font-bold text-emerald-700"
+                  >
+                    CONNECTED
+                  </span>
+                </div>
+                <div
+                  class="mt-0.5 text-[11px] text-[#64748b]"
+                >
+                  Centurion Hotel · API server pinged at 2026-10-09 12:00:00 UTC · Active
+                </div>
+              </div>
+            </div>
+            <div
+              class="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800"
+            >
+              <svg
+                class="lucide lucide-circle-check h-4 w-4 shrink-0 text-emerald-600"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  d="m9 12 2 2 4-4"
+                />
+              </svg>
+              <span>
+                Nava server connected · Workstation API ping verified.
+              </span>
+            </div>
+          </div>
+          <button
+            aria-busy="false"
+            aria-disabled="false"
+            class="cursor-pointer whitespace-nowrap rounded-lg ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 aria-busy:cursor-progress h-10 px-4 py-2 flex w-full items-center justify-center gap-2 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023] disabled:opacity-50"
+            type="button"
+          >
+            <span>
+              Next: 60-Second Feature Tour
+            </span>
+            <svg
+              class="lucide lucide-arrow-right h-3.5 w-3.5"
+              fill="none"
+              height="24"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+              <path
+                d="m12 5 7 7-7 7"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <footer
+        class="mt-auto flex shrink-0 items-center justify-end border-t border-[#f1f5f9] px-3 py-1.5"
+      >
+        <button
+          aria-expanded="false"
+          aria-haspopup="menu"
+          aria-label="More"
+          class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
+          data-state="closed"
+          id="radix-«r3l»"
+          type="button"
+        >
+          <svg
+            class="lucide lucide-ellipsis h-4 w-4"
+            fill="none"
+            height="24"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="1"
+            />
+            <circle
+              cx="19"
+              cy="12"
+              r="1"
+            />
+            <circle
+              cx="5"
+              cy="12"
+              r="1"
+            />
+          </svg>
+        </button>
+      </footer>
+    </div>
+  </div>
+</div>
+`;
+
 exports[`NavaPane screen states > review: the system check results sit at the foot of the tool once the check ends 1`] = `
 <div>
   <div
@@ -3396,6 +3703,341 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
           id="radix-«r2u»"
+          type="button"
+        >
+          <svg
+            class="lucide lucide-ellipsis h-4 w-4"
+            fill="none"
+            height="24"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="1"
+            />
+            <circle
+              cx="19"
+              cy="12"
+              r="1"
+            />
+            <circle
+              cx="5"
+              cy="12"
+              r="1"
+            />
+          </svg>
+        </button>
+      </footer>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`NavaPane screen states > tour: the first slide of the feature tour, opened once the server ping succeeds 1`] = `
+<div>
+  <div
+    class="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+  >
+    <div
+      class="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]"
+    >
+      <header
+        class="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5"
+      >
+        <div
+          class="flex items-center gap-2"
+        >
+          <span
+            class="flex h-5 w-5 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white"
+          >
+            N
+          </span>
+          <div>
+            <h1
+              class="text-[13px] font-bold text-[#1e293b]"
+            >
+              Nava Reservationist
+            </h1>
+          </div>
+        </div>
+        <div
+          class="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]"
+        >
+          <span
+            class="h-2 w-2 rounded-full animate-pulse bg-emerald-600"
+          />
+          <span>
+            Centurion
+          </span>
+          <span
+            class="sr-only"
+          >
+            Connected to Classic Outlook (16.0; product/build unknown)
+          </span>
+        </div>
+      </header>
+      <p
+        class="mx-3 mt-2 text-[11px] text-slate-600"
+      >
+        Update the Outlook add-in to enable automatic email copying.
+      </p>
+      <div
+        class="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs"
+      >
+        <div
+          class="flex items-center gap-1 font-semibold text-[#1e293b]"
+        >
+          <span
+            class="text-[11px] text-[#64748b]"
+          >
+            Step
+          </span>
+        </div>
+        <div
+          class="flex items-center gap-1"
+        >
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            1. Welcome
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            2. Connection
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors bg-[#1a4332] font-semibold text-white"
+            type="button"
+          >
+            3. Tour
+          </button>
+          <button
+            class="rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors text-[#64748b] hover:bg-[#e2e8f0]"
+            type="button"
+          >
+            4. Quote Tool
+          </button>
+        </div>
+      </div>
+      <div
+        class="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-3 duration-150"
+      >
+        <div
+          class="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center"
+        >
+          <div
+            class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]"
+          >
+            <svg
+              class="lucide lucide-mail h-5 w-5"
+              fill="none"
+              height="24"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="16"
+                rx="2"
+                width="20"
+                x="2"
+                y="4"
+              />
+              <path
+                d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"
+              />
+            </svg>
+          </div>
+          <h2
+            class="text-sm font-bold text-[#1e293b]"
+          >
+            1. Automatic Email Sync
+          </h2>
+          <p
+            class="mt-1 text-xs text-[#64748b]"
+          >
+            When an inquiry arrives, key parameters are detected directly from the email thread.
+          </p>
+          <div
+            class="mt-4 w-full space-y-2 text-left"
+          >
+            <div
+              class="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs"
+            >
+              <svg
+                class="lucide lucide-circle-check mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  d="m9 12 2 2 4-4"
+                />
+              </svg>
+              <div>
+                <strong
+                  class="text-[#1e293b]"
+                >
+                  Direct HMS pre-fill:
+                </strong>
+                 
+                <span
+                  class="text-[#475569]"
+                >
+                  Extracted details automatically populate your fields with zero manual re-typing.
+                </span>
+              </div>
+            </div>
+            <div
+              class="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs"
+            >
+              <svg
+                class="lucide lucide-circle-check mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  d="m9 12 2 2 4-4"
+                />
+              </svg>
+              <div>
+                <strong
+                  class="text-[#1e293b]"
+                >
+                  Verify auto-filled details:
+                </strong>
+                 
+                <span
+                  class="text-[#475569]"
+                >
+                  During the pilot, please check the email vs the AI auto-filled details to make sure everything is correct.
+                </span>
+              </div>
+            </div>
+          </div>
+          <div
+            class="my-4 flex justify-center gap-1.5"
+          >
+            <button
+              aria-label="Slide 1"
+              class="h-2 rounded-full transition-all w-5 bg-[#1a4332]"
+              type="button"
+            />
+            <button
+              aria-label="Slide 2"
+              class="h-2 rounded-full transition-all w-2 bg-[#cbd5e1]"
+              type="button"
+            />
+            <button
+              aria-label="Slide 3"
+              class="h-2 rounded-full transition-all w-2 bg-[#cbd5e1]"
+              type="button"
+            />
+          </div>
+          <div
+            class="flex w-full items-center gap-2"
+          >
+            <button
+              aria-busy="false"
+              aria-disabled="true"
+              class="inline-flex items-center justify-center cursor-pointer gap-2 whitespace-nowrap rounded-lg font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 aria-busy:cursor-progress border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2 flex-1 text-xs"
+              disabled=""
+              type="button"
+            >
+              <svg
+                class="lucide lucide-chevron-left mr-1 h-3.5 w-3.5"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="m15 18-6-6 6-6"
+                />
+              </svg>
+               Previous
+            </button>
+            <button
+              aria-busy="false"
+              class="inline-flex items-center justify-center cursor-pointer gap-2 whitespace-nowrap rounded-lg ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 aria-busy:cursor-progress h-10 px-4 py-2 flex-1 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023]"
+              type="button"
+            >
+              <span>
+                Next
+              </span>
+               
+              <svg
+                class="lucide lucide-chevron-right ml-1 h-3.5 w-3.5"
+                fill="none"
+                height="24"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="m9 18 6-6-6-6"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <footer
+        class="mt-auto flex shrink-0 items-center justify-end border-t border-[#f1f5f9] px-3 py-1.5"
+      >
+        <button
+          aria-expanded="false"
+          aria-haspopup="menu"
+          aria-label="More"
+          class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
+          data-state="closed"
+          id="radix-«r3n»"
           type="button"
         >
           <svg
