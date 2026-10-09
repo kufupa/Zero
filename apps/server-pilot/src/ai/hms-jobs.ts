@@ -259,6 +259,8 @@ export async function prefetchHmsConfirmations(
   if (numbers.length === 0) return 0;
   const workItemId = await latestWorkItemId(db, run.transportId, run.threadId);
   let created = 0;
+  // The day is part of the key: a failed prefetch gets its next try tomorrow.
+  const dayKey = new Date().toISOString().slice(0, 10);
   for (const confirmation of numbers) {
     const used = await countRecentPrefetches(
       db,
@@ -275,8 +277,8 @@ export async function prefetchHmsConfirmations(
         userId: null,
         request: { kind: 'find', confirmation },
         priority: HMS_JOB_PRIORITY_PREFETCH,
-        // Same number again is a no-op, whichever mail carried it.
-        idempotencyKey: `hms-job:prefetch:${run.transportId}:${confirmation}`,
+        // Same number again on the same day is a no-op, whichever mail carried it.
+        idempotencyKey: `hms-job:prefetch:${run.transportId}:${confirmation}:${dayKey}`,
       },
       db,
     );
@@ -302,6 +304,8 @@ async function requeueRun(
       nextRunAt: new Date(Date.now() + input.delayMs),
       lastError: input.lastError,
       failureClass: input.failureClass,
+      // A yielded or retried job runs again later, so its next claim gets a fresh run deadline.
+      resetDeadline: true,
     },
     db,
   );
@@ -573,10 +577,13 @@ export async function registerJobScreenshotRun(
   registerPaneRun({ runId: input.cliRunId, dir, owner: input.owner, now: Date.now() });
 }
 
+/** A claim whose heartbeat is older than this belongs to a dead worker: three lease heartbeats of slack. */
+const HMS_CLAIM_STALE_MS = 60_000;
+
 /**
- * Runs at worker start. Read runs this lane's previous process still held go
- * back to retry_wait now, not after the stale-claim timeout. Other processes'
- * claims are left alone.
+ * Runs at worker start. Read runs that a dead hms worker still held go back to
+ * retry_wait now, not after the stale-claim timeout. A claim with a fresh
+ * heartbeat belongs to a live worker and is left alone.
  */
 export async function requeueHmsReadsAfterRestart(
   input: { ownerId: string },
@@ -601,6 +608,7 @@ export async function requeueHmsReadsAfterRestart(
         inArray(aiWorkflowRun.state, ['claimed', 'running']),
         like(aiWorkflowRun.claimOwner, 'hms-ai-worker-%'),
         ne(aiWorkflowRun.claimOwner, input.ownerId),
+        lt(aiWorkflowRun.heartbeatAt, new Date(now.getTime() - HMS_CLAIM_STALE_MS)),
       ),
     )
     .returning({ id: aiWorkflowRun.id });

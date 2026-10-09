@@ -302,6 +302,8 @@ export interface MarkAiRunRetryInput {
   nextRunAt: Date;
   lastError: string;
   failureClass: AiFailureClass;
+  /** Clears the run deadline, so the next claim gets a fresh one. For work that yields and runs again later. */
+  resetDeadline?: boolean;
 }
 
 export interface MarkAiRunDeadLetterInput {
@@ -880,6 +882,7 @@ export async function markAiRunRetry(input: MarkAiRunRetryInput, db: DB = getDb(
       nextRunAt: input.nextRunAt,
       lastError: input.lastError,
       failureClass: input.failureClass,
+      ...(input.resetDeadline ? { deadlineAt: null } : {}),
       claimOwner: null,
       claimToken: null,
       updatedAt: now,

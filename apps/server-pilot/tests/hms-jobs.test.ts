@@ -5,6 +5,7 @@ import {
   canClaimReadToolRun,
   claimNextAiRun,
   HMS_JOB_PROMPT_VERSION,
+  markAiRunRetry,
   markAiRunRunning,
   type AiWorkflowRun,
 } from '../src/ai/run-ledger.js';
@@ -232,7 +233,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect((await readHmsJobView({ transportId: TRANSPORT_ID, runId: second!.id }, db))?.position).toBe(2);
     }));
 
-  it('a restart moves a read run that the previous process held to retry_wait', () =>
+  it('a restart moves a read run that a dead worker held to retry_wait, and leaves a live worker alone', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const job = await queueUserHmsJob(
@@ -244,9 +245,50 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         { runId: claimed.id, claimOwner: claimed.claimOwner!, claimToken: claimed.claimToken!, deadlineAt: claimed.deadlineAt! },
         db,
       );
+      // Fresh heartbeat: worker 111 is alive, so its run is not touched.
+      expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-222' }, db)).toBe(0);
+      // Ten minutes without a heartbeat: worker 111 is gone.
+      await db
+        .update(aiWorkflowRun)
+        .set({ heartbeatAt: new Date(Date.now() - 10 * 60_000) })
+        .where(eq(aiWorkflowRun.id, claimed.id));
       expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-222' }, db)).toBe(1);
       const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: job!.id }, db);
       expect(view).toMatchObject({ status: 'retrying', failureClass: 'LEASE_LOST' });
+    }));
+
+  it('a requeued job gets a fresh run deadline on its next claim', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const job = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const claimed = await claimJob(db);
+      // The first deadline has passed by the time the job yields, as after a long wait.
+      await db
+        .update(aiWorkflowRun)
+        .set({ deadlineAt: new Date(Date.now() - 1_000) })
+        .where(eq(aiWorkflowRun.id, claimed.id));
+      const yielded = await markAiRunRetry(
+        {
+          runId: claimed.id,
+          claimOwner: claimed.claimOwner!,
+          claimToken: claimed.claimToken!,
+          expectedStates: ['claimed'],
+          attempts: 0,
+          nextRunAt: new Date(),
+          lastError: 'staff quote active',
+          failureClass: 'STAFF_QUOTE_ACTIVE',
+          resetDeadline: true,
+        },
+        db,
+      );
+      expect(yielded).not.toBeNull();
+      const again = await claimJob(db);
+      expect(again.id).toBe(job!.id);
+      expect(again.state).toBe('claimed');
+      expect(again.deadlineAt!.getTime()).toBeGreaterThan(Date.now());
     }));
 
   it('prefetch never takes the lock while a staff quote is in flight', () =>

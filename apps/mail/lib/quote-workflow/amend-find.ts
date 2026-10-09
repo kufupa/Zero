@@ -447,23 +447,36 @@ export function searchRunFromJob(view: HmsJobView | null, queueFailed: boolean):
 
 /** Poll cadence while a job is queued, running or retrying. */
 export const HMS_JOB_POLL_MS = 3_000;
+/** Unreadable polls in a row before polling stops: about a minute at the poll cadence. */
+export const HMS_JOB_MAX_MISSES = 20;
 
 /**
  * Polls one job by run id until it settles. Each read goes to onView. live() ends the loop when the pane unmounts or a
  * newer request has replaced this one. A read that fails is tried again on the next tick: the job is in the database,
- * so a dropped request loses nothing.
+ * so a dropped request loses nothing. After HMS_JOB_MAX_MISSES unreadable reads in a row, polling stops and the last job
+ * seen shows as failed, so the staff can retry instead of waiting on a spinner that never ends.
  */
 export async function pollHmsJob(
   transport: HmsJobTransport,
   runId: string,
   options: { live: () => boolean; onView: (view: HmsJobView) => void },
 ): Promise<void> {
+  let misses = 0;
+  let last: HmsJobView | null = null;
   while (options.live()) {
     const view = await transport.status({ runId }).catch(() => null);
     if (!options.live()) return;
     if (view) {
+      misses = 0;
+      last = view;
       options.onView(view);
       if (isSettled(view)) return;
+    } else {
+      misses += 1;
+      if (misses >= HMS_JOB_MAX_MISSES) {
+        if (last) options.onView({ ...last, status: 'failed', failureClass: 'POLL_LOST' });
+        return;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
   }

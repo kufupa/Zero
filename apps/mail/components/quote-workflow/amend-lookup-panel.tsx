@@ -130,7 +130,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     ? { kind: 'error', message: refusedNow }
     : searchRunFromJob(searchView, search.queueFailed);
   const searching = search.queuing || (searchView !== null && !isSettled(searchView));
-  const busy = running || searching;
+  // A background prefetch shows its status but never blocks a staff Find: the staff run queues ahead of it.
+  const findBusy = find.queuing || (findView !== null && !isSettled(findView) && !findView.prefetch);
+  const busy = findBusy || searching;
   const findNotFound = findRun?.kind === 'not_found';
   // The name search opens when there is no usable number, when a find came back not found, or once a search has run.
   const searchOpen = !lookupable || findNotFound || searchView !== null || search.queuing;

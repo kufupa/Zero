@@ -4153,7 +4153,22 @@ export async function executeAiRun(
   };
   const leaseAbort = new AbortController();
   const shutdownSignal = options.shutdownSignal ?? new AbortController().signal;
-  const signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
+  let signal: AbortSignal;
+  try {
+    signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
+  } catch (error) {
+    // Too little deadline is left to run. Dead-letter the claim here: an error that escapes this function ends the worker process.
+    if (!(error instanceof RunDeadlineError)) throw error;
+    await markAiRunDeadLetter({
+      runId: run.id,
+      claimOwner: owner,
+      claimToken,
+      expectedStates: ['claimed'],
+      lastError: 'RUN_DEADLINE',
+      failureClass: 'RUN_DEADLINE',
+    });
+    return { runId: run.id, state: 'dead_letter' };
+  }
 
   const flipped = await markAiRunRunning(fence);
   if (!flipped) {

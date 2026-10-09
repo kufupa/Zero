@@ -61,11 +61,21 @@ export function hmsJobLabel(view: HmsJobView | null, queuing: boolean): string |
   }
 }
 
-/** HH:MM in local time for a snapshot's as-of stamp. Null when the stamp is not a date. */
-export function formatAsOfTime(asOf: string): string | null {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A dated snapshot's as-of stamp in local time: HH:MM when it is from the same day as `now`, otherwise "D Mon HH:MM", so
+ * an old snapshot never reads as current. Null when the stamp is not a date.
+ */
+export function formatAsOfStamp(asOf: string, now: Date = new Date()): string | null {
   const date = new Date(asOf);
   if (Number.isNaN(date.getTime())) return null;
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  return sameDay ? time : `${date.getDate()} ${MONTHS[date.getMonth()]} ${time}`;
 }
 
 /**
@@ -121,11 +131,11 @@ export function HmsJobStatusLine({
 
 /** "As of HH:MM" under a dated HMS snapshot. Renders nothing without a stamp. */
 export function HmsAsOf({ asOf }: { asOf: string | null }) {
-  const time = asOf ? formatAsOfTime(asOf) : null;
-  if (!time) return null;
+  const stamp = asOf ? formatAsOfStamp(asOf) : null;
+  if (!stamp) return null;
   return (
     <p data-testid="hms-as-of" className="text-[10.5px] text-[#64748b]">
-      {`As of ${time}`}
+      {`As of ${stamp}`}
     </p>
   );
 }

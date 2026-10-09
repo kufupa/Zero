@@ -3,7 +3,7 @@
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HmsAsOf, HmsJobStatusLine, formatAsOfTime, hmsJobLabel } from '../components/quote-workflow/hms-queue-status';
+import { HmsAsOf, HmsJobStatusLine, formatAsOfStamp, hmsJobLabel } from '../components/quote-workflow/hms-queue-status';
 import {
   HMS_JOB_POLL_MS,
   type HmsJobKind,
@@ -13,7 +13,8 @@ import {
 } from '../lib/quote-workflow/amend-find';
 import { useHmsJob } from '../lib/quote-workflow/use-hms-job';
 
-const AS_OF = '2026-10-09T08:05:00.000Z';
+// Local time on the fake clock's day, so the stamp reads "08:05" in any time zone.
+const AS_OF = new Date(2026, 9, 9, 8, 5).toISOString();
 const CONFIRMATION = '57291630-1';
 const DETAIL = 'Nava is looking up the booking in HMS…';
 const FIND: HmsJobRequest = { kind: 'find', confirmation: CONFIRMATION };
@@ -21,6 +22,7 @@ const SEARCH: HmsJobRequest = { kind: 'search_guest', lastName: 'Smith', arrival
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.setSystemTime(new Date(2026, 9, 9, 12, 0));
 });
 
 afterEach(() => {
@@ -45,7 +47,7 @@ function view(overrides: Partial<HmsJobView> & Pick<HmsJobView, 'runId' | 'statu
  * A transport whose queue call hands out run ids in order. A poll by run id reads `polls` one per call, and the last
  * one repeats. A read by kind is the remount read-back, which answers `readBack`.
  */
-function fakeTransport(polls: HmsJobView[], readBack: HmsJobView | null = null) {
+function fakeTransport(polls: (HmsJobView | null)[], readBack: HmsJobView | null = null) {
   let queued = 0;
   let read = 0;
   const queue = vi.fn(async (_request: HmsJobRequest) => ({ runId: `run-${++queued}` }));
@@ -162,17 +164,26 @@ describe('the status line', () => {
 });
 
 describe('the as-of stamp on a dated snapshot', () => {
-  it('shows As of HH:MM in local time, the same time formatAsOfTime gives', () => {
-    const time = formatAsOfTime(AS_OF);
-    expect(time).toMatch(/^\d{2}:\d{2}$/);
+  it('shows As of HH:MM in local time for a snapshot from today', () => {
+    expect(formatAsOfStamp(AS_OF)).toBe('08:05');
     render(<HmsAsOf asOf={AS_OF} />);
-    expect(screen.getByTestId('hms-as-of').textContent).toBe(`As of ${time}`);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
   });
 
-  it('shows nothing without a date, and no time for a value that is not a date', () => {
+  it('adds the day for a snapshot from an earlier day, so it never reads as current', () => {
+    render(<HmsAsOf asOf={new Date(2026, 9, 8, 17, 30).toISOString()} />);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 8 Oct 17:30');
+  });
+
+  it('switches to the day form just after midnight', () => {
+    expect(formatAsOfStamp(AS_OF, new Date(2026, 9, 9, 23, 59))).toBe('08:05');
+    expect(formatAsOfStamp(AS_OF, new Date(2026, 9, 10, 0, 1))).toBe('9 Oct 08:05');
+  });
+
+  it('shows nothing without a date, and no stamp for a value that is not a date', () => {
     const { container } = render(<HmsAsOf asOf={null} />);
     expect(container.textContent).toBe('');
-    expect(formatAsOfTime('not a date')).toBeNull();
+    expect(formatAsOfStamp('not a date')).toBeNull();
   });
 });
 
@@ -195,7 +206,7 @@ describe('a queued lookup, polled on the 3 s clock', () => {
 
     await advance(HMS_JOB_POLL_MS);
     expect(screen.queryByTestId('hms-job-status')).toBeNull();
-    expect(screen.getByTestId('hms-as-of').textContent).toBe(`As of ${formatAsOfTime(AS_OF)}`);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
 
     const reads = status.mock.calls.length;
     await advance(HMS_JOB_POLL_MS * 3);
@@ -217,7 +228,7 @@ describe('a remount reads the job back from the database', () => {
 
     await advance(HMS_JOB_POLL_MS);
     expect(status).toHaveBeenNthCalledWith(2, { runId: 'run-9' });
-    expect(screen.getByTestId('hms-as-of').textContent).toBe(`As of ${formatAsOfTime(AS_OF)}`);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
     expect(queue).not.toHaveBeenCalled();
   });
 });
@@ -238,7 +249,7 @@ describe('a failed lookup', () => {
     expect(queue).toHaveBeenCalledTimes(2);
     expect(queue).toHaveBeenNthCalledWith(2, SEARCH);
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByTestId('hms-as-of').textContent).toBe(`As of ${formatAsOfTime(AS_OF)}`);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
   });
 
   it('says so when the queue call itself fails, and shows no job', async () => {
@@ -253,6 +264,24 @@ describe('a failed lookup', () => {
     await advance(0);
     expect(screen.getByText('The lookup could not be queued.')).toBeTruthy();
     expect(screen.queryByTestId('hms-job-status')).toBeNull();
+  });
+});
+
+describe('a job that stops answering', () => {
+  it('stops polling after about a minute of unreadable answers, and shows the last job as Failed with Retry', async () => {
+    const { transport, status } = fakeTransport([view({ runId: 'run-1', status: 'running' }), null]);
+    render(<Harness transport={transport} request={FIND} />);
+    await lookUp();
+    await advance(0);
+    expect(screen.getByText('Running')).toBeTruthy();
+
+    await advance(HMS_JOB_POLL_MS * 21);
+    expect(screen.getByRole('alert').textContent).toContain('Failed');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+
+    const reads = status.mock.calls.length;
+    await advance(HMS_JOB_POLL_MS * 5);
+    expect(status.mock.calls.length).toBe(reads);
   });
 });
 
