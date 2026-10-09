@@ -2250,3 +2250,30 @@ describe('staff dinner B&B fallback', () => {
     expect(after.staffHeader.dinnerAllowanceGroupIds).toEqual(['g1']);
   });
 });
+
+describe('type chosen by staff after stay edits', () => {
+  it('applies Booking from the re-read and keeps the edited stay', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
+    s = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'create_booking' });
+    s = reduceQuoteSession(s, { type: 'analysis_started' });
+    s = reduceQuoteSession(s, {
+      type: 'analysis_ready',
+      analysis: { ...quoteAnalysis, luna: lunaQuote({ workflow: 'create_booking' }) },
+    });
+    expect(s.analysis?.luna?.workflow).toBe('create_booking');
+    expect(s.groups[0]?.adults).toBe(3);
+  });
+
+  it('a re-read without a type change still keeps the staff edits and the earlier analysis', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    const first = { ...quoteAnalysis, luna: lunaQuote() };
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: first });
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
+    s = reduceQuoteSession(s, { type: 'analysis_started' });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    expect(s.analysis).toBe(first);
+    expect(s.groups[0]?.adults).toBe(3);
+  });
+});

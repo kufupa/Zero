@@ -874,6 +874,7 @@ export function QuoteWorkflowPanel({
       <div className="flex flex-col gap-3">
         <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
         <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
+        <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} />
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">

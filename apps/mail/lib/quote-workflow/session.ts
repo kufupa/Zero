@@ -653,16 +653,17 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );
+        // Staff stay edits win over a re-read. A type staff chose (quote or booking) still applies: the re-read's
+        // workflow is taken, the edited stays are kept.
+        const typeChanged =
+          Boolean(session.treatAs) && action.analysis.luna?.workflow !== session.analysis?.luna?.workflow;
+        const analysis = typeChanged ? action.analysis : session.analysis;
         return {
           ...session,
           phase: loadingDone,
+          analysis,
           analysisStartStayRevision: null,
-          reviewItems: projectQuoteReviewItems(
-            session.analysis,
-            session.groups,
-            extras,
-            session.staffActions,
-          ),
+          reviewItems: projectQuoteReviewItems(analysis, session.groups, extras, session.staffActions),
         };
       }
       if (action.analysis.intent !== 'quote') {
