@@ -573,10 +573,11 @@ describe('OutlookPanePage', () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    // A failed attempt remounts the button, so wait on the live one.
+    const insertButton = () => screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    await waitFor(() => expect(insertButton().hasAttribute('disabled')).toBe(false));
 
     vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
-    const insertButton = () => screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     fireEvent.click(insertButton());
 
     expect(createReplyCalls()).toHaveLength(1);
