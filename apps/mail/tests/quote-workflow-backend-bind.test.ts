@@ -506,6 +506,28 @@ describe('staff quote execute/PDF header bind', () => {
     ).toMatchObject({ other: { label: '', amountMinor: 30_000, unit: 'item' } });
   });
 
+  it('does not run the quote while an amount is unreadable', async () => {
+    const mutate = vi.fn(async () => readyResult);
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: {
+        ...government,
+        dinnerAllowanceMinor: 45_000,
+        fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' },
+      },
+    });
+    expect(result).toEqual({
+      status: 'unavailable',
+      reason:
+        'Fix the amounts before running this search. Dinner allowance: Enter an amount in rand, like 450 or 1,250.50',
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('sends the group ids the dinner allowance belongs to, so the server charges only those guests', async () => {
     const mutate = vi.fn(async (_input: unknown) => readyResult);
     await bindExecuteStaffQuote({

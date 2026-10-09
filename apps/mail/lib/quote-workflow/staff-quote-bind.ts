@@ -15,6 +15,7 @@ import type {
   StaffQuoteSource,
   StayGroupRequirement,
 } from './types';
+import { staffHeaderFieldProblem } from './types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes. Labels such as SINGLE are not codes. */
@@ -519,6 +520,11 @@ export async function bindExecuteStaffQuote(args: {
   groups: StayGroupRequirement[];
   header: StaffQuoteHeader;
 }): Promise<BoundExecuteStaffQuote> {
+  // A typed amount that cannot be read is never priced from the older saved amount.
+  const fieldProblem = staffHeaderFieldProblem(args.header);
+  if (fieldProblem) {
+    return { status: 'unavailable', reason: `Fix the amounts before running this search. ${fieldProblem}` };
+  }
   if (!args.mutate) {
     return {
       status: 'unavailable',

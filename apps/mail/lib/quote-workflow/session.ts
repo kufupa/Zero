@@ -14,7 +14,7 @@ import type {
   StayGroupRequirement,
   StaffQuoteHeader,
 } from './types';
-import { emptyStaffQuoteHeader } from './types';
+import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 import { approvedExecuteHeader } from './staff-quote-bind';
 
@@ -129,9 +129,13 @@ export function pendingPdfStayKey(
 
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs'>,
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader'>,
   step: QuoteToolStep,
 ): string | null {
+  if (step.kind === 'quote_stay') {
+    const problem = staffHeaderFieldProblem(session.staffHeader);
+    if (problem) return `Fix the amounts before running this search. ${problem}`;
+  }
   if (step.kind !== 'quote_stay' || !step.shareKey) return null;
   const pending = pendingPdfStayKey(session);
   if (!pending || pending === step.shareKey) return null;
@@ -376,6 +380,8 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
 }
 
 export function canCreatePdf(session: QuoteSession): boolean {
+  // An unreadable amount means the saved one is not what staff see: no PDF, Excel or reply until it is fixed.
+  if (staffHeaderFieldProblem(session.staffHeader)) return false;
   if (!staffSourceReady(session)) return false;
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
   const selectedKeys = new Set(
@@ -569,6 +575,17 @@ function applyGroupPatch(
   return { ...group, ...patch, id: group.id, fields };
 }
 
+function keptFieldErrors(
+  errors: Partial<Record<StaffExtraField, string>>,
+): Partial<Record<StaffExtraField, string>> {
+  const kept: Partial<Record<StaffExtraField, string>> = {};
+  for (const field of Object.keys(errors) as StaffExtraField[]) {
+    const message = errors[field];
+    if (message) kept[field] = message;
+  }
+  return kept;
+}
+
 /** A B&B fallback for dinner needs a staff-entered per-person allowance before any PDF; never price it here. */
 export function dinnerAllowanceStillRequired(
   header: Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor'>,
@@ -760,6 +777,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     }
     case 'patch_staff_header': {
+      // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.
+      const { fieldErrors, ...amounts } = action.header;
+      if (fieldErrors !== undefined && Object.keys(amounts).length === 0) {
+        return { ...session, staffHeader: { ...session.staffHeader, fieldErrors: keptFieldErrors(fieldErrors) } };
+      }
       const staffHeader = { ...session.staffHeader, ...action.header };
       if (action.header.agency !== undefined && !action.header.agency.trim()) {
         staffHeader.agency = '';

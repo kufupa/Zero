@@ -21,6 +21,7 @@ import {
   dinnerAllowanceStillRequired,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
+import { staffHeaderFieldProblem } from '../lib/quote-workflow/types';
 import type {
   LunaAnalysisWire,
   QuoteAnalysis,
@@ -111,6 +112,24 @@ describe('quote session', () => {
       { type: 'analysis_ready', analysis: analysisWith('Airport transfer on arrival') },
     );
     expect(airport.staffHeader.shuttleRequested).toBe(true);
+  });
+
+  it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
+    const start = initialQuoteSession();
+    const errored = reduceQuoteSession(start, {
+      type: 'patch_staff_header',
+      header: { fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' } },
+    });
+    expect(errored.inputRevision).toBe(start.inputRevision);
+    expect(staffHeaderFieldProblem(errored.staffHeader)).toBe(
+      'Dinner allowance: Enter an amount in rand, like 450 or 1,250.50',
+    );
+    expect(canCreatePdf(errored)).toBe(false);
+    const step = { kind: 'quote_stay', shareKey: 'stay-1' } as never;
+    expect(quoteRunBlockReason(errored, step)).toMatch(/^Fix the amounts before running this search\./);
+    const fixed = reduceQuoteSession(errored, { type: 'patch_staff_header', header: { fieldErrors: {} } });
+    expect(staffHeaderFieldProblem(fixed.staffHeader)).toBeNull();
+    expect(quoteRunBlockReason(fixed, step)).toBeNull();
   });
 
   it('reuses analysis for an unchanged selection digest', () => {

@@ -232,7 +232,43 @@ export type StaffQuoteHeader = {
   other?: StaffQuoteOtherCharge;
   /** Unpriced note for the reply and the PDF. */
   notes?: string;
+  /**
+   * Unreadable or over-cap text in an amount or count field. While any entry is here, the quote cannot run,
+   * no PDF, Excel or reply can be made, and the saved amount is never used silently.
+   */
+  fieldErrors?: Partial<Record<StaffExtraField, string>>;
 };
+
+/** Amount and count fields whose typed text the pane reads. */
+export type StaffExtraField =
+  | 'dinnerAllowance'
+  | 'lunchAllowance'
+  | 'officeTransfer'
+  | 'officeTransferDays'
+  | 'shuttleAmount'
+  | 'shuttleTrips'
+  | 'otherAmount';
+
+const STAFF_EXTRA_FIELD_LABELS: Record<StaffExtraField, string> = {
+  dinnerAllowance: 'Dinner allowance',
+  lunchAllowance: 'Lunch allowance',
+  officeTransfer: 'Office transfer',
+  officeTransferDays: 'Office transfer days',
+  shuttleAmount: 'Shuttle price',
+  shuttleTrips: 'Shuttle trips',
+  otherAmount: 'Other amount',
+};
+
+/** The first unreadable or over-cap amount, as "Label: message", or null when every field reads cleanly. */
+export function staffHeaderFieldProblem(
+  header: { fieldErrors?: Partial<Record<StaffExtraField, string>> } | null | undefined,
+): string | null {
+  for (const field of Object.keys(STAFF_EXTRA_FIELD_LABELS) as StaffExtraField[]) {
+    const message = header?.fieldErrors?.[field];
+    if (message) return `${STAFF_EXTRA_FIELD_LABELS[field]}: ${message}`;
+  }
+  return null;
+}
 
 export type StaffQuoteOtherUnit = 'per_person_night' | 'per_person' | 'per_trip' | 'item';
 

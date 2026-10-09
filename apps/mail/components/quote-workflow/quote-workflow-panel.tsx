@@ -19,6 +19,7 @@ import type {
   QuoteReviewItem,
   QuoteSession,
   StaffQuoteHeader,
+  StaffExtraField,
   StaffQuoteOtherUnit,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
@@ -88,24 +89,43 @@ function formatZarMinor(minor: number | undefined): string {
 
 /**
  * A rand amount typed by staff. Text that cannot be read, or an amount over the cap, stays on screen with an
- * inline message. It is never silently cleared.
+ * inline message and is reported to the quote gate. The saved amount is not changed by it.
  */
 function ZarMinorInput({
   ariaLabel,
   minor,
   onMinorChange,
+  onErrorChange,
 }: {
   ariaLabel: string;
   minor: number | undefined;
   onMinorChange: (minor: number | undefined) => void;
+  /** Reports unreadable or over-cap text to the quote gate; null once the text reads cleanly. */
+  onErrorChange?: (message: string | null) => void;
 }) {
   const formatted = formatZarMinor(minor);
   const [draft, setDraft] = useState(formatted);
   const [focused, setFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const report = (message: string | null) => {
+    setError(message);
+    onErrorChange?.(message);
+  };
   useEffect(() => {
     if (!focused && !error) setDraft(formatted);
   }, [formatted, focused, error]);
+  const apply = (raw: string) => {
+    const result = parseZarInput(raw);
+    if (result.status === 'ok') {
+      report(null);
+      onMinorChange(result.minor);
+    } else if (result.status === 'empty') {
+      report(null);
+      onMinorChange(undefined);
+    } else {
+      report(result.status === 'partial' ? EXTRA_AMOUNT_FORMAT_MESSAGE : result.message);
+    }
+  };
   return (
     <>
       <input
@@ -120,24 +140,11 @@ function ZarMinorInput({
         }}
         onBlur={() => {
           setFocused(false);
-          const result = parseZarInput(draft.replace(/\.$/, ''));
-          if (result.status === 'empty') {
-            setError(null);
-            onMinorChange(undefined);
-          } else if (result.status === 'ok') {
-            setError(null);
-            onMinorChange(result.minor);
-          } else {
-            setError(result.status === 'partial' ? EXTRA_AMOUNT_FORMAT_MESSAGE : result.message);
-          }
+          apply(draft.replace(/\.$/, ''));
         }}
         onChange={(event) => {
-          const raw = event.target.value;
-          setDraft(raw);
-          const result = parseZarInput(raw);
-          setError(result.status === 'over_cap' ? result.message : null);
-          if (result.status === 'empty') onMinorChange(undefined);
-          else if (result.status === 'ok') onMinorChange(result.minor);
+          setDraft(event.target.value);
+          apply(event.target.value);
         }}
       />
       {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
@@ -145,27 +152,45 @@ function ZarMinorInput({
   );
 }
 
-/** A whole number of trips or days, up to max. Over the cap shows an inline message and is not saved. */
+/** A whole number of trips or days, up to max. Anything else is reported to the quote gate and not saved. */
 function CountInput({
   ariaLabel,
   value,
   max,
   placeholder,
   onValueChange,
+  onErrorChange,
 }: {
   ariaLabel: string;
   value: number | undefined;
   max: number;
   placeholder?: string;
   onValueChange: (value: number | undefined) => void;
+  onErrorChange?: (message: string | null) => void;
 }) {
   const formatted = value === undefined ? '' : String(value);
   const [draft, setDraft] = useState(formatted);
   const [focused, setFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const report = (message: string | null) => {
+    setError(message);
+    onErrorChange?.(message);
+  };
   useEffect(() => {
     if (!focused && !error) setDraft(formatted);
   }, [formatted, focused, error]);
+  const apply = (raw: string) => {
+    const result = parseCountInput(raw, max);
+    if (result.status === 'ok') {
+      report(null);
+      onValueChange(result.count);
+    } else if (result.status === 'empty') {
+      report(null);
+      onValueChange(undefined);
+    } else {
+      report(result.message);
+    }
+  };
   return (
     <>
       <input
@@ -181,29 +206,25 @@ function CountInput({
         }}
         onBlur={() => {
           setFocused(false);
-          const result = parseCountInput(draft, max);
-          if (result.status === 'ok') {
-            setError(null);
-            onValueChange(result.count);
-          } else if (result.status === 'empty') {
-            setError(null);
-            onValueChange(undefined);
-          } else {
-            setError(result.message);
-          }
+          apply(draft);
         }}
         onChange={(event) => {
-          const raw = event.target.value;
-          setDraft(raw);
-          const result = parseCountInput(raw, max);
-          setError(result.status === 'over_cap' ? result.message : null);
-          if (result.status === 'ok') onValueChange(result.count);
-          else if (result.status === 'empty') onValueChange(undefined);
+          setDraft(event.target.value);
+          apply(event.target.value);
         }}
       />
       {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
     </>
   );
+}
+
+function withoutFieldErrors(
+  errors: Partial<Record<StaffExtraField, string>> | undefined,
+  fields: StaffExtraField[],
+): Partial<Record<StaffExtraField, string>> {
+  const kept = { ...errors };
+  for (const field of fields) delete kept[field];
+  return kept;
 }
 
 function StaffHeaderFields({
@@ -215,6 +236,15 @@ function StaffHeaderFields({
 }) {
   // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
   const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
+  // Reports one field's unreadable text through the header, so the quote gate sees it. No revision bump.
+  const reportFieldError = (field: StaffExtraField) => (message: string | null) => {
+    const current = header.fieldErrors ?? {};
+    if ((current[field] ?? null) === message) return;
+    const next: Partial<Record<StaffExtraField, string>> = { ...current };
+    if (message) next[field] = message;
+    else delete next[field];
+    onPatch?.({ fieldErrors: next });
+  };
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
@@ -287,6 +317,7 @@ function StaffHeaderFields({
             ariaLabel="Dinner allowance (R per person per night)"
             minor={header.dinnerAllowanceMinor}
             onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
+            onErrorChange={reportFieldError('dinnerAllowance')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -307,6 +338,7 @@ function StaffHeaderFields({
             ariaLabel="Lunch allowance (R per person per night)"
             minor={header.lunchAllowanceMinor}
             onMinorChange={(lunchAllowanceMinor) => onPatch?.({ lunchAllowanceMinor })}
+            onErrorChange={reportFieldError('lunchAllowance')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -327,6 +359,7 @@ function StaffHeaderFields({
             ariaLabel="Office transfer (R per person per day)"
             minor={header.officeTransferMinor}
             onMinorChange={(officeTransferMinor) => onPatch?.({ officeTransferMinor })}
+            onErrorChange={reportFieldError('officeTransfer')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -337,6 +370,7 @@ function StaffHeaderFields({
             max={31}
             placeholder="nights of stay"
             onValueChange={(officeTransferDays) => onPatch?.({ officeTransferDays })}
+            onErrorChange={reportFieldError('officeTransferDays')}
           />
         </label>
       </div>
@@ -346,7 +380,14 @@ function StaffHeaderFields({
             type="checkbox"
             aria-label="Shuttle requested"
             checked={Boolean(header.shuttleRequested)}
-            onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
+            onChange={(event) =>
+              onPatch?.({
+                shuttleRequested: event.target.checked,
+                ...(event.target.checked
+                  ? {}
+                  : { fieldErrors: withoutFieldErrors(header.fieldErrors, ['shuttleAmount', 'shuttleTrips']) }),
+              })
+            }
           />
           Shuttle requested
         </label>
@@ -362,6 +403,7 @@ function StaffHeaderFields({
                   max={50}
                   placeholder="1"
                   onValueChange={(shuttleTrips) => onPatch?.({ shuttleTrips })}
+                  onErrorChange={reportFieldError('shuttleTrips')}
                 />
               </label>
               <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -370,6 +412,7 @@ function StaffHeaderFields({
                   ariaLabel="Shuttle amount"
                   minor={header.shuttleMinor}
                   onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+                  onErrorChange={reportFieldError('shuttleAmount')}
                 />
               </label>
             </div>
@@ -407,6 +450,7 @@ function StaffHeaderFields({
               onMinorChange={(amountMinor) =>
                 onPatch?.({ other: { label: header.other?.label ?? '', unit: header.other?.unit ?? 'item', amountMinor } })
               }
+              onErrorChange={reportFieldError('otherAmount')}
             />
           </label>
         </div>
