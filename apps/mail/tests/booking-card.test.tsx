@@ -3,7 +3,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BookingCards } from '../components/quote-workflow/booking-card';
+import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -308,6 +308,22 @@ describe('booking cards', () => {
       'STQN',
       'SKNG',
     ]);
+  });
+
+  it('drops the price match once staff pick another room type, and says to quote again', () => {
+    render(
+      <BookingCards
+        draft={draftReady({
+          rateCheck: [{ status: 'match', claimQuote: 'R1,750', assumedTaxBasis: false, differenceMinor: 0 }],
+        })}
+      />,
+    );
+    expect(screen.getByText(/Price matches the email/)).toBeDefined();
+    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
+    expect(screen.queryByText(/Price matches the email/)).toBeNull();
+    expect(screen.getByText(ROOM_TYPE_CHANGED_COPY)).toBeDefined();
+    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'STQN' } });
+    expect(screen.getByText(/Price matches the email/)).toBeDefined();
   });
 
   it('fills an empty Organization and Booking agency from the picked company and agency', () => {
