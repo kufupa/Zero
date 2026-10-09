@@ -1,5 +1,6 @@
 import {
   buildGalleryHtml,
+  classifyTrpcRequest,
   gateFailures,
   outcomeOf,
   parseRunConfig,
@@ -231,5 +232,54 @@ describe('gallery and outputs', () => {
     expect(json.summary.intent).toBe(1);
     expect(json.results[0]?.threadId).toBe('t-1');
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('real-browser run');
+  });
+});
+
+describe('classifyTrpcRequest', () => {
+  const origin = 'https://nava.legacyhotels.co.za/api/trpc/';
+
+  // The app sends queries as POST (methodOverride). The method is not an input here, so a
+  // batched POST is judged by the procedure names in its path.
+  it('allows one query, even when the app sends it as a POST', () => {
+    expect(classifyTrpcRequest(`${origin}mail.get?batch=1`)).toEqual({
+      allowed: true,
+      procedures: ['mail.get'],
+      blocked: [],
+    });
+  });
+
+  it('allows a batched POST made only of queries', () => {
+    const decision = classifyTrpcRequest(
+      `${origin}mail.get,mail.listThreads,brain.getCapabilities?batch=1`,
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.procedures).toEqual(['mail.get', 'mail.listThreads', 'brain.getCapabilities']);
+    expect(decision.blocked).toEqual([]);
+  });
+
+  it('blocks a batched POST that carries one mutation, and names it as a write', () => {
+    const decision = classifyTrpcRequest(`${origin}mail.get,workstation.bridgeTicket?batch=1`);
+    expect(decision.allowed).toBe(false);
+    expect(decision.blocked).toEqual([{ procedure: 'workstation.bridgeTicket', reason: 'write' }]);
+  });
+
+  it('allows the analysis mutation, which is read-only for HMS and mail', () => {
+    expect(classifyTrpcRequest(`${origin}quoteWorkflow.analyseSelection?batch=1`).allowed).toBe(
+      true,
+    );
+  });
+
+  it('blocks an unknown procedure and lists it as unknown, not as a write', () => {
+    expect(classifyTrpcRequest(`${origin}mail.neverSeenBefore?batch=1`).blocked).toEqual([
+      { procedure: 'mail.neverSeenBefore', reason: 'unknown' },
+    ]);
+  });
+
+  it('blocks a request whose path names no procedure', () => {
+    expect(classifyTrpcRequest(`${origin}?batch=1`)).toEqual({
+      allowed: false,
+      procedures: [],
+      blocked: [{ procedure: '(none)', reason: 'unknown' }],
+    });
   });
 });

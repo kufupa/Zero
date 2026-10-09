@@ -31,8 +31,78 @@ const POLL_MS = 1_000;
 const MAX_FIELDS = 60;
 const MAX_BANNERS = 12;
 const MAX_BLOCKED = 20;
-/** The only non-GET tRPC procedure the viewer may call: the analysis itself. */
-export const ALLOWED_MUTATIONS: ReadonlySet<string> = new Set(['quoteWorkflow.analyseSelection']);
+/**
+ * tRPC queries the viewer and the pane call. Classified by procedure name, not HTTP method:
+ * the app sends queries as POST (methodOverride). A batched path lists every procedure, so one
+ * write in a batch blocks the whole request. tests/nava-preview-trpc-classes.test.ts checks
+ * these names against the server router and against the pane's client code.
+ */
+export const READ_PROCEDURES: ReadonlySet<string> = new Set([
+  'brain.getCapabilities',
+  'connections.getDefault',
+  'connections.list',
+  'drafts.get',
+  'drafts.list',
+  'mail.get',
+  'mail.listThreads',
+  'paneStayCancel.paneStayScreenshot',
+  'paneStayLookup.screenshot',
+  'workstation.getPriorStaffQuoteRequote',
+  'workstation.hmsQueueStatus',
+  'workstation.listThreadQuoteRevisions',
+  'workstation.outlookSync.status',
+  'workstation.quoteRunScreenshot',
+  'workstation.staffQuoteSource',
+]);
+/** The one mutation the viewer may call: a read-only analysis (cache and ledger rows, no HMS, no mail). */
+export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.analyseSelection']);
+/** Mutations the pane references. Named so a block reads as a write. Any other name is blocked as unknown. */
+export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
+  'paneStayLookup.findStay',
+  'paneStayLookup.searchGuest',
+  'quoteWorkflow.commitStay',
+  'quoteWorkflow.previewStay',
+  'workstation.bridgeTicket',
+  'workstation.executeStaffQuote',
+  'workstation.outlookSync.activate',
+  'workstation.outlookSync.control',
+  'workstation.ping',
+  'workstation.prepareBookingDraft',
+  'workstation.qualifiedQuoteProposalPdf',
+  'workstation.reportBridgeFailure',
+  'workstation.usePriorQuoteForBooking',
+]);
+
+export type TrpcDecision = {
+  allowed: boolean;
+  procedures: string[];
+  blocked: Array<{ procedure: string; reason: 'write' | 'unknown' }>;
+};
+
+const TRPC_PREFIX = '/api/trpc/';
+
+/**
+ * Classifies one request by the procedure names in its /api/trpc/ path, batched or not.
+ * The HTTP method is not an input: a query sent as POST is still a read.
+ */
+export function classifyTrpcRequest(url: string): TrpcDecision {
+  const { pathname } = new URL(url);
+  const procedures = pathname.startsWith(TRPC_PREFIX)
+    ? pathname.slice(TRPC_PREFIX.length).split(',').filter(Boolean)
+    : [];
+  if (procedures.length === 0) {
+    return { allowed: false, procedures, blocked: [{ procedure: '(none)', reason: 'unknown' }] };
+  }
+  const blocked: TrpcDecision['blocked'] = [];
+  for (const procedure of procedures) {
+    if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure)) continue;
+    blocked.push({
+      procedure,
+      reason: KNOWN_WRITE_PROCEDURES.has(procedure) ? 'write' : 'unknown',
+    });
+  }
+  return { allowed: blocked.length === 0, procedures, blocked };
+}
 const THREAD_ID_PATTERN = /^[A-Za-z0-9_.:~@-]{1,128}$/;
 
 export type Outcome = 'intent' | 'fallback' | 'error' | 'unsynced' | 'timeout';
@@ -311,22 +381,15 @@ function threadFromReferer(referer: string | undefined): string | null {
 async function installWriteGuard(page: Page, blocked: BlockedWrite[]): Promise<void> {
   await page.route('**/api/trpc/**', async (route: Route) => {
     const request = route.request();
-    const procedures = new URL(request.url()).pathname
-      .slice('/api/trpc/'.length)
-      .split(',')
-      .filter(Boolean);
-    const readOnly = request.method() === 'GET';
-    if (
-      readOnly ||
-      (procedures.length > 0 && procedures.every((name) => ALLOWED_MUTATIONS.has(name)))
-    ) {
+    const decision = classifyTrpcRequest(request.url());
+    if (decision.allowed) {
       await route.continue();
       return;
     }
-    blocked.push({
-      thread: threadFromReferer(request.headers().referer),
-      procedure: procedures.join(',') || 'unknown',
-    });
+    const thread = threadFromReferer(request.headers().referer);
+    for (const item of decision.blocked) {
+      blocked.push({ thread, procedure: item.procedure });
+    }
     await route.abort('blockedbyclient');
   });
 }
