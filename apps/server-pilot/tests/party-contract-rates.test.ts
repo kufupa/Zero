@@ -144,10 +144,16 @@ function groupInput(parties?: StaffQuoteParties, text: { company?: string; agenc
   });
 }
 
-/** What HMS resolves each requested context to: the id and name the picker found. */
+/** HMS's own display name for an id, when it differs from the name staff or Nava typed (e.g. "Woolworths Holdings"). */
+const hmsDisplayName: Record<string, string> = {};
+
+/** What HMS resolves each requested context to: the id the picker found, and HMS's own name for it. */
 function resolvedContext(rateContext: Record<string, { nativeId: string; name: string }> | undefined) {
   return Object.fromEntries(
-    Object.entries(rateContext ?? {}).map(([kind, ref]) => [kind, { id: ref.nativeId, name: ref.name }]),
+    Object.entries(rateContext ?? {}).map(([kind, ref]) => [
+      kind,
+      { id: ref.nativeId, name: hmsDisplayName[ref.nativeId] ?? ref.name },
+    ]),
   );
 }
 
@@ -327,6 +333,18 @@ describe('contract rates from the picked company or agency', () => {
     const { revision } = await quoteWith(agencyWoolworths, [BAR, AGENCY_FLAGGED]);
     expect(revision.groups[0]!.rateCode).toBe('WSF2B');
     expect(partyContractReviewNote(agencyWoolworths, revision.groups)).toBeNull();
+  });
+
+  it('matches the party by HMS id, so a shorter name ("Woolworths" vs "Woolworths Holdings") still gets the contract row', async () => {
+    hmsDisplayName['569'] = 'Woolworths Agency (Pty) Ltd';
+    try {
+      const picked = { agency: agency('569', 'Woolworths') };
+      const { revision } = await quoteWith(picked, [BAR, AGENCY_FLAGGED]);
+      expect(revision.groups[0]!.rateCode).toBe('WSF2B');
+      expect(partyContractReviewNote(picked, revision.groups)).toBeNull();
+    } finally {
+      delete hmsDisplayName['569'];
+    }
   });
 
   it('a plan named after the party is not offered as a contract unless HMS flags it', async () => {
