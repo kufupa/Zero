@@ -911,7 +911,8 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
   const sourceHash = createHash('sha256').update(messageId).digest('hex');
   const input = staffQuoteInputFor(check, messageId, sourceHash);
   const scope = {
-    transportId: 'v8-live-check',
+    // The route's transport. A live run with another transport is refused by the policy scope.
+    transportId: 'transport-centurion',
     userId: 'v8-live-check',
     threadId: messageId,
     messageId,
