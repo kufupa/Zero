@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
 import {
   excelSerialDate,
+  MAX_WORKBOOK_LINES,
   quoteDateLabel,
   quoteWorkbookFileName,
   quoteWorkbookForRevision,
   workbookLinesFor,
-  WORKBOOK_LINE_ROWS,
+  WorkbookLineLimitError,
 } from '../src/quote-proposal/quote-workbook.js';
 import { renderRevisionProposalHtml } from '../src/quote-proposal/proposal-pdf.js';
 import type { AuthorizedProposalFacts } from '../src/quote-proposal/quote-lines.js';
@@ -99,25 +100,26 @@ describe('quote workbook totals and formulas', () => {
     const pdfTotal = pdfTotalMinor(renderRevisionProposalHtml(revision, pdfHeader, facts));
     const sheet = sheetOf(bytes);
     expect(totalMinor).toBe(pdfTotal);
-    expect(cachedCents(sheet, 'H33')).toBe(pdfTotal);
-    expect(cachedCents(sheet, 'H31')).toBe(pdfTotal);
-    const lineTotals = [24, 25, 26, 27, 28, 29].reduce((sum, row) => sum + cachedCents(sheet, `H${row}`), 0);
+    // Seven lines move the subtotal to row 32 and the total to row 34.
+    expect(cachedCents(sheet, 'H34')).toBe(pdfTotal);
+    expect(cachedCents(sheet, 'H32')).toBe(pdfTotal);
+    const lineTotals = [24, 25, 26, 27, 28, 29, 30].reduce((sum, row) => sum + cachedCents(sheet, `H${row}`), 0);
     expect(lineTotals).toBe(pdfTotal);
   });
 
   it('keeps line totals, subtotal and total as formulas with cached values', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);
-    for (const row of [24, 25, 26, 27, 28, 29]) {
+    for (const row of [24, 25, 26, 27, 28, 29, 30]) {
       expect(cellXml(sheet, `H${row}`)).toContain(`<f>+B${row}*F${row}*G${row}</f>`);
       const qty = Number(cellXml(sheet, `B${row}`).match(/<v>([^<]*)<\/v>/)?.[1] ?? 0);
       const nights = Number(cellXml(sheet, `F${row}`).match(/<v>([^<]*)<\/v>/)?.[1] ?? 0);
       const rateCents = Math.round(Number(cellXml(sheet, `G${row}`).match(/<v>([^<]*)<\/v>/)?.[1] ?? 0) * 100);
       expect(cachedCents(sheet, `H${row}`)).toBe(qty * nights * rateCents);
     }
-    expect(cellXml(sheet, 'H31')).toContain('<f>SUM(H24:H30)</f>');
-    expect(cellXml(sheet, 'H33')).toContain('<f>+H31</f>');
-    expect((sheet.match(/<f[ >]/g) ?? []).length).toBe(8);
+    expect(cellXml(sheet, 'H32')).toContain('<f>SUM(H24:H31)</f>');
+    expect(cellXml(sheet, 'H34')).toContain('<f>+H32</f>');
+    expect((sheet.match(/<f[ >]/g) ?? []).length).toBe(9);
     expect(sheet).not.toContain('t="shared"');
     const workbookXml = new TextDecoder().decode(unzipSync(quoteWorkbookForRevision({ revision, facts, header }).bytes)['xl/workbook.xml']!);
     expect(workbookXml).toMatch(/<calcPr[^>]*fullCalcOnLoad="1"/);
@@ -170,29 +172,36 @@ describe('quote workbook totals and formulas', () => {
 });
 
 describe('quote workbook line rows', () => {
-  it('fits extras that overflow six rows into one exact "Other charges" line', async () => {
+  it('gives every authorised extra its own row, with no collapse into Other charges', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const { lines, totalMinor } = workbookLinesFor(revision, facts);
-    expect(lines.length).toBeLessThanOrEqual(WORKBOOK_LINE_ROWS);
-    expect(lines.at(-1)?.description).toBe('Other charges');
-    expect(lines.at(-1)?.totalMinor).toBe(120_000 + 30_000);
+    // Two room rate runs, then one row each for the dinner, lunch, office transfer, shuttle and parking.
+    expect(lines).toHaveLength(7);
+    expect(lines.slice(2).map((line) => line.description)).toEqual([
+      'Dinner allowance',
+      'Lunch allowance',
+      'Office transfer',
+      'Shuttle',
+      'Parking',
+    ]);
+    expect(lines.reduce((sum, line) => sum + line.totalMinor, 0)).toBe(totalMinor);
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);
-    expect(cellXml(sheet, `A${24 + lines.length}`)).not.toContain('inlineStr');
-    expect(cachedCents(sheet, 'H33')).toBe(totalMinor);
+    expect(cachedCents(sheet, 'H34')).toBe(totalMinor);
   });
 
-  it('handles more than six native room lines without losing money', async () => {
+  it('puts each native rate run on its own row beyond six', async () => {
     const amounts = ['100.00', '110.00', '120.00', '130.00', '140.00', '150.00', '160.00'];
     const { revision, facts } = await staffScenario({}, amounts);
     const { lines, totalMinor } = workbookLinesFor(revision, facts);
-    expect(lines.length).toBe(WORKBOOK_LINE_ROWS);
-    expect(lines.at(-1)?.description).toBe('Other charges');
-    const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);
-    expect(cachedCents(sheet, 'H33')).toBe(totalMinor);
+    expect(lines).toHaveLength(7);
+    expect(lines.some((line) => line.description === 'Other charges')).toBe(false);
     expect(totalMinor).toBe(revision.totalMinor);
+    const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);
+    expect(cellXml(sheet, 'H32')).toContain('<f>SUM(H24:H31)</f>');
+    expect(cachedCents(sheet, 'H34')).toBe(totalMinor);
   });
 
-  it('merges same-type extra blocks into guests x nights when that brings the sheet within six rows', async () => {
+  it('keeps each same-type extra block on its own row, with guests who share dates in one block', async () => {
     const revision = await syntheticRevision();
     const sourceRef = 'message:message-1';
     const facts: AuthorizedProposalFacts = {
@@ -225,14 +234,30 @@ describe('quote workbook line rows', () => {
       ],
     };
     const { lines, totalMinor } = workbookLinesFor(revision, facts);
-    // Two rooms, two dinner blocks, lunch, office transfer and shuttle: seven rows before merging, six after.
-    expect(lines.length).toBe(6);
-    const dinner = lines.find((line) => line.description === 'Dinner allowance');
-    expect(dinner).toMatchObject({ qty: 2, nights: 2, totalMinor: 2 * 2 * 45_000 });
+    // Two room rows, two dinner blocks (each guest is missing a different night), lunch, office transfer and shuttle.
+    expect(lines).toHaveLength(7);
+    expect(
+      lines.filter((line) => line.description === 'Dinner allowance').map((line) => [line.qty, line.nights, line.totalMinor]),
+    ).toEqual([
+      [1, 2, 2 * 45_000],
+      [1, 2, 2 * 45_000],
+    ]);
     expect(lines.some((line) => line.description === 'Other charges')).toBe(false);
     const pdfTotal = pdfTotalMinor(renderRevisionProposalHtml(revision, pdfHeader, facts));
     expect(totalMinor).toBe(pdfTotal);
-    expect(cachedCents(sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes), 'H33')).toBe(pdfTotal);
+    expect(cachedCents(sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes), 'H34')).toBe(pdfTotal);
+  });
+
+  it('refuses a quote with more lines than the sheet holds, and builds one at the limit', async () => {
+    // 63 one-night rate runs fill the sheet: the subtotal is row 88 and the total row 90.
+    const atLimit = await syntheticRevision(Array.from({ length: MAX_WORKBOOK_LINES }, (_, i) => `${100 + i}.00`));
+    const { bytes, totalMinor } = quoteWorkbookForRevision({ revision: atLimit, header });
+    expect(cachedCents(sheetOf(bytes), 'H90')).toBe(totalMinor);
+    const over = await syntheticRevision(Array.from({ length: MAX_WORKBOOK_LINES + 1 }, (_, i) => `${100 + i}.00`));
+    expect(() => quoteWorkbookForRevision({ revision: over, header })).toThrow(WorkbookLineLimitError);
+    expect(() => quoteWorkbookForRevision({ revision: over, header })).toThrow(
+      'Quote has 64 lines; the proposal Excel holds at most 63. Split it into separate quotes.',
+    );
   });
 
   it('writes the staff note into a wrapped, merged block and keeps the merge count consistent', async () => {

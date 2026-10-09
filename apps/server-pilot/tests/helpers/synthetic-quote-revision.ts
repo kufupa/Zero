@@ -1,7 +1,7 @@
 import { resolveQuoteRevision, type QuoteSourceRecord } from '../../src/quote-proposal/quote-revision.js';
-export async function syntheticRevision(amounts = ['100.01', '500.00', '500.00'], board = 'Room Only R', roomCode = 'SKNG', currentSourceAt?: string) {
+export async function syntheticRevision(amounts = ['100.01', '500.00', '500.00'], board = 'Room Only R', roomCode = 'SKNG', currentSourceAt?: string, arrival = '2026-10-12') {
  const req = { id: 'g1', quantity: 2, adults: 1, children: 0, childAges: [] };
- const start = '2026-10-12';
+ const start = arrival;
  const end = new Date(Date.parse(`${start}T00:00:00Z`) + amounts.length * 86400000).toISOString().slice(0, 10);
  const source: QuoteSourceRecord = { ref: 'synthetic', sha256: 'a'.repeat(64), toolVersion: '2', observedAt: currentSourceAt ?? '2026-10-04T09:00:00Z',
  request: { propertyCode: 'HRCEN', requestedCurrency: 'ZAR', arrivalDate: start, departureDate: end, rooms: [req] },
