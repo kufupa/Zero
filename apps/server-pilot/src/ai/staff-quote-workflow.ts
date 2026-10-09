@@ -34,6 +34,8 @@ const groupSchema = z
       .min(1)
       .max(8)
       .optional(),
+    // The rate card the staff pinned, re-run with exactly this HMS rate code. A contract code prices only with its verified party.
+    rateCode: z.string().regex(/^[A-Z0-9_-]{1,16}$/).optional(),
   })
   .strict();
 /** How an "other" charge multiplies: per guest per night, per guest, per trip, or once as an item. */
@@ -281,11 +283,13 @@ export function prepareStaffQuote(
                 : 'room_only',
           ],
           ...(g.roomCodes ? { roomCodes: g.roomCodes } : {}),
+          ...(g.rateCode ? { rateCodes: [g.rateCode] } : {}),
         },
       })),
       search: {
         includeRestricted: false,
-        includeAlternatives: false,
+        // Other boards and rooms come back as alternatives, so staff see the rate cards. Only the quoted option is priced in full.
+        includeAlternatives: true,
         salesStrategy: input.salesStrategy,
       },
       details: 'full',
