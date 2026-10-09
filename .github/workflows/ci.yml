@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
-            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/nava-pane-render.test.tsx tests/pane-release-watch.test.ts tests/mutations-in-flight.test.ts tests/pane-status-line.test.tsx tests/outlook-pane-quote-pdf.test.tsx \
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/nava-pane-render.test.tsx tests/pane-menu.test.tsx tests/pane-release-watch.test.ts tests/mutations-in-flight.test.ts tests/pane-status-line.test.tsx tests/outlook-pane-quote-pdf.test.tsx \
             tests/outlook-sync-progress.test.tsx tests/outlook-sync-client.test.tsx tests/outlook-pane-onboarding.test.tsx \
             tests/web-pane-bridge.test.ts
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \

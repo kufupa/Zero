@@ -46,10 +46,17 @@ function analysingCopy(session: QuoteSession): string {
 
 function TellLunaBox({
   onStaffNote,
+  draft,
+  onDraftChange,
 }: {
   onStaffNote?: (note: string) => void;
+  /** The owner keeps the draft when this box unmounts. Without it the box keeps its own. */
+  draft?: string;
+  onDraftChange?: (value: string) => void;
 }) {
-  const [note, setNote] = useState('');
+  const [localNote, setLocalNote] = useState('');
+  const note = draft ?? localNote;
+  const setNote = onDraftChange ?? setLocalNote;
   return (
     <form
       className="flex flex-col gap-1.5"
@@ -675,6 +682,8 @@ export function QuoteWorkflowPanel({
   onSelectStayKey,
   onTreatAs,
   onStaffNote,
+  staffNoteDraft,
+  onStaffNoteDraftChange,
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
@@ -698,6 +707,9 @@ export function QuoteWorkflowPanel({
   onSelectStayKey?: (stayKey: string) => void;
   onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
+  /** Unfinished Tell Nava text, owned by the pane so it survives a trip off the tool screen. */
+  staffNoteDraft?: string;
+  onStaffNoteDraftChange?: (value: string) => void;
   /** HMS queue progress for the staff quote run in flight. */
   hmsQueue?: { pending: boolean; status: QueueStatus | null };
   /** Loads one HMS audit screenshot of a completed staff quote run. */
@@ -726,7 +738,7 @@ export function QuoteWorkflowPanel({
             <StatusNote key={item.id}>{item.text}</StatusNote>
           ))}
         <StatusNote>Nava thinks this is not a quote request, so no quote was started. If that is wrong, use the buttons below.</StatusNote>
-        <TellLunaBox onStaffNote={onStaffNote} />
+        <TellLunaBox onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -770,7 +782,7 @@ export function QuoteWorkflowPanel({
   return (
     <div className="flex flex-col gap-3.5">
       <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
-      <TellLunaBox onStaffNote={onStaffNote} />
+      <TellLunaBox onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
       {showWorkspace ? (

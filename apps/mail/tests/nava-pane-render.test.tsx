@@ -11,7 +11,8 @@ import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState } = vi.hoisted(() => ({
+const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate } = vi.hoisted(() => ({
+  pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   quotePdfMutate: vi.fn().mockResolvedValue({
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
@@ -112,7 +113,7 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
-      ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
+      ping: { mutate: pingMutate },
       quoteProposalPdf: { mutate: quotePdfMutate },
       staffQuoteSource: {
         query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
@@ -187,6 +188,14 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+/** Opens the ⋯ menu from the keyboard (Radix opens on Enter) and returns its item by name. */
+function openPaneMenuItem(name: string): HTMLElement {
+  const trigger = screen.getByRole('button', { name: 'More' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'Enter' });
+  return screen.getByRole('menuitem', { name });
+}
+
 const LOADED_BUILD = 'build-loaded-0001';
 const NEWER_BUILD = 'build-newer-0002';
 
@@ -222,7 +231,7 @@ describe('NavaPane', () => {
 
   it('keeps the feedback and tour actions in the ⋯ menu, not the footer', () => {
     render(<NavaPane bridge={fakeBridge} />);
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    openPaneMenuItem('Replay tour');
     expect(screen.getByRole('menuitem', { name: 'Check connection' })).toBeDefined();
     expect(screen.getByRole('menuitem', { name: 'Replay tour' })).toBeDefined();
     expect(screen.getByRole('menuitem', { name: 'Feedback by email' }).getAttribute('href')).toBe(
@@ -233,20 +242,18 @@ describe('NavaPane', () => {
 
   it('replays the tour from the ⋯ menu', () => {
     render(<NavaPane bridge={fakeBridge} />);
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Replay tour' }));
+    fireEvent.keyDown(openPaneMenuItem('Replay tour'), { key: 'Enter' });
     expect(screen.getByRole('button', { name: /Next: 60-Second Feature Tour|Next/i })).toBeDefined();
     expect(screen.getByText('1. Automatic Email Sync')).toBeDefined();
   });
 
-  it('shows the build this page was served, from its own meta, under About', () => {
+  it('shows the build this page was served, from its own meta, under About in the ⋯ menu', () => {
     mountBuildMeta(LOADED_BUILD);
     render(<NavaPane bridge={fakeBridge} />);
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'About' }));
-    expect(screen.getByText(/Build build-l/)).toBeDefined();
+    openPaneMenuItem('Replay tour');
+    expect(screen.getByText(/About Nava Reservationist · Build build-l/)).toBeDefined();
   });
-  });
+
   it('holds a build reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
     vi.stubEnv('PROD', true);
     mountBuildMeta(LOADED_BUILD);
@@ -318,5 +325,51 @@ describe('NavaPane', () => {
     } finally {
       if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
     }
+  });
+
+  it('runs the connection check again after a successful one', async () => {
+    pingMutate.mockClear();
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
+    await waitFor(() => expect(pingMutate).toHaveBeenCalledTimes(1));
+    await screen.findByText(/Workstation API ping verified/);
+
+    fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
+    await waitFor(() => expect(pingMutate).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps an unsent Tell Nava note through a trip off the tool, and holds reloads until it is sent', async () => {
+    vi.stubEnv('PROD', true);
+    mountBuildMeta(LOADED_BUILD);
+    const served = { build: LOADED_BUILD };
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const note = await screen.findByLabelText("Tell Nava what's wrong");
+    fireEvent.change(note, { target: { value: 'Three nights from 12 Nov' } });
+    fireEvent.blur(note);
+
+    // Check connection leaves the tool screen; coming back must show the same text.
+    fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('button', { name: /4\. Quote Tool/i }));
+    expect((await screen.findByLabelText("Tell Nava what's wrong") as HTMLTextAreaElement).value).toBe(
+      'Three nights from 12 Nov',
+    );
+
+    // Unsent text holds the auto-reload while focus is away from the pane's inputs.
+    served.build = NEWER_BUILD;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).toBeNull();
+
+    // Sending the note releases the hold: the next idle check reloads.
+    const sentNote = screen.getByLabelText("Tell Nava what's wrong");
+    fireEvent.submit(sentNote.closest('form') as HTMLFormElement);
+    await waitFor(() => {
+      window.dispatchEvent(new Event('focus'));
+      expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).not.toBeNull();
+    });
   });
 });

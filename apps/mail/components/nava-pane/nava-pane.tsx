@@ -656,6 +656,17 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     }
   };
 
+  // Unfinished Tell Nava text lives here, so it survives a trip off the tool screen (the ⋯ menu's
+  // Check connection). The sent text is kept, so a note that was already re-read does not block reloads.
+  const [staffNoteDraft, setStaffNoteDraft] = useState('');
+  const [staffNoteSent, setStaffNoteSent] = useState('');
+  const unsentStaffNote = staffNoteDraft.trim() !== '' && staffNoteDraft.trim() !== staffNoteSent.trim();
+  // A note belongs to the email it was written for. Selecting another email starts a clean note.
+  useEffect(() => {
+    setStaffNoteDraft('');
+    setStaffNoteSent('');
+  }, [selectedIdentity]);
+
   // Stale-build check. Idle = no tRPC mutation or reply draft in flight, no unsent quote, booking or
   // stay edits, and no focused input inside the pane. Reloading then loses nothing staff typed.
   const paneRootRef = useRef<HTMLDivElement>(null);
@@ -667,6 +678,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     quoteSession.phase === 'native_pending' ||
     combinedEdit !== null ||
     quoteSession.bookingDraft !== null ||
+    unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
   const isBusy = (): boolean => {
     if (replyInFlight.current || mutationsInFlight() > 0 || hasUnsentWork) return true;
@@ -1792,7 +1804,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
-              onStaffNote={(staffNote) => dispatchQuote({ type: 'staff_note', staffNote })}
+              onStaffNote={(staffNote) => {
+                setStaffNoteSent(staffNote);
+                dispatchQuote({ type: 'staff_note', staffNote });
+              }}
+              staffNoteDraft={staffNoteDraft}
+              onStaffNoteDraftChange={setStaffNoteDraft}
               hmsQueue={{ pending: quoteRunPending, status: hmsQueue }}
               onLoadRunScreenshot={(input) =>
                 bindQuoteRunScreenshot({
@@ -1975,7 +1992,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             buildRelease={loadedBuild}
             onCheckConnection={() => {
               setCurrentScreen('diagnostics');
-              if (pingState === 'idle') void executeServerPing();
+              if (pingState !== 'loading') void executeServerPing();
             }}
             onReplayTour={() => {
               setTourSlideIndex(0);
