@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
@@ -40,6 +40,7 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { HmsLinkActions } from './hms-link-actions';
 
 type LookupStatus = { phase: 'running' } | { phase: 'done'; run: HmsFindRun };
 
@@ -82,7 +83,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
-  // A dash number is used as written. Digits alone are read as the booking's first stay (-1). Anything else is no HMS number.
+  // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
   // The email's arrival rides with the find so HMS quick search covers that day. runHmsFind drops a non-date.
@@ -248,7 +249,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         <div className="flex flex-col gap-2">
           <p className={headingClass}>What the guest asked</p>
           <AskRow label="Request" value={amendment.requestedChange ?? 'Not stated'} />
-          <AskRow label="Confirmation" value={amendment.confirmationNumber ?? 'Not in the email'} />
+          <AskRow
+            label="Confirmation"
+            value={amendment.confirmationNumber ?? 'Not in the email'}
+            actions={confirmationNumber ? <HmsLinkActions confirmation={confirmationNumber} /> : null}
+          />
           <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} />
           <AskRow label="Arrival" value={amendment.arrival ? formatStayDate(amendment.arrival) : 'Not stated'} />
           <AskRow label="Departure" value={amendment.departure ? formatStayDate(amendment.departure) : 'Not stated'} />
@@ -261,6 +266,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                 field="matched"
                 label="Matched on"
                 value={`confirmation number ${foundNumber ?? ''}`.trim()}
+                actions={foundNumber ? <HmsLinkActions confirmation={foundNumber} /> : null}
               />
               <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
@@ -487,11 +493,12 @@ function shownDate(value: string | null): string {
   return text ? formatStayDate(text) : 'Not shown';
 }
 
-function AskRow({ label, value }: { label: string; value: string }) {
+function AskRow({ label, value, actions }: { label: string; value: string; actions?: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5">
       <p className={headingClass}>{label}</p>
       <p className={valueClass}>{value}</p>
+      {actions ? <div className="pt-0.5">{actions}</div> : null}
       <p className={captionClass}>From the email</p>
     </div>
   );
@@ -502,11 +509,13 @@ function HmsRow({
   label,
   value,
   wants,
+  actions,
 }: {
   field: string;
   label: string;
   value: string;
   wants?: string;
+  actions?: ReactNode;
 }) {
   return (
     <div
@@ -516,6 +525,7 @@ function HmsRow({
     >
       <p className={headingClass}>{label}</p>
       <p className={valueClass}>{value}</p>
+      {actions ? <div className="pt-0.5">{actions}</div> : null}
       {wants ? <p className="text-[11px] font-semibold text-amber-900">{`Guest wants: ${wants}`}</p> : null}
     </div>
   );
