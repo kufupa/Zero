@@ -70,7 +70,9 @@ describe('quote proposal xlsx patch', () => {
     expect(sheet).toContain('R Opperman');
     expect(sheet).toContain('0126433600');
     expect(sheet).toContain('<v>2150</v>');
-    expect(sheet).toContain('+B24*F24*G24');
+    // The patcher writes each line total as a value (2 x 2 x 2150) and does not keep the template formula.
+    expect(sheet).toMatch(/<c r="H24"[^>]*><v>8600<\/v><\/c>/);
+    expect(sheet).not.toContain('B24*F24*G24');
     expect(sheet).toContain('t="s"><v>1</v>');
   });
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { BookingDraftReady, BookingRateCheck, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import { HmsLinkActions } from './hms-link-actions';
 import {
   commitOutcome,
   PANE_BOOKER_EMAIL_MAX,
@@ -307,6 +308,7 @@ function RoomSave({
         <p className="text-[12.5px] font-semibold text-emerald-800">
           {`Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
+        <HmsLinkActions confirmation={commit.confirmationNumber} />
         {commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Luna saved in HMS"

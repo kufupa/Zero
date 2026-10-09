@@ -34,6 +34,13 @@ const groupSchema = z
       .optional(),
   })
   .strict();
+/** How an "other" charge multiplies: per guest per night, per guest, per trip, or once as an item. */
+export const OTHER_CHARGE_UNITS = ['per_person_night', 'per_person', 'per_trip', 'item'] as const;
+export type OtherChargeUnit = (typeof OTHER_CHARGE_UNITS)[number];
+const staffLabel = z.string().trim().max(120);
+/** Largest accepted amount for one extra unit: R1,000,000 in cents. Keeps every total far from unsafe integers. */
+export const MAX_EXTRA_AMOUNT_MINOR = 100_000_000;
+const extraAmount = z.number().int().positive().max(MAX_EXTRA_AMOUNT_MINOR);
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
 export const staffQuoteInput = z
   .object({
@@ -48,11 +55,29 @@ export const staffQuoteInput = z
     attention: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
-    dinnerAllowanceMinor: z.number().int().positive().optional(),
+    // Staff-typed extras. Every amount is ZAR minor units and must be positive; absent means not charged.
+    dinnerAllowanceMinor: extraAmount.optional(),
+    dinnerAllowanceLabel: staffLabel.optional(),
     // The groups that took the B&B fallback. The allowance charges only these groups' guests; absent means every group.
     dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
+    lunchAllowanceMinor: extraAmount.optional(),
+    lunchAllowanceLabel: staffLabel.optional(),
+    officeTransferMinor: extraAmount.optional(),
+    officeTransferDays: z.number().int().min(1).max(31).optional(),
     shuttleRequested: z.boolean().optional(),
-    shuttleMinor: z.number().int().positive().optional(),
+    shuttleMinor: extraAmount.optional(),
+    shuttleTrips: z.number().int().min(1).max(50).optional(),
+    other: z
+      .object({
+        // A blank label is kept, not rejected: the amount then raises a review item instead of vanishing.
+        label: z.string().trim().max(120).default(''),
+        amountMinor: extraAmount,
+        unit: z.enum(OTHER_CHARGE_UNITS),
+      })
+      .strict()
+      .optional(),
+    /** Unpriced staff note, printed on the quotation as a note. */
+    notes: z.string().trim().max(1000).optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
@@ -80,6 +105,8 @@ export type StaffQuoteAttestation = {
   authorizationId: string;
   revisionIds: string[];
   header: Pick<RevisionProposalHeader, 'company' | 'agency'>;
+  /** Staff note approved with the quote; the PDF prints this stored copy, never a later client value. */
+  notes?: string;
 };
 export function staffQuoteSourceHash(mail: {
   id: string;
@@ -221,6 +248,21 @@ export function prepareStaffQuote(
   };
 }
 const SHUTTLE_REVIEW_TEXT = 'Shuttle requested — add a price or answer in the reply';
+const otherLabelReviewText = (amountMinor: number) =>
+  `Other charge R${(amountMinor / 100).toFixed(2)} has no label — add a label or answer in the reply`;
+
+/** "Dinner allowance (food only)": the staff qualifier is printed in brackets after the base label. */
+function withQualifier(base: string, qualifier: string | undefined): string {
+  return qualifier ? `${base} (${qualifier})` : base;
+}
+
+/** The first `count` calendar dates from `start` (YYYY-MM-DD), used as the days of a per-day charge. */
+function consecutiveDates(start: string, count: number): string[] {
+  const origin = Date.parse(`${start}T00:00:00Z`);
+  return Array.from({ length: count }, (_, index) =>
+    new Date(origin + index * 86400000).toISOString().slice(0, 10),
+  );
+}
 
 function buildStayPersons(input: StaffQuoteInput): Array<{ id: string; age: number }> {
   const persons: Array<{ id: string; age: number }> = [];
@@ -259,31 +301,75 @@ export function buildStaffProposalFacts(
   const extras: AuthorizedProposalFacts['extras'] = [];
   const extrasReviewItems: string[] = [];
   const first = input.groups[0]!;
-  const dates = occupiedDates(first.arrivalDate, first.departureDate);
+  const nights = occupiedDates(first.arrivalDate, first.departureDate);
   const allowanceIds = input.dinnerAllowanceGroupIds;
   const allowanceGroups = allowanceIds ? input.groups.filter((group) => allowanceIds.includes(group.id)) : input.groups;
-  if (input.dinnerAllowanceMinor && input.dinnerAllowanceMinor > 0 && allowanceGroups.length) {
-    const persons = buildStayPersons({ ...input, groups: allowanceGroups });
-    const units = persons.length * dates.length;
+  const allowancePersons = buildStayPersons({ ...input, groups: allowanceGroups });
+  const stayPersons = buildStayPersons(input);
+  // Person services print as guests x dates; the rate is per guest per date (night or day).
+  const personService = (
+    id: string,
+    label: string,
+    service: string,
+    unitMinor: number,
+    persons: Array<{ id: string; age: number }>,
+    dates: string[],
+    options: { chargeUnit?: OtherChargeUnit; daysExplicit?: boolean } = {},
+  ) => {
     extras.push({
-      id: 'dinner-allowance',
-      label: 'Dinner allowance',
+      id,
+      label,
       quantity: 1,
-      units,
+      units: persons.length * dates.length,
       unitKind: 'person_service',
-      unitMinor: input.dinnerAllowanceMinor,
-      service: 'dinner_allowance',
+      unitMinor,
+      service,
       persons,
       dates,
+      ...(options.chargeUnit ? { chargeUnit: options.chargeUnit } : {}),
+      ...(options.daysExplicit === undefined ? {} : { daysExplicit: options.daysExplicit }),
     });
+  };
+  if (input.dinnerAllowanceMinor && allowancePersons.length) {
+    personService(
+      'dinner-allowance',
+      withQualifier('Dinner allowance', input.dinnerAllowanceLabel),
+      'dinner_allowance',
+      input.dinnerAllowanceMinor,
+      allowancePersons,
+      nights,
+    );
+  }
+  if (input.lunchAllowanceMinor) {
+    personService(
+      'lunch-allowance',
+      withQualifier('Lunch allowance', input.lunchAllowanceLabel),
+      'lunch_allowance',
+      input.lunchAllowanceMinor,
+      stayPersons,
+      nights,
+    );
+  }
+  if (input.officeTransferMinor) {
+    // Office transfer is a return trip per guest per day; days default to the nights of the stay.
+    personService(
+      'office-transfer',
+      'Office transfer',
+      'office_transfer',
+      input.officeTransferMinor,
+      stayPersons,
+      consecutiveDates(first.arrivalDate, input.officeTransferDays ?? nights.length),
+      // Typed days are restored on a re-quote; defaulted days follow the stay instead.
+      { daysExplicit: input.officeTransferDays !== undefined },
+    );
   }
   if (input.shuttleRequested) {
-    if (input.shuttleMinor && input.shuttleMinor > 0) {
+    if (input.shuttleMinor) {
       extras.push({
         id: 'shuttle',
         label: 'Shuttle',
         quantity: 1,
-        units: 1,
+        units: input.shuttleTrips ?? 1,
         unitKind: 'trip',
         unitMinor: input.shuttleMinor,
         service: 'shuttle',
@@ -292,6 +378,29 @@ export function buildStaffProposalFacts(
       });
     } else {
       extrasReviewItems.push(SHUTTLE_REVIEW_TEXT);
+    }
+  }
+  if (input.other) {
+    const { label, amountMinor, unit } = input.other;
+    if (!label) {
+      extrasReviewItems.push(otherLabelReviewText(amountMinor));
+    } else if (unit === 'per_person_night') {
+      personService('other', label, 'other', amountMinor, stayPersons, nights, { chargeUnit: unit });
+    } else if (unit === 'per_person') {
+      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], { chargeUnit: unit });
+    } else {
+      extras.push({
+        id: 'other',
+        label,
+        quantity: 1,
+        units: 1,
+        unitKind: unit === 'per_trip' ? 'trip' : 'item',
+        unitMinor: amountMinor,
+        service: 'other',
+        persons: [],
+        dates: [first.arrivalDate],
+        chargeUnit: unit,
+      });
     }
   }
   if (!extras.length) {
@@ -334,6 +443,40 @@ export async function executeStaffQuote(
   await guard();
   return revision;
 }
+/**
+ * Why a staff-approved quote can no longer be exported, or null while it is still the current approval.
+ * Pure: the caller reads the latest generation and the current message from the database.
+ */
+export function staffQuoteCurrencyProblem(args: {
+  staff: Pick<StaffQuoteAttestation, 'userId' | 'threadId' | 'sourceHash' | 'header'>;
+  runGenerationId: string | null | undefined;
+  latestGenerationId: string | null | undefined;
+  currentMessage:
+    | { id: string; threadId: string; subject: string | null; textBody: string | null; htmlBody: string | null }
+    | null
+    | undefined;
+  userId: string;
+  party: { company: string; agency: string };
+}): string | null {
+  if (args.latestGenerationId !== args.runGenerationId)
+    return 'Newer stay inputs were approved; use the current quote';
+  const current = args.currentMessage;
+  if (
+    !current ||
+    args.staff.userId !== args.userId ||
+    args.staff.threadId !== current.threadId ||
+    args.staff.sourceHash !== staffQuoteSourceHash(current)
+  )
+    return 'Selected email changed; rerun the approved quote';
+  if (
+    !args.staff.header ||
+    args.party.company !== args.staff.header.company ||
+    args.party.agency !== args.staff.header.agency
+  )
+    return 'Party identity changed; rerun the approved quote';
+  return null;
+}
+
 export function attestStaffQuote(
   input: StaffQuoteInput,
   scope: StaffQuoteScope,
@@ -356,5 +499,6 @@ export function attestStaffQuote(
     authorizationId: prepared.authorizationId,
     revisionIds: [revision.id],
     header: { company: prepared.header.company, agency: prepared.header.agency },
+    ...(input.notes ? { notes: input.notes } : {}),
   };
 }

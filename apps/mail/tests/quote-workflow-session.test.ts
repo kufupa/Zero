@@ -21,6 +21,7 @@ import {
   dinnerAllowanceStillRequired,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
+import { staffHeaderFieldProblem } from '../lib/quote-workflow/types';
 import type {
   LunaAnalysisWire,
   QuoteAnalysis,
@@ -96,6 +97,41 @@ describe('quote session', () => {
     expect(changed.selectedOfferIds).toEqual([]);
     expect(canCreateNativeDraft(changed)).toBe(false);
   });
+  it('does not tick shuttle for a bank transfer, but does for an airport transfer', () => {
+    const analysisWith = (request: string) => ({
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, specialRequests: [request] }],
+    });
+    const bank = reduceQuoteSession(
+      { ...initialQuoteSession(), binding: bind() },
+      { type: 'analysis_ready', analysis: analysisWith('Please confirm the bank transfer details') },
+    );
+    expect(bank.staffHeader.shuttleRequested).toBeFalsy();
+    const airport = reduceQuoteSession(
+      { ...initialQuoteSession(), binding: bind() },
+      { type: 'analysis_ready', analysis: analysisWith('Airport transfer on arrival') },
+    );
+    expect(airport.staffHeader.shuttleRequested).toBe(true);
+  });
+
+  it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
+    const start = initialQuoteSession();
+    const errored = reduceQuoteSession(start, {
+      type: 'patch_staff_header',
+      header: { fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' } },
+    });
+    expect(errored.inputRevision).toBe(start.inputRevision);
+    expect(staffHeaderFieldProblem(errored.staffHeader)).toBe(
+      'Dinner allowance: Enter an amount in rand, like 450 or 1,250.50',
+    );
+    expect(canCreatePdf(errored)).toBe(false);
+    const step = { kind: 'quote_stay', shareKey: 'stay-1' } as never;
+    expect(quoteRunBlockReason(errored, step)).toMatch(/^Fix the amounts before running this search\./);
+    const fixed = reduceQuoteSession(errored, { type: 'patch_staff_header', header: { fieldErrors: {} } });
+    expect(staffHeaderFieldProblem(fixed.staffHeader)).toBeNull();
+    expect(quoteRunBlockReason(fixed, step)).toBeNull();
+  });
+
   it('reuses analysis for an unchanged selection digest', () => {
     const a = reduceQuoteSession(initialQuoteSession(), {
       type: 'selection',
@@ -2008,9 +2044,13 @@ describe('quote session staff review items', () => {
       staffQuote,
       selectionEpoch: 1,
       inputRevision: s.inputRevision,
-      extrasReviewItems: ['Shuttle requested — add a price or answer in the reply'],
+      extrasReviewItems: [
+        'Shuttle requested — add a price or answer in the reply',
+        'Other charge R300.00 has no label — add a label or answer in the reply',
+      ],
     });
     expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
+    expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
     s = reduceQuoteSession(s, {
       type: 'staff_quote_ready',
       offer,

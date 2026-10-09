@@ -9,10 +9,17 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 // --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
 const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name']);
+// Lifts the Labtest guard for one run. Only the server passes it, and only in on mode. It is never read from the environment.
+export const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);
 const OK_OUTCOMES = new Set(['preview_ok', 'cancelled', 'already_cancelled']);
-const REFUSED_OUTCOMES = new Set(['refused_not_lab', 'refused_identity_mismatch', 'refused_reason_missing']);
+const REFUSED_OUTCOMES = new Set([
+  'refused_not_lab',
+  'refused_identity_mismatch',
+  'refused_reason_missing',
+  'refused_penalty',
+]);
 const CDP_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export const squash = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -137,11 +144,19 @@ export function chooseStaySource({ confirmation, open, row, allowOpen = true }) 
 
 export function parseCancelArgs(argv) {
   const values = new Map();
+  let allowRealGuest = false;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (flag === ALLOW_REAL_GUEST_FLAG) {
+      if (allowRealGuest) return refuse(`Repeated argument: ${flag}`);
+      allowRealGuest = true;
+      continue;
+    }
     if (!VALUE_FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
     const value = argv[index + 1];
-    if (value === undefined || VALUE_FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (value === undefined || VALUE_FLAGS.has(value) || value === ALLOW_REAL_GUEST_FLAG) {
+      return refuse(`Missing value for ${flag}`);
+    }
     if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
     values.set(flag, value);
     index += 1;
@@ -161,7 +176,7 @@ export function parseCancelArgs(argv) {
   return {
     ok: true,
     exitCode: 0,
-    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName },
+    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName, allowRealGuest },
   };
 }
 
@@ -172,9 +187,12 @@ function optionalSurname(values) {
   return GUEST_SURNAME.test(lastName) ? lastName : false;
 }
 
-// Refuses before any browser work when the requested arrival is not a 2027+ lab stay.
+// Refuses before any browser work when the requested arrival is not a 2027+ lab stay. An on-mode run (allowRealGuest)
+// has no lab guard, so this floor does not apply to it.
 export function preflight(args) {
-  if (args.arrival < LAB_ARRIVAL_FLOOR) return { ok: false, outcome: 'refused_not_lab', reason: 'arrival_before_2027' };
+  if (!args.allowRealGuest && args.arrival < LAB_ARRIVAL_FLOOR) {
+    return { ok: false, outcome: 'refused_not_lab', reason: 'arrival_before_2027' };
+  }
   return { ok: true, outcome: null, reason: null };
 }
 
@@ -187,15 +205,113 @@ export function labGuard({ lastName, arrival }) {
   return { ok: true, reason: null, arrivalIso };
 }
 
-// Full identity check on the opened record. The lab guard runs first, so a real guest is always refused as not_lab.
-// The lab guard and the confirmation always apply. The arrival must match for a write (commit). With arrivalHint the
-// requested arrival is only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
+// Full identity check on the opened record. Without --allow-real-guest the lab guard runs first, so a real guest is
+// refused as not_lab. With it (on mode) the lab guard is skipped, and the arrival must still be readable. The
+// confirmation always applies. The arrival must match for a write (commit). With arrivalHint the requested arrival is
+// only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
 export function identityCheck(args, record, { arrivalHint = false } = {}) {
-  const lab = labGuard(record);
-  if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
+  const arrivalIso = hmsDateToIso(record.arrival);
+  if (!args.allowRealGuest) {
+    const lab = labGuard(record);
+    if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
+  } else if (!arrivalIso) {
+    return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival_unparsed' };
+  }
   if (squash(record.confirmation) !== args.confirmation) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'confirmation' };
-  if (!arrivalHint && lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
+  if (!arrivalHint && arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
   return { ok: true, outcome: null, reason: null };
+}
+
+// The note HMS takes with the cancel. A lab run keeps the lab-proof text; an on-mode run records the staff's reason.
+export const LAB_CANCEL_NOTE = 'Lab proof cancel';
+export function cancelNoteFor(args) {
+  return args.allowRealGuest ? args.reason : LAB_CANCEL_NOTE;
+}
+
+// A cancellation penalty dialog refuses the run before the reason OK. It is recorded and left open, and nothing is
+// clicked on it. Returns the outcome to report, or null when no penalty is open.
+export function penaltyRefusal(penalty) {
+  return penalty ? 'refused_penalty' : null;
+}
+
+// Writes the charge text and amount onto the run result.
+export function recordPenalty(result, penalty) {
+  result.penaltyText = penalty.text;
+  result.penaltyAmount = penalty.amount;
+}
+
+// The cancel dialog, from the first look to the readback. Every page action goes through io, so these decisions run the
+// same way on the real page (cancel-stay.mjs dialogIo) and on a scripted dialog in the tests. A charge on screen refuses
+// before a reason is picked or OK is clicked: it is recorded and left open, and nothing is clicked on it. Exactly one OK
+// is clicked, and only after a last look finds no charge. io: windowTexts, shot, mark, fillNote, readReasons,
+// pickReason, readRecord, close, clickOk, waitAfterOk, settle.
+export async function runCancelDialog({ args, record, result, io }) {
+  const penaltyBefore = parsePenalty(await io.windowTexts());
+  const refusedBefore = penaltyRefusal(penaltyBefore);
+  if (refusedBefore) {
+    recordPenalty(result, penaltyBefore);
+    await io.shot('penalty.png');
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = refusedBefore;
+    return result;
+  }
+  if (args.mode === 'commit') await io.fillNote(cancelNoteFor(args));
+  const list = await io.readReasons();
+  result.reasons = list.reasons;
+  io.mark('reasons');
+
+  if (args.mode === 'preview') {
+    if (list.reasons.length === 0) throw new Error('REASON_LIST_EMPTY');
+    await io.close();
+    const after = await io.readRecord();
+    result.statusAfter = after.confirmation === args.confirmation ? squash(after.status) : null;
+    result.outcome = resolveOutcome({ mode: 'preview', statusBefore: record.status, statusAfter: result.statusAfter });
+    return result;
+  }
+
+  const index = findReasonIndex(list.texts, args.reason);
+  if (index === -1) {
+    result.refusal = 'reason_not_in_list';
+    await io.close();
+    result.outcome = 'refused_reason_missing';
+    return result;
+  }
+  const again = await io.readRecord();
+  if (!identityCheck(args, again).ok) throw new Error('IDENTITY_CHANGED_BEFORE_OK');
+  await io.pickReason(list, index);
+  // Last look before the one OK: a charge that appeared since the first check refuses the run, with no OK click.
+  const penaltyNow = parsePenalty(await io.windowTexts());
+  const refusedNow = penaltyRefusal(penaltyNow);
+  if (refusedNow) {
+    recordPenalty(result, penaltyNow);
+    await io.shot('penalty.png');
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = refusedNow;
+    return result;
+  }
+  if (!(await io.clickOk())) throw new Error('REASON_OK_NOT_UNIQUE');
+  result.clickedOk = true;
+  io.mark('committed');
+  await io.waitAfterOk();
+  // HMS shows its "Processing request." mask while the cancel applies, and the open form keeps its old status until the
+  // mask clears (live 0144). Wait for the mask, then poll the status until it reads Cancelled. After 60 s it is unconfirmed.
+  const settled = await io.settle();
+  const windows = await io.windowTexts();
+  result.followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
+  result.reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
+  const penaltyAfter = parsePenalty(windows);
+  if (penaltyAfter) {
+    recordPenalty(result, penaltyAfter);
+    result.penaltyPending = true;
+    await io.shot('penalty.png');
+  }
+  result.statusAfter = settled.statusAfter;
+  result.settle = settled;
+  result.readbackMethod = 'settle';
+  await io.shot('readback.png');
+  io.mark('readback');
+  result.outcome = resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });
+  return result;
 }
 
 // The arrival the operator asked about (requestedArrival, possibly a date the guest proposed) against the arrival HMS

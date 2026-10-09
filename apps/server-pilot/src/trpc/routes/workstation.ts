@@ -1,12 +1,14 @@
 import { outlookSyncRouter } from './outlook-sync.js';
 import {
   staffQuoteInput,
+  staffQuoteCurrencyProblem,
   staffQuoteSourceHash,
   prepareStaffQuote,
   executeStaffQuote,
   attestStaffQuote,
   buildStaffProposalFacts,
   type StaffQuoteAttestation,
+  type StaffQuoteInput,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
@@ -31,6 +33,7 @@ import {
   deriveAuthorizedExtraLines,
   type AuthorizedProposalFacts,
 } from '../../quote-proposal/quote-lines.js';
+import { quoteWorkbookForRevision, quoteWorkbookFileName } from '../../quote-proposal/quote-workbook.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -92,6 +95,30 @@ const HMS_EXECUTION_CODES = new Set([
 const HMS_EXECUTION_PHASE = /^(login|hotel_availability|search|details|run|execution)$/;
 
 // Identifiers only: free-text error messages can carry PMS or guest data, so they never reach logs.
+/**
+ * Prices the staff extras for one approved revision. Invalid or oversize extras are the caller's mistake,
+ * so any failure here is a BAD_REQUEST, never an internal error.
+ */
+export function staffExtrasOrBadRequest(
+  input: StaffQuoteInput,
+  scope: Parameters<typeof buildStaffProposalFacts>[1],
+  prepared: Parameters<typeof buildStaffProposalFacts>[2],
+  revision: QuoteRevision,
+): { proposal: ReturnType<typeof buildStaffProposalFacts>; extraTotal: number } {
+  try {
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const extraTotal = proposal.facts
+      ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce((sum, line) => sum + line.totalMinor, 0)
+      : 0;
+    return { proposal, extraTotal };
+  } catch {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
+    });
+  }
+}
+
 export function staffQuoteFailureCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const candidate = typeof raw === 'string' ? raw : error instanceof Error ? error.message : '';
@@ -670,19 +697,29 @@ export const workstationRouter = router({
         });
       }
       queued.setPhase(3);
-      const attestation = attestStaffQuote(input, scope, prepared, revision);
-      const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
-      const extraTotal = proposal.facts
-        ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
-            (sum, line) => sum + line.totalMinor,
-            0,
-          )
-        : 0;
-      if (!(await stillCurrent()))
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Selected email changed while pricing',
-        });
+      // Any failure after pricing must not leave this generation 'running'.
+      const markGenerationFailed = (code: string) =>
+        Promise.resolve(
+          db
+            .update(aiDraftGeneration)
+            .set({ status: 'failed', errorMessage: code })
+            .where(eq(aiDraftGeneration.id, generationId)),
+        ).catch(() => undefined);
+      let attestation: StaffQuoteAttestation;
+      let proposal: ReturnType<typeof buildStaffProposalFacts>;
+      let extraTotal: number;
+      try {
+        attestation = attestStaffQuote(input, scope, prepared, revision);
+        ({ proposal, extraTotal } = staffExtrasOrBadRequest(input, scope, prepared, revision));
+        if (!(await stillCurrent()))
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Selected email changed while pricing',
+          });
+      } catch (error) {
+        await markGenerationFailed('staff_quote_post_pricing_failed');
+        throw error;
+      }
       const runId = evidence.directory
         ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
         : null;
@@ -762,7 +799,12 @@ export const workstationRouter = router({
         registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
         return summary();
       }
-      await persistRun();
+      try {
+        await persistRun();
+      } catch (error) {
+        await markGenerationFailed('staff_quote_persist_failed');
+        throw error;
+      }
       return summary();
     } finally {
       if (!queueEndedLater) queued.end();
@@ -1270,7 +1312,13 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
       const result = await buildRevisionProposalPdf(
         resolved.revision,
-        { ...input, signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+        {
+          ...input,
+          signerName: ctx.sessionUser.name ?? '',
+          signerEmail: ctx.sessionUser.email,
+          // The note comes from the approved attestation, not from this request.
+          notes: staff?.notes,
+        },
         { url, facts: resolved.facts },
       );
       await assertCurrentStaffQuote();
@@ -1296,6 +1344,105 @@ export const workstationRouter = router({
                 0,
               )
             : 0),
+      };
+    }),
+  /**
+   * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then the
+   * approved revision and its authorised extras written into the staff quotation template.
+   */
+  quoteWorkbook: mailboxProcedure
+    .input(qualifiedProposalInput)
+    .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
+      if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const db = getDb();
+      const [bound] = await db
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      const staff = bound.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+      const assertCurrentStaffQuote = async () => {
+        if (!staff) return;
+        const [latest] = await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+              eq(aiDraftGeneration.threadId, bound.run.threadId),
+              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1);
+        const [current] = await db
+          .select()
+          .from(message)
+          .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+          .limit(1);
+        const problem = staffQuoteCurrencyProblem({
+          staff,
+          runGenerationId: bound.run.generationId,
+          latestGenerationId: latest?.id,
+          currentMessage: current,
+          userId: ctx.sessionUser.id,
+          party: { company: input.company, agency: input.agency },
+        });
+        if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
+      };
+      await assertCurrentStaffQuote();
+      const resolveApproved = () => {
+        try {
+          return resolveLedgerProposal(bound.run, {
+            transportId: ctx.activeTransportId,
+            messageId: input.messageId,
+            revisionRef: input.revisionRef,
+            factRefs: input.factRefs,
+          });
+        } catch {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence is not ready' });
+        }
+      };
+      const resolved = resolveApproved();
+      let workbook: ReturnType<typeof quoteWorkbookForRevision>;
+      try {
+        workbook = quoteWorkbookForRevision({
+          revision: resolved.revision,
+          facts: resolved.facts,
+          header: {
+            attention: input.attention,
+            company: input.company,
+            clientEmail: input.clientEmail,
+            clientTelephone: input.clientTelephone,
+            signerName: ctx.sessionUser.name ?? '',
+            signerEmail: ctx.sessionUser.email,
+          },
+          // The note comes from the approved attestation, not from this request.
+          note: staff?.notes,
+        });
+      } catch {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
+      }
+      await assertCurrentStaffQuote();
+      resolveApproved();
+      return {
+        fileName: quoteWorkbookFileName(input.company, resolved.revision.groups[0]?.arrivalDate ?? resolved.revision.authoredDate),
+        xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
+        totalMinor: workbook.totalMinor,
+        revisionId: resolved.revision.id,
       };
     }),
   sourceQuoteProposalPdf: mailboxProcedure

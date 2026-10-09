@@ -88,6 +88,7 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.ping',
   'workstation.prepareBookingDraft',
   'workstation.qualifiedQuoteProposalPdf',
+  'workstation.quoteWorkbook',
   'workstation.reportBridgeFailure',
   'workstation.usePriorQuoteForBooking',
 ]);

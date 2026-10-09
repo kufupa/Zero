@@ -4,7 +4,7 @@ import {
   type LunaAnalysis,
 } from './reservationist-decision.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
-import type { ModelAdapter } from './bedrock/adapter.js';
+import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
 import { createHash } from 'node:crypto';
@@ -33,9 +33,60 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'invalid_output' | 'disabled';
 
+/** Model-call facts for the HITL ledger. Optional fields appear only when reported. */
+export type QuoteWorkflowTelemetry = {
+  /** Wall time of the analyse call, including the model round trip when one was made. */
+  latencyMs: number;
+  modelId?: string;
+  /** Adapter protocol and route, from the adapter's provenance. */
+  provider?: string;
+  modelRoute?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    costUsd?: number;
+    usageSource?: 'reported' | 'unknown';
+  };
+};
+
 export type AnalyseQuoteSelectionResult =
-  | { source: 'luna'; analysis: LunaAnalysis }
-  | { source: 'regex_fallback'; fallbackReason: QuoteWorkflowFallbackReason };
+  | { source: 'luna'; analysis: LunaAnalysis; telemetry?: QuoteWorkflowTelemetry }
+  | {
+      source: 'regex_fallback';
+      fallbackReason: QuoteWorkflowFallbackReason;
+      telemetry?: QuoteWorkflowTelemetry;
+    };
+
+/** The model every quote analyse requests. */
+const LUNA_REQUESTED_MODEL_ID = 'gpt-6-luna';
+
+function telemetryFrom(
+  result: ModelInvokeResult | undefined,
+  startedAt: number,
+): QuoteWorkflowTelemetry {
+  const latencyMs = Date.now() - startedAt;
+  // A call was attempted but produced no result (timeout or error): report what was requested.
+  if (!result) return { latencyMs, modelId: LUNA_REQUESTED_MODEL_ID };
+  const usage = result.usage;
+  return {
+    latencyMs,
+    modelId: result.modelId || LUNA_REQUESTED_MODEL_ID,
+    ...(result.provenance
+      ? { provider: result.provenance.protocol, modelRoute: result.provenance.routeId }
+      : {}),
+    ...(usage && typeof usage.inputTokens === 'number' && typeof usage.outputTokens === 'number'
+      ? {
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            costUsd:
+              typeof usage.estimatedCostUsd === 'number' ? usage.estimatedCostUsd : undefined,
+            usageSource: result.provenance?.usageSource,
+          },
+        }
+      : {}),
+  };
+}
 
 export type MappedQuoteDecision = {
   intent: 'quote' | 'other';
@@ -349,8 +400,14 @@ export async function analyseQuoteSelection(input: {
   treatAs?: QuoteTreatAs;
   staffNote?: string;
 }): Promise<AnalyseQuoteSelectionResult> {
+  const started = Date.now();
   if (!input.enabled || !input.adapter) {
-    return { source: 'regex_fallback', fallbackReason: 'disabled' };
+    // No model call was attempted, so no modelId is reported.
+    return {
+      source: 'regex_fallback',
+      fallbackReason: 'disabled',
+      telemetry: { latencyMs: Date.now() - started },
+    };
   }
   const deadlineMs = input.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const controller = new AbortController();
@@ -363,8 +420,9 @@ export async function analyseQuoteSelection(input: {
     unknown
   >;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let result: ModelInvokeResult | undefined;
   const invokePromise = input.adapter.invoke({
-    modelId: 'gpt-6-luna',
+    modelId: LUNA_REQUESTED_MODEL_ID,
     systemPrompt: prompt.system,
     userPrompt: prompt.user,
     files: prompt.files,
@@ -382,10 +440,14 @@ export async function analyseQuoteSelection(input: {
         reject(error);
       }, deadlineMs);
     });
-    const result = await Promise.race([invokePromise, timeoutPromise]);
+    result = await Promise.race([invokePromise, timeoutPromise]);
     const parsed = lunaAnalysisSchema.safeParse(result.output);
     if (!parsed.success) {
-      return { source: 'regex_fallback', fallbackReason: 'invalid_output' };
+      return {
+        source: 'regex_fallback',
+        fallbackReason: 'invalid_output',
+        telemetry: telemetryFrom(result, started),
+      };
     }
     const sourceText = prompt.user;
     const staffNote = input.staffNote?.trim() ?? '';
@@ -403,9 +465,14 @@ export async function analyseQuoteSelection(input: {
         rateClaims: verbatim(parsed.data.rateClaims),
         ...groundedAmendmentFields(parsed.data, sourceText),
       },
+      telemetry: telemetryFrom(result, started),
     };
   } catch (error) {
-    return { source: 'regex_fallback', fallbackReason: fallbackReasonFromError(error) };
+    return {
+      source: 'regex_fallback',
+      fallbackReason: fallbackReasonFromError(error),
+      telemetry: telemetryFrom(result, started),
+    };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

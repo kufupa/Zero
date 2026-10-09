@@ -216,8 +216,66 @@ export type StaffQuoteHeader = {
   dinnerAllowanceRequired?: boolean;
   /** The groups that took the B&B fallback. The allowance is charged only to these groups' guests. */
   dinnerAllowanceGroupIds?: string[];
+  /** Optional qualifier on the dinner line, e.g. "food only". Printed in brackets. */
+  dinnerAllowanceLabel?: string;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  /** R per person per day, return trip. */
+  officeTransferMinor?: number;
+  /** Days charged for the office transfer. Absent means the nights of the stay. */
+  officeTransferDays?: number;
   shuttleRequested?: boolean;
+  /** R per trip. A legacy header with only this set means one trip. */
   shuttleMinor?: number;
+  /** Number of shuttle trips. Absent means one trip. */
+  shuttleTrips?: number;
+  other?: StaffQuoteOtherCharge;
+  /** Unpriced note for the reply and the PDF. */
+  notes?: string;
+  /**
+   * Unreadable or over-cap text in an amount or count field. While any entry is here, the quote cannot run,
+   * no PDF, Excel or reply can be made, and the saved amount is never used silently.
+   */
+  fieldErrors?: Partial<Record<StaffExtraField, string>>;
+};
+
+/** Amount and count fields whose typed text the pane reads. */
+export type StaffExtraField =
+  | 'dinnerAllowance'
+  | 'lunchAllowance'
+  | 'officeTransfer'
+  | 'officeTransferDays'
+  | 'shuttleAmount'
+  | 'shuttleTrips'
+  | 'otherAmount';
+
+const STAFF_EXTRA_FIELD_LABELS: Record<StaffExtraField, string> = {
+  dinnerAllowance: 'Dinner allowance',
+  lunchAllowance: 'Lunch allowance',
+  officeTransfer: 'Office transfer',
+  officeTransferDays: 'Office transfer days',
+  shuttleAmount: 'Shuttle price',
+  shuttleTrips: 'Shuttle trips',
+  otherAmount: 'Other amount',
+};
+
+/** The first unreadable or over-cap amount, as "Label: message", or null when every field reads cleanly. */
+export function staffHeaderFieldProblem(
+  header: { fieldErrors?: Partial<Record<StaffExtraField, string>> } | null | undefined,
+): string | null {
+  for (const field of Object.keys(STAFF_EXTRA_FIELD_LABELS) as StaffExtraField[]) {
+    const message = header?.fieldErrors?.[field];
+    if (message) return `${STAFF_EXTRA_FIELD_LABELS[field]}: ${message}`;
+  }
+  return null;
+}
+
+export type StaffQuoteOtherUnit = 'per_person_night' | 'per_person' | 'per_trip' | 'item';
+
+export type StaffQuoteOtherCharge = {
+  label: string;
+  amountMinor?: number;
+  unit: StaffQuoteOtherUnit;
 };
 
 export function emptyStaffQuoteHeader(): StaffQuoteHeader {

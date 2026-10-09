@@ -8,9 +8,10 @@
 // already_cancelled. If the dropdown window does not cover arrival, its calendar icon moves it first; the grid
 // window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
-// Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
-// recorded and left open; OK is never clicked on it.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest]
+// Commit picks --reason and clicks its OK once. A cancellation penalty dialog, open before preview or commit
+// clicks OK, refuses the run (refused_penalty). It is recorded and left open; nothing is clicked on it.
+// --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
+// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
@@ -20,15 +21,14 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
-  isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
+  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, hmsDateToIso, identityCheck,
+  isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
+  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, runCancelDialog, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
-const CANCEL_NOTE = 'Lab proof cancel';
 const PICKER_OPEN = '.x-datepicker:visible, .x-date-picker:visible, .x-monthpicker:visible';
 const PICKER_TITLE = '.x-datepicker-month .x-btn-inner, .x-datepicker-month';
 const PICKER_NEXT = '.x-datepicker-next, .x-datepicker-next a';
@@ -43,6 +43,7 @@ function newResult(args) {
     mode: args.mode,
     reason: args.reason,
     lastName: args.lastName ?? null,
+    allowRealGuest: args.allowRealGuest === true,
     quickStages: [],
     arrivalMismatch: false,
     requestedArrival: args.arrival ?? null,
@@ -567,9 +568,29 @@ function settleIo(ctx) {
   };
 }
 
-function recordPenalty(result, penalty) {
-  result.penaltyText = penalty.text;
-  result.penaltyAmount = penalty.amount;
+// The real page behind the cancel dialog. Each method makes the call the flow made before it moved into
+// cancel-stay-rules.mjs (runCancelDialog), in the same order and with the same waits.
+function dialogIo(ctx, dialog) {
+  const { page } = ctx;
+  return {
+    mark: (name) => mark(ctx, name),
+    shot: (name) => shot(ctx, name),
+    windowTexts: () => visibleWindowTexts(page),
+    fillNote: async (text) => {
+      const note = dialog.locator('textarea:visible');
+      if ((await note.count()) === 1) await note.fill(text);
+    },
+    readReasons: () => readReasonList(page, dialog),
+    pickReason: async (list, index) => {
+      await list.items.nth(index).click({ force: true });
+      await page.waitForTimeout(300);
+    },
+    readRecord: () => readRecord(page),
+    close: () => closeCancelDialog(page, dialog),
+    clickOk: () => clickReasonOk(page),
+    waitAfterOk: () => page.waitForTimeout(1500),
+    settle: () => settleCancel(settleIo(ctx), { now: () => Date.now(), sleep: (ms) => delay(ms) }),
+  };
 }
 
 async function run(ctx) {
@@ -628,62 +649,7 @@ async function run(ctx) {
   result.cancelPath = await openCancelDialog(page);
   const dialog = await waitCancelDialog(page);
   await shot(ctx, 'cancel-dialog.png');
-  const penaltyBefore = parsePenalty(await visibleWindowTexts(page));
-  if (penaltyBefore) {
-    if (args.mode === 'commit') throw new Error('PENALTY_DIALOG_OPEN_BEFORE_OK');
-    recordPenalty(result, penaltyBefore);
-    await shot(ctx, 'penalty.png');
-  }
-  if (args.mode === 'commit') {
-    const note = dialog.locator('textarea:visible');
-    if ((await note.count()) === 1) await note.fill(CANCEL_NOTE);
-  }
-  const list = await readReasonList(page, dialog);
-  result.reasons = list.reasons;
-  mark(ctx, 'reasons');
-
-  if (args.mode === 'preview') {
-    if (list.reasons.length === 0) throw new Error('REASON_LIST_EMPTY');
-    await closeCancelDialog(page, dialog);
-    const after = await readRecord(page);
-    result.statusAfter = after.confirmation === args.confirmation ? squash(after.status) : null;
-    result.outcome = resolveOutcome({ mode: 'preview', statusBefore: record.status, statusAfter: result.statusAfter });
-    return;
-  }
-
-  const index = findReasonIndex(list.texts, args.reason);
-  if (index === -1) {
-    result.refusal = 'reason_not_in_list';
-    await closeCancelDialog(page, dialog);
-    result.outcome = 'refused_reason_missing';
-    return;
-  }
-  const again = await readRecord(page);
-  if (!identityCheck(args, again).ok) throw new Error('IDENTITY_CHANGED_BEFORE_OK');
-  await list.items.nth(index).click({ force: true });
-  await page.waitForTimeout(300);
-  if (!(await clickReasonOk(page))) throw new Error('REASON_OK_NOT_UNIQUE');
-  result.clickedOk = true;
-  mark(ctx, 'committed');
-  await page.waitForTimeout(1500);
-  // HMS shows its "Processing request." mask while the cancel applies, and the open form keeps its old status until the
-  // mask clears (live 0144). Wait for the mask, then poll the status until it reads Cancelled. After 60 s it is unconfirmed.
-  const settled = await settleCancel(settleIo(ctx), { now: () => Date.now(), sleep: (ms) => delay(ms) });
-  const windows = await visibleWindowTexts(page);
-  result.followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
-  result.reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
-  const penaltyAfter = parsePenalty(windows);
-  if (penaltyAfter) {
-    recordPenalty(result, penaltyAfter);
-    result.penaltyPending = true;
-    await shot(ctx, 'penalty.png');
-  }
-  result.statusAfter = settled.statusAfter;
-  result.settle = settled;
-  result.readbackMethod = 'settle';
-  await shot(ctx, 'readback.png');
-  mark(ctx, 'readback');
-  result.outcome = resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });
+  await runCancelDialog({ args, record, result, io: dialogIo(ctx, dialog) });
 }
 
 async function drive(ctx) {

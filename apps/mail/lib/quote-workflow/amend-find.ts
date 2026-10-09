@@ -33,20 +33,24 @@ export const AMEND_FIND_COPY = {
   searchPick: 'Pick a booking to see it in HMS above.',
 } as const;
 
-/** HMS confirmation numbers look like 57291630-1. findStay takes no other form. */
+/**
+ * A real HMS confirmation: 6 to 10 digits, a dash, then the stay's 1 or 2 digits (57291630-1). findStay takes no other
+ * form, and the pane never sends one.
+ */
+const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
+
 export function isHmsConfirmation(value: string): boolean {
-  return /^\d+-\d+$/.test(value);
+  return HMS_CONFIRMATION.test(value);
 }
 
 /**
- * The HMS number the find uses for an email number. A dash form is taken as written. Digits alone (6 to 10) are
- * read as the first stay of that booking, so -1 is added. Anything else, such as an agency reference, is null.
+ * The HMS confirmation for an email number, or null. Only a dash confirmation is taken, exactly as written. A bare
+ * number is not a confirmation: it may be a billing or voucher reference, and adding -1 could match a different stay.
+ * So a bare number gets no -1 here, and the pane searches by guest name instead.
  */
 export function hmsNumberFor(value: string | null | undefined): string | null {
   const number = value?.trim() ?? '';
-  if (isHmsConfirmation(number)) return number;
-  if (/^\d{6,10}$/.test(number)) return `${number}-1`;
-  return null;
+  return isHmsConfirmation(number) ? number : null;
 }
 
 /** The note for an email number HMS cannot take: an agency or voucher reference, say. It names the number. */
