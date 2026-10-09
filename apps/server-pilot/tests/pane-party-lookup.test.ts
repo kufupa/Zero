@@ -2,6 +2,7 @@ import {
   findParty,
   mergePartyKindResults,
   PANE_PARTY_CANDIDATE_CAP,
+  PANE_PARTY_PER_KIND_CAP,
   panePartyCandidates,
   panePartyFindResultFromCli,
   panePartyLookupLoaders,
@@ -287,7 +288,9 @@ describe('findParty: the 50-row load and the cap', () => {
     const found = await findParty({ name: 'Tourvest' });
     expect(found.truncated).toBe(true);
     expect(found.outcome).toBe('ambiguous');
-    expect(found.results).toHaveLength(PANE_PARTY_CANDIDATE_CAP);
+    // One kind shows at most PANE_PARTY_PER_KIND_CAP rows, so the 50 companies are cut to 10.
+    expect(found.results).toHaveLength(PANE_PARTY_PER_KIND_CAP);
+    expect(PANE_PARTY_PER_KIND_CAP * 2).toBe(PANE_PARTY_CANDIDATE_CAP);
   });
 
   it('a 50-row grid with no local match is no_match, and still truncated so the pane asks for more of the name', async () => {
@@ -330,6 +333,43 @@ describe('findParty: the 50-row load and the cap', () => {
     expect(merged.outcome).toBe('ambiguous');
     expect(merged.results).toHaveLength(20);
     expect(merged.truncated).toBe(true);
+  });
+});
+
+describe('merged list: exact and prefix matches first, one row per HMS id, each kind capped', () => {
+  const companyRow = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
+  const agencyRow = (nativeId: string, name: string) => ({ kind: 'agency' as const, nativeId, name });
+
+  it('puts the exact name first, then names that start with it, and caps companies so agencies still show', () => {
+    const companies = [
+      companyRow('900', 'The Tourvest Group'),
+      companyRow('901', 'Tourvest'),
+      companyRow('902', 'Tourvest Travel'),
+      ...Array.from({ length: 20 }, (_, i) => companyRow(String(1000 + i), `Other ${i}`)),
+    ];
+    const agencies = [agencyRow('A1', 'Agency One'), agencyRow('A2', 'Agency Two'), agencyRow('A3', 'Agency Three')];
+    const merged = mergePartyKindResults(
+      [
+        { outcome: 'ambiguous', results: companies, truncated: false },
+        { outcome: 'ambiguous', results: agencies, truncated: false },
+      ],
+      'Tourvest',
+    );
+    expect(PANE_PARTY_PER_KIND_CAP).toBe(10);
+    expect(merged.results.slice(0, 3).map((row) => row.nativeId)).toEqual(['901', '902', '900']);
+    expect(merged.results.filter((row) => row.kind === 'company')).toHaveLength(PANE_PARTY_PER_KIND_CAP);
+    expect(merged.results.filter((row) => row.kind === 'agency').map((row) => row.nativeId)).toEqual(['A1', 'A2', 'A3']);
+    expect(merged.truncated).toBe(true);
+    expect(merged.outcome).toBe('ambiguous');
+  });
+
+  it('shows one row per HMS id, even when the CLI repeats a candidate', () => {
+    const merged = mergePartyKindResults(
+      [{ outcome: 'ambiguous', results: [companyRow('206', 'Tourvest'), companyRow('206', 'Tourvest')], truncated: false }],
+      'Tourvest',
+    );
+    expect(merged.results).toEqual([companyRow('206', 'Tourvest')]);
+    expect(merged.outcome).toBe('resolved');
   });
 });
 

@@ -112,19 +112,56 @@ export function panePartyFindResultFromCli(kind: PanePartyKind, raw: unknown): P
   return { outcome, results, truncated };
 }
 
+/** Each kind shows at most this many, so a broad company name cannot crowd out the agencies. */
+export const PANE_PARTY_PER_KIND_CAP = 10;
+
+/** 0 for an exact name, 1 for a name that starts with the query, 2 for one that contains it, else 3. */
+function matchRank(query: string, name: string): number {
+  const wanted = query.replace(/\s+/g, ' ').trim().toLowerCase();
+  const found = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (found === wanted) return 0;
+  if (found.startsWith(wanted)) return 1;
+  if (found.includes(wanted)) return 2;
+  return 3;
+}
+
+/** One kind's candidates: one row per HMS id, the best matches first, capped. `more` says there were further rows. */
+function rankKindCandidates(query: string, candidates: readonly PanePartyCandidate[]): { kept: PanePartyCandidate[]; more: boolean } {
+  const seen = new Set<string>();
+  const ranked = candidates
+    .filter((candidate) => {
+      const key = `${candidate.kind}:${candidate.nativeId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((candidate, index) => ({ candidate, index, rank: matchRank(query, candidate.name) }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((row) => row.candidate);
+  return { kept: ranked.slice(0, PANE_PARTY_PER_KIND_CAP), more: ranked.length > PANE_PARTY_PER_KIND_CAP };
+}
+
 /**
  * One answer for a search over both kinds. A refusal or failure on either kind is the answer, with no results.
- * Otherwise the two kinds' candidates merge in order and are capped.
+ * Otherwise each kind is ranked and capped on its own, and the companies come before the agencies.
  */
-export function mergePartyKindResults(perKind: readonly PanePartyFindResult[]): PanePartyFindResult {
+export function mergePartyKindResults(
+  perKind: readonly PanePartyFindResult[],
+  query = '',
+): PanePartyFindResult {
   const refused = perKind.find((result) => result.outcome.startsWith('refused_'));
   if (refused) return withoutResults(refused.outcome);
   for (const failure of KIND_FAILURES) {
     if (perKind.some((result) => result.outcome === failure)) return withoutResults(failure);
   }
-  const all = perKind.flatMap((result) => result.results);
-  const truncated = perKind.some((result) => result.truncated) || all.length > PANE_PARTY_CANDIDATE_CAP;
-  const results = all.slice(0, PANE_PARTY_CANDIDATE_CAP);
+  const candidates = perKind.flatMap((result) => result.results);
+  const results: PanePartyCandidate[] = [];
+  let truncated = perKind.some((result) => result.truncated);
+  for (const kind of PARTY_KINDS) {
+    const ranked = rankKindCandidates(query, candidates.filter((candidate) => candidate.kind === kind));
+    results.push(...ranked.kept);
+    truncated = truncated || ranked.more;
+  }
   if (!results.length) return withoutResults('no_match', truncated);
   return {
     outcome: results.length === 1 && !truncated ? 'resolved' : 'ambiguous',
@@ -152,7 +189,8 @@ async function defaultSpawn(input: { kind: PanePartyKind; name: string }): Promi
         process.execPath,
         [PARTY_LOOKUP, '--request', requestPath],
         // The same borrowed browser and credential file the stay lookups use.
-        { timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS, env: paneStaySpawnEnv(), maxBuffer: 1024 * 1024 },
+        // SIGKILL: a runner stuck on HMS is stopped outright, not asked politely. Its temp request goes in the finally.
+        { timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS, killSignal: 'SIGKILL', env: paneStaySpawnEnv(), maxBuffer: 1024 * 1024 },
       ));
     } catch (error) {
       // The CLI exits 2 on failures but still prints its result line. Without one, the run failed.
@@ -202,5 +240,5 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
       break;
     }
   }
-  return mergePartyKindResults(perKind);
+  return mergePartyKindResults(perKind, name);
 }
