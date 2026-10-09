@@ -674,6 +674,7 @@ export function QuoteWorkflowPanel({
   onPreparePdf,
   onPreparePdfFor,
   onDownloadWorkbook,
+  workbookPending,
   onHandleReviewItem,
   onUndoReviewItem,
   onViewSource,
@@ -699,6 +700,8 @@ export function QuoteWorkflowPanel({
   onPreparePdf?: () => void;
   onPreparePdfFor?: (stayKey: string) => void;
   onDownloadWorkbook?: () => void;
+  /** An Excel export is being made; the Excel button is disabled meanwhile. */
+  workbookPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   onViewSource?: (item: QuoteReviewItem) => void;
@@ -872,6 +875,7 @@ export function QuoteWorkflowPanel({
           onReplyChange={onReplyChange}
           onPreparePdf={onPreparePdf}
           onDownloadWorkbook={onDownloadWorkbook}
+          workbookPending={workbookPending}
         />
       ) : null}
     </div>

@@ -305,9 +305,29 @@ describe('Outlook pane quote proposal PDF', () => {
     fireEvent.click(download);
     await waitFor(() => expect(quoteWorkbookMutateMock).toHaveBeenCalledTimes(1));
     expect(quoteWorkbookMutateMock.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ workflowRunId: expect.any(String), revisionRef: expect.any(String) }),
+      expect.objectContaining({ workflowRunId: 'run-1', revisionRef: 'rev-auth' }),
     );
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('workbook route reached'));
+  });
+
+  it('makes one Excel export at a time and keeps Download Excel disabled until it settles', async () => {
+    let settle!: (value: unknown) => void;
+    quoteWorkbookMutateMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    const download = screen.getByRole('button', { name: 'Download Excel' });
+    fireEvent.click(download);
+    await waitFor(() => expect(download.hasAttribute('disabled')).toBe(true));
+    fireEvent.click(download);
+    expect(quoteWorkbookMutateMock).toHaveBeenCalledTimes(1);
+
+    settle({ fileName: 'Quote - CIDB - 2026-11-12.xlsx', xlsxBase64: '', totalMinor: 0, revisionId: 'rev-auth' });
+    await waitFor(() => expect(download.hasAttribute('disabled')).toBe(false));
+    expect(toast.warning).toHaveBeenCalled();
   });
 
   it('refuses convert and draft until a server-selected mailbox exists', async () => {

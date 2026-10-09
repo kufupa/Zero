@@ -9,6 +9,10 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedQuoteProposalPdf')).toBe(60_000);
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteProposalPdf')).toBe(60_000);
   });
+  it('gives the Excel workbook the same deadline as the PDF routes', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteWorkbook')).toBe(60_000);
+  });
+
   it('keeps source and ordinary queries short', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.staffQuoteSource')).toBe(5_000);
     expect(trpcRequestTimeoutMs('/api/trpc/drafts.list')).toBe(5_000);

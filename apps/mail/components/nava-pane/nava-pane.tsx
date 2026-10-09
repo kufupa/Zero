@@ -683,6 +683,23 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     quoteSession.bookingDraft !== null ||
     unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
+  // One Excel export at a time. A second click while one is being made does nothing, and the button
+  // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
+  const [workbookPending, setWorkbookPending] = useState(false);
+  const workbookInFlight = useRef(false);
+  const downloadWorkbook = () => {
+    if (workbookInFlight.current) return;
+    workbookInFlight.current = true;
+    setWorkbookPending(true);
+    void downloadStaffQuoteWorkbook({
+      session: quoteSessionRef.current,
+      mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
+      notify: (message) => toast.warning(message),
+    }).finally(() => {
+      workbookInFlight.current = false;
+      setWorkbookPending(false);
+    });
+  };
   // The build this page was served, read from its index.html at page load (never from a fetch).
   const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
   // A newer build is live but not loaded. It loads at the next safe boundary: an email switch, or 15 idle minutes.
@@ -1878,13 +1895,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               }}
               onPreparePdf={() => preparePdfFor(null)}
               onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
-              onDownloadWorkbook={() =>
-                void downloadStaffQuoteWorkbook({
-                  session: quoteSessionRef.current,
-                  mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
-                  notify: (message) => toast.warning(message),
-                })
-              }
+              onDownloadWorkbook={downloadWorkbook}
+              workbookPending={workbookPending}
             />
 
             <div className="flex flex-col gap-2.5">

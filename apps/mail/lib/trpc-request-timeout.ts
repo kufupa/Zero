@@ -20,6 +20,7 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
       return 27 * 60_000;
     if (
       routes.includes('workstation.qualifiedQuoteProposalPdf') ||
+      routes.includes('workstation.quoteWorkbook') ||
       routes.includes('workstation.quoteProposalPdf') ||
       routes.includes('workstation.prepareBookingDraft') ||
       routes.includes('workstation.usePriorQuoteForBooking')

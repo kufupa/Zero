@@ -6,11 +6,14 @@ export function DocumentReview({
   onReplyChange,
   onPreparePdf,
   onDownloadWorkbook,
+  workbookPending,
 }: {
   session: QuoteSession;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
   onDownloadWorkbook?: () => void;
+  /** An Excel export is being made. The button stays disabled until it settles. */
+  workbookPending?: boolean;
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
@@ -39,7 +42,7 @@ export function DocumentReview({
         </button>
         <button
           type="button"
-          disabled={!pdfReady || !onDownloadWorkbook}
+          disabled={!pdfReady || !onDownloadWorkbook || workbookPending}
           onClick={onDownloadWorkbook}
           className="flex h-9 flex-1 items-center justify-center rounded-xs border border-[#1a4332] bg-white text-xs font-bold text-[#1a4332] hover:bg-[#f1f5f2] disabled:border-slate-300 disabled:text-slate-400"
         >
