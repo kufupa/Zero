@@ -7,7 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
-import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partyReadingOf} from './party-rate-failure.js';
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:boolean;salesStrategy:'Government'|'Preset'|'BAR'};details:'full';maxOptionsPerGroup:number};
@@ -74,6 +74,14 @@ export function partyContractChoice<O extends { rateScope?: string }>(
   const contract = options.filter((option) => option.rateScope === 'contextual');
   if (contract.length) return contract;
   return options.filter((option) => option.rateScope === 'public');
+}
+
+/** The Rate Shop's largest return per group (quote-contract.mjs MAX_OPTIONS). A picked party's summary asks for all of it. */
+const PARTY_SUMMARY_MAX_OPTIONS=200;
+/** Keeps each requested room's own options from a party read that asked HMS for every room type. */
+function narrowToRequestedRooms(source:QuoteSourceRecord,rooms:QuoteSourceRecord['request']['rooms']):QuoteSourceRecord{
+ const wanted=new Map(rooms.map(room=>[room.id,room.required?.roomCodes??[]] as const));
+ return{...source,result:{...source.result,groups:source.result.groups.map(group=>{const codes=wanted.get(group.id)??[];return codes.length?{...group,options:group.options.filter(option=>codes.includes(option.room.code))}:group;})}};
 }
 
 /** Pick a requested qualified option by exact total cents; unqualified alternatives never win. */
@@ -144,10 +152,16 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  };
  // Native full detail inspection is bounded to five offers. Search first, then
  // narrow only to codes selected from that actual complete, qualified result.
- const searchRequest={...request,details:'summary'},summary=await readBound(searchRequest);observations.set(observationContextDigest(ctx),structuredClone(summary.source));
+ // A picked party's summary asks HMS for every room type, up to the Rate Shop's maximum: HMS hides the flagged rows behind a
+ // room-type filter, and other rooms must not crowd the requested room out of the read. The requested room types stay local.
+ const partyRead=Boolean(request.rateContext);
+ const searchRequest=partyRead?{...request,rooms:request.rooms.map(room=>{const required={...room.required};delete required.roomCodes;return{...room,required};}),maxOptionsPerGroup:PARTY_SUMMARY_MAX_OPTIONS,details:'summary'}:{...request,details:'summary'};
+ const read=await readBound(searchRequest),summary=partyRead?{...read,source:narrowToRequestedRooms(read.source,request.rooms)}:read;observations.set(observationContextDigest(ctx),structuredClone(summary.source));
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
- if(staffApproval&&partyReadingOf(summary.source.result.groups,request.rateContext)==='incomplete')throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
+ // A picked party's contract is confirmed or ruled out only by a read that covered every requested room. A cut list or a missing
+ // page may hide a flagged row, so the quote is public and says so.
+ if(staffApproval&&partyRead&&read.source.result.groups.some(group=>!partySearchCovered(group)||group.completeness.requiredFacts!=='complete'))throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
  const candidates=quoteOptionCandidates(summary.source);
  // A picked party's contract is never replaced silently by public rates. Staff: a contract on another board alone quotes the requested
  // board at public and the review says so; no contract on any board retries at public rates as before; a requested contract that

@@ -50,6 +50,17 @@ const COVERAGE_ISSUE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * True when a group's search covered its dates and rooms with no coverage issue. A missing calendar page or a cut list
+ * (OPTION_LIMIT) is not covered: a flagged row may be among the rows HMS did not show.
+ */
+export function partySearchCovered(group: { completeness?: { search?: unknown }; issues?: Array<{ code?: unknown }> }): boolean {
+  return (
+    group.completeness?.search === 'complete' &&
+    !(group.issues ?? []).some((issue) => COVERAGE_ISSUE_CODES.has(String(issue.code)))
+  );
+}
+
+/**
  * What a capture's groups say about a picked party's contract, for a party read that offers public rows and no flagged row.
  * no_contract only when every group's search covered its dates and rooms with no coverage issue. incomplete when any group
  * did not, because a missing calendar page can hide a flagged row. null for anything else, including a flagged row.
@@ -63,10 +74,5 @@ export function partyReadingOf(groups: unknown, rateContext: unknown): 'no_contr
   }>;
   const rows = list.flatMap((group) => group.options ?? []);
   if (!rows.some((row) => row.rateScope === 'public') || rows.some((row) => row.rateScope === 'contextual')) return null;
-  const covered = list.every(
-    (group) =>
-      group.completeness?.search === 'complete' &&
-      !(group.issues ?? []).some((issue) => COVERAGE_ISSUE_CODES.has(String(issue.code))),
-  );
-  return covered ? 'no_contract' : 'incomplete';
+  return list.every(partySearchCovered) ? 'no_contract' : 'incomplete';
 }
