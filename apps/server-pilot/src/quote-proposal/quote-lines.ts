@@ -37,7 +37,7 @@ export type AuthorizedProposalFacts = {
  includedEntitlements:Array<{sourceRef:string;sourceHash:string;service:string;personIds:string[];dates:string[]}>;
 };
 /** quantity x nights x rateMinor = totalMinor. Person services: quantity is guests and nights is nights or days. Trips and items: nights is the trip or item count. */
-export type ExtraDisplayLine = {id:string;description:string;quantity:number;nights:number;units:number;unitKind:string;rateMinor:number;totalMinor:number;sourceRef:string;sourceHash:string;dates:string[]};
+export type ExtraDisplayLine = {id:string;service:string;description:string;quantity:number;nights:number;units:number;unitKind:string;rateMinor:number;totalMinor:number;sourceRef:string;sourceHash:string;dates:string[]};
 /** Facts must be resolved from authorized document/policy storage; callers cannot supply model text as authority. */
 export function deriveAuthorizedExtraLines(revision:QuoteRevision,facts:AuthorizedProposalFacts):ExtraDisplayLine[]{
  deriveQuoteLines(revision);
@@ -67,7 +67,7 @@ export function deriveAuthorizedExtraLines(revision:QuoteRevision,facts:Authoriz
   }else blocks=[{quantity:extra.quantity,nights:extra.units,dates:extra.dates}];
   blocks.forEach((block,index)=>{
    const totalMinor=block.quantity*block.nights*extra.unitMinor;if(!Number.isSafeInteger(totalMinor))throw new Error('money_overflow');
-   lines.push({id:index?`${extra.id}-${index+1}`:extra.id,description:extra.label,quantity:block.quantity,nights:block.nights,units:block.quantity*block.nights,unitKind:extra.unitKind,rateMinor:extra.unitMinor,totalMinor,sourceRef:facts.sourceRef,sourceHash:facts.sourceHash,dates:block.dates});
+   lines.push({id:index?`${extra.id}-${index+1}`:extra.id,service:extra.service,description:extra.label,quantity:block.quantity,nights:block.nights,units:block.quantity*block.nights,unitKind:extra.unitKind,rateMinor:extra.unitMinor,totalMinor,sourceRef:facts.sourceRef,sourceHash:facts.sourceHash,dates:block.dates});
   });
  }
  return lines;

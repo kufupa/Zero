@@ -440,6 +440,40 @@ export async function executeStaffQuote(
   await guard();
   return revision;
 }
+/**
+ * Why a staff-approved quote can no longer be exported, or null while it is still the current approval.
+ * Pure: the caller reads the latest generation and the current message from the database.
+ */
+export function staffQuoteCurrencyProblem(args: {
+  staff: Pick<StaffQuoteAttestation, 'userId' | 'threadId' | 'sourceHash' | 'header'>;
+  runGenerationId: string | null | undefined;
+  latestGenerationId: string | null | undefined;
+  currentMessage:
+    | { id: string; threadId: string; subject: string | null; textBody: string | null; htmlBody: string | null }
+    | null
+    | undefined;
+  userId: string;
+  party: { company: string; agency: string };
+}): string | null {
+  if (args.latestGenerationId !== args.runGenerationId)
+    return 'Newer stay inputs were approved; use the current quote';
+  const current = args.currentMessage;
+  if (
+    !current ||
+    args.staff.userId !== args.userId ||
+    args.staff.threadId !== current.threadId ||
+    args.staff.sourceHash !== staffQuoteSourceHash(current)
+  )
+    return 'Selected email changed; rerun the approved quote';
+  if (
+    !args.staff.header ||
+    args.party.company !== args.staff.header.company ||
+    args.party.agency !== args.staff.header.agency
+  )
+    return 'Party identity changed; rerun the approved quote';
+  return null;
+}
+
 export function attestStaffQuote(
   input: StaffQuoteInput,
   scope: StaffQuoteScope,

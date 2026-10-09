@@ -1,6 +1,7 @@
 import { outlookSyncRouter } from './outlook-sync.js';
 import {
   staffQuoteInput,
+  staffQuoteCurrencyProblem,
   staffQuoteSourceHash,
   prepareStaffQuote,
   executeStaffQuote,
@@ -32,6 +33,7 @@ import {
   deriveAuthorizedExtraLines,
   type AuthorizedProposalFacts,
 } from '../../quote-proposal/quote-lines.js';
+import { quoteWorkbookForRevision, quoteWorkbookFileName } from '../../quote-proposal/quote-workbook.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -1342,6 +1344,105 @@ export const workstationRouter = router({
                 0,
               )
             : 0),
+      };
+    }),
+  /**
+   * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then the
+   * approved revision and its authorised extras written into the staff quotation template.
+   */
+  quoteWorkbook: mailboxProcedure
+    .input(qualifiedProposalInput)
+    .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
+      if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const db = getDb();
+      const [bound] = await db
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      const staff = bound.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+      const assertCurrentStaffQuote = async () => {
+        if (!staff) return;
+        const [latest] = await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+              eq(aiDraftGeneration.threadId, bound.run.threadId),
+              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1);
+        const [current] = await db
+          .select()
+          .from(message)
+          .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+          .limit(1);
+        const problem = staffQuoteCurrencyProblem({
+          staff,
+          runGenerationId: bound.run.generationId,
+          latestGenerationId: latest?.id,
+          currentMessage: current,
+          userId: ctx.sessionUser.id,
+          party: { company: input.company, agency: input.agency },
+        });
+        if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
+      };
+      await assertCurrentStaffQuote();
+      const resolveApproved = () => {
+        try {
+          return resolveLedgerProposal(bound.run, {
+            transportId: ctx.activeTransportId,
+            messageId: input.messageId,
+            revisionRef: input.revisionRef,
+            factRefs: input.factRefs,
+          });
+        } catch {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence is not ready' });
+        }
+      };
+      const resolved = resolveApproved();
+      let workbook: ReturnType<typeof quoteWorkbookForRevision>;
+      try {
+        workbook = quoteWorkbookForRevision({
+          revision: resolved.revision,
+          facts: resolved.facts,
+          header: {
+            attention: input.attention,
+            company: input.company,
+            clientEmail: input.clientEmail,
+            clientTelephone: input.clientTelephone,
+            signerName: ctx.sessionUser.name ?? '',
+            signerEmail: ctx.sessionUser.email,
+          },
+          // The note comes from the approved attestation, not from this request.
+          note: staff?.notes,
+        });
+      } catch {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
+      }
+      await assertCurrentStaffQuote();
+      resolveApproved();
+      return {
+        fileName: quoteWorkbookFileName(input.company, resolved.revision.groups[0]?.arrivalDate ?? resolved.revision.authoredDate),
+        xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
+        totalMinor: workbook.totalMinor,
+        revisionId: resolved.revision.id,
       };
     }),
   sourceQuoteProposalPdf: mailboxProcedure
