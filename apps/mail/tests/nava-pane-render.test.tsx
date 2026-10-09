@@ -199,7 +199,7 @@ describe('NavaPane', () => {
 
   it('renders the header, main body and footer landmarks from a bridge prop alone', () => {
     const { container } = render(<NavaPane bridge={fakeBridge} />);
-    expect(container.querySelector('header')?.textContent).toContain('Nava AI Reservationist');
+    expect(container.querySelector('header')?.textContent).toContain('Nava Reservationist');
     expect(container.querySelector('main')).not.toBeNull();
     expect(container.querySelector('footer')?.textContent).toContain('Pilot feedback');
   });

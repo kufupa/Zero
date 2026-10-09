@@ -30,6 +30,7 @@ import { HmsQueueStatusLine } from './hms-queue-status';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
+import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
@@ -40,7 +41,7 @@ const fieldClass =
   'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 function analysingCopy(session: QuoteSession): string {
-  return session.staffNote ? 'Luna is re-reading with your note…' : 'Luna is reading the email…';
+  return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
 }
 
 function TellLunaBox({
@@ -60,18 +61,18 @@ function TellLunaBox({
       }}
     >
       <label className="text-[11.5px] font-semibold text-[#475569]" htmlFor="tell-luna-note">
-        Tell Luna what&apos;s wrong
+        Tell Nava what&apos;s wrong
       </label>
       <textarea
         id="tell-luna-note"
-        aria-label="Tell Luna what's wrong"
+        aria-label="Tell Nava what's wrong"
         placeholder="e.g. 3 nights from 12 Nov, 2 adults, dinner included"
         className="min-h-[4.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] text-[#1e293b]"
         value={note}
         onChange={(event) => setNote(event.target.value)}
       />
       <p className="text-[11px] text-[#64748b]">
-        Luna will re-read the email with your note. Your note wins over the email.
+        Nava will re-read the email with your note. Your note wins over the email.
       </p>
       <button
         type="submit"
@@ -513,7 +514,7 @@ function StayScopePicker({
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Date options</h3>
       <p className="text-[11px] text-[#64748b]">
-        This email asks for more than one set of dates. Run each option; Luna keeps every result.
+        This email asks for more than one set of dates. Run each option; Nava keeps every result.
       </p>
       {pending ? (
         <p className="text-[11px] text-amber-800">
@@ -703,14 +704,14 @@ export function QuoteWorkflowPanel({
   onLoadRunScreenshot?: LoadRunScreenshot;
 }) {
   if (session.phase === 'idle') {
-    return <StatusNote>Select an email in Outlook. Luna will read it and list what the quote needs.</StatusNote>;
+    return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
   if (session.phase === 'unsynced') {
     return <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>;
   }
   if (session.phase === 'unsupported') {
     return (
-      <StatusNote>{session.errorMessage ?? 'Luna cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+      <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
     );
   }
   if (session.phase === 'non_quote') {
@@ -724,7 +725,7 @@ export function QuoteWorkflowPanel({
           .map((item) => (
             <StatusNote key={item.id}>{item.text}</StatusNote>
           ))}
-        <StatusNote>Luna thinks this is not a quote request, so no quote was started. If that is wrong, use the buttons below.</StatusNote>
+        <StatusNote>Nava thinks this is not a quote request, so no quote was started. If that is wrong, use the buttons below.</StatusNote>
         <TellLunaBox onStaffNote={onStaffNote} />
         <div className="flex flex-wrap gap-2">
           <button
@@ -742,7 +743,7 @@ export function QuoteWorkflowPanel({
             This is a booking
           </button>
         </div>
-        <p className="text-[11px] text-[#64748b]">Use if Luna sorted this email wrong.</p>
+        <p className="text-[11px] text-[#64748b]">Use if Nava sorted this email wrong.</p>
       </div>
     );
   }
@@ -771,27 +772,7 @@ export function QuoteWorkflowPanel({
       <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
       <TellLunaBox onStaffNote={onStaffNote} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
-      {session.phase === 'failed' ? (
-        <StatusNote>
-          {session.errorMessage ?? 'Luna could not read this email. Select it again, or use Tell Luna to explain what is wrong.'}
-        </StatusNote>
-      ) : null}
-      {session.phase === 'missing_source' ? (
-        <StatusNote>
-          Luna could not read the attachment contents. Open the attachment in Outlook and check it by hand.
-          {session.missing.length ? ` Could not read: ${session.missing.join(', ')}.` : ''}
-        </StatusNote>
-      ) : null}
-      {session.errorMessage && session.phase !== 'failed' ? <StatusNote>{session.errorMessage}</StatusNote> : null}
-      {session.mailboxStatus && session.mailboxStatus !== 'ready' ? (
-        <StatusNote>
-          {session.mailboxStatus === 'unsynced'
-            ? 'This email has not finished syncing, so this result may be out of date. Wait for sync, then select the email again.'
-            : session.mailboxStatus === 'missing_source'
-              ? 'Attachment contents are missing. Open the attachment in Outlook and check it by hand.'
-              : 'Luna is not connected to this pane yet. Refresh the pane and try again.'}
-        </StatusNote>
-      ) : null}
+      <PaneStatusLine session={session} />
       {showWorkspace ? (
         <>
           <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />

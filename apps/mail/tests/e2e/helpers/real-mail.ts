@@ -31,7 +31,7 @@ export async function dismissMailOnboarding(page: Page) {
       continue;
     }
 
-    const welcome = page.getByText('Welcome to Nava AI');
+    const welcome = page.getByText('Welcome to Nava');
     if (await welcome.isVisible({ timeout: 600 }).catch(() => false)) {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(300);
