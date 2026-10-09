@@ -9,22 +9,22 @@ import { AMEND_FIND_COPY, type ScreenshotInput, type ScreenshotReply } from './a
 export const AMEND_CANCEL_COPY = {
   preview: 'Preview cancellation',
   previewHint:
-    'Luna opens the cancel screen in HMS and reads any cancellation fee. Nothing is cancelled.',
+    'Nava opens the cancel screen in HMS and reads any cancellation fee. Nothing is cancelled.',
   footerPreview:
-    'Luna can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
-  previewing: 'Luna is reading the cancel screen in HMS… (usually under a minute)',
+    'Nava can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
+  previewing: 'Nava is reading the cancel screen in HMS… (usually under a minute)',
   reasonLabel: 'Cancellation reason',
   reasonPlaceholder: 'Choose a reason',
   commit: 'Cancel booking in HMS',
-  committing: 'Luna is cancelling the booking in HMS… (usually under a minute)',
-  seeScreenshot: 'See what Luna saw in HMS',
+  committing: 'Nava is cancelling the booking in HMS… (usually under a minute)',
+  seeScreenshot: 'See what Nava saw in HMS',
   alreadyCancelled: 'This booking is already cancelled in HMS.',
   switchedOff: 'Cancelling from here is switched off for now.',
   testOnly: 'Cancelling from here only works on test bookings right now.',
   reasonRefused: 'HMS did not accept that reason. Pick another and try again.',
   previewAgain: 'Preview the cancellation again first.',
   unconfirmed: 'HMS may have cancelled this booking. Check HMS before trying again.',
-  failed: "Luna couldn't finish in HMS. Check HMS yourself.",
+  failed: "Nava couldn't finish in HMS. Check HMS yourself.",
 } as const;
 
 /** The plain HMS steps for cancelling by hand. */
@@ -58,7 +58,7 @@ export function cancelConfirmLine(input: {
   guest: string;
   penaltyText: string | null;
 }): string {
-  return `Luna will cancel ${input.confirmation} for ${input.guest}. ${cancelFeeSentence(input.penaltyText)} This can't be undone from here.`;
+  return `Nava will cancel ${input.confirmation} for ${input.guest}. ${cancelFeeSentence(input.penaltyText)} This can't be undone from here.`;
 }
 
 // HMS charge text without a trailing full stop, so the copy does not end in two.

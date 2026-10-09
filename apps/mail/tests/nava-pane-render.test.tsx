@@ -469,4 +469,48 @@ describe('NavaPane', () => {
     );
     expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
   });
+
+  /**
+   * Each element's own text nodes, one per line so words never run together, plus the labelled
+   * attributes that screen readers and tooltips read. (happy-dom's TreeWalker finds no text, so the
+   * walk goes through childNodes instead.)
+   */
+  function staffVisibleText(): string {
+    const elements = [document.body, ...Array.from(document.body.querySelectorAll('*'))];
+    const texts = elements.flatMap((element) =>
+      Array.from(element.childNodes)
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.textContent ?? ''),
+    );
+    const labelled = elements.flatMap((element) =>
+      ['aria-label', 'alt', 'title', 'placeholder'].map((name) => element.getAttribute(name) ?? ''),
+    );
+    return [...texts, ...labelled].join('\n');
+  }
+
+  it('shows no retired assistant name on any screen, including the voucher card', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    // A voucher whose guest surname could not be read: the card shows its missing-guest and partial-read notes.
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: null, arrival: '2026-11-12' },
+      file: null,
+      unreadPdfs: 1,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /2\. Connection/i }));
+    await screen.findByText(/Workstation API ping verified/);
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /3\. Tour/i }));
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
+    await screen.findByLabelText("Tell Nava what's wrong");
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+  });
 });

@@ -51,22 +51,22 @@ export function voucherFindClientFromTrpc(trpc: unknown): VoucherFindClient | nu
 export const VOUCHER_COPY = {
   heading: 'Find the booking',
   caption:
-    'Read from this voucher or proof of payment. Luna only searches HMS and saves the file. It books and changes nothing.',
+    'Read from this voucher or proof of payment. Nava only searches HMS and saves the file. It books and changes nothing.',
   missingGuest:
-    'Luna could not read the guest surname from this email. Find the booking by name in HMS.',
+    'Nava could not read the guest surname from this email. Find the booking by name in HMS.',
   missingArrival:
-    'Luna could not read the arrival date from this email. Find the booking by name in HMS.',
-  conflictLastNames: 'More than one guest name is on this voucher. Luna did not pick one:',
-  conflictArrivals: 'More than one arrival date is on this voucher. Luna did not pick one:',
-  waitingForSync: 'Waiting for this email to sync. Luna checks it again when the sync lands.',
+    'Nava could not read the arrival date from this email. Find the booking by name in HMS.',
+  conflictLastNames: 'More than one guest name is on this voucher. Nava did not pick one:',
+  conflictArrivals: 'More than one arrival date is on this voucher. Nava did not pick one:',
+  waitingForSync: 'Waiting for this email to sync. Nava checks it again when the sync lands.',
   partialRead: "Part of the voucher couldn't be read — check the PDF.",
   search: 'Find the booking in HMS',
-  searching: 'Luna is searching HMS by guest name… (about 1 minute)',
+  searching: 'Nava is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',
   save: 'Save attachment',
   saving: 'Saving…',
   saved: 'Saved. Upload it in HMS Documents.',
-  saveFailed: "Luna couldn't save the attachment. Try again, or save it from the email by hand.",
+  saveFailed: "Nava couldn't save the attachment. Try again, or save it from the email by hand.",
   noFile: 'No file to save from this email.',
 } as const;
 

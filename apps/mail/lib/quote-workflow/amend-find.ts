@@ -7,8 +7,8 @@ import type { QuoteAmendment } from './types';
  */
 
 export const AMEND_FIND_COPY = {
-  looking: 'Luna is looking up the booking in HMS… (about 1–2 minutes)',
-  noNumber: "Luna couldn't find a booking number in the email. Find the booking by guest name below.",
+  looking: 'Nava is looking up the booking in HMS… (about 1–2 minutes)',
+  noNumber: "Nava couldn't find a booking number in the email. Find the booking by guest name below.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
   notFound:
     'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
@@ -17,19 +17,19 @@ export const AMEND_FIND_COPY = {
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
   arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
   busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
-  readFailed: 'Luna could not read the HMS result. Try again in a minute.',
-  lookupFailed: "Luna couldn't look this up. Search HMS yourself.",
+  readFailed: 'Nava could not read the HMS result. Try again in a minute.',
+  lookupFailed: "Nava couldn't look this up. Search HMS yourself.",
   noHmsNumber: 'No HMS booking number found in the email.',
   unavailable: 'The HMS lookup is not connected in this session. Search HMS by hand.',
-  unreachable: "Luna can't reach HMS right now. Tell the Nava team.",
+  unreachable: "Nava can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
-  footer: 'Luna only looks the booking up. Make the change in HMS yourself.',
+  footer: 'Nava only looks the booking up. Make the change in HMS yourself.',
   searchIntro: 'The email has no HMS booking number, so find the booking by surname and arrival day.',
   searchButton: 'Search HMS (about 1 minute)',
-  searching: 'Luna is searching HMS by guest name… (about 1 minute)',
+  searching: 'Nava is searching HMS by guest name… (about 1 minute)',
   searchCapped: 'Many matches — add the departure date.',
   searchInvalid: 'Check the surname and dates, then search again.',
-  searchFailed: 'Luna could not read the HMS search. Try again in a minute.',
+  searchFailed: 'Nava could not read the HMS search. Try again in a minute.',
   searchPick: 'Pick a booking to see it in HMS above.',
 } as const;
 
