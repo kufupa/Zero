@@ -2,7 +2,7 @@
 
 For the owner, on a call with the Centurion reservationist. Plain words. Read the lines marked **Say** out loud. The rest is for you.
 
-Status: draft for Opus review. Anything marked **TODO(opus)** must be checked, or cut, before the call.
+Status: labels and messages checked against main on 2026-10-09 (commit 31ae92cb4). Items still marked **TODO(opus)** are features not merged yet, or not yet proven live. Check them before the call.
 
 **Roles.** The owner talks and shows. The reservationist uses the keyboard. One person at a time.
 
@@ -17,7 +17,7 @@ Status: draft for Opus review. Anything marked **TODO(opus)** must be checked, o
 - [ ] Two test emails ready: one quote and one booking. A change or cancellation test email is a bonus.
 - [ ] The PC has **Classic** Outlook. New Outlook is not supported.
 - [ ] IT has approved the installer, and the file has been checked before the call by IT or the operator. The reservationist does not check files. If IT has not approved it, cut the install and book a follow-up.
-- [ ] Decide whether the booking card is on for this call. If it is off, skip section 7 for the booking card. **TODO(opus):** confirm how the owner turns it on.
+- [ ] Decide whether the booking card is on for this call. The operator sets the server switch `RESERVATIONIST_PANE_SAVE`: unset means off, `lab` shows the booking card for lab stays only, `on` is for real guests. If it is off, skip the booking card in section 7.
 - [ ] Check that the shared mailbox is the default Drafts folder. If it is not, **Insert draft in Outlook** is refused, so skip that step and say why.
 - [ ] Support contact for the call: **TODO(opus)**.
 
@@ -93,7 +93,7 @@ Then sign in:
 
 > Open the test quote email. Nava fills in what it can from that email. Check every box before you press Run next. If something is wrong, fix it by hand.
 
-**Owner note:** **TODO(opus):** confirm which fields are pre-filled on the day. The party picker (U6) was still in progress when this guide was drafted.
+**Owner note:** **TODO(opus):** confirm which fields are pre-filled on the day. The viewer check (V1) has not been re-run since #88 merged.
 
 ---
 
@@ -101,13 +101,11 @@ Then sign in:
 
 **Say:**
 
-> Type the company or agency name in its box. Press **Find in HMS**. Pick the right match and check it.
+> Type the agency name in the **Agency** box. Press **Find in HMS** under it. Pick the right match. It shows as a chip. Press **Clear** to change it.
 >
-> If the company has a contract rate, pick it in **Rate type**. If not, pick **BAR (best available rate)**.
->
-> If Nava says no contract rate was found, it uses the best available rate. That is correct. Carry on.
+> For the rate, leave **Rate type** on **BAR (best available rate)**.
 
-**Owner note:** **TODO(opus):** **Find in HMS**, the contract rate option and the "No contract rate found" message come from #61 and #79. Both are open. If they are not merged, say only the **Rate type** line and keep **BAR (best available rate)**. Also confirm the exact name of the contract rate option.
+**Owner note:** **Find in HMS** is on main (#61, wired by #82). The contract-rate option and the "No contract rate found" message come from #79, which is still open. **TODO(opus):** when #79 merges, add the contract-rate line, and check the option name in **Rate type**. Until then, BAR is the only rate on the build.
 
 ---
 
@@ -124,7 +122,7 @@ Then sign in:
 - **Other amount:** anything else with a price.
 - **Notes for the quote:** only words for the quote. No prices here.
 
-**Owner note:** The labels are on main (#60). **TODO(opus):** U8-C (separate allowance fields) was still in progress when this guide was drafted. Check the labels on the build you use.
+**Owner note:** These labels are on main (#60, with the layout in #82). Check them on the build you use before the call.
 
 ---
 
@@ -144,13 +142,13 @@ Then sign in:
 >
 > Check the draft. Do not press Send today. Today we stop here.
 
-**Owner note:** The button says **Run next**. Teach that name. Under the run there is a link to the HMS screenshot. Call it "the HMS screenshot". On some builds that link still shows an older name (**TODO(opus):** fixed once #72 reaches main). Do not read the link label out loud. If **Insert draft in Outlook** is refused, skip it and say why. It is refused when the shared mailbox is not the default Drafts folder.
+**Owner note:** The button says **Run next**. Teach that name. Under the run there is a link, **See what Nava did in HMS**. It opens the HMS screenshot. If **Insert draft in Outlook** is refused, skip it and say why. It is refused when the shared mailbox is not the default Drafts folder.
 
 ---
 
 ## 7. Booking card, finding a booking, and cancelling (1.5 minutes)
 
-**Booking card.** Only if you turned it on.
+**Booking card.** Only if it is on.
 
 **Say:**
 
@@ -160,7 +158,7 @@ Then sign in:
 >
 > Do not book a real guest. Press Book only when I say, and only on a test stay.
 
-**Owner note:** The booking card is off unless the operator has turned it on for you. If the server is in lab mode, the button reads **Book (lab test only)**. Test stays only.
+**Owner note:** The booking card shows only when the server switch is `lab` or `on`. It is unset (off) today, and the owner decides. In `lab` mode the button reads **Book (lab test only)**. Test stays only.
 
 **Finding a booking.**
 
@@ -168,9 +166,11 @@ Then sign in:
 
 > On a change or cancellation email, press **Find this booking in HMS**. It only looks. It takes about one to two minutes. Do not start a quote while it runs.
 >
-> For a voucher or a proof of payment, use the find step on that email. When a confirmation number shows, press **Copy confirmation** to copy it. Press **Open HMS** to open the HMS sign-in page in your browser, then find the booking by that number.
+> For a voucher or a proof of payment, press **Find the booking in HMS** on that email.
+>
+> When a confirmation number shows, press **Copy confirmation** to copy it. Press **Open HMS** to open the HMS sign-in page in your browser, then find the booking by that number.
 
-**Owner note:** **Open HMS** goes to the HMS sign-in page only. It does not open the booking. **TODO(opus):** the voucher and proof-of-payment find (#73) is open. Confirm its label and placement before the call.
+**Owner note:** **Open HMS** goes to the HMS sign-in page only. It does not open the booking. **Find the booking in HMS** for voucher and proof-of-payment mail is merged (#73), but its live check is not recorded yet. **TODO(opus):** confirm it before the call.
 
 **Cancelling.**
 
@@ -180,7 +180,7 @@ Then sign in:
 >
 > Press **Cancel booking in HMS** only when I say. Charges are not set in Nava. If HMS shows a cancellation charge, Nava stops. You cancel that booking in HMS yourself.
 
-**Owner note:** Cancelling is off unless the server setting is on. Do not cancel a real guest on this call.
+**Owner note:** Cancelling is off unless the server switch is set. Do not cancel a real guest on this call.
 
 ---
 
@@ -188,19 +188,19 @@ Then sign in:
 
 **Say:**
 
-> If something looks wrong, read the status line at the top of the pane. Write down what it says and the time. Do not write down guest names.
+> If something looks wrong, read the status line under the quote header. Write down what it says and the time. Do not write down guest names.
 >
-> If it still looks wrong, press the three dots (⋯), then **Check connection**. If that does not help, press the three dots, then **Feedback**. Then tell me.
+> If it still looks wrong, press the three dots (⋯) at the bottom of the pane, then **Check connection**. If that does not help, press the three dots again and choose **Feedback by email** or **Feedback on WhatsApp**. Then tell me.
 >
 > Do not keep pressing **Run next**.
 
-**Owner note:** **TODO(opus):** the ⋯ menu, **Check connection** and **Feedback** come from #76, which is open. If it is not merged, drop the menu line and keep the status line and "tell me". **TODO(opus):** confirm where the status line sits.
+**Owner note:** The ⋯ menu and its items are on main (#76). Check the wording on screen before the call.
 
-Messages you may see. They are copied from the install doc. Check the wording on screen before the call.
+Messages you may see. They are copied from the server and the pane. Check the wording on screen before the call.
 
 | On screen | What to do |
 |---|---|
-| 1 quote ahead of yours | Wait. Do not press **Run next** again. |
+| 1 quote ahead of yours, with a wait time | Wait. Do not press **Run next** again. |
 | HMS is busy with another quote or lookup. Try again in a minute. | Wait one minute. Try once. |
 | HMS is not responding. Try again in a few minutes. | Wait about five minutes. Try once. Then tell me. |
 | Staff session expired; sign in again | Sign in again. |
