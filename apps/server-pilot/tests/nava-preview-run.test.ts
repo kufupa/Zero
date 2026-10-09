@@ -283,3 +283,58 @@ describe('classifyTrpcRequest', () => {
     });
   });
 });
+
+describe('parseRunConfig for the EC2 gate', () => {
+  it('reads the pinned resolve address and the transport', () => {
+    const config = parseRunConfig(
+      ['--latest', '20'],
+      env({
+        NAVA_PREVIEW_RESOLVE_TO: '127.0.0.1',
+        NAVA_PREVIEW_TRANSPORT_ID: 'transport-centurion',
+      }),
+      dir,
+    );
+    expect(config).toMatchObject({
+      resolveTo: '127.0.0.1',
+      transportId: 'transport-centurion',
+      selection: { kind: 'latest', count: 20 },
+    });
+  });
+
+  it('keeps normal DNS and the server default when neither is set', () => {
+    const config = parseRunConfig(['--latest', '1'], env(), dir);
+    expect(config).toMatchObject({ resolveTo: null, transportId: null });
+  });
+
+  it('refuses a resolve value that is not an IPv4 address', () => {
+    expect(() =>
+      parseRunConfig(['--latest', '1'], env({ NAVA_PREVIEW_RESOLVE_TO: 'localhost' }), dir),
+    ).toThrow('IPv4');
+    expect(() =>
+      parseRunConfig(['--latest', '1'], env({ NAVA_PREVIEW_RESOLVE_TO: '127.0.0.1;evil' }), dir),
+    ).toThrow('IPv4');
+  });
+
+  it('refuses a transport id with spaces or shell characters', () => {
+    expect(() =>
+      parseRunConfig(['--latest', '1'], env({ NAVA_PREVIEW_TRANSPORT_ID: 'a b' }), dir),
+    ).toThrow('invalid id');
+  });
+
+  it('records the run settings in results.json without any secret', () => {
+    const out = join(dir, 'meta-run');
+    writeOutputs(out, [], '2026-10-09T07:00:00.000Z', [], {
+      baseUrl: 'https://nava.legacyhotels.co.za',
+      transportId: 'transport-centurion',
+      resolveTo: '127.0.0.1',
+    });
+    const json = JSON.parse(readFileSync(join(out, 'results.json'), 'utf8')) as {
+      meta: Record<string, string | null>;
+    };
+    expect(json.meta).toEqual({
+      baseUrl: 'https://nava.legacyhotels.co.za',
+      transportId: 'transport-centurion',
+      resolveTo: '127.0.0.1',
+    });
+  });
+});

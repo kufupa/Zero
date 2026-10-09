@@ -111,10 +111,17 @@ export type RunConfig = {
   baseUrl: string;
   storageStatePath: string;
   chromiumPath: string | null;
+  /** IPv4 the origin's host resolves to (curl --resolve semantics). Null uses normal DNS. */
+  resolveTo: string | null;
+  /** Mailbox transport read through x-zero-active-transport. Null lets the server choose. */
+  transportId: string | null;
   selection: RunSelection;
   outDir: string;
   timeoutMs: number;
 };
+
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+const TRANSPORT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 export type PrefilledField = { field: string; value: string };
 export type ThreadResult = {
   threadId: string;
@@ -221,10 +228,20 @@ export function parseRunConfig(
   const stamp = now.toISOString().replace(/[:.]/g, '-');
   const outDir = resolve(cwd, outRaw ?? join('out', `nava-preview-${stamp}`));
   const chromiumPath = env.NAVA_PREVIEW_CHROMIUM?.trim() || null;
+  const resolveRaw = env.NAVA_PREVIEW_RESOLVE_TO?.trim() || '';
+  if (resolveRaw && !IPV4.test(resolveRaw)) {
+    throw new Error('NAVA_PREVIEW_RESOLVE_TO must be an IPv4 address');
+  }
+  const transportRaw = env.NAVA_PREVIEW_TRANSPORT_ID?.trim() || '';
+  if (transportRaw && !TRANSPORT_ID.test(transportRaw)) {
+    throw new Error('NAVA_PREVIEW_TRANSPORT_ID has an invalid id');
+  }
   return {
     baseUrl: base.origin,
     storageStatePath,
     chromiumPath,
+    resolveTo: resolveRaw || null,
+    transportId: transportRaw || null,
     selection,
     outDir,
     timeoutMs,
@@ -498,12 +515,18 @@ export async function runPreview(
   log: (line: string) => void,
 ): Promise<RunOutput> {
   const launchOptions = config.chromiumPath ? { executablePath: config.chromiumPath } : {};
-  const browser: Browser = await chromium.launch({ headless: true, ...launchOptions });
+  // --resolve equivalent: Chromium sends this host's TLS and requests to the pinned address.
+  const host = new URL(config.baseUrl).hostname;
+  const args = config.resolveTo ? [`--host-resolver-rules=MAP ${host} ${config.resolveTo}`] : [];
+  const browser: Browser = await chromium.launch({ headless: true, args, ...launchOptions });
   try {
     const context = await browser.newContext({
       storageState: config.storageStatePath,
       viewport: { width: 1600, height: 1000 },
       acceptDownloads: false,
+      ...(config.transportId
+        ? { extraHTTPHeaders: { 'x-zero-active-transport': config.transportId } }
+        : {}),
     });
     const page = await context.newPage();
     const blocked: BlockedWrite[] = [];
@@ -640,11 +663,19 @@ ${cards}
 `;
 }
 
+/** Run settings recorded in results.json. None of them is a secret. */
+export type RunMeta = {
+  baseUrl: string | null;
+  transportId: string | null;
+  resolveTo: string | null;
+};
+
 export function writeOutputs(
   outDir: string,
   results: readonly ThreadResult[],
   generatedAt: string,
   blockedOutsideThreads: readonly string[] = [],
+  meta: RunMeta = { baseUrl: null, transportId: null, resolveTo: null },
 ): void {
   mkdirSync(outDir, { recursive: true });
   writeFileSync(
@@ -652,6 +683,7 @@ export function writeOutputs(
     `${JSON.stringify(
       {
         generatedAt,
+        meta,
         summary: summarize(results, blockedOutsideThreads),
         blockedOutsideThreads,
         results,
@@ -667,7 +699,11 @@ async function main(): Promise<void> {
   const config = parseRunConfig(process.argv.slice(2), process.env, process.cwd());
   const generatedAt = new Date().toISOString();
   const { results, blockedOutsideThreads } = await runPreview(config, (line) => console.log(line));
-  writeOutputs(config.outDir, results, generatedAt, blockedOutsideThreads);
+  writeOutputs(config.outDir, results, generatedAt, blockedOutsideThreads, {
+    baseUrl: config.baseUrl,
+    transportId: config.transportId,
+    resolveTo: config.resolveTo,
+  });
   const counts = summarize(results, blockedOutsideThreads);
   console.log(`out: ${config.outDir}`);
   console.log(
