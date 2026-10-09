@@ -710,7 +710,7 @@ export const workstationRouter = router({
       userId: scope.userId,
       lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
     });
-    // Provisional mode (on by default; QUOTE_TRACE_ASYNC=off rolls back): the quote is returned once captured, while the lock
+    // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
     // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
     const traceAsync = quoteTraceAsyncEnabled();
     const traceFinishes: Promise<void>[] = [];

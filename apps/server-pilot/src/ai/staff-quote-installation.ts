@@ -58,7 +58,7 @@ export type InstalledStaffQuoteServiceOptions = Pick<
 > & {
   /** Reports the private evidence directory of a completed capture run. */
   onEvidenceDirectory?: (evidenceDirectory: string) => void;
-  /** Provisional mode only (on by default; QUOTE_TRACE_ASYNC=off rolls back): settles when that capture's trace has finished. */
+  /** Provisional mode only (QUOTE_TRACE_ASYNC=on): settles when that capture's trace has finished. */
   onTraceFinish?: (finished: Promise<void>) => void;
 };
 

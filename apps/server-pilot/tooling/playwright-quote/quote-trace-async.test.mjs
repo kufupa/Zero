@@ -21,12 +21,11 @@ function recordingAudit(screenshots = GRID_SHOTS) {
 
 const quoteResult = { outcome: 'quote', groups: [{ id: 'group-1' }], issues: [], screenshots: [] };
 
-test('the trace-async flag is on by default; only an unset variable or the exact value on enables it', () => {
+test('the trace-async flag is enabled only by the exact value on', () => {
   assert.equal(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: 'on' }), true);
-  assert.equal(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: undefined }), true);
-  assert.equal(quoteTraceAsyncEnabled({}), true);
-  for (const value of ['', '1', 'true', 'ON', ' on', 'on ', 'off'])
+  for (const value of [undefined, '', '1', 'true', 'ON', ' on', 'on ', 'off'])
     assert.equal(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: value }), false, `value ${JSON.stringify(value)}`);
+  assert.equal(quoteTraceAsyncEnabled({}), false);
 });
 
 test('a quote becomes a provisional capture with a pending trace and never finishes the audit', () => {

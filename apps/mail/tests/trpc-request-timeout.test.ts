@@ -37,6 +37,9 @@ describe('procedure-specific request deadlines', () => {
     expect(
       trpcRequestTimeoutMs('/api/trpc/drafts.list%2Cworkstation.executeStaffQuote?batch=1'),
     ).toBe(1_200_000);
+    expect(
+      trpcRequestTimeoutMs('/api/trpc/workstation.quoteProposalPdf%2Cworkstation.quoteWorkbook?batch=1'),
+    ).toBe(120_000);
   });
   it('accepts URL and Request inputs and keeps malformed input short', () => {
     expect(

@@ -1,4 +1,4 @@
-// U9 phase timings and criteria helpers. Browser-free: fake fields and runs that stop before CDP attach.
+// U9 phase timings. Browser-free: a fake clock and runs that stop before CDP attach.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import * as quote from './fetch-quote.mjs';
 import { createAudit } from './audit.mjs';
 
-const { QUOTE_PHASES, createPhaseClock, fillIfDifferent, fetchQuote } = quote;
+const { QUOTE_PHASES, createPhaseClock, fetchQuote } = quote;
 // Every phase except traceFinish needs a browser or a secret, so it stays at zero in these runs.
 const NOT_RUN = QUOTE_PHASES.filter((name) => name !== 'traceFinish');
 
@@ -30,33 +30,6 @@ test('a timed span adds to its own phase, and a span that throws still counts', 
   assert.equal(clock.ms.login, 10);
   assert.equal(clock.ms.grid, 4);
   assert.equal(clock.ms.nav, 0);
-});
-
-// A fake field that records, in order, what the fill helper does to it.
-function fakePage(initial) {
-  const log = [];
-  let current = initial;
-  return {
-    log,
-    locator(selector) {
-      log.push(`locator:${selector}`);
-      return {
-        inputValue: async () => current,
-        fill: async (text) => { log.push(`fill:${text}`); current = text; },
-        press: async (key) => { log.push(`press:${key}`); },
-      };
-    },
-  };
-}
-
-test('a field that already shows the value is not retyped; a changed field is filled, then tabbed', async () => {
-  const same = fakePage('BAR');
-  await fillIfDifferent(same, 'input[name="rateplans"]', 'BAR');
-  assert.deepEqual(same.log, ['locator:input[name="rateplans"]']);
-
-  const changed = fakePage('Preset');
-  await fillIfDifferent(changed, 'input[name="rateplans"]', 'BAR');
-  assert.deepEqual(changed.log, ['locator:input[name="rateplans"]', 'fill:BAR', 'press:Tab']);
 });
 
 test('audit events take optional fields, and the fixed keys cannot be overwritten', async (t) => {

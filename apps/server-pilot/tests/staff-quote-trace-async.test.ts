@@ -55,11 +55,9 @@ async function run(
 }
 
 describe('provisional staff quote capture', () => {
-  it('is on by default; only an unset variable or the exact value on enables it', () => {
-    expect(quoteTraceAsyncEnabled({} as NodeJS.ProcessEnv)).toBe(true);
-    expect(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: undefined } as NodeJS.ProcessEnv)).toBe(true);
+  it('is enabled only by the exact value on', () => {
     expect(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: 'on' } as NodeJS.ProcessEnv)).toBe(true);
-    for (const value of ['', '1', 'true', 'ON', 'on ', 'off'])
+    for (const value of [undefined, '', '1', 'true', 'ON', 'on ', 'off'])
       expect(quoteTraceAsyncEnabled({ QUOTE_TRACE_ASYNC: value } as NodeJS.ProcessEnv)).toBe(false);
   });
 

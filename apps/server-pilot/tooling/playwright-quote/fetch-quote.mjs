@@ -168,13 +168,9 @@ export async function saveEvidence(directory, name, value) {
   await writeFile(join(directory,name), typeof value === 'string' ? value : JSON.stringify(value,null,2)+'\n', { mode: 0o600 });
 }
 
-/**
- * On by default: an unset QUOTE_TRACE_ASYNC or the exact value 'on' enables the provisional quote capture. Any other set
- * value keeps the sequential trace finish.
- */
+/** Only the exact value 'on' enables the provisional quote capture. Anything else stays sequential. */
 export function quoteTraceAsyncEnabled(env = process.env) {
-  const value = env?.QUOTE_TRACE_ASYNC;
-  return value === undefined || value === 'on';
+  return env?.QUOTE_TRACE_ASYNC === 'on';
 }
 
 // Milliseconds per phase, written to result.json (phaseMs) and events.jsonl. Searches add to criteria, grid and details, so a
@@ -190,14 +186,6 @@ export function createPhaseClock(now = () => performance.now()) {
       try { return await work(); } finally { ms[name] += Math.round(now() - started); }
     },
   };
-}
-
-// Types a value only when the field does not already show it, so an unchanged field skips its fill and Tab.
-export async function fillIfDifferent(page, selector, value) {
-  const input = page.locator(selector);
-  if (await input.inputValue() === value) return;
-  await input.fill(value);
-  await input.press('Tab');
 }
 
 /**
@@ -346,7 +334,7 @@ async function setToggle(page,name,value) {
 
 async function applyCurrency(page,currency) {
   const input=page.locator('input[name="currency"]:visible');
-  if (!currency) {await fillIfDifferent(page,'input[name="currency"]:visible','');await setToggle(page,'convertcurrency',false);return;}
+  if (!currency) {await input.fill('');await input.press('Tab');await setToggle(page,'convertcurrency',false);return;}
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger').click();
   const configured=await input.evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getStore().getRange().map(r=>({code:r.data.value,label:r.data.display})));
   const entry=configured.find(c=>c.code===currency);
@@ -401,8 +389,8 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
-  // The strategy change can move the date. Type it again only when it did.
-  await fillIfDifferent(page,'input[name="startdate"]',displayDate(request.arrivalDate));
+  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
+  await page.locator('input[name="startdate"]').press('Tab');
   await applyGuests(page,room);
   await applyCurrency(page,request.requestedCurrency);
   // Visibility only. Native false hides whole rows based on the 14-day grid,
@@ -411,7 +399,9 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
   await setToggle(page,'includemultirateoptions',showRestricted);
   const roomCodes=(room.required?.roomCodes??(request.roomCode?[request.roomCode]:[])).join(',');
   const rateCodes=(room.required?.rateCodes??(request.rateCode?[request.rateCode]:[])).join(',');
-  for(const [field,value] of [['roomtypes',roomCodes],['rateplans',rateCodes]]) await fillIfDifferent(page,`input[name="${field}"]`,value);
+  for(const [field,value] of [['roomtypes',roomCodes],['rateplans',rateCodes]]) {
+    await page.locator(`input[name="${field}"]`).fill(value);await page.locator(`input[name="${field}"]`).press('Tab');
+  }
   if (await page.locator('input[name="propertycodes"]').inputValue()!==request.propertyCode) throw new Error('PROPERTY_MISMATCH');
   await clock.time('criteriaShot', criteriaCheckpoint);
   return {resolvedContext,strategy,roomCodes,rateCodes,showRestricted};
