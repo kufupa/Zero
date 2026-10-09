@@ -216,7 +216,8 @@ vi.mock('../providers/query-provider', () => ({
 
 beforeAll(stubResizeObserverForMenus);
 
-describe('OutlookPanePage', () => {
+// Each test drives the quote flow, several seconds of waits on a loaded VPS. The 5 s default is too tight for it.
+describe('OutlookPanePage', { timeout: 15_000 }, () => {
   const createReplyCalls = () =>
     sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
 
@@ -561,7 +562,6 @@ describe('OutlookPanePage', () => {
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const startedAt = Date.now();
     queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
@@ -571,13 +571,17 @@ describe('OutlookPanePage', () => {
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
 
+    // The retry window starts at the first click, so the clock is pinned there. Reading it before the quote
+    // preparation let that slow setup eat the 1 s margin past the 15 minutes.
+    const attemptAt = Date.UTC(2026, 9, 9, 12);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(attemptAt);
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     // A failed attempt remounts the button, so wait on the live one.
     const insertButton = () => screen.getByRole('button', { name: /Insert Draft in Outlook/i });
     await waitFor(() => expect(insertButton().hasAttribute('disabled')).toBe(false));
 
-    vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
+    clock.mockReturnValue(attemptAt + 15 * 60 * 1000 + 1000);
     fireEvent.click(insertButton());
 
     expect(createReplyCalls()).toHaveLength(1);
@@ -595,7 +599,7 @@ describe('OutlookPanePage', () => {
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
     const freshPayload = createReplyCalls()[1]?.[1] as { operationId: string };
     expect(freshPayload.operationId).not.toBe(firstPayload.operationId);
-    vi.spyOn(Date, 'now').mockRestore();
+    clock.mockRestore();
   });
 
   it('keeps the prior uncertain draft warning if selection changes before the new reply reaches Outlook', async () => {
@@ -635,17 +639,18 @@ describe('OutlookPanePage', () => {
   });
 
   it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
-    const startedAt = Date.now();
     queueSelectedEmail();
     sendCommandMock.mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'));
     const pane = render(<OutlookPanePage />);
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    const attemptAt = Date.UTC(2026, 9, 9, 12);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(attemptAt);
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
 
-    vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
+    clock.mockReturnValue(attemptAt + 15 * 60 * 1000 + 1000);
     bridgeMockState.selectedEntryId = '002';
     pane.rerender(<OutlookPanePage />);
     await prepareReviewedQuote();
