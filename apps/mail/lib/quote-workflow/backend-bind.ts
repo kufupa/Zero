@@ -123,7 +123,7 @@ export async function bindAnalyseSelection(args: {
     return {
       kind: 'unavailable',
       reason:
-        'Luna cannot read emails in this pane yet. Refresh the pane and try again.',
+        'Nava cannot read emails in this pane yet. Refresh the pane and try again.',
     };
   }
   try {

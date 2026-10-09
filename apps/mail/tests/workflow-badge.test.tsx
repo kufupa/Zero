@@ -8,8 +8,8 @@ import { WorkflowBadge } from '../components/quote-workflow/workflow-badge';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { LunaAnalysisWire, QuoteAmendment, QuoteAnalysis } from '../lib/quote-workflow/types';
 
-const CHANGE_HINT = 'Luna thinks the guest wants to change an existing booking.';
-const CANCEL_HINT = 'Luna thinks the guest wants to cancel an existing booking.';
+const CHANGE_HINT = 'Nava thinks the guest wants to change an existing booking.';
+const CANCEL_HINT = 'Nava thinks the guest wants to cancel an existing booking.';
 
 const AMEND: QuoteAmendment = {
   kind: 'amend',
@@ -92,7 +92,7 @@ describe('WorkflowBadge', () => {
     expect(screen.queryByText('Other')).toBeNull();
   });
 
-  it('shows the amendment chip even when Luna gave no workflow', () => {
+  it('shows the amendment chip even when Nava gave no workflow', () => {
     render(<WorkflowBadge analysis={analysis(null)} amendmentKind="amend" />);
     expect(screen.getByText('Change to booking')).toBeDefined();
   });

@@ -530,7 +530,11 @@ async function runNginxActivation({
     function stageFixtureRelease(html: string, stable: string, label: string) {
       const seed = join(tempDir, `${label}-client`);
       mkdirSync(join(seed, 'assets'), { recursive: true });
-      writeFileSync(join(seed, 'index.html'), html);
+      // The staged index carries the build id the page reads (root.tsx); the release script requires it.
+      const withBuild = html.includes('name="nava-pane-build"')
+        ? html
+        : `<meta name="nava-pane-build" content="fixture-build-0001">${html}`;
+      writeFileSync(join(seed, 'index.html'), withBuild);
       writeFileSync(join(seed, 'assets', stableAsset), stable);
       const identity = spawnSync(process.execPath, [join(deployDir, 'pane-csp-release.mjs'), 'id', seed], {
         encoding: 'utf8',
@@ -565,6 +569,7 @@ async function runNginxActivation({
     const candidate = fixtureTemplate
       .replaceAll('__NAVA_RELEASE_ID__', releaseId)
       .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+      .replaceAll('__NAVA_PANE_BUILD__', 'fixture-build-0001')
       .replace(
         '__NAVA_PANE_SCRIPT_HASHES__',
         `'sha256-${createHash('sha256').update('window.paneTest = 1').digest('base64')}'`,
@@ -578,6 +583,7 @@ async function runNginxActivation({
       ? fixtureTemplate
           .replaceAll('__NAVA_RELEASE_ID__', oldId)
           .replaceAll('__NAVA_WEB_ROOT__', webRoot)
+          .replaceAll('__NAVA_PANE_BUILD__', 'fixture-build-0001')
           .replace(
             '__NAVA_PANE_SCRIPT_HASHES__',
             `'sha256-${createHash('sha256').update(stableOnlyChange ? 'window.paneTest = 1' : 'window.paneTest = 0').digest('base64')}'`,

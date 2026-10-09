@@ -54,8 +54,8 @@ describe('QuoteAuditScreenshot', () => {
     const loadScreenshot = vi.fn(async ({ name }: { runId: string; name: string }) => readyShot(name));
     render(<QuoteAuditScreenshot runId={RUN_ID} screenshots={NAMES} loadScreenshot={loadScreenshot} />);
 
-    const thumbnail = await screen.findByRole('button', { name: 'See what Luna did in HMS' });
-    expect(thumbnail.textContent).toContain('See what Luna did in HMS');
+    const thumbnail = await screen.findByRole('button', { name: 'See what Nava did in HMS' });
+    expect(thumbnail.textContent).toContain('See what Nava did in HMS');
     expect(loadScreenshot).toHaveBeenCalledWith({ runId: RUN_ID, name: '02-rates.png' });
     expect(screen.getByRole('img', { name: /Thumbnail of the HMS screenshot/ }).getAttribute('src')).toBe(
       'data:image/png;base64,SHOT-02-rates.png',
@@ -78,13 +78,13 @@ describe('QuoteAuditScreenshot', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('button', { name: 'See what Luna did in HMS' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'See what Nava did in HMS' })).toBeDefined();
   });
 
   it('closes the viewer from the Close button', async () => {
     const loadScreenshot = vi.fn(async ({ name }: { runId: string; name: string }) => readyShot(name));
     render(<QuoteAuditScreenshot runId={RUN_ID} screenshots={NAMES} loadScreenshot={loadScreenshot} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna did in HMS' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Nava did in HMS' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close screenshot' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -96,7 +96,7 @@ describe('QuoteAuditScreenshot', () => {
     }));
     render(<QuoteAuditScreenshot runId={RUN_ID} screenshots={NAMES} loadScreenshot={loadScreenshot} />);
     expect(await screen.findByText(UNAVAILABLE_COPY)).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'See what Luna did in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'See what Nava did in HMS' })).toBeNull();
     expect(screen.queryByText(/quote_run_unavailable/)).toBeNull();
   });
 
@@ -115,7 +115,7 @@ describe('QuoteAuditScreenshot', () => {
         : readyShot(name),
     );
     render(<QuoteAuditScreenshot runId={RUN_ID} screenshots={NAMES} loadScreenshot={loadScreenshot} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna did in HMS' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Nava did in HMS' }));
     fireEvent.click(screen.getByRole('button', { name: 'Previous screenshot' }));
     await waitFor(() => expect(screen.getAllByText(UNAVAILABLE_COPY).length).toBeGreaterThan(0));
     expect(screen.getByRole('dialog')).toBeDefined();
@@ -193,7 +193,7 @@ describe('QuoteWorkflowPanel HMS audit', () => {
         onLoadRunScreenshot={onLoadRunScreenshot}
       />,
     );
-    expect(await screen.findByRole('button', { name: 'See what Luna did in HMS' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'See what Nava did in HMS' })).toBeDefined();
     expect(onLoadRunScreenshot).toHaveBeenCalledTimes(1);
     expect(onLoadRunScreenshot).toHaveBeenCalledWith({ runId: RUN_ID, name: '02-rates.png' });
   });

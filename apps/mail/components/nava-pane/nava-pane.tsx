@@ -17,6 +17,14 @@ import { createOperationId, type MailLocation, type WorkstationEmailPayload } fr
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
+import {
+  createPaneReleaseWatch,
+  fetchPaneVersion,
+  loadedPaneBuild,
+  PANE_RELEASE_POLL_MS,
+  sessionPaneReloadGuard,
+} from '@/lib/workstation/pane-release-watch';
+import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -120,7 +128,7 @@ const TOUR_SLIDES: TourSlide[] = [
     bullets: [
       {
         title: 'Automated execution:',
-        desc: 'Simply hit run and Nava AI performs the task directly inside Infor HMS for you.',
+        desc: 'Simply hit run and Nava performs the task directly inside Infor HMS for you.',
       },
       {
         title: 'Inspect screenshot proof:',
@@ -134,7 +142,7 @@ const TOUR_SLIDES: TourSlide[] = [
     bullets: [
       {
         title: 'Drafted responses & actions:',
-        desc: 'Nava AI prepares suggested replies and action cards directly in your Outlook window.',
+        desc: 'Nava prepares suggested replies and action cards directly in your Outlook window.',
       },
       {
         title: 'Check details & tone:',
@@ -417,7 +425,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         const message =
-          error instanceof Error && error.message.trim() ? error.message : 'Luna could not read this email. Select it again and try again.';
+          error instanceof Error && error.message.trim() ? error.message : 'Nava could not read this email. Select it again and try again.';
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', message });
       });
@@ -644,6 +652,55 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       setPingErrorMessage(err instanceof Error ? err.message : 'Connection failed');
     }
   };
+
+  // Stale-build check. Idle = no tRPC mutation or reply draft in flight, no unsent quote, booking or
+  // stay edits, and no focused input inside the pane. Reloading then loses nothing staff typed.
+  const paneRootRef = useRef<HTMLDivElement>(null);
+  const hasUnsentWork =
+    isDraftPending ||
+    quoteRunPending ||
+    quoteSession.runningStepId !== null ||
+    quoteSession.phase === 'analysing' ||
+    quoteSession.phase === 'native_pending' ||
+    combinedEdit !== null ||
+    quoteSession.bookingDraft !== null ||
+    hasStaffStayEdits(quoteSession);
+  const isBusy = (): boolean => {
+    if (replyInFlight.current || mutationsInFlight() > 0 || hasUnsentWork) return true;
+    const active = document.activeElement;
+    return Boolean(
+      active &&
+        paneRootRef.current?.contains(active) &&
+        (active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          active instanceof HTMLSelectElement),
+    );
+  };
+  const isBusyRef = useRef(isBusy);
+  isBusyRef.current = isBusy;
+  // The build this page was served, read from its index.html at page load (never from a fetch).
+  const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
+  const [newerReleaseServed, setNewerReleaseServed] = useState(false);
+  useEffect(() => {
+    // Dev and test servers serve no release file, so only released builds check.
+    if (!import.meta.env.PROD || loadedBuild === null) return;
+    const watch = createPaneReleaseWatch({
+      loadedBuild,
+      fetchServed: () => fetchPaneVersion(),
+      isBusy: () => isBusyRef.current(),
+      reload: () => window.location.reload(),
+      guard: sessionPaneReloadGuard(),
+      onNewerRelease: () => setNewerReleaseServed(true),
+    });
+    const poll = () => void watch.check();
+    poll();
+    const timer = window.setInterval(poll, PANE_RELEASE_POLL_MS);
+    window.addEventListener('focus', poll);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', poll);
+    };
+  }, [loadedBuild]);
 
   // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
   const pendingDinnerFallbackStepRef = useRef<string | null>(null);
@@ -1331,7 +1388,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       : 'Draft the selected option only';
 
   return (
-    <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
+    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
       {/* Strict 380px pane container */}
       <div className="shadow-xs relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
@@ -1341,7 +1398,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               N
             </span>
             <div>
-              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava AI Reservationist</h1>
+              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
             </div>
           </div>
           <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]">
@@ -1398,6 +1455,11 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </Button>
           </div>
         )}
+        {newerReleaseServed && (
+          <div role="status" className="m-3 mb-0 rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
+            <p>New version available — reopen the pane.</p>
+          </div>
+        )}
         {selectionOutsideMailbox && (
           <div role="status" className="m-3 mb-0 rounded-sm border border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-700">
             <p>
@@ -1450,7 +1512,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
                 <Building2 className="h-6 w-6" />
               </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava AI</h1>
+              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava</h1>
               <p className="mt-1 text-xs leading-relaxed text-[#64748b]">
                 Your intelligent assistant for Infor HMS quoting and reservations, built directly
                 into Outlook.
@@ -1489,9 +1551,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
                 <Network className="h-6 w-6" />
               </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava AI Services</h1>
+              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava Services</h1>
               <p className="mt-1 text-xs text-[#64748b]">
-                Verifying connection to Nava AI server and workstation environment.
+                Verifying connection to Nava server and workstation environment.
               </p>
 
               <div className="my-5 w-full space-y-3 text-left">
@@ -1518,7 +1580,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-[#1e293b]">
-                        Nava AI Server Connection
+                        Nava Server Connection
                       </span>
                       {pingState === 'success' && (
                         <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
@@ -1543,7 +1605,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 {pingState === 'success' && (
                   <div className="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-                    <span>Nava AI server connected · Workstation API ping verified.</span>
+                    <span>Nava server connected · Workstation API ping verified.</span>
                   </div>
                 )}
 
@@ -1650,7 +1712,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 >
                   {tourSlideIndex === TOUR_SLIDES.length - 1 ? (
                     <>
-                      <span>Open Nava AI</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                      <span>Open Nava</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
                     </>
                   ) : (
                     <>
@@ -1694,7 +1756,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
               {activeEmail
-                ? "Luna's suggestions from this email. Check and correct them before running searches."
+                ? "Nava's suggestions from this email. Check and correct them before running searches."
                 : 'Sample data, not from a live email.'}
             </p>}
 
@@ -1729,7 +1791,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
                 toast.message(
                   item.filename
-                    ? `Luna found this in the selected email. It lists the file ${item.filename}. A file name does not show what is inside, so open the attachment in Outlook to read it.`
+                    ? `Nava found this in the selected email. It lists the file ${item.filename}. A file name does not show what is inside, so open the attachment in Outlook to read it.`
                     : 'The selected email is shown at the top of this pane. Open it in Outlook for the full text.',
                 );
               }}
@@ -1896,6 +1958,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         {/* Minimal Pilot Footer */}
         <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">
           <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10.5px] text-[#94a3b8]">
+            {loadedBuild && (
+              <>
+                <span>Build {loadedBuild.slice(0, 7)}</span>
+                <span className="text-[#cbd5e1]">·</span>
+              </>
+            )}
             <span>
               Pilot feedback:{' '}
               <a href="mailto:aroransh17@gmail.com" className="text-[#64748b] hover:underline">

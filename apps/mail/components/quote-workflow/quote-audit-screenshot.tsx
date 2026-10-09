@@ -86,7 +86,7 @@ function AuditThumbnail({
   return (
     <button
       type="button"
-      aria-label="See what Luna did in HMS"
+      aria-label="See what Nava did in HMS"
       onClick={onOpen}
       className="flex flex-col gap-1.5 rounded-xs border border-[#cbd5e1] bg-white p-2 text-left hover:border-[#0066cc]"
     >
@@ -95,7 +95,7 @@ function AuditThumbnail({
         alt="Thumbnail of the HMS screenshot for this quote"
         className="max-h-44 w-full rounded-xs border border-[#e2e8f0] object-contain object-top"
       />
-      <span className="text-[12px] font-semibold text-[#0066cc]">See what Luna did in HMS</span>
+      <span className="text-[12px] font-semibold text-[#0066cc]">See what Nava did in HMS</span>
     </button>
   );
 }

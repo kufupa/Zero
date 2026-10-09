@@ -46,11 +46,19 @@ function inlineScriptHashes(html: string): string[] {
     .map(([, , body]) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
 }
 
+const PANE_BUILD = 'fixture-build-0001';
+
+/** The staged index carries the build id the page reads (see root.tsx). */
+function withPaneBuild(html: string): string {
+  if (html.includes('name="nava-pane-build"')) return html;
+  return `<meta name="nava-pane-build" content="${PANE_BUILD}">${html}`;
+}
+
 function fixture(html: string, additionalFiles: Record<string, string> = {}) {
   const webRoot = tempDir();
   const source = join(webRoot, 'source');
   mkdirSync(source);
-  writeFileSync(join(source, 'index.html'), html);
+  writeFileSync(join(source, 'index.html'), withPaneBuild(html));
   for (const [path, content] of Object.entries(additionalFiles)) {
     mkdirSync(dirname(join(source, path)), { recursive: true });
     writeFileSync(join(source, path), content);
@@ -183,14 +191,43 @@ describe('the built pane CSP and immutable mail release', () => {
     },
   );
 
+  it('serves the release id at /pane-version.json from the candidate that publishes that release', () => {
+    const { candidate, id, index, webRoot } = fixture('<script>const release=1</script>');
+    expect(runHelper('render', index, template, candidate, webRoot).status).toBe(0);
+    const rendered = readFileSync(candidate, 'utf8');
+    const version = rendered.match(/location = \/pane-version\.json \{\n([\s\S]*?)\n  \}/)?.[1] ?? '';
+    expect(version).toContain(`return 200 '{"release":"${id}","build":"${PANE_BUILD}"}';`);
+    expect(version).toContain('default_type application/json;');
+    expect(version).toMatch(/\bexpires -1;/);
+    expect(rendered).not.toMatch(/__NAVA_(?:RELEASE_ID|WEB_ROOT|PANE_SCRIPT_HASHES|PANE_BUILD)__/);
+  });
+
+  it('refuses to publish a staged index without exactly one pane build id', () => {
+    const webRoot = tempDir();
+    const source = join(webRoot, 'source');
+    mkdirSync(source);
+    writeFileSync(join(source, 'index.html'), '<script>const release=1</script>');
+    const identity = runHelper('id', source);
+    expect(identity.status, identity.stderr).toBe(0);
+    const id = identity.stdout.trim();
+    const index = join(webRoot, 'releases', id, 'index.html');
+    mkdirSync(dirname(index), { recursive: true });
+    renameSync(join(source, 'index.html'), index);
+    const candidate = join(webRoot, 'candidate.conf');
+    const rendered = runHelper('render', index, template, candidate, webRoot);
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toMatch(/nava-pane-build/);
+    expect(existsSync(candidate)).toBe(false);
+  });
+
   it('rejects both a changed staged index and a stale or altered Nginx policy', () => {
     const { candidate, index, webRoot } = fixture('<script>const release=1</script>');
     expect(runHelper('render', index, template, candidate, webRoot).status).toBe(0);
-    writeFileSync(index, '<script>const release=2</script>');
+    writeFileSync(index, withPaneBuild('<script>const release=2</script>'));
     const changedIndex = runHelper('verify', index, template, candidate, webRoot);
     expect(changedIndex.status).not.toBe(0);
     expect(changedIndex.stderr).toMatch(/index|release|hash/i);
-    writeFileSync(index, '<script>const release=1</script>');
+    writeFileSync(index, withPaneBuild('<script>const release=1</script>'));
     writeFileSync(
       candidate,
       readFileSync(candidate, 'utf8').replace(
@@ -225,7 +262,7 @@ describe('the built pane CSP and immutable mail release', () => {
     const publicAssets = join(root, 'public', 'assets');
     mkdirSync(join(source, 'assets'), { recursive: true });
     mkdirSync(publicAssets, { recursive: true });
-    writeFileSync(join(source, 'index.html'), '<script>window.safe=true</script>');
+    writeFileSync(join(source, 'index.html'), withPaneBuild('<script>window.safe=true</script>'));
     writeFileSync(join(source, 'assets', 'mail.svg'), '<svg>stable</svg>');
     writeFileSync(join(source, 'assets', 'entry-ABcd1234.js'), 'immutable chunk');
     writeFileSync(join(source, 'assets', 'logo-ABcd1234.svg'), '<svg>public</svg>');

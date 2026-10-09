@@ -1,7 +1,7 @@
 import type { LunaAnalysisWire, QuoteAmendment } from '@/lib/quote-workflow/types';
 
 /** Shown in place of the "not supported" copy while the change or cancel panel is on screen. */
-export const AMENDMENT_PANEL_COPY = 'Luna can find the booking; make the change in HMS yourself.';
+export const AMENDMENT_PANEL_COPY = 'Nava can find the booking; make the change in HMS yourself.';
 
 const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   conference_or_group: 'Conference or group request (venue, day delegates, packages): handle it by hand.',

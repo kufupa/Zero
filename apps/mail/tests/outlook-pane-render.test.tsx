@@ -265,9 +265,9 @@ describe('OutlookPanePage', () => {
     bridgeMockState.screenshotReads = [];
   });
 
-  it('renders Nava AI Reservationist title and connection status', () => {
+  it('renders Nava Reservationist title and connection status', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
+    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
     expect(
       screen.getByText(/Connected to Classic Outlook.*16\.0.*product\/build unknown/i),
     ).toBeDefined();
@@ -298,7 +298,7 @@ describe('OutlookPanePage', () => {
     bridgeMockState.staffQuoteScreenshots = ['01-search.png', '02-rates.png', '03-save.png'];
     render(<OutlookPanePage />);
     await prepareReviewedQuote();
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna did in HMS' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Nava did in HMS' }));
     expect(screen.getByRole('dialog', { name: 'HMS quote screenshots' })).toBeDefined();
     expect(await screen.findByRole('img', { name: 'HMS screenshot 2 of 3' })).toBeDefined();
     expect(bridgeMockState.screenshotReads).toContain('02-rates.png');
@@ -362,7 +362,7 @@ describe('OutlookPanePage', () => {
 
   it('labels the AI draft card as a sample placeholder', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Luna's suggestions from this email.*Check and correct/i)).toBeDefined();
+    expect(screen.getByText(/Nava's suggestions from this email.*Check and correct/i)).toBeDefined();
   });
 
   it('passes the selected store ID when creating a reply draft', async () => {

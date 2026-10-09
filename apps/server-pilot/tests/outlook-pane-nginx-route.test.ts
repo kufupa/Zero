@@ -22,6 +22,21 @@ describe('Outlook pane Nginx route', () => {
     expect(nginx).toMatch(/location \^~ \/outlook-pane\/ \{\s*return 404;\s*\}/);
   });
 
+  it('answers the pane build check with uncached JSON under the pane connect-src, before the SPA fallback', () => {
+    const paneStart = nginx.indexOf('location = /outlook-pane {');
+    const paneEnd = nginx.indexOf('}', paneStart);
+    const pane = nginx.slice(paneStart, paneEnd);
+    const version = nginx.indexOf('location = /pane-version.json {');
+    const spaFallback = nginx.indexOf('location / {');
+
+    expect(pane).toContain("connect-src 'self'");
+    expect(version).toBeGreaterThan(paneStart);
+    expect(spaFallback).toBeGreaterThan(version);
+    expect(nginx.slice(version, spaFallback)).toMatch(
+      /location = \/pane-version\.json \{\s*default_type application\/json;\s*return 200 '\{"release":"__NAVA_RELEASE_ID__","build":"__NAVA_PANE_BUILD__"\}';[\s\S]*?expires -1;\s*\}/,
+    );
+  });
+
   it('rejects case variants of the pane URL and its subpaths before the SPA fallback', () => {
     const tlsServerStart = nginx.indexOf('listen 443 ssl default_server;');
     const paneStart = nginx.indexOf('location = /outlook-pane {', tlsServerStart);

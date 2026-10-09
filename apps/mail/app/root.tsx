@@ -66,12 +66,16 @@ export const meta: MetaFunction = () => {
   ];
 };
 
+// The build id from vite.config.ts `define`. The pane reads it from this meta at page load.
+const PANE_BUILD = typeof __PANE_BUILD__ === 'string' ? __PANE_BUILD__ : '';
+
 export function Layout({ children }: PropsWithChildren) {
   return (
     <html lang={getLocale()} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="nava-pane-build" content={PANE_BUILD} />
         <meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)" />
         <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
         <link rel="manifest" href="/manifest.json" />

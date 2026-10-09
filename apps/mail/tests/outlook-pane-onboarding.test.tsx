@@ -134,7 +134,7 @@ describe('OutlookPane Onboarding Flow', () => {
 
   it('renders Screen 1 Welcome with auto-detected Outlook email and property info', () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Welcome to Nava AI/i)).toBeDefined();
+    expect(screen.getByText(/Welcome to Nava/i)).toBeDefined();
     expect(screen.getByText('ropperman@legacyhotels.co.za')).toBeDefined();
     expect(screen.getByText(/The Centurion Hotel/i)).toBeDefined();
     expect(screen.getByRole('button', { name: /Confirm Account & Connect/i })).toBeDefined();
@@ -191,7 +191,7 @@ describe('OutlookPane Onboarding Flow', () => {
     const confirmBtn = screen.getByRole('button', { name: /Confirm Account & Connect/i });
     fireEvent.click(confirmBtn);
 
-    expect(screen.getByText(/Connecting to Nava AI Services/i)).toBeDefined();
+    expect(screen.getByText(/Connecting to Nava Services/i)).toBeDefined();
 
     await waitFor(() => {
       expect(pingMutateMock).toHaveBeenCalledWith(
@@ -205,7 +205,7 @@ describe('OutlookPane Onboarding Flow', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Server pinged at 2026-09-25 09:30:00 UTC/i)).toBeDefined();
-      expect(screen.getByText(/Nava AI server connected/i)).toBeDefined();
+      expect(screen.getByText(/Nava server connected/i)).toBeDefined();
     });
 
     expect(screen.getByRole('button', { name: /Next: 60-Second Feature Tour/i })).toBeDefined();
@@ -234,27 +234,27 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.getByText(/Check details & tone:/i)).toBeDefined();
     expect(screen.getByText(/Expanding capabilities:/i)).toBeDefined();
 
-    // Click "Open Nava AI" to reach tool
-    const openBtn = screen.getByRole('button', { name: /Open Nava AI/i });
+    // Click "Open Nava" to reach tool
+    const openBtn = screen.getByRole('button', { name: /Open Nava/i });
     fireEvent.click(openBtn);
 
-    expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
+    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
     expect(localStorage.getItem('nava_onboarding_completed')).toBe('true');
   });
 
   it('supports direct switching between steps via top switcher bar', () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
+    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: /1\. Welcome/i }));
-    expect(screen.getByText(/Welcome to Nava AI/i)).toBeDefined();
+    expect(screen.getByText(/Welcome to Nava/i)).toBeDefined();
   });
 
   it('correctly opens the quote tool without a September RATE_TABLE calendar', async () => {
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    expect(screen.getByText(/Nava AI Reservationist/i)).toBeDefined();
+    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/Change Dates/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();

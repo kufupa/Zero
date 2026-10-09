@@ -415,7 +415,7 @@ const COMMIT_OK: PaneStayResult = {
   runId: PANE_SAVE_RUN,
   screenshots: ['filled.png', 'saved.png'],
 };
-const JOHN_SMITH_PREVIEW = `Luna will book John Smith for 2026-11-12 – 2026-11-14, 1 room, rate TAXYZ. Nothing is saved until you press Book in HMS.`;
+const JOHN_SMITH_PREVIEW = `Nava will book John Smith for 2026-11-12 – 2026-11-14, 1 room, rate TAXYZ. Nothing is saved until you press Book in HMS.`;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -485,7 +485,7 @@ describe('booking card pane save', () => {
       guaranteeType: 'Confirmation Received',
       bookingAgency: { name: 'XYZ TRAVEL' },
     });
-    expect(screen.getByRole('status').textContent).toBe('Luna is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
     expect(bookButton(0)).toHaveProperty('disabled', true);
     await act(async () => pending.resolve(PREVIEW_OK));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
@@ -498,8 +498,8 @@ describe('booking card pane save', () => {
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     // Role queries are slow on the full card DOM, so this wait is longer than the 1 s default.
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna filled in HMS' }, { timeout: 5000 }));
-    expect(screen.getByRole('dialog', { name: 'See what Luna filled in HMS' })).toBeDefined();
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Nava filled in HMS' }, { timeout: 5000 }));
+    expect(screen.getByRole('dialog', { name: 'See what Nava filled in HMS' })).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -525,7 +525,7 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'John', track: 'COR' }), PANE_DIGEST);
-    expect(await screen.findByRole('button', { name: 'See what Luna saved in HMS' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
   });
 
@@ -570,7 +570,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
-    expect(screen.getByRole('status').textContent).toBe('Luna is booking this in HMS… (about 2 minutes)');
+    expect(screen.getByRole('status').textContent).toBe('Nava is booking this in HMS… (about 2 minutes)');
     await act(async () => pending.resolve(COMMIT_OK));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
   });
@@ -625,7 +625,7 @@ describe('booking card pane save', () => {
         'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
       ),
     ).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'See what Luna saved in HMS' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     expect(previewButton(0)).toHaveProperty('disabled', false);
     expect(screen.queryByText(/Booked in HMS/)).toBeNull();

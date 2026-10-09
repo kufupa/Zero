@@ -80,6 +80,16 @@ function scriptHashes(html) {
     .map(([, , body]) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
 }
 
+// The build id the page carries in <meta name="nava-pane-build"> (Vite define + root.tsx). The page compares it
+// with the build nginx serves, so it must be exactly one id in the staged index.
+function paneBuildFrom(html) {
+  const metas = [
+    ...html.toString('utf8').matchAll(/<meta\s+name="nava-pane-build"\s+content="([A-Za-z0-9._-]{8,64})"\s*\/?>/g),
+  ];
+  if (metas.length !== 1) throw new Error('staged index must carry exactly one nava-pane-build meta');
+  return metas[0][1];
+}
+
 function releaseIdentity(indexPath, webRoot) {
   if (!isAbsolute(webRoot) || !/^\/[A-Za-z0-9_./-]+$/.test(webRoot)) {
     throw new Error('web root must be a safe absolute Nginx path');
@@ -101,11 +111,11 @@ function releaseIdentity(indexPath, webRoot) {
   }
   const hashes = scriptHashes(html);
   if (hashes.length === 0) throw new Error('staged index contains no inline scripts');
-  return { id, hashes };
+  return { id, hashes, build: paneBuildFrom(html) };
 }
 
 function candidateFor(indexPath, templatePath, webRoot) {
-  const { id, hashes } = releaseIdentity(indexPath, webRoot);
+  const { id, hashes, build } = releaseIdentity(indexPath, webRoot);
   const template = readFileSync(templatePath, 'utf8');
   const pane = template.match(/location = \/outlook-pane\s*\{([^}]*)\}/)?.[1] ?? '';
   const panePolicy = pane.match(/add_header Content-Security-Policy "([^"]+)" always;/)?.[1] ?? '';
@@ -120,14 +130,16 @@ function candidateFor(indexPath, templatePath, webRoot) {
     /\bscript-src-elem\b|script-src [^;]*'unsafe-inline'/.test(panePolicy) ||
     (template.match(/__NAVA_RELEASE_ID__/g) ?? []).length < 4 ||
     (template.match(/__NAVA_WEB_ROOT__/g) ?? []).length < 4 ||
-    (template.match(/__NAVA_PANE_SCRIPT_HASHES__/g) ?? []).length !== 1
+    (template.match(/__NAVA_PANE_SCRIPT_HASHES__/g) ?? []).length !== 1 ||
+    (template.match(/__NAVA_PANE_BUILD__/g) ?? []).length !== 1
   ) {
     throw new Error('Nginx template pane script policy is unsafe or lacks release placeholders');
   }
   return template
     .replaceAll('__NAVA_RELEASE_ID__', id)
     .replaceAll('__NAVA_WEB_ROOT__', webRoot)
-    .replace('__NAVA_PANE_SCRIPT_HASHES__', hashes.join(' '));
+    .replace('__NAVA_PANE_SCRIPT_HASHES__', hashes.join(' '))
+    .replaceAll('__NAVA_PANE_BUILD__', build);
 }
 
 function main([command, indexPath, templatePath, candidatePath, webRoot]) {
