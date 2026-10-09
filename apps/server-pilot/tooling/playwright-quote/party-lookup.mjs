@@ -33,10 +33,11 @@ export const BORROWED_CLOSE_OWNER = false;
 export const CONNECT_MS = 25000;
 // A lookup store loads 50 rows. A full store can hide more matches, so the result is marked truncated.
 export const HMS_LOOKUP_PAGE_ROWS = 50;
-// With no busy mask after this grace, the store has nothing to wait for. Long enough for a store reload to start.
-export const LOOKUP_IDLE_GRACE_MS = 5000;
+// A search whose grid neither changed nor showed the busy mask within this window is not verified.
+export const LOOKUP_CHANGE_WINDOW_MS = 15000;
 // A store still busy after this long is a failed lookup, never an empty one.
 export const LOOKUP_IDLE_TIMEOUT_MS = 60000;
+
 
 export function lookupTruncated(loaded) {
   return Number(loaded) >= HMS_LOOKUP_PAGE_ROWS;
@@ -263,9 +264,9 @@ async function fillExt(locator, value) {
   return filterReadsBack(value, got);
 }
 
-// Fills the lookup's filter with value and runs it. True only when a filter input reads the query back, so a caller
-// never reads a grid that the query did not reach.
-async function applyLookupFilter(page, kind, value) {
+// Fills the lookup's filter with value. True only when a filter input reads the query back, so no grid is read that the
+// query did not reach. Filling never runs the search: runLookupFilter does that.
+async function fillLookupFilter(page, kind, value) {
   if (!filled(value)) return false;
   const win = await lookupWindow(page, kind);
   let held = false;
@@ -280,23 +281,27 @@ async function applyLookupFilter(page, kind, value) {
     if (isLookupColumnLabel(current)) continue;
     const combo = await box.evaluate((el) => /combo/i.test(el.className || '') || /combo/i.test(el.parentElement?.className || '')).catch(() => false);
     if (combo) continue;
-    const ok = await fillExt(box, value);
-    if (ok) {
-      held = true;
-      await box.press('Enter').catch(() => {});
-      break;
-    }
+    if (!(await fillExt(box, value))) continue;
+    held = true;
+    // Enter submits a toolbar query. When it cannot be pressed, the query never reached the store.
+    if (!(await box.press('Enter').then(() => true, () => false))) return false;
+    break;
   }
-  if (!held) return false;
+  return held;
+}
+
+// Runs the lookup's search through its Run control. False when the window has no Run control or the click fails: the
+// search did not run, so nothing may be read from the grid.
+async function runLookupFilter(page, kind) {
+  const win = await lookupWindow(page, kind);
   for (const name of dialogRunNames(kind)) {
     const btn = win.getByRole('button', { name });
-    if (await btn.count()) {
-      await btn.first().click().catch(() => {});
-      await page.waitForTimeout(800);
-    }
+    if (!(await btn.count())) continue;
+    if (!(await btn.first().click().then(() => true, () => false))) return false;
+    await page.waitForTimeout(800);
+    return true;
   }
-  await page.waitForTimeout(1200);
-  return true;
+  return false;
 }
 
 const GRID_HEADER_RE = /^(organization id|name|guest id|account|iata\/reference number|booking agency name|address|city|country|external id|last name|first name|second last name|restricted reason|email type|email address|contact last name)$/i;
@@ -324,25 +329,67 @@ export function cellsToRow(cells = [], { kind } = {}) {
   return { nativeId, displayName, matchedOn: ['dom'] };
 }
 
+/** The search could not be verified as run and settled. A failure, never no_match. */
+export function filterNotVerified(detail) {
+  return {
+    outcome: 'execution_failure',
+    candidates: [],
+    truncated: false,
+    issues: [{ code: 'EXECUTION_FAILURE', path: 'filter', reason: 'filter_not_verified', detail }],
+  };
+}
+
+// The grid as a read shows it: the row count and each row's id and name. Two reads with the same key show the same grid.
+export function gridKey(grid) {
+  const rows = (grid?.rows ?? []).map((row) => `${row.nativeId}\u0001${row.displayName}`);
+  return `${Number(grid?.loaded) || 0}\u0002${rows.join('\u0003')}`;
+}
+
 /**
- * Waits for the lookup's store after a filter run: the "Processing request" mask must show and then clear. With no mask
- * after the grace period there is nothing to wait for. Every kind waits here. Resolves false when the mask is still up
- * at the timeout: the grid then belongs to a search HMS has not finished, and the caller must not read it.
+ * Decides whether a lookup's grid answers the search that was just run. It is settled when the "Processing request" mask
+ * showed and then cleared, or when the grid changed from `before`, the grid read before the run. A mask still up at the
+ * timeout is busy. With no mask and no change inside the window, the grid may still be the one from before the run, so
+ * the answer is not verified. It is never read as no match.
  */
-export async function waitLookupIdle(
-  page,
-  { now = Date.now, timeoutMs = LOOKUP_IDLE_TIMEOUT_MS, graceMs = LOOKUP_IDLE_GRACE_MS, pollMs = 500 } = {},
-) {
+export async function waitForFreshGrid(page, kind, before, {
+  now = Date.now,
+  timeoutMs = LOOKUP_IDLE_TIMEOUT_MS,
+  changeWindowMs = LOOKUP_CHANGE_WINDOW_MS,
+  pollMs = 500,
+  read = readVisibleGrid,
+} = {}) {
   const start = now();
   let sawBusy = false;
   while (now() - start < timeoutMs) {
     const busy = (await page.getByText(/Processing request/i).count()) > 0;
     if (busy) sawBusy = true;
-    if (sawBusy && !busy) return true;
-    if (!sawBusy && now() - start >= graceMs) return true;
+    if (sawBusy && !busy) return 'settled';
+    if (!sawBusy && gridKey(await read(page, kind)) !== before) return 'settled';
+    if (!sawBusy && now() - start >= changeWindowMs) return 'not_verified';
     await page.waitForTimeout(pollMs);
   }
-  return false;
+  return sawBusy ? 'busy' : 'not_verified';
+}
+
+async function snapshotGrid(page, kind) {
+  return gridKey(await readVisibleGrid(page, kind));
+}
+
+/** Text for matching: case and runs of spaces do not count. */
+function normalizedText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** A row answers the query when its name contains the query, or its id is the query. */
+export function rowAnswersQuery(row, needle) {
+  const query = String(needle ?? '').trim();
+  if (!query) return true;
+  return normalizedText(row.displayName).includes(normalizedText(query)) || String(row.nativeId ?? '') === query;
+}
+
+/** True only when every row of a grid answers the query. One row that does not means the grid was not filtered. */
+export function gridAnswersQuery(rows, needle) {
+  return (rows ?? []).every((row) => rowAnswersQuery(row, needle));
 }
 
 // Reads the lookup's rows: the Ext store first, then the dialog grid, then any visible window table.
@@ -420,52 +467,66 @@ export function classifyKindRows(kind, rows, request, loaded = rows.length) {
   return { ...found, truncated: lookupTruncated(loaded) };
 }
 
-// Reads the grid once the filter ran: waits for the store on every kind, then checks the external-system banner.
-async function readLookupKind(page, kind, request) {
-  if (!(await waitLookupIdle(page))) return lookupBusyTimeout();
+// Reads the grid once the search ran and settled: the external-system banner first, then the rows. Every row must
+// answer the query, or the grid is not the answer to this search.
+async function readSettledGrid(page, kind, request, needle) {
   if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
     return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
   const grid = await readVisibleGrid(page, kind);
+  if (!gridAnswersQuery(grid.rows, needle)) return filterNotVerified('rows_do_not_answer_query');
   return classifyKindRows(kind, grid.rows, request, grid.loaded);
 }
 
-async function searchKind(page, request) {
+// One filtered lookup, fail-closed. `fill` puts the query into the window. The grid is read only after the search ran
+// and settled. Any step that cannot be verified is a failure, never no_match.
+async function filteredLookup(page, kind, request, fill) {
+  const before = await snapshotGrid(page, kind);
+  if (!(await fill())) return filterNotApplied();
+  if (!(await runLookupFilter(page, kind))) return filterNotVerified('run_not_clicked');
+  const settled = await waitForFreshGrid(page, kind, before);
+  if (settled === 'busy') return lookupBusyTimeout();
+  if (settled !== 'settled') return filterNotVerified('grid_not_refreshed');
+  return readSettledGrid(page, kind, request, queryNeedle(request));
+}
+
+/** Searches one lookup kind by the request's query. Every answer comes from a verified, settled grid. */
+export async function searchKind(page, request) {
   if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
     return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
-  // Every kind reads its grid only after its filter is read back. A filter that did not apply is a failure, never no_match.
   if (request.kind === 'organization') {
     await clickLov(page, 'company');
     const name = request.query.organizationName;
     const ext = request.query.externalOrganizationId;
     const extField = page.locator('input[name="externalorganizationid"]:visible');
-    const applied = filled(ext) && (await extField.count())
-      ? (await fillExt(extField, ext)) && (await applyLookupFilter(page, 'organization', ext))
-      : await applyLookupFilter(page, 'organization', name);
-    if (!applied) return filterNotApplied();
-    return readLookupKind(page, 'organization', request);
+    if (filled(ext) && (await extField.count())) {
+      return filteredLookup(page, 'organization', request, async () =>
+        (await fillExt(extField, ext)) && (await fillLookupFilter(page, 'organization', ext)));
+    }
+    return filteredLookup(page, 'organization', request, () => fillLookupFilter(page, 'organization', name));
   }
   if (request.kind === 'bookingAgency') {
     await clickLov(page, 'ta1');
     const name = request.query.bookingAgencyName;
     const iata = request.query.iataNumber;
     const iataField = page.locator('.x-window:visible input[name="ff_iatanumber"]:visible, .x-window:visible input[name="iatanumber"]:visible');
-    const applied = filled(iata)
-      ? (await fillExt(iataField, iata)) && (await applyLookupFilter(page, 'bookingAgency', iata))
-      : await applyLookupFilter(page, 'bookingAgency', name);
-    if (!applied) return filterNotApplied();
-    return readLookupKind(page, 'bookingAgency', request);
+    if (filled(iata)) {
+      return filteredLookup(page, 'bookingAgency', request, async () =>
+        (await fillExt(iataField, iata)) && (await fillLookupFilter(page, 'bookingAgency', iata)));
+    }
+    return filteredLookup(page, 'bookingAgency', request, () => fillLookupFilter(page, 'bookingAgency', name));
   }
   if (request.kind === 'arAccount') {
     await clickLov(page, 'araccountname');
-    if (!(await applyLookupFilter(page, 'arAccount', request.query.arAccountName))) return filterNotApplied();
-    return readLookupKind(page, 'arAccount', request);
+    return filteredLookup(page, 'arAccount', request, () => fillLookupFilter(page, 'arAccount', request.query.arAccountName));
   }
+  // Guest search: the grid is read only after the Search control was clicked and the grid settled.
   await page.locator('[data-qtip="Guest Search"], [data-qtip="Search Guest"]').first().click({ timeout: 5000 }).catch(async () => {
     await page.getByRole('button', { name: /Guest Search/i }).first().click();
   });
   const guestWin = await lookupWindow(page, 'guest');
+  const before = await snapshotGrid(page, 'guest');
   const typed = [];
   if (filled(request.query.lastName)) typed.push(await fillExt(guestWin.locator('input[name="lastname"]:visible'), request.query.lastName));
   if (filled(request.query.firstName)) typed.push(await fillExt(guestWin.locator('input[name="firstname"]:visible'), request.query.firstName));
@@ -478,11 +539,16 @@ async function searchKind(page, request) {
   const searchBtn = guestWin.getByRole('button', { name: /^Search$/ });
   const searchText = guestWin.getByText(/^Search$/);
   const searchAnchor = guestWin.locator('a').filter({ hasText: /^Search$/ });
-  if (await searchBtn.count()) await searchBtn.first().click().catch(() => {});
-  else if (await searchAnchor.count()) await searchAnchor.last().click().catch(() => {});
-  else if (await searchText.count()) await searchText.last().click().catch(() => {});
-  else if (!(await applyLookupFilter(page, 'guest', request.query.lastName))) return filterNotApplied();
-  if (!(await waitLookupIdle(page))) return lookupBusyTimeout();
+  const clicked = (locator) => locator.click().then(() => true, () => false);
+  let searched;
+  if (await searchBtn.count()) searched = await clicked(searchBtn.first());
+  else if (await searchAnchor.count()) searched = await clicked(searchAnchor.last());
+  else if (await searchText.count()) searched = await clicked(searchText.last());
+  else searched = (await fillLookupFilter(page, 'guest', request.query.lastName)) && (await runLookupFilter(page, 'guest'));
+  if (!searched) return filterNotVerified('search_not_clicked');
+  const settled = await waitForFreshGrid(page, 'guest', before);
+  if (settled === 'busy') return lookupBusyTimeout();
+  if (settled !== 'settled') return filterNotVerified('grid_not_refreshed');
   const profileErr = page.getByText(/Cannot retrieve profile:/i);
   if (await profileErr.count()) {
     const msg = await profileErr.first().innerText().catch(() => '');
@@ -490,6 +556,9 @@ async function searchKind(page, request) {
     return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
   const grid = await readVisibleGrid(page, 'guest');
+  // Guest search also matches on email and phone, so only a typed surname must appear in every row.
+  const surname = filled(request.query.lastName) ? request.query.lastName : '';
+  if (surname && !gridAnswersQuery(grid.rows, surname)) return filterNotVerified('rows_do_not_answer_query');
   return classifyKindRows('guest', grid.rows, request, grid.loaded);
 }
 

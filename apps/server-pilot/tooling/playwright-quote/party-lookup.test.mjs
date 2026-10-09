@@ -199,39 +199,232 @@ test('a result envelope is not truncated unless the lookup says so', () => {
   assert.equal(lookup.resultEnvelope({ outcome: 'no_match' }).truncated, false);
 });
 
-/** A page whose "Processing request" mask is up until the fake clock reaches `busyUntil`. */
-function maskedPage(busyUntil, clock) {
-  return {
-    getByText: () => ({ count: async () => (clock.now < busyUntil ? 1 : 0) }),
-    waitForTimeout: async (ms) => {
-      clock.now += ms;
-    },
-  };
+/** Fake clock for the lookup tests. Date.now and the page's waits both move it, so no test waits in real time. */
+function fakeClock() {
+  return { now: 0, advance(ms) { this.now += ms; } };
 }
 
-test('a store still busy at the timeout does not settle, so the lookup never reads its grid', async () => {
-  const clock = { now: 0 };
-  const settled = await lookup.waitLookupIdle(maskedPage(Infinity, clock), { now: () => clock.now });
-  assert.equal(settled, false);
+test('waitForFreshGrid: a mask still up at the timeout is busy, never settled', async () => {
+  const clock = fakeClock();
+  const page = { getByText: () => ({ count: async () => 1 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const read = async () => ({ rows: [], loaded: 0 });
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', '0\u0002', { now: () => clock.now, read }), 'busy');
   assert.ok(clock.now >= lookup.LOOKUP_IDLE_TIMEOUT_MS);
 });
 
-test('a mask that clears inside the timeout settles the store', async () => {
-  const clock = { now: 0 };
-  assert.equal(await lookup.waitLookupIdle(maskedPage(3000, clock), { now: () => clock.now }), true);
-  assert.ok(clock.now >= 3000 && clock.now < lookup.LOOKUP_IDLE_TIMEOUT_MS);
+test('waitForFreshGrid: a mask that shows and clears settles the grid', async () => {
+  const clock = fakeClock();
+  const page = {
+    getByText: () => ({ count: async () => (clock.now >= 1000 && clock.now < 3000 ? 1 : 0) }),
+    waitForTimeout: async (ms) => clock.advance(ms),
+  };
+  const read = async () => ({ rows: [], loaded: 0 });
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', '0\u0002', { now: () => clock.now, read }), 'settled');
 });
 
-test('no mask after the grace period means there is nothing to wait for', async () => {
-  const clock = { now: 0 };
-  assert.equal(await lookup.waitLookupIdle(maskedPage(0, clock), { now: () => clock.now }), true);
-  assert.ok(clock.now <= lookup.LOOKUP_IDLE_GRACE_MS + 500);
+test('waitForFreshGrid: no mask and no change inside the window is not verified, not an empty answer', async () => {
+  const clock = fakeClock();
+  const page = { getByText: () => ({ count: async () => 0 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const read = async () => ({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  const before = lookup.gridKey({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'not_verified');
+  assert.ok(clock.now >= lookup.LOOKUP_CHANGE_WINDOW_MS);
 });
 
-test('a busy timeout is execution_failure with lookup_busy_timeout, never a grid or no_match', () => {
-  const failed = lookup.lookupBusyTimeout();
-  assert.equal(failed.outcome, 'execution_failure');
-  assert.deepEqual(failed.candidates, []);
-  assert.equal(failed.truncated, false);
-  assert.equal(failed.issues[0].reason, 'lookup_busy_timeout');
+test('waitForFreshGrid: a grid that changes from the snapshot settles without a mask', async () => {
+  const clock = fakeClock();
+  const page = { getByText: () => ({ count: async () => 0 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const read = async () => (clock.now >= 2000
+    ? { rows: [{ nativeId: '206', displayName: 'Tourvest Test Profile' }], loaded: 1 }
+    : { rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  const before = lookup.gridKey({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'settled');
+});
+
+test('waitForFreshGrid: a reload that starts late, inside the window, still settles', async () => {
+  const clock = fakeClock();
+  const page = {
+    getByText: () => ({ count: async () => (clock.now >= 9000 && clock.now < 12000 ? 1 : 0) }),
+    waitForTimeout: async (ms) => clock.advance(ms),
+  };
+  const read = async () => ({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  const before = lookup.gridKey({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'settled');
+});
+
+test('the failure results name the step that was not verified, and are never no_match', () => {
+  const busy = lookup.lookupBusyTimeout();
+  assert.equal(busy.outcome, 'execution_failure');
+  assert.equal(busy.issues[0].reason, 'lookup_busy_timeout');
+  const unverified = lookup.filterNotVerified('grid_not_refreshed');
+  assert.equal(unverified.outcome, 'execution_failure');
+  assert.deepEqual(unverified.candidates, []);
+  assert.equal(unverified.issues[0].reason, 'filter_not_verified');
+  assert.equal(unverified.issues[0].detail, 'grid_not_refreshed');
+});
+
+test('rows that do not answer the query make the grid unverified, row by row', () => {
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '206', displayName: 'Tourvest Test Profile' }, 'TOURVEST'), true);
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '207', displayName: 'Unrelated Company' }, 'Tourvest'), false);
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '49', displayName: 'Woolworths' }, '49'), true);
+  assert.equal(lookup.gridAnswersQuery([{ nativeId: '206', displayName: 'Tourvest Test Profile' }], 'Tourvest'), true);
+  assert.equal(
+    lookup.gridAnswersQuery(
+      [{ nativeId: '206', displayName: 'Tourvest Test Profile' }, { nativeId: '207', displayName: 'Unrelated Company' }],
+      'Tourvest',
+    ),
+    false,
+  );
+});
+
+/**
+ * A fake page for searchKind. The lookup store, the Run control and the busy mask all follow the fake clock, so the
+ * scenarios run without a browser and without waiting in real time.
+ */
+function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {} }) {
+  const values = new Map();
+  const counts = (desc) => {
+    if (desc.includes('Processing request')) return mask() ? 1 : 0;
+    if (desc.includes('^Run$')) return runButton ? 1 : 0;
+    if (desc.includes('ff_companyname')) return 1;
+    if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return 1;
+    return 0;
+  };
+  const loc = (desc) => {
+    const self = {
+      locator: (s) => loc(`${desc} >> ${s}`),
+      filter: () => self,
+      first: () => self,
+      last: () => self,
+      nth: () => self,
+      getByRole: (role, o) => loc(`${desc} >> role=${role}:${String(o?.name)}`),
+      getByText: (re) => loc(`${desc} >> text:${String(re)}`),
+      count: async () => counts(desc),
+      click: async () => {
+        if (desc.includes('^Run$')) {
+          if (runThrows) throw new Error('click intercepted');
+          onRun();
+        }
+      },
+      fill: async (v) => values.set(desc, String(v)),
+      inputValue: async () => values.get(desc) ?? '',
+      press: async () => {},
+      innerText: async () => '',
+      evaluate: async (fn, arg) => (arg === undefined ? store() : { rows: [], loaded: 0 }),
+    };
+    return self;
+  };
+  const page = loc('page');
+  page.waitForTimeout = async (ms) => clock.advance(ms);
+  page.setDefaultTimeout = () => {};
+  return page;
+}
+
+async function withFakeClock(clock, run) {
+  const realNow = Date.now;
+  Date.now = () => clock.now;
+  try {
+    return await run();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+const TOURVEST_REQUEST = { kind: 'organization', query: { organizationName: 'Tourvest' } };
+const TOURVEST = [{ companyid: 206, companyname: 'Tourvest Test Profile' }];
+const UNRELATED = [{ companyid: 207, companyname: 'Unrelated Company' }];
+
+test('a search whose store reloads and settles answers from the grid that matches the query', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    mask: () => clock.now >= busyFrom && clock.now < busyUntil,
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.deepEqual(found.candidates.map((c) => c.nativeId), ['206']);
+});
+
+test('a store that never settles is lookup_busy_timeout, with no candidates', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => [],
+    mask: () => clock.now >= busyFrom,
+    onRun: () => {
+      busyFrom = clock.now;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.deepEqual(found.candidates, []);
+  assert.equal(found.issues[0].reason, 'lookup_busy_timeout');
+});
+
+test('a search with no Run control is never read as no_match', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => UNRELATED, runButton: false });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'filter_not_verified');
+  assert.equal(found.issues[0].detail, 'run_not_clicked');
+});
+
+test('a Run click that fails is execution_failure, not a read of the old grid', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => UNRELATED, runThrows: true });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].detail, 'run_not_clicked');
+});
+
+test('a grid that never changes and never shows the mask is not verified after the window, not no_match', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => TOURVEST });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'filter_not_verified');
+  assert.equal(found.issues[0].detail, 'grid_not_refreshed');
+});
+
+test('a late reload that starts after the Run is still read once it settles, never as the stale grid', async () => {
+  const clock = fakeClock();
+  let runAt = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => (clock.now >= runAt + 12000 ? TOURVEST : UNRELATED),
+    mask: () => clock.now >= runAt + 9000 && clock.now < runAt + 12000,
+    onRun: () => {
+      runAt = clock.now;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.notEqual(found.outcome, 'no_match');
+  assert.equal(found.outcome, 'resolved');
+});
+
+test('a grid that changed to rows the query did not filter is not verified, never the answer', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => UNRELATED,
+    mask: () => clock.now >= busyFrom && clock.now < busyUntil,
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].detail, 'rows_do_not_answer_query');
 });
