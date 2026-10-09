@@ -17,6 +17,8 @@ import { createOperationId, type MailLocation, type WorkstationEmailPayload } fr
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
+import { PaneMenu } from './pane-menu';
 import {
   createPaneReleaseWatch,
   fetchPaneVersion,
@@ -1389,9 +1391,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       : 'Draft the selected option only';
 
   return (
-    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
-      {/* Strict 380px pane container */}
-      <div className="shadow-xs relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
+    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm">
+      {/* Fills the Outlook pane; never narrower than 320px. */}
+      <div className="shadow-xs relative flex min-h-screen w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
         <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
           <div className="flex items-center gap-2">
@@ -1471,7 +1473,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
           </div>
         )}
 
-        {/* Top Step Switcher Navigation Bar */}
+        {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). */}
+        {currentScreen !== 'tool' && (
         <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
           <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
             <span className="text-[11px] text-[#64748b]">Step</span>
@@ -1505,6 +1508,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             ))}
           </div>
         </div>
+        )}
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
         {currentScreen === 'welcome' && (
@@ -1728,30 +1732,30 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
         {currentScreen === 'tool' && (
-          <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
-            {/* Email Context Bar */}
-            <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
-                <div className="flex min-w-0 flex-col">
-                  <span className="truncate text-xs font-semibold text-[#1e293b]">
-                    {currentSubject}
-                  </span>
-                  <span className="truncate text-[11px] text-[#64748b]">
-                    {currentSender} &lt;{currentSenderEmail}&gt;
-                  </span>
+          <main className={`flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5 ${NATIVE_VISIBLE_SCROLLBAR_CLASSES}`}>
+            {/* Email context for the selected email; until one is selected, an empty state. */}
+            {activeEmail ? (
+              <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate text-xs font-semibold text-[#1e293b]">
+                      {activeEmail.subject || '(no subject)'}
+                    </span>
+                    <span className="truncate text-[11px] text-[#64748b]">
+                      {`${activeEmail.senderName || 'Unknown sender'}${activeEmail.senderEmail ? ` <${activeEmail.senderEmail}>` : ''}`}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              {activeEmail ? (
                 <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                   <Check className="h-3 w-3" /> Synced
                 </span>
-              ) : (
-                <span className="flex shrink-0 items-center gap-1 rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                  Sample
-                </span>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div id="quote-selected-message" className="rounded-sm border border-dashed border-[#cbd5e1] p-3 text-center text-xs text-[#64748b]">
+                Click an email to start
+              </div>
+            )}
 
             <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
             <VoucherFindCard
@@ -1766,10 +1770,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               }
             />
 
-            {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-              {activeEmail
-                ? "Nava's suggestions from this email. Check and correct them before running searches."
-                : 'Sample data, not from a live email.'}
+            {activeEmail && !quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+              Nava&apos;s suggestions from this email. Check and correct them before running searches.
             </p>}
 
             <QuoteWorkflowPanel
@@ -1828,7 +1830,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                       : 'Insert draft in Outlook'}
                 </Button>
                 {allOptionsDraft ? (
-                  <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                  <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
                     Combined reply (you can edit it)
                     <textarea
                       aria-label="Combined reply"
@@ -1926,7 +1928,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </div>
 
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
-              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
+              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-xs">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
                   System check results
                 </p>
@@ -1967,34 +1969,19 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
           </main>
         )}
 
-        {/* Minimal Pilot Footer */}
-        <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">
-          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10.5px] text-[#94a3b8]">
-            {loadedBuild && (
-              <>
-                <span>Build {loadedBuild.slice(0, 7)}</span>
-                <span className="text-[#cbd5e1]">·</span>
-              </>
-            )}
-            <span>
-              Pilot feedback:{' '}
-              <a href="mailto:aroransh17@gmail.com" className="text-[#64748b] hover:underline">
-                aroransh17@gmail.com
-              </a>
-            </span>
-            <span className="text-[#cbd5e1]">·</span>
-            <span>
-              WhatsApp:{' '}
-              <a
-                href="https://wa.me/447505014078"
-                target="_blank"
-                rel="noreferrer"
-                className="text-[#64748b] hover:underline"
-              >
-                +44 7505 014078
-              </a>
-            </span>
-          </div>
+        {/* ⋯ menu: connection check, tour, feedback and build id. */}
+        <footer className="mt-auto flex shrink-0 items-center justify-end border-t border-[#f1f5f9] px-3 py-1.5">
+          <PaneMenu
+            buildRelease={loadedBuild}
+            onCheckConnection={() => {
+              setCurrentScreen('diagnostics');
+              if (pingState === 'idle') void executeServerPing();
+            }}
+            onReplayTour={() => {
+              setTourSlideIndex(0);
+              setCurrentScreen('tour');
+            }}
+          />
         </footer>
       </div>
     </div>

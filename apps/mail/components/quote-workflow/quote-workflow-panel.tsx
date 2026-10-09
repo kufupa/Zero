@@ -60,7 +60,7 @@ function TellLunaBox({
         onStaffNote?.(trimmed);
       }}
     >
-      <label className="text-[11.5px] font-semibold text-[#475569]" htmlFor="tell-luna-note">
+      <label className="text-xs font-semibold text-[#475569]" htmlFor="tell-luna-note">
         Tell Nava what&apos;s wrong
       </label>
       <textarea
@@ -252,7 +252,7 @@ function StaffHeaderFields({
       <p className="text-[11px] text-[#64748b]">
         These exact values go on the PDF. Leave Agency blank if there is none.
       </p>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Rate type
         <select
           aria-label="Rate type"
@@ -266,7 +266,7 @@ function StaffHeaderFields({
           <option value="Government">Government rate</option>
         </select>
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Company
         <input
           aria-label="Company"
@@ -275,7 +275,7 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ company: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Agency
         <input
           aria-label="Agency"
@@ -284,7 +284,7 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ agency: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Attention
         <input
           aria-label="Attention"
@@ -293,7 +293,7 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ attention: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Client email
         <input
           aria-label="Client email"
@@ -302,7 +302,7 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ clientEmail: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Client telephone
         <input
           aria-label="Client telephone"
@@ -312,7 +312,7 @@ function StaffHeaderFields({
         />
       </label>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Dinner allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Dinner allowance (R per person per night)"
@@ -333,7 +333,7 @@ function StaffHeaderFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Lunch allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Lunch allowance (R per person per night)"
@@ -354,7 +354,7 @@ function StaffHeaderFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Office transfer (R per person per day)
           <ZarMinorInput
             ariaLabel="Office transfer (R per person per day)"
@@ -376,7 +376,7 @@ function StaffHeaderFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input
             type="checkbox"
             aria-label="Shuttle requested"
@@ -479,7 +479,7 @@ function StaffHeaderFields({
           </select>
         </label>
       </div>
-      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-xs font-semibold text-[#475569]">
         Notes for the quote
         <textarea
           aria-label="Notes for the quote"
@@ -537,7 +537,7 @@ function StayScopePicker({
         return (
           <div
             key={key}
-            className={`flex flex-col gap-1 rounded-xs border p-2 ${
+            className={`flex flex-col gap-1 rounded-xs border p-3 ${
               selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
             }`}
           >
@@ -614,7 +614,7 @@ function OfferCard({
       type="button"
       onClick={() => onSelect?.(offer.id)}
       aria-pressed={selected}
-      className={`flex flex-col gap-1 rounded-xs border p-2.5 text-left ${
+      className={`flex flex-col gap-1 rounded-xs border p-3 text-left ${
         selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
       }`}
     >
@@ -716,7 +716,7 @@ export function QuoteWorkflowPanel({
   }
   if (session.phase === 'non_quote') {
     return (
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3.5">
         <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />
         <NeedsAnswerList missing={session.analysis?.luna?.missing} />
@@ -768,7 +768,7 @@ export function QuoteWorkflowPanel({
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3.5">
       <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
       <TellLunaBox onStaffNote={onStaffNote} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}

@@ -424,7 +424,7 @@ function RoomTextField({
 }) {
   return (
     <div className="flex items-end gap-2">
-      <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
         {label}
         {multiline ? (
           <textarea
@@ -632,7 +632,7 @@ export function BookingCards({
               onChange={(value) => setChoice({ organization: value })}
             />
             <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Source of business
                 <select
                   disabled={locked}
@@ -652,7 +652,7 @@ export function BookingCards({
               <CopyButton label="Source of business" roomIndex={roomIndex} value={choice.sourceOfBusiness} />
             </div>
             <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Track
                 <select
                   disabled={locked}
@@ -672,7 +672,7 @@ export function BookingCards({
               <CopyButton label="Track" roomIndex={roomIndex} value={choice.track} />
             </div>
             <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Guarantee
                 <select
                   disabled={locked}

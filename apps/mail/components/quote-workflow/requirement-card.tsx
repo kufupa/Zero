@@ -74,7 +74,7 @@ export function RequirementCard({
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">
         Stay {index + 1}
       </h3>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         <span>
           Arrival
           <Provenance value={group.fields.arrivalDate} />
@@ -88,7 +88,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('arrivalDate', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         <span>
           Departure
           <Provenance value={group.fields.departureDate} />
@@ -102,7 +102,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('departureDate', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Rooms
         <input
           type="number"
@@ -113,7 +113,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('quantity', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Room type
         <select
           className={fieldClass}
@@ -128,7 +128,7 @@ export function RequirementCard({
         </select>
         <FieldEvidence quotes={quotesFor('roomPreference', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         <span>
           Adults
           <Provenance value={group.fields.adults} />
@@ -143,7 +143,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('adults', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Children ages (separate with commas)
         <input
           className={fieldClass}
@@ -157,7 +157,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         <span>
           Meal plan
           {group.fields.board === 'defaulted' ? (
@@ -183,7 +183,7 @@ export function RequirementCard({
         </select>
         <FieldEvidence quotes={quotesFor('board', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Company or agency
         <input
           className={fieldClass}
@@ -193,7 +193,7 @@ export function RequirementCard({
         />
         <FieldEvidence quotes={quotesFor('organisation', evidence)} />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Special requests
         <textarea
           className={`${fieldClass} h-16 py-1`}

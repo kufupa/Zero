@@ -18,7 +18,7 @@ export function DocumentReview({
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quotation and reply</h3>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Reply to the client (you can edit it)
         <textarea
           id="quote-reviewed-reply"

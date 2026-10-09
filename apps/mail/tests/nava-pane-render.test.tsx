@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { PANE_RELOAD_GUARD_KEY } from '../lib/workstation/pane-release-watch';
@@ -216,13 +216,36 @@ describe('NavaPane', () => {
     const { container } = render(<NavaPane bridge={fakeBridge} />);
     expect(container.querySelector('header')?.textContent).toContain('Nava Reservationist');
     expect(container.querySelector('main')).not.toBeNull();
-    expect(container.querySelector('footer')?.textContent).toContain('Pilot feedback');
+    expect(container.querySelector('footer')?.textContent).not.toContain('Pilot feedback');
+    expect(screen.getByRole('button', { name: 'More' })).toBeDefined();
   });
 
-  it('shows the build this page was served, from its own meta, in the footer', () => {
+  it('keeps the feedback and tour actions in the ⋯ menu, not the footer', () => {
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('menuitem', { name: 'Check connection' })).toBeDefined();
+    expect(screen.getByRole('menuitem', { name: 'Replay tour' })).toBeDefined();
+    expect(screen.getByRole('menuitem', { name: 'Feedback by email' }).getAttribute('href')).toBe(
+      'mailto:aroransh17@gmail.com',
+    );
+    expect(screen.getByRole('menuitem', { name: 'Feedback on WhatsApp' })).toBeDefined();
+  });
+
+  it('replays the tour from the ⋯ menu', () => {
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Replay tour' }));
+    expect(screen.getByRole('button', { name: /Next: 60-Second Feature Tour|Next/i })).toBeDefined();
+    expect(screen.getByText('1. Automatic Email Sync')).toBeDefined();
+  });
+
+  it('shows the build this page was served, from its own meta, under About', () => {
     mountBuildMeta(LOADED_BUILD);
-    const { container } = render(<NavaPane bridge={fakeBridge} />);
-    expect(container.querySelector('footer')?.textContent).toContain('Build build-l');
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'About' }));
+    expect(screen.getByText(/Build build-l/)).toBeDefined();
+  });
   });
   it('holds a build reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
     vi.stubEnv('PROD', true);
