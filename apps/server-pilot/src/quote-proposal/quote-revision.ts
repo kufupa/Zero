@@ -291,9 +291,10 @@ export async function resolveQuoteRevision(input: {
         requested = ref as Record<string, unknown>;
       if (
         !evidence ||
-        (requested.nativeId && String(evidence.id) !== String(requested.nativeId)) ||
-        (requested.code && evidence.code !== requested.code) ||
-        (requested.name && evidence.name !== requested.name)
+        (requested.nativeId
+          ? String(evidence.id) !== String(requested.nativeId)
+          : (requested.code && evidence.code !== requested.code) ||
+            (requested.name && evidence.name !== requested.name))
       )
         throw new Error('context_entitlement');
     }
