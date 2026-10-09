@@ -2,12 +2,16 @@ import {
   buildGalleryHtml,
   classifyTrpcRequest,
   gateFailures,
+  isPiiField,
   outcomeOf,
   parseRunConfig,
+  piiValuesOf,
   redactText,
   safeSegment,
+  shapeResult,
   summarize,
   writeOutputs,
+  type PaneRead,
   type ThreadResult,
 } from '../scripts/nava-preview-run';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -166,13 +170,14 @@ function result(overrides: Partial<ThreadResult> = {}): ThreadResult {
   return {
     threadId: 't-1',
     subject: 'Rooms',
+    subjectPresent: true,
     outcome: 'intent',
     paneStatus: 'ready',
     unsyncedReason: null,
     intent: 'Quote',
     amendment: null,
     aiUnavailable: false,
-    prefilled: [{ field: 'Arrival', value: '2026-11-12' }],
+    prefilled: [{ field: 'Arrival', value: '2026-11-12', present: true }],
     party: [],
     banners: [],
     blockedWrites: [],
@@ -209,7 +214,7 @@ describe('gallery and outputs', () => {
         result({
           subject: '<img src=x onerror=alert(1)>',
           banners: ['<b>bold</b>'],
-          prefilled: [{ field: 'Company', value: 'A & B <script>' }],
+          prefilled: [{ field: 'Company', value: 'A & B <script>', present: true }],
         }),
       ],
       '2026-10-09T07:00:00.000Z',
@@ -232,6 +237,105 @@ describe('gallery and outputs', () => {
     expect(json.summary.intent).toBe(1);
     expect(json.results[0]?.threadId).toBe('t-1');
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('real-browser run');
+  });
+});
+
+describe('guest details never reach the outputs', () => {
+  const NAME = 'Zanele Fixturemann';
+  const EMAIL = 'zanele.fixture@example.test';
+  const PHONE = '+27 82 555 0100';
+  const NOTE = 'Zanele needs a late check-in';
+  const SECRETS = [NAME, 'Zanele', EMAIL, '555 0100', 'late check-in'];
+  const read: PaneRead = {
+    subject: `Quote for ${NAME} <${EMAIL}>`,
+    paneStatus: 'ready',
+    unsyncedReason: null,
+    analysing: false,
+    intent: 'Quote',
+    amendment: null,
+    aiUnavailable: false,
+    alerts: [`${NAME} already has a booking`],
+    fields: [
+      { field: 'Guest name', value: NAME },
+      { field: 'Attention', value: NAME },
+      { field: 'Client email', value: EMAIL },
+      { field: 'Client telephone', value: PHONE },
+      { field: 'Notes for the quote', value: NOTE },
+      { field: 'Company or agency', value: 'Fixture Travel Ltd' },
+      { field: 'Arrival', value: '2026-11-02' },
+      { field: 'Adults', value: '2' },
+    ],
+    statusText: '',
+  };
+
+  it('classifies guest fields, and leaves business names, dates and counts visible', () => {
+    for (const label of [
+      'Guest name',
+      'Attention',
+      'Client email',
+      'Client telephone',
+      'Notes for the quote',
+    ]) {
+      expect(isPiiField(label)).toBe(true);
+    }
+    for (const label of [
+      'Company or agency',
+      'Company name',
+      'Arrival',
+      'Adults',
+      'Rate type',
+      'Children ages',
+    ]) {
+      expect(isPiiField(label)).toBe(false);
+    }
+  });
+
+  it('keeps field presence and business names, and drops every guest value', () => {
+    const shaped = shapeResult(
+      't-9',
+      read,
+      'intent',
+      [],
+      { pane: null, page: null },
+      10,
+      piiValuesOf(read),
+    );
+    const text = JSON.stringify(shaped).toLowerCase();
+    for (const secret of SECRETS) expect(text).not.toContain(secret.toLowerCase());
+    expect(shaped.subject).toBe('');
+    expect(shaped.subjectPresent).toBe(true);
+    expect(shaped.prefilled).toContainEqual({ field: 'Attention', value: null, present: true });
+    expect(shaped.prefilled).toContainEqual({
+      field: 'Company or agency',
+      value: 'Fixture Travel Ltd',
+      present: true,
+    });
+    expect(shaped.prefilled).toContainEqual({
+      field: 'Arrival',
+      value: '2026-11-02',
+      present: true,
+    });
+    expect(shaped.party).toEqual(['Fixture Travel Ltd']);
+    expect(shaped.banners).toEqual(['[redacted] already has a booking']);
+  });
+
+  it('never writes a fixture guest value to results.json or index.html', () => {
+    const out = join(dir, 'run');
+    const shaped = shapeResult(
+      't-9',
+      read,
+      'intent',
+      [],
+      { pane: null, page: null },
+      10,
+      piiValuesOf(read),
+    );
+    writeOutputs(out, [shaped], '2026-10-09T07:00:00.000Z');
+    for (const file of ['results.json', 'index.html']) {
+      const text = readFileSync(join(out, file), 'utf8').toLowerCase();
+      for (const secret of SECRETS) expect(text).not.toContain(secret.toLowerCase());
+    }
+    expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('(hidden)');
   });
 });
 

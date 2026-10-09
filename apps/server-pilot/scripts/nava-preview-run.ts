@@ -32,6 +32,25 @@ const MAX_FIELDS = 60;
 const MAX_BANNERS = 12;
 const MAX_BLOCKED = 20;
 /**
+ * Guest-identifying fields (names, contact details, free-text notes). Their values never reach
+ * results.json, index.html or the screenshots. Business names (company, agency) stay visible.
+ */
+export const PII_LABEL =
+  /attention|client|e-?mail|phone|telephone|mobile|contact|\bname\b|\bnotes?\b|surname/i;
+export const BUSINESS_LABEL = /company|agency|organi[sz]ation|business|hotel|property/i;
+/** Plain numbers, dates and amounts. The screenshot fallback leaves these visible. */
+export const SAFE_LABEL =
+  /arrival|departure|date|night|adult|child|pax|room|rate|allowance|amount|trip|transfer|shuttle|meal|guarantee|count/i;
+/** Controls that hold guest text even without a useful label. */
+export const PII_TESTIDS: readonly string[] = ['amend-guest-search'];
+const MIN_PII_LENGTH = 3;
+
+/** A guest-identifying field. A company or agency name is a business name, not a guest detail. */
+export function isPiiField(label: string): boolean {
+  return PII_LABEL.test(label) && !BUSINESS_LABEL.test(label);
+}
+
+/**
  * tRPC queries the viewer and the pane call. Classified by procedure name, not HTTP method:
  * the app sends queries as POST (methodOverride). A batched path lists every procedure, so one
  * write in a batch blocks the whole request. tests/nava-preview-trpc-classes.test.ts checks
@@ -122,10 +141,13 @@ export type RunConfig = {
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 const TRANSPORT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
-export type PrefilledField = { field: string; value: string };
+/** A kept field. A guest-identifying field keeps `present` and drops its value (value null). */
+export type PrefilledField = { field: string; value: string | null; present: boolean };
 export type ThreadResult = {
   threadId: string;
+  /** Always empty in results: email subjects can carry a guest name. See subjectPresent. */
   subject: string;
+  subjectPresent: boolean;
   outcome: Outcome;
   paneStatus: string;
   unsyncedReason: string | null;
@@ -289,7 +311,9 @@ const READ_PANE_JS = `(threadId) => {
   };
 }`;
 
-type PaneRead = {
+/** One labelled control as read from the page, before any redaction. */
+export type RawField = { field: string; value: string };
+export type PaneRead = {
   subject: string | null;
   paneStatus: string;
   unsyncedReason: string | null;
@@ -298,7 +322,7 @@ type PaneRead = {
   amendment: string | null;
   aiUnavailable: boolean;
   alerts: string[];
-  fields: PrefilledField[];
+  fields: RawField[];
   statusText: string;
 };
 
@@ -313,13 +337,18 @@ export function outcomeOf(read: PaneRead): Outcome | null {
   return null;
 }
 
-const PARTY_FIELD = /company|agency|attention|party/i;
-
 /**
- * Marks elements whose visible text or value holds an email, a phone-like number, or a
- * contact-labelled input, so the screenshots can cover them. Runs only in the page.
+ * Page-side, run before each screenshot. Masks guest fields (by label or test id), any unlabelled
+ * or unknown text field (the default), the thread list's subject and snippet (email text), and any
+ * text or value holding an email or a phone-like number. Selects and plain number, date and
+ * amount fields stay visible. Business names stay visible. Runs only in the page.
  */
-const MARK_PII_JS = `() => {
+export const MARK_PII_JS = `() => {
+  const pii = new RegExp(${JSON.stringify(PII_LABEL.source)}, 'i');
+  const business = new RegExp(${JSON.stringify(BUSINESS_LABEL.source)}, 'i');
+  const safe = new RegExp(${JSON.stringify(SAFE_LABEL.source)}, 'i');
+  const testIds = ${JSON.stringify(PII_TESTIDS)};
+  const plainTypes = ['number', 'date', 'datetime-local', 'time', 'month', 'week', 'checkbox', 'radio', 'hidden', 'button', 'submit', 'reset', 'range', 'color', 'file'];
   const email = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/;
   const phones = /\\+?\\d[\\d\\s().-]{6,}\\d/g;
   const hasPhone = (text) =>
@@ -327,47 +356,89 @@ const MARK_PII_JS = `() => {
       const digits = m.replace(/\\D/g, '').length;
       return digits >= 9 && digits <= 15;
     });
-  const contact = /email|mail|phone|tel|mobile|attention|guest|name|party/i;
   let marked = 0;
+  const mark = (el) => {
+    el.setAttribute('data-runner-mask', '');
+    marked += 1;
+  };
+  for (const el of document.querySelectorAll('input, textarea, select')) {
+    const label = el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || '';
+    const named = testIds.includes(el.getAttribute('data-testid') || '') || pii.test(label);
+    if (named && !business.test(label)) {
+      mark(el);
+      continue;
+    }
+    if (el.tagName === 'SELECT' || business.test(label) || safe.test(label)) continue;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const mode = (el.getAttribute('inputmode') || '').toLowerCase();
+    if (plainTypes.includes(type) || mode === 'numeric' || mode === 'decimal') continue;
+    mark(el);
+  }
+  for (const el of document.querySelectorAll('aside a[data-thread-id] span')) mark(el);
   for (const el of document.querySelectorAll('body *')) {
     if (el.matches('input, textarea, select')) {
-      const label = el.getAttribute('aria-label') || '';
       const value = String(el.value || '');
-      if (contact.test(label) || email.test(value) || hasPhone(value)) {
-        el.setAttribute('data-runner-mask', '');
-        marked += 1;
-      }
+      if (email.test(value) || hasPhone(value)) mark(el);
       continue;
     }
     const text = el.childElementCount === 0 ? el.textContent || '' : '';
-    if (text && (email.test(text) || hasPhone(text))) {
-      el.setAttribute('data-runner-mask', '');
-      marked += 1;
-    }
+    if (text && (email.test(text) || hasPhone(text))) mark(el);
   }
   return marked;
 }`;
+
+/** Replaces every known guest value in text, longest first, ignoring case. */
+export function scrubKnown(text: string, knownPii: readonly string[]): string {
+  const values = Array.from(new Set(knownPii.map((value) => value.trim())))
+    .filter((value) => value.length >= MIN_PII_LENGTH)
+    .sort((a, b) => b.length - a.length);
+  let out = text;
+  for (const value of values) {
+    out = out.replace(new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[redacted]');
+  }
+  return out;
+}
+
+/** Non-empty values of the guest fields on one pane read. They are scrubbed from text, never kept. */
+export function piiValuesOf(read: Pick<PaneRead, 'fields'>): string[] {
+  return read.fields
+    .filter((item) => isPiiField(item.field))
+    .map((item) => item.value.trim())
+    .filter((value) => value.length >= MIN_PII_LENGTH);
+}
 
 function cleanBanners(values: readonly string[]): string[] {
   const unique = Array.from(new Set(values.map((value) => redactText(value).slice(0, 300))));
   return unique.filter(Boolean).slice(0, MAX_BANNERS);
 }
 
-function shapeResult(
+/**
+ * Shapes one pane read into the stored result. Guest-identifying values are dropped (the field
+ * keeps present: true); the email subject keeps only its presence; banners are scrubbed of every
+ * known guest value. Business names, dates, counts, room types and amounts are kept.
+ */
+export function shapeResult(
   threadId: string,
   read: PaneRead,
   outcome: Outcome,
   blockedWrites: string[],
   screenshots: ThreadResult['screenshots'],
   elapsedMs: number,
+  knownPii: readonly string[] = [],
 ): ThreadResult {
-  const prefilled = read.fields.slice(0, MAX_FIELDS).map((item) => ({
-    field: redactText(item.field).slice(0, 80),
-    value: redactText(item.value).slice(0, 200),
-  }));
+  const prefilled: PrefilledField[] = read.fields.slice(0, MAX_FIELDS).map((item) => {
+    const field = redactText(item.field).slice(0, 80);
+    return isPiiField(item.field)
+      ? { field, value: null, present: true }
+      : { field, value: redactText(item.value).slice(0, 200), present: true };
+  });
+  const banners = cleanBanners(
+    read.alerts.length > 0 ? read.alerts : [read.statusText].filter(Boolean),
+  ).map((line) => scrubKnown(line, knownPii));
   return {
     threadId,
-    subject: redactText(read.subject ?? '').slice(0, 200),
+    subject: '',
+    subjectPresent: Boolean(read.subject),
     outcome,
     paneStatus: read.paneStatus,
     unsyncedReason: read.unsyncedReason,
@@ -375,8 +446,10 @@ function shapeResult(
     amendment: read.amendment,
     aiUnavailable: read.aiUnavailable,
     prefilled,
-    party: prefilled.filter((item) => PARTY_FIELD.test(item.field)).map((item) => item.value),
-    banners: cleanBanners(read.alerts.length > 0 ? read.alerts : [read.statusText].filter(Boolean)),
+    party: prefilled
+      .filter((item) => item.value !== null && BUSINESS_LABEL.test(item.field))
+      .map((item) => item.value as string),
+    banners,
     blockedWrites: blockedWrites.slice(0, MAX_BLOCKED),
     screenshots,
     elapsedMs,
@@ -431,6 +504,7 @@ async function viewThread(
   outDir: string,
   timeoutMs: number,
   blocked: BlockedWrite[],
+  knownPii: Set<string>,
 ): Promise<ThreadResult> {
   const started = Date.now();
   const url = `${baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`;
@@ -452,6 +526,7 @@ async function viewThread(
   const settled = outcome !== null;
   if (!read) read = await readPane();
   if (!read) throw new Error('the thread view never rendered');
+  for (const value of piiValuesOf(read)) knownPii.add(value);
   const blockedWrites = blocked
     .filter((item) => item.thread === threadId)
     .map((item) => item.procedure);
@@ -476,6 +551,7 @@ async function viewThread(
     blockedWrites,
     { pane: rel(panePath), page: rel(pagePath) },
     Date.now() - started,
+    [...knownPii],
   );
 }
 
@@ -490,6 +566,7 @@ function errorResult(
   return {
     threadId,
     subject: '',
+    subjectPresent: false,
     outcome: 'error',
     paneStatus: 'error',
     unsyncedReason: null,
@@ -543,6 +620,7 @@ export async function runPreview(
     log(`threads: ${threadIds.length}`);
 
     const results: ThreadResult[] = [];
+    const knownPii = new Set<string>();
     for (const threadId of threadIds) {
       const started = Date.now();
       const result = await viewThread(
@@ -552,7 +630,14 @@ export async function runPreview(
         config.outDir,
         config.timeoutMs,
         blocked,
-      ).catch((error: unknown) => errorResult(threadId, error, blocked, Date.now() - started));
+        knownPii,
+      ).catch((error: unknown) => {
+        const failed = errorResult(threadId, error, blocked, Date.now() - started);
+        return {
+          ...failed,
+          banners: failed.banners.map((line) => scrubKnown(line, [...knownPii])),
+        };
+      });
       log(`${results.length + 1}/${threadIds.length} ${result.outcome}`);
       results.push(result);
     }
@@ -616,7 +701,7 @@ export function buildGalleryHtml(results: readonly ThreadResult[], generatedAt: 
     .map((result) => {
       const e = escapeHtml;
       const fields = result.prefilled
-        .map((item) => `<tr><th>${e(item.field)}</th><td>${e(item.value)}</td></tr>`)
+        .map((item) => `<tr><th>${e(item.field)}</th><td>${e(item.value ?? '(hidden)')}</td></tr>`)
         .join('');
       const banners = result.banners.map((line) => `<li>${e(line)}</li>`).join('');
       const shots = [result.screenshots.pane, result.screenshots.page]
@@ -629,7 +714,7 @@ export function buildGalleryHtml(results: readonly ThreadResult[], generatedAt: 
         ? `<p class="bad">Blocked writes: ${e(result.blockedWrites.join('; '))}</p>`
         : '';
       return `<article class="card ${e(result.outcome)}">
-  <header><span class="badge">${e(result.outcome)}</span> <strong>${e(result.subject || '(no subject)')}</strong></header>
+  <header><span class="badge">${e(result.outcome)}</span> <strong>${e(result.subject || (result.subjectPresent ? '(subject hidden)' : '(no subject)'))}</strong></header>
   <p class="meta">${e(result.threadId)} · ${e(result.intent ?? '—')}${result.amendment ? ` · ${e(result.amendment)}` : ''}${result.aiUnavailable ? ' · read without AI' : ''} · ${result.elapsedMs} ms</p>
   ${result.unsyncedReason ? `<p class="meta">Unsynced: ${e(result.unsyncedReason)}</p>` : ''}
   ${blocked}
