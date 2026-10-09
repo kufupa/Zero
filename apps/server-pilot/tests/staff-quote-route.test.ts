@@ -265,6 +265,55 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     });
 
+    it('builds one combined PDF and Excel from two approved stays, and refuses a stay a newer approval superseded', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db),
+          api = caller();
+        const stayOn = (inputRevision: number, arrivalDate: string, departureDate: string) =>
+          api.workstation.executeStaffQuote({
+            ...request.input,
+            inputRevision,
+            groups: [{ ...request.input.groups[0]!, arrivalDate, departureDate }],
+          });
+        const october = await stayOn(1, '2026-10-26', '2026-10-27');
+        const november = await stayOn(2, '2026-11-17', '2026-11-18');
+        expect(october).toMatchObject({ status: 'ready', totalMinor: 20002 });
+        expect(november).toMatchObject({ status: 'ready', totalMinor: 20002 });
+        const combined = {
+          ...pdfInput({ workflowRunId: october.workflowRunId, revisionRef: october.revisionRef, messageId: october.messageId }),
+          additionalStays: [{ workflowRunId: november.workflowRunId, revisionRef: november.revisionRef, factRefs: [] }],
+        };
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf(combined);
+        expect(pdf.totalMinor).toBe(40004);
+        expect(pdf.revisionId).toMatch(/^quotes:/);
+        expect(pdf.fileName).toMatch(/^Quote - Guest 26 October - 18 November 2026 \([0-9a-f]{8}\)\.pdf$/);
+        expect(vi.mocked(fetch).mock.calls.at(-1)![0]).toBe('http://synthetic.invalid/forms/libreoffice/convert');
+        const workbook = await api.workstation.quoteWorkbook(combined);
+        expect(workbook).toMatchObject({ totalMinor: 40004, revisionId: pdf.revisionId });
+        // The same run twice is one stay, not two.
+        await expect(
+          api.workstation.qualifiedQuoteProposalPdf({
+            ...combined,
+            additionalStays: [{ workflowRunId: october.workflowRunId, revisionRef: october.revisionRef, factRefs: [] }],
+          }),
+        ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+        // A newer approval for the October dates supersedes the October stay, so the old pair is refused.
+        const octoberAgain = await stayOn(3, '2026-10-26', '2026-10-27');
+        await expect(api.workstation.qualifiedQuoteProposalPdf(combined)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'Newer stay inputs were approved; use the current quote',
+        });
+        await expect(api.workstation.quoteWorkbook(combined)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        const current = await api.workstation.qualifiedQuoteProposalPdf({
+          ...combined,
+          workflowRunId: octoberAgain.workflowRunId,
+          revisionRef: octoberAgain.revisionRef,
+        });
+        expect(current.totalMinor).toBe(40004);
+      });
+    });
+
     it('revokes an in-flight older approval when corrected requirements are submitted before the native lock', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
