@@ -8,3 +8,4 @@ export * from './ai-shadow-evaluation.js';
 export * from './outlook-device.js';
 export * from './outlook-authorization.js';
 export * from './outlook-sync.js';
+export * from './hitl.js';

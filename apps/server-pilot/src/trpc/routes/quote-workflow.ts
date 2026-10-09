@@ -12,6 +12,7 @@ import {
   resolveAnalyseCacheDir,
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
+import { resolveAgentRunRecorder, type AgentRunRecorder } from '../../ai/hitl-recorder.js';
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
@@ -78,12 +79,15 @@ export const quoteWorkflowLoaders: {
   /** Tests set a temp dir. Production uses apps/server-pilot/.private/luna-analyse-cache. */
   analyseCacheDir: string | null;
   promptVersion: string | null;
+  /** HITL ledger sink. Only read when HITL_LEDGER=on; production resolves the DB recorder. */
+  agentRunRecorder: AgentRunRecorder | null;
 } = {
   loadSyncedSelection: null,
   adapter: null,
   llmEnabled: null,
   analyseCacheDir: null,
   promptVersion: null,
+  agentRunRecorder: null,
 };
 
 export const analyseSelectionInput = z.object({
@@ -132,6 +136,8 @@ export const quoteWorkflowRouter = router({
         adapter: quoteWorkflowLoaders.adapter,
         llmEnabled: () =>
           quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env),
+        recorder: resolveAgentRunRecorder(process.env, quoteWorkflowLoaders.agentRunRecorder),
+        recordAs: { trigger: 'pane', userId: ctx.sessionUser.id },
       });
       if (outcome.kind === 'fallback') {
         console.warn('quote_workflow_fallback', outcome.reason);

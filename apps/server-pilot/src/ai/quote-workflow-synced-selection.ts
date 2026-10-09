@@ -27,6 +27,9 @@ export type SyncedQuoteSelection = {
   receivedAt?: string;
   preceding: Array<{ bodyText: string }>;
   attachments: SyncedQuoteAttachment[];
+  /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
+  messageId?: string;
+  threadId?: string;
 };
 
 export type QuoteAttachmentRow = {
@@ -215,5 +218,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     receivedAt: row.receivedAt?.toISOString(),
     preceding,
     attachments: await readQuoteAttachments(rows, reader),
+    messageId: row.id,
+    threadId: row.threadId,
   };
 }
