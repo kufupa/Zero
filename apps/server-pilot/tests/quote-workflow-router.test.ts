@@ -1396,6 +1396,57 @@ describe('quoteWorkflow.voucherFind', () => {
         mimeType: 'application/pdf',
         sizeBytes: 100,
       },
+      unreadPdfs: 0,
+    });
+  });
+
+  it('counts a voucher PDF the reader could not read, so the card can tell staff to check it', async () => {
+    voucherLoaders.candidate = async () => ({
+      messageId: 'm1',
+      subject: 'Voucher – Smith',
+      bodyText: 'Please find it attached.',
+      attachments: [attachmentRow('att-1', 'Smith_VCH_1879000.pdf'), attachmentRow('att-2', 'Smith_VCH_1879000_p2.pdf')],
+    });
+    voucherLoaders.readText = async (files: Array<{ id: string; filename: string; sizeBytes: number }>) =>
+      files.map((file) =>
+        file.id === 'att-1'
+          ? { id: file.id, filename: file.filename, byteSize: file.sizeBytes, bytesPresent: true, text: 'GUEST: Smith\nARRIVAL 2026-11-12' }
+          : {
+              id: file.id,
+              filename: file.filename,
+              byteSize: file.sizeBytes,
+              bytesPresent: false,
+              readFailure: 'over the 3 file / 5 MB analysis limit',
+            },
+      );
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host' });
+    expect(reply).toMatchObject({
+      status: 'voucher',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      unreadPdfs: 1,
+    });
+  });
+
+  it('counts a scanned voucher PDF with no text as unread, and still answers from the email', async () => {
+    voucherLoaders.candidate = async () => ({
+      messageId: 'm2',
+      subject: 'Voucher – Jones',
+      bodyText: 'Guest: Jones\nArrival: 12 Nov 2026',
+      attachments: [attachmentRow('scan-1', 'Jones_VCH_77.pdf')],
+    });
+    voucherLoaders.readText = async (files: Array<{ id: string; filename: string; sizeBytes: number }>) =>
+      files.map((file) => ({
+        id: file.id,
+        filename: file.filename,
+        byteSize: file.sizeBytes,
+        bytesPresent: true,
+        pdf: new Uint8Array([37, 80, 68, 70]),
+      }));
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'def@host' });
+    expect(reply).toMatchObject({
+      status: 'voucher',
+      guest: { lastName: 'Jones', arrival: '2026-11-12' },
+      unreadPdfs: 1,
     });
   });
 

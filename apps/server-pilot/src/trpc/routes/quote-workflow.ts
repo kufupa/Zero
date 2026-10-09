@@ -187,10 +187,10 @@ export const quoteWorkflowRouter = router({
       attachmentNames: files.map((attachment) => attachment.filename),
     });
     if (!voucher) return { status: 'not_voucher' };
-    const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(
-      voucherReadFiles(files),
-      AbortSignal.timeout(15_000),
-    );
+    const readable = voucherReadFiles(files);
+    const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(readable, AbortSignal.timeout(15_000));
+    // A voucher PDF whose text was not read (over the reader's cap, scanned, or unreadable) is counted for the card.
+    const withText = new Set(texts.filter((entry) => entry.text?.trim()).map((entry) => entry.id));
     return {
       status: 'voucher',
       messageId: candidate.messageId,
@@ -200,6 +200,7 @@ export const quoteWorkflowRouter = router({
         attachmentTexts: texts.map((text) => text.text ?? ''),
       }),
       file: pickVoucherFile(files),
+      unreadPdfs: readable.filter((file) => !withText.has(file.id)).length,
     };
   }),
   runStep: mailboxProcedure.input(runStepInput).mutation(async () => {

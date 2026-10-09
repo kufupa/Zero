@@ -203,6 +203,61 @@ describe('guest and arrival from the voucher text', () => {
     ).toEqual({ lastName: 'Smith', arrival: null });
   });
 
+  it('a company field on the same line does not hide the guest, because the exclusion is per field', () => {
+    expect(
+      extractVoucherGuest({ subject: 'Voucher', bodyText: 'Guest: Smith, John  Company: Acme', attachmentTexts: [] }),
+    ).toEqual({ lastName: 'Smith', arrival: null });
+  });
+
+  it('a guest label that belongs to an agency phrase is skipped, and the next line still counts', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Agency guest: Travel Co\nArrival: 12 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: null, arrival: '2026-11-12' });
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Agency guest: Travel Co\nGuest: Smith  Company: Acme',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: null });
+  });
+
+  it('a departure label without a colon ends the arrival, so a departure date is never the arrival', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith\nArrival: TBA  Departure 15 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: null });
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith\nArrival: TBA Departure 15 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: null });
+  });
+
+  it('a known word after one space is part of the name when no colon or date follows it', () => {
+    expect(
+      extractVoucherGuest({ subject: 'Voucher', bodyText: 'Guest: Mary Price\nArrival: 12 Nov 2026', attachmentTexts: [] }),
+    ).toEqual({ lastName: 'Price', arrival: '2026-11-12' });
+  });
+
+  it('a Surname or Last name label keeps the whole surname, not its last word', () => {
+    expect(
+      extractVoucherGuest({ subject: 'Voucher', bodyText: 'Surname: De la Rey\nArrival: 12 Nov 2026', attachmentTexts: [] }),
+    ).toEqual({ lastName: 'De la Rey', arrival: '2026-11-12' });
+    expect(
+      extractVoucherGuest({ subject: 'Voucher', bodyText: 'Last name: Mr De la Rey', attachmentTexts: [] }),
+    ).toEqual({ lastName: 'De la Rey', arrival: null });
+  });
+
   it('a value stops at the next label, so a departure date is never read as the arrival', () => {
     expect(
       extractVoucherGuest({

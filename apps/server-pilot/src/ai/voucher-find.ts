@@ -34,7 +34,14 @@ export type VoucherGuest = {
 export type VoucherFindReply =
   | { status: 'unsynced' }
   | { status: 'not_voucher' }
-  | { status: 'voucher'; messageId: string; guest: VoucherGuest; file: VoucherFile | null };
+  | {
+      status: 'voucher';
+      messageId: string;
+      guest: VoucherGuest;
+      file: VoucherFile | null;
+      /** Voucher PDFs with no text: over the reader's cap, scanned, or unreadable. Staff check these by hand. */
+      unreadPdfs: number;
+    };
 
 /** The stored message and its attachment rows. Read from the database only, with no attachment bytes. */
 export type VoucherCandidate = {
@@ -163,22 +170,30 @@ export function dayFromText(text: string): string | null {
 const GUEST_LABEL_START =
   /\b(?:guest(?:\s+name)?|lead\s+guest|passenger(?:\s+name)?|travell?er|surname|last\s+name|name\s+of\s+guest)\s*:/gi;
 const ARRIVAL_LABEL_START = /\b(?:arrival(?:\s+date)?|arrives?|arriving|check[\s-]?in(?:\s+date)?)\s*:?/gi;
-// Known voucher labels that end a value on the same line. Only these, so a name such as "Mary Smith  Arrival:" is cut
-// after "Smith", and "Arrival: TBA  Departure: 15 Nov" gives no arrival.
+// Known voucher labels that end a value on the same line, with or without a colon. Only these, so a name such as
+// "Mary Smith  Arrival:" is cut after "Smith", and "Arrival: TBA  Departure 15 Nov 2026" gives no arrival.
 const KNOWN_LABELS =
   'guest(?: name)?|lead guest|passenger(?: name)?|travell?er|surname|last name|name of guest|arrival(?: date)?|arrives?|arriving|check[ -]?in(?: date| time)?|departure(?: date)?|check[ -]?out(?: date| time)?|room(?: type| number)?|rooms|rate(?: plan| code| type)?|meal plan|board(?: basis)?|nights?|adults?|children|pax|number of (?:guests|rooms)|special requests?|remarks?|notes?|confirmation(?: number)?|booking(?: number| ref| reference)?|reservation(?: number)?|reference|voucher(?: number| no)?|company|agency|organi[sz]ation|hotel|property|status|total|balance|deposit|payment(?: method)?|price|amount|currency|e-?mail|phone|mobile|address|city|country|cancellation(?: policy)?|contact|booked by|created by|issued';
 // A "Label:" left in a value once the known labels are cut, so the value runs into a field this list does not know.
 const UNKNOWN_LABEL_COLON = /[A-Za-z]\s*:/;
-const NEXT_LABEL = new RegExp(`\\s+(?=(?:${KNOWN_LABELS})\\s*:)`, 'i');
-// Lines about the company, agency, contact or sender are not the guest, even when they say "name".
-const NOT_THE_GUEST =
-  /\b(?:company|agency|organi[sz]ation|corporate|contact|booked\s+by|your\s+name)\b|^\s*from\s*:/i;
+// Where a value ends on the same line: a known label with a colon, a known label after a column gap, or a known label
+// followed by a number ("Departure 15 Nov"). A bare known word after one space, such as the surname "Price", is not a
+// boundary.
+const NEXT_LABEL = new RegExp(
+  `\\s+(?=(?:${KNOWN_LABELS})\\s*:)|\\s{2,}(?=(?:${KNOWN_LABELS})\\b)|\\s+(?=(?:${KNOWN_LABELS})\\s+\\d)`,
+  'i',
+);
+// Where a field starts over: a colon, a column gap, a tab or a pipe. The text back to here is the field a label sits in.
+const FIELD_EDGE = /:|\s{2,}|\t|\|/;
+// Field text that makes a guest label part of a company, agency or contact phrase, not the guest. Checked per field.
+const NOT_THE_GUEST = /\b(?:company|agency|organi[sz]ation|corporate|contact|booked\s+by|your\s+name)\b/i;
 const TITLE = /^(?:mr|mrs|ms|miss|mstr|dr|prof)\.?$/i;
+// Where a surname value ends: a column gap, a pipe, a tab, a sentence end, or the next known label.
+const VALUE_END = new RegExp(`\\s{2,}|\\||\\t|[.;](?:\\s|$)|(?:${NEXT_LABEL.source})`, 'i');
 
 /** The surname from a guest-name value: "Smith, John", "SMITH/JOHN MR", "Mr John Smith" all give the surname. */
 export function surnameFrom(value: string): string | null {
-  // The value ends at a column gap, a sentence end, or the next known label on the same line.
-  const first = value.split(new RegExp(`\\s{2,}|\\||\\t|[.;](?:\\s|$)|${NEXT_LABEL.source}`, 'i'))[0]!.trim();
+  const first = (value.split(VALUE_END)[0] ?? '').trim();
   const separated = /[,/]/.test(first);
   const words = first
     .split(/[,/]/)[0]!
@@ -190,14 +205,30 @@ export function surnameFrom(value: string): string | null {
   return surname && isGuestSurname(surname) ? surname : null;
 }
 
-// Each labelled value on one line. A value runs from its label to the next label of the same kind, and stops at the
-// next label of any kind. "Guest: Smith  Guest: Jones" gives two values; nothing on the line is skipped.
-function labelledValues(line: string, start: RegExp): string[] {
+/** A value labelled Surname or Last name is the whole surname, so "De la Rey" is not shortened to "Rey". */
+function surnameOnly(value: string): string | null {
+  const first = (value.split(VALUE_END)[0] ?? '').split(/[,/]/)[0]!.trim();
+  const whole = first
+    .split(/\s+/)
+    .filter((word) => word && !TITLE.test(word))
+    .join(' ');
+  return isGuestSurname(whole) ? whole : null;
+}
+
+type LabelledValue = { label: string; value: string; before: string };
+
+// Each labelled value on one line, with the text of its own field before the label. A value runs from its label to the
+// next label of the same kind, and stops at the next known label, with or without a colon.
+function labelledValues(line: string, start: RegExp): LabelledValue[] {
   const matches = [...line.matchAll(start)];
   return matches.map((match, index) => {
     const from = match.index + match[0].length;
     const to = matches[index + 1]?.index ?? line.length;
-    return (line.slice(from, to).trimStart().split(NEXT_LABEL)[0] ?? '').trimEnd();
+    return {
+      label: match[0],
+      value: (line.slice(from, to).trimStart().split(NEXT_LABEL)[0] ?? '').trimEnd(),
+      before: line.slice(0, match.index).split(FIELD_EDGE).at(-1) ?? '',
+    };
   });
 }
 
@@ -221,21 +252,23 @@ export function extractVoucherGuest(input: {
   // A guest value that runs into an unknown field may have its surname in the wrong word, so no surname is taken from it.
   let guestUnclear = false;
   for (const line of sources.join('\n').split(/\r?\n/)) {
-    if (!NOT_THE_GUEST.test(line)) {
-      for (const value of labelledValues(line, GUEST_LABEL_START)) {
-        if (UNKNOWN_LABEL_COLON.test(value)) {
-          guestUnclear = true;
-          continue;
-        }
-        const surname = surnameFrom(value);
-        // The first spelling wins, so "Smith" and "SMITH" are one guest and keep the spelling read first.
-        if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
+    for (const field of labelledValues(line, GUEST_LABEL_START)) {
+      // The exclusion is per field: "Agency guest: ..." is skipped, but "Guest: Smith, John  Company: Acme" keeps Smith.
+      if (NOT_THE_GUEST.test(field.before)) continue;
+      if (UNKNOWN_LABEL_COLON.test(field.value)) {
+        guestUnclear = true;
+        continue;
       }
+      const surname = /^(?:surname|last\s+name)\b/i.test(field.label)
+        ? surnameOnly(field.value)
+        : surnameFrom(field.value);
+      // The first spelling wins, so "Smith" and "SMITH" are one guest and keep the spelling read first.
+      if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
     }
-    for (const value of labelledValues(line, ARRIVAL_LABEL_START)) {
+    for (const field of labelledValues(line, ARRIVAL_LABEL_START)) {
       // Text after an unknown label is not the arrival, so a date beyond that label is never read.
-      const label = UNKNOWN_LABEL_COLON.exec(value);
-      const head = label ? value.slice(0, label.index) : value;
+      const label = UNKNOWN_LABEL_COLON.exec(field.value);
+      const head = label ? field.value.slice(0, label.index) : field.value;
       const day = dayFromText(head.slice(0, LABEL_TAIL_CHARS));
       if (day) days.add(day);
     }

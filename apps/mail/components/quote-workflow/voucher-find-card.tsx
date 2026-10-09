@@ -133,6 +133,7 @@ export function VoucherFindCard({
   }
   if (reply.status !== 'voucher') return null;
   const { guest, file } = reply;
+  const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
   const canSearch = canSearchVoucher(guest) && searchClient !== null;
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
@@ -182,6 +183,12 @@ export function VoucherFindCard({
           {text}
         </p>
       ))}
+      {/* Staff still see the search when the surname and arrival were read. The note only says what is missing. */}
+      {unreadPdfs > 0 ? (
+        <p role="alert" className={warnNoteClass}>
+          {VOUCHER_COPY.partialRead}
+        </p>
+      ) : null}
       {canSearch ? (
         <button
           type="button"

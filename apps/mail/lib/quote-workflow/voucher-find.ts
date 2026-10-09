@@ -21,7 +21,14 @@ export type VoucherFile = { id: string; filename: string; mimeType: string; size
 export type VoucherFindReply =
   | { status: 'unsynced' }
   | { status: 'not_voucher' }
-  | { status: 'voucher'; messageId: string; guest: VoucherGuest; file: VoucherFile | null };
+  | {
+      status: 'voucher';
+      messageId: string;
+      guest: VoucherGuest;
+      file: VoucherFile | null;
+      /** Voucher PDFs whose text was not read. Optional so older replies still type-check. */
+      unreadPdfs?: number;
+    };
 
 export type VoucherFindClient = {
   check: (input: { internetMessageId: string }) => Promise<VoucherFindReply>;
@@ -52,6 +59,7 @@ export const VOUCHER_COPY = {
   conflictLastNames: 'More than one guest name is on this voucher. Luna did not pick one:',
   conflictArrivals: 'More than one arrival date is on this voucher. Luna did not pick one:',
   waitingForSync: 'Waiting for this email to sync. Luna checks it again when the sync lands.',
+  partialRead: "Part of the voucher couldn't be read — check the PDF.",
   search: 'Find the booking in HMS',
   searching: 'Luna is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',
