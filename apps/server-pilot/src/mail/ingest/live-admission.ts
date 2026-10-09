@@ -12,6 +12,10 @@ import {
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { enqueueShadowPrediction } from '../../ai/shadow-evaluation.js';
+import {
+  enqueueInboundExtraction,
+  inboundExtractionEnabled,
+} from '../../ai/extraction/inbound-run.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -438,6 +442,11 @@ export async function admitLiveMessage(
     },
     db,
   );
+  if (trigger.direction === 'inbound' && inboundExtractionEnabled(process.env))
+    await enqueueInboundExtraction(
+      { transportId: input.transportId, threadId: trigger.threadId, messageId: trigger.id },
+      db,
+    );
   if (trigger.direction === 'inbound')
     await enqueueShadowPrediction({
       transportId: input.transportId,

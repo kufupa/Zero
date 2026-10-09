@@ -15,7 +15,7 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Override hotel-rule "groups of 10+ are other": rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
 
 /** The response schema the model fills. Hashed into the version so a schema change also misses the cache. */
 const LUNA_RESPONSE_JSON = JSON.stringify(
@@ -198,7 +198,7 @@ export function buildQuoteWorkflowPrompt(
   };
 }
 
-function validIsoDate(value: string | null): string | undefined {
+export function validIsoDate(value: string | null): string | undefined {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
   const [year, month, day] = value.split('-').map(Number) as [number, number, number];
   const utc = new Date(Date.UTC(year, month - 1, day));
