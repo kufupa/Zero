@@ -198,6 +198,7 @@ export const quoteWorkflowRouter = router({
     return {
       status: 'voucher',
       messageId: candidate.messageId,
+      threadId: candidate.threadId,
       guest: extractVoucherGuest({
         subject: candidate.subject,
         bodyText: candidate.bodyText,

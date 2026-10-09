@@ -14,6 +14,7 @@ import {
   resolveDeployedTriagePromptVersion,
   mailBaselineGenerationKey,
   RunDeadlineError,
+  HMS_JOB_PROMPT_VERSION,
   shouldRetryAiFailure,
   toAiRunFence,
   type AiFailureClass,
@@ -157,6 +158,11 @@ import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { scheduleInboundTriageAnalyseWarm } from './quote-workflow-warmer.js';
+import {
+  executeHmsJob,
+  requeueHmsReadsAfterRestart,
+  schedulePrefetchForInbound,
+} from './hms-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
@@ -4203,6 +4209,11 @@ export async function executeAiRun(
 
     if (signal.aborted) throw new RunDeadlineError();
 
+    // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
+    if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {
+      return { runId, state: await executeHmsJob({ run, fence }) };
+    }
+
     if (run.runKind === 'read_tool') {
       if (run.executorLane !== 'hms') {
         throw Object.assign(new Error('read_tool must execute on the HMS lane'), {
@@ -5347,22 +5358,27 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     shadowModelRouteFactory,
     ...scope
   } = options;
-  // hms + off: drafting claims none, but an independently enabled read lane
-  // remains claimable without browser/model initialization.
-  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
-    return false;
-  }
+  // hms + off: drafting claims none. Read runs stay claimable without browser/model
+  // initialization: all reads when the read service is on, else pane HMS jobs only.
+  const hmsReadOnly = lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off';
+  const hmsJobsOnly = hmsReadOnly && !env.HMS_READ_SERVICE_ENABLED;
   maybeInitHmsRuntime(lane);
   // Eager singleton browser for HMS shadow (reuse across runs).
   if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'shadow') {
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const readOnlyLane =
-    lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
-  const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
+  const claimScope = hmsReadOnly
+    ? {
+        ...scope,
+        runKind: 'read_tool' as const,
+        ...(hmsJobsOnly ? { promptVersion: HMS_JOB_PROMPT_VERSION } : {}),
+      }
+    : scope;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
   if (!claimed) {
+    // Jobs-only hms worker: no maintenance, as before this lane claimed jobs.
+    if (hmsJobsOnly) return false;
     // Assessment and retention are private, bounded database lanes. They run
     // only after the claim check, so a normal queued prediction cannot be
     // hidden behind maintenance work; no route factory is initialized here.
@@ -5404,6 +5420,8 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // Fire-and-forget after the triage commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
+    // Off unless HMS_PREFETCH_ENABLED=1; live inbound triage only.
+    schedulePrefetchForInbound(claimed);
   }
   return true;
 }
@@ -5562,6 +5580,10 @@ async function main() {
   }
 
   // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
+  if (env.AI_WORKER_LANE === 'hms') {
+    const requeued = await requeueHmsReadsAfterRestart({ ownerId: aiWorkerOwnerId('hms') });
+    if (requeued > 0) console.log(JSON.stringify({ ok: true, hmsReadsRequeued: requeued }));
+  }
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
   await runAiWorkerLoop(
     5_000,

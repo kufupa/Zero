@@ -34,6 +34,8 @@ export interface PropertyReadLockAcquisitionOptions {
   signal?: AbortSignal;
   /** Optional absolute deadline in epoch milliseconds. */
   deadlineAt?: number;
+  /** One non-waiting attempt. A busy lock reports the deadline error at once, so background work can requeue. */
+  tryOnce?: boolean;
 }
 
 const PROPERTY_READ_LOCK_POLL_MS = 25;
@@ -229,6 +231,7 @@ async function acquireAdvisoryLock(
       options,
     );
     if (advisoryLockWasAcquired(result)) return;
+    if (options.tryOnce) throw lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE));
     await waitForAcquisitionPoll(options);
   }
 }

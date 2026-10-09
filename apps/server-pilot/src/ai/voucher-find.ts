@@ -42,6 +42,8 @@ export type VoucherFindReply =
   | {
       status: 'voucher';
       messageId: string;
+      /** The mail's thread. The pane anchors a guest-name search job to it. */
+      threadId: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
       /** Voucher PDFs with no text: over the reader's cap, scanned, or unreadable. Staff check these by hand. */
@@ -51,6 +53,7 @@ export type VoucherFindReply =
 /** The stored message and its attachment rows. Read from the database only, with no attachment bytes. */
 export type VoucherCandidate = {
   messageId: string;
+  threadId: string;
   subject: string;
   bodyText: string;
   attachments: QuoteAttachmentRow[];
@@ -305,7 +308,12 @@ export async function loadVoucherCandidate(input: {
     return null;
   }
   const selected = await db
-    .select({ id: message.id, subject: message.subject, textBody: message.textBody })
+    .select({
+      id: message.id,
+      threadId: message.threadId,
+      subject: message.subject,
+      textBody: message.textBody,
+    })
     .from(message)
     .where(
       and(
@@ -332,6 +340,7 @@ export async function loadVoucherCandidate(input: {
     .orderBy(asc(attachment.id));
   return {
     messageId: row.id,
+    threadId: row.threadId,
     subject: row.subject ?? '',
     bodyText: row.textBody ?? '',
     attachments,

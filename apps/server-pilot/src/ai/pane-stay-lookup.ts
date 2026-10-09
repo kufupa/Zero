@@ -10,6 +10,7 @@ import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
   PANE_PROPERTY_LOCK_WAIT_MS,
+  type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
 import type { OsressDuplicateStatus, PaneStayLock } from './pane-stay-save.js';
 
@@ -117,6 +118,8 @@ export type PaneStayLookupSpawnResult = {
 export type PaneStayLookupDeps = {
   /** The session hotel's property lock, resolved per call. Null means no lock can be made, so the run is refused. */
   lock: () => PaneStayLock | null;
+  /** Lock acquisition bounds. Absent means wait up to PANE_PROPERTY_LOCK_WAIT_MS. */
+  acquisition?: PropertyReadLockAcquisitionOptions;
   /** Called for each run that wrote a directory, so the caller can register its screenshots for reads. */
   onRun?: (run: { runId: string; dir: string }) => void;
 };
@@ -142,7 +145,7 @@ function isRealIsoDate(value: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-function isConfirmation(value: string): boolean {
+export function isConfirmation(value: string): boolean {
   return /^\d+-\d+$/.test(value);
 }
 
@@ -276,7 +279,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   try {
     run = await lock.withLock(
       () => spawn({ mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null }),
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+      deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
@@ -362,7 +365,7 @@ export async function searchGuest(
           arrival: input.arrival,
           ...(input.departure !== undefined ? { departure: input.departure } : {}),
         }),
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+      deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refusedSearch('refused_lock_busy');

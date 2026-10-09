@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
@@ -43,6 +43,8 @@ export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
+/** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
+export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
 export const MAIL_BASELINE_GENERATION_VERSION = 'mail-baseline-generation-v1';
 
@@ -69,8 +71,12 @@ export function canClaimReadToolRun(input: {
   runKind: AiWorkflowRunKind | string;
   lane: AiExecutorLane | string;
   readServiceEnabled: boolean;
+  promptVersion?: string;
 }): boolean {
-  return input.runKind !== READ_TOOL_RUN_KIND || (input.lane === 'hms' && input.readServiceEnabled);
+  if (input.runKind !== READ_TOOL_RUN_KIND) return true;
+  if (input.lane !== 'hms') return false;
+  // Pane HMS jobs run through the CLI, so they do not depend on the read service flag.
+  return input.readServiceEnabled || input.promptVersion === HMS_JOB_PROMPT_VERSION;
 }
 export const CLEANUP_RESERVE_MS = READ_CLEANUP_RESERVE_MS;
 
@@ -227,6 +233,8 @@ export type AiFailureClass =
   | 'BEDROCK_TRANSIENT'
   | 'ARTIFACT_TRANSIENT'
   | 'AUDIT_CAPTURE'
+  | 'HMS_LOCK_BUSY'
+  | 'STAFF_QUOTE_ACTIVE'
   | 'UNKNOWN';
 
 const RETRYABLE_FAILURE_CLASSES: ReadonlySet<AiFailureClass> = new Set([
@@ -280,7 +288,8 @@ export interface MarkAiRunSucceededInput {
   generationId?: string;
   metrics?: Record<string, unknown>;
   readResultRef?: string;
-  readResult?: ReadResult<unknown>;
+  /** Typed receipt, or a pane HMS job snapshot (hms-job/1) stored as a plain object. */
+  readResult?: ReadResult<unknown> | Record<string, unknown>;
   readResultExpiresAt?: Date;
 }
 
@@ -562,16 +571,25 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const env = parseEnv(process.env as Record<string, string | undefined>);
+  // Operator pause (HMS_LANE_PAUSED=1): the hms lane claims nothing.
+  if (input.lane === 'hms' && env.HMS_LANE_PAUSED) return null;
   if (
     !canClaimReadToolRun({
       runKind: input.runKind ?? '',
       lane: input.lane,
       readServiceEnabled: env.HMS_READ_SERVICE_ENABLED,
+      promptVersion: input.promptVersion,
     })
   )
     return null;
   const staleRunTimeoutMs = input.staleRunTimeoutMs ?? env.AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
+  // hms_write may already have changed HMS when its claim went stale, so it is never reclaimed automatically.
+  const staleClaim = and(
+    inArray(aiWorkflowRun.state, ['claimed', 'running']),
+    lte(aiWorkflowRun.updatedAt, staleBefore),
+    ne(aiWorkflowRun.runKind, 'hms_write'),
+  );
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
   const scope = scopePredicates({
     transportId: input.transportId,
@@ -594,10 +612,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
                 inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
                 or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
               ),
-              and(
-                inArray(aiWorkflowRun.state, ['claimed', 'running']),
-                lte(aiWorkflowRun.updatedAt, staleBefore),
-              ),
+              staleClaim,
             ),
           ),
         )
@@ -665,10 +680,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
                 inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
                 or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
               ),
-              and(
-                inArray(aiWorkflowRun.state, ['claimed', 'running']),
-                lte(aiWorkflowRun.updatedAt, staleBefore),
-              ),
+              staleClaim,
             ),
           ),
         )

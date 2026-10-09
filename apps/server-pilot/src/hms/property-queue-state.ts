@@ -208,6 +208,22 @@ export async function readPropertyLockHolder(db: DB, lockKey: string): Promise<L
   };
 }
 
+/** True while any staff quote run is in flight. Background HMS work yields to it. */
+export async function staffQuoteInFlight(db: DB): Promise<boolean> {
+  const [row] = await db
+    .select({ id: aiDraftGeneration.id })
+    .from(aiDraftGeneration)
+    .where(
+      and(
+        eq(aiDraftGeneration.model, STAFF_QUOTE_GENERATION_MODEL),
+        eq(aiDraftGeneration.status, 'running'),
+        sql`${aiDraftGeneration.createdAt} > clock_timestamp() - interval '20 minutes'`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 /** In-flight staff quote runs across mailboxes, excluding one generation. Counts only. */
 export async function countOtherInFlightQuoteRuns(
   db: DB,

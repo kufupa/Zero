@@ -12,7 +12,9 @@ import {
 import {
   formatStayDate,
   noSearchMatchCopy,
+  type GuestSearchInput,
   type GuestSearchReply,
+  type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { VoucherFindCard } from '../components/quote-workflow/voucher-find-card';
@@ -20,9 +22,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => cleanup());
 
+const AS_OF = '2026-10-09T08:05:00.000Z';
+
 const VOUCHER: VoucherFindReply = {
   status: 'voucher',
   messageId: 'm1',
+  threadId: 'thread-1',
   guest: { lastName: 'Smith', arrival: '2026-11-12' },
   file: {
     id: 'att-1',
@@ -41,22 +46,53 @@ const SMITH_ROW = {
   departure: '2026-11-14',
 };
 
-// The trpc client the pane passes in: the voucher check, the existing guest search, and nothing else.
+// The trpc client the pane passes in: the voucher check and the guest-name search job routes, and nothing else.
+// Each queued search runs its mock and is stored as a finished job, so jobStatus answers on the first poll.
 function fakeTrpc(options: { reply: VoucherFindReply; search?: GuestSearchReply }) {
   const voucherFind = vi.fn(async (_input: { internetMessageId: string }) => options.reply);
   const searchGuest = vi.fn(
     async (_input: { lastName: string; arrival: string; departure?: string }) =>
       options.search ?? { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
   );
+  const jobs = new Map<string, HmsJobView>();
+  let issued = 0;
   return {
     trpc: {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
-      paneStayLookup: { searchGuest: { mutate: searchGuest } },
+      paneStayLookup: {
+        queueFind: { mutate: vi.fn() },
+        queueSearchGuest: {
+          mutate: async ({ threadId: _threadId, ...input }: GuestSearchInput & { threadId: string }) => {
+            const reply = await searchGuest(input);
+            const runId = `run-${++issued}`;
+            jobs.set(runId, {
+              runId,
+              request: { kind: 'search_guest', ...input },
+              prefetch: false,
+              status: 'done',
+              position: null,
+              attempts: 1,
+              failureClass: null,
+              asOf: AS_OF,
+              result: { ...reply, kind: 'search_guest', asOf: AS_OF },
+            });
+            return { runId };
+          },
+        },
+        jobStatus: {
+          query: async (input: { runId: string } | { threadId: string }) =>
+            'runId' in input ? (jobs.get(input.runId) ?? null) : null,
+        },
+        screenshot: { query: vi.fn() },
+      },
     },
     voucherFind,
     searchGuest,
   };
 }
+
+// The job routes alone, for the sync cases that never run a search.
+const jobRoutesOnly = () => fakeTrpc({ reply: VOUCHER }).trpc.paneStayLookup;
 
 describe('voucher find card: what shows', () => {
   it('renders nothing when the email is not a voucher or is not synced', async () => {
@@ -144,7 +180,7 @@ describe('voucher find card: the existing search', () => {
 
   it('shows a plain failure when the search call fails', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
-    trpc.paneStayLookup.searchGuest.mutate = vi.fn(async () => {
+    trpc.paneStayLookup.queueSearchGuest.mutate = vi.fn(async () => {
       throw new Error('socket closed');
     });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
@@ -216,7 +252,7 @@ describe('voucher find card: waiting for the sync', () => {
       .mockResolvedValue(VOUCHER);
     const trpc = {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
-      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+      paneStayLookup: jobRoutesOnly(),
     };
     const { rerender } = render(
       <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} syncPending />,
@@ -264,7 +300,7 @@ describe('voucher find card: waiting for the sync', () => {
       .mockResolvedValue(VOUCHER);
     const trpc = {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
-      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+      paneStayLookup: jobRoutesOnly(),
     };
     const { rerender } = render(
       <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} />,
@@ -290,7 +326,7 @@ describe('voucher find card: waiting for the sync', () => {
       .mockResolvedValue({ status: 'not_voucher' });
     const trpc = {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
-      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+      paneStayLookup: jobRoutesOnly(),
     };
     const { rerender } = render(
       <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} />,

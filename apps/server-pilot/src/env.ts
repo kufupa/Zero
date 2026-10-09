@@ -118,6 +118,12 @@ export interface MailEnv {
   HMS_DRAFT_ENRICHMENT_MODE: HmsDraftEnrichmentMode;
   /** Independent model-free HMS read worker gate; defaults off. */
   HMS_READ_SERVICE_ENABLED: boolean;
+  /** Pause the hms executor lane: it claims nothing while true. Defaults off. */
+  HMS_LANE_PAUSED: boolean;
+  /** Confirmation-number prefetch of inbound mail into the hms lane. Defaults off. */
+  HMS_PREFETCH_ENABLED: boolean;
+  /** Prefetch runs enqueued per transport in a rolling hour. */
+  HMS_PREFETCH_PER_HOUR: number;
   HMS_RUN_DEADLINE_MS: number;
   HMS_HEALTH_STATUS_PATH: string;
   HMS_CIRCUIT_COOLDOWN_MS: number;
@@ -372,6 +378,9 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_WORKER_LANE: 'default',
     HMS_DRAFT_ENRICHMENT_MODE: 'off',
     HMS_READ_SERVICE_ENABLED: false,
+    HMS_LANE_PAUSED: false,
+    HMS_PREFETCH_ENABLED: false,
+    HMS_PREFETCH_PER_HOUR: 30,
     HMS_RUN_DEADLINE_MS: 150_000,
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
@@ -454,6 +463,15 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.HMS_READ_SERVICE_ENABLED = input.HMS_READ_SERVICE_ENABLED
     ? toBool('HMS_READ_SERVICE_ENABLED', input.HMS_READ_SERVICE_ENABLED)
     : false;
+  env.HMS_LANE_PAUSED = input.HMS_LANE_PAUSED
+    ? toBool('HMS_LANE_PAUSED', input.HMS_LANE_PAUSED)
+    : false;
+  env.HMS_PREFETCH_ENABLED = input.HMS_PREFETCH_ENABLED
+    ? toBool('HMS_PREFETCH_ENABLED', input.HMS_PREFETCH_ENABLED)
+    : false;
+  env.HMS_PREFETCH_PER_HOUR = input.HMS_PREFETCH_PER_HOUR
+    ? toInt('HMS_PREFETCH_PER_HOUR', input.HMS_PREFETCH_PER_HOUR)
+    : 30;
   env.HMS_HEALTH_STATUS_PATH = hmsControl.healthPath;
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)

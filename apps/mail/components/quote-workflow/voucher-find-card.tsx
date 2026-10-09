@@ -2,10 +2,13 @@
 
 import {
   AMEND_FIND_COPY,
-  amendSearchClientFromTrpc,
+  amendFindClientFromTrpc,
   formatStayDate,
+  hmsJobTransport,
+  isSettled,
   noSearchMatchCopy,
-  runHmsSearch,
+  searchRequestFor,
+  searchRunFromJob,
   type GuestSearchRow,
   type HmsSearchRun,
 } from '@/lib/quote-workflow/amend-find';
@@ -18,20 +21,22 @@ import {
   type VoucherFindReply,
 } from '@/lib/quote-workflow/voucher-find';
 import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/attachment-access';
+import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
 import { HmsLinkActions } from './hms-link-actions';
+import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 
 const captionClass = 'text-[11px] text-[#64748b]';
 const valueClass = 'text-[12.5px] font-semibold text-[#1e293b]';
 const infoNoteClass = 'text-[11.5px] text-[#334155]';
 
-type SearchStatus = { phase: 'running' } | { phase: 'done'; run: HmsSearchRun };
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'failed';
 
 /**
  * Find the booking for voucher or proof-of-payment mail. Renders nothing unless the server says this email is a voucher.
- * The HMS search runs only when staff press the button, because a search takes about a minute of the shared HMS session.
+ * The HMS search is a persisted job, queued only when staff press the button, because a search takes about a minute of
+ * the shared HMS session.
  */
 export function VoucherFindCard({
   internetMessageId,
@@ -50,10 +55,11 @@ export function VoucherFindCard({
   syncPending?: boolean;
 }) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc), [trpc]);
-  const searchClient = useMemo(() => amendSearchClientFromTrpc(trpc), [trpc]);
+  const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
-  const [search, setSearch] = useState<SearchStatus | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
+  // A search the form refused before queueing. It shows in place of a run, for the email it was made on.
+  const [refused, setRefused] = useState<{ scope: string | null; message: string } | null>(null);
   const mounted = useRef(false);
   const [checkRound, setCheckRound] = useState(0);
   // The sync's committed count as of the last commit this card has seen.
@@ -62,6 +68,10 @@ export function VoucherFindCard({
   const showingUnsynced = useRef(false);
   // The email the card last checked. A re-check of the same email keeps its answer on screen until the next one arrives.
   const checkedFor = useRef<string | null>(null);
+  // The search job runs on the voucher mail's thread, which the check's reply names.
+  const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
+  const transport = useMemo(() => hmsJobTransport(jobClient, replyThread), [jobClient, replyThread]);
+  const searchJob = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: internetMessageId });
 
   useEffect(() => {
     mounted.current = true;
@@ -72,10 +82,9 @@ export function VoucherFindCard({
 
   useEffect(() => {
     if (checkedFor.current !== internetMessageId) {
-      // A new email starts clean: the last email's voucher, search and save state must not show under it.
+      // A new email starts clean: the last email's voucher and save state must not show under it.
       checkedFor.current = internetMessageId;
       setReply(null);
-      setSearch(null);
       setSave('idle');
     }
     showingUnsynced.current = false;
@@ -127,7 +136,7 @@ export function VoucherFindCard({
   const { guest, file } = reply;
   const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
-  const canSearch = canSearchVoucher(guest) && searchClient !== null;
+  const canSearch = canSearchVoucher(guest) && transport !== null;
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
   const arrivalConflict = (guest.conflicts?.arrivals.length ?? 0) > 1;
   // Every warning shares one box, one short line each. Staff still see the search when the surname and arrival were read.
@@ -141,15 +150,21 @@ export function VoucherFindCard({
     ...voucherConflictLines(guest),
   ].filter((text): text is string => text !== null);
 
-  const runSearch = async () => {
+  const refusedNow = refused && refused.scope === internetMessageId ? refused.message : null;
+  const searchRun: HmsSearchRun | null = refusedNow
+    ? { kind: 'error', message: refusedNow }
+    : searchRunFromJob(searchJob.view, searchJob.queueFailed);
+  const searching = searchJob.queuing || (searchJob.view !== null && !isSettled(searchJob.view));
+
+  const runSearch = () => {
     if (!canSearchVoucher(guest)) return;
-    setSearch({ phase: 'running' });
-    const run = await runHmsSearch({
-      client: searchClient,
-      lastName: guest.lastName,
-      arrival: guest.arrival,
-    });
-    if (mounted.current) setSearch({ phase: 'done', run });
+    const next = searchRequestFor({ lastName: guest.lastName, arrival: guest.arrival });
+    if ('request' in next) {
+      setRefused(null);
+      searchJob.start(next.request);
+    } else {
+      setRefused({ scope: internetMessageId, message: next.error });
+    }
   };
 
   const saveFile = async () => {
@@ -183,16 +198,18 @@ export function VoucherFindCard({
         </Notice>
       ) : null}
       {canSearch ? (
-        <SecondaryButton disabled={search?.phase === 'running'} onClick={() => void runSearch()}>
+        <SecondaryButton disabled={searching} onClick={() => void runSearch()}>
           {VOUCHER_COPY.search}
         </SecondaryButton>
       ) : null}
-      {search?.phase === 'running' ? (
-        <p role="status" className={infoNoteClass}>
-          {VOUCHER_COPY.searching}
-        </p>
-      ) : null}
-      {search?.phase === 'done' ? <SearchResult run={search.run} /> : null}
+      <HmsJobStatusLine
+        view={searchJob.view}
+        queuing={searchJob.queuing}
+        detail={VOUCHER_COPY.searching}
+        onRetry={searchJob.retry}
+      />
+      {searchRun ? <SearchResult run={searchRun} /> : null}
+      {searchJob.view?.status === 'done' ? <HmsAsOf asOf={searchJob.view.asOf} /> : null}
       {file ? (
         <div className="flex flex-wrap items-center gap-2">
           <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>

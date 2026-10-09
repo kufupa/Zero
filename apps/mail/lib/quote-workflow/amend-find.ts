@@ -1,9 +1,10 @@
 import type { QuoteAmendment } from './types';
 
 /**
- * HMS lookup for amend and cancel mail. Luna reads one booking by its exact confirmation number through
- * paneStayLookup.findStay: a read-only browser run under the session hotel's lock, about 1-2 minutes.
- * The panel calls runHmsFind and nothing else, so the transport can change here. Nothing here changes HMS.
+ * HMS lookup for amend and cancel mail. A find (paneStayLookup.queueFind) or a guest-name search (queueSearchGuest) is
+ * a persisted HMS job, about 1-2 minutes in HMS. The pane polls the job by run id and shows the dated snapshot the worker
+ * stored, so a lookup keeps going while the pane is closed or the email changes. The panels call these helpers and
+ * nothing else, so the transport can change here. Nothing here changes HMS.
  */
 
 export const AMEND_FIND_COPY = {
@@ -59,7 +60,7 @@ export function notHmsNumberNote(value: string): string {
   return `The number in the email (${value}) looks like the agent's own reference, not an HMS booking number. Find the booking by guest name below.`;
 }
 
-/** One Guest Stay as findStay returns it. Each field is null when HMS does not show it. Dates are ISO days. */
+/** One Guest Stay as the find reply carries it. Each field is null when HMS does not show it. Dates are ISO days. */
 export type StayRecordWire = {
   status: string | null;
   confirmation: string | null;
@@ -86,7 +87,7 @@ export type StayRecordWire = {
 export type FindStayInput = { confirmation: string; arrival?: string };
 
 /**
- * paneStayLookup.findStay. Refusals and failures carry no stay. With an arrival sent, HMS refuses a record that
+ * The reply a find job stores. Refusals and failures carry no stay. With an arrival sent, HMS refuses a record that
  * starts on another day: outcome ambiguous with reason arrival_mismatch.
  */
 export type FindStayReply = {
@@ -105,28 +106,113 @@ export type FindStayReply = {
 export type ScreenshotInput = { runId: string; name: string };
 export type ScreenshotReply = { status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string };
 
-export type AmendFindClient = {
-  findStay: (input: FindStayInput) => Promise<FindStayReply>;
+/** One row of a guest-name search, as the search reply carries it. Dates are ISO days or null. */
+export type GuestSearchRow = {
+  confirmation: string;
+  lastName: string;
+  firstName: string;
+  status: string;
+  arrival: string | null;
+  departure: string | null;
+};
+
+export type GuestSearchInput = { lastName: string; arrival: string; departure?: string };
+
+/** The reply a search job stores. rows are complete only for outcome ok. */
+export type GuestSearchReply = {
+  outcome: string;
+  rows: GuestSearchRow[];
+  screenshots: string[];
+  runId: string | null;
+};
+
+export type HmsJobKind = 'find' | 'search_guest';
+
+/** What a job was queued for. paneStayLookup stores it with the job. */
+export type HmsJobRequest =
+  | { kind: 'find'; confirmation: string; arrival?: string }
+  | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string };
+
+export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed';
+
+/**
+ * One job as paneStayLookup.jobStatus returns it. `result` is the find or search reply the worker stored, a snapshot
+ * taken at `asOf`, and is null until the job succeeds. `position` counts the HMS queue ahead of the job while it waits.
+ */
+export type HmsJobView = {
+  runId: string;
+  request: HmsJobRequest | null;
+  prefetch: boolean;
+  status: HmsJobStatus;
+  position: number | null;
+  attempts: number;
+  failureClass: string | null;
+  asOf: string | null;
+  result: Record<string, unknown> | null;
+};
+
+export type QueuedHmsJob = { runId: string };
+
+/** The paneStayLookup job routes, bound off the pane's tRPC client. */
+export type HmsJobClient = {
+  queueFind: (input: FindStayInput & { threadId: string }) => Promise<QueuedHmsJob>;
+  queueSearchGuest: (input: GuestSearchInput & { threadId: string }) => Promise<QueuedHmsJob>;
+  jobStatus: (
+    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string },
+  ) => Promise<HmsJobView | null>;
   screenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
+};
+
+/** The job calls for one thread: queue a request, and read a job by run id or the latest of a kind on the thread. */
+export type HmsJobTransport = {
+  queue: (request: HmsJobRequest) => Promise<QueuedHmsJob>;
+  status: (input: { runId: string } | { kind: HmsJobKind; confirmation?: string }) => Promise<HmsJobView | null>;
 };
 
 type TrpcPaneStayLookupRoutes = {
   paneStayLookup?: {
-    findStay?: { mutate: (input: FindStayInput) => Promise<FindStayReply> };
+    queueFind?: { mutate: HmsJobClient['queueFind'] };
+    queueSearchGuest?: { mutate: HmsJobClient['queueSearchGuest'] };
+    jobStatus?: { query: HmsJobClient['jobStatus'] };
     screenshot?: { query: (input: ScreenshotInput) => Promise<ScreenshotReply> };
   };
 };
 
-/** Binds paneStayLookup.findStay and paneStayLookup.screenshot off a tRPC client. Null when either is missing. */
-export function amendFindClientFromTrpc(trpc: unknown): AmendFindClient | null {
+/** Binds the paneStayLookup job routes and screenshot off a tRPC client. Null when any of them is missing. */
+export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcPaneStayLookupRoutes).paneStayLookup;
-  const find = routes?.findStay;
+  const queueFind = routes?.queueFind;
+  const queueSearch = routes?.queueSearchGuest;
+  const status = routes?.jobStatus;
   const shot = routes?.screenshot;
-  if (!find || !shot) return null;
+  if (!queueFind || !queueSearch || !status || !shot) return null;
   return {
-    findStay: (input) => find.mutate(input),
+    queueFind: (input) => queueFind.mutate(input),
+    queueSearchGuest: (input) => queueSearch.mutate(input),
+    jobStatus: (input) => status.query(input),
     screenshot: (input) => shot.query(input),
+  };
+}
+
+/** The job calls for one thread, or null when the client or the thread is missing. */
+export function hmsJobTransport(client: HmsJobClient | null, threadId: string | null): HmsJobTransport | null {
+  if (!client || !threadId) return null;
+  return {
+    queue: (request) =>
+      request.kind === 'find'
+        ? client.queueFind({
+            threadId,
+            confirmation: request.confirmation,
+            ...(request.arrival ? { arrival: request.arrival } : {}),
+          })
+        : client.queueSearchGuest({
+            threadId,
+            lastName: request.lastName,
+            arrival: request.arrival,
+            ...(request.departure ? { departure: request.departure } : {}),
+          }),
+    status: (input) => client.jobStatus('runId' in input ? input : { threadId, ...input }),
   };
 }
 
@@ -151,36 +237,35 @@ export type HmsFindRun =
   | { kind: 'error'; message: string };
 
 /**
- * The only HMS call the amend pane makes for a look-up: one read-only find by the exact confirmation number.
- * The email's arrival is sent too when it is a real ISO day. HMS quick search covers only about two months from
- * today, so the arrival moves its window to reach later stays. HMS then also needs the record to start that day,
- * so a different arrival comes back as arrival_mismatch rather than as a found stay.
+ * The find to queue for an email's number, or the copy to show instead. The server takes only the HMS form, so anything
+ * else, such as an agency or voucher reference, is never queued. The email's arrival is sent when it is a real ISO day.
  */
-export async function runHmsFind(options: {
-  /** Null when the paneStayLookup routes are not bound. The run then fails with the unavailable copy. */
-  client: AmendFindClient | null;
-  confirmation: string;
-  /** The email's arrival. Anything that is not a real ISO day is left out. */
-  arrival?: string | null;
-}): Promise<HmsFindRun> {
-  const client = options.client;
-  if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
-  // The server takes only the HMS form. Anything else, such as an agency or voucher reference, is never sent.
-  if (!isHmsConfirmation(options.confirmation)) {
-    return { kind: 'error', message: notHmsNumberNote(options.confirmation) };
+export function findRequestFor(
+  confirmation: string,
+  arrival?: string | null,
+): { request: HmsJobRequest } | { error: string } {
+  if (!isHmsConfirmation(confirmation)) return { error: notHmsNumberNote(confirmation) };
+  const day = sendableArrival(arrival);
+  return { request: day ? { kind: 'find', confirmation, arrival: day } : { kind: 'find', confirmation } };
+}
+
+/** A settled job, done or failed. Other states are still moving. */
+export function isSettled(view: HmsJobView): boolean {
+  return view.status === 'done' || view.status === 'failed';
+}
+
+/** The copy for a failed job, from its failure class. The raw error is never shown. */
+function failedCopy(failureClass: string | null, kind: HmsJobKind): string {
+  if (failureClass === 'HMS_LOCK_BUSY') return AMEND_FIND_COPY.busy;
+  if (failureClass === 'POLICY_BLOCK') return AMEND_FIND_COPY.unavailable;
+  if (failureClass === 'SCHEMA_DRIFT') {
+    return kind === 'find' ? AMEND_FIND_COPY.notExact : AMEND_FIND_COPY.searchInvalid;
   }
-  const arrival = sendableArrival(options.arrival);
-  const input: FindStayInput = arrival
-    ? { confirmation: options.confirmation, arrival }
-    : { confirmation: options.confirmation };
-  let reply: FindStayReply | undefined;
-  try {
-    reply = await client.findStay(input);
-  } catch {
-    // Any failed call (a tRPC error, a timeout, a dropped socket) reads the same. The raw message is never shown.
-    return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
-  }
-  if (!reply) return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
+  return kind === 'find' ? AMEND_FIND_COPY.lookupFailed : AMEND_FIND_COPY.searchFailed;
+}
+
+/** The panel's find run for a stored find reply. */
+export function findRunFromReply(reply: FindStayReply): HmsFindRun {
   switch (reply.outcome) {
     case 'found':
       if (!reply.stay) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
@@ -209,6 +294,18 @@ export async function runHmsFind(options: {
     default:
       return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
   }
+}
+
+/**
+ * The find run a job shows. Null while the job is still queued, running or retrying. A queue call that failed is an
+ * error here, since no job exists to wait for.
+ */
+export function findRunFromJob(view: HmsJobView | null, queueFailed: boolean): HmsFindRun | null {
+  if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
+  if (!view || !isSettled(view)) return null;
+  if (view.status === 'failed') return { kind: 'error', message: failedCopy(view.failureClass, 'find') };
+  if (!view.result) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+  return findRunFromReply(view.result as unknown as FindStayReply);
 }
 
 /** A stay field's text when HMS shows it, else null. */
@@ -273,45 +370,31 @@ export function sendableArrival(value: string | null | undefined): string | null
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === day ? day : null;
 }
 
-/** One row of a guest-name search, as paneStayLookup.searchGuest returns it. Dates are ISO days or null. */
-export type GuestSearchRow = {
-  confirmation: string;
-  lastName: string;
-  firstName: string;
-  status: string;
-  arrival: string | null;
-  departure: string | null;
-};
-
-export type GuestSearchInput = { lastName: string; arrival: string; departure?: string };
-
-/** paneStayLookup.searchGuest. rows are complete only for outcome ok. */
-export type GuestSearchReply = {
-  outcome: string;
-  rows: GuestSearchRow[];
-  screenshots: string[];
-  runId: string | null;
-};
-
-export type AmendSearchClient = {
-  searchGuest: (input: GuestSearchInput) => Promise<GuestSearchReply>;
-};
-
-type TrpcPaneStayLookupSearchRoute = {
-  paneStayLookup?: { searchGuest?: { mutate: (input: GuestSearchInput) => Promise<GuestSearchReply> } };
-};
-
-/** Binds paneStayLookup.searchGuest off a tRPC client. Null when the route is missing. */
-export function amendSearchClientFromTrpc(trpc: unknown): AmendSearchClient | null {
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
-  const search = (trpc as TrpcPaneStayLookupSearchRoute).paneStayLookup?.searchGuest;
-  if (!search) return null;
-  return { searchGuest: (input) => search.mutate(input) };
-}
-
 /** Same surname rule as the server: 2 to 40 letters, spaces, apostrophes or hyphens, starting and ending on a letter. */
 export function isSearchSurname(value: string): boolean {
   return value.length >= 2 && value.length <= 40 && /^\p{L}[\p{L} '-]*\p{L}$/u.test(value);
+}
+
+/**
+ * The guest-name search to queue. The surname and arrival are required; a departure, when given, must fall after the
+ * arrival. Anything else is the copy to show instead.
+ */
+export function searchRequestFor(form: {
+  lastName: string;
+  arrival: string | null | undefined;
+  departure?: string | null;
+}): { request: HmsJobRequest } | { error: string } {
+  const lastName = form.lastName.trim().replace(/\s+/g, ' ');
+  const arrival = sendableArrival(form.arrival);
+  const departureText = (form.departure ?? '').trim();
+  const departure = departureText ? sendableArrival(departureText) : null;
+  if (!isSearchSurname(lastName) || !arrival) return { error: AMEND_FIND_COPY.searchInvalid };
+  if (departureText && (!departure || departure <= arrival)) return { error: AMEND_FIND_COPY.searchInvalid };
+  return {
+    request: departure
+      ? { kind: 'search_guest', lastName, arrival, departure }
+      : { kind: 'search_guest', lastName, arrival },
+  };
 }
 
 export type HmsSearchRun =
@@ -326,35 +409,10 @@ export function noSearchMatchCopy(lastName: string, arrival: string): string {
 }
 
 /**
- * The guest-name search. The surname and arrival are required; a departure, when given, must fall after the arrival.
- * Only an ok read with rows is a list. A capped read has no list to pick from, so it says to add the departure.
+ * The panel's search run for a stored search reply. Only an ok read with rows is a list. A capped read has no list to
+ * pick from, so it says to add the departure.
  */
-export async function runHmsSearch(options: {
-  /** Null when the paneStayLookup route is not bound. The run then fails with the unavailable copy. */
-  client: AmendSearchClient | null;
-  lastName: string;
-  arrival: string | null | undefined;
-  departure?: string | null;
-}): Promise<HmsSearchRun> {
-  const client = options.client;
-  if (!client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
-  const lastName = options.lastName.trim().replace(/\s+/g, ' ');
-  const arrival = sendableArrival(options.arrival);
-  const departureText = (options.departure ?? '').trim();
-  const departure = departureText ? sendableArrival(departureText) : null;
-  if (!isSearchSurname(lastName) || !arrival) return { kind: 'error', message: AMEND_FIND_COPY.searchInvalid };
-  if (departureText && (!departure || departure <= arrival)) {
-    return { kind: 'error', message: AMEND_FIND_COPY.searchInvalid };
-  }
-  const input: GuestSearchInput = departure ? { lastName, arrival, departure } : { lastName, arrival };
-  let reply: GuestSearchReply | undefined;
-  try {
-    reply = await client.searchGuest(input);
-  } catch {
-    // Same rule as the find: a failed call reads the same whatever failed, and its raw message is never shown.
-    return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
-  }
-  if (!reply) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+export function searchRunFromReply(reply: GuestSearchReply, lastName: string, arrival: string): HmsSearchRun {
   switch (reply.outcome) {
     case 'ok':
       return reply.rows.length > 0 ? { kind: 'rows', rows: reply.rows } : { kind: 'none', lastName, arrival };
@@ -370,6 +428,44 @@ export async function runHmsSearch(options: {
       return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
     default:
       return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  }
+}
+
+/** The search run a job shows. Null while the job is still moving. */
+export function searchRunFromJob(view: HmsJobView | null, queueFailed: boolean): HmsSearchRun | null {
+  if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  if (!view || !isSettled(view)) return null;
+  if (view.status === 'failed') return { kind: 'error', message: failedCopy(view.failureClass, 'search_guest') };
+  if (!view.result) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  const request = view.request?.kind === 'search_guest' ? view.request : null;
+  return searchRunFromReply(
+    view.result as unknown as GuestSearchReply,
+    request?.lastName ?? '',
+    request?.arrival ?? '',
+  );
+}
+
+/** Poll cadence while a job is queued, running or retrying. */
+export const HMS_JOB_POLL_MS = 3_000;
+
+/**
+ * Polls one job by run id until it settles. Each read goes to onView. live() ends the loop when the pane unmounts or a
+ * newer request has replaced this one. A read that fails is tried again on the next tick: the job is in the database,
+ * so a dropped request loses nothing.
+ */
+export async function pollHmsJob(
+  transport: HmsJobTransport,
+  runId: string,
+  options: { live: () => boolean; onView: (view: HmsJobView) => void },
+): Promise<void> {
+  while (options.live()) {
+    const view = await transport.status({ runId }).catch(() => null);
+    if (!options.live()) return;
+    if (view) {
+      options.onView(view);
+      if (isSettled(view)) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
   }
 }
 

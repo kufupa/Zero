@@ -8,15 +8,24 @@ import {
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
-  amendSearchClientFromTrpc,
+  findRequestFor,
+  findRunFromJob,
+  hmsJobTransport,
   hmsNumberFor,
+  isSettled,
   noSearchMatchCopy,
   notHmsNumberNote,
-  runHmsFind,
-  runHmsSearch,
-  type AmendFindClient,
-  type AmendSearchClient,
+  pollHmsJob,
+  searchRequestFor,
+  searchRunFromJob,
+  type FindStayInput,
   type FindStayReply,
+  type GuestSearchInput,
+  type HmsFindRun,
+  type HmsJobRequest,
+  type HmsJobTransport,
+  type HmsJobView,
+  type HmsSearchRun,
   type StayRecordWire,
 } from '../lib/quote-workflow/amend-find';
 import type { CancelRun } from '../lib/quote-workflow/amend-cancel';
@@ -120,20 +129,111 @@ function refusal(outcome: string): FindStayReply {
   return { outcome, reason: null, stay: null, screenshots: [], runId: null };
 }
 
-/** The paneStayLookup routes and the capability route, as the panel reads them off the tRPC client. */
+const AS_OF = '2026-10-09T08:05:00.000Z';
+
+type FindMock = { findStay: ReturnType<typeof vi.fn>; screenshot?: ReturnType<typeof vi.fn> };
+type SearchMock = { searchGuest: ReturnType<typeof vi.fn> };
+
+/**
+ * The paneStayLookup job routes and the capability route, as the panel reads them off the tRPC client. Each queue call
+ * runs its HMS mock and stores the reply as a finished job, so jobStatus returns it on the first poll. A mock that
+ * rejects fails the queue call.
+ */
 function lookupTrpc(
   findStay: ReturnType<typeof vi.fn>,
   shot: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(NO_SHOT),
   searchGuest: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null }),
 ) {
+  const jobs = new Map<string, HmsJobView>();
+  let issued = 0;
+  const finish = (request: HmsJobRequest, reply: unknown): { runId: string } => {
+    // A call that answers with nothing is a failed call, as it was before the job route.
+    if (!reply) throw new Error('no reply from HMS');
+    const runId = `run-${++issued}`;
+    jobs.set(runId, {
+      runId,
+      request,
+      prefetch: false,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { ...(reply as Record<string, unknown>), kind: request.kind, asOf: AS_OF },
+    });
+    return { runId };
+  };
   return {
     paneStayLookup: {
-      findStay: { mutate: findStay },
+      queueFind: {
+        mutate: async ({ threadId: _threadId, ...input }: FindStayInput & { threadId: string }) =>
+          finish({ kind: 'find', ...input }, await findStay(input)),
+      },
+      queueSearchGuest: {
+        mutate: async ({ threadId: _threadId, ...input }: GuestSearchInput & { threadId: string }) =>
+          finish({ kind: 'search_guest', ...input }, await searchGuest(input)),
+      },
+      jobStatus: {
+        query: async (input: { runId: string } | { threadId: string }) =>
+          'runId' in input ? (jobs.get(input.runId) ?? null) : null,
+      },
       screenshot: { query: shot },
-      searchGuest: { mutate: searchGuest },
     },
     brain: { getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) } },
   };
+}
+
+/** Polls one job the way the panel does, until it settles. */
+async function settle(transport: HmsJobTransport, runId: string): Promise<HmsJobView | null> {
+  let last: HmsJobView | null = null;
+  await pollHmsJob(transport, runId, {
+    live: () => last === null || !isSettled(last),
+    onView: (view) => {
+      last = view;
+    },
+  });
+  return last;
+}
+
+/** A find as the panel runs it: queued as a job on the thread, polled to settle, and mapped to the panel's run. */
+async function runHmsFind(options: {
+  client: FindMock | null;
+  confirmation: string;
+  arrival?: string | null;
+}): Promise<HmsFindRun> {
+  if (!options.client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  const next = findRequestFor(options.confirmation, options.arrival);
+  if (!('request' in next)) return { kind: 'error', message: next.error };
+  const bound = amendFindClientFromTrpc(lookupTrpc(options.client.findStay, options.client.screenshot));
+  const transport = hmsJobTransport(bound, THREAD);
+  if (!transport) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  try {
+    const { runId } = await transport.queue(next.request);
+    return findRunFromJob(await settle(transport, runId), false) ?? { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+  } catch {
+    return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
+  }
+}
+
+/** A guest-name search as the panel runs it: validated, queued as a job, polled to settle, and mapped to the panel's run. */
+async function runHmsSearch(options: {
+  client: SearchMock | null;
+  lastName: string;
+  arrival: string | null | undefined;
+  departure?: string | null;
+}): Promise<HmsSearchRun> {
+  if (!options.client) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  const next = searchRequestFor(options);
+  if (!('request' in next)) return { kind: 'error', message: next.error };
+  const bound = amendFindClientFromTrpc(lookupTrpc(vi.fn(), undefined, options.client.searchGuest));
+  const transport = hmsJobTransport(bound, THREAD);
+  if (!transport) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
+  try {
+    const { runId } = await transport.queue(next.request);
+    return searchRunFromJob(await settle(transport, runId), false) ?? { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  } catch {
+    return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  }
 }
 
 const ROW_MOKOENA = {
@@ -566,24 +666,25 @@ describe('guest-name search helpers', () => {
     expect(hmsNumberFor(null)).toBeNull();
   });
 
-  it('never sends a bare billing number to findStay, even when the caller passes one', async () => {
+  it('never queues a bare billing number to HMS, even when the caller passes one', async () => {
     const findStay = vi.fn();
-    const client = amendFindClientFromTrpc(lookupTrpc(findStay));
-    await expect(runHmsFind({ client, confirmation: '1879000' })).resolves.toMatchObject({ kind: 'error' });
+    await expect(runHmsFind({ client: { findStay }, confirmation: '1879000' })).resolves.toMatchObject({
+      kind: 'error',
+    });
     expect(findStay).not.toHaveBeenCalled();
   });
 
-  it('binds searchGuest to the paneStayLookup route only', async () => {
-    expect(amendSearchClientFromTrpc({ paneStayLookup: { findStay: {} } })).toBeNull();
+  it('binds the search job route to the paneStayLookup routes only', async () => {
+    expect(amendFindClientFromTrpc({ paneStayLookup: { queueFind: {} } })).toBeNull();
     const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
-    const client = amendSearchClientFromTrpc(lookupTrpc(vi.fn(), undefined, search));
-    await client?.searchGuest({ lastName: 'Mokoena', arrival: '2026-10-12' });
+    const client = amendFindClientFromTrpc(lookupTrpc(vi.fn(), undefined, search));
+    await client?.queueSearchGuest({ threadId: THREAD, lastName: 'Mokoena', arrival: '2026-10-12' });
     expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12' });
   });
 
   it('sends a surname of 2 to 40 letters, spaces, apostrophes or hyphens and a real arrival, and nothing else', async () => {
     const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
-    const client: AmendSearchClient = { searchGuest: search };
+    const client: SearchMock = { searchGuest: search };
     await expect(runHmsSearch({ client, lastName: 'X', arrival: '2026-10-12' })).resolves.toEqual({
       kind: 'error',
       message: AMEND_FIND_COPY.searchInvalid,
@@ -644,7 +745,7 @@ describe('guest-name search helpers', () => {
 
   it('refuses a departure that is not a real day after the arrival, with no call', async () => {
     const search = vi.fn();
-    const client: AmendSearchClient = { searchGuest: search };
+    const client: SearchMock = { searchGuest: search };
     await expect(
       runHmsSearch({ client, lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-12' }),
     ).resolves.toEqual({ kind: 'error', message: AMEND_FIND_COPY.searchInvalid });
@@ -903,27 +1004,28 @@ describe('amend find helpers', () => {
     expect(amendFindClientFromTrpc({ workstation: {} })).toBeNull();
   });
 
-  it('binds findStay and screenshot to the paneStayLookup routes', async () => {
+  it('binds the find job route and screenshot to the paneStayLookup routes', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
     const shot = vi.fn().mockResolvedValue(NO_SHOT);
     const client = amendFindClientFromTrpc(lookupTrpc(findStay, shot));
     expect(client).not.toBeNull();
-    await client?.findStay({ confirmation: CONFIRMATION });
+    const queued = await client?.queueFind({ threadId: THREAD, confirmation: CONFIRMATION });
     await client?.screenshot({ runId: RUN_ID, name: 'record.png' });
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION });
+    expect(queued?.runId).toBeTruthy();
     expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' });
   });
 
   it('sends the confirmation number alone when the email gives no arrival', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
-    const client: AmendFindClient = { findStay, screenshot: vi.fn() };
+    const client: FindMock = { findStay, screenshot: vi.fn() };
     await runHmsFind({ client, confirmation: CONFIRMATION });
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION });
   });
 
   it('sends the email arrival with the confirmation only when it is a real ISO day', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
-    const client: AmendFindClient = { findStay, screenshot: vi.fn() };
+    const client: FindMock = { findStay, screenshot: vi.fn() };
     await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(findStay).toHaveBeenLastCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
     await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-02-31' });
@@ -938,14 +1040,14 @@ describe('amend find helpers', () => {
       screenshots: [],
       runId: null,
     };
-    const client: AmendFindClient = { findStay: vi.fn().mockResolvedValue(mismatch), screenshot: vi.fn() };
+    const client: FindMock = { findStay: vi.fn().mockResolvedValue(mismatch), screenshot: vi.fn() };
     const run = await runHmsFind({ client, confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(run).toEqual({ kind: 'error', message: AMEND_FIND_COPY.arrivalDiffers });
   });
 
   it('never sends a number that is not an HMS booking number, and names the one it refused', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
-    const client: AmendFindClient = { findStay, screenshot: vi.fn() };
+    const client: FindMock = { findStay, screenshot: vi.fn() };
     await expect(runHmsFind({ client, confirmation: '9999SH999999' })).resolves.toEqual({
       kind: 'error',
       message: notHmsNumberNote('9999SH999999'),
@@ -955,12 +1057,12 @@ describe('amend find helpers', () => {
   });
 
   it('turns a rejected or empty find call into the plain lookup-failed copy', async () => {
-    const rejecting: AmendFindClient = { findStay: vi.fn().mockRejectedValue(new Error('boom')), screenshot: vi.fn() };
+    const rejecting: FindMock = { findStay: vi.fn().mockRejectedValue(new Error('boom')), screenshot: vi.fn() };
     await expect(runHmsFind({ client: rejecting, confirmation: CONFIRMATION })).resolves.toEqual({
       kind: 'error',
       message: AMEND_FIND_COPY.lookupFailed,
     });
-    const empty: AmendFindClient = {
+    const empty: FindMock = {
       findStay: vi.fn().mockResolvedValue(undefined as unknown as FindStayReply),
       screenshot: vi.fn(),
     };
