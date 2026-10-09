@@ -5,7 +5,9 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     const pathname = new URL(raw, 'https://timeout.invalid').pathname;
     const routes = decodeURIComponent(pathname.split('/').at(-1) ?? '').split(',');
     if (routes.includes('workstation.executeStaffQuote')) return 20 * 60_000;
-    if (routes.includes('quoteWorkflow.analyseSelection')) return 45_000;
+    // voucherFind: a 15 s text read, then up to 20 s for a scanned PDF's vision read (SCANNED_PDF_VISION).
+    if (routes.includes('quoteWorkflow.analyseSelection') || routes.includes('quoteWorkflow.voucherFind'))
+      return 45_000;
     // Browser runs under the hotel lock: a find or name search takes about 1-2 minutes; the server bounds it at 5.
     if (routes.includes('paneStayLookup.findStay') || routes.includes('paneStayLookup.searchGuest'))
       return 6 * 60_000;

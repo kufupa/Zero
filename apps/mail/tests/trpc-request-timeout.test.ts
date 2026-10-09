@@ -27,6 +27,10 @@ describe('procedure-specific request deadlines', () => {
   it('gives analyseSelection a 45s client deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.analyseSelection?batch=1')).toBe(45_000);
   });
+  it('gives voucherFind 45s, past its 15s text read plus the 20s scanned-PDF vision read', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.voucherFind?batch=1')).toBe(45_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.voucherFindX')).toBe(5_000);
+  });
   it('gives prepareBookingDraft and usePriorQuoteForBooking the trace-finish deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.prepareBookingDraft?batch=1')).toBe(120_000);
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.usePriorQuoteForBooking?batch=1')).toBe(

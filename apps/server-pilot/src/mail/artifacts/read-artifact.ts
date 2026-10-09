@@ -4,7 +4,7 @@
  * Model never receives S3 keys.
  */
 import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import type { ToolResult } from '../../ai/draft-evidence.js';
 import { maskCardNumbers } from '../../ai/card-mask.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -77,10 +77,14 @@ export type SandboxResult = {
   truncated?: boolean;
 };
 
+/** pdftoppm only renders vision pages, into the output directory. */
+export type PdfSandboxTool = 'pdfinfo' | 'pdftotext' | 'pdftoppm';
+
 export type SandboxRunner = (
-  tool: 'pdfinfo' | 'pdftotext',
+  tool: PdfSandboxTool,
   inputPath: string,
   signal?: AbortSignal,
+  outputDir?: string,
 ) => Promise<SandboxResult>;
 
 function pdfFailureReason(result: SandboxResult): 'encrypted' | 'malformed' {
@@ -260,21 +264,29 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
+/** Vision pages: the first pages only, long edge capped. Each rendered page has its own file cap. */
+export const VISION_MAX_PAGES = 3;
+export const VISION_LONG_EDGE_PX = 1568;
+const VISION_MAX_PAGE_BYTES = 2 * 1024 * 1024;
+
 /**
- * Run pdfinfo/pdftotext under bubblewrap + prlimit.
- * Never retries unsandboxed. No OCR binaries.
+ * The bubblewrap argv for one Poppler tool. Only pdftoppm gets a writable output directory, mounted at /output, and
+ * its per-file cap is the page cap rather than the text cap.
  */
-export async function runPdfSandbox(
-  tool: 'pdfinfo' | 'pdftotext',
-  inputPath: string,
-  signal?: AbortSignal,
-): Promise<SandboxResult> {
+export function pdfSandboxArgv(tool: PdfSandboxTool, inputPath: string, outputDir?: string): string[] {
+  if (tool === 'pdftoppm' && !outputDir) throw new Error('pdftoppm needs an output directory');
   const toolArgs =
     tool === 'pdfinfo'
       ? ['/input/document.pdf']
-      : ['-layout', '-enc', 'UTF-8', '-eol', 'unix', '/input/document.pdf', '-'];
+      : tool === 'pdftotext'
+        ? ['-layout', '-enc', 'UTF-8', '-eol', 'unix', '/input/document.pdf', '-']
+        : [
+            '-scale-to', String(VISION_LONG_EDGE_PX), '-f', '1', '-l', String(VISION_MAX_PAGES),
+            '-jpeg', '-jpegopt', 'quality=75', '/input/document.pdf', '/output/page',
+          ];
+  const fileCap = tool === 'pdftoppm' ? VISION_MAX_PAGE_BYTES : ARTIFACT_MAX_OUTPUT_BYTES;
 
-  const argv = [
+  return [
     '--die-with-parent',
     '--new-session',
     '--unshare-user',
@@ -315,13 +327,14 @@ export async function runPdfSandbox(
     '--ro-bind',
     inputPath,
     '/input/document.pdf',
+    ...(outputDir ? ['--dir', '/output', '--bind', outputDir, '/output'] : []),
     '--chdir',
     '/tmp',
     '--',
     '/usr/bin/prlimit',
     '--cpu=5:5',
     '--as=536870912:536870912',
-    `--fsize=${ARTIFACT_MAX_OUTPUT_BYTES}:${ARTIFACT_MAX_OUTPUT_BYTES}`,
+    `--fsize=${fileCap}:${fileCap}`,
     '--nofile=32:32',
     '--nproc=16:16',
     '--core=0:0',
@@ -329,6 +342,19 @@ export async function runPdfSandbox(
     `/usr/bin/${tool}`,
     ...toolArgs,
   ];
+}
+
+/**
+ * Run one Poppler tool under bubblewrap + prlimit.
+ * Never retries unsandboxed. No OCR binaries.
+ */
+export async function runPdfSandbox(
+  tool: PdfSandboxTool,
+  inputPath: string,
+  signal?: AbortSignal,
+  outputDir?: string,
+): Promise<SandboxResult> {
+  const argv = pdfSandboxArgv(tool, inputPath, outputDir);
 
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -370,6 +396,58 @@ export async function runPdfSandbox(
       });
     });
   });
+}
+
+/** One rendered page, ready for a vision model. */
+export type VisionPage = { filename: string; mediaType: 'image/jpeg'; data: Uint8Array };
+
+/**
+ * The first pages of a scanned PDF as JPEGs, rendered by pdftoppm inside runPdfSandbox. Null when the render fails,
+ * so the caller keeps the plain unread message.
+ */
+export async function renderPdfPagesForVision(
+  body: Buffer,
+  options: { runner?: SandboxRunner; signal?: AbortSignal } = {},
+): Promise<VisionPage[] | null> {
+  if (body.byteLength > ARTIFACT_MAX_INPUT_BYTES || body.subarray(0, 5).toString('ascii') !== '%PDF-') {
+    return null;
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'nava-pdf-'));
+  try {
+    await chmod(directory, 0o700);
+    const inputPath = join(directory, 'document.pdf');
+    const pagesDir = join(directory, 'pages');
+    await writeFile(inputPath, body, { mode: 0o600 });
+    await mkdir(pagesDir, { mode: 0o700 });
+
+    const runner = options.runner ?? runPdfSandbox;
+    if (options.runner === undefined) {
+      assertPdfToolchain();
+    }
+    const linkedSignal = AbortSignal.any([
+      options.signal ?? new AbortController().signal,
+      AbortSignal.timeout(ARTIFACT_SUBPROCESS_TIMEOUT_MS),
+    ]);
+    const rendered = await runner('pdftoppm', inputPath, linkedSignal, pagesDir);
+    if (rendered.exitCode !== 0) return null;
+
+    const names = (await readdir(pagesDir))
+      .filter((name) => /\.jpe?g$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))
+      .slice(0, VISION_MAX_PAGES);
+    if (names.length === 0) return null;
+    return await Promise.all(
+      names.map(async (filename) => ({
+        filename,
+        mediaType: 'image/jpeg' as const,
+        data: new Uint8Array(await readFile(join(pagesDir, filename))),
+      })),
+    );
+  } catch {
+    return null;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 export async function extractEmbeddedPdfText(
