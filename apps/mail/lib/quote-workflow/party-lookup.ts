@@ -68,3 +68,39 @@ export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string
     return 'HMS rate lookup is turned off here, so company and agency rates are not checked.';
   return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
 }
+
+/**
+ * A suggestion for the picker, from the sender's domain or a name the body states. Only a listed HMS id makes it a
+ * party; an unverified suggestion is a name to search in HMS and never a pick.
+ */
+export type PartySuggestion = {
+  source: 'sender' | 'body';
+  kind: StaffQuoteParty['kind'];
+  name: string;
+  nativeId: string | null;
+  idStatus: 'listed' | 'unverified';
+};
+
+export type PartySuggestReply = { suggestions: PartySuggestion[] };
+
+export type PartySuggester = (input: { sender: string; body: string }) => Promise<PartySuggestReply>;
+
+type TrpcPanePartySuggestRoutes = {
+  panePartyLookup?: {
+    suggest?: { query: (input: { sender: string; body: string }) => Promise<PartySuggestReply> };
+  };
+};
+
+/** Binds panePartyLookup.suggest off a tRPC client. Null when the route is missing. Functions are accepted, as in the other *FromTrpc helpers. */
+export function partySuggesterFromTrpc(trpc: unknown): PartySuggester | null {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const suggest = (trpc as TrpcPanePartySuggestRoutes).panePartyLookup?.suggest;
+  if (!suggest) return null;
+  return (input) => suggest.query(input);
+}
+
+/** The party a suggestion stands for, only when HMS listed its id. Null for an unverified suggestion. */
+export function partyFromSuggestion(suggestion: PartySuggestion): StaffQuoteParty | null {
+  if (suggestion.idStatus !== 'listed' || !suggestion.nativeId) return null;
+  return { kind: suggestion.kind, nativeId: suggestion.nativeId, name: suggestion.name };
+}

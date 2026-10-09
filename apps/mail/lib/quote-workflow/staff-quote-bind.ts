@@ -11,6 +11,7 @@ import type {
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
+  StaffQuoteParties,
   StaffQuoteOtherUnit,
   StaffQuoteParty,
   StaffQuoteSource,
@@ -81,7 +82,7 @@ export type ExecuteStaffQuoteInput = {
   other?: { label: string; amountMinor: number; unit: StaffQuoteOtherUnit };
   notes?: string;
   /** Sent only when staff picked a company or agency in HMS. Without one the request is unchanged. */
-  party?: StaffQuoteParty;
+  parties?: StaffQuoteParties;
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -523,6 +524,24 @@ function otherChargeFor(
   return { label: trimmedOrUndefined(other.label) ?? '', amountMinor, unit: other.unit };
 }
 
+/**
+ * The picked parties the quote sends: a company as company and an agency as agency, each with its HMS id and name. A pick
+ * without a plain HMS id (an unverified suggestion, for one) is never sent. Undefined when nothing valid was picked.
+ */
+export function pickedParties(parties: StaffQuoteParties | undefined): StaffQuoteParties | undefined {
+  const company = validPick(parties?.company, 'company');
+  const agency = validPick(parties?.agency, 'agency');
+  if (!company && !agency) return undefined;
+  return { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
+}
+
+function validPick(party: StaffQuoteParty | undefined, kind: 'company' | 'agency'): StaffQuoteParty | undefined {
+  if (!party || party.kind !== kind) return undefined;
+  if (typeof party.nativeId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(party.nativeId)) return undefined;
+  if (typeof party.name !== 'string' || !party.name.trim()) return undefined;
+  return { kind, nativeId: party.nativeId, name: party.name };
+}
+
 export async function bindExecuteStaffQuote(args: {
   mutate?: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
   source: StaffQuoteSource;
@@ -557,15 +576,7 @@ export async function bindExecuteStaffQuote(args: {
       inputRevision: args.inputRevision,
       groups: prepared.ok,
       ...header,
-      ...(args.header.party
-        ? {
-            party: {
-              kind: args.header.party.kind,
-              nativeId: args.header.party.nativeId,
-              name: args.header.party.name,
-            },
-          }
-        : {}),
+      ...(pickedParties(args.header.parties) ? { parties: pickedParties(args.header.parties) } : {}),
     });
     if (!result || typeof result !== 'object') {
       return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };

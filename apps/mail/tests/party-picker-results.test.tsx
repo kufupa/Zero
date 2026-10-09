@@ -28,7 +28,7 @@ function deferred() {
 }
 
 function picker(name: string, find: (query: string) => Promise<PartyFindReply>, onPick = vi.fn()): ReactElement {
-  return <PartyPicker name={name} party={undefined} find={find} onPick={onPick} onClear={vi.fn()} />;
+  return <PartyPicker name={name} parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />;
 }
 
 function findButton(): HTMLButtonElement {
