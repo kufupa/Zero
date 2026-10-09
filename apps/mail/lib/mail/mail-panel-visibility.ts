@@ -44,3 +44,12 @@ export function resolveActiveMailScope(args: {
   return listHidden ? 'thread-display' : 'mail-list';
 }
 
+/** The Nava pane sits beside an open thread, on wide screens only, when the toggle is on. */
+export function shouldShowNavaSidePanel(args: {
+  isWideSplit: boolean;
+  threadId: string | null;
+  enabled: boolean;
+}): boolean {
+  return args.isWideSplit && Boolean(args.threadId) && args.enabled;
+}
+

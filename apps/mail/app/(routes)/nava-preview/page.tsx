@@ -1,6 +1,5 @@
-import { useWebPreview, type PreviewSelection } from '@/lib/workstation/web-pane-bridge';
+import { WebPanePanel } from '@/components/nava-pane/web-pane-panel';
 import type { ThreadListItem } from '@zero/server/driver/types';
-import { NavaPane } from '@/components/nava-pane/nava-pane';
 import { useTRPC } from '@/providers/query-provider';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -31,43 +30,6 @@ function parseWhen(value: string | Date | null | undefined): Date | null {
 function formatWhen(value: string | Date | null | undefined): string {
   return (
     parseWhen(value)?.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) ?? ''
-  );
-}
-
-function statusCopy(selection: PreviewSelection): string {
-  if (selection.status === 'loading') return 'Loading thread…';
-  if (selection.status === 'error') return 'Could not load this thread.';
-  if (selection.status === 'unsynced' && selection.reason === 'no_message_id') {
-    return 'Not analysable: the latest guest email has no Message-ID, so Nava cannot bind it.';
-  }
-  if (selection.status === 'unsynced') return 'No guest email in this thread to analyse.';
-  return '';
-}
-
-function PreviewPanel({ threadId }: { threadId: string }) {
-  const { selection, bridge } = useWebPreview({ threadId });
-  if (selection.status !== 'ready') {
-    const reason = selection.status === 'unsynced' ? selection.reason : undefined;
-    return (
-      <div
-        data-preview-status={selection.status}
-        data-preview-reason={reason}
-        data-preview-thread={threadId}
-        role={selection.status === 'error' ? 'alert' : 'status'}
-        className="p-4 text-sm text-slate-600"
-      >
-        {statusCopy(selection)}
-      </div>
-    );
-  }
-  return (
-    <div
-      data-preview-status="ready"
-      data-preview-thread={threadId}
-      className="h-full overflow-y-auto"
-    >
-      <NavaPane bridge={bridge} preview />
-    </div>
   );
 }
 
@@ -128,7 +90,7 @@ export default function NavaPreviewPage() {
         className="flex h-screen w-[420px] shrink-0 flex-col overflow-hidden border-l border-[#e2e8f0] bg-white"
       >
         {selectedId ? (
-          <PreviewPanel key={selectedId} threadId={selectedId} />
+          <WebPanePanel key={selectedId} threadId={selectedId} />
         ) : (
           <p className="p-4 text-sm text-slate-500">No thread selected.</p>
         )}
