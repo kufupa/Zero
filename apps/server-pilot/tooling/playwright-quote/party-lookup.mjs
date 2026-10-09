@@ -173,8 +173,8 @@ export function resultEnvelope(partial = {}) {
   };
 }
 
-async function clickLov(page, field) {
-  await page.locator(`input[name="${field}"]:visible`).locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger').click();
+export async function clickLov(page, field, { timeout = 30000 } = {}) {
+  await page.locator(`input[name="${field}"]:visible`).locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger').click({ timeout });
 }
 
 async function dismissUnsaved(page) {
@@ -246,6 +246,55 @@ async function lookupWindow(page, kind) {
   const named = page.locator('.x-window:visible').filter({ hasText: re });
   if (re && await named.count()) return named.last();
   return page.locator('.x-window:visible').last();
+}
+
+/** The dialog the lookup opened, found by its title. Never another window: a dialog that has not opened is not read from. */
+async function namedLookupWindow(page, kind) {
+  const re = windowTitleRe(kind);
+  if (!re) return null;
+  const named = page.locator('.x-window:visible').filter({ hasText: re });
+  return (await named.count()) ? named.last() : null;
+}
+
+/** Polls until check() holds, or until limitMs has passed on the page's clock. Returns { ok, waited }. */
+async function pollUntil(page, check, limitMs, pollMs) {
+  let waited = 0;
+  for (;;) {
+    if (await check()) return { ok: true, waited };
+    if (waited >= limitMs) return { ok: false, waited };
+    await page.waitForTimeout(pollMs);
+    waited += pollMs;
+  }
+}
+
+/**
+ * Opens a lookup's dialog and waits until it is open, with no "Processing request" mask over the screen. The trigger is clicked
+ * again once when the dialog has not appeared after retryAfterMs: a dropped click. False when the dialog never opens within
+ * budgetMs. The caller then fails with lookupWindowNotOpened(), and never reads another window.
+ */
+export async function openLookupWindow(page, kind, clickTrigger, { budgetMs = 20000, retryAfterMs = 8000, pollMs = 250 } = {}) {
+  const open = async () => (await namedLookupWindow(page, kind)) !== null;
+  await clickTrigger().catch(() => {});
+  const first = await pollUntil(page, open, Math.min(retryAfterMs, budgetMs), pollMs);
+  let waited = first.waited;
+  if (!first.ok) {
+    await clickTrigger().catch(() => {});
+    const second = await pollUntil(page, open, Math.max(0, budgetMs - waited), pollMs);
+    waited += second.waited;
+    if (!second.ok) return false;
+  }
+  const unmasked = async () => !(await busyMaskVisible(page));
+  return (await pollUntil(page, unmasked, Math.max(0, budgetMs - waited), pollMs)).ok;
+}
+
+/** The outcome for a lookup whose dialog never opened. Nothing is read from another window. Fails closed, never no_match. */
+export function lookupWindowNotOpened() {
+  return {
+    outcome: 'execution_failure',
+    candidates: [],
+    truncated: false,
+    issues: [{ code: 'EXECUTION_FAILURE', path: 'lookup', reason: 'lookup_window_not_opened' }],
+  };
 }
 
 async function fillExt(locator, value) {
@@ -391,7 +440,8 @@ async function waitUntilTrue(page, check, timeoutMs, pollMs = 150) {
  */
 export async function fillRunRowFilter(page, kind, value) {
   if (!filled(value)) return 'query_empty';
-  const win = await lookupWindow(page, kind);
+  const win = await namedLookupWindow(page, kind);
+  if (!win) return 'lookup_window_not_open';
   const run = win.getByRole('button', { name: /^Run$/ }).first();
   const runBox = (await run.count()) ? await run.boundingBox().catch(() => null) : null;
   if (!runBox) return 'no_run_button';
@@ -694,7 +744,7 @@ export async function searchKind(page, request) {
     return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
   if (request.kind === 'organization') {
-    await clickLov(page, 'company');
+    if (!(await openLookupWindow(page, 'organization', () => clickLov(page, 'company', { timeout: 5000 })))) return lookupWindowNotOpened();
     const name = request.query.organizationName;
     const ext = request.query.externalOrganizationId;
     const extField = page.locator('input[name="externalorganizationid"]:visible');
@@ -705,7 +755,7 @@ export async function searchKind(page, request) {
     return filteredLookup(page, 'organization', request, () => fillRunRowFilter(page, 'organization', name));
   }
   if (request.kind === 'bookingAgency') {
-    await clickLov(page, 'ta1');
+    if (!(await openLookupWindow(page, 'bookingAgency', () => clickLov(page, 'ta1', { timeout: 5000 })))) return lookupWindowNotOpened();
     const name = request.query.bookingAgencyName;
     const iata = request.query.iataNumber;
     const iataField = page.locator('.x-window:visible input[name="ff_iatanumber"]:visible, .x-window:visible input[name="iatanumber"]:visible');

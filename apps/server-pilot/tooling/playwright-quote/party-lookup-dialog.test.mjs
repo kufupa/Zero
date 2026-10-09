@@ -124,3 +124,60 @@ test('an empty query types nothing', { skip }, async () => {
     await page.close();
   }
 });
+
+test('a dialog that opens late, behind the Processing request mask, is waited for, and the query goes into its Run row', { skip }, async () => {
+  const page = await openFixture('delayed-dialog.html');
+  try {
+    await page.evaluate(() => {
+      window.delayMs = 1500;
+    });
+    const opened = await lookup.openLookupWindow(page, 'bookingAgency', () => lookup.clickLov(page, 'ta1', { timeout: 5000 }), {
+      budgetMs: 8000,
+      retryAfterMs: 4000,
+    });
+    assert.equal(opened, true);
+    assert.equal(await lookup.fillRunRowFilter(page, 'bookingAgency', 'Acme Travel'), true);
+    assert.equal(await lookup.runLookupFilter(page, 'bookingAgency'), true);
+    assert.equal(await page.evaluate(() => window.dialogRan), 'Acme Travel');
+    assert.equal(await page.evaluate(() => window.decoyRan === true), false);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a dropped trigger click is retried once, and the dialog opens on the second click', { skip }, async () => {
+  const page = await openFixture('delayed-dialog.html');
+  try {
+    await page.evaluate(() => {
+      window.dropClicks = 1;
+      window.delayMs = 300;
+    });
+    const opened = await lookup.openLookupWindow(page, 'bookingAgency', () => lookup.clickLov(page, 'ta1', { timeout: 5000 }), {
+      budgetMs: 6000,
+      retryAfterMs: 1000,
+    });
+    assert.equal(opened, true);
+    assert.equal(await lookup.fillRunRowFilter(page, 'bookingAgency', 'Acme Travel'), true);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a dialog that never opens is not found, and no other window is typed into', { skip }, async () => {
+  const page = await openFixture('delayed-dialog.html');
+  try {
+    await page.evaluate(() => {
+      window.neverOpen = true;
+    });
+    const opened = await lookup.openLookupWindow(page, 'bookingAgency', () => lookup.clickLov(page, 'ta1', { timeout: 5000 }), {
+      budgetMs: 2500,
+      retryAfterMs: 1000,
+    });
+    assert.equal(opened, false);
+    assert.equal(await lookup.fillRunRowFilter(page, 'bookingAgency', 'Acme Travel'), 'lookup_window_not_open');
+    assert.equal(await page.inputValue('#decoy-filter'), '');
+    assert.equal(await page.evaluate(() => window.decoyRan === true), false);
+  } finally {
+    await page.close();
+  }
+});

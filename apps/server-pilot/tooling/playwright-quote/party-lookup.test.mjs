@@ -298,8 +298,11 @@ function fakeResponse({ url, postData = '', status = 200 }) {
  * click, { after, status, url, postData }; without it no answer comes. The clock moves in 50 ms steps, so a mask that shows
  * and clears between two polls is still seen by a watcher armed before the click.
  */
-function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {}, answer = null, selectorLabel = 'Name' }) {
+function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {}, answer = null, selectorLabel = 'Name', windowOpen = () => true, openAfterClicks = null }) {
   const values = new Map();
+  // The lookup's dialog is open when windowOpen() holds, or, with openAfterClicks, once the trigger has been clicked that often.
+  let triggerClicks = 0;
+  const windowIsOpen = () => (openAfterClicks === null ? windowOpen() : triggerClicks >= openAfterClicks);
   // The dialog's row: a saved-search combo, the read-only field selector, and the empty filter box; the Run button follows at the right.
   const INPUTS = [
     { x: 248, y: 212, width: 248, height: 26, readonly: false, value: '360 degrees' },
@@ -366,7 +369,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
     if (desc.includes('Processing request')) return mask() ? 1 : 0;
     if (desc.includes('^Run$')) return runButton ? 1 : 0;
     if (desc.includes('ff_companyname')) return 1;
-    if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return 1;
+    if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return windowIsOpen() ? 1 : 0;
     return 0;
   };
   const loc = (desc) => {
@@ -388,6 +391,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
         return new Promise((resolve) => maskWaiters.push(resolve));
       },
       click: async () => {
+        if (desc.includes('x-form-lov-trigger')) triggerClicks += 1;
         if (desc.includes('^Run$')) {
           if (runThrows) throw new Error('click intercepted');
           onRun();
@@ -462,6 +466,53 @@ test('a store that never settles is lookup_busy_timeout, with no candidates', as
   assert.equal(found.outcome, 'execution_failure');
   assert.deepEqual(found.candidates, []);
   assert.equal(found.issues[0].reason, 'lookup_busy_timeout');
+});
+
+test('a dialog that never opens is lookup_window_not_opened after the retry, and nothing is read from another window', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => TOURVEST, windowOpen: () => false });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'lookup_window_not_opened');
+  assert.deepEqual(found.candidates, []);
+});
+
+test('a dropped trigger click is retried once after eight seconds, and the search then runs', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    openAfterClicks: 2,
+    mask: () => clock.now >= busyFrom && clock.now < busyUntil,
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.ok(clock.now >= 8000, 'the retry waits eight seconds before it clicks the trigger again');
+});
+
+test('a dialog that opens behind a Processing request mask is waited for before the query goes in', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    windowOpen: () => clock.now >= 3000,
+    mask: () => clock.now < 5000 || (clock.now >= busyFrom && clock.now < busyUntil),
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.equal(lookup.lookupWindowNotOpened().issues[0].reason, 'lookup_window_not_opened');
 });
 
 test('a search with no Run control is never read as no_match', async () => {

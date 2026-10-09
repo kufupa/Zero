@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- SYNTHETIC fixture: the New Record form opens the Booking Agencies dialog late. A "Processing request." mask covers the screen
+     while the dialog loads, a click on the lookup trigger can be dropped, and a visible decoy window ("Guest Search") must never
+     be read. The test sets window.dropClicks, window.delayMs and window.neverOpen. Names and ids are invented. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>New Record with a delayed lookup (synthetic)</title>
+<style>
+  body { margin: 0; width: 1280px; height: 720px; position: relative; font: 12px Arial, sans-serif; background: #f2f2f2; }
+  [hidden] { display: none !important; }
+  .abs { position: absolute; box-sizing: border-box; }
+  input.x-form-text { position: absolute; box-sizing: border-box; height: 26px; border: 1px solid #aaa; padding: 0 6px; background: #fff; }
+  button { position: absolute; box-sizing: border-box; height: 28px; }
+  .x-window { position: absolute; left: 220px; top: 100px; width: 840px; height: 520px; background: #fff; border: 1px solid #999; }
+  .x-boundlist { position: absolute; z-index: 10; width: 200px; background: #fff; border: 1px solid #888; }
+  .x-boundlist-item { padding: 4px 6px; cursor: pointer; }
+  .mask { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; background: rgba(255,255,255,0.55); z-index: 50; }
+  .mask span { position: absolute; left: 600px; top: 420px; color: #1d4ed8; font-weight: bold; }
+  .x-form-lov-trigger { position: relative; width: 22px; height: 22px; background: #bbb; cursor: pointer; }
+</style>
+</head>
+<body>
+  <!-- The field whose lookup trigger opens the dialog: the Primary Booking Agency field. -->
+  <table class="abs" style="left:60px; top:440px; width:320px;"><tr>
+    <td><input class="x-form-text" name="ta1" style="position:relative; width:260px;"></td>
+    <td><div class="x-form-lov-trigger" id="lov-trigger"></div></td>
+  </tr></table>
+
+  <!-- A decoy: a visible window that is not the lookup. Its input and Run must never be used. -->
+  <div class="x-window" id="decoy" style="left:600px; top:40px; width:600px; height:140px;">
+    <div class="abs" style="left:20px; top:14px; font-weight:bold;">Guest Search</div>
+    <input class="x-form-text" id="decoy-filter" style="left:20px; top:60px; width:200px;">
+    <button id="decoy-run" style="left:240px; top:60px; width:40px; background:#eee;">Run</button>
+  </div>
+
+  <div class="mask" id="mask" hidden><span>Processing request.</span></div>
+
+  <div class="x-window" id="dialog" hidden>
+    <div class="abs" style="left:20px; top:14px; font-weight:bold;">Booking Agencies</div>
+    <div class="abs" style="left:20px; top:55px;">Select a record and click OK.</div>
+    <input class="x-form-text" id="saved-search" value="360 degrees" style="left:29px; top:112px; width:248px;">
+    <input class="x-form-text" id="field-selector" readonly value="Booking Agency Name" style="left:383px; top:112px; width:200px;">
+    <button id="match-mode" style="left:592px; top:112px; width:32px;">[A]</button>
+    <input class="x-form-text" id="filter-box" style="left:631px; top:112px; width:134px;">
+    <button id="dialog-run" disabled style="left:770px; top:112px; width:40px; background:#c8c8c8;">Run</button>
+    <div id="field-list" class="x-boundlist" hidden style="left:383px; top:140px;"><div class="x-boundlist-item">IATA/Reference Number</div><div class="x-boundlist-item">Booking Agency Name</div><div class="x-boundlist-item">Address</div><div class="x-boundlist-item">City</div></div>
+    <div class="abs" style="left:20px; top:160px; width:800px; height:26px; background:#444; color:#fff; padding:5px 8px;">IATA/Reference Number &nbsp; Booking Agency Name &nbsp; Address &nbsp; City &nbsp; Country &nbsp; Contact Last Name</div>
+    <input class="x-form-text" style="left:30px; top:186px; width:150px;">
+    <input class="x-form-text" style="left:260px; top:186px; width:150px;">
+    <input class="x-form-text" style="left:520px; top:186px; width:150px;">
+    <div class="abs" style="left:20px; top:230px; width:800px; height:24px; background:#dbeaf5; padding:4px 8px;">&nbsp; Booking Agency: 4 Travel &nbsp;&nbsp; 63 Stephen Dlamini Road &nbsp;&nbsp; Durban &nbsp;&nbsp; South Africa</div>
+    <label class="abs" style="left:600px; top:470px;"><input type="checkbox" id="show-filter" checked> Show Filter Row</label>
+  </div>
+
+  <script>
+    window.dropClicks = 0;
+    window.delayMs = 1000;
+    window.neverOpen = false;
+    const mask = document.getElementById('mask');
+    const dialog = document.getElementById('dialog');
+    document.getElementById('lov-trigger').addEventListener('click', () => {
+      if (window.dropClicks > 0) { window.dropClicks -= 1; return; }
+      if (window.neverOpen) return;
+      mask.hidden = false;
+      setTimeout(() => { mask.hidden = true; dialog.hidden = false; }, window.delayMs);
+    });
+    document.getElementById('decoy-run').addEventListener('click', () => { window.decoyRan = true; });
+    const filterBox = document.getElementById('filter-box');
+    const dialogRun = document.getElementById('dialog-run');
+    const selector = document.getElementById('field-selector');
+    const list = document.getElementById('field-list');
+    filterBox.addEventListener('input', () => { dialogRun.disabled = filterBox.value.trim() === ''; });
+    dialogRun.addEventListener('click', () => { window.dialogRan = filterBox.value; });
+    selector.addEventListener('click', () => { list.hidden = false; });
+    list.addEventListener('click', (event) => {
+      if (!event.target.classList.contains('x-boundlist-item')) return;
+      selector.value = event.target.textContent;
+      list.hidden = true;
+    });
+  </script>
+</body>
+</html>
