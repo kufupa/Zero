@@ -86,7 +86,7 @@ jobs:
             tests/mail-content-rendering.test.tsx tests/resolve-mail-html.test.ts tests/mail-content-fallback.test.ts
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --dir apps/server-pilot exec vitest run \
             tests/pane-csp-release.test.ts tests/outlook-pane-nginx-route.test.ts tests/auth-signup-guard.test.ts tests/auth-session-ttl.test.ts \
-            tests/nava-preview-run.test.ts tests/nava-preview-trpc-classes.test.ts
+            tests/nava-preview-run.test.ts tests/nava-preview-trpc-classes.test.ts tests/nava-preview-gate.test.ts
 
       - name: Require read-only private Outlook source access
         if: steps.outlook.outputs.required == 'true'
