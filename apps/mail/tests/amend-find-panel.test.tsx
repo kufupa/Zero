@@ -29,6 +29,7 @@ const capabilities = vi.hoisted(() => ({ paneSave: false }));
 afterEach(() => {
   cleanup();
   capabilities.paneSave = false;
+  vi.unstubAllEnvs();
 });
 
 const THREAD = 'thread-7';
@@ -464,44 +465,76 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(search).toHaveBeenCalledTimes(1);
   });
 
-  it('reads a digits-only number as its first stay, and opens the name search when HMS does not know it', async () => {
-    const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
-    render(
-      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '57291630' })} trpc={lookupTrpc(findStay)} />,
-    );
-    expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByTestId('amend-guest-search')).toBeNull();
-    pressFind();
-    await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: '57291630-1', arrival: '2026-10-12' }));
-    await waitFor(() => expect(screen.getByTestId('amend-guest-search')).toBeTruthy());
-    expect(
-      screen.getByText(
-        'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
-      ),
-    ).toBeTruthy();
-    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
-  });
+  it.each(['1879000', '57291630', '5729163012'])(
+    'does not turn the bare number %s into a booking: the find stays off, no lookup runs, and the name search opens',
+    (bare) => {
+      const findStay = vi.fn();
+      render(
+        <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: bare })} trpc={lookupTrpc(findStay)} />,
+      );
+      expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+      expect(
+        screen.getByText(
+          `The number in the email (${bare}) looks like the agent's own reference, not an HMS booking number. Find the booking by guest name below.`,
+        ),
+      ).toBeTruthy();
+      pressFind();
+      expect(findStay).not.toHaveBeenCalled();
+    },
+  );
 
-  it('finds a digits-only number as its first stay, the same as a dash number, and shows that booking', async () => {
-    const findStay = vi.fn().mockResolvedValue(found());
+  it('looks up a dash confirmation exactly as written, and shows that booking', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ confirmation: '64318608-1' }));
     render(
-      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '57291630' })} trpc={lookupTrpc(findStay)} />,
+      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '64318608-1' })} trpc={lookupTrpc(findStay)} />,
     );
     pressFind();
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
-    expect(findStay).toHaveBeenCalledWith({ confirmation: '57291630-1', arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({ confirmation: '64318608-1', arrival: '2026-10-12' });
+    expect(screen.getByText('confirmation number 64318608-1')).toBeTruthy();
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+  });
+
+  it('shows Open HMS beside the email number and the booking HMS returns, with no link target', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.queryAllByRole('link', { name: 'Open HMS' })).toHaveLength(0);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY');
+    cleanup();
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getAllByRole('link', { name: 'Open HMS' })).toHaveLength(1);
+    pressFind();
+    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    const links = screen.getAllByRole('link', { name: 'Open HMS' });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link.getAttribute('href')).toBe('https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY');
+      expect(link.hasAttribute('target')).toBe(false);
+    }
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
   });
 });
 
 describe('guest-name search helpers', () => {
-  it('reads a digits-only email number as its first stay, and takes a dash number as written', () => {
-    expect(hmsNumberFor('57291630')).toBe('57291630-1');
-    expect(hmsNumberFor(' 5729163012 ')).toBe('5729163012-1');
-    expect(hmsNumberFor('57291630-2')).toBe('57291630-2');
+  it('takes a dash confirmation as written, and never turns a bare number into one', () => {
+    expect(hmsNumberFor('64318608-1')).toBe('64318608-1');
+    expect(hmsNumberFor(' 57291630-2 ')).toBe('57291630-2');
+    expect(hmsNumberFor('1879000')).toBeNull();
+    expect(hmsNumberFor('57291630')).toBeNull();
+    expect(hmsNumberFor(' 5729163012 ')).toBeNull();
     expect(hmsNumberFor('12345')).toBeNull();
+    expect(hmsNumberFor('57291630-123')).toBeNull();
     expect(hmsNumberFor('9999SH999999')).toBeNull();
     expect(hmsNumberFor(null)).toBeNull();
+  });
+
+  it('never sends a bare billing number to findStay, even when the caller passes one', async () => {
+    const findStay = vi.fn();
+    const client = amendFindClientFromTrpc(lookupTrpc(findStay));
+    await expect(runHmsFind({ client, confirmation: '1879000' })).resolves.toMatchObject({ kind: 'error' });
+    expect(findStay).not.toHaveBeenCalled();
   });
 
   it('binds searchGuest to the paneStayLookup route only', async () => {
