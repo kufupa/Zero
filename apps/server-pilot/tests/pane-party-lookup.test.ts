@@ -28,6 +28,7 @@ type RunnerSeams = {
     loaded?: number,
   ) => { outcome: string; candidates: unknown[]; truncated: boolean };
   filterNotApplied: () => { outcome: string; candidates: unknown[]; truncated: boolean };
+  lookupBusyTimeout: () => { outcome: string; candidates: unknown[]; truncated: boolean };
 };
 const runner = (await import(
   new URL('../tooling/playwright-quote/party-lookup.mjs', import.meta.url).href
@@ -237,6 +238,20 @@ describe('findParty: one search over companies and agencies', () => {
       results: [],
       truncated: false,
     });
+  });
+});
+
+describe('findParty: a busy HMS store is a failure too', () => {
+  it('a store still busy at the timeout is execution_failure with no results, never a grid or no_match', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = vi.fn(async () => runner.lookupBusyTimeout());
+    panePartyLookupLoaders.spawn = spawn;
+    await expect(findParty({ name: 'Tourvest' })).resolves.toEqual({
+      outcome: 'execution_failure',
+      results: [],
+      truncated: false,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });
 

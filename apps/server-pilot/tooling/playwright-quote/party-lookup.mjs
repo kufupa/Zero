@@ -35,6 +35,8 @@ export const CONNECT_MS = 25000;
 export const HMS_LOOKUP_PAGE_ROWS = 50;
 // With no busy mask after this grace, the store has nothing to wait for. Long enough for a store reload to start.
 export const LOOKUP_IDLE_GRACE_MS = 5000;
+// A store still busy after this long is a failed lookup, never an empty one.
+export const LOOKUP_IDLE_TIMEOUT_MS = 60000;
 
 export function lookupTruncated(loaded) {
   return Number(loaded) >= HMS_LOOKUP_PAGE_ROWS;
@@ -58,6 +60,16 @@ export function filterNotApplied() {
     candidates: [],
     truncated: false,
     issues: [{ code: 'EXECUTION_FAILURE', path: 'filter', reason: 'filter_not_applied' }],
+  };
+}
+
+/** The store never settled: HMS was still busy at the timeout. A grid read then is no answer, so it fails closed. */
+export function lookupBusyTimeout() {
+  return {
+    outcome: 'execution_failure',
+    candidates: [],
+    truncated: false,
+    issues: [{ code: 'EXECUTION_FAILURE', path: 'lookup', reason: 'lookup_busy_timeout' }],
   };
 }
 
@@ -312,19 +324,25 @@ export function cellsToRow(cells = [], { kind } = {}) {
   return { nativeId, displayName, matchedOn: ['dom'] };
 }
 
-// Waits for the lookup's store after a filter run: the "Processing request" mask must show and then clear. With no mask
-// after the grace period there is nothing to wait for. Every kind waits here, not only guest.
-async function waitLookupIdle(page) {
-  const start = Date.now();
-  const deadline = start + 60000;
+/**
+ * Waits for the lookup's store after a filter run: the "Processing request" mask must show and then clear. With no mask
+ * after the grace period there is nothing to wait for. Every kind waits here. Resolves false when the mask is still up
+ * at the timeout: the grid then belongs to a search HMS has not finished, and the caller must not read it.
+ */
+export async function waitLookupIdle(
+  page,
+  { now = Date.now, timeoutMs = LOOKUP_IDLE_TIMEOUT_MS, graceMs = LOOKUP_IDLE_GRACE_MS, pollMs = 500 } = {},
+) {
+  const start = now();
   let sawBusy = false;
-  while (Date.now() < deadline) {
-    const busy = await page.getByText(/Processing request/i).count();
+  while (now() - start < timeoutMs) {
+    const busy = (await page.getByText(/Processing request/i).count()) > 0;
     if (busy) sawBusy = true;
-    if (sawBusy && !busy) return;
-    if (!sawBusy && Date.now() - start >= LOOKUP_IDLE_GRACE_MS) return;
-    await page.waitForTimeout(500);
+    if (sawBusy && !busy) return true;
+    if (!sawBusy && now() - start >= graceMs) return true;
+    await page.waitForTimeout(pollMs);
   }
+  return false;
 }
 
 // Reads the lookup's rows: the Ext store first, then the dialog grid, then any visible window table.
@@ -404,7 +422,7 @@ export function classifyKindRows(kind, rows, request, loaded = rows.length) {
 
 // Reads the grid once the filter ran: waits for the store on every kind, then checks the external-system banner.
 async function readLookupKind(page, kind, request) {
-  await waitLookupIdle(page);
+  if (!(await waitLookupIdle(page))) return lookupBusyTimeout();
   if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
     return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
@@ -464,7 +482,7 @@ async function searchKind(page, request) {
   else if (await searchAnchor.count()) await searchAnchor.last().click().catch(() => {});
   else if (await searchText.count()) await searchText.last().click().catch(() => {});
   else if (!(await applyLookupFilter(page, 'guest', request.query.lastName))) return filterNotApplied();
-  await waitLookupIdle(page);
+  if (!(await waitLookupIdle(page))) return lookupBusyTimeout();
   const profileErr = page.getByText(/Cannot retrieve profile:/i);
   if (await profileErr.count()) {
     const msg = await profileErr.first().innerText().catch(() => '');

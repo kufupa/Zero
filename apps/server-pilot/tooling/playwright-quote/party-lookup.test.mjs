@@ -198,3 +198,40 @@ test('a result envelope is not truncated unless the lookup says so', () => {
   assert.equal(lookup.resultEnvelope().truncated, false);
   assert.equal(lookup.resultEnvelope({ outcome: 'no_match' }).truncated, false);
 });
+
+/** A page whose "Processing request" mask is up until the fake clock reaches `busyUntil`. */
+function maskedPage(busyUntil, clock) {
+  return {
+    getByText: () => ({ count: async () => (clock.now < busyUntil ? 1 : 0) }),
+    waitForTimeout: async (ms) => {
+      clock.now += ms;
+    },
+  };
+}
+
+test('a store still busy at the timeout does not settle, so the lookup never reads its grid', async () => {
+  const clock = { now: 0 };
+  const settled = await lookup.waitLookupIdle(maskedPage(Infinity, clock), { now: () => clock.now });
+  assert.equal(settled, false);
+  assert.ok(clock.now >= lookup.LOOKUP_IDLE_TIMEOUT_MS);
+});
+
+test('a mask that clears inside the timeout settles the store', async () => {
+  const clock = { now: 0 };
+  assert.equal(await lookup.waitLookupIdle(maskedPage(3000, clock), { now: () => clock.now }), true);
+  assert.ok(clock.now >= 3000 && clock.now < lookup.LOOKUP_IDLE_TIMEOUT_MS);
+});
+
+test('no mask after the grace period means there is nothing to wait for', async () => {
+  const clock = { now: 0 };
+  assert.equal(await lookup.waitLookupIdle(maskedPage(0, clock), { now: () => clock.now }), true);
+  assert.ok(clock.now <= lookup.LOOKUP_IDLE_GRACE_MS + 500);
+});
+
+test('a busy timeout is execution_failure with lookup_busy_timeout, never a grid or no_match', () => {
+  const failed = lookup.lookupBusyTimeout();
+  assert.equal(failed.outcome, 'execution_failure');
+  assert.deepEqual(failed.candidates, []);
+  assert.equal(failed.truncated, false);
+  assert.equal(failed.issues[0].reason, 'lookup_busy_timeout');
+});
