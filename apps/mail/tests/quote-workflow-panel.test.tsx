@@ -111,7 +111,7 @@ describe('QuoteWorkflowPanel', () => {
   it('labels missing fields and extracted provenance', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('missing-fields')} />);
     expect(screen.getAllByText('Missing').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Email').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('from email').length).toBeGreaterThan(0);
   });
 
   it('runs next only when not already running, and shows retry guidance on failure', () => {
