@@ -216,7 +216,7 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
  * Re-checks each picked party in HMS and returns the HMS id and name. A pick HMS does not confirm is refused before any
  * rate is bound, so an id the client made up never reaches a quote.
  */
-async function verifyStaffParties(parties: StaffQuoteParties): Promise<StaffQuoteParties> {
+export async function verifyStaffParties(parties: StaffQuoteParties): Promise<StaffQuoteParties> {
   const verified: StaffQuoteParties = {};
   const refuse = (reason: string): never => {
     throw new TRPCError({
