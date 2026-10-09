@@ -21,6 +21,7 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
+import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
@@ -1691,6 +1692,11 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </div>
 
             <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
+            <VoucherFindCard
+              key={activeEmail?.internetMessageId ?? 'no-email'}
+              internetMessageId={activeEmail?.internetMessageId ?? null}
+              trpc={trpcClient}
+            />
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
               {activeEmail

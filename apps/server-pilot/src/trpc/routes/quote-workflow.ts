@@ -14,6 +14,16 @@ import {
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { resolveAgentRunRecorder, type AgentRunRecorder } from '../../ai/hitl-recorder.js';
 import {
+  extractVoucherGuest,
+  isVoucherMail,
+  loadVoucherCandidate,
+  pickVoucherFile,
+  readVoucherAttachmentText,
+  type VoucherCandidate,
+  type VoucherFindReply,
+} from '../../ai/voucher-find.js';
+import type { QuoteAttachmentRow, SyncedQuoteAttachment } from '../../ai/quote-workflow-synced-selection.js';
+import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
   PANE_PARTY_NAME_MAX,
@@ -90,6 +100,17 @@ export const quoteWorkflowLoaders: {
   agentRunRecorder: null,
 };
 
+/** Test seams for the voucher route: the stored candidate and the PDF text reader. Null uses the real ones. */
+export const voucherLoaders: {
+  candidate: ((input: { transportId: string; internetMessageId: string }) => Promise<VoucherCandidate | null>) | null;
+  readText: ((files: QuoteAttachmentRow[], signal: AbortSignal) => Promise<SyncedQuoteAttachment[]>) | null;
+} = {
+  candidate: null,
+  readText: null,
+};
+
+const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998) });
+
 /**
  * Only internetMessageId selects the mail. storeId, entryId and folderEntryId are
  * optional and unused, so the web preview can analyse a thread without Outlook ids.
@@ -148,6 +169,38 @@ export const quoteWorkflowRouter = router({
       }
       return payload;
     }),
+  // Read-only. Voucher or POP mail gets the guest surname and arrival read from its text, and the file to save. The
+  // stored subject and body decide it, so an ordinary email reads no attachment bytes. Nothing is booked or changed.
+  voucherFind: mailboxProcedure.input(voucherFindInput).query(async ({ input, ctx }): Promise<VoucherFindReply> => {
+    const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
+    if (!internetMessageId) return { status: 'unsynced' };
+    const candidate = await (voucherLoaders.candidate ?? loadVoucherCandidate)({
+      transportId: ctx.activeTransportId,
+      internetMessageId,
+    });
+    if (!candidate) return { status: 'unsynced' };
+    const files = candidate.attachments.filter((attachment) => !attachment.isInline);
+    const voucher = isVoucherMail({
+      subject: candidate.subject,
+      bodyText: candidate.bodyText,
+      attachmentNames: files.map((attachment) => attachment.filename),
+    });
+    if (!voucher) return { status: 'not_voucher' };
+    const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(
+      files,
+      AbortSignal.timeout(15_000),
+    );
+    return {
+      status: 'voucher',
+      messageId: candidate.messageId,
+      guest: extractVoucherGuest({
+        subject: candidate.subject,
+        bodyText: candidate.bodyText,
+        attachmentTexts: texts.map((text) => text.text ?? ''),
+      }),
+      file: pickVoucherFile(files),
+    };
+  }),
   runStep: mailboxProcedure.input(runStepInput).mutation(async () => {
     return {
       status: 'integration_unavailable' as const,

@@ -1,4 +1,4 @@
-import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
+import { quoteWorkflowLoaders, voucherLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
@@ -1315,5 +1315,93 @@ describe('quoteWorkflow.analyseSelection without Outlook ids', () => {
     expect(seen).toHaveLength(1);
     // The route canonicalises the id (brackets stripped) before the loader sees it.
     expect(seen[0]).toMatchObject({ internetMessageId: 'preview-1@x' });
+  });
+});
+
+describe('quoteWorkflow.voucherFind', () => {
+  afterEach(() => {
+    voucherLoaders.candidate = null;
+    voucherLoaders.readText = null;
+  });
+
+  function attachmentRow(id: string, filename: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      filename,
+      mimeType: filename.endsWith('.pdf') ? 'application/pdf' : 'image/png',
+      sizeBytes: 100,
+      isInline: false,
+      s3Key: `k/${id}`,
+      messageId: 'm1',
+      ...extra,
+    };
+  }
+
+  it('answers unsynced for a Message-ID this mailbox has not synced', async () => {
+    voucherLoaders.candidate = async () => null;
+    await expect(
+      mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<abc@host>' }),
+    ).resolves.toEqual({ status: 'unsynced' });
+  });
+
+  it('answers not_voucher for an ordinary email, without reading any attachment text', async () => {
+    const readText = vi.fn(async () => []);
+    voucherLoaders.candidate = async () => ({
+      messageId: 'm1',
+      subject: 'Booking request',
+      bodyText: 'Please quote two rooms.',
+      attachments: [attachmentRow('a', 'Quote.pdf')],
+    });
+    voucherLoaders.readText = readText;
+    await expect(
+      mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host' }),
+    ).resolves.toEqual({ status: 'not_voucher' });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('reads only the voucher files, and returns the guest facts and the file to save', async () => {
+    const seen: unknown[] = [];
+    const readText = vi.fn(async (files: Array<{ id: string; filename: string; sizeBytes: number }>) =>
+      files.map((file) => ({
+        id: file.id,
+        filename: file.filename,
+        byteSize: file.sizeBytes,
+        bytesPresent: true,
+        text: 'GUEST: Smith, John\nARRIVAL 2026-11-12',
+      })),
+    );
+    voucherLoaders.candidate = async (input) => {
+      seen.push(input);
+      return {
+        messageId: 'm1',
+        subject: 'Voucher – Smith',
+        bodyText: 'Please find it attached.',
+        attachments: [
+          attachmentRow('att-1', 'Smith_VCH_1879000.pdf'),
+          attachmentRow('att-2', 'logo.png', { isInline: true }),
+        ],
+      };
+    };
+    voucherLoaders.readText = readText;
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<ABC@Host>' });
+    expect(seen).toEqual([{ transportId: 'transport-1', internetMessageId: 'abc@host' }]);
+    expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['att-1']);
+    expect(reply).toEqual({
+      status: 'voucher',
+      messageId: 'm1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: {
+        id: 'att-1',
+        filename: 'Smith_VCH_1879000.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 100,
+      },
+    });
+  });
+
+  it('refuses an empty Message-ID at the schema', async () => {
+    await expect(
+      mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '' }),
+    ).rejects.toThrow();
   });
 });
