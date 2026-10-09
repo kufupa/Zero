@@ -1,11 +1,26 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CenturionCorpusMessageRow } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
 import {
+  STRATA,
   buildCases,
+  cellOf,
   pickPhaseA,
+  pickSubset,
+  readGoldenSet,
+  replayRunners,
   scoreCase,
+  scoreFields,
+  scoreGoldenCase,
+  senderDomainOf,
+  summarizeGolden,
   toIsoDay,
+  validateGoldenSet,
   type BacktestCase,
+  type GoldenRow,
+  type GoldenScoredCase,
   type ToolCall,
   type RuntimeReplayAssertions,
 } from '../src/ai/reservationist-backtest.js';
@@ -293,4 +308,185 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  const cancelApproved={...approved,tasks:cancelTasks.map(({kind: _kind,...task})=>task),pendingActions:[cancelAction]};
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[cancel]},cancelApproved,'authoritative_source_replay').pass).toBe(true);
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[{...cancel,requested}]},cancelApproved,'authoritative_source_replay').pass).toBe(false);
+});
+
+const DOMAINS = ['d0.test', 'd1.test', 'd2.test', 'd3.test', 'd4.test', 'd5.test', 'd6.test', 'd7.test'];
+const ASK = { arrivalDate: '2026-10-12', departureDate: '2026-10-14', adults: 2, children: 0, rooms: 1 };
+
+function golden(index: number, split: 'dev' | 'holdout', from = `guest${index}@${DOMAINS[index % DOMAINS.length]}`): GoldenRow {
+  return {
+    id: `${split}-${index}`,
+    split,
+    type: STRATA[index % STRATA.length]!,
+    trigger: { id: `${split}-${index}-m`, direction: 'inbound', eventAt: '2026-10-06T08:00:00.000Z', from, subject: 'Enquiry', text: 'Synthetic request' },
+    context: [],
+    expected: { workflow: 'quote', ...ASK },
+    recordedReads: [],
+  };
+}
+
+/** The full 80 dev + 40 holdout shape; sender domains and types cycle so every split stays under the cap. */
+function fullSet(): GoldenRow[] {
+  return [
+    ...Array.from({ length: 80 }, (_, i) => golden(i, 'dev')),
+    ...Array.from({ length: 40 }, (_, i) => golden(80 + i, 'holdout')),
+  ];
+}
+
+function decision(stay: Partial<NonNullable<ReservationistDecision['stayAsk']>> | null, workflow: ReservationistDecision['workflow'] = 'quote'): ReservationistDecision {
+  return { workflow, stayAsk: stay === null ? null : { ...ASK, ...stay }, missing: [], replyDraft: '', rationale: '' };
+}
+
+describe('golden set field scoring', () => {
+  it('flags a wrong arrival and counts the other named fields as correct', () => {
+    const scored = scoreGoldenCase(golden(0, 'dev'), { decision: decision({ arrivalDate: '2026-10-13' }), replayMisses: 0 });
+    expect(scored.flags).toEqual(['wrong_arrival']);
+    expect(scored.fields.find((f) => f.field === 'arrivalDate')).toMatchObject({ status: 'wrong', expected: '2026-10-12', actual: '2026-10-13' });
+    expect([scored.correct, scored.scored]).toEqual([5, 6]);
+  });
+
+  it('penalises a hallucinated field that the row says must be absent', () => {
+    const row: GoldenRow = { ...golden(1, 'dev'), expected: { ...golden(1, 'dev').expected, children: null } };
+    const scored = scoreGoldenCase(row, { decision: decision({ children: 2 }), replayMisses: 0 });
+    expect(scored.flags).toEqual(['hallucinated_children']);
+    expect([scored.correct, scored.scored]).toEqual([5, 6]);
+  });
+
+  it('separates missing from correct, and leaves fields the row omits unscored', () => {
+    expect(
+      scoreFields(
+        { arrivalDate: '2026-10-12', adults: 2 },
+        { workflow: null, arrivalDate: null, departureDate: null, adults: 2, children: null, rooms: null },
+      ).fields.map((f) => [f.field, f.status]),
+    ).toEqual([
+      ['arrivalDate', 'missing'],
+      ['adults', 'correct'],
+    ]);
+    const row: GoldenRow = { ...golden(2, 'dev'), expected: { workflow: 'quote', arrivalDate: '2026-10-12' } };
+    expect(scoreGoldenCase(row, { decision: decision(null), replayMisses: 0 }).fields.map((f) => [f.field, f.status])).toEqual([
+      ['workflow', 'correct'],
+      ['arrivalDate', 'missing'],
+    ]);
+    const unscored = scoreGoldenCase({ ...row, expected: { arrivalDate: '2026-10-12' } }, { decision: decision({ children: 2 }), replayMisses: 0 });
+    expect(unscored.fields.map((f) => f.field)).toEqual(['arrivalDate']);
+    expect(unscored.scored).toBe(1);
+  });
+
+  it('scores a failed run as missing on every named field', () => {
+    expect(scoreGoldenCase(golden(3, 'dev'), { decision: null, replayMisses: 2, error: 'boom' })).toMatchObject({
+      correct: 0,
+      scored: 6,
+      replayMisses: 2,
+      error: true,
+    });
+  });
+
+  it('derives the sender domain and stratification cell from the first address', () => {
+    expect(senderDomainOf('Ann Guest <Ann@Example.CO.za>, other@x.test')).toBe('example.co.za');
+    expect(senderDomainOf('no address')).toBe('unknown');
+    expect(cellOf(golden(0, 'dev', 'x@Booking.Example.test'))).toBe(`${STRATA[0]}|booking.example.test`);
+  });
+});
+
+describe('golden set validation and subset', () => {
+  it('accepts the full set and rejects wrong counts, an over-cap domain, and duplicate ids', () => {
+    expect(validateGoldenSet(fullSet())).toEqual([]);
+    expect(validateGoldenSet(fullSet().slice(1))).toContainEqual('dev: 79 cases, need 80');
+    const crowded = fullSet().map((row, i) =>
+      row.split === 'dev' && i < 13 ? { ...row, trigger: { ...row.trigger, from: 'guest@big.test' } } : row,
+    );
+    expect(validateGoldenSet(crowded)).toContainEqual(expect.stringContaining('sender domain big.test holds 13 of 80'));
+    const dup = fullSet();
+    dup[1] = { ...dup[1]!, id: dup[0]!.id };
+    expect(validateGoldenSet(dup)).toContainEqual('duplicate id dev-0');
+  });
+
+  it('picks a deterministic 30 at 20 dev / 10 holdout, covering distinct cells', () => {
+    const rows = fullSet();
+    const subset = pickSubset(rows, 30);
+    const ids = subset.map((row) => row.id);
+    expect(new Set(ids).size).toBe(30);
+    expect(subset.filter((row) => row.split === 'dev')).toHaveLength(20);
+    expect(subset.filter((row) => row.split === 'holdout')).toHaveLength(10);
+    expect(new Set(subset.filter((row) => row.split === 'dev').map(cellOf)).size).toBe(20);
+    expect(pickSubset([...rows].reverse(), 30).map((row) => row.id)).toEqual(ids);
+  });
+});
+
+describe('golden set file', () => {
+  it('fails clearly when the operator file is absent and names a bad line without echoing it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'golden-set-'));
+    try {
+      const file = path.join(dir, 'golden-set.jsonl');
+      expect(() => readGoldenSet(file)).toThrow(`golden set not found at ${file}`);
+      const bad = { ...golden(1, 'dev'), split: 'train', trigger: { text: 'private body' } };
+      writeFileSync(file, `${JSON.stringify(golden(0, 'dev'))}\n${JSON.stringify(bad)}\n`);
+      let message = '';
+      try {
+        readGoldenSet(file);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/^golden set line 2 is invalid: split /);
+      expect(message).not.toContain('private body');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads back the rows it was given', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'golden-set-'));
+    try {
+      const file = path.join(dir, 'golden-set.jsonl');
+      const rows = [golden(0, 'dev'), golden(81, 'holdout')];
+      writeFileSync(file, rows.map((row) => JSON.stringify(row)).join('\n'));
+      expect(readGoldenSet(file)).toEqual(rows);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('overfit alarm', () => {
+  const part = (split: 'dev' | 'holdout', correct: number, scored: number): GoldenScoredCase => ({
+    id: `${split}-${correct}`,
+    split,
+    type: 'create',
+    senderDomain: 'd.test',
+    fields: [],
+    flags: [],
+    correct,
+    scored,
+    replayMisses: 0,
+    error: false,
+  });
+
+  it('fires only when dev beats holdout by more than 10 points', () => {
+    expect(summarizeGolden([part('dev', 100, 100), part('holdout', 90, 100)]).overfitAlarm).toBe(false);
+    expect(summarizeGolden([part('dev', 100, 100), part('holdout', 89, 100)])).toMatchObject({ gapPoints: 11, overfitAlarm: true });
+    expect(summarizeGolden([part('dev', 0, 0), part('holdout', 1, 2)]).overfitAlarm).toBe(false);
+  });
+});
+
+describe('replayed reads', () => {
+  it('serves recorded reads by request fingerprint and counts anything unrecorded as a miss', async () => {
+    const row: GoldenRow = {
+      ...golden(0, 'dev'),
+      recordedReads: [
+        {
+          toolName: 'quote_stay',
+          args: { schemaVersion: 2, propertyCode: 'HRCEN', arrivalDate: '2026-10-12' },
+          result: { outcome: 'quote', groups: [] },
+        },
+      ],
+    };
+    const replay = replayRunners(row);
+    expect(await replay.quote({ arrivalDate: '2026-10-12', propertyCode: 'HRCEN', schemaVersion: 2 })).toEqual({ outcome: 'quote', groups: [] });
+    expect(await replay.quote({ schemaVersion: 2, propertyCode: 'HRCEN', arrivalDate: '2026-10-13' })).toEqual({
+      status: 'tool_error',
+      message: 'replay_miss',
+    });
+    expect(await replay.party({ kind: 'organization', query: {} })).toEqual({ status: 'tool_error', message: 'replay_miss' });
+    expect(replay.misses()).toBe(2);
+  });
 });
