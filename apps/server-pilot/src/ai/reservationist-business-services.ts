@@ -61,6 +61,21 @@ export function deriveReservationistProposalHeader(ctx:Context,signer:Pick<Revis
  const parties=ctx.facts.filter(f=>f.kind==='party'&&f.verification==='text_verified'&&f.disclosure==='guest').map(f=>f.value as string),agency=parties.find(p=>/\b(?:travel|tours|tourism|agency)\b/i.test(p))??'',company=parties.find(p=>p!==agency)??'';
  return{attention:'',company,agency,clientEmail:'',clientTelephone:'',...signer};
 }
+/**
+ * A quote for picked parties offers only the rows HMS flags as negotiated (rateScope 'contextual', from isNegotiatedRate).
+ * With none flagged it offers the public BAR rows. Rate names never decide: a plan named after the party is offered only
+ * when HMS flags it. Without a party context the options pass through unchanged.
+ */
+export function partyContractChoice<O extends { rateScope?: string }>(
+  rateContext: Record<string, unknown> | undefined,
+  options: readonly O[],
+): O[] {
+  if (!rateContext || !Object.keys(rateContext).length) return [...options];
+  const contract = options.filter((option) => option.rateScope === 'contextual');
+  if (contract.length) return contract;
+  return options.filter((option) => option.rateScope === 'public');
+}
+
 /** Pick a requested qualified option by exact total cents; unqualified alternatives never win. */
 export function selectReservationistQuoteOptions(source:QuoteSourceRecord):{sourceRef:string;groupId:string;optionId:string}[]{
  return selectQuoteOptions(source,false);
@@ -68,7 +83,7 @@ export function selectReservationistQuoteOptions(source:QuoteSourceRecord):{sour
 function quoteOptionCandidates(source:QuoteSourceRecord){
  if(!source.request.rooms.length||source.request.rooms.length>64||new Set(source.request.rooms.map(r=>r.id)).size!==source.request.rooms.length||source.result.groups.length!==source.request.rooms.length||new Set(source.result.groups.map(g=>g.id)).size!==source.result.groups.length)missing('business_selected_scope_unavailable',['all requested room groups']);
  const dates=occupiedDates(source.request.arrivalDate,source.request.departureDate);
- const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>50||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=group.options.filter(o=>o.eligibility==='verified'&&o.availability==='available'&&o.matchStatus==='match'&&o.held===false&&!!boards[norm(o.board??'')]&&Object.entries(source.request.rateContext??{}).every(([kind,wanted])=>{const got=(o.appliedContext as Record<string,{id?:string;code?:string;name?:string}>|undefined)?.[kind],ref=wanted as {nativeId?:string;code?:string;name?:string};return got&&(!ref.nativeId||String(got.id)===String(ref.nativeId))&&(!ref.code||got.code===ref.code)&&(!ref.name||got.name===ref.name);})&&(!request.required?.roomCodes||request.required.roomCodes.includes(o.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(o.rate.code))&&(!request.required?.boardBases||request.required.boardBases.includes(boards[norm(o.board??'')]))&&o.nightly.length===dates.length&&new Set(o.nightly.map(n=>n.date)).size===dates.length&&o.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=request.quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency));
+ const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>50||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>o.eligibility==='verified'&&o.availability==='available'&&o.matchStatus==='match'&&o.held===false&&!!boards[norm(o.board??'')]&&Object.entries(source.request.rateContext??{}).every(([kind,wanted])=>{const got=(o.appliedContext as Record<string,{id?:string;code?:string;name?:string}>|undefined)?.[kind],ref=wanted as {nativeId?:string;code?:string;name?:string};return got&&(!ref.nativeId||String(got.id)===String(ref.nativeId))&&(!ref.code||got.code===ref.code)&&(!ref.name||got.name===ref.name);})&&(!request.required?.roomCodes||request.required.roomCodes.includes(o.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(o.rate.code))&&(!request.required?.boardBases||request.required.boardBases.includes(boards[norm(o.board??'')]))&&o.nightly.length===dates.length&&new Set(o.nightly.map(n=>n.date)).size===dates.length&&o.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=request.quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency)));
  const totals=qualified.map(o=>({o,total:o.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0)*request.quantity})).filter(v=>Number.isSafeInteger(v.total)&&v.total>0).sort((a,b)=>a.total-b.total||a.o.id.localeCompare(b.o.id));if(!totals.length)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);return{request,totals};});
  return candidates;
 }

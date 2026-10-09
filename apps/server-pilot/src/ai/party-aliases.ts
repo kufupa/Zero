@@ -132,3 +132,25 @@ export function extractPartyMentions(body: unknown): PartyMention[] {
   }
   return out;
 }
+
+export type PartySuggestionView = {
+  source: 'sender' | 'body';
+  kind: PartyKind;
+  name: string;
+  nativeId: string | null;
+  idStatus: 'listed' | 'unverified';
+};
+
+/**
+ * Suggestions for the picker: the sender's domain alias, then the names the body states. A name from the body never
+ * carries an HMS id, so it is unverified until staff pick it with Find in HMS.
+ */
+export function suggestPartiesFor(input: { sender?: string; body?: string }): PartySuggestionView[] {
+  const out: PartySuggestionView[] = [];
+  const fromSender = suggestPartyFromSender(input.sender);
+  if (fromSender) out.push({ source: 'sender', ...fromSender });
+  for (const mention of extractPartyMentions(input.body)) {
+    out.push({ source: 'body', kind: mention.kind, name: mention.name, nativeId: null, idStatus: 'unverified' });
+  }
+  return out;
+}

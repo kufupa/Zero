@@ -1,0 +1,304 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  executeStaffQuote,
+  partyContractReviewNote,
+  partyNoContractNote,
+  partyRateContext,
+  prepareStaffQuote,
+  staffQuoteInput,
+  type StaffQuoteParties,
+} from '../src/ai/staff-quote-workflow.js';
+import {
+  createReservationistBusinessServices,
+  partyContractChoice,
+} from '../src/ai/reservationist-business-services.js';
+import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
+import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
+import { suggestPartiesFor } from '../src/ai/party-aliases.js';
+
+// The Rate Shop helpers the runner uses, for the runner-input checks.
+type RunnerSeams = {
+  pickerFilter: (kind: string, reference: Record<string, unknown>) => { name: string; value: string };
+};
+const runner = (await import('../tooling/playwright-quote/fetch-quote.mjs' as string)) as RunnerSeams;
+const normalizer = (await import('../tooling/playwright-quote/quote-contract.mjs' as string)) as {
+  normalizeQuoteRequest: (input: unknown) => { ok: boolean; request: any };
+};
+
+const ARRIVAL = '2026-10-12';
+const DEPARTURE = '2026-10-15';
+const signer = { signerName: 'Staff', signerEmail: 'staff@example.test' };
+const scope = {
+  transportId: 'transport',
+  userId: 'staff',
+  threadId: 'thread',
+  messageId: 'message',
+  sourceHash: 'a'.repeat(64),
+  propertyCode: 'HRCEN',
+  messageAt: '2026-09-30T12:00:00Z',
+  messageText: 'Booking for Woolworths employees',
+};
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  panePartyLookupLoaders.spawn = null;
+  panePartyLookupLoaders.lock = null;
+  panePartyLookupLoaders.enabled = null;
+});
+
+// Fixture rows, named the way HMS names them. The names are test labels, not live data.
+type Rate = { code: string; label: string; rateScope: 'public' | 'contextual' | 'unknown'; amounts: string[] };
+const BAR: Rate = { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['500.00'] };
+const WOOLWORTHS_FLAGGED: Rate = { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['520.00'] };
+const AGENCY_FLAGGED: Rate = { code: 'WSF2B', label: 'Agency Negotiated', rateScope: 'contextual', amounts: ['610.00'] };
+// Named after the party but not flagged by HMS: it must never be offered as a contract, however cheap it is.
+const NAME_ONLY: Rate = { code: 'NGD10B', label: 'Woolworths Corporate', rateScope: 'unknown', amounts: ['100.00'] };
+
+function rateOption(rate: Rate, context: Record<string, unknown>) {
+  const dates = occupiedDates(ARRIVAL, DEPARTURE);
+  return {
+    id: `SKNG:${rate.code}`,
+    room: { code: 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
+    rate: { code: rate.code, label: rate.label },
+    board: 'Room Only R',
+    appliedContext: context,
+    rateScope: rate.rateScope,
+    // Verified on purpose: the contract rule must hold by flag alone, not because some other check filtered the row.
+    eligibility: 'verified',
+    availability: 'available',
+    matchStatus: 'match',
+    held: false,
+    totals: { taxInclusive: true },
+    nightly: dates.map((date, i) => ({
+      date,
+      inventory: 8,
+      price: { amount: rate.amounts[i] ?? rate.amounts.at(-1)!, currency: 'ZAR' },
+    })),
+  };
+}
+
+const policy = {
+  ref: 'policy',
+  propertyCode: 'HRCEN',
+  sourceHashes: ['c'.repeat(64)],
+  authoredDates: ['2026-09-08'],
+  families: [
+    { rateCode: 'BARRO', board: 'room_only' as const },
+    { rateCode: 'BCO1B', board: 'room_only' as const },
+    { rateCode: 'WSF2B', board: 'room_only' as const },
+    { rateCode: 'NGD10B', board: 'room_only' as const },
+  ],
+  vat: 'included' as const,
+  levy: 'included' as const,
+};
+
+function groupInput(parties?: StaffQuoteParties) {
+  return staffQuoteInput.parse({
+    messageId: scope.messageId,
+    sourceHash: scope.sourceHash,
+    selectionEpoch: 3,
+    inputRevision: 2,
+    groups: [
+      {
+        id: 'single',
+        arrivalDate: ARRIVAL,
+        departureDate: DEPARTURE,
+        quantity: 1,
+        adults: 1,
+        childrenAges: [],
+        board: 'room_only',
+        roomCodes: ['SKNG'],
+      },
+    ],
+    ...(parties ? { parties } : {}),
+  });
+}
+
+/** What HMS resolves each requested context to: the id and name the picker found. */
+function resolvedContext(rateContext: Record<string, { nativeId: string; name: string }> | undefined) {
+  return Object.fromEntries(
+    Object.entries(rateContext ?? {}).map(([kind, ref]) => [kind, { id: ref.nativeId, name: ref.name }]),
+  );
+}
+
+/** One quote through the staff path, with a Rate Shop read that offers the given rows under the requested context. */
+async function quoteWith(parties: StaffQuoteParties | undefined, rates: Rate[]) {
+  const confirmed = groupInput(parties);
+  const prepared = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
+  const context = resolvedContext(prepared.request.rateContext);
+  const services = createReservationistBusinessServices(
+    {
+      authorizationId: prepared.authorizationId,
+      authorizeContext: async () => true,
+      signer,
+      readQuote: async (request: any) => {
+        const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
+        return {
+          ref: 'source:1',
+          sha256: 'b'.repeat(64),
+          toolVersion: 'fixture',
+          observedAt: new Date().toISOString(),
+          request: normalized,
+          result: {
+            outcome: 'quote',
+            propertyCode: 'HRCEN',
+            groups: normalized.rooms.map((r: any) => ({
+              id: r.id,
+              request: r,
+              completeness: { search: 'complete', requiredFacts: 'complete' },
+              options: rates.map((rate) => rateOption(rate, context)),
+            })),
+          },
+        };
+      },
+      resolvePolicy: async () => policy,
+    },
+    prepared.approval,
+  );
+  const revision = await executeStaffQuote(prepared, services, async () => true);
+  return { prepared, revision };
+}
+
+const company = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
+const agency = (nativeId: string, name: string) => ({ kind: 'agency' as const, nativeId, name });
+
+describe('contract rates from the picked company or agency', () => {
+  it('a company pick sends its HMS id as the organization context, and the Rate Shop reads that id', async () => {
+    const { prepared } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR]);
+    expect(prepared.request.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(runner.pickerFilter('organization', { nativeId: '49', name: 'Woolworths' })).toEqual({
+      name: 'ff_companyid',
+      value: '49',
+    });
+  });
+
+  it('an agency pick alone sends the agency id; flagged rows if any, otherwise BAR', async () => {
+    const flagged = await quoteWith({ agency: agency('569', 'Woolworths Agency') }, [BAR, AGENCY_FLAGGED]);
+    expect(flagged.prepared.request.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
+    expect(flagged.revision.groups[0]!.rateCode).toBe('WSF2B');
+
+    const none = await quoteWith({ agency: agency('113', '360 degrees Travel') }, [BAR]);
+    expect(none.revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyContractReviewNote({ agency: agency('113', '360 degrees Travel') }, none.revision.groups)).toBe(
+      'No contract rate found for 360 degrees Travel; this quote uses our best available rate.',
+    );
+  });
+
+  it('both picks send both ids, and only the flagged rows are offered as contracts', async () => {
+    const parties = { company: company('49', 'Woolworths'), agency: agency('569', 'Woolworths Agency') };
+    const { prepared, revision } = await quoteWith(parties, [NAME_ONLY, WOOLWORTHS_FLAGGED, AGENCY_FLAGGED, BAR]);
+    expect(prepared.request.rateContext).toEqual({
+      organization: { nativeId: '49', name: 'Woolworths' },
+      agency: { nativeId: '569', name: 'Woolworths Agency' },
+    });
+    // The cheapest flagged row is priced. The cheaper unflagged name match is not.
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
+    const offered = partyContractChoice(
+      prepared.request.rateContext,
+      [NAME_ONLY, WOOLWORTHS_FLAGGED, AGENCY_FLAGGED, BAR].map((rate) => rateOption(rate, {})),
+    ).map((option) => option.rate.code);
+    expect(offered).toEqual(['BCO1B', 'WSF2B']);
+  });
+
+  it('nothing flagged prices BAR and says so in plain copy', async () => {
+    const { revision } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR]);
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyNoContractNote(['Woolworths'])).toBe(
+      'No contract rate found for Woolworths; this quote uses our best available rate.',
+    );
+    expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, revision.groups)).toBe(
+      'No contract rate found for Woolworths; this quote uses our best available rate.',
+    );
+    expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, [{ rateCode: 'BCO1B' }])).toBeNull();
+  });
+
+  it('a plan named after the party is not offered as a contract unless HMS flags it', async () => {
+    const { revision } = await quoteWith({ company: company('49', 'Woolworths') }, [NAME_ONLY, BAR]);
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(revision.groups[0]!.rateCode).not.toBe('NGD10B');
+  });
+
+  it('with the switch off, no party context is sent and the request is public', async () => {
+    vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
+    const prepared = prepareStaffQuote(
+      groupInput({ company: company('49', 'Woolworths') }),
+      scope,
+      signer,
+      new AbortController().signal,
+    );
+    expect(prepared.request).not.toHaveProperty('rateContext');
+    expect(prepared.approval.rates).toBe('public');
+  });
+
+  it('an unverified alias id, which is null, is never sent as a party', () => {
+    expect(() =>
+      staffQuoteInput.parse({
+        messageId: scope.messageId,
+        sourceHash: scope.sourceHash,
+        selectionEpoch: 3,
+        inputRevision: 2,
+        groups: groupInput().groups,
+        parties: { company: { kind: 'company', nativeId: null, name: 'Tourvest' } },
+      }),
+    ).toThrow();
+  });
+
+  it('the rate context carries the organization and agency only, so no commission or A/R account is sent', () => {
+    const context = partyRateContext({ company: company('49', 'Woolworths'), agency: agency('569', 'Agency') });
+    expect(Object.keys(context ?? {}).sort()).toEqual(['agency', 'organization']);
+    expect(partyRateContext(undefined)).toBeUndefined();
+  });
+});
+
+describe('re-checking a picked id in HMS before it is bound', () => {
+  it('binds the HMS name for a pick HMS returns with the same id and name', async () => {
+    panePartyLookupLoaders.lock = { withLock: async (fn) => fn() };
+    panePartyLookupLoaders.spawn = async () => ({
+      outcome: 'resolved',
+      candidates: [{ nativeId: '49', displayName: 'Woolworths Holdings', kind: 'organization', matchedOn: ['store'] }],
+      truncated: false,
+    });
+    await expect(verifyPartyPick({ kind: 'company', nativeId: '49', name: 'woolworths holdings' })).resolves.toEqual({
+      ok: true,
+      party: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
+    });
+  });
+
+  it('refuses an id HMS does not return for that name, so a made-up id is never bound', async () => {
+    panePartyLookupLoaders.lock = { withLock: async (fn) => fn() };
+    panePartyLookupLoaders.spawn = async () => ({
+      outcome: 'resolved',
+      candidates: [{ nativeId: '49', displayName: 'Woolworths', kind: 'organization', matchedOn: ['store'] }],
+      truncated: false,
+    });
+    await expect(verifyPartyPick({ kind: 'company', nativeId: '999', name: 'Woolworths' })).resolves.toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
+  });
+
+  it('refuses with the switch off before any lock or lookup', async () => {
+    vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
+    const spawn = vi.fn();
+    panePartyLookupLoaders.spawn = spawn;
+    await expect(verifyPartyPick({ kind: 'company', nativeId: '49', name: 'Woolworths' })).resolves.toEqual({
+      ok: false,
+      reason: 'refused_flag_off',
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('suggestions for the picker', () => {
+  it('a sender alias carries its HMS id only where listed; body names never carry one', () => {
+    const suggestions = suggestPartiesFor({
+      sender: 'ops@mycwt.co.za',
+      body: 'Travel Agency Details: RENNIES TRAVEL (PTY) LTD\nOrganization Details: Tourvest',
+    });
+    expect(suggestions).toEqual([
+      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: '290', idStatus: 'listed' },
+      { source: 'body', kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', nativeId: null, idStatus: 'unverified' },
+      { source: 'body', kind: 'company', name: 'Tourvest', nativeId: null, idStatus: 'unverified' },
+    ]);
+  });
+});
