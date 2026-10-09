@@ -23,6 +23,7 @@ export default [
 
   layout('(routes)/layout.tsx', [
     route('/developer', '(routes)/developer/page.tsx'),
+    route('/nava-preview', '(routes)/nava-preview/page.tsx'),
     layout(
       '(routes)/lab/layout.tsx',
       prefix('/lab', [
