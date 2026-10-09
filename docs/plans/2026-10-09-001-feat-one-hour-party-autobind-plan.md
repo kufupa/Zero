@@ -28,7 +28,7 @@ When Nava reads "Woolworths" in an email, the pane shows **"Use Woolworths Holdi
 ## Lanes (parallel)
 | Lane | Model | Work | T+ |
 |---|---|---|---|
-| **HMS** | Opus (single HMS owner) | Run `scripts/party-index-sweep.ts` on EC2 for A–Z per kind, `--delay-ms 5000`, resumable. ~52 lookups ≈ 25–30 min. Writes the index file (mode 600). Verify "Woolworths" → #49 and "360" → #113 in the index | 0 → 30 |
+| **HMS** | Opus (single HMS owner) | Run `pnpm -C apps/server-pilot exec tsx scripts/party-index-sweep.ts --delay-ms 15000 --max-runs 30` on EC2. A full A–Z sweep for both kinds is ~52 lookups at ~1 min each, so it does **not** fit in the hour. Run 30, pause (exit 3), and resume after the proofs. The gaps between runs leave the HMS lock free for staff during the pilot. Verify "Woolworths" → #49 and "360" → #113 once those letters are done | 0 → 40, resume after 60 |
 | **A: chip** | Haiku (max) | `nava-pane.tsx`: pass `partyIndex={partyIndexFromTrpc(trpcClient)}` to the panel and `PartyPicker`. `party-picker.tsx`: when the field holds Nava's pre-filled name and the index returns hits whose `matchKey` contains it, show the top hit as a chip "Use {HMS name} (#{id})". One click → `onPick` (binds the id; the server re-verifies at bind, `pane-party-lookup.ts:265-291`). Several hits → show the top 3 chips. None → keep "Search HMS now". Tests: chip appears and binds; no index → no chip; multiple hits → 3 chips | 0 → 35 |
 | **B: booking card** | Haiku (max) | `booking-card.tsx`: when the quote header has a picked company or agency, pre-fill Booking agency and Organization with the **HMS name** (the runner types it into HMS, and the create proof bound "360 degrees Travel" and "Woolworths" this way). Room type: show a select from the 9 schema enum values (`booking-draft.ts:205-231`) instead of read-only text. Tests | 0 → 30 |
 | **Review** | 2nd Haiku (checklist) + Greptile | Picks must always carry a nativeId; no unverified id is bound; chip copy has no "Luna" | 35 → 42 |
@@ -44,9 +44,9 @@ When Nava reads "Woolworths" in an email, the pane shows **"Use Woolworths Holdi
 ## Risks
 | Risk | Mitigation |
 |---|---|
-| The sweep collides with live proofs on the HMS lock | The sweep runs alone T+0→30. Proofs only after T+50 |
+| The sweep collides with live proofs or staff on the HMS lock | `--max-runs 30` pauses it before the proofs. A 15 s delay frees the lock between runs |
 | A bad chip binds the wrong party | Only exact or contains index hits, staff click to bind, and the server re-verifies the id against HMS at bind |
 | Index stale | The picker shows the index age. Re-run the sweep weekly |
-| The sweep overruns | It's resumable. Any partial index still gives chips for the letters covered |
+| The sweep doesn't finish in the hour (expected) | It's resumable. Any partial index still gives chips for the letters covered. If W isn't covered yet, V-chip uses a party from a covered letter |
 </content>
 </invoke>

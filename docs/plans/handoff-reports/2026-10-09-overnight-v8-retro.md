@@ -83,8 +83,8 @@ Deploys: planned 3 (01:40, 04:00, 06:00). Actual 6: D1 01:58, D2a 02:25 (+migrat
 ## Highest-ROI to-dos (ranked)
 | # | To-do | ROI | Effort |
 |---|---|---|---|
-| 1 | **Party auto-bind:** when Nava reads "Woolworths", look it up in HMS in the background and show a one-click "Use Woolworths Holdings (#49)" chip | Very high: a party is named on 70–80% of quote/booking mail and contract rates depend on the pick | ~45m code + live check |
-| 2 | **Party index sweep** (instant typeahead, and the option list for constrained Nava matching) | High: search goes from ~1 min to instant | ~1h HMS background, no code |
+| 1 | **Party auto-bind:** when Nava reads "Woolworths", match it against the party index and show a one-click "Use Woolworths Holdings (#49)" chip | Very high: a party is named on 70–80% of quote/booking mail and contract rates depend on the pick | ~45m code + live check |
+| 2 | **Party index sweep** (instant typeahead, and the option list for constrained Nava matching) | High: search goes from ~1 min to instant | ~1 h of HMS time (~52 lookups), no code |
 | 3 | **Pane quote → PDF → Excel live proof** (viewer act mode), then decide on `QUOTE_TRACE_ASYNC` | High: protects the core flow | ~30m |
 | 4 | **Create through the pane:** flag `lab` → Labtest Preview→Book via the viewer → confirm the note → `on` | High once the owner OKs real bookings | ~30m + owner decision |
 | 5 | `HITL_LEDGER=on` | High compounding value: every click becomes eval data | 5m (owner flag) |
