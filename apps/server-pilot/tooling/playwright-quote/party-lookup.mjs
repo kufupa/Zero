@@ -64,12 +64,12 @@ export function filterReadsBack(query, readBack) {
 }
 
 /** The lookup's filter never reached the window, so its grid is not the query's. Fails closed: never no_match. */
-export function filterNotApplied() {
+export function filterNotApplied(detail) {
   return {
     outcome: 'execution_failure',
     candidates: [],
     truncated: false,
-    issues: [{ code: 'EXECUTION_FAILURE', path: 'filter', reason: 'filter_not_applied' }],
+    issues: [{ code: 'EXECUTION_FAILURE', path: 'filter', reason: 'filter_not_applied', ...(detail ? { detail } : {}) }],
   };
 }
 
@@ -296,7 +296,7 @@ async function fillLookupFilter(page, kind, value) {
 // Runs the lookup's search through its Run control. False when the window has no Run control or the click fails: the
 // search did not run, so nothing may be read from the grid. It returns as soon as the click lands. The completion watchers
 // (armLookupRun) are armed before the click, so a quick answer is not missed.
-async function runLookupFilter(page, kind) {
+export async function runLookupFilter(page, kind) {
   const win = await lookupWindow(page, kind);
   for (const name of dialogRunNames(kind)) {
     const btn = win.getByRole('button', { name });
@@ -304,6 +304,116 @@ async function runLookupFilter(page, kind) {
     return btn.first().click().then(() => true, () => false);
   }
   return false;
+}
+
+// The name field each dialog's field selector shows. The runner filters by the name only when the selector shows it.
+export const NAME_FIELD_LABELS = {
+  organization: ['Name', 'Organization Name'],
+  bookingAgency: ['Booking Agency Name'],
+};
+
+function escapeRe(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// A field selector shows a column name: the name fields, or the column a lookup can filter on.
+function isFieldSelectorValue(value) {
+  return isLookupColumnLabel(value) || Object.values(NAME_FIELD_LABELS).flat().some((label) => matchKey(label) === matchKey(value));
+}
+
+/**
+ * The dialog's filter box: the editable text box on the Run button's row, nearest to the Run button, whose left neighbour on
+ * the row is the field selector (read-only, or showing a column name). A saved-search combo at the left of the row has no
+ * selector before it, and the column filters below sit on another row, so neither is ever the filter box. `boxes` are the
+ * window's visible text inputs as { index, x, y, width, height, readonly, value }; `run` is the Run button's box. Null when no
+ * box fits.
+ */
+export function runRowFilterIndex(boxes, run) {
+  const runMid = run.y + run.height / 2;
+  const onRow = (box) => Math.abs(box.y + box.height / 2 - runMid) <= run.height / 2;
+  const editable = boxes.filter((box) => onRow(box) && !box.readonly && box.x + box.width <= run.x);
+  if (!editable.length) return null;
+  const target = editable.reduce((best, box) => (box.x + box.width > best.x + best.width ? box : best));
+  const selectorIndex = runRowSelectorIndex(boxes, target.index);
+  const selector = boxes.find((box) => box.index === selectorIndex);
+  return selector && (selector.readonly || isFieldSelectorValue(selector.value)) ? target.index : null;
+}
+
+/** The box just left of the filter box on its row: the field selector that names the column the query filters. */
+export function runRowSelectorIndex(boxes, filterIndex) {
+  const filter = boxes.find((box) => box.index === filterIndex);
+  if (!filter) return null;
+  const mid = filter.y + filter.height / 2;
+  const left = boxes.filter(
+    (box) =>
+      box.index !== filterIndex &&
+      Math.abs(box.y + box.height / 2 - mid) <= filter.height / 2 &&
+      box.x + box.width <= filter.x,
+  );
+  if (!left.length) return null;
+  return left.reduce((best, box) => (box.x + box.width > best.x + best.width ? box : best)).index;
+}
+
+/**
+ * Makes the dialog's field selector show the name field: when it shows another column, the name is picked from its list.
+ * True only when the selector reads the name field afterwards.
+ */
+async function ensureNameField(page, selector, kind) {
+  const labels = NAME_FIELD_LABELS[kind] ?? [];
+  const isName = (text) => labels.some((label) => matchKey(label) === matchKey(text));
+  if (isName(await selector.inputValue().catch(() => ''))) return true;
+  await selector.click({ timeout: 2000 }).catch(() => {});
+  for (const label of labels) {
+    const option = page
+      .locator('.x-boundlist-item:visible')
+      .filter({ hasText: new RegExp(`^\\s*${escapeRe(label)}\\s*$`) })
+      .first();
+    if (!(await option.count())) continue;
+    await option.click({ timeout: 2000 }).catch(() => {});
+    return isName(await selector.inputValue().catch(() => ''));
+  }
+  return false;
+}
+
+/** Polls until check() is true, or until the wait runs out. */
+async function waitUntilTrue(page, check, timeoutMs, pollMs = 150) {
+  for (let waited = 0; ; waited += pollMs) {
+    if (await check()) return true;
+    if (waited >= timeoutMs) return false;
+    await page.waitForTimeout(pollMs);
+  }
+}
+
+/**
+ * Types the query into the dialog's filter box on the Run row, once the field selector shows the name field. Returns true only
+ * when the box reads the query back and the dialog's Run button is enabled. Otherwise, the reason it stopped. The saved-search
+ * combo and the header search are never typed into.
+ */
+export async function fillRunRowFilter(page, kind, value) {
+  if (!filled(value)) return 'query_empty';
+  const win = await lookupWindow(page, kind);
+  const run = win.getByRole('button', { name: /^Run$/ }).first();
+  const runBox = (await run.count()) ? await run.boundingBox().catch(() => null) : null;
+  if (!runBox) return 'no_run_button';
+  const inputs = win.locator('input:visible');
+  const boxes = [];
+  const n = await inputs.count();
+  for (let i = 0; i < n; i += 1) {
+    const type = (await inputs.nth(i).getAttribute('type').catch(() => null)) ?? 'text';
+    if (!/^(text|search)$/i.test(type)) continue;
+    const box = await inputs.nth(i).boundingBox().catch(() => null);
+    if (!box) continue;
+    const readonly = (await inputs.nth(i).getAttribute('readonly').catch(() => null)) !== null;
+    const value = await inputs.nth(i).inputValue().catch(() => '');
+    boxes.push({ index: i, ...box, readonly, value });
+  }
+  const target = runRowFilterIndex(boxes, runBox);
+  if (target === null) return 'no_run_row_input';
+  const selectorIndex = runRowSelectorIndex(boxes, target);
+  if (!(await ensureNameField(page, inputs.nth(selectorIndex), kind))) return 'field_not_name';
+  if (!(await fillExt(inputs.nth(target), value))) return 'filter_not_read_back';
+  const enabled = await waitUntilTrue(page, () => run.isEnabled().catch(() => false), 3000);
+  return enabled ? true : 'run_disabled';
 }
 
 /** Decodes a URL or form body for matching. Text that does not decode is matched as it is. */
@@ -565,7 +675,8 @@ async function readSettledGrid(page, kind, request, needle) {
 // settled. Any step that cannot be verified is a failure, never no_match.
 async function filteredLookup(page, kind, request, fill) {
   const before = await snapshotGrid(page, kind);
-  if (!(await fill())) return filterNotApplied();
+  const outcome = await fill();
+  if (outcome !== true) return filterNotApplied(typeof outcome === 'string' ? outcome : undefined);
   const needle = queryNeedle(request);
   // Armed before the Run click, so an answer that lands during the click is never missed.
   const run = armLookupRun(page, needle);
@@ -591,7 +702,7 @@ export async function searchKind(page, request) {
       return filteredLookup(page, 'organization', request, async () =>
         (await fillExt(extField, ext)) && (await fillLookupFilter(page, 'organization', ext)));
     }
-    return filteredLookup(page, 'organization', request, () => fillLookupFilter(page, 'organization', name));
+    return filteredLookup(page, 'organization', request, () => fillRunRowFilter(page, 'organization', name));
   }
   if (request.kind === 'bookingAgency') {
     await clickLov(page, 'ta1');
@@ -602,7 +713,7 @@ export async function searchKind(page, request) {
       return filteredLookup(page, 'bookingAgency', request, async () =>
         (await fillExt(iataField, iata)) && (await fillLookupFilter(page, 'bookingAgency', iata)));
     }
-    return filteredLookup(page, 'bookingAgency', request, () => fillLookupFilter(page, 'bookingAgency', name));
+    return filteredLookup(page, 'bookingAgency', request, () => fillRunRowFilter(page, 'bookingAgency', name));
   }
   if (request.kind === 'arAccount') {
     await clickLov(page, 'araccountname');
