@@ -79,6 +79,29 @@ describe('extractPartyMentions', () => {
     ]);
   });
 
+  it('names no company for a number or a lower-case word before "employees"', () => {
+    expect(extractPartyMentions('Please book rooms for 25 employees from 12 Nov.')).toEqual([]);
+    expect(extractPartyMentions('Rooms for many employees, for 4 people.')).toEqual([]);
+  });
+
+  it('stays fast on hostile spacing: 2000-character lines finish well inside 50 ms each', () => {
+    const hostile = [
+      `for${' '.repeat(2000)}x`,
+      `Travel Agency Details:a${' '.repeat(2000)}b`,
+      `Organization Details:${' '.repeat(2000)}`,
+      `for ${'A '.repeat(1000)}employe`,
+      `for${' '.repeat(1000)}Acme${' '.repeat(1000)}employee`,
+    ];
+    for (const body of hostile) {
+      const started = performance.now();
+      extractPartyMentions(body);
+      expect(performance.now() - started).toBeLessThan(50);
+    }
+    // The long line is cut before matching, so the name it can yield stays bounded.
+    const [long] = extractPartyMentions(`Travel Agency Details: ${'Acme '.repeat(200)}`);
+    expect(long?.name.length ?? 0).toBeLessThanOrEqual(120);
+  });
+
   it('skips a generic "for all employees" phrase, and an empty or non-text body', () => {
     expect(extractPartyMentions('Rooms for all employees please.')).toEqual([]);
     expect(extractPartyMentions('Organization Details:   ')).toEqual([]);

@@ -44,19 +44,23 @@ const LABELLED_LINES: ReadonlyArray<{
   source: PartyMention['source'];
 }> = [
   {
-    pattern: /^\s*[*>\-•]*\s*travel\s+agency\s+details\s*:\s*(.+?)\s*$/i,
+    pattern: /^[\s*>\-•]{0,10}travel\s{1,5}agency\s{1,5}details\s{0,5}:(.{1,200})$/i,
     kind: 'agency',
     source: 'travel_agency_details',
   },
   {
-    pattern: /^\s*[*>\-•]*\s*organi[sz]ation\s+details\s*:\s*(.+?)\s*$/i,
+    pattern: /^[\s*>\-•]{0,10}organi[sz]ation\s{1,5}details\s{0,5}:(.{1,200})$/i,
     kind: 'company',
     source: 'organization_details',
   },
 ];
 
-// "... for Bidvest Facilities Management employees" names the company whose staff are travelling.
-const EMPLOYEE_LINE = /\bfor\s+(.+?)\s+employees?\b/i;
+// Every quantifier is bounded, and each line is cut to MAX_LINE_CHARS before any match, so hostile spacing cannot make
+// matching slow. "... for Bidvest Facilities Management employees" names a company: the name starts with a capital
+// letter, so "for 25 employees" and "for many employees" name nothing.
+const MAX_LINE_CHARS = 300;
+const MAX_NAME_CHARS = 120;
+const EMPLOYEE_LINE = /\b[Ff]or\s{1,5}(\p{Lu}[^\n]{0,118}?)\s{1,5}[Ee]mployees?\b/u;
 const NOT_A_PARTY_WORD =
   /^(all|any|our|the|my|your|their|his|her|its|this|that|these|those|each|some|staff|new|existing|other)$/i;
 const MAX_BODY_CHARS = 20_000;
@@ -92,8 +96,8 @@ export function suggestPartyFromSender(sender: unknown): PartySuggestion | null 
 }
 
 function cleanPartyName(raw: string): string | null {
-  const name = raw.replace(/\s+/g, ' ').replace(/[.;,]+$/, '').trim();
-  if (name.length < 2 || name.length > 120 || /[@<>]|https?:/i.test(name)) return null;
+  const name = raw.slice(0, MAX_NAME_CHARS).replace(/\s+/g, ' ').replace(/[.;,]+$/, '').trim();
+  if (name.length < 2 || !/\p{L}/u.test(name) || /[@<>]|https?:/i.test(name)) return null;
   return name;
 }
 
@@ -113,11 +117,11 @@ export function extractPartyMentions(body: unknown): PartyMention[] {
     seen.add(key);
     out.push({ kind, name, source });
   };
-  for (const line of body.slice(0, MAX_BODY_CHARS).split(/\r?\n/)) {
-    const labelled = LABELLED_LINES.find(({ pattern }) => pattern.test(line));
+  for (const raw of body.slice(0, MAX_BODY_CHARS).split(/\r?\n/)) {
+    const line = raw.slice(0, MAX_LINE_CHARS);
+    const labelled = LABELLED_LINES.map((row) => ({ row, match: line.match(row.pattern) })).find((hit) => hit.match);
     if (labelled) {
-      const match = line.match(labelled.pattern);
-      if (match?.[1]) add(labelled.kind, match[1], labelled.source);
+      if (labelled.match?.[1]) add(labelled.row.kind, labelled.match[1], labelled.row.source);
       continue;
     }
     const employee = line.match(EMPLOYEE_LINE);
