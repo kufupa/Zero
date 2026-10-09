@@ -17,14 +17,20 @@ import { createOperationId, type MailLocation, type WorkstationEmailPayload } fr
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
+import { PaneMenu } from './pane-menu';
 import {
-  createPaneReleaseWatch,
+  createPaneVersionWatch,
   fetchPaneVersion,
   loadedPaneBuild,
+  PANE_IDLE_CHECK_MS,
   PANE_RELEASE_POLL_MS,
-  sessionPaneReloadGuard,
+  reloadAtEmailSwitch,
+  reloadAtIdle,
+  reloadPane,
+  type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
-import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { beginMutation, endMutation, mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -654,54 +660,91 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     }
   };
 
-  // Stale-build check. Idle = no tRPC mutation or reply draft in flight, no unsent quote, booking or
-  // stay edits, and no focused input inside the pane. Reloading then loses nothing staff typed.
-  const paneRootRef = useRef<HTMLDivElement>(null);
-  const hasUnsentWork =
-    isDraftPending ||
-    quoteRunPending ||
-    quoteSession.runningStepId !== null ||
-    quoteSession.phase === 'analysing' ||
-    quoteSession.phase === 'native_pending' ||
+  // Unfinished Tell Nava text lives here, so it survives a trip off the tool screen (the ⋯ menu's
+  // Check connection). The sent text is kept, so a note that was already re-read does not block reloads.
+  const [staffNoteDraft, setStaffNoteDraft] = useState('');
+  const [staffNoteSent, setStaffNoteSent] = useState('');
+  const unsentStaffNote = staffNoteDraft.trim() !== '' && staffNoteDraft.trim() !== staffNoteSent.trim();
+  // A note belongs to the email it was written for. Selecting another email starts a clean note. A bridge gap (no
+  // email reported) and a return to the same email keep it.
+  const noteEmailRef = useRef(selectedIdentity);
+  useEffect(() => {
+    if (selectedIdentity === null || selectedIdentity === noteEmailRef.current) return;
+    noteEmailRef.current = selectedIdentity;
+    setStaffNoteDraft('');
+    setStaffNoteSent('');
+  }, [selectedIdentity]);
+
+  // Unsent quote-session work that a reload would discard. Local field edits are not tracked one by one:
+  // any input in the pane resets the idle clock, and writes are counted, so no per-field checks are needed.
+  const quoteSessionDirty =
     combinedEdit !== null ||
     quoteSession.bookingDraft !== null ||
+    unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
-  const isBusy = (): boolean => {
-    if (replyInFlight.current || mutationsInFlight() > 0 || hasUnsentWork) return true;
-    const active = document.activeElement;
-    return Boolean(
-      active &&
-        paneRootRef.current?.contains(active) &&
-        (active instanceof HTMLInputElement ||
-          active instanceof HTMLTextAreaElement ||
-          active instanceof HTMLSelectElement),
-    );
-  };
-  const isBusyRef = useRef(isBusy);
-  isBusyRef.current = isBusy;
   // The build this page was served, read from its index.html at page load (never from a fetch).
   const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
-  const [newerReleaseServed, setNewerReleaseServed] = useState(false);
+  // A newer build is live but not loaded. It loads at the next safe boundary: an email switch, or 15 idle minutes.
+  const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
+  const pendingBuildRef = useRef(pendingBuild);
+  pendingBuildRef.current = pendingBuild;
+  const quoteSessionDirtyRef = useRef(quoteSessionDirty);
+  quoteSessionDirtyRef.current = quoteSessionDirty;
+  // Input inside the pane (keys, typing, pointer) resets the idle clock.
+  const lastInputAtRef = useRef(Date.now());
+  const markInput = () => {
+    lastInputAtRef.current = Date.now();
+  };
   useEffect(() => {
     // Dev and test servers serve no release file, so only released builds check.
     if (!import.meta.env.PROD || loadedBuild === null) return;
-    const watch = createPaneReleaseWatch({
+    const watch = createPaneVersionWatch({
       loadedBuild,
       fetchServed: () => fetchPaneVersion(),
-      isBusy: () => isBusyRef.current(),
-      reload: () => window.location.reload(),
-      guard: sessionPaneReloadGuard(),
-      onNewerRelease: () => setNewerReleaseServed(true),
+      onPending: (served) => setPendingBuild(served),
     });
     const poll = () => void watch.check();
     poll();
     const timer = window.setInterval(poll, PANE_RELEASE_POLL_MS);
     window.addEventListener('focus', poll);
+    const idleTimer = window.setInterval(() => {
+      if (
+        reloadAtIdle({
+          pending: pendingBuildRef.current !== null,
+          mutationsInFlight: mutationsInFlight(),
+          quoteSessionDirty: quoteSessionDirtyRef.current,
+          idleMs: Date.now() - lastInputAtRef.current,
+        })
+      ) {
+        reloadPane();
+      }
+    }, PANE_IDLE_CHECK_MS);
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(idleTimer);
       window.removeEventListener('focus', poll);
     };
   }, [loadedBuild]);
+
+  // Email switch. A pending build loads before the new email renders, because panels reset on switch anyway. A
+  // mutation in flight keeps the pane on this build. Only a new email counts: a bridge gap (null) is not a switch,
+  // so going to no email and back to the same one neither reloads nor clears the note.
+  const renderedIdentityRef = useRef(selectedIdentity); // the last email that was actually shown
+  const emailSwitched = selectedIdentity !== null && selectedIdentity !== renderedIdentityRef.current;
+  const reloadForSwitch =
+    emailSwitched && reloadAtEmailSwitch({ pending: pendingBuild !== null, mutationsInFlight: mutationsInFlight() });
+  const reloadForSwitchRef = useRef(false);
+  reloadForSwitchRef.current = reloadForSwitch;
+  // Sticky: once the switch reload is requested, the placeholder stays until the page is replaced.
+  const [switchReloading, setSwitchReloading] = useState(false);
+  useLayoutEffect(() => {
+    if (selectedIdentity === null) return;
+    const switched = selectedIdentity !== renderedIdentityRef.current;
+    renderedIdentityRef.current = selectedIdentity;
+    if (!switched || !reloadForSwitchRef.current) return;
+    setSwitchReloading(true);
+    reloadPane();
+  }, [selectedIdentity]);
 
   // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
   const pendingDinnerFallbackStepRef = useRef<string | null>(null);
@@ -716,6 +759,13 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
         <p className="text-xs text-slate-500">Loading session…</p>
+      </div>
+    );
+  }
+  if (reloadForSwitch || switchReloading) {
+    return (
+      <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
+        <p className="text-xs text-slate-500">Loading the latest Nava pane…</p>
       </div>
     );
   }
@@ -787,6 +837,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
   const currentSubject = activeEmail?.subject || 'Suite Availability Request';
   const currentSender = activeEmail?.senderName || 'David Miller';
   const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
+
+  // The reply draft is a write to Outlook. It counts as in flight until it settles, like a tRPC mutation.
+  const trackedDraft = (scope: ReplyDraftScope) => {
+    beginMutation();
+    void handleInsertAiDraft(scope).finally(endMutation);
+  };
 
   const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected') => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
@@ -1389,9 +1445,14 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       : 'Draft the selected option only';
 
   return (
-    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
-      {/* Strict 380px pane container */}
-      <div className="shadow-xs relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
+    <div
+      onKeyDownCapture={markInput}
+      onInputCapture={markInput}
+      onPointerDownCapture={markInput}
+      className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+    >
+      {/* Fills the Outlook pane; never narrower than 320px. */}
+      <div className="shadow-xs relative flex min-h-screen w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
         <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
           <div className="flex items-center gap-2">
@@ -1456,9 +1517,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </Button>
           </div>
         )}
-        {newerReleaseServed && (
+        {pendingBuild !== null && (
           <div role="status" className="m-3 mb-0 rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
-            <p>New version available — reopen the pane.</p>
+            <p>New version available — it will load when you open the next email.</p>
           </div>
         )}
         {selectionOutsideMailbox && (
@@ -1471,7 +1532,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
           </div>
         )}
 
-        {/* Top Step Switcher Navigation Bar */}
+        {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). */}
+        {currentScreen !== 'tool' && (
         <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
           <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
             <span className="text-[11px] text-[#64748b]">Step</span>
@@ -1505,6 +1567,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             ))}
           </div>
         </div>
+        )}
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
         {currentScreen === 'welcome' && (
@@ -1728,30 +1791,30 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
         {currentScreen === 'tool' && (
-          <main className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
-            {/* Email Context Bar */}
-            <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
-                <div className="flex min-w-0 flex-col">
-                  <span className="truncate text-xs font-semibold text-[#1e293b]">
-                    {currentSubject}
-                  </span>
-                  <span className="truncate text-[11px] text-[#64748b]">
-                    {currentSender} &lt;{currentSenderEmail}&gt;
-                  </span>
+          <main className={`flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5 ${NATIVE_VISIBLE_SCROLLBAR_CLASSES}`}>
+            {/* Email context for the selected email; until one is selected, an empty state. */}
+            {activeEmail ? (
+              <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate text-xs font-semibold text-[#1e293b]">
+                      {activeEmail.subject || '(no subject)'}
+                    </span>
+                    <span className="truncate text-[11px] text-[#64748b]">
+                      {`${activeEmail.senderName || 'Unknown sender'}${activeEmail.senderEmail ? ` <${activeEmail.senderEmail}>` : ''}`}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              {activeEmail ? (
                 <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                   <Check className="h-3 w-3" /> Synced
                 </span>
-              ) : (
-                <span className="flex shrink-0 items-center gap-1 rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                  Sample
-                </span>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div id="quote-selected-message" className="rounded-sm border border-dashed border-[#cbd5e1] p-3 text-center text-xs text-[#64748b]">
+                Click an email to start
+              </div>
+            )}
 
             <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
             <VoucherFindCard
@@ -1766,10 +1829,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               }
             />
 
-            {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-              {activeEmail
-                ? "Nava's suggestions from this email. Check and correct them before running searches."
-                : 'Sample data, not from a live email.'}
+            {activeEmail && !quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
+              Nava&apos;s suggestions from this email. Check and correct them before running searches.
             </p>}
 
             <QuoteWorkflowPanel
@@ -1790,7 +1851,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
-              onStaffNote={(staffNote) => dispatchQuote({ type: 'staff_note', staffNote })}
+              onStaffNote={(staffNote) => {
+                setStaffNoteSent(staffNote);
+                dispatchQuote({ type: 'staff_note', staffNote });
+              }}
+              staffNoteDraft={staffNoteDraft}
+              onStaffNoteDraftChange={setStaffNoteDraft}
               hmsQueue={{ pending: quoteRunPending, status: hmsQueue }}
               onLoadRunScreenshot={(input) =>
                 bindQuoteRunScreenshot({
@@ -1816,7 +1882,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 <Button
                   type="button"
                   aria-label={allOptionsDraft ? allOptionsLabel : 'Insert Draft in Outlook'}
-                  onClick={() => handleInsertAiDraft(allOptionsDraft ? 'all' : 'selected')}
+                  onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
                   disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
                   className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
                 >
@@ -1828,7 +1894,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                       : 'Insert draft in Outlook'}
                 </Button>
                 {allOptionsDraft ? (
-                  <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+                  <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
                     Combined reply (you can edit it)
                     <textarea
                       aria-label="Combined reply"
@@ -1852,7 +1918,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                   <Button
                     type="button"
                     aria-label={selectedOptionLabel}
-                    onClick={() => handleInsertAiDraft('selected')}
+                    onClick={() => trackedDraft('selected')}
                     disabled={
                       !activeEmail ||
                       !supportsAction('CREATE_REPLY_DRAFT') ||
@@ -1926,7 +1992,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </div>
 
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
-              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-2.5 text-xs">
+              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-xs">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
                   System check results
                 </p>
@@ -1967,34 +2033,19 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
           </main>
         )}
 
-        {/* Minimal Pilot Footer */}
-        <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">
-          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10.5px] text-[#94a3b8]">
-            {loadedBuild && (
-              <>
-                <span>Build {loadedBuild.slice(0, 7)}</span>
-                <span className="text-[#cbd5e1]">·</span>
-              </>
-            )}
-            <span>
-              Pilot feedback:{' '}
-              <a href="mailto:aroransh17@gmail.com" className="text-[#64748b] hover:underline">
-                aroransh17@gmail.com
-              </a>
-            </span>
-            <span className="text-[#cbd5e1]">·</span>
-            <span>
-              WhatsApp:{' '}
-              <a
-                href="https://wa.me/447505014078"
-                target="_blank"
-                rel="noreferrer"
-                className="text-[#64748b] hover:underline"
-              >
-                +44 7505 014078
-              </a>
-            </span>
-          </div>
+        {/* ⋯ menu: connection check, tour, feedback and build id. */}
+        <footer className="mt-auto flex shrink-0 items-center justify-end border-t border-[#f1f5f9] px-3 py-1.5">
+          <PaneMenu
+            buildRelease={loadedBuild}
+            onCheckConnection={() => {
+              setCurrentScreen('diagnostics');
+              if (pingState !== 'loading') void executeServerPing();
+            }}
+            onReplayTour={() => {
+              setTourSlideIndex(0);
+              setCurrentScreen('tour');
+            }}
+          />
         </footer>
       </div>
     </div>

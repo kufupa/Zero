@@ -242,13 +242,17 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(localStorage.getItem('nava_onboarding_completed')).toBe('true');
   });
 
-  it('supports direct switching between steps via top switcher bar', () => {
+  it('supports direct switching between steps via top switcher bar, and hides the bar on the tool', () => {
     render(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: /3\. Tour/i }));
+    expect(screen.getByText(/Automatic Email Sync/i)).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: /1\. Welcome/i }));
     expect(screen.getByText(/Welcome to Nava/i)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /1\. Welcome/i })).toBeNull();
   });
 
   it('correctly opens the quote tool without a September RATE_TABLE calendar', async () => {
@@ -261,11 +265,13 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(await screen.findByRole('button', { name: /^Run next$/i })).toBeDefined();
   });
 
-  it('displays Sample badge when no active email is present from bridge', () => {
+  it('shows an empty state instead of sample data when no email is selected', () => {
     activeEmailState.current = null;
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    expect(screen.getByText('Sample')).toBeDefined();
+    expect(screen.getByText('Click an email to start')).toBeDefined();
+    expect(screen.queryByText('Sample')).toBeNull();
     expect(screen.queryByText('Synced')).toBeNull();
+    expect(screen.queryByText(/Suite Availability Request/)).toBeNull();
   });
 });

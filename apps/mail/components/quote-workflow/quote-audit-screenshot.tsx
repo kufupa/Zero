@@ -88,7 +88,7 @@ function AuditThumbnail({
       type="button"
       aria-label="See what Nava did in HMS"
       onClick={onOpen}
-      className="flex flex-col gap-1.5 rounded-xs border border-[#cbd5e1] bg-white p-2 text-left hover:border-[#0066cc]"
+      className="flex flex-col gap-1.5 rounded-xs border border-[#cbd5e1] bg-white p-3 text-left hover:border-[#0066cc]"
     >
       <img
         src={shot.dataUrl}

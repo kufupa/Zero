@@ -55,7 +55,7 @@ export function NotSupportedList({
   return (
     <section
       role="alert"
-      className="flex flex-col gap-1 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800"
+      className="flex flex-col gap-1 rounded-sm border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
       aria-label="Not supported"
     >
       {copies.map((copy) => (
