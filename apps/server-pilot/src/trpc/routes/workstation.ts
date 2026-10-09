@@ -8,11 +8,13 @@ import {
   attestStaffQuote,
   buildStaffProposalFacts,
   partyContractReviewNote,
+  partyNames,
   quoteWithPartyFallback,
   type StaffQuoteAttestation,
   type StaffQuoteInput,
   type StaffQuoteParties,
 } from '../../ai/staff-quote-workflow.js';
+import { otherBoardContractNotes, type RateOption } from '../../ai/rate-options.js';
 import { quoteRateContextEnabled } from '../../ai/quote-rate-switch.js';
 import { verifyPartyPick } from '../../ai/pane-party-lookup.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
@@ -633,6 +635,8 @@ export const workstationRouter = router({
     // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
     // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
     const notes: string[] = [];
+    // The rate cards of the attempt that priced. Empty when the quote failed before they were built.
+    let rateOptions: RateOption[] = [];
     let quoteInput: StaffQuoteInput = input;
     if (input.parties) {
       if (quoteRateContextEnabled()) {
@@ -739,7 +743,12 @@ export const workstationRouter = router({
                     traceFinishes.push(finished);
                   },
                 },
-                attempt.approval,
+                {
+                  ...attempt.approval,
+                  onRateOptions: (options: RateOption[]) => {
+                    rateOptions = options;
+                  },
+                },
               );
               return executeStaffQuote(
                 attempt,
@@ -764,7 +773,10 @@ export const workstationRouter = router({
             }).then((attempt) => {
               prepared = attempt.prepared;
               const contractNote = partyContractReviewNote(quoteInput.parties, attempt.result.groups);
+              // A contract on another board only: the public quote says which contract it did not take, instead of "no contract".
+              const elsewhere = quoteInput.parties ? otherBoardContractNotes(partyNames(quoteInput.parties), rateOptions) : [];
               if (attempt.note) notes.push(attempt.note);
+              else if (elsewhere.length) notes.push(...elsewhere);
               else if (contractNote) notes.push(contractNote);
               return attempt.result;
             });
@@ -860,6 +872,7 @@ export const workstationRouter = router({
         threadId: mail.threadId,
         factRefs: proposal.factRefs,
         extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
+        rateOptions,
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,
         inputDigest: prepared.inputDigest,

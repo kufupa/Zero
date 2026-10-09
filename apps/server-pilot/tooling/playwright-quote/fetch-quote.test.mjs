@@ -406,10 +406,10 @@ test('bound party with no negotiated rates returns public BAR and flags no speci
   f.calendar.options[0].rate='BCO1B: Negotiated Contracted  Best Available Rate';
   const mixed=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
   assert.equal(mixed.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
-  assert.equal(mixed.options.find(o=>o.rate.code==='BAR').matchStatus,'unresolved');
+  assert.equal(mixed.options.find(o=>o.rate.code==='BAR').matchStatus,'match');
   assert.equal(mixed.options.find(o=>o.rate.code==='BCO1B').matchStatus,'match');
   const bar=mixed.options.find(o=>o.rate.code==='BAR');
-  assert.equal(quote.reapplyBedAssessment(bar,{matchStatus:'match',conditions:[]}).matchStatus,'unresolved');
+  assert.equal(quote.reapplyBedAssessment(bar,{matchStatus:'match',conditions:[]}).matchStatus,'match');
 });
 test('filtered rate or room search cannot claim the party has no special rates',()=>{
   const f=multipleSource();
@@ -418,7 +418,25 @@ test('filtered rate or room search cannot claim the party has no special rates',
   const criteria={travelAgencyID:'290'};
   const filtered=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
   assert.equal(filtered.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
-  assert.equal(filtered.options.every(o=>o.matchStatus==='unresolved'),true);
+  assert.equal(filtered.options.every(o=>o.matchStatus==='match'&&o.conditions.find(c=>c.field==='rateContext')?.kind==='preferred'),true);
+});
+test('a verified party keeps its public row bookable; an unverified party keeps it unresolved',()=>{
+  const f=multipleSource();
+  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
+  const criteria={travelAgencyID:'290'};
+  const verified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{agency:{id:'290'}});
+  assert.ok(verified.options.length>0&&verified.options.every(o=>o.rateScope==='public'));
+  for(const o of verified.options){assert.equal(o.matchStatus,'match');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'preferred');}
+  const unverified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{});
+  assert.ok(unverified.options.length>0&&unverified.options.every(o=>o.rateScope==='public'));
+  for(const o of unverified.options){assert.equal(o.matchStatus,'unresolved');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'required');}
+  assert.equal(quote.reapplyBedAssessment(unverified.options[0],{matchStatus:'match',conditions:[]}).matchStatus,'unresolved');
+});
+test('OPTION_LIMIT counts only a cut row that is not an alternative',()=>{
+  const rows=[{id:0,matchStatus:'match'},{id:1,matchStatus:'alternative'},{id:2,matchStatus:'alternative'}];
+  assert.equal(quote.hiddenRowsMatter(rows,1),false);
+  assert.equal(quote.hiddenRowsMatter(rows,0),true);
+  assert.equal(quote.hiddenRowsMatter([{matchStatus:'match'},{matchStatus:'unresolved'}],1),true);
 });
 test('summary states BAR is not a contracted rate when no special rates',()=>{
   const text=quote.summarize({

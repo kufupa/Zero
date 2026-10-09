@@ -14,6 +14,7 @@ import {
   partyContractChoice,
 } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
+import { otherBoardContractNotes, type RateOption } from '../src/ai/rate-options.js';
 import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../src/ai/party-aliases.js';
 import {
@@ -55,12 +56,22 @@ afterEach(() => {
 });
 
 // Fixture rows, named the way HMS names them. The names are test labels, not live data.
-type Rate = { code: string; label: string; rateScope: 'public' | 'contextual' | 'unknown'; amounts: string[]; room?: string };
+type Rate = {
+  code: string;
+  label: string;
+  rateScope: 'public' | 'contextual' | 'unknown';
+  amounts: string[];
+  room?: string;
+  board?: 'room_only' | 'breakfast';
+  availability?: 'available' | 'unavailable';
+};
 const BAR: Rate = { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['500.00'] };
 const WOOLWORTHS_FLAGGED: Rate = { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['520.00'] };
 const AGENCY_FLAGGED: Rate = { code: 'WSF2B', label: 'Agency Negotiated', rateScope: 'contextual', amounts: ['610.00'] };
 // Named after the party but not flagged by HMS: it must never be offered as a contract, however cheap it is.
 const NAME_ONLY: Rate = { code: 'NGD10B', label: 'Woolworths Corporate', rateScope: 'unknown', amounts: ['100.00'] };
+// A flagged contract on the B&B board only: a room-only request must not take it, but it is listed beside the quote.
+const BB_FLAGGED: Rate = { code: 'BCO2B', label: 'Woolworths Negotiated B&B', rateScope: 'contextual', amounts: ['640.00'], board: 'breakfast' };
 
 function rateOption(rate: Rate, context: Record<string, unknown>) {
   const dates = occupiedDates(ARRIVAL, DEPARTURE);
@@ -68,12 +79,12 @@ function rateOption(rate: Rate, context: Record<string, unknown>) {
     id: `${rate.room ?? 'SKNG'}:${rate.code}`,
     room: { code: rate.room ?? 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
     rate: { code: rate.code, label: rate.label },
-    board: 'Room Only R',
+    board: rate.board === 'breakfast' ? 'Bed & Breakfast R' : 'Room Only R',
     appliedContext: context,
     rateScope: rate.rateScope,
     // Verified on purpose: the contract rule must hold by flag alone, not because some other check filtered the row.
     eligibility: 'verified',
-    availability: 'available',
+    availability: rate.availability ?? 'available',
     matchStatus: 'match',
     held: false,
     totals: { taxInclusive: true },
@@ -86,25 +97,25 @@ function rateOption(rate: Rate, context: Record<string, unknown>) {
 }
 
 /**
- * The rows one Rate Shop read returns, as fetch-quote.mjs marks them. Under a party context, a public row is accepted
- * only in an unfiltered read (no exact room or rate code, Preset or no strategy) with no flagged row in the read. Any
- * other row under the context is unresolved, which is how the runner rejects the capture.
+ * The rows one Rate Shop read returns, as fetch-quote.mjs marks them under a party context. A flagged row and a public row are
+ * bookable matches (the public row is the BAR it is). A name-only row is unresolved. A row off the requested board, room or
+ * rate is an alternative, which the staff read keeps for the rate cards.
  */
 function rateShopRows(request: any, rates: Rate[], context: Record<string, unknown>) {
   const partyRequested = Object.keys(request.rateContext ?? {}).length > 0;
-  const filtered = request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
-  const strategy = String(request.search?.salesStrategy ?? '').toUpperCase();
-  const unfiltered = !filtered && (strategy === '' || strategy === 'PRESET');
-  const noSpecialRates =
-    partyRequested && unfiltered && rates.some((r) => r.rateScope === 'public') && rates.every((r) => r.rateScope !== 'contextual');
-  return rates.map((rate) => ({
-    ...rateOption(rate, context),
-    eligibility: rate.rateScope === 'unknown' ? 'conditional' : 'verified',
-    matchStatus:
-      partyRequested && rate.rateScope !== 'contextual' && !(noSpecialRates && rate.rateScope === 'public')
-        ? 'unresolved'
-        : 'match',
-  }));
+  const ask = request.rooms[0]?.required ?? {};
+  const boardOf = (rate: Rate) => (rate.board === 'breakfast' ? 'breakfast' : 'room_only');
+  return rates.map((rate) => {
+    const off =
+      (ask.boardBases?.length && !ask.boardBases.includes(boardOf(rate))) ||
+      (ask.roomCodes?.length && !ask.roomCodes.includes(rate.room ?? 'SKNG')) ||
+      (ask.rateCodes?.length && !ask.rateCodes.includes(rate.code));
+    return {
+      ...rateOption(rate, context),
+      eligibility: rate.rateScope === 'unknown' ? 'conditional' : 'verified',
+      matchStatus: off ? 'alternative' : partyRequested && rate.rateScope === 'unknown' ? 'unresolved' : 'match',
+    };
+  });
 }
 
 const policy = {
@@ -122,7 +133,11 @@ const policy = {
   levy: 'included' as const,
 };
 
-function groupInput(parties?: StaffQuoteParties, text: { company?: string; agency?: string } = {}) {
+function groupInput(
+  parties?: StaffQuoteParties,
+  text: { company?: string; agency?: string } = {},
+  group: { pin?: string; roomCodes?: string[] } = {},
+) {
   return staffQuoteInput.parse({
     messageId: scope.messageId,
     sourceHash: scope.sourceHash,
@@ -137,6 +152,8 @@ function groupInput(parties?: StaffQuoteParties, text: { company?: string; agenc
         adults: 1,
         childrenAges: [],
         board: 'room_only',
+        ...(group.roomCodes ? { roomCodes: group.roomCodes } : {}),
+        ...(group.pin ? { rateCode: group.pin } : {}),
       },
     ],
     ...text,
@@ -162,7 +179,7 @@ function rateShopServices(
   prepared: ReturnType<typeof prepareStaffQuote>,
   rates: Rate[],
   sent: any[],
-  flags: { readParty?: any; incompleteParty?: boolean } = {},
+  flags: { readParty?: any; incompleteParty?: boolean; onRateOptions?: (options: RateOption[]) => void } = {},
 ) {
   const context = resolvedContext(prepared.request.rateContext);
   return createReservationistBusinessServices(
@@ -204,7 +221,7 @@ function rateShopServices(
       resolvePolicy: async () => policy,
       ...(flags.readParty ? { readParty: flags.readParty } : {}),
     },
-    prepared.approval,
+    { ...prepared.approval, ...(flags.onRateOptions ? { onRateOptions: flags.onRateOptions } : {}) },
   );
 }
 
@@ -212,18 +229,37 @@ function rateShopServices(
 async function quoteWith(
   parties: StaffQuoteParties | undefined,
   rates: Rate[],
-  options: { header?: { company?: string; agency?: string }; readParty?: any; incompleteParty?: boolean } = {},
+  options: {
+    header?: { company?: string; agency?: string };
+    readParty?: any;
+    incompleteParty?: boolean;
+    pin?: string;
+    roomCodes?: string[];
+  } = {},
 ) {
-  const confirmed = groupInput(parties, options.header);
+  const confirmed = groupInput(parties, options.header, { pin: options.pin, roomCodes: options.roomCodes });
   const first = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
   const sent: any[] = [];
+  // The rate cards of the attempt that priced; a failed attempt never publishes any.
+  const cards: RateOption[][] = [];
+  const onRateOptions = (published: RateOption[]) => {
+    cards.push(published);
+  };
   const attempt = await quoteWithPartyFallback({
     input: confirmed,
     first,
     retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
-    run: (prepared) => executeStaffQuote(prepared, rateShopServices(prepared, rates, sent, options), async () => true),
+    run: (prepared) =>
+      executeStaffQuote(prepared, rateShopServices(prepared, rates, sent, { ...options, onRateOptions }), async () => true),
   });
-  return { prepared: first, revision: attempt.result, note: attempt.note, fellBack: attempt.fellBack, sent };
+  return {
+    prepared: first,
+    revision: attempt.result,
+    note: attempt.note,
+    fellBack: attempt.fellBack,
+    sent,
+    cards: cards.at(-1) ?? [],
+  };
 }
 
 const company = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
@@ -382,6 +418,80 @@ describe('contract rates from the picked company or agency', () => {
     const context = partyRateContext({ company: company('49', 'Woolworths'), agency: agency('569', 'Agency') });
     expect(Object.keys(context ?? {}).sort()).toEqual(['agency', 'organization']);
     expect(partyRateContext(undefined)).toBeUndefined();
+  });
+});
+
+describe('staff rate cards: the quoted option first, other boards labelled, a pin re-runs the quote', () => {
+  it('(a) a room-only request with only a B&B contract quotes the public room-only rate, lists the contract second, and says so', async () => {
+    const { revision, fellBack, cards } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, BB_FLAGGED]);
+    expect(fellBack).toBe(false);
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({ rateCode: 'BARRO', board: 'room_only', contract: false, matchesRequest: true, selected: true, priced: 'full' });
+    expect(cards[1]).toMatchObject({ rateCode: 'BCO2B', board: 'bb', boardLabel: 'Bed & Breakfast R', contract: true, onlyContract: true, matchesRequest: false, selected: false, priced: 'summary' });
+    expect(otherBoardContractNotes(['Woolworths'], cards)).toEqual([
+      "Woolworths's contract rate is Bed & Breakfast R only (BCO2B). Quoted room only at the public rate as asked. Pick the contract option to switch.",
+    ]);
+  });
+
+  it('(b) a room-only contract is quoted first, with the public room-only rate listed beside it', async () => {
+    const { revision, cards } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED]);
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
+    expect(cards.map((card) => card.rateCode)).toEqual(['BCO1B', 'BARRO']);
+    expect(cards[0]).toMatchObject({ contract: true, matchesRequest: true, selected: true, priced: 'full' });
+    expect(cards[1]).toMatchObject({ contract: false, matchesRequest: true, selected: false, priced: 'summary' });
+    expect(otherBoardContractNotes(['Woolworths'], cards)).toEqual([]);
+  });
+
+  it('(c) with no flagged row on any board, the first attempt is PARTY_NO_CONTRACT and the public retry has no contract card', async () => {
+    const parties = { company: company('49', 'Woolworths') };
+    const first = prepareStaffQuote(groupInput(parties), scope, signer, new AbortController().signal);
+    await expect(executeStaffQuote(first, rateShopServices(first, [BAR], []), async () => true)).rejects.toMatchObject({
+      code: PARTY_NO_CONTRACT_CODE,
+    });
+    const { fellBack, note, cards } = await quoteWith(parties, [BAR]);
+    expect(fellBack).toBe(true);
+    expect(note).toBeNull();
+    expect(cards.some((card) => card.contract)).toBe(false);
+  });
+
+  it('(d) a sold-out requested room still fails as before, and no rate cards are published for that quote', async () => {
+    const first = prepareStaffQuote(
+      groupInput({ company: company('49', 'Woolworths') }, {}, { roomCodes: ['SKNG'] }),
+      scope,
+      signer,
+      new AbortController().signal,
+    );
+    const cards: RateOption[][] = [];
+    const rates: Rate[] = [{ ...BAR, availability: 'unavailable' }, { ...BAR, room: 'STQN' }];
+    await expect(
+      executeStaffQuote(first, rateShopServices(first, rates, [], { onRateOptions: (published) => cards.push(published) }), async () => true),
+    ).rejects.toMatchObject({ code: 'business_selected_price_unavailable' });
+    expect(cards).toEqual([]);
+  });
+
+  it('(f) a pinned rate code re-runs the quote with only that rate priced in full', async () => {
+    const pinnedBar = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BARRO' });
+    expect(pinnedBar.prepared.request.rooms[0]!.required?.rateCodes).toEqual(['BARRO']);
+    expect(pinnedBar.revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(pinnedBar.cards.filter((card) => card.priced === 'full').map((card) => card.rateCode)).toEqual(['BARRO']);
+    expect(pinnedBar.cards.find((card) => card.rateCode === 'BCO1B')).toMatchObject({ matchesRequest: false, selected: false, priced: 'summary' });
+
+    const pinnedContract = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BCO1B' });
+    expect(pinnedContract.revision.groups[0]!.rateCode).toBe('BCO1B');
+    expect(pinnedContract.cards[0]).toMatchObject({ rateCode: 'BCO1B', selected: true, priced: 'full' });
+  });
+
+  it('the pin and the alternatives flag reach the native request, and a malformed pin is refused', () => {
+    const prepared = prepareStaffQuote(
+      groupInput({ company: company('49', 'Woolworths') }, {}, { pin: 'BCO1B' }),
+      scope,
+      signer,
+      new AbortController().signal,
+    );
+    expect(prepared.request.search.includeAlternatives).toBe(true);
+    expect(prepared.request.rooms[0]!.required).toMatchObject({ rateCodes: ['BCO1B'], boardBases: ['room_only'] });
+    expect(() => groupInput(undefined, {}, { pin: 'bco1b!' })).toThrow();
   });
 });
 

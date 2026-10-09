@@ -564,8 +564,9 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {
-      if(noSpecialRates&&option.rateScope==='public') {
-        option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:'No special rates for this party; public BAR is returned.'});
+      // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
+      if(contextVerified&&option.rateScope==='public') {
+        option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
       } else {
         option.conditions.push({kind:'required',field:'rateContext',status:'unknown',requested:request.rateContext,evidence:null,reason:'Public/conditional row does not prove requested contextual entitlement.'});
         if(option.matchStatus==='match') option.matchStatus='unresolved';
@@ -603,6 +604,8 @@ export function limitOptions(ordered,max) {
   const quoteEligible=o=>o.matchStatus==='match'&&o.eligibility==='verified'&&o.availability==='available';
   return {options,truncated:hidden.length>0,matchingRowsUnseen:hidden.some(quoteEligible)};
 }
+// ponytail: a cut alternative is not a cut match, so it must not mark a party read incomplete (OPTION_LIMIT counts as coverage).
+export function hiddenRowsMatter(ordered,max){return ordered.slice(max).some(o=>o.matchStatus!=='alternative');}
 
 export function reapplyBedAssessment(option,assessment) {
   const contextConditions=option.conditions.filter(c=>c.field==='rateContext');
@@ -751,7 +754,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         (request.search.includeRestricted||o.availability!=='restricted'));
       const {options,truncated,matchingRowsUnseen}=limitOptions(visible,request.maxOptionsPerGroup);
       const groupIssues=[...parsed.issues,...detailIssues,...parsed.options.flatMap(o=>o.issues.filter(i=>i.code==='DETAIL_COVERAGE_PARTIAL'))];
-      if(truncated)groupIssues.push(issue('OPTION_LIMIT',room.id,'Returned options truncated.','Narrow native room/rate codes or increase maxOptionsPerGroup.'));
+      if(truncated&&hiddenRowsMatter(visible,request.maxOptionsPerGroup))groupIssues.push(issue('OPTION_LIMIT',room.id,'Returned options truncated.','Narrow native room/rate codes or increase maxOptionsPerGroup.'));
       const requiredPartial=request.details==='full'&&parsed.options.some(o=>o.details.status!=='complete')||
         parsed.options.some(o=>o.matchStatus==='unresolved')&&!eligible.length;
       const completeness={...parsed.completeness,returnedOptions:options.length,detailOptions:[...details.keys()].length,
