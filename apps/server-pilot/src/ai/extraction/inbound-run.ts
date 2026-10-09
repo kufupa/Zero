@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
-import { mailThread, message } from '../../db/schema/mail.js';
+import { mailCategory, mailThread, mailThreadCategory, message } from '../../db/schema/mail.js';
 import { mailExtraction } from '../../db/schema/work.js';
+import { getSenderPreference } from '../../mail/sender-preference.js';
 import type { ModelAdapter } from '../bedrock/adapter.js';
+import { AI_DURABLE_PRIMARY_CATEGORY_SLUGS } from '../categories.js';
+import { isAutoTriageNeverSpam } from '../never-spam.js';
 import { canonicalInternetMessageId, resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
@@ -161,6 +164,7 @@ export async function runInboundExtraction(
     .select({
       threadId: message.threadId,
       direction: message.direction,
+      fromAddress: message.fromAddress,
       messageIdHeader: message.messageIdHeader,
     })
     .from(message)
@@ -211,6 +215,7 @@ export async function runInboundExtraction(
     adapter,
     selection,
     messageId: run.triggerMessageId,
+    from: trigger.fromAddress,
     signal: deps.signal,
     deadlineMs: deps.extractionDeadlineMs ?? EXTRACTION_DEADLINE_MS,
   });
@@ -255,8 +260,11 @@ export async function runInboundExtraction(
       ...(translationUsage ? { translation: translationUsage } : {}),
     },
   });
-  // Same effect as the triage spam write. A person's spam lock, either way, wins over the model.
-  if (extraction.kind === 'spam' && env.AI_WRITE_GATE_ENABLED === 'true') {
+  if (
+    extraction.kind === 'spam' &&
+    env.AI_WRITE_GATE_ENABLED === 'true' &&
+    (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress))
+  ) {
     const now = new Date();
     await db
       .update(mailThread)
@@ -271,6 +279,47 @@ export async function runInboundExtraction(
       );
   }
   return 'stored';
+}
+
+/**
+ * The triage spam guards, so the model never moves mail that triage would keep. A person's lock (checked in the
+ * update), a settled primary folder, an allowed or never-spam sender, and a thread with a staff reply all win.
+ */
+async function spamWriteAllowed(
+  db: DB,
+  transportId: string,
+  threadId: string,
+  fromAddress: string,
+): Promise<boolean> {
+  if (isAutoTriageNeverSpam(fromAddress)) return false;
+  if ((await getSenderPreference({ db, transportId, emailRaw: fromAddress })) === 'allow') {
+    return false;
+  }
+  const [settled] = await db
+    .select({ threadId: mailThreadCategory.threadId })
+    .from(mailThreadCategory)
+    .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+    .where(
+      and(
+        eq(mailThreadCategory.threadId, threadId),
+        eq(mailThreadCategory.transportId, transportId),
+        inArray(mailCategory.slug, [...AI_DURABLE_PRIMARY_CATEGORY_SLUGS]),
+      ),
+    )
+    .limit(1);
+  if (settled) return false;
+  const [staffReply] = await db
+    .select({ id: message.id })
+    .from(message)
+    .where(
+      and(
+        eq(message.threadId, threadId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'outbound'),
+      ),
+    )
+    .limit(1);
+  return !staffReply;
 }
 
 /** Worker entry for an `inbound_extraction` run. Maps the outcome onto the run's state. */

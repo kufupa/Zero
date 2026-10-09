@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
 import type { DB } from '../src/db/client.js';
 import { buildInboundPrompt, extractInboundMail } from '../src/ai/extraction/extract.js';
@@ -20,11 +20,18 @@ import {
   TRANSLATE_RULES,
 } from '../src/ai/extraction/translate.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
-import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import {
+  aiWorkflowRun,
+  mailSenderPreference,
+  mailThread,
+  message,
+} from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import { toAiRunFence } from '../src/ai/run-ledger.js';
 import {
+  AE1_FROM,
   AE1_OUTPUT,
+  AE1_SUBJECT,
   AE1_TEXT,
   AE2_OUTPUT,
   AE2_TEXT,
@@ -46,12 +53,14 @@ const CAPPED = { INBOUND_EXTRACTION: 'on', INBOUND_EXTRACTION_MAX_PER_HOUR: '1' 
 const CARD_DIGITS = /4111[ -]?1111[ -]?1111[ -]?1111/;
 
 beforeEach(() => __resetInboundExtractionCapForTests());
+afterEach(() => vi.unstubAllEnvs());
 
 async function seedMail(
   db: DB,
   threadId: string,
   body: string,
   direction: 'inbound' | 'outbound' = 'inbound',
+  fromAddress = 'sender@example.com',
 ): Promise<string> {
   const messageId = `msg-${threadId}`;
   await seedInboxThread(db, {
@@ -59,7 +68,7 @@ async function seedMail(
     transportId: TRANSPORT,
     transportEmail: 'centurion@legacyhotels.co.za',
     messageId,
-    fromAddress: 'sender@example.com',
+    fromAddress,
     subject: 'Rooms request',
     textBody: body,
     messageIdHeader: `${threadId}@example.com`,
@@ -100,22 +109,32 @@ async function rowFor(db: DB, messageId: string) {
 describe('inbound extraction stored read', () => {
   it('AE1: two date sets make two stays with stable ids, and the agency is the sender, not the end client', () =>
     withIngestionDb(async ({ db }) => {
-      const messageId = await seedMail(db, 'thread-ae1', AE1_TEXT);
+      const messageId = await seedMail(db, 'thread-ae1', AE1_TEXT, 'inbound', AE1_FROM);
       const model = fakeModel(() => AE1_OUTPUT);
-      const selection = selectionFor(AE1_TEXT);
+      const selection = selectionFor(AE1_TEXT, AE1_SUBJECT);
 
       expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
+      // The model sees the From address, so the agency can come from the sender domain.
+      expect(model.calls[0]?.userPrompt).toContain(`From: ${AE1_FROM}`);
+      expect(model.calls[0]?.systemPrompt).toMatch(/agency is the organisation of the sender/);
       const row = await rowFor(db, messageId);
       expect(row).toMatchObject({ status: 'succeeded', kind: 'quote', language: 'en', translation: null });
       const payload = row!.payload as MailExtractionPayload;
-      expect(payload.agency).toBe('Tailormade Travel');
-      expect(payload.endClient).toBe('New Frontiers');
-      expect(payload.contact.email).toBe('sam@tailormade.example');
+      // The sender's organisation is the agency. The client named in the subject is the end client.
+      expect(payload.agency).toBe('Horizon Trail Tours');
+      expect(payload.endClient).toBe('Summit Africa');
+      expect(payload.contact.email).toBe('priya@horizontrailtours.example');
       expect(payload.stays.map((stay) => stay.requested)).toEqual([
-        { arrival: '2026-10-26', departure: '2026-10-27' },
-        { arrival: '2026-11-17', departure: '2026-11-18' },
+        { arrival: '2027-10-26', departure: '2027-10-28' },
+        { arrival: '2027-11-17', departure: '2027-11-19' },
       ]);
-      expect(payload.stays[0]!.rows.reduce((sum, room) => sum + (room.rooms ?? 0), 0)).toBe(30);
+      // 30 rooms is a stay total with no split: the total is kept, the rows keep their types, rooms is asked for.
+      expect(payload.stays.map((stay) => stay.totalRooms)).toEqual([30, 30]);
+      expect(payload.stays[0]!.rows.map((room) => [room.roomType, room.rooms])).toEqual([
+        ['Single', null],
+        ['Double/Twin', null],
+      ]);
+      expect(payload.missing.map((item) => item.field)).toContain('rooms');
       expect(payload.stays[0]!.id).toMatch(/^s_[0-9a-f]{8}$/);
       expect(new Set(payload.stays.map((stay) => stay.id)).size).toBe(2);
       // English makes no second call.
@@ -191,6 +210,7 @@ describe('inbound extraction stored read', () => {
             hotel: null,
             requested: { arrival: '2026-10-31', departure: '2026-02-30' },
             booked: null,
+            totalRooms: 1000,
             rows: [],
           },
         ],
@@ -200,6 +220,7 @@ describe('inbound extraction stored read', () => {
       const payload = (await rowFor(db, messageId))!.payload as MailExtractionPayload;
       expect(payload.confirmationNumbers).toEqual(['57291630-1']);
       expect(payload.stays[0]!.requested).toEqual({ arrival: '2026-10-31', departure: null });
+      expect(payload.stays[0]!.totalRooms).toBeNull();
     }));
 
   it('an outbound saved-sent copy is not extracted and makes no call', () =>
@@ -212,15 +233,41 @@ describe('inbound extraction stored read', () => {
       expect(await rowFor(db, messageId)).toBeNull();
     }));
 
-  it('kind spam sets spamAt only when the write gate is on and no person has locked the thread', () =>
+  it('kind spam sets spamAt only with the write gate on and none of the triage not-spam guards', () =>
     withIngestionDb(async ({ db }) => {
       const gateOn = await seedMail(db, 'thread-spam-on', SPAM_TEXT);
       const locked = await seedMail(db, 'thread-spam-locked', SPAM_TEXT);
       const gateOff = await seedMail(db, 'thread-spam-off', SPAM_TEXT);
+      // Triage keeps these out of spam, so the model must too: an allowed sender and a thread staff replied on.
+      const allowed = await seedMail(db, 'thread-spam-allowed', SPAM_TEXT, 'inbound', 'friend@example.org');
+      const replied = await seedMail(db, 'thread-spam-replied', SPAM_TEXT);
       await db
         .update(mailThread)
         .set({ spamUserLockedAt: new Date() })
         .where(eq(mailThread.id, 'thread-spam-locked'));
+      await db.insert(mailSenderPreference).values({
+        id: 'pref-allow',
+        transportId: TRANSPORT,
+        email: 'friend@example.org',
+        kind: 'allow',
+      });
+      await db.insert(message).values({
+        id: 'msg-thread-spam-replied-staff',
+        transportId: TRANSPORT,
+        threadId: 'thread-spam-replied',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['sender@example.com'],
+        ccAddresses: [],
+        bccAddresses: [],
+        subject: 'Re: Rooms request',
+        textBody: 'Thanks, we will check.',
+        ownerHeaderValue: 'centurion@legacyhotels.co.za',
+        messageIdHeader: 'staff-reply@example.com',
+        references: [],
+        isRead: true,
+        isStarred: false,
+      });
       const model = fakeModel(() => SPAM_OUTPUT);
       const selection = selectionFor(SPAM_TEXT);
       const gateOpen = { ...ON, AI_WRITE_GATE_ENABLED: 'true' } as NodeJS.ProcessEnv;
@@ -228,6 +275,8 @@ describe('inbound extraction stored read', () => {
       await readMail(db, gateOn, selection, model.adapter, { env: gateOpen });
       await readMail(db, locked, selection, model.adapter, { env: gateOpen });
       await readMail(db, gateOff, selection, model.adapter);
+      await readMail(db, allowed, selection, model.adapter, { env: gateOpen });
+      await readMail(db, replied, selection, model.adapter, { env: gateOpen });
 
       const threads = await db
         .select({ id: mailThread.id, spamAt: mailThread.spamAt })
@@ -236,6 +285,8 @@ describe('inbound extraction stored read', () => {
       expect(spamAt('thread-spam-on')).not.toBeNull();
       expect(spamAt('thread-spam-locked')).toBeNull();
       expect(spamAt('thread-spam-off')).toBeNull();
+      expect(spamAt('thread-spam-allowed')).toBeNull();
+      expect(spamAt('thread-spam-replied')).toBeNull();
     }));
 
   it('a timeout stores a failed read with a reason, and a rerun with the same key is a no-op', () =>
@@ -387,6 +438,71 @@ describe('inbound extraction stored read', () => {
         }),
       ).toEqual({ runId: stale.run.id, state: 'dead_letter' });
       expect((await stateOf(stale.run.id)).state).toBe('dead_letter');
+    }));
+});
+
+describe('live admission enqueue', () => {
+  const observed = (id: string, direction: 'inbound' | 'outbound') => ({
+    transportId: TRANSPORT,
+    sourceId: 'source-one',
+    sourceObservationId: id,
+    semanticVersion: '1',
+    direction,
+    internetMessageId: `${id}@example.test`,
+    fromAddress: direction === 'inbound' ? 'guest@example.test' : 'centurion@legacyhotels.co.za',
+    toAddresses: [direction === 'inbound' ? 'centurion@legacyhotels.co.za' : 'guest@example.test'],
+    ccAddresses: [],
+    bccAddresses: [],
+    authoredAt: new Date('2026-10-09T10:00:00Z'),
+    sentAt: null,
+    textBody: `Body ${id}`,
+    htmlBody: null,
+    subject: 'Request',
+    inReplyTo: null,
+    references: [],
+    originalMsgKey: `outlook-sync-originals/v1/source/${id}`,
+    attachments: [],
+    sourceProvenance: {},
+  });
+
+  it('queues one versioned read for admitted inbound mail only, and none while the flag is off', () =>
+    withIngestionDb(async ({ db }) => {
+      const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+      const { admitLiveMessage } = await import('../src/mail/ingest/live-admission.js');
+      const admit = (messageId: string, receipt: string) =>
+        db.transaction((tx) =>
+          admitLiveMessage(tx as typeof db, {
+            transportId: TRANSPORT,
+            canonicalMessageId: messageId,
+            evidence: { kind: 'verified-pop3', sourceReceiptId: receipt },
+          }),
+        );
+      const extractionRuns = () =>
+        db
+          .select({
+            key: aiWorkflowRun.idempotencyKey,
+            trigger: aiWorkflowRun.triggerMessageId,
+            promptVersion: aiWorkflowRun.promptVersion,
+          })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.runKind, 'inbound_extraction'));
+
+      const flagOff = await persistOutlookHistory(db, observed('flag-off', 'inbound'));
+      expect((await admit(flagOff.messageId, 'flag-off')).admitted).toBe(true);
+      expect(await extractionRuns()).toHaveLength(0);
+
+      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      const inbound = await persistOutlookHistory(db, observed('inbound', 'inbound'));
+      const outbound = await persistOutlookHistory(db, observed('outbound', 'outbound'));
+      expect((await admit(inbound.messageId, 'inbound')).admitted).toBe(true);
+      expect((await admit(outbound.messageId, 'outbound')).admitted).toBe(true);
+      expect(await extractionRuns()).toEqual([
+        {
+          key: `inbound-extraction:${inbound.messageId}:${EXTRACTION_VERSION}`,
+          trigger: inbound.messageId,
+          promptVersion: EXTRACTION_VERSION,
+        },
+      ]);
     }));
 });
 

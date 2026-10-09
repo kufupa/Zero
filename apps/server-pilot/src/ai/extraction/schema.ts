@@ -30,10 +30,10 @@ export const mailExtractionSchema = z.object({
     .describe('ISO 639-1 code of the main body text, lower case, e.g. "en" or "fr". Null if unclear.'),
   kind: z.enum(MAIL_KINDS),
   agency: nullableText.describe(
-    'The organisation that SENT this mail, from its signature, letterhead or sender domain. Null for a private sender.',
+    'The organisation of the sender (the From address), from the From domain, signature or letterhead. Null for a private sender.',
   ),
   endClient: nullableText.describe(
-    'The company or group the rooms are for, only when it differs from the sender. Null if the same or not stated.',
+    'The client the booking is for, e.g. "our client X" or a client named in the subject, only when it differs from the sender. Null if the same or not stated.',
   ),
   contact: z.object({
     name: nullableText,
@@ -52,6 +52,11 @@ export const mailExtractionSchema = z.object({
         .describe(
           'Only for amendment, cancellation or voucher_pop: the dates the mail or thread says are currently booked. Null for new requests.',
         ),
+      totalRooms: z
+        .number()
+        .int()
+        .nullable()
+        .describe('Total rooms asked for in this stay, as stated. Null if not stated.'),
       rows: z.array(
         z.object({
           roomType: nullableText.describe(
@@ -95,6 +100,8 @@ export type ExtractionStay = {
   hotel: string | null;
   requested: DateRange;
   booked: DateRange | null;
+  /** Stay total as stated. Set when the mail gives a total without a per-type split (rows then carry rooms null). */
+  totalRooms: number | null;
   rows: ExtractionRow[];
 };
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
@@ -168,6 +175,7 @@ export function sanitizeExtraction(
       hotel: cleanText(stay.hotel),
       requested: dateRangeOf(stay.requested),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
+      totalRooms: countOf(stay.totalRooms, 1, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row, rowIndex) => ({
         id: stableId('r', id, String(rowIndex)),
         roomType: cleanText(row.roomType),

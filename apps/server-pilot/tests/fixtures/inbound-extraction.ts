@@ -8,25 +8,29 @@ import type { SyncedQuoteSelection } from '../../src/ai/quote-workflow-synced-se
 
 export const AE1_RECEIVED_AT = '2026-10-09T08:00:00.000Z';
 
+/**
+ * Shaped like the real AE1 mail with invented names: a tour operator writes for its client, the client is named in
+ * the subject, each date set lists two nights, and 30 rooms is a stay total with no split per room type.
+ */
+export const AE1_FROM = 'Priya Naidoo <priya@horizontrailtours.example>';
+export const AE1_SUBJECT = 'Summit Africa: Rugby Tour 2027 / Grand Hotel';
 export const AE1_TEXT = [
-  'From: Sam Carter <sam@tailormade.example>',
-  'Subject: Rooms for New Frontiers, 26-27 October and 17-18 November',
+  'Reservations Team,',
   '',
-  'Hi,',
+  'Summit Africa is a long-standing client of ours who normally brings their running groups to South Africa. With the rugby tour next year they would like to bring groups for this tour. Please advise availability and rates for Single and Double/Twin occupancy at Grand Hotel for the dates below.',
   '',
-  'Please quote for our client New Frontiers.',
+  '  *   26th and 27th October - 30 rooms.',
   '',
-  'We need two stays:',
-  '- 26 to 27 October (one night)',
-  '- 17 to 18 November (one night)',
+  '  *   17th and 18th November - 30 rooms.',
   '',
-  'We need 30 rooms for each stay. Please quote the single and the double/twin rates.',
+  'We need 2 nights per date set for now; our client may add a 3rd night later.',
   '',
   'Kind regards,',
-  'Sam Carter',
-  'Tailormade Travel',
-  'sam@tailormade.example',
-  '+27 11 555 0100',
+  'Priya',
+  '',
+  'Priya Naidoo',
+  'Direct line: +27 31 555 0100 | Email: priya@horizontrailtours.example',
+  'www.horizontrailtours.example',
 ].join('\n');
 
 export const AE2_TEXT = [
@@ -69,32 +73,41 @@ const EMPTY_OUTPUT = {
   missing: [],
 };
 
-const ROWS_30 = [
-  { roomType: 'Single', rooms: 15, adultsPerRoom: 1, childAges: [], board: null },
-  { roomType: 'Double/Twin', rooms: 15, adultsPerRoom: 2, childAges: [], board: null },
+/** A stay total with no split: the rows keep their room types and leave rooms null. */
+const ROWS_UNSPLIT = [
+  { roomType: 'Single', rooms: null, adultsPerRoom: 1, childAges: [], board: null },
+  { roomType: 'Double/Twin', rooms: null, adultsPerRoom: 2, childAges: [], board: null },
 ];
 
+/** The correct read: the sender's organisation is the agency, the client in the subject is the end client. */
 export const AE1_OUTPUT = {
   ...EMPTY_OUTPUT,
   sourceLanguage: 'en',
   kind: 'quote',
-  agency: 'Tailormade Travel',
-  endClient: 'New Frontiers',
-  contact: { name: 'Sam Carter', email: 'sam@tailormade.example', phone: '+27 11 555 0100' },
+  agency: 'Horizon Trail Tours',
+  endClient: 'Summit Africa',
+  contact: {
+    name: 'Priya Naidoo',
+    email: 'priya@horizontrailtours.example',
+    phone: '+27 31 555 0100',
+  },
   stays: [
     {
-      hotel: null,
-      requested: { arrival: '2026-10-26', departure: '2026-10-27' },
+      hotel: 'Grand Hotel',
+      requested: { arrival: '2027-10-26', departure: '2027-10-28' },
       booked: null,
-      rows: ROWS_30,
+      totalRooms: 30,
+      rows: ROWS_UNSPLIT,
     },
     {
-      hotel: null,
-      requested: { arrival: '2026-11-17', departure: '2026-11-18' },
+      hotel: 'Grand Hotel',
+      requested: { arrival: '2027-11-17', departure: '2027-11-19' },
       booked: null,
-      rows: ROWS_30,
+      totalRooms: 30,
+      rows: ROWS_UNSPLIT,
     },
   ],
+  missing: [{ field: 'rooms', question: 'How many single and how many double/twin rooms per stay?' }],
 };
 
 export const AE2_OUTPUT = {
@@ -108,6 +121,7 @@ export const AE2_OUTPUT = {
       hotel: null,
       requested: { arrival: '2026-10-31', departure: '2026-11-07' },
       booked: { arrival: '2026-11-01', departure: '2026-11-06' },
+      totalRooms: null,
       rows: [],
     },
   ],
@@ -122,9 +136,9 @@ export const VOUCHER_OUTPUT = {
 
 export const SPAM_OUTPUT = { ...EMPTY_OUTPUT, sourceLanguage: 'en', kind: 'spam' };
 
-export function selectionFor(bodyText: string): SyncedQuoteSelection {
+export function selectionFor(bodyText: string, subject = 'Rooms request'): SyncedQuoteSelection {
   return {
-    subject: 'Rooms request',
+    subject,
     bodyText,
     receivedAt: AE1_RECEIVED_AT,
     preceding: [],

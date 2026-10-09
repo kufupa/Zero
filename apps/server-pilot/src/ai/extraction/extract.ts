@@ -26,10 +26,11 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - Card numbers appear masked as "[card ••••1234]". Never output a card number or a security code.
 - Map hotel-rule workflow names onto kind: create is booking, amend is amendment, cancel is cancellation, skip is other, spam is spam.
 - kind: quote asks for rates, availability or a quotation. booking asks to book or confirm a stay. amendment changes an existing booking (dates, nights, room, late checkout). cancellation cancels one. voucher_pop is a voucher, proof of payment or booking document. spam is cold outreach or a promotion. other is anything else, including venue hire, events and invoices.
-- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so 26 to 27 Oct is one night. A day and month without a year is its next occurrence after the received date.
+- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. A year the mail states for the trip (in the subject or body, e.g. "Tour 2027" or "next year") wins. Otherwise a day and month without a year is its next occurrence after the received date.
 - rows: within a stay, one row per room type as written. "Single" and "Double/Twin" are separate rows. rooms is the count of identical rooms of that type. adultsPerRoom is the adults in EACH room: "6 adults in 3 rooms" is 2, one named guest in a room is 1, and a double or twin with no headcount is 2.
+- totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
-- agency is the organisation that SENT this mail, from its signature, letterhead or sender domain. A travel agency that books rooms for another company is the agency. endClient is the company or group the rooms are for, only when it differs from the sender. Never put the end client in agency.
+- agency is the organisation of the sender: the From address domain, the signature or the letterhead. A travel agency or tour operator writing for its client is the agency. endClient is the party the booking is for ("our client X", or a client or group named in the subject or body), only when it differs from the sender. A company named in the subject is the end client, not the agency, unless the sender works for it. Never swap them.
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
@@ -59,8 +60,14 @@ export function usageOf(result: ModelInvokeResult | undefined, startedAt: number
   };
 }
 
-/** System rules plus the mail as text. Scanned PDF bytes are dropped: their card digits cannot be masked. */
-export function buildInboundPrompt(selection: SyncedQuoteSelection): {
+/**
+ * System rules plus the mail as text, with the From address so the agency can come from the sender domain. Scanned
+ * PDF bytes are dropped: their card digits cannot be masked.
+ */
+export function buildInboundPrompt(
+  selection: SyncedQuoteSelection,
+  from?: string | null,
+): {
   system: string;
   user: string;
 } {
@@ -71,7 +78,9 @@ export function buildInboundPrompt(selection: SyncedQuoteSelection): {
   const { user } = buildQuoteWorkflowPrompt(textOnly);
   return {
     system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}`,
-    user: maskCardNumbers(`${UNTRUSTED_NOTE}\n\n${user}`).slice(0, MAX_PROMPT_CHARS),
+    user: maskCardNumbers(
+      `${UNTRUSTED_NOTE}\n\n${from?.trim() ? `From: ${from.trim()}\n\n` : ''}${user}`,
+    ).slice(0, MAX_PROMPT_CHARS),
   };
 }
 
@@ -173,10 +182,12 @@ export async function extractInboundMail(input: {
   adapter: ModelAdapter;
   selection: SyncedQuoteSelection;
   messageId: string;
+  /** The stored From header of the mail. */
+  from?: string | null;
   signal?: AbortSignal;
   deadlineMs?: number;
 }): Promise<ExtractionAttempt> {
-  const prompt = buildInboundPrompt(input.selection);
+  const prompt = buildInboundPrompt(input.selection, input.from);
   const startedAt = Date.now();
   const called = await invokeBounded({
     adapter: input.adapter,
