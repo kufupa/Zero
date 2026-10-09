@@ -8,6 +8,7 @@ import type { QuoteOffer, QuotePdf, QuoteSession, StaffQuoteAllocation } from '.
 import { approvedExecuteHeader } from './staff-quote-bind';
 import { FIXTURE_PDF } from './fixtures';
 import { withStaffNote } from './native-draft';
+import { staffHeaderFieldProblem } from './types';
 
 /**
  * One unsent reply that covers every date option staff completed. Each option keeps its own
@@ -100,6 +101,8 @@ export function requireMultiOptionDraft(
 ): MultiOptionDraft | null {
   const options = completedDateOptions(session);
   if (options.length < 2) return null;
+  // The options' PDFs may predate an unreadable amount. Their old charges must not reach a reply.
+  if (staffHeaderFieldProblem(session.staffHeader)) return null;
   const edited = edit && edit.signature === multiOptionSignature(session) ? edit.html : null;
   return {
     html: withStaffNote(edited ?? multiOptionDraftHtml(options), session.staffHeader?.notes),

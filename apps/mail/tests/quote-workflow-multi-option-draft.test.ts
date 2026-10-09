@@ -211,6 +211,13 @@ describe('one reply for every completed date option', () => {
     expect(requireMultiOptionDraft(changed, { signature, html: edited })?.html).not.toBe(edited);
   });
 
+  it('offers no combined reply while an amount is unreadable, even with PDFs made earlier', () => {
+    const base = twoQuotedOptions();
+    const errored = { ...base, staffHeader: { ...base.staffHeader, fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' } } };
+    expect(requireMultiOptionDraft(base)).not.toBeNull();
+    expect(requireMultiOptionDraft(errored)).toBeNull();
+  });
+
   it('attaches each option PDF once, with its option letter in the name', () => {
     const draft = requireMultiOptionDraft(twoQuotedOptions());
     expect(draft?.letters).toEqual(['A', 'B']);
