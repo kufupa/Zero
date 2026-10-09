@@ -72,6 +72,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
+import { quoteDateLabel, quoteWorkbookForStays, workbookLinesForStays, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -100,17 +101,76 @@ export function renderRevisionProposalHtml(revision:QuoteRevision,header:Revisio
   }
   return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#242424;font-size:10px;margin:0}.proposal-page{break-after:page}.proposal-page:last-child{break-after:auto}header{display:flex;justify-content:space-between;align-items:center;height:72px}header img{max-width:43%;max-height:65px;object-fit:contain}h1{font-size:18px;color:#78633a;border-bottom:2px solid #b49c68;padding:12px 0}.client{line-height:1.6;margin:14px 0}table{width:100%;border-collapse:collapse;table-layout:fixed}th{background:#e7dfcb;font-size:9px}th,td{border:1px solid #8d887d;padding:7px 5px;vertical-align:top;overflow-wrap:anywhere}th:nth-child(1){width:17%}th:nth-child(2){width:6%}th:nth-child(3){width:35%}th:nth-child(4){width:8%}th:nth-child(5),th:nth-child(6){width:17%}tr{break-inside:avoid}.total{text-align:right;font-size:15px;font-weight:bold;border-bottom:2px solid #b49c68;padding:10px}.terms{line-height:1.5}footer{font-size:7px;overflow-wrap:anywhere;border-top:1px solid #b49c68;margin-top:20px;padding-top:7px}</style></head><body>${pages.join('')}</body></html>`;
 }
+/** One document per quote: a single stay keeps its revision id, combined stays get a digest of their revision ids. */
+export function documentIdFor(stays: WorkbookStay[]): string {
+  return stays.length === 1 ? stays[0]!.revision.id : `quotes:${quoteDigest(stays.map((stay) => stay.revision.id).sort())}`;
+}
+/** Every stay's dates as one span, e.g. "26 October - 18 November 2026". */
+function staySpanLabel(stays: WorkbookStay[]): string {
+  const groups = stays.flatMap((stay) => stay.revision.groups);
+  return quoteDateLabel(groups.map((group) => group.arrivalDate).sort()[0]!, groups.map((group) => group.departureDate).sort().at(-1)!);
+}
+/** QUOTE_PDF_RENDERER=html selects the HTML renderer, for one stay only. Anything else uses the Excel master. */
+export function quoteProposalPdfUsesHtml(env: Record<string, string | undefined> = process.env): boolean {
+  return env.QUOTE_PDF_RENDERER?.trim().toLowerCase() === 'html';
+}
+/**
+ * The proposal PDF for one or more resolved stays. The Excel workbook is the master, and Gotenberg's LibreOffice route
+ * converts it. The HTML renderer is the fallback behind QUOTE_PDF_RENDERER=html, and it only renders a single stay.
+ */
+export async function buildStaysProposalPdf(
+  stays: WorkbookStay[],
+  header: RevisionProposalHeader,
+  opts: { url: string; fetchImpl?: typeof fetch; html?: boolean },
+): Promise<{ revisionId: string; pdfHash: string; pdf: Uint8Array; fileName: string; totalMinor: number }> {
+  const base = opts.url.replace(/\/+$/, '');
+  if (!base) throw new Error('GOTENBERG_URL missing');
+  let pdf: Uint8Array;
+  let totalMinor: number;
+  if (opts.html ?? quoteProposalPdfUsesHtml()) {
+    // ponytail: the HTML renderer draws one revision, so a combined quote needs the workbook renderer.
+    if (stays.length !== 1) throw new Error('html_renderer_single_stay_only');
+    const { revision, facts } = stays[0]!;
+    totalMinor = workbookLinesForStays(stays).totalMinor;
+    const html = renderRevisionProposalHtml(revision, header, facts);
+    const form = new FormData();
+    form.append('files', new Blob([html], { type: 'text/html' }), 'index.html');
+    form.append('preferCssPageSize', 'true');
+    form.append('printBackground', 'true');
+    const res = await (opts.fetchImpl ?? fetch)(`${base}/forms/chromium/convert/html`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error(`gotenberg convert failed: ${res.status}`);
+    if (res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf') throw new Error('gotenberg convert returned non-PDF MIME');
+    pdf = new Uint8Array(await res.arrayBuffer());
+    if (pdf.length <= 5 || new TextDecoder().decode(pdf.subarray(0, 5)) !== '%PDF-') throw new Error('gotenberg convert returned empty or invalid PDF bytes');
+  } else {
+    const workbook = quoteWorkbookForStays({
+      stays,
+      header: {
+        attention: header.attention,
+        company: header.company,
+        clientEmail: header.clientEmail,
+        clientTelephone: header.clientTelephone,
+        signerName: header.signerName,
+        signerEmail: header.signerEmail,
+      },
+      note: header.notes,
+    });
+    totalMinor = workbook.totalMinor;
+    pdf = await convertXlsxWithGotenberg(workbook.bytes, { url: base, fetchImpl: opts.fetchImpl });
+  }
+  const documentId = documentIdFor(stays);
+  return {
+    revisionId: documentId,
+    pdfHash: createHash('sha256').update(pdf).digest('hex'),
+    pdf,
+    // ponytail: every PDF carries the document-id suffix, so same-day options never collide and no existing names are looked up.
+    fileName: quotePdfFileName(header.agency.trim() || header.company, staySpanLabel(stays), documentId),
+    totalMinor,
+  };
+}
 export async function buildRevisionProposalPdf(revision:QuoteRevision,header:RevisionProposalHeader,opts:{url:string;fetchImpl?:typeof fetch;facts?:AuthorizedProposalFacts}):Promise<{revisionId:string;pdfHash:string;pdf:Uint8Array;fileName:string}>{
-  const html=renderRevisionProposalHtml(revision,header,opts.facts);
-  const base=opts.url.replace(/\/+$/,'');if(!base)throw new Error('GOTENBERG_URL missing');
-  const form=new FormData();form.append('files',new Blob([html],{type:'text/html'}),'index.html');
-  form.append('preferCssPageSize','true');form.append('printBackground','true');
-  const res=await (opts.fetchImpl??fetch)(`${base}/forms/chromium/convert/html`,{method:'POST',body:form});
-  if(!res.ok)throw new Error(`gotenberg convert failed: ${res.status}`);
-  if(res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()!=='application/pdf')throw new Error('gotenberg convert returned non-PDF MIME');
-  const pdf=new Uint8Array(await res.arrayBuffer());
-  if(pdf.length<=5||new TextDecoder().decode(pdf.subarray(0,5))!=='%PDF-')throw new Error('gotenberg convert returned empty or invalid PDF bytes');
-  return {revisionId:revision.id,pdfHash:createHash('sha256').update(pdf).digest('hex'),pdf,fileName:quotePdfFileName(header.agency.trim()||header.company,revision.authoredDate)};
+  const { revisionId, pdfHash, pdf, fileName } = await buildStaysProposalPdf([{ revision, facts: opts.facts }], header, opts);
+  return { revisionId, pdfHash, pdf, fileName };
 }
 type ApprovedOverridePacket=Awaited<ReturnType<typeof import('./quote-revision.js').resolveApprovedOverride>>;
 function renderSourceLinePages(input:{id:string;title:string;lines:Array<{description:string;amountMinor:number}>;totalMinor:number;currency:string;terms:string},header:RevisionProposalHeader):string{

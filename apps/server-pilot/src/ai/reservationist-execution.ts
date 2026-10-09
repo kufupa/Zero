@@ -81,7 +81,8 @@ export type CurrentNativeObservationReceipt={observation:CurrentNativeObservatio
 function quoteRequestSummary(ctx:Context):string{
  const facts=ctx.facts.filter(f=>f.verification==='text_verified'&&f.disclosure==='guest'),parts:string[]=[];
  const stays=facts.filter((f):f is Extract<ValidatedDocumentFact,{kind:'dates'}>=>f.kind==='dates');
- if(stays.length&&new Set(stays.map(f=>`${f.value.arrival}/${f.value.departure}`)).size===1){const d=stays[0]!.value,nights=(Date.parse(`${d.departure}T00:00:00Z`)-Date.parse(`${d.arrival}T00:00:00Z`))/86400000;parts.push(`${d.arrival} to ${d.departure}${Number.isSafeInteger(nights)&&nights>0?` (${nights} ${nights===1?'night':'nights'})`:''}`);}
+ const spans=[...new Map(stays.map(f=>[`${f.value.arrival}/${f.value.departure}`,f.value])).values()];
+ if(spans.length)parts.push(spans.map(d=>{const nights=(Date.parse(`${d.departure}T00:00:00Z`)-Date.parse(`${d.arrival}T00:00:00Z`))/86400000;return `${d.arrival} to ${d.departure}${Number.isSafeInteger(nights)&&nights>0?` (${nights} ${nights===1?'night':'nights'})`:''}`;}).join('; '));
  const rooms=[...new Map(facts.filter((f):f is Extract<ValidatedDocumentFact,{kind:'room'}>=>f.kind==='room').map(f=>[quoteDigest(f.value),f])).values()];
  if(rooms.length<=8)for(const f of rooms){const r=f.value,quantity=r.quantity===undefined?'':`${r.quantity} ${r.quantity===1?'room':'rooms'}, `;const child=r.childAges.length?`, ${r.childAges.length} ${r.childAges.length===1?'child':'children'} per room (ages ${r.childAges.join(', ')})`:'';parts.push(`${quantity}${r.adults} ${r.adults===1?'adult':'adults'} per room${child}${r.quotationBasis==='per_room_rate'?' (separate rate example)':''}`);}
  const boards=facts.filter((f):f is Extract<ValidatedDocumentFact,{kind:'board'}>=>f.kind==='board').map(f=>typeof f.value==='string'?f.value:f.value.board);

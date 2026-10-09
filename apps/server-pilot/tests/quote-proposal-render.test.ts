@@ -21,10 +21,16 @@ describe('complete revision proposal rendering',()=>{
   });
   const result=await buildRevisionProposalPdf(r,header,{url:'http://local.test',fetchImpl:fetchMock as any});
   expect(result.revisionId).toBe(r.id);expect(result.pdfHash).toMatch(/^[a-f0-9]{64}$/);
-  expect(fetchMock.mock.calls[0][0]).toBe('http://local.test/forms/chromium/convert/html');
+  expect(fetchMock.mock.calls[0][0]).toBe('http://local.test/forms/libreoffice/convert');
  });
 });
 
+it('uses the HTML renderer only when QUOTE_PDF_RENDERER=html',async()=>{
+ const r=await syntheticRevision();const fetchMock=vi.fn(async()=>new Response('%PDF-1.4 synthetic',{headers:{'content-type':'application/pdf'}}));
+ vi.stubEnv('QUOTE_PDF_RENDERER','html');
+ try{await buildRevisionProposalPdf(r,header,{url:'http://local.test',fetchImpl:fetchMock as any});}finally{vi.unstubAllEnvs();}
+ expect(fetchMock.mock.calls[0][0]).toBe('http://local.test/forms/chromium/convert/html');
+});
 it('renders authorized extras and reconciles one combined final total',async()=>{
  const r=await syntheticRevision();const facts={revisionId:r.id,authorizationId:r.authorizationId,sourceRef:'document',sourceHash:'c'.repeat(64),extras:[{id:'trip',label:'Airport trip',quantity:1,units:2,unitKind:'trip' as const,unitMinor:50000,service:'transport',persons:[],dates:['2026-10-12','2026-10-15']}],includedEntitlements:[]};
  const html=renderRevisionProposalHtml(r,header,facts);

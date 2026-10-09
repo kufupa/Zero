@@ -1,5 +1,7 @@
 import { outlookSyncRouter } from './outlook-sync.js';
 import {
+  approvedStaySpan,
+  combinedStayCurrencyProblem,
   staffQuoteInput,
   staffQuoteCurrencyProblem,
   staffQuoteSourceHash,
@@ -30,7 +32,8 @@ import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
 // Outlook sends the raw Message-ID; ingest stores the canonical form, as analyseSelection already matches.
 import { canonicalInternetMessageId } from '../../ai/quote-workflow-analyse-selection.js';
 import {
-  buildRevisionProposalPdf,
+  buildStaysProposalPdf,
+  documentIdFor,
   renderImportedProposalHtml,
   renderApprovedOverrideHtml,
   convertProposalHtml,
@@ -40,7 +43,11 @@ import {
   deriveAuthorizedExtraLines,
   type AuthorizedProposalFacts,
 } from '../../quote-proposal/quote-lines.js';
-import { quoteWorkbookForRevision, quoteWorkbookFileName } from '../../quote-proposal/quote-workbook.js';
+import {
+  quoteWorkbookForStays,
+  quoteWorkbookFileName,
+  WorkbookLineLimitError,
+} from '../../quote-proposal/quote-workbook.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -331,6 +338,14 @@ function partyClassFromRevision(
   return 'private';
 }
 
+/** A stay after the first in a combined quote: its own approved run, revision and authorised facts. */
+const qualifiedStayInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    factRefs: z.array(z.string().min(1)).max(32).default([]),
+  })
+  .strict();
 export const qualifiedProposalInput = z
   .object({
     workflowRunId: z.string().min(1),
@@ -343,6 +358,8 @@ export const qualifiedProposalInput = z
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
     agency: z.string().max(256).default('Quote'),
+    // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
+    additionalStays: z.array(qualifiedStayInput).max(62).default([]),
   })
   .strict();
 export function resolveLedgerProposal(
@@ -468,6 +485,155 @@ export function resolveLedgerSourceProposal(
     new Date(),
   );
   return selected;
+}
+
+/** A stay of a proposal request, resolved to its approved revision and, when attested, its staff approval. */
+type ProposalStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts; staff?: StaffQuoteAttestation };
+
+/** The dates an approval covers, read from the revision its run attested. Null when unknown. */
+function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): string | null {
+  const staff = metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+  const result = metrics?.reservationistResult as { quoteRevisions?: QuoteRevision[] } | undefined;
+  const revision = result?.quoteRevisions?.find((candidate) => candidate.id === staff?.revisionIds?.[0]);
+  return revision ? approvedStaySpan(revision) : null;
+}
+
+/** Every staff approval for this message, newest first, with the stay dates each one covers. */
+async function staffApprovalsFor(
+  ctx: { activeTransportId: string; sessionUser: { id: string } },
+  threadId: string,
+  messageId: string,
+) {
+  const rows = await getDb()
+    .select({ id: aiDraftGeneration.id, metrics: aiWorkflowRun.metrics })
+    .from(aiDraftGeneration)
+    .leftJoin(aiWorkflowRun, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+    .where(
+      and(
+        eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+        eq(aiDraftGeneration.threadId, threadId),
+        eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+        eq(aiDraftGeneration.model, 'staff-approved-native'),
+        sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([messageId])}::jsonb`,
+      ),
+    )
+    .orderBy(desc(aiDraftGeneration.createdAt));
+  return rows.map((row) => ({ generationId: row.id, span: attestedStaySpan(row.metrics) }));
+}
+
+/**
+ * Every stay of a proposal request, resolved to its approved revision. Each run must belong to this user, transport and
+ * message. One stay keeps the message-wide currency rule. A combined quote needs every stay attested, and each stay is
+ * current while no newer approval covers the same dates. Run again after a document is built, so nothing changes under it.
+ */
+async function proposalStaysFor(
+  input: z.infer<typeof qualifiedProposalInput>,
+  ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
+  resolveFailure: string,
+): Promise<ProposalStay[]> {
+  const requests = [
+    { workflowRunId: input.workflowRunId, revisionRef: input.revisionRef, factRefs: input.factRefs },
+    ...input.additionalStays,
+  ];
+  if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Each stay needs its own approved quote' });
+  const db = getDb();
+  const runs = await Promise.all(
+    requests.map(async (request) => {
+      await awaitPendingStaffQuote(request.workflowRunId);
+      const [bound] = await db
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, request.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      return { run: bound.run, request };
+    }),
+  );
+  const combined = runs.length > 1;
+  const threadId = runs[0]!.run.threadId;
+  const [current] = await db
+    .select()
+    .from(message)
+    .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+    .limit(1);
+  const approvals = combined ? await staffApprovalsFor(ctx, threadId, input.messageId) : [];
+  const latest = combined
+    ? undefined
+    : (
+        await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
+              eq(aiDraftGeneration.threadId, threadId),
+              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1)
+      )[0];
+  const stays: ProposalStay[] = [];
+  for (const { run, request } of runs) {
+    const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+    if (combined && !staff)
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Every stay needs its own approved quote' });
+    if (staff) {
+      const party = { company: input.company, agency: input.agency };
+      const problem = combined
+        ? combinedStayCurrencyProblem({
+            stay: { generationId: run.generationId, span: attestedStaySpan(run.metrics) },
+            approvals,
+          }) ??
+          staffQuoteCurrencyProblem({
+            staff,
+            runGenerationId: run.generationId,
+            latestGenerationId: run.generationId,
+            currentMessage: current,
+            userId: ctx.sessionUser.id,
+            party,
+          })
+        : staffQuoteCurrencyProblem({
+            staff,
+            runGenerationId: run.generationId,
+            latestGenerationId: latest?.id,
+            currentMessage: current,
+            userId: ctx.sessionUser.id,
+            party,
+          });
+      if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
+    }
+    let resolved: ReturnType<typeof resolveLedgerProposal>;
+    try {
+      resolved = resolveLedgerProposal(run, {
+        transportId: ctx.activeTransportId,
+        messageId: input.messageId,
+        revisionRef: request.revisionRef,
+        factRefs: request.factRefs,
+      });
+    } catch {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
+    }
+    stays.push({ ...resolved, staff });
+  }
+  return stays;
+}
+
+/** The staff notes approved with each stay, each kept once and one per line. */
+function stayNotes(stays: ProposalStay[]): string | undefined {
+  const notes = [...new Set(stays.map((stay) => stay.staff?.notes).filter((note): note is string => !!note))];
+  return notes.length ? notes.join('\n') : undefined;
 }
 
 export const quoteRunScreenshotInput = z
@@ -1367,126 +1533,44 @@ export const workstationRouter = router({
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
-      const [bound] = await getDb()
-        .select({ run: aiWorkflowRun })
-        .from(aiWorkflowRun)
-        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
-        .where(
-          and(
-            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
-            eq(aiWorkflowRun.id, input.workflowRunId),
-            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
-            eq(aiWorkflowRun.triggerMessageId, input.messageId),
-          ),
-        )
-        .limit(1);
-      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
-      const staff = bound.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
-      const assertCurrentStaffQuote = async () => {
-        if (!staff) return;
-        const [latest] = await getDb()
-          .select({ id: aiDraftGeneration.id })
-          .from(aiDraftGeneration)
-          .where(
-            and(
-              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
-              eq(aiDraftGeneration.threadId, bound.run.threadId),
-              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
-              eq(aiDraftGeneration.model, 'staff-approved-native'),
-              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
-            ),
-          )
-          .orderBy(desc(aiDraftGeneration.createdAt))
-          .limit(1);
-        if (latest?.id !== bound.run.generationId)
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Newer stay inputs were approved; use the current quote',
-          });
-        const [current] = await getDb()
-          .select()
-          .from(message)
-          .where(
-            and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)),
-          )
-          .limit(1);
-        if (
-          !current ||
-          staff.userId !== ctx.sessionUser.id ||
-          staff.threadId !== current.threadId ||
-          staff.sourceHash !== staffQuoteSourceHash(current)
-        )
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Selected email changed; rerun the approved quote',
-          });
-        if (
-          !staff.header ||
-          input.company !== staff.header.company ||
-          input.agency !== staff.header.agency
-        )
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Party identity changed; rerun the approved quote',
-          });
-      };
-      await assertCurrentStaffQuote();
-      let resolved: ReturnType<typeof resolveLedgerProposal>;
-      try {
-        resolved = resolveLedgerProposal(bound.run, {
-          transportId: ctx.activeTransportId,
-          messageId: input.messageId,
-          revisionRef: input.revisionRef,
-          factRefs: input.factRefs,
-        });
-      } catch {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Proposal evidence is not ready',
-        });
-      }
+      const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
       const url = process.env.GOTENBERG_URL?.trim();
       if (!url)
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
-      const result = await buildRevisionProposalPdf(
-        resolved.revision,
-        {
-          ...input,
-          signerName: ctx.sessionUser.name ?? '',
-          signerEmail: ctx.sessionUser.email,
-          // The note comes from the approved attestation, not from this request.
-          notes: staff?.notes,
-        },
-        { url, facts: resolved.facts },
-      );
-      await assertCurrentStaffQuote();
+      let result: Awaited<ReturnType<typeof buildStaysProposalPdf>>;
       try {
-        resolveLedgerProposal(bound.run, {
-          transportId: ctx.activeTransportId,
-          messageId: input.messageId,
-          revisionRef: input.revisionRef,
-          factRefs: input.factRefs,
-        });
-      } catch {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence expired during conversion' });
+        result = await buildStaysProposalPdf(
+          stays,
+          {
+            attention: input.attention,
+            company: input.company,
+            clientEmail: input.clientEmail,
+            clientTelephone: input.clientTelephone,
+            agency: input.agency,
+            signerName: ctx.sessionUser.name ?? '',
+            signerEmail: ctx.sessionUser.email,
+            // The note comes from the approved attestations, not from this request.
+            notes: stayNotes(stays),
+          },
+          { url },
+        );
+      } catch (error) {
+        if (error instanceof WorkbookLineLimitError)
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
+        throw error;
       }
+      await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
       return {
-        ...result,
-        pdf: undefined,
+        revisionId: result.revisionId,
+        pdfHash: result.pdfHash,
+        fileName: result.fileName,
+        totalMinor: result.totalMinor,
         pdfBase64: Buffer.from(result.pdf).toString('base64'),
-        totalMinor:
-          resolved.revision.totalMinor +
-          (resolved.facts
-            ? deriveAuthorizedExtraLines(resolved.revision, resolved.facts).reduce(
-                (sum, line) => sum + line.totalMinor,
-                0,
-              )
-            : 0),
       };
     }),
   /**
-   * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then the
-   * approved revision and its authorised extras written into the staff quotation template.
+   * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then every approved
+   * stay's revision and authorised extras written into the staff quotation template.
    */
   quoteWorkbook: mailboxProcedure
     .input(qualifiedProposalInput)
@@ -1494,72 +1578,11 @@ export const workstationRouter = router({
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
-      const db = getDb();
-      const [bound] = await db
-        .select({ run: aiWorkflowRun })
-        .from(aiWorkflowRun)
-        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
-        .where(
-          and(
-            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
-            eq(aiWorkflowRun.id, input.workflowRunId),
-            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
-            eq(aiWorkflowRun.triggerMessageId, input.messageId),
-          ),
-        )
-        .limit(1);
-      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
-      const staff = bound.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
-      const assertCurrentStaffQuote = async () => {
-        if (!staff) return;
-        const [latest] = await db
-          .select({ id: aiDraftGeneration.id })
-          .from(aiDraftGeneration)
-          .where(
-            and(
-              eq(aiDraftGeneration.transportId, ctx.activeTransportId),
-              eq(aiDraftGeneration.threadId, bound.run.threadId),
-              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
-              eq(aiDraftGeneration.model, 'staff-approved-native'),
-              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([input.messageId])}::jsonb`,
-            ),
-          )
-          .orderBy(desc(aiDraftGeneration.createdAt))
-          .limit(1);
-        const [current] = await db
-          .select()
-          .from(message)
-          .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-          .limit(1);
-        const problem = staffQuoteCurrencyProblem({
-          staff,
-          runGenerationId: bound.run.generationId,
-          latestGenerationId: latest?.id,
-          currentMessage: current,
-          userId: ctx.sessionUser.id,
-          party: { company: input.company, agency: input.agency },
-        });
-        if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
-      };
-      await assertCurrentStaffQuote();
-      const resolveApproved = () => {
-        try {
-          return resolveLedgerProposal(bound.run, {
-            transportId: ctx.activeTransportId,
-            messageId: input.messageId,
-            revisionRef: input.revisionRef,
-            factRefs: input.factRefs,
-          });
-        } catch {
-          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence is not ready' });
-        }
-      };
-      const resolved = resolveApproved();
-      let workbook: ReturnType<typeof quoteWorkbookForRevision>;
+      const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+      let workbook: ReturnType<typeof quoteWorkbookForStays>;
       try {
-        workbook = quoteWorkbookForRevision({
-          revision: resolved.revision,
-          facts: resolved.facts,
+        workbook = quoteWorkbookForStays({
+          stays,
           header: {
             attention: input.attention,
             company: input.company,
@@ -1568,24 +1591,30 @@ export const workstationRouter = router({
             signerName: ctx.sessionUser.name ?? '',
             signerEmail: ctx.sessionUser.email,
           },
-          // The note comes from the approved attestation, not from this request.
-          note: staff?.notes,
+          // The note comes from the approved attestations, not from this request.
+          note: stayNotes(stays),
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof WorkbookLineLimitError)
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
       }
-      await assertCurrentStaffQuote();
-      resolveApproved();
+      await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+      // The file is named for the earliest arrival across the stays.
+      const arrival = stays
+        .map((stay) => stay.revision.groups[0]?.arrivalDate ?? stay.revision.authoredDate)
+        .sort()[0]!;
       return {
-        fileName: quoteWorkbookFileName(input.company, resolved.revision.groups[0]?.arrivalDate ?? resolved.revision.authoredDate),
+        fileName: quoteWorkbookFileName(input.company, arrival),
         xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
         totalMinor: workbook.totalMinor,
-        revisionId: resolved.revision.id,
+        revisionId: documentIdFor(stays),
       };
     }),
   sourceQuoteProposalPdf: mailboxProcedure
     .input(
       qualifiedProposalInput
+        .omit({ additionalStays: true })
         .extend({ kind: z.enum(['imported_offer', 'approved_override']) })
         .strict(),
     )

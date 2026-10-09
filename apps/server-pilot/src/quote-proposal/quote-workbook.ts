@@ -9,8 +9,16 @@ const TEMPLATE_PATH = fileURLToPath(new URL('../../fixtures/centurion-quotation-
 const SHEET_PATH = 'xl/worksheets/sheet1.xml';
 const CALC_CHAIN_PATH = 'xl/calcChain.xml';
 /** Template line rows 24-29. Row 30 is a merged separator and row 31 holds the subtotal. */
-export const WORKBOOK_LINE_ROWS = 6;
+const TEMPLATE_LINE_ROWS = 6;
 const FIRST_LINE_ROW = 24;
+/** Template row 30, the first row below the line block. Every row from here down moves when line rows are inserted. */
+const SEPARATOR_ROW = 30;
+/** One proposal Excel holds at most this many line rows. Larger quotes are refused, never split or collapsed. */
+export const MAX_WORKBOOK_LINES = 63;
+const DRAWING_PATH = 'xl/drawings/drawing1.xml';
+/** Drawing anchors are 0-based, so xdr:row 29 is template row 30. */
+const DRAWING_SHIFT_FROM = SEPARATOR_ROW - 1;
+const PRINT_AREA_LAST_ROW = 69;
 /** Staff note block: merged A42:H46, wrapped with the template's wrap-text style (73). */
 const NOTE_ROWS = [42, 43, 44, 45, 46];
 const NOTE_STYLE = ' s="73"';
@@ -64,6 +72,16 @@ type WorkbookItem = {
   departure: string;
 };
 
+/** One resolved stay: its revision and the authorised extras attached to it. */
+export type WorkbookStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts };
+
+/** A quote with more lines than the proposal Excel holds. The message says how to split it. */
+export class WorkbookLineLimitError extends Error {}
+
+function lineLimitMessage(count: number): string {
+  return `Quote has ${count} lines; the proposal Excel holds at most ${MAX_WORKBOOK_LINES}. Split it into separate quotes.`;
+}
+
 function isoParts(value: string): { year: number; month: number; day: number } {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   const year = Number(match?.[1]);
@@ -100,63 +118,64 @@ function sumOf(items: WorkbookItem[], key: 'qty' | 'totalMinor'): number {
   return items.reduce((sum, item) => sum + item[key], 0);
 }
 
-function combineItems(group: WorkbookItem[]): WorkbookItem {
-  const first = group[0]!;
-  if (group.length === 1) return first;
-  const arrival = group.map((item) => item.arrival).sort()[0]!;
-  const departure = group.map((item) => item.departure).sort().at(-1)!;
-  const totalMinor = sumOf(group, 'totalMinor');
-  const uniform = group.every((item) => item.rateMinor === first.rateMinor && item.nights === first.nights);
-  // Uniform blocks keep guests x nights. Mixed blocks become one exact 1 x 1 x total line.
-  return uniform
-    ? { ...first, qty: sumOf(group, 'qty'), totalMinor, arrival, departure }
-    : { ...first, qty: 1, nights: 1, rateMinor: totalMinor, totalMinor, arrival, departure };
-}
-
-/** Merges extras of the same service into one line each. Room lines are never merged. */
-function mergeExtrasByService(items: WorkbookItem[]): WorkbookItem[] {
-  const byService = new Map<string, WorkbookItem[]>();
-  for (const item of items) {
-    if (item.extra) byService.set(item.service, [...(byService.get(item.service) ?? []), item]);
-  }
-  const emitted = new Set<string>();
-  const rows: WorkbookItem[] = [];
-  for (const item of items) {
-    if (!item.extra) {
-      rows.push(item);
-    } else if (!emitted.has(item.service)) {
-      emitted.add(item.service);
-      rows.push(combineItems(byService.get(item.service)!));
-    }
-  }
-  return rows;
-}
-
-function otherChargesItem(items: WorkbookItem[]): WorkbookItem {
-  return {
-    service: 'other_charges',
-    extra: true,
-    description: 'Other charges',
-    qty: 1,
-    nights: 1,
-    rateMinor: sumOf(items, 'totalMinor'),
-    totalMinor: sumOf(items, 'totalMinor'),
-    arrival: items.map((item) => item.arrival).sort()[0]!,
-    departure: items.map((item) => item.departure).sort().at(-1)!,
-  };
-}
-
 /**
- * Fits room and extra items into the six template rows. Extras are merged by type first. If that is
- * still too many, everything from the last row on becomes one "Other charges" line, so the total stays exact.
+ * Workbook lines for one or more resolved stays, in stay order: each stay's room rows, then its authorised extras.
+ * With more than one stay, a row that continues the same stay's dates leaves its DATE cell blank. A single stay
+ * prints its date on every row, as it always has.
  */
-function fitWorkbookItems(items: WorkbookItem[]): WorkbookItem[] {
-  let rows = items;
-  if (rows.length > WORKBOOK_LINE_ROWS) rows = mergeExtrasByService(rows);
-  if (rows.length > WORKBOOK_LINE_ROWS) {
-    rows = [...rows.slice(0, WORKBOOK_LINE_ROWS - 1), otherChargesItem(rows.slice(WORKBOOK_LINE_ROWS - 1))];
+export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookLine[]; totalMinor: number } {
+  if (stays.length < 1) throw new Error('workbook_stays');
+  const items: Array<WorkbookItem & { stay: number }> = [];
+  stays.forEach((stay, index) => {
+    const rooms = deriveQuoteLines(stay.revision).map(
+      (line): WorkbookItem => ({
+        service: 'room',
+        extra: false,
+        description: line.description,
+        qty: line.quantity,
+        nights: line.nights,
+        rateMinor: line.rateMinor,
+        totalMinor: line.totalMinor,
+        arrival: line.arrivalDate,
+        departure: line.departureDate,
+      }),
+    );
+    const extras = (stay.facts ? deriveAuthorizedExtraLines(stay.revision, stay.facts) : []).map(
+      (line): WorkbookItem => ({
+        service: line.service,
+        extra: true,
+        description: line.description,
+        qty: line.quantity,
+        nights: line.nights,
+        rateMinor: line.rateMinor,
+        totalMinor: line.totalMinor,
+        arrival: line.dates[0] ?? stay.revision.authoredDate,
+        departure: line.dates.at(-1) ?? stay.revision.authoredDate,
+      }),
+    );
+    items.push(...[...rooms, ...extras].map((item) => ({ ...item, stay: index })));
+  });
+  const totalMinor = sumOf(items, 'totalMinor');
+  if (!Number.isSafeInteger(totalMinor)) throw new Error('money_overflow');
+  if (items.length > MAX_WORKBOOK_LINES) throw new WorkbookLineLimitError(lineLimitMessage(items.length));
+  let previous: { stay: number; dateLabel: string } | undefined;
+  const lines = items.map((item): WorkbookLine => {
+    const dateLabel = quoteDateLabel(item.arrival, item.departure);
+    const continues = stays.length > 1 && previous?.stay === item.stay && previous.dateLabel === dateLabel;
+    previous = { stay: item.stay, dateLabel };
+    return {
+      dateLabel: continues ? '' : dateLabel,
+      description: item.description,
+      qty: item.qty,
+      nights: item.nights,
+      rateMinor: item.rateMinor,
+      totalMinor: item.totalMinor,
+    };
+  });
+  if (lines.reduce((sum, line) => sum + line.totalMinor, 0) !== totalMinor) {
+    throw new Error('workbook_total_mismatch');
   }
-  return rows;
+  return { lines, totalMinor };
 }
 
 /** Workbook lines for a resolved revision and its authorised extras, with the exact total they add up to. */
@@ -164,49 +183,7 @@ export function workbookLinesFor(
   revision: QuoteRevision,
   facts?: AuthorizedProposalFacts,
 ): { lines: WorkbookLine[]; totalMinor: number } {
-  const rooms = deriveQuoteLines(revision).map(
-    (line): WorkbookItem => ({
-      service: 'room',
-      extra: false,
-      description: line.description,
-      qty: line.quantity,
-      nights: line.nights,
-      rateMinor: line.rateMinor,
-      totalMinor: line.totalMinor,
-      arrival: line.arrivalDate,
-      departure: line.departureDate,
-    }),
-  );
-  const extras = (facts ? deriveAuthorizedExtraLines(revision, facts) : []).map(
-    (line): WorkbookItem => ({
-      service: line.service,
-      extra: true,
-      description: line.description,
-      qty: line.quantity,
-      nights: line.nights,
-      rateMinor: line.rateMinor,
-      totalMinor: line.totalMinor,
-      arrival: line.dates[0] ?? revision.authoredDate,
-      departure: line.dates.at(-1) ?? revision.authoredDate,
-    }),
-  );
-  const items = [...rooms, ...extras];
-  const totalMinor = sumOf(items, 'totalMinor');
-  if (!Number.isSafeInteger(totalMinor)) throw new Error('money_overflow');
-  const lines = fitWorkbookItems(items).map(
-    (item): WorkbookLine => ({
-      dateLabel: quoteDateLabel(item.arrival, item.departure),
-      description: item.description,
-      qty: item.qty,
-      nights: item.nights,
-      rateMinor: item.rateMinor,
-      totalMinor: item.totalMinor,
-    }),
-  );
-  if (lines.reduce((sum, line) => sum + line.totalMinor, 0) !== totalMinor) {
-    throw new Error('workbook_total_mismatch');
-  }
-  return { lines, totalMinor };
+  return workbookLinesForStays([{ revision, facts }]);
 }
 
 function xmlText(value: string): string {
@@ -266,17 +243,65 @@ function setRowHeight(sheet: string, row: number, height: number): string {
   return sheet.replace(match[0], `<row r="${row}"${attrs} ht="${height}" customHeight="1">`);
 }
 
-function setNote(sheet: string, note: string): string {
+function setNote(sheet: string, note: string, rows: number[]): string {
   const text = `Note: ${note}`;
-  let next = setText(sheet, `A${NOTE_ROWS[0]}`, text, NOTE_STYLE);
-  next = addMerge(next, `A${NOTE_ROWS[0]}:H${NOTE_ROWS.at(-1)}`);
+  let next = setText(sheet, `A${rows[0]}`, text, NOTE_STYLE);
+  next = addMerge(next, `A${rows[0]}:H${rows.at(-1)}`);
   const wrappedLines = text
     .split('\n')
     .reduce((count, part) => count + Math.max(1, Math.ceil(part.length / NOTE_CHARS_PER_LINE)), 0);
   const needed = wrappedLines * 15 + 4;
-  const height = Math.max(17.4, Math.ceil(needed / NOTE_ROWS.length));
-  for (const row of NOTE_ROWS) next = setRowHeight(next, row, height);
+  const height = Math.max(17.4, Math.ceil(needed / rows.length));
+  for (const row of rows) next = setRowHeight(next, row, height);
   return next;
+}
+
+/** A line row styled like template row 24. Its cells are filled afterwards. */
+function lineRowXml(sheet: string, row: number): string {
+  const template = sheet.match(new RegExp(`<row r="${FIRST_LINE_ROW}"([^>]*)>([\\s\\S]*?)</row>`));
+  if (!template) throw new Error('template line row missing');
+  const cells = [...template[2]!.matchAll(/<c r="([A-Z]+)\d+"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g)].map(
+    ([, column, attrs]) => `<c r="${column}${row}"${attrs!.match(/\ss="[^"]*"/)?.[0] ?? ''}/>`,
+  );
+  return `<row r="${row}"${template[1]}>${cells.join('')}</row>`;
+}
+
+/**
+ * Inserts `count` line rows above template row 30. Every row, cell, merge, hyperlink and the dimension at or below
+ * row 30 moves down by `count`, so the line block stays one table and nothing overlaps it.
+ */
+function insertLineRows(sheet: string, count: number): string {
+  if (count === 0) return sheet;
+  const down = (row: number) => (row >= SEPARATOR_ROW ? row + count : row);
+  const moveRef = (ref: string) =>
+    ref.replace(/([A-Z]+)(\d+)/g, (_all, column: string, row: string) => `${column}${down(Number(row))}`);
+  let next = sheet
+    .replace(/<row r="(\d+)"/g, (_all, row: string) => `<row r="${down(Number(row))}"`)
+    .replace(/<c r="([A-Z]+\d+)"/g, (_all, ref: string) => `<c r="${moveRef(ref)}"`)
+    .replace(/<mergeCell ref="([^"]+)"/g, (_all, ref: string) => `<mergeCell ref="${moveRef(ref)}"`)
+    .replace(/<hyperlink ref="([^"]+)"/g, (_all, ref: string) => `<hyperlink ref="${moveRef(ref)}"`)
+    .replace(/<dimension ref="([^"]+)"/, (_all, ref: string) => `<dimension ref="${moveRef(ref)}"`);
+  const separator = `<row r="${down(SEPARATOR_ROW)}"`;
+  if (next.split(separator).length !== 2) throw new Error('template separator row missing');
+  const rows = Array.from({ length: count }, (_, index) => SEPARATOR_ROW + index);
+  next = next.replace(separator, () => rows.map((row) => lineRowXml(next, row)).join('') + separator);
+  for (const row of rows) next = addMerge(next, `C${row}:E${row}`);
+  return next;
+}
+
+/** Drawing anchors at or below template row 30 move with the rows. The logo above the line block stays put. */
+function shiftDrawingRows(drawingXml: string, count: number): string {
+  return drawingXml.replace(/<xdr:row>(\d+)<\/xdr:row>/g, (_all, row: string) => {
+    const index = Number(row);
+    return `<xdr:row>${index >= DRAWING_SHIFT_FROM ? index + count : index}</xdr:row>`;
+  });
+}
+
+/** The print area ends where the template's last row ends, moved down with the inserted rows. */
+function printAreaFor(workbookXml: string, count: number): string {
+  const area = `Sheet1!$A$1:$H$${PRINT_AREA_LAST_ROW}`;
+  if (!workbookXml.includes(area)) throw new Error('quotation template print area drifted');
+  return workbookXml.replace(area, `Sheet1!$A$1:$H$${PRINT_AREA_LAST_ROW + count}`);
 }
 
 /** The template keeps the author's local save path in workbook.xml. Drop that optional block and set recalc on load. */
@@ -303,13 +328,20 @@ function scrubCore(xml: string): string {
  * values, so Excel can recalculate them. Metadata is scrubbed. The date is fixed, not TODAY().
  */
 export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
-  if (input.lines.length < 1 || input.lines.length > WORKBOOK_LINE_ROWS) throw new Error('workbook_line_count');
+  if (input.lines.length < 1) throw new Error('workbook_line_count');
+  if (input.lines.length > MAX_WORKBOOK_LINES) throw new WorkbookLineLimitError(lineLimitMessage(input.lines.length));
   const files = unzipSync(readFileSync(TEMPLATE_PATH));
   const sheetBytes = files[SHEET_PATH];
   const workbookBytes = files['xl/workbook.xml'];
   const coreBytes = files['docProps/core.xml'];
-  if (!sheetBytes || !workbookBytes || !coreBytes) throw new Error('quotation template missing sheet');
-  let sheet = new TextDecoder().decode(sheetBytes);
+  const drawingBytes = files[DRAWING_PATH];
+  if (!sheetBytes || !workbookBytes || !coreBytes || !drawingBytes) {
+    throw new Error('quotation template missing sheet');
+  }
+  // Rows inserted above template row 30. Every row-addressed artefact at or below that row moves by the same count.
+  const extra = Math.max(0, input.lines.length - TEMPLATE_LINE_ROWS);
+  const below = (row: number) => (row >= SEPARATOR_ROW ? row + extra : row);
+  let sheet = insertLineRows(new TextDecoder().decode(sheetBytes), extra);
   let subtotal = 0;
   for (const line of input.lines) {
     if (
@@ -332,7 +364,8 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   sheet = setText(sheet, 'B13', input.header.company);
   sheet = setText(sheet, 'B14', input.header.clientEmail);
   sheet = setText(sheet, 'B15', input.header.clientTelephone);
-  for (let index = 0; index < WORKBOOK_LINE_ROWS; index += 1) {
+  const lineRows = Math.max(TEMPLATE_LINE_ROWS, input.lines.length);
+  for (let index = 0; index < lineRows; index += 1) {
     const row = FIRST_LINE_ROW + index;
     const line = input.lines[index];
     if (line) {
@@ -347,20 +380,24 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
     }
     sheet = setFormula(sheet, `H${row}`, `+B${row}*F${row}*G${row}`, randText(line?.totalMinor ?? 0));
   }
-  sheet = setFormula(sheet, 'H31', 'SUM(H24:H30)', randText(subtotal));
-  sheet = setFormula(sheet, 'H33', '+H31', randText(subtotal));
+  // The subtotal sums through the separator row, as the template's SUM(H24:H30) does, so it moves with it.
+  sheet = setFormula(sheet, `H${below(31)}`, `SUM(H${FIRST_LINE_ROW}:H${below(30)})`, randText(subtotal));
+  sheet = setFormula(sheet, `H${below(33)}`, `+H${below(31)}`, randText(subtotal));
   if (!input.breakfastIncluded) {
-    sheet = setText(sheet, 'A38', 'Meals are included only where stated in the line description.');
-    sheet = clearCell(sheet, 'F39');
+    sheet = setText(sheet, `A${below(38)}`, 'Meals are included only where stated in the line description.');
+    sheet = clearCell(sheet, `F${below(39)}`);
   }
   const note = input.note?.trim();
-  if (note) sheet = setNote(sheet, note);
-  sheet = setText(sheet, 'B61', input.header.signerName);
-  sheet = setText(sheet, 'B62', input.header.signerEmail);
-  sheet = setText(sheet, 'B63', HOTEL_TELEPHONE);
+  if (note) sheet = setNote(sheet, note, NOTE_ROWS.map(below));
+  sheet = setText(sheet, `B${below(61)}`, input.header.signerName);
+  sheet = setText(sheet, `B${below(62)}`, input.header.signerEmail);
+  sheet = setText(sheet, `B${below(63)}`, HOTEL_TELEPHONE);
 
   files[SHEET_PATH] = new TextEncoder().encode(sheet);
-  files['xl/workbook.xml'] = new TextEncoder().encode(scrubWorkbook(new TextDecoder().decode(workbookBytes)));
+  files[DRAWING_PATH] = new TextEncoder().encode(shiftDrawingRows(new TextDecoder().decode(drawingBytes), extra));
+  files['xl/workbook.xml'] = new TextEncoder().encode(
+    printAreaFor(scrubWorkbook(new TextDecoder().decode(workbookBytes)), extra),
+  );
   files['docProps/core.xml'] = new TextEncoder().encode(scrubCore(new TextDecoder().decode(coreBytes)));
   // Formulas changed, so the template's calculation chain is stale. Excel rebuilds it on load.
   delete files[CALC_CHAIN_PATH];
@@ -373,6 +410,26 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   return zipSync(files);
 }
 
+/** The workbook for one or more resolved stays: its lines, the exact total, and the bytes. */
+export function quoteWorkbookForStays(args: {
+  stays: WorkbookStay[];
+  header: WorkbookHeader;
+  note?: string;
+}): { bytes: Uint8Array; totalMinor: number } {
+  const { lines, totalMinor } = workbookLinesForStays(args.stays);
+  const bytes = buildQuoteWorkbook({
+    // The earliest read sets the date, so no stay is quoted beyond the validity of its own read.
+    authoredDate: args.stays.map((stay) => stay.revision.authoredDate).sort()[0]!,
+    breakfastIncluded: args.stays.every((stay) =>
+      stay.revision.groups.every((group) => group.board === 'breakfast' || group.board === 'dinner_bed_breakfast'),
+    ),
+    header: args.header,
+    lines,
+    note: args.note,
+  });
+  return { bytes, totalMinor };
+}
+
 /** The workbook for a resolved revision: its lines, the exact total, and the bytes. */
 export function quoteWorkbookForRevision(args: {
   revision: QuoteRevision;
@@ -380,17 +437,7 @@ export function quoteWorkbookForRevision(args: {
   header: WorkbookHeader;
   note?: string;
 }): { bytes: Uint8Array; totalMinor: number } {
-  const { lines, totalMinor } = workbookLinesFor(args.revision, args.facts);
-  const bytes = buildQuoteWorkbook({
-    authoredDate: args.revision.authoredDate,
-    breakfastIncluded: args.revision.groups.every(
-      (group) => group.board === 'breakfast' || group.board === 'dinner_bed_breakfast',
-    ),
-    header: args.header,
-    lines,
-    note: args.note,
-  });
-  return { bytes, totalMinor };
+  return quoteWorkbookForStays({ stays: [{ revision: args.revision, facts: args.facts }], header: args.header, note: args.note });
 }
 
 /** "Quote - <Company or Guest> - <arrival>.xlsx" with path-unsafe characters removed. */

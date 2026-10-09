@@ -599,6 +599,32 @@ export function staffQuoteCurrencyProblem(args: {
   return null;
 }
 
+/** The one date set ("arrival/departure") a revision covers, or null when it has none or several. */
+export function approvedStaySpan(revision: Pick<QuoteRevision, 'groups'>): string | null {
+  const spans = new Set(revision.groups.map((group) => `${group.arrivalDate}/${group.departureDate}`));
+  return spans.size === 1 ? [...spans][0]! : null;
+}
+
+/**
+ * Why one stay of a combined quote is no longer current, or null. A stay is superseded by a newer approval for the same
+ * dates, and by a newer approval whose dates are unknown (failed or still running), since that one could have changed
+ * the stay. `approvals` lists the message's staff approvals, newest first.
+ */
+export function combinedStayCurrencyProblem(args: {
+  stay: { generationId: string | null | undefined; span: string | null };
+  approvals: ReadonlyArray<{ generationId: string; span: string | null }>;
+}): string | null {
+  const superseded = 'Newer stay inputs were approved; use the current quote';
+  if (!args.stay.span) return 'Stay dates are not one set; rerun the approved quote';
+  const index = args.approvals.findIndex((approval) => approval.generationId === args.stay.generationId);
+  if (!args.stay.generationId || index < 0) return superseded;
+  return args.approvals
+    .slice(0, index)
+    .some((approval) => approval.span === null || approval.span === args.stay.span)
+    ? superseded
+    : null;
+}
+
 export function attestStaffQuote(
   input: StaffQuoteInput,
   scope: StaffQuoteScope,
