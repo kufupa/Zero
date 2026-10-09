@@ -119,13 +119,22 @@ describe('nava-preview-gate.sh --dry-run', () => {
       'AWS_REGION=af-south-1',
       'BETTER_AUTH_URL=https://nava.legacyhotels.co.za',
     ]);
-    const result = gateRun(['--dry-run'], { ENV_FILE: env });
+    // An exported NAVA_PREVIEW_THREADS would switch the selection, so the default case clears it.
+    const result = gateRun(['--dry-run'], { ENV_FILE: env, NAVA_PREVIEW_THREADS: '' });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('transport-centurion');
     expect(result.stdout).toContain('s3://test-bucket-xyz/nava-preview-gate/<run id>/');
     expect(result.stdout).toContain('/opt/nava/shared/nava-preview/gate-<UTC run id>/');
     expect(result.stdout).toContain('--latest 20');
     expect(result.stdout).toContain('never printed');
+  });
+
+  it('runs the listed threads instead of the latest when NAVA_PREVIEW_THREADS is set', () => {
+    const env = envFile(['S3_BUCKET=test-bucket-xyz', 'BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
+    const result = gateRun(['--dry-run'], { ENV_FILE: env, NAVA_PREVIEW_THREADS: 'thread-a,thread-b' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('--threads thread-a,thread-b');
+    expect(result.stdout).not.toContain('--latest 20');
   });
 
   it('refuses a non-canonical BETTER_AUTH_URL before any other step', () => {

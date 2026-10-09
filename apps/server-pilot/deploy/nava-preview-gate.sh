@@ -26,6 +26,9 @@ CANONICAL_ORIGIN="https://${CANONICAL_HOST}"
 RESOLVE_TO="127.0.0.1"
 TRANSPORT_ID="transport-centurion"
 LATEST_COUNT=20
+# NAVA_PREVIEW_THREADS=id1,id2 runs those threads instead of the latest ones (a targeted live proof).
+SELECTION=(--latest "$LATEST_COUNT")
+if [ -n "${NAVA_PREVIEW_THREADS:-}" ]; then SELECTION=(--threads "$NAVA_PREVIEW_THREADS"); fi
 RUNNER_TIMEOUT_MS=90000
 PILOT_EMAIL="navaai@legacyhotels.co.za"
 PILOT_SECRET_ID="nava-zero/server-pilot/pilot-users"
@@ -141,7 +144,7 @@ if [ "$MODE" = "dry-run" ]; then
   done
   echo "origin:      ${CANONICAL_ORIGIN} (curl and Chromium pin ${CANONICAL_HOST} to ${RESOLVE_TO})"
   echo "transport:   ${TRANSPORT_ID} (sent as x-zero-active-transport)"
-  echo "selection:   --latest ${LATEST_COUNT}, ${RUNNER_TIMEOUT_MS} ms per thread"
+  echo "selection:   ${SELECTION[*]}, ${RUNNER_TIMEOUT_MS} ms per thread"
   echo "sign-in:     POST ${CANONICAL_ORIGIN}/api/auth/sign-in/email as the pilot operator account"
   echo "password:    Secrets Manager ${PILOT_SECRET_ID} (region ${AWS_REGION_NAME}), never printed"
   echo "output:      ${OUT_ROOT}/gate-<UTC run id>/ (mode 700)"
@@ -257,7 +260,7 @@ NAVA_PREVIEW_STORAGE_STATE="$AUTH_DIR/storage-state.json" \
 NAVA_PREVIEW_RESOLVE_TO="$RESOLVE_TO" \
 NAVA_PREVIEW_TRANSPORT_ID="$TRANSPORT_ID" \
 pnpm --dir apps/server-pilot exec tsx scripts/nava-preview-run.ts \
-  --latest "$LATEST_COUNT" \
+  "${SELECTION[@]}" \
   --out "$OUT_DIR" \
   --timeout-ms "$RUNNER_TIMEOUT_MS"
 RUN_EXIT=$?
