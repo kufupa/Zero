@@ -608,7 +608,11 @@ export async function runPreview(
   config: RunConfig,
   log: (line: string) => void,
 ): Promise<RunOutput> {
-  const launchOptions = config.chromiumPath ? { executablePath: config.chromiumPath } : {};
+  // Headless Chromium hides scrollbars by default. Staff see them in WebView2, so the screenshots must too.
+  const launchOptions = {
+    ...(config.chromiumPath ? { executablePath: config.chromiumPath } : {}),
+    ignoreDefaultArgs: ['--hide-scrollbars'],
+  };
   // --resolve equivalent: Chromium sends this host's TLS and requests to the pinned address.
   const host = new URL(config.baseUrl).hostname;
   const args = config.resolveTo ? [`--host-resolver-rules=MAP ${host} ${config.resolveTo}`] : [];
