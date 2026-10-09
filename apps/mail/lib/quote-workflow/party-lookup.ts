@@ -63,7 +63,8 @@ export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string
   if (outcome === 'execution_failure') return "HMS search didn't apply — try again";
   if (outcome === 'refused_lock_busy')
     return 'HMS is busy with another run. Try again in a minute.';
+  // The switch is off, so no company or agency rate is checked. The copy does not say which rates the quote uses.
   if (outcome === 'refused_flag_off')
-    return 'HMS rate lookup is turned off, so this quote uses public rates.';
+    return 'HMS rate lookup is turned off here, so company and agency rates are not checked.';
   return "Luna couldn't check HMS for this name. Try again, or quote at public rates.";
 }

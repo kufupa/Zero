@@ -172,6 +172,10 @@ export function staffQuoteFailureMessage(
     business_party_lookup_unavailable:
       'Organisation or agency lookup is unavailable; retry the quote.',
     staff_quote_party_unavailable: 'Organisation or agency lookup failed; retry the quote.',
+    staff_quote_party_invalid:
+      "Luna couldn't verify the company or agency rate from HMS. Try again, or quote at public rates.",
+    staff_quote_party_changed:
+      'The HMS company or agency result changed while Luna read it. Try again.',
     business_selected_joint_inventory_unavailable:
       'Verify combined availability for the requested rooms and dates.',
     business_selected_price_unavailable:

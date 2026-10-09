@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import { PartyPicker } from '../components/quote-workflow/party-picker';
-import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
+import { PARTY_TRUNCATED_NOTE, type PartyFindReply } from '../lib/quote-workflow/party-lookup';
 
 afterEach(() => {
   cleanup();
@@ -34,6 +34,16 @@ function picker(name: string, find: (query: string) => Promise<PartyFindReply>, 
 function findButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
 }
+
+describe('PartyPicker copy for a search HMS cut short', () => {
+  it('shows the 50-match copy when a search has no rows to list but was cut short, not a no-match reason', async () => {
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({ outcome: 'no_match', results: [], truncated: true }));
+    render(picker('Tour', find));
+    fireEvent.click(findButton());
+    await waitFor(() => expect(screen.getByText(PARTY_TRUNCATED_NOTE)).toBeTruthy());
+    expect(screen.queryByText(/No match in HMS/)).toBeNull();
+  });
+});
 
 describe('PartyPicker results follow the name typed now', () => {
   it('clears listed results when the name changes, so a result for the old name cannot be picked', async () => {

@@ -59,7 +59,9 @@ describe('party copy', () => {
       'No match in HMS. Quote will use BAR unless you pick a company or agency.',
     );
     expect(partyNoCandidateNote('refused_lock_busy')).toContain('busy');
-    expect(partyNoCandidateNote('refused_flag_off')).toContain('public rates');
+    expect(partyNoCandidateNote('refused_flag_off')).toBe(
+      'HMS rate lookup is turned off here, so company and agency rates are not checked.',
+    );
     expect(partyNoCandidateNote('execution_failure')).toBe("HMS search didn't apply — try again");
     expect(PARTY_TRUNCATED_NOTE).toBe('50+ matches — type more of the name');
   });
