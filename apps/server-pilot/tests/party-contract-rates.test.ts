@@ -77,6 +77,28 @@ function rateOption(rate: Rate, context: Record<string, unknown>) {
   };
 }
 
+/**
+ * The rows one Rate Shop read returns, as fetch-quote.mjs marks them. Under a party context, a public row is accepted
+ * only in an unfiltered read (no exact room or rate code, Preset or no strategy) with no flagged row in the read. Any
+ * other row under the context is unresolved, which is how the runner rejects the capture.
+ */
+function rateShopRows(request: any, rates: Rate[], context: Record<string, unknown>) {
+  const partyRequested = Object.keys(request.rateContext ?? {}).length > 0;
+  const filtered = request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
+  const strategy = String(request.search?.salesStrategy ?? '').toUpperCase();
+  const unfiltered = !filtered && (strategy === '' || strategy === 'PRESET');
+  const noSpecialRates =
+    partyRequested && unfiltered && rates.some((r) => r.rateScope === 'public') && rates.every((r) => r.rateScope !== 'contextual');
+  return rates.map((rate) => ({
+    ...rateOption(rate, context),
+    eligibility: rate.rateScope === 'unknown' ? 'conditional' : 'verified',
+    matchStatus:
+      partyRequested && rate.rateScope !== 'contextual' && !(noSpecialRates && rate.rateScope === 'public')
+        ? 'unresolved'
+        : 'match',
+  }));
+}
+
 const policy = {
   ref: 'policy',
   propertyCode: 'HRCEN',
@@ -107,7 +129,6 @@ function groupInput(parties?: StaffQuoteParties, text: { company?: string; agenc
         adults: 1,
         childrenAges: [],
         board: 'room_only',
-        roomCodes: ['SKNG'],
       },
     ],
     ...text,
@@ -153,7 +174,7 @@ async function quoteWith(
               id: r.id,
               request: r,
               completeness: { search: 'complete', requiredFacts: 'complete' },
-              options: rates.map((rate) => rateOption(rate, context)),
+              options: rateShopRows(request, rates, context),
             })),
           },
         };
@@ -218,6 +239,27 @@ describe('contract rates from the picked company or agency', () => {
       'No contract rate found for Woolworths; this quote uses our best available rate.',
     );
     expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, [{ rateCode: 'BCO1B' }])).toBeNull();
+  });
+
+  it('a verified party with only public rows quotes BAR in a clean read, and the review copy says so', async () => {
+    const agency360 = { agency: agency('113', '360 degrees Travel') };
+    const { revision, sent } = await quoteWith(agency360, [BAR]);
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyContractReviewNote(agency360, revision.groups)).toBe(
+      'No contract rate found for 360 degrees Travel; this quote uses our best available rate.',
+    );
+    // The summary read finds the public row. The full read keeps the party context and adds no exact code filter.
+    expect(sent).toHaveLength(2);
+    expect(sent[1].rateContext).toEqual({ agency: { nativeId: '113', name: '360 degrees Travel' } });
+    expect(sent[1].rooms[0].required).not.toHaveProperty('roomCodes');
+    expect(sent[1].rooms[0].required).not.toHaveProperty('rateCodes');
+  });
+
+  it('a verified party with a flagged row prices that contract row, not the public one', async () => {
+    const agencyWoolworths = { agency: agency('569', 'Woolworths Agency') };
+    const { revision } = await quoteWith(agencyWoolworths, [BAR, AGENCY_FLAGGED]);
+    expect(revision.groups[0]!.rateCode).toBe('WSF2B');
+    expect(partyContractReviewNote(agencyWoolworths, revision.groups)).toBeNull();
   });
 
   it('a plan named after the party is not offered as a contract unless HMS flags it', async () => {
