@@ -196,7 +196,7 @@ describe('Outlook pane quote proposal PDF', () => {
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' })));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 })));
-  });
+  }, 15_000);
   it('requires a fresh quote after the staff session changes on the same selected message', async () => {
     const view = render(<OutlookPanePage />);
     await prepareReviewedQuote();
@@ -208,7 +208,7 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByText('Prepare the quote PDF first')).toBeDefined();
     expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
-  });
+  }, 15_000);
   it('prepares the booking draft from the staff-edited stay dates, not the raw Luna read-out', async () => {
     analyseOverride.current = async () => ({
       status: 'ready' as const,
@@ -253,6 +253,8 @@ describe('Outlook pane quote proposal PDF', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: '2026-11-13' } });
+    // Get rates waits for a room type on every row; the email gave none.
+    fireEvent.change(await screen.findByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => expect(prepareDraftMutateMock).toHaveBeenCalledTimes(1));
     const sent = prepareDraftMutateMock.mock.calls[0]?.[0] as {
@@ -511,6 +513,7 @@ describe('Outlook pane quote proposal PDF', () => {
     });
   });
 
+  // These reply flows run close to the 5 s default in happy-dom under VPS load; 15 s matches party-index-typeahead.
   it('keeps the exact PDF bytes and attachment operation after an ambiguous native timeout', async () => {
     let attachmentCount = 0;
     sendCommandMock.mockImplementation(async (action: string) => {
@@ -555,7 +558,7 @@ describe('Outlook pane quote proposal PDF', () => {
       sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT'),
     ).toHaveLength(1);
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('does not create a reply or attach cached PDF after staff logs out during native revalidation', async () => {
     let release!: () => void;
@@ -597,7 +600,7 @@ describe('Outlook pane quote proposal PDF', () => {
       ),
     );
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('requires checking Drafts when a native reply completes after the staff scope changes', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -633,7 +636,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(sendCommandMock.mock.calls.filter(
       ([action]) => action === 'CREATE_REPLY_DRAFT',
     )).toHaveLength(2));
-  });
+  }, 15_000);
 
   it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -675,5 +678,5 @@ describe('Outlook pane quote proposal PDF', () => {
     confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

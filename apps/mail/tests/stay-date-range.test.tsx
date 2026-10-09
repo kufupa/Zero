@@ -29,8 +29,8 @@ function dayButton(day: number): HTMLElement {
 describe('StayDateRange', () => {
   it('shows both dates as tiles and the nights between them', () => {
     renderRange();
-    expect(screen.getByRole('button', { name: /arrival date/i }).textContent).toContain('Thu 15 Oct 2026');
-    expect(screen.getByRole('button', { name: /departure date/i }).textContent).toContain('Sat 17 Oct 2026');
+    expect(screen.getByRole('button', { name: /check-in/i }).textContent).toContain('Thu 15 Oct 2026');
+    expect(screen.getByRole('button', { name: /check-out/i }).textContent).toContain('Sat 17 Oct 2026');
     // The quick pills say "2 nights" too, so match the footer only.
     expect(screen.getByText('2 nights', { selector: 'span' })).toBeTruthy();
   });
@@ -76,14 +76,14 @@ describe('StayDateRange', () => {
 
   it('moves the arrival from its tile and keeps a departure that is still after it', () => {
     const { onChange } = renderRange({ arrival: '2026-10-10', departure: '2026-10-14' });
-    fireEvent.click(screen.getByRole('button', { name: /arrival date/i }));
+    fireEvent.click(screen.getByRole('button', { name: /check-in/i }));
     fireEvent.click(dayButton(12));
     expect(onChange).toHaveBeenLastCalledWith({ arrivalDate: '2026-10-12', departureDate: '2026-10-14' });
   });
 
   it('clears a departure that the new arrival passes', () => {
     const { onChange } = renderRange({ arrival: '2026-10-10', departure: '2026-10-14' });
-    fireEvent.click(screen.getByRole('button', { name: /arrival date/i }));
+    fireEvent.click(screen.getByRole('button', { name: /check-in/i }));
     fireEvent.click(dayButton(16));
     expect(onChange).toHaveBeenLastCalledWith({ arrivalDate: '2026-10-16', departureDate: '' });
   });

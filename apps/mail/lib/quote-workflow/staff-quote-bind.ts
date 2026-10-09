@@ -19,20 +19,11 @@ import type {
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem } from './types';
+import { ROOM_TYPE_CODES } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
-/** Exact Centurion native room-type codes. Labels such as SINGLE are not codes. */
-export const KNOWN_NATIVE_ROOM_CODES = new Set([
-  'DLXKNG',
-  'DLXQN',
-  'DLXTWN',
-  'LUXKNG',
-  'SUITE',
-  'SKNG',
-  'EXKNG',
-  'STQN',
-  'STWN',
-]);
+/** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
+export const KNOWN_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>(ROOM_TYPE_CODES);
 
 export type NativeRoomCodeResolution =
   | { status: 'omitted' }

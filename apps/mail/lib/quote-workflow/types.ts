@@ -33,7 +33,10 @@ export type QuoteSelectionBinding = {
 };
 
 export type StayGroupRequirement = {
+  /** One row of a stay. Each row is still one server group. */
   id: string;
+  /** The stay this row belongs to. Rows with the same stayId are one stay. Missing: the row's dates make its stay. */
+  stayId?: string;
   arrivalDate?: string;
   departureDate?: string;
   quantity?: number;
@@ -531,7 +534,31 @@ export type QuoteSession = {
   analysisStartStayRevision?: number | null;
 };
 
+/**
+ * A removed stay, kept by the shell so Undo can put it back. Rates come back only when the input revision has not
+ * moved since the removal.
+ */
+export type RemovedStay = {
+  rows: StayGroupRequirement[];
+  index: number;
+  inputRevision: number;
+  staffQuotes: Record<string, StaffQuoteAllocation>;
+  stayPdfs: Record<string, QuotePdf>;
+  offers: QuoteOffer[];
+};
+
+/** `token` makes the ids of rows and stays a new action creates; the reducer stays pure. */
+export type StayEditAction =
+  | { type: 'add_stay'; token: string }
+  | { type: 'add_row'; stayId: string; token: string }
+  | { type: 'duplicate_row'; groupId: string; token: string }
+  | { type: 'remove_row'; groupId: string }
+  | { type: 'duplicate_stay'; stayId: string; token: string }
+  | { type: 'remove_stay'; stayId: string };
+
 export type QuoteSessionAction =
+  | StayEditAction
+  | { type: 'restore_stay'; removal: RemovedStay }
   | { type: 'reset' }
   | { type: 'selection'; binding: QuoteSelectionBinding }
   | { type: 'analysis_started' }

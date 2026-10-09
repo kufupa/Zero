@@ -110,6 +110,8 @@ describe('production pane never synthesizes quote evidence', () => {
 
   it('keeps integration unavailable and does not emit fixture offers, PDF, or native calls', async () => {
     render(<OutlookPanePage />);
+    // Get rates waits for a room type on every row; the email gave none.
+    fireEvent.change(await screen.findByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => {
       expect(screen.getAllByText(/not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
