@@ -16,7 +16,7 @@ import {
   type AuthorizedProposalFacts,
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { PARTY_NO_CONTRACT_CODE, isPartyRateFailure } from './party-rate-failure.js';
+import { PARTY_NO_CONTRACT_CODE, PARTY_SEARCH_INCOMPLETE_CODE, isPartyRateFailure } from './party-rate-failure.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -152,6 +152,18 @@ export function partyRateFallbackNote(names: readonly string[]): string {
   return `HMS couldn't apply the contract rate for ${names.join(' and ')}, so these are public rates. Check in HMS.`;
 }
 
+/** The review note when HMS could not confirm the picked party's contract rates. The quote is public and says so. */
+export function partyUnconfirmedNote(names: readonly string[]): string {
+  return `Nava couldn't confirm contract rates for ${names.join(' and ')} — this quote uses our best available rate. Check HMS before sending.`;
+}
+
+/** The note a public retry carries. A complete no-contract retry has none: its review note on the public groups says so. */
+function fallbackNote(code: unknown, names: readonly string[]): string | null {
+  if (code === PARTY_NO_CONTRACT_CODE) return null;
+  if (code === PARTY_SEARCH_INCOMPLETE_CODE) return partyUnconfirmedNote(names);
+  return partyRateFallbackNote(names);
+}
+
 /**
  * Quotes the picked parties first. When HMS cannot price them, quotes once more at public rates and says so in the
  * note. Any other failure, and every quote without a picked party, fails as before.
@@ -171,7 +183,7 @@ export async function quoteWithPartyFallback<T, P>(options: {
       prepared: retry,
       result: await options.run(retry),
       // A no-contract retry is said by the review note on its public groups, not by the fallback note.
-      note: (error as { code?: unknown }).code === PARTY_NO_CONTRACT_CODE ? null : partyRateFallbackNote(partyNames(options.input.parties)),
+      note: fallbackNote((error as { code?: unknown }).code, partyNames(options.input.parties)),
       fellBack: true,
     };
   }

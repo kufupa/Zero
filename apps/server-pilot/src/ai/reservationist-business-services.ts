@@ -7,7 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
-import {PartyRateFailure,PARTY_NO_CONTRACT_CODE} from './party-rate-failure.js';
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partyReadingOf} from './party-rate-failure.js';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:false;salesStrategy:'Government'|'Preset'|'BAR'};details:'full';maxOptionsPerGroup:number};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
@@ -149,6 +149,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const searchRequest={...request,details:'summary'},summary=await readBound(searchRequest);observations.set(observationContextDigest(ctx),structuredClone(summary.source));
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
+ if(staffApproval&&partyReadingOf(summary.source.result.groups,request.rateContext)==='incomplete')throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
  const candidates=quoteOptionCandidates(summary.source);
  // A staff quote with picked parties needs an HMS-flagged row for every requested room. Without one, the quote retries at public rates.
  if(staffApproval&&request.rateContext&&!candidates.every(c=>c.totals.some(v=>v.o.rateScope==='contextual')))throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);

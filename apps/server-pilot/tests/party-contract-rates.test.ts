@@ -16,8 +16,13 @@ import {
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
 import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../src/ai/party-aliases.js';
-import { PARTY_NO_CONTRACT_CODE, PartyRateFailure, isPartyRateFailure } from '../src/ai/party-rate-failure.js';
-import { partyHasOnlyPublicRows } from '../src/ai/reservationist-evaluation-composition.js';
+import {
+  PARTY_NO_CONTRACT_CODE,
+  PARTY_SEARCH_INCOMPLETE_CODE,
+  PartyRateFailure,
+  isPartyRateFailure,
+  partyReadingOf,
+} from '../src/ai/party-rate-failure.js';
 
 // The Rate Shop helpers the runner uses, for the runner-input checks.
 type RunnerSeams = {
@@ -147,7 +152,12 @@ function resolvedContext(rateContext: Record<string, { nativeId: string; name: s
 }
 
 /** The Rate Shop services for one staff attempt: every read is answered from the rows, under the attempt's context. */
-function rateShopServices(prepared: ReturnType<typeof prepareStaffQuote>, rates: Rate[], sent: any[]) {
+function rateShopServices(
+  prepared: ReturnType<typeof prepareStaffQuote>,
+  rates: Rate[],
+  sent: any[],
+  flags: { readParty?: any; incompleteParty?: boolean } = {},
+) {
   const context = resolvedContext(prepared.request.rateContext);
   return createReservationistBusinessServices(
     {
@@ -157,11 +167,16 @@ function rateShopServices(prepared: ReturnType<typeof prepareStaffQuote>, rates:
       readQuote: async (request: any) => {
         sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
-        const options = rateShopRows(request, rates, context);
+        const rows = rateShopRows(request, rates, context);
         // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
         const unfilteredFull =
           request.details === 'full' &&
           !request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
+        // A party read whose calendar pages did not all load: its groups report it, as the runner does.
+        const incomplete = Boolean(flags.incompleteParty && request.rateContext);
+        const completeness = incomplete
+          ? { search: 'partial', requiredFacts: 'partial' }
+          : { search: 'complete', requiredFacts: 'complete' };
         return {
           ref: 'source:1',
           sha256: 'b'.repeat(64),
@@ -169,18 +184,19 @@ function rateShopServices(prepared: ReturnType<typeof prepareStaffQuote>, rates:
           observedAt: new Date().toISOString(),
           request: normalized,
           result: {
-            outcome: unfilteredFull && options.length > 5 ? 'partial' : 'quote',
+            outcome: incomplete || (unfilteredFull && rows.length > 5) ? 'partial' : 'quote',
             propertyCode: 'HRCEN',
             groups: normalized.rooms.map((r: any) => ({
               id: r.id,
               request: r,
-              completeness: { search: 'complete', requiredFacts: 'complete' },
-              options,
+              completeness,
+              options: rows,
             })),
           },
         };
       },
       resolvePolicy: async () => policy,
+      ...(flags.readParty ? { readParty: flags.readParty } : {}),
     },
     prepared.approval,
   );
@@ -190,7 +206,7 @@ function rateShopServices(prepared: ReturnType<typeof prepareStaffQuote>, rates:
 async function quoteWith(
   parties: StaffQuoteParties | undefined,
   rates: Rate[],
-  options: { header?: { company?: string; agency?: string } } = {},
+  options: { header?: { company?: string; agency?: string }; readParty?: any; incompleteParty?: boolean } = {},
 ) {
   const confirmed = groupInput(parties, options.header);
   const first = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
@@ -199,7 +215,7 @@ async function quoteWith(
     input: confirmed,
     first,
     retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
-    run: (prepared) => executeStaffQuote(prepared, rateShopServices(prepared, rates, sent), async () => true),
+    run: (prepared) => executeStaffQuote(prepared, rateShopServices(prepared, rates, sent, options), async () => true),
   });
   return { prepared: first, revision: attempt.result, note: attempt.note, fellBack: attempt.fellBack, sent };
 }
@@ -294,6 +310,16 @@ describe('contract rates from the picked company or agency', () => {
         .filter((request) => request.details === 'full')
         .every((request) => request.rooms.every((room: any) => room.required?.roomCodes?.length)),
     ).toBe(true);
+  });
+
+  it('an incomplete party search still falls back to public, with the honest copy, never the no-contract copy', async () => {
+    const agency360 = { agency: agency('113', '360 degrees Travel') };
+    const { revision, fellBack, note } = await quoteWith(agency360, [BAR], { incompleteParty: true });
+    expect(fellBack).toBe(true);
+    expect(note).toBe(
+      "Nava couldn't confirm contract rates for 360 degrees Travel — this quote uses our best available rate. Check HMS before sending.",
+    );
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
 
   it('a verified party with a flagged row prices that contract row, not the public one', async () => {
@@ -517,33 +543,46 @@ describe('an unpicked company or agency is text only: it is never looked up and 
   });
 });
 
-describe('a partial capture of public rows is no contract, and retries at public rates', () => {
-  // Shaped like the runner's capture: a complete audit, outcome partial, and rows that carry their rateScope.
-  const captured = (rows: Array<Record<string, unknown>>) => ({
-    schemaVersion: 2,
-    outcome: 'partial',
-    audit: { status: 'complete' },
-    groups: [{ id: 'room-1', outcome: 'partial', options: rows }],
-  });
-  const row = (rateScope: string, matchStatus: string) => ({
+describe('a public-only party read is no contract only when its search covered every group', () => {
+  const withContext = { agency: { nativeId: '113', name: '360 degrees Travel' } };
+  const row = (rateScope: string) => ({
     id: 'SKNG:BARRO',
     rateScope,
-    matchStatus,
-    eligibility: rateScope === 'public' ? 'verified' : 'conditional',
+    matchStatus: 'unresolved',
+    eligibility: 'verified',
     availability: 'available',
   });
-  const withContext = { rateContext: { agency: { nativeId: '113', name: '360 degrees Travel' } } };
-
-  it('recognises public rows under a party context, and nothing a contract could be behind', () => {
-    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved'), row('unknown', 'unresolved')]), withContext)).toBe(true);
-    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved'), row('contextual', 'match')]), withContext)).toBe(false);
-    expect(partyHasOnlyPublicRows({ ...captured([row('public', 'unresolved')]), audit: { status: 'pending' } }, withContext)).toBe(false);
-    expect(partyHasOnlyPublicRows({ ...captured([row('public', 'unresolved')]), outcome: 'quote' }, withContext)).toBe(false);
-    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved')]), {})).toBe(false);
+  const group = (rows: unknown[], completeness = { search: 'complete', requiredFacts: 'complete' }, issues: unknown[] = []) => ({
+    id: 'room-1',
+    completeness,
+    issues,
+    options: rows,
   });
 
-  it('is a typed party-rate failure with its own code, so only it retries at public rates', () => {
+  it('complete public rows are no contract', () => {
+    expect(partyReadingOf([group([row('public'), row('unknown')])], withContext)).toBe('no_contract');
+  });
+
+  it('a group whose search is partial is incomplete, so no contract is never concluded from it', () => {
+    expect(partyReadingOf([group([row('public')], { search: 'partial', requiredFacts: 'partial' })], withContext)).toBe(
+      'incomplete',
+    );
+  });
+
+  it('a missing calendar page is incomplete even when its group reports complete', () => {
+    expect(partyReadingOf([group([row('public')], undefined, [{ code: 'NULL_OR_INVALID_CALENDAR' }])], withContext)).toBe(
+      'incomplete',
+    );
+  });
+
+  it('a flagged row, or no party context, is neither: the contract path or the plain quote decides', () => {
+    expect(partyReadingOf([group([row('public'), row('contextual')])], withContext)).toBeNull();
+    expect(partyReadingOf([group([row('public')])], undefined)).toBeNull();
+  });
+
+  it('both reasons are party-rate failures, so the public retry runs', () => {
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
-    expect(isPartyRateFailure(new Error(PARTY_NO_CONTRACT_CODE))).toBe(false);
+    expect(isPartyRateFailure(new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(true);
+    expect(isPartyRateFailure(new Error(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(false);
   });
 });
