@@ -1,10 +1,14 @@
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 
+/** HMS flags no negotiated row for the picked party. The quote retries at public rates, as before party rates. */
+export const PARTY_NO_CONTRACT_CODE = 'business_party_no_contract_rate';
+
 /**
  * The codes a picked party can cause when HMS will not price its rate. Only these fall back to public rates, and only a
  * typed error carries them. A plain Error is never judged by its code or its message.
  */
 export const PARTY_RATE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  PARTY_NO_CONTRACT_CODE,
   'business_party_identity_unavailable',
   'business_party_lookup_unavailable',
   'business_party_source_unbound',

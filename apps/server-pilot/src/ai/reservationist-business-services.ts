@@ -7,6 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE} from './party-rate-failure.js';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:false;salesStrategy:'Government'|'Preset'|'BAR'};details:'full';maxOptionsPerGroup:number};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
@@ -149,6 +150,8 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
  const candidates=quoteOptionCandidates(summary.source);
+ // A staff quote with picked parties needs an HMS-flagged row for every requested room. Without one, the quote retries at public rates.
+ if(staffApproval&&request.rateContext&&!candidates.every(c=>c.totals.some(v=>v.o.rateScope==='contextual')))throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
  // Price the cheapest qualified room for each observed board, as separate selected alternatives.
  // Remaining room labels are current observations, never individually priced promises.
  const byPair=new Map<string,(typeof candidates)[number]['totals'][number]>();
@@ -158,11 +161,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const selectionSets=alternativeRequest?[...byPair.values()].map(v=>[{sourceRef:summary.source.ref,groupId:request.rooms[0]!.id,optionId:v.o.id}]):[selectQuoteOptions(summary.source,true)];
  const results=[];
  for(const chosen of selectionSets){
- const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');const boardBases=alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boards[norm(option.board??'')]!]}:{};
-  // A public row under a party context is read without exact room or rate codes. fetch-quote.mjs accepts a public row only
-  // in an unfiltered read (its noSpecialRates exception), and the summary read that chose it was unfiltered too.
-  if(request.rateContext&&option.rateScope==='public')return{...room,required:{...room.required,...boardBases}};
-  return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...boardBases}};})};
+ const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...(alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boards[norm(option.board??'')]!]}:{})}};})};
  const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);const selections=selectReservationistQuoteOptions(source);const taskSources=revisions.get(ctx.task.id)??new Set<string>();taskSources.add(source.sha256);revisions.set(ctx.task.id,taskSources);if(!alternativeRequest)claimSources.set(ctx.task.id,{contextDigest:claimContextDigest(ctx),source:structuredClone(source)});
  results.push({propertyCode:ctx.input.propertyCode,authoredDate:sourceAt.slice(0,10),selections,resolveSource:async(ref:string)=>{await guard(ctx);if(ref!==source.ref)throw new Error('business_quote_source_unknown');return source;},resolvePolicy:async(property:string,rate:string,board:Board)=>{await guard(ctx);const policy=options.resolveSelectedPolicy?await options.resolveSelectedPolicy(ctx,source,selections,property,rate,board):await options.resolvePolicy(property,rate,board);await guard(ctx);if(policy===null)throw new ReservationistTaskEvidenceUnavailable('business_quote_policy_unavailable',['source-backed VAT and tourism levy inclusions'],['tax_inclusion']);return policy;},admission:{authorizationId:options.authorizationId,sourceEvaluationAt:sourceAt,maxSourceAgeMs:maxAge,expectedRequests:{[source.ref]:expected},authorizeSource:async(ref:string,id:string)=>{await guard(ctx);return ref===source.ref&&id===options.authorizationId;}}});
  }

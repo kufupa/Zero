@@ -1,3 +1,4 @@
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE} from './party-rate-failure.js';
 import {validateReservationistMailAnswers,type LocalEvaluationAnswerSource} from './reservationist-mail-answer-source.js';
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {execFile} from 'node:child_process';
@@ -152,6 +153,16 @@ export function isReservationistCleanNoMatch(source:unknown,expectedRequest:Quot
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
 export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number})=>Promise<{stdout:string;traceFinish?:'pending'}>};
 /** Explicit installed lower edge: only the existing native Hotel Availability tool and borrowed browser owner. */
+/**
+ * A complete capture under a party context whose rows hold no HMS-flagged negotiated rate, only public ones. The runner
+ * leaves those rows unresolved, so the capture reads as partial. The staff quote then retries at public rates.
+ */
+export function partyHasOnlyPublicRows(source:unknown,request:{rateContext?:unknown}):boolean{
+ const capture=source as {outcome?:unknown;audit?:{status?:unknown};groups?:unknown};
+ if(!request.rateContext||capture.outcome!=='partial'||capture.audit?.status!=='complete'||!Array.isArray(capture.groups))return false;
+ const rows=(capture.groups as {options?:{rateScope?:unknown}[]}[]).flatMap(group=>group.options??[]);
+ return rows.some(row=>row.rateScope==='public')&&!rows.some(row=>row.rateScope==='contextual');
+}
 export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNativeQuoteOptions):(request:QuoteSourceRecord['request'],signal:AbortSignal)=>Promise<QuoteSourceRecord>{
  const repo=fileURLToPath(new URL('../../../../',import.meta.url)),privateRoot=resolve(repo,'.private/playwright-quote'),output=resolve(options.outputDir),owner=structuredClone(options.owner);
  let cdp:URL;try{cdp=new URL(owner.cdpUrl);}catch{throw new Error('native_browser_owner_invalid');}
@@ -176,6 +187,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   if(source.schemaVersion!==2||(source.propertyCode!==undefined&&source.propertyCode!==request.propertyCode)||source.requested.propertyCode!==request.propertyCode||(provisional?source.audit?.status!=='pending'||source.outcome!=='quote':source.audit?.status!=='complete')||quoteDigest(source.requested)!==quoteDigest(normalized.request)||source.evidenceDirectory!==evidence||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.now()||!Array.isArray(source.groups)||quoteDigest(options.owner)!==ownerHash)throw new Error('native_quote_capture_scope_or_completeness_invalid');
   const toolHash=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');if(toolHash!==toolHashBefore)throw new Error('native_quote_tool_changed');
   if(source.outcome!=='quote'&&!summaryPartial){
+   if(partyHasOnlyPublicRows(source,request))throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
    // Intact full captures with unqualified business facts need staff evidence, never quote admission.
    const fullBusinessGap=isReservationistAuditedFullBusinessGap(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
    if(fullBusinessGap)throw new ReservationistTaskEvidenceUnavailable('native_quote_business_evidence_unavailable',['qualified rate eligibility and proven shared room inventory'],['room_options']);

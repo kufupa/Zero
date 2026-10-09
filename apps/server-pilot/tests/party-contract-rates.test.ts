@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   executeStaffQuote,
+  quoteWithPartyFallback,
   partyContractReviewNote,
   partyNoContractNote,
   partyRateContext,
@@ -15,6 +16,8 @@ import {
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
 import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../src/ai/party-aliases.js';
+import { PARTY_NO_CONTRACT_CODE, PartyRateFailure, isPartyRateFailure } from '../src/ai/party-rate-failure.js';
+import { partyHasOnlyPublicRows } from '../src/ai/reservationist-evaluation-composition.js';
 
 // The Rate Shop helpers the runner uses, for the runner-input checks.
 type RunnerSeams = {
@@ -47,7 +50,7 @@ afterEach(() => {
 });
 
 // Fixture rows, named the way HMS names them. The names are test labels, not live data.
-type Rate = { code: string; label: string; rateScope: 'public' | 'contextual' | 'unknown'; amounts: string[] };
+type Rate = { code: string; label: string; rateScope: 'public' | 'contextual' | 'unknown'; amounts: string[]; room?: string };
 const BAR: Rate = { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['500.00'] };
 const WOOLWORTHS_FLAGGED: Rate = { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['520.00'] };
 const AGENCY_FLAGGED: Rate = { code: 'WSF2B', label: 'Agency Negotiated', rateScope: 'contextual', amounts: ['610.00'] };
@@ -57,8 +60,8 @@ const NAME_ONLY: Rate = { code: 'NGD10B', label: 'Woolworths Corporate', rateSco
 function rateOption(rate: Rate, context: Record<string, unknown>) {
   const dates = occupiedDates(ARRIVAL, DEPARTURE);
   return {
-    id: `SKNG:${rate.code}`,
-    room: { code: 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
+    id: `${rate.room ?? 'SKNG'}:${rate.code}`,
+    room: { code: rate.room ?? 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
     rate: { code: rate.code, label: rate.label },
     board: 'Room Only R',
     appliedContext: context,
@@ -143,17 +146,10 @@ function resolvedContext(rateContext: Record<string, { nativeId: string; name: s
   );
 }
 
-/** One quote through the staff path, with a Rate Shop read that offers the given rows under the requested context. */
-async function quoteWith(
-  parties: StaffQuoteParties | undefined,
-  rates: Rate[],
-  options: { header?: { company?: string; agency?: string }; readParty?: any } = {},
-) {
-  const confirmed = groupInput(parties, options.header);
-  const prepared = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
+/** The Rate Shop services for one staff attempt: every read is answered from the rows, under the attempt's context. */
+function rateShopServices(prepared: ReturnType<typeof prepareStaffQuote>, rates: Rate[], sent: any[]) {
   const context = resolvedContext(prepared.request.rateContext);
-  const sent: any[] = [];
-  const services = createReservationistBusinessServices(
+  return createReservationistBusinessServices(
     {
       authorizationId: prepared.authorizationId,
       authorizeContext: async () => true,
@@ -161,6 +157,11 @@ async function quoteWith(
       readQuote: async (request: any) => {
         sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
+        const options = rateShopRows(request, rates, context);
+        // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
+        const unfilteredFull =
+          request.details === 'full' &&
+          !request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
         return {
           ref: 'source:1',
           sha256: 'b'.repeat(64),
@@ -168,24 +169,39 @@ async function quoteWith(
           observedAt: new Date().toISOString(),
           request: normalized,
           result: {
-            outcome: 'quote',
+            outcome: unfilteredFull && options.length > 5 ? 'partial' : 'quote',
             propertyCode: 'HRCEN',
             groups: normalized.rooms.map((r: any) => ({
               id: r.id,
               request: r,
               completeness: { search: 'complete', requiredFacts: 'complete' },
-              options: rateShopRows(request, rates, context),
+              options,
             })),
           },
         };
       },
       resolvePolicy: async () => policy,
-      ...(options.readParty ? { readParty: options.readParty } : {}),
     },
     prepared.approval,
   );
-  const revision = await executeStaffQuote(prepared, services, async () => true);
-  return { prepared, revision, sent };
+}
+
+/** One quote through the staff path, as the workstation runs it: the picked parties first, public rates if HMS flags none. */
+async function quoteWith(
+  parties: StaffQuoteParties | undefined,
+  rates: Rate[],
+  options: { header?: { company?: string; agency?: string } } = {},
+) {
+  const confirmed = groupInput(parties, options.header);
+  const first = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
+  const sent: any[] = [];
+  const attempt = await quoteWithPartyFallback({
+    input: confirmed,
+    first,
+    retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
+    run: (prepared) => executeStaffQuote(prepared, rateShopServices(prepared, rates, sent), async () => true),
+  });
+  return { prepared: first, revision: attempt.result, note: attempt.note, fellBack: attempt.fellBack, sent };
 }
 
 const company = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
@@ -241,18 +257,43 @@ describe('contract rates from the picked company or agency', () => {
     expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, [{ rateCode: 'BCO1B' }])).toBeNull();
   });
 
-  it('a verified party with only public rows quotes BAR in a clean read, and the review copy says so', async () => {
+  it('a verified party with only public rows reads the party once, then quotes BAR the public way, with the review copy', async () => {
     const agency360 = { agency: agency('113', '360 degrees Travel') };
-    const { revision, sent } = await quoteWith(agency360, [BAR]);
+    const { revision, fellBack, note, sent } = await quoteWith(agency360, [BAR]);
+    expect(fellBack).toBe(true);
+    expect(note).toBeNull();
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(partyContractReviewNote(agency360, revision.groups)).toBe(
       'No contract rate found for 360 degrees Travel; this quote uses our best available rate.',
     );
-    // The summary read finds the public row. The full read keeps the party context and adds no exact code filter.
-    expect(sent).toHaveLength(2);
-    expect(sent[1].rateContext).toEqual({ agency: { nativeId: '113', name: '360 degrees Travel' } });
-    expect(sent[1].rooms[0].required).not.toHaveProperty('roomCodes');
-    expect(sent[1].rooms[0].required).not.toHaveProperty('rateCodes');
+    // The party read stops at its summary. The public retry reads without any party context.
+    const withContext = sent.filter((request) => request.rateContext);
+    expect(withContext).toHaveLength(1);
+    expect(withContext[0]!.details).toBe('summary');
+    expect(sent.at(-1)).not.toHaveProperty('rateContext');
+  });
+
+  it('more than five unflagged rows never get an unfiltered full read; the public quote prices the cheapest row', async () => {
+    const rooms = ['SKNG', 'STWN', 'STQN', 'DLXQN', 'DLXKN', 'STKNG'];
+    const unflagged: Rate[] = rooms.map((room, i) => ({
+      code: 'BARRO',
+      label: 'Room Only',
+      rateScope: 'public',
+      amounts: [`${500 + i * 10}.00`],
+      room,
+    }));
+    const { revision, fellBack, sent } = await quoteWith({ agency: agency('113', '360 degrees Travel') }, unflagged);
+    expect(fellBack).toBe(true);
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(revision.groups[0]!.roomCode).toBe('SKNG');
+    // The only full read under the party context is none: the party read stops at its summary.
+    expect(sent.filter((request) => request.rateContext && request.details === 'full')).toHaveLength(0);
+    // Every full read the quote sends names its room, so none is unfiltered.
+    expect(
+      sent
+        .filter((request) => request.details === 'full')
+        .every((request) => request.rooms.every((room: any) => room.required?.roomCodes?.length)),
+    ).toBe(true);
   });
 
   it('a verified party with a flagged row prices that contract row, not the public one', async () => {
@@ -473,5 +514,36 @@ describe('an unpicked company or agency is text only: it is never looked up and 
     expect(readParty).not.toHaveBeenCalled();
     expect(prepared.request.rateContext).toBeUndefined();
     expect(sent.at(-1)?.rateContext).toBeUndefined();
+  });
+});
+
+describe('a partial capture of public rows is no contract, and retries at public rates', () => {
+  // Shaped like the runner's capture: a complete audit, outcome partial, and rows that carry their rateScope.
+  const captured = (rows: Array<Record<string, unknown>>) => ({
+    schemaVersion: 2,
+    outcome: 'partial',
+    audit: { status: 'complete' },
+    groups: [{ id: 'room-1', outcome: 'partial', options: rows }],
+  });
+  const row = (rateScope: string, matchStatus: string) => ({
+    id: 'SKNG:BARRO',
+    rateScope,
+    matchStatus,
+    eligibility: rateScope === 'public' ? 'verified' : 'conditional',
+    availability: 'available',
+  });
+  const withContext = { rateContext: { agency: { nativeId: '113', name: '360 degrees Travel' } } };
+
+  it('recognises public rows under a party context, and nothing a contract could be behind', () => {
+    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved'), row('unknown', 'unresolved')]), withContext)).toBe(true);
+    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved'), row('contextual', 'match')]), withContext)).toBe(false);
+    expect(partyHasOnlyPublicRows({ ...captured([row('public', 'unresolved')]), audit: { status: 'pending' } }, withContext)).toBe(false);
+    expect(partyHasOnlyPublicRows({ ...captured([row('public', 'unresolved')]), outcome: 'quote' }, withContext)).toBe(false);
+    expect(partyHasOnlyPublicRows(captured([row('public', 'unresolved')]), {})).toBe(false);
+  });
+
+  it('is a typed party-rate failure with its own code, so only it retries at public rates', () => {
+    expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
+    expect(isPartyRateFailure(new Error(PARTY_NO_CONTRACT_CODE))).toBe(false);
   });
 });

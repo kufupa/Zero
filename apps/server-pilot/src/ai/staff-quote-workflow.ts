@@ -16,7 +16,7 @@ import {
   type AuthorizedProposalFacts,
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { isPartyRateFailure } from './party-rate-failure.js';
+import { PARTY_NO_CONTRACT_CODE, isPartyRateFailure } from './party-rate-failure.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -170,7 +170,8 @@ export async function quoteWithPartyFallback<T, P>(options: {
     return {
       prepared: retry,
       result: await options.run(retry),
-      note: partyRateFallbackNote(partyNames(options.input.parties)),
+      // A no-contract retry is said by the review note on its public groups, not by the fallback note.
+      note: (error as { code?: unknown }).code === PARTY_NO_CONTRACT_CODE ? null : partyRateFallbackNote(partyNames(options.input.parties)),
       fellBack: true,
     };
   }
