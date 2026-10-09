@@ -140,6 +140,7 @@ function pdfRunner(input: {
   text?: string;
   infoExit?: number;
   textExit?: number;
+  textStderr?: string;
   throwError?: Error;
   waitForAbort?: boolean;
 }): SandboxRunner {
@@ -168,7 +169,7 @@ function pdfRunner(input: {
     }
     return {
       stdout: Buffer.from(input.text ?? 'Synthetic PDF text\n'),
-      stderr: Buffer.alloc(0),
+      stderr: Buffer.from(input.textStderr ?? ''),
       exitCode: input.textExit ?? 0,
     };
   };
@@ -606,7 +607,12 @@ describe('hydrateThreadCorpusArtifacts', () => {
         id: 'encrypted',
         declaredMime: 'application/pdf',
         objectMime: 'application/pdf',
-        runner: pdfRunner({ info: 'Pages: 1\nEncrypted: yes\n' }),
+        // A user password: pdftotext refuses with Poppler's diagnostic. An owner-only lock would extract text.
+        runner: pdfRunner({
+          info: 'Pages: 1\nEncrypted: yes\n',
+          textExit: 1,
+          textStderr: 'Command Line Error: Incorrect password\n',
+        }),
         expected: 'encrypted',
       },
       {

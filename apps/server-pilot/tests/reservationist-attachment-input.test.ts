@@ -37,6 +37,23 @@ it('admits actual prior bytes with hash and owner proof without draft readiness'
   expect(result.source?.pages).toEqual(['2 adults']);
   expect(result.draftReady).toBe(false);
 });
+it('masks card numbers and security codes in plain-text attachment pages', async () => {
+  const card = Buffer.from('Card 4111 1111 1111 1111 CVV: 123, order 1234567890123456');
+  const result = await admitReservationistAttachment({
+    metadata: { ...metadata, sizeBytes: card.length, sourceHash: createHash('sha256').update(card).digest('hex') },
+    scope,
+    read: {
+      ...read,
+      resolveLocator: async () => ({ messageId: 'm', mimeType: 'text/plain', sizeBytes: card.length, s3Key: 'attachments/m/a' }),
+      s3: {
+        getObjectBounded: async () => ({ body: card, contentType: 'text/plain' }),
+        headObject: async () => ({ sizeBytes: card.length, contentType: 'text/plain' }),
+      } as any,
+    },
+  });
+  expect(result.status).toBe('admitted');
+  expect(result.source?.pages).toEqual(['Card [card ••••1111] CVV: [code masked], order 1234567890123456']);
+});
 it('denies future, cross-owner, altered-byte and mime identities', async () => {
   for (const altered of [
     { messageAt: '2026-10-03T00:00:00Z' },
@@ -125,13 +142,21 @@ it('handles bounded scanned, encrypted, malformed PDFs with existing sandbox ada
   });
   expect(scanned.status).toBe('admitted');
   expect(scanned.source?.pages).toBeNull();
+  // A user password: pdftotext refuses with Poppler's diagnostic, so the PDF stays encrypted.
   expect(
     (
       await admitReservationistAttachment({
         metadata: meta,
         scope,
         read: pdfRead,
-        runner: sandbox('Pages: 1\nEncrypted: yes'),
+        runner: async (tool: string) =>
+          tool === 'pdfinfo'
+            ? { stdout: Buffer.from('Pages: 1\nEncrypted: yes'), stderr: Buffer.alloc(0), exitCode: 0 }
+            : {
+                stdout: Buffer.alloc(0),
+                stderr: Buffer.from('Command Line Error: Incorrect password\n'),
+                exitCode: 1,
+              },
       })
     ).reason,
   ).toBe('encrypted');

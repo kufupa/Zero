@@ -2081,6 +2081,7 @@ async function loadMailDocumentAuthority(input: {
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
       s3Key: attachment.s3Key,
+      sha256: attachment.sha256,
       direction: message.direction,
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
@@ -2116,6 +2117,7 @@ async function loadMailDocumentAuthority(input: {
         mimeType: row.mimeType,
         sizeBytes: row.sizeBytes,
         messageId: row.messageId,
+        sha256: row.sha256,
       },
     ]),
   );
@@ -2265,6 +2267,7 @@ function createMailDocumentService(input: {
         s3Key: attachment.s3Key,
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
+        sha256: attachment.sha256,
       })
       .from(attachment)
       .innerJoin(message, eq(message.id, attachment.messageId))
@@ -2283,6 +2286,7 @@ function createMailDocumentService(input: {
       mimeType: row.mimeType,
       sizeBytes: row.sizeBytes,
       messageId: row.messageId,
+      sha256: row.sha256,
     } satisfies AttachmentLocator;
     return (await currentMailAttachmentAuthority({
       run: input.run,
@@ -4743,6 +4747,7 @@ export async function executeAiRun(
               mimeType: attachment.mimeType,
               sizeBytes: attachment.sizeBytes,
               s3Key: attachment.s3Key,
+              sha256: attachment.sha256,
               isInline: attachment.isInline,
               createdAt: attachment.createdAt,
               direction: message.direction,
@@ -4851,6 +4856,7 @@ export async function executeAiRun(
                   mimeType: row.mimeType,
                   sizeBytes: row.sizeBytes,
                   messageId: row.messageId,
+                  sha256: row.sha256,
                 },
               ]),
             );

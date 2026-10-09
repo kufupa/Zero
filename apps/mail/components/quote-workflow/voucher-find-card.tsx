@@ -131,13 +131,14 @@ export function VoucherFindCard({
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
   const arrivalConflict = (guest.conflicts?.arrivals.length ?? 0) > 1;
   // Every warning shares one box, one short line each. Staff still see the search when the surname and arrival were read.
+  // An unread voucher PDF already has its own notice in the quote panel, so the surname and arrival lines wait for a
+  // readable file. Conflicts come from text that was read, so they stay.
   const warnings = [
-    guest.lastName === null && !surnameConflict ? VOUCHER_COPY.missingGuest : null,
-    guest.lastName !== null && guest.arrival === null && !arrivalConflict
+    unreadPdfs === 0 && guest.lastName === null && !surnameConflict ? VOUCHER_COPY.missingGuest : null,
+    unreadPdfs === 0 && guest.lastName !== null && guest.arrival === null && !arrivalConflict
       ? VOUCHER_COPY.missingArrival
       : null,
     ...voucherConflictLines(guest),
-    unreadPdfs > 0 ? VOUCHER_COPY.partialRead : null,
   ].filter((text): text is string => text !== null);
 
   const runSearch = async () => {
@@ -173,7 +174,7 @@ export function VoucherFindCard({
       <p className={captionClass}>{VOUCHER_COPY.caption}</p>
       {line ? <p className={valueClass}>{line}</p> : null}
       {warnings.length > 0 ? (
-        <Notice tone="warn" role={unreadPdfs > 0 ? 'alert' : undefined}>
+        <Notice tone="warn">
           <ul className="flex list-disc flex-col gap-0.5 pl-4">
             {warnings.map((text) => (
               <li key={text}>{text}</li>

@@ -358,27 +358,41 @@ describe('voucher find card: values that disagree', () => {
 });
 
 describe('voucher find card: a voucher PDF that could not be read', () => {
-  it('says so, and keeps the search available when the surname and arrival were read', async () => {
+  it('adds no line of its own, since the quote panel names the unread file, and keeps the search', async () => {
     const { trpc } = fakeTrpc({ reply: { ...VOUCHER, unreadPdfs: 1 } });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    expect(await screen.findByText(VOUCHER_COPY.partialRead)).toBeTruthy();
-    expect(screen.getByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
-  });
-
-  it('shows no partial read note when every voucher PDF was read', async () => {
-    const { trpc } = fakeTrpc({ reply: { ...VOUCHER, unreadPdfs: 0 } });
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
-    expect(screen.queryByText(VOUCHER_COPY.partialRead)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows the partial read beside the missing surname note, and offers no search without a surname', async () => {
+  it('shows the missing surname note again once every voucher PDF was read', async () => {
+    const { trpc } = fakeTrpc({
+      reply: { ...VOUCHER, guest: { lastName: null, arrival: '2026-11-12' }, unreadPdfs: 0 },
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    expect(await screen.findByText(VOUCHER_COPY.missingGuest)).toBeTruthy();
+  });
+
+  it('keeps the missing surname note out while a voucher PDF is unread, and offers no search without a surname', async () => {
     const { trpc } = fakeTrpc({
       reply: { ...VOUCHER, guest: { lastName: null, arrival: '2026-11-12' }, unreadPdfs: 2 },
     });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    expect(await screen.findByText(VOUCHER_COPY.partialRead)).toBeTruthy();
-    expect(screen.getByText(VOUCHER_COPY.missingGuest)).toBeTruthy();
+    expect(await screen.findByText(VOUCHER_COPY.caption)).toBeTruthy();
+    expect(screen.queryByText(VOUCHER_COPY.missingGuest)).toBeNull();
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+  });
+
+  it('keeps a conflict line while a voucher PDF is unread, because it comes from text that was read', async () => {
+    const { trpc } = fakeTrpc({
+      reply: {
+        ...VOUCHER,
+        guest: { lastName: null, arrival: null, conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] } },
+        unreadPdfs: 1,
+      },
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    expect(await screen.findByText(`${VOUCHER_COPY.conflictLastNames} Smith, Jones.`)).toBeTruthy();
+    expect(screen.queryByText(VOUCHER_COPY.missingGuest)).toBeNull();
   });
 });

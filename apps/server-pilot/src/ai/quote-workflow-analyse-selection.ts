@@ -26,7 +26,7 @@ import type {
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
-import { attachmentMattersForReview } from './quote-attachment-review.js';
+import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -155,23 +155,27 @@ function unreadAttachments(
   );
 }
 
+/** One item per unreadable file. The plain reason goes in the text, so the one notice says why. */
 function documentFailureItems(
   attachments: SyncedQuoteAttachment[],
   mode: 'bytes' | 'text' = 'bytes',
 ) {
-  return unreadAttachments(attachments, mode).map((attachment) => ({
-    id: `unread:${attachment.id}`,
-    kind: 'document_failure' as const,
-    rank: 'unread_source' as const,
-    text: `Nava can't read ${attachment.filename} yet — open it if it has booking details.`,
-    sourceLabel: attachment.filename,
-    sourceRef: attachment.id,
-    sourceKind: 'attachment' as const,
-    filename: attachment.filename,
-    reason: attachment.readFailure ?? 'Content unavailable; review the original attachment.',
-    // Needs review, never a stop: the quote can still run without an unread file.
-    blocking: false as const,
-  }));
+  return unreadAttachments(attachments, mode).map((attachment) => {
+    const words = unreadReasonWords(attachment.readFailure);
+    return {
+      id: `unread:${attachment.id}`,
+      kind: 'document_failure' as const,
+      rank: 'unread_source' as const,
+      text: `Nava can't read ${attachment.filename}${words ? ` (${words})` : ''} — open it if it has booking details.`,
+      sourceLabel: attachment.filename,
+      sourceRef: attachment.id,
+      sourceKind: 'attachment' as const,
+      filename: attachment.filename,
+      ...(words ? {} : { reason: attachment.readFailure ?? 'Content unavailable; review the original attachment.' }),
+      // Needs review, never a stop: the quote can still run without an unread file.
+      blocking: false as const,
+    };
+  });
 }
 
 function questionItems(missing: Array<{ field: string; question: string }>) {

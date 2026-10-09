@@ -26,7 +26,7 @@ export type VoucherFindReply =
       messageId: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
-      /** Voucher PDFs whose text was not read. Optional so older replies still type-check. */
+      /** Voucher PDFs whose text was not read. Optional so older replies still type-check. The quote panel names each file. */
       unreadPdfs?: number;
     };
 
@@ -59,7 +59,6 @@ export const VOUCHER_COPY = {
   conflictLastNames: 'More than one guest name is on this voucher. Nava did not pick one:',
   conflictArrivals: 'More than one arrival date is on this voucher. Nava did not pick one:',
   waitingForSync: 'Waiting for this email to sync. Nava checks it again when the sync lands.',
-  partialRead: "Part of the voucher couldn't be read — check the PDF.",
   search: 'Find the booking in HMS',
   searching: 'Nava is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',

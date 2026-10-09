@@ -43,6 +43,30 @@ export function isPdfAttachment(facts: Pick<AttachmentReviewFacts, 'filename' | 
   return mimeOf(facts) === 'application/pdf' || PDF_FILE.test(facts.filename);
 }
 
+/** A part whose declared type says nothing (octet-stream or none). Its bytes decide whether it is an image. */
+export function isGenericAttachment(facts: Pick<AttachmentReviewFacts, 'mimeType'>): boolean {
+  const mime = mimeOf(facts);
+  return mime === '' || mime === 'application/octet-stream';
+}
+
+// Keyed by the reader's failure text, where underscores are read as spaces.
+const UNREAD_REASON_WORDS: Record<string, string> = {
+  encrypted: 'password-protected',
+  'no embedded text': 'no text, maybe a scan',
+  'too large': 'too large to read',
+  'too many pages': 'more than 50 pages',
+  malformed: 'damaged',
+  timeout: 'timed out',
+  'parser failure': 'reader failed',
+  unsupported: 'file type not readable',
+  'not a PDF': 'not a PDF',
+};
+
+/** Why Nava could not read a file, in words staff can act on. Null for a reason with no wording. */
+export function unreadReasonWords(reason: string | undefined): string | null {
+  return reason ? (UNREAD_REASON_WORDS[reason] ?? null) : null;
+}
+
 /** True when an attachment Nava could not read earns a review row and counts toward the unread banner. */
 export function attachmentMattersForReview(facts: AttachmentReviewFacts): boolean {
   if (facts.isInline) return false;

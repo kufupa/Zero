@@ -1,6 +1,12 @@
 /** Luhn PAN candidates: 13–19 digits with optional space/dash separators. `/g` is stateful. */
 export const PAN_CANDIDATE_PATTERN = /(?<!\d)(?:\d[ -]?){13,19}(?!\d)/g;
 
+/**
+ * A security-code label and its 3–4 digit value: "CVV: 123", "CVC 1234", "security code 123". Only the value goes.
+ * The gap never crosses a bracket, so a masked card token that follows a label stays whole.
+ */
+const SECURITY_CODE = /\b(cvv2?|cvc2?|cvn|csc|security\s+code)\b([^\d\n[\]]{0,16}?)\d{3,4}(?!\d)/gi;
+
 export function isLuhnValid(value: string): boolean {
   let sum = 0;
   let double = false;
@@ -16,12 +22,17 @@ export function isLuhnValid(value: string): boolean {
   return sum % 10 === 0;
 }
 
-/** Replace Luhn-valid card numbers. Scanned PDF bytes cannot be masked; callers skip them. */
+/**
+ * Replace Luhn-valid card numbers and security codes. Scanned PDF bytes cannot be masked; callers skip them.
+ * Only the digits after a security-code label are replaced, so the label still says what was there.
+ */
 export function maskCardNumbers(text: string): string {
-  return text.replace(PAN_CANDIDATE_PATTERN, (match) => {
-    const digits = match.replace(/[ -]/g, '');
-    if (!isLuhnValid(digits)) return match;
-    const tail = /[ -]$/.test(match) ? match.slice(-1) : '';
-    return `[card ••••${digits.slice(-4)}]${tail}`;
-  });
+  return text
+    .replace(PAN_CANDIDATE_PATTERN, (match) => {
+      const digits = match.replace(/[ -]/g, '');
+      if (!isLuhnValid(digits)) return match;
+      const tail = /[ -]$/.test(match) ? match.slice(-1) : '';
+      return `[card ••••${digits.slice(-4)}]${tail}`;
+    })
+    .replace(SECURITY_CODE, (_match, label: string, gap: string) => `${label}${gap}[code masked]`);
 }

@@ -318,6 +318,7 @@ export async function loadVoucherCandidate(input: {
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
       isInline: attachment.isInline,
+      sha256: attachment.sha256,
       s3Key: attachment.s3Key,
       messageId: attachment.messageId,
     })

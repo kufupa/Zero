@@ -4,10 +4,11 @@ import { attachment, message } from '../db/schema/mail.js';
 import {
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
+  sniffImageBytes,
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
-import { attachmentMattersForReview, isPdfAttachment } from './quote-attachment-review.js';
+import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -44,8 +45,11 @@ export type QuoteAttachmentRow = {
   messageId: string;
   /** Content-ID of the part. A cid never skips a part on its own. */
   contentId?: string | null;
+  /** The stored sha256. Binds an Outlook-sync original key to its bytes. */
+  sha256?: string | null;
 };
 
+/** `reason: 'image'` is a logo or signature image: the caller drops it, with no warning. */
 export type QuoteAttachmentReader = (
   row: QuoteAttachmentRow,
 ) => Promise<{ text: string | null; pdf?: Uint8Array; reason?: string }>;
@@ -65,31 +69,37 @@ function reviewFacts(row: QuoteAttachmentRow) {
 
 /**
  * Signatures, invites, inline parts and tiny files are dropped here, so they never reach the reader or the review
- * rows. Of what is left, only PDFs are read, within the file/byte caps. Other kinds are listed as not read.
+ * rows. PDFs are read within the file/byte caps. A part of unknown type is read the same way, and is dropped when its
+ * bytes are an image (a logo). Other kinds are listed as not read.
  */
 export async function readQuoteAttachments(
   rows: QuoteAttachmentRow[],
   reader: QuoteAttachmentReader,
 ): Promise<SyncedQuoteAttachment[]> {
+  const matters = rows.filter((row) => attachmentMattersForReview(reviewFacts(row)));
+  // PDFs claim the file and byte caps first, so an unknown part cannot push a voucher out of them.
+  const claimOrder = [...matters.filter(isPdfAttachment), ...matters.filter((row) => !isPdfAttachment(row))];
   let files = 0;
   let bytes = 0;
-  const plan = rows
-    .filter((row) => attachmentMattersForReview(reviewFacts(row)))
-    .map((row) => {
-      if (!isPdfAttachment(row)) return { row, failure: 'not a PDF' };
-      if (files >= QUOTE_ATTACHMENT_MAX_FILES || bytes + row.sizeBytes > QUOTE_ATTACHMENT_MAX_TOTAL_BYTES) {
-        return { row, failure: OVER_LIMIT };
-      }
+  const failures = new Map<string, string>();
+  for (const row of claimOrder) {
+    if (!isPdfAttachment(row) && !isGenericAttachment(row)) {
+      failures.set(row.id, 'not a PDF');
+    } else if (files >= QUOTE_ATTACHMENT_MAX_FILES || bytes + row.sizeBytes > QUOTE_ATTACHMENT_MAX_TOTAL_BYTES) {
+      failures.set(row.id, OVER_LIMIT);
+    } else {
       files += 1;
       bytes += row.sizeBytes;
-      return { row, failure: undefined };
-    });
-  return Promise.all(
-    plan.map(async ({ row, failure }): Promise<SyncedQuoteAttachment> => {
+    }
+  }
+  const results = await Promise.all(
+    matters.map(async (row): Promise<SyncedQuoteAttachment | null> => {
       const base = { id: row.id, filename: row.filename, mimeType: row.mimeType, byteSize: row.sizeBytes };
+      const failure = failures.get(row.id);
       if (failure) return { ...base, bytesPresent: false, readFailure: failure };
       try {
         const read = await reader(row);
+        if (read.reason === 'image') return null;
         if (read.text?.trim()) return { ...base, bytesPresent: true, text: read.text };
         if (read.pdf) return { ...base, bytesPresent: true, pdf: read.pdf };
         return { ...base, bytesPresent: false, readFailure: read.reason ?? 'no readable text' };
@@ -98,6 +108,7 @@ export async function readQuoteAttachments(
       }
     }),
   );
+  return results.filter((result): result is SyncedQuoteAttachment => result !== null);
 }
 
 /** Locators come only from this mailbox's attachment rows; the caller never supplies keys. */
@@ -108,11 +119,22 @@ export function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSi
   const resolveLocator = async (attachmentId: string): Promise<AttachmentLocator | null> => {
     const row = byId.get(attachmentId);
     return row
-      ? { s3Key: row.s3Key, mimeType: row.mimeType, sizeBytes: row.sizeBytes, messageId: row.messageId }
+      ? {
+          s3Key: row.s3Key,
+          mimeType: row.mimeType,
+          sizeBytes: row.sizeBytes,
+          messageId: row.messageId,
+          sha256: row.sha256 ?? null,
+        }
       : null;
   };
   return async (row) => {
     const common = { attachmentId: row.id, authorizedAttachmentIds, s3, signal, resolveLocator };
+    if (!isPdfAttachment(row)) {
+      // A part of unknown type is a logo or a file Nava does not read. Its magic bytes say which; no text is read.
+      const raw = await readAuthorizedArtifactBytes({ ...common, allowSniff: true });
+      return { text: null, reason: raw && sniffImageBytes(raw.body) ? 'image' : 'not a PDF' };
+    }
     const result = await readAuthorizedArtifact(common);
     if (result.data.text?.trim()) return { text: result.data.text };
     if (result.data.reason === 'no_embedded_text') {
@@ -210,6 +232,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       sizeBytes: attachment.sizeBytes,
       isInline: attachment.isInline,
       contentId: attachment.contentId,
+      sha256: attachment.sha256,
       s3Key: attachment.s3Key,
       messageId: attachment.messageId,
     })
