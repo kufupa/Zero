@@ -500,6 +500,12 @@ describe('staff quote execute/PDF header bind', () => {
     expect(bare).not.toHaveProperty('officeTransferDays');
   });
 
+  it('sends an other amount with no label, so the server can raise a review item for it', () => {
+    expect(
+      approvedExecuteHeader({ ...government, other: { label: '  ', amountMinor: 30_000, unit: 'item' } }),
+    ).toMatchObject({ other: { label: '', amountMinor: 30_000, unit: 'item' } });
+  });
+
   it('sends the group ids the dinner allowance belongs to, so the server charges only those guests', async () => {
     const mutate = vi.fn(async (_input: unknown) => readyResult);
     await bindExecuteStaffQuote({

@@ -384,6 +384,24 @@ describe('QuoteWorkflowPanel', () => {
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ shuttleTrips: 2 });
   });
 
+  it('asks for a label when an other amount has none, and stops asking once it has one', () => {
+    const base = sessionFromFixture('mixed-same-dates');
+    const withOther = (other: QuoteSession['staffHeader']['other']) => ({
+      ...base,
+      staffHeader: { ...base.staffHeader, other },
+    });
+    render(<QuoteWorkflowPanel session={withOther({ label: '', amountMinor: 30_000, unit: 'item' })} />);
+    expect(screen.getByText('Add a label for this amount')).toBeDefined();
+    expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(true);
+    cleanup();
+    render(<QuoteWorkflowPanel session={withOther({ label: '', unit: 'item' })} />);
+    expect(screen.queryByText('Add a label for this amount')).toBeNull();
+    cleanup();
+    render(<QuoteWorkflowPanel session={withOther({ label: 'Parking', amountMinor: 30_000, unit: 'item' })} />);
+    expect(screen.queryByText('Add a label for this amount')).toBeNull();
+    expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(false);
+  });
+
   it('gives each date option its own Run button', () => {
     const onRunStep = vi.fn();
     const session = staggeredDatesSession();

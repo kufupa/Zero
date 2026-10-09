@@ -293,10 +293,26 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
       { shuttleTrips: 21 },
       { other: { label: 'Parking', amountMinor: -100, unit: 'item' } },
       { other: { label: 'Parking', amountMinor: 100, unit: 'per_night' } },
-      { other: { label: '', amountMinor: 100, unit: 'item' } },
     ]) {
       expect(() => staffQuoteInput.parse({ ...base, ...bad })).toThrow();
     }
+  });
+
+  it('raises a review item, never a line, for an other amount with no label', async () => {
+    for (const label of ['', '   ']) {
+      const { built, lines } = await staffExtras({ other: { label, amountMinor: 30_000, unit: 'item' } });
+      expect(lines).toEqual([]);
+      expect(built.facts).toBeNull();
+      expect(built.extrasReviewItems).toEqual([
+        'Other charge R300.00 has no label — add a label or answer in the reply',
+      ]);
+    }
+    const { built, lines } = await staffExtras({
+      dinnerAllowanceMinor: 45_000,
+      other: { label: '', amountMinor: 30_000, unit: 'per_person_night' },
+    });
+    expect(lines.map((line) => line.description)).toEqual(['Dinner allowance']);
+    expect(built.extrasReviewItems).toHaveLength(1);
   });
 
   it('caps the staff note at 1000 characters', () => {

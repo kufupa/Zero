@@ -66,7 +66,8 @@ export const staffQuoteInput = z
     shuttleTrips: z.number().int().min(1).max(20).optional(),
     other: z
       .object({
-        label: z.string().trim().min(1).max(120),
+        // A blank label is kept, not rejected: the amount then raises a review item instead of vanishing.
+        label: z.string().trim().max(120).default(''),
         amountMinor: z.number().int().positive(),
         unit: z.enum(OTHER_CHARGE_UNITS),
       })
@@ -244,6 +245,8 @@ export function prepareStaffQuote(
   };
 }
 const SHUTTLE_REVIEW_TEXT = 'Shuttle requested — add a price or answer in the reply';
+const otherLabelReviewText = (amountMinor: number) =>
+  `Other charge R${(amountMinor / 100).toFixed(2)} has no label — add a label or answer in the reply`;
 
 /** "Dinner allowance (food only)": the staff qualifier is printed in brackets after the base label. */
 function withQualifier(base: string, qualifier: string | undefined): string {
@@ -371,7 +374,9 @@ export function buildStaffProposalFacts(
   }
   if (input.other) {
     const { label, amountMinor, unit } = input.other;
-    if (unit === 'per_person_night') {
+    if (!label) {
+      extrasReviewItems.push(otherLabelReviewText(amountMinor));
+    } else if (unit === 'per_person_night') {
       personService('other', label, 'other', amountMinor, stayPersons, nights);
     } else if (unit === 'per_person') {
       personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate]);

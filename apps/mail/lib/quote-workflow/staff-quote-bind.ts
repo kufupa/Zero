@@ -499,14 +499,16 @@ function trimmedOrUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-/** An "other" charge is sent only when it has a label and a positive amount. */
+/**
+ * An "other" charge is sent when it has a positive amount. A blank label is sent as '' on purpose, so the
+ * server raises a review item for it instead of dropping the amount.
+ */
 function otherChargeFor(
   other: StaffQuoteHeader['other'],
 ): ExecuteStaffQuoteInput['other'] | undefined {
-  const label = trimmedOrUndefined(other?.label);
   const amountMinor = positiveWhole(other?.amountMinor);
-  if (!other || !label || !amountMinor) return undefined;
-  return { label, amountMinor, unit: other.unit };
+  if (!other || !amountMinor) return undefined;
+  return { label: trimmedOrUndefined(other.label) ?? '', amountMinor, unit: other.unit };
 }
 
 export async function bindExecuteStaffQuote(args: {

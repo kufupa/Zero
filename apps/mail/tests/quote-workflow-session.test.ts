@@ -2025,9 +2025,13 @@ describe('quote session staff review items', () => {
       staffQuote,
       selectionEpoch: 1,
       inputRevision: s.inputRevision,
-      extrasReviewItems: ['Shuttle requested — add a price or answer in the reply'],
+      extrasReviewItems: [
+        'Shuttle requested — add a price or answer in the reply',
+        'Other charge R300.00 has no label — add a label or answer in the reply',
+      ],
     });
     expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
+    expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
     s = reduceQuoteSession(s, {
       type: 'staff_quote_ready',
       offer,

@@ -142,6 +142,8 @@ function StaffHeaderFields({
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
 }) {
+  // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
+  const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
@@ -325,9 +327,11 @@ function StaffHeaderFields({
             Label
             <input
               aria-label="Other label"
+              aria-invalid={otherNeedsLabel || undefined}
               className={fieldClass}
               maxLength={120}
               placeholder="e.g. Parking"
+              required={otherNeedsLabel}
               value={header.other?.label ?? ''}
               onChange={(event) =>
                 onPatch?.({ other: { unit: header.other?.unit ?? 'item', ...header.other, label: event.target.value } })
@@ -345,6 +349,7 @@ function StaffHeaderFields({
             />
           </label>
         </div>
+        {otherNeedsLabel ? <p className="text-[11px] text-[#b45309]">Add a label for this amount</p> : null}
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
           Unit
           <select
