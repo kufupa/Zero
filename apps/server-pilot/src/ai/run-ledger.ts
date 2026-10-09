@@ -601,7 +601,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ),
           ),
         )
-        .orderBy(aiWorkflowRun.createdAt)
+        .orderBy(desc(aiWorkflowRun.priority), aiWorkflowRun.createdAt)
         .limit(1)
         .for('update', { skipLocked: true });
 

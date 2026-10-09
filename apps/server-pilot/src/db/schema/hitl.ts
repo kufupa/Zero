@@ -23,7 +23,8 @@ import { user } from './auth.js';
  * Hand-written migration: drizzle/0046_hitl_ledger.sql (keep the lists below in sync).
  */
 
-const sqlList = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(', '));
+export const sqlList = (values: readonly string[]) =>
+  sql.raw(values.map((v) => `'${v}'`).join(', '));
 
 export const AGENT_RUN_TRIGGERS = ['pane', 'warmer', 'backfill'] as const;
 export const AGENT_RUN_CACHE_STATUSES = ['miss', 'hit', 'backfill'] as const;
