@@ -1,6 +1,6 @@
 # Overnight v8 handoff (2026-10-09)
 
-Status: final docs pass, 2026-10-09, on main at 31ae92cb4 (#89 merged, D3 deploy started). Evidence: the run ledger (`.superpowers/sdd/v8-progress.md`, UTC) and the merged PRs. Ledger times before 01:59 UTC are estimates. Items marked **TODO(opus)** are still open.
+Status: final, 2026-10-09 ~06:00 UTC, main at `4979df0f` + #84 merged; D4 (`4979df0f`) live. Evidence: run ledger (`.superpowers/sdd/v8-progress.md`, UTC; times before 01:59 are estimates), merged PRs, live EC2 checks.
 
 Plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Teaching guide: `docs/pilot/2026-10-09-teaching-script.md`. Install doc: `docs/pilot/2026-10-08-install-and-onboarding.md`.
 
@@ -12,7 +12,7 @@ Plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Teaching 
 - Proven live on EC2: rateshop reads (03:07), a Labtest create that was saved and cancelled (03:14), party lookups for 360, Woolworths and Tourvest (04:35, on the fix build), and the 1.0.17 installer served with a verified SHA.
 - Not proven yet: two full quotes with PDF and Excel (V3), and a clean viewer gate run (V1 failed 03:57 and was fixed in #88 at 04:42). The QUOTE_TRACE_ASYNC decision waits on V3.
 - Staff copy on main has no Luna text left (#72 and #82). The install doc still says Luna in places.
-- Go or no-go for the pilot call on 2026-10-10: **TODO(opus)**.
+- Go or no-go for today's pilot call (2026-10-09): **GO for quote + party picker + allowances + Excel + voucher find + links.** Create stays `off` until you set the flag (see Flags). Contract-rate quotes are merged but **not yet proven end to end** (see V3).
 
 ---
 
@@ -20,13 +20,13 @@ Plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Teaching 
 
 Clearly open items. Each needs Opus before the call.
 
-- **TODO(opus): #79 contract-rate wiring.** OPEN (base main, head `feat/v8-party-rates`). Its P1s were fixed in 61a43902 (02:41). A new P1, "public party quotes fail", was found at 04:31 and sent to Lane D. Merge status: **TODO(opus)**.
-- **TODO(opus): #84 party typeahead.** OPEN, and stacked on #79 (base `feat/v8-party-rates`). Retarget it to main before merging, or the merge lands on #79's branch. Merge status: **TODO(opus)**.
-- **TODO(opus): preview gate rerun result (V1).** The 03:23 run on EC2 failed 20/20 at 03:57 (fresh-profile onboarding, blocked app-shell reads). The fix, #88, merged at 04:42. A rerun is not recorded. Gate run id: `gate-20261009T032626Z`.
-- **TODO(opus): party index sweep (#84).** The sweep script is ready, but the ledger records no EC2 sweep run yet ("sweep on EC2 later", 02:41; "sweep resume", 03:47).
-- **TODO(opus): D3 deploy result** for 31ae92cb4 (started 04:45 UTC): health, pane, migration state and flags.
-- **TODO(opus): V3** (two full quotes with PDF and Excel) and **V7** (first staff use after install, from her IP).
-- **TODO(opus): gallery URL** for the viewer gate. The ledger records only the EC2 folder `/tmp/v8gate`.
+- **#79 contract-rate wiring: MERGED** (05:21, after 4 Greptile P1 rounds: unpicked parties, public fallback, >5 rows, incomplete searches). Deployed in D4 (`4979df0f`).
+- **#84 party typeahead: MERGED** (05:40). Not yet deployed (next deploy). No index file exists on the box yet, so typeahead falls back to live HMS search until the sweep runs.
+- **Preview gate (V1): PASS** after #88. Latest 20 emails: 20/20 analysed, 0 timeouts, 0 blocked writes (`gate-20261009T045007Z`). 8 real quote/booking/voucher threads: booking request pre-filled 13 fields (`gate-20261009T045320Z`). That run exposed a **P0** (a signature image `image001.jpg` blocked the quote) → fixed in #90, re-verified in `gate-20261009T053510Z` (no attachment blocker). Two voucher threads still showed "Nava is reading the email…" at the 90 s screenshot: voucher PDF analysis is slow.
+- **Party index sweep: NOT RUN.** It needs ~150 HMS lookups (~1 h+). Run it on a quiet morning: `cd /home/ubuntu/repos/zero && pnpm -C apps/server-pilot exec tsx scripts/party-index-sweep.ts --delay-ms 20000 --max-runs 150` (resumable).
+- **Deploys:** D3 `31ae92cb4` and D4 `4979df0f` both READY, health 200, pane 200, VPN OK. Prod flags: all unset → `RESERVATIONIST_PANE_SAVE` off, `HITL_LEDGER` off, `QUOTE_TRACE_ASYNC` off, `QUOTE_RATE_CONTEXT` on (applies only when staff pick a party).
+- **V3 not proven end to end.** HMS quote runs succeed live (rate shop org #49 → BCO1B/NCOR2B flagged; staff-path runs with org 49 resolved "Woolworths Holdings"), but the server-side harness (#91) failed after capture, so a full quote → PDF → Excel through the pane path is still unproven. **Do one live quote on the call before relying on it.** V7 happens on the call.
+- **Gallery:** `aws s3 sync s3://nava-zero-mail-845242190536-af-south-1/nava-preview-gate/<run>/ ./gallery/` with run ids above (screenshots mask guest fields). Live viewer for you: https://nava.legacyhotels.co.za/nava-preview (sign in as usual).
 
 ---
 
@@ -90,8 +90,8 @@ In flight at drafting (not merged at the time of the last ledger row): none list
 | `QUOTE_RATE_CONTEXT` | server env (#61) | On unless exactly `off` (kill switch in `quote-rate-switch.ts`) | keep on; `off` stops every party lookup | none | operator |
 | `PANE_STAY_LOOKUP` | server env | On by default; `off` disables Find this booking | keep on | none | none |
 
-- The Labtest save at 03:14 needs the save path, which needs `lab` or `on`. The ledger does not record when the flag was set for that proof: **TODO(opus)**.
-- #47's title says `QUOTE_TRACE_ASYNC` is flag off. No PR body describes what it changes: **TODO(opus)**, before any flip.
+- The Labtest save at 03:14 ran `create-lab-stay.mjs` directly on EC2 (not through the pane route), so no prod flag was changed. The pane Book button stays copy-only until you set `RESERVATIONIST_PANE_SAVE`.
+- `QUOTE_TRACE_ASYNC` (#47) stays off: its gate was two full live pane quotes, which were not proven tonight (see V3).
 
 ---
 
@@ -113,13 +113,13 @@ From the plan's verification contract (lines 366–372), with the ledger's times
 
 | Gate | What the plan requires | Status | Evidence |
 |---|---|---|---|
-| V1 | Viewer run, 20 real emails: 0 crashes, intent shown, pre-fill on quote and booking emails, screenshots in the gallery | **FAIL** at 03:57 (20/20 timeout: first-run onboarding on a fresh profile, app-shell reads blocked). Fixed in #88 (04:42). Rerun: **TODO(opus)** | gate `gate-20261009T032626Z`; EC2 gallery `/tmp/v8gate` |
+| V1 | Viewer run, 20 real emails: 0 crashes, intent shown, pre-fill on quote and booking emails, screenshots in the gallery | **PASS** after #88: 20/20 analysed, 0 timeouts, 0 blocked writes (`gate-20261009T045007Z`); booking request pre-filled 13 fields (`gate-20261009T045320Z`); signature-image blocker found + fixed (#90), re-verified (`gate-20261009T053510Z`) | S3 `nava-preview-gate/<run>/` |
 | V2 | Party: 360 → #113, Tourvest → Company #206, an org quote returns a non-BAR plan | **PASS** at 04:35 on the fix build: 360 → agency #113, Woolworths → org #49, Tourvest → org #206. Rateshop at 03:07 (D2b): org #49 flagged BCO1B×5 and NCOR2B×5; agency #113 flagged none (BAR) | run evidence `.private/playwright-quote/runs` on EC2 |
-| V3 | Quote: 2 live quotes → PDF and Excel, totals match, allowance lines correct | **NOT PROVEN.** No two full pane quotes are recorded. The Excel and PDF wiring is merged (#66, #82) | **TODO(opus)** |
-| V4 | Create: Labtest booked from the pane with agency, org and note; confirmation read back; no guest email (or flagged); cancelled | **PASS in part** at 03:14 (on the #85 fix build): Labtest 48315098-1 saved with agency 360, org Woolworths, commission 10%; no guest email; cancelled through cancel-stay, with the penalty text recorded and not clicked. The ledger's self-clean cancel was marked stale. The note and the confirmation read-back are not recorded | **TODO(opus)**: note and read-back |
+| V3 | Quote: 2 live quotes → PDF and Excel, totals match, allowance lines correct | **NOT PROVEN end to end.** Live HMS quote runs succeed (org #49 resolved, contract rows flagged); the server-side harness (#91) failed after capture, so pane quote → PDF → Excel is unproven | Do one live quote on the call first |
+| V4 | Create: Labtest booked with agency, org and note; confirmation read back; no guest email; cancelled | **PASS (runner level)** at 03:14: Labtest 48315098-1 saved via `create-lab-stay.mjs` on EC2 with agency "360 degrees Travel", org "Woolworths", commission 10% auto; no guest email; cancelled via `cancel-stay.mjs` (penalty text recorded, not clicked). Not yet via the pane route; note field not visually confirmed | screenshots in ledger |
 | V5 | Add-in: 1.0.17 published, SHA matches, install doc updated | **PASS.** Artifact SHA matches the manifest and the served SHA (about 00:16 and 00:18 UTC, estimated). Pin and install doc merged (#59, 00:25) | addin PR #8; #59 |
-| V6 | Prod: 8788/8789 ok, pane 200, VPN ok, migration applied, flags as listed | **PASS** for D1 (4ab79674, 01:58), D2a (c469cbf3 with migration 0046, 02:25) and D2b (4435c5c3, live at 03:07). **D3** (31ae92cb4, started 04:45): **TODO(opus)** | ledger |
-| V7 | First staff use: `analyseSelection` 200 from her IP after install | **NOT RUN.** The pilot call is 2026-10-10 | **TODO(opus)** |
+| V6 | Prod: 8788/8789 ok, pane 200, VPN ok, migration applied, flags as listed | **PASS** for D1 `4ab79674`, D2a `c469cbf3` (+0046), D2b `4435c5c3`, D2c, D3 `31ae92cb4`, D4 `4979df0f`; all READY + VPN OK; flags all unset (defaults) | ledger |
+| V7 | First staff use: `analyseSelection` 200 from her IP after install | **On the call today** (2026-10-09). Check nginx for `analyseSelection` from her IP after she installs 1.0.17 | — |
 
 Deep links (03:16 UTC): every OSRESV and OSRESS GET bounces to the login page, even when logged in, with or without a confirmation number and with prefill. Record links are not possible. The shipped approach stays: the landing page and Copy confirmation (K10 confirmed). The messenger APPURL format is untested.
 
@@ -158,5 +158,5 @@ Bugs found live and fixed:
 4. Opus: run one live full quote (PDF and Excel) to close V3. Then decide `QUOTE_TRACE_ASYNC`.
 5. Opus: #79, rebase on main, review and merge. Then retarget #84 to main, run the party index sweep on EC2, and merge.
 6. Confirm IT has approved the installer and the server hash matches, before the call.
-7. Opus: resolve the remaining TODO(opus) items in the teaching guide (support contact, follow-up date, contract-rate line after #79).
+7. Owner: fill the support contact and follow-up date in the teaching guide.
 8. Owner: confirm the call slot and the test stays for the booking step (test data only).

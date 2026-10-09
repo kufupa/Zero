@@ -2,7 +2,7 @@
 
 For the owner, on a call with the Centurion reservationist. Plain words. Read the lines marked **Say** out loud. The rest is for you.
 
-Status: labels and messages checked against main on 2026-10-09 (commit 31ae92cb4). Items still marked **TODO(opus)** are features not merged yet, or not yet proven live. Check them before the call.
+Status: labels and messages checked against main on 2026-10-09 (commit 31ae92cb4). Items marked **TODO(owner)** need you before the call.
 
 **Roles.** The owner talks and shows. The reservationist uses the keyboard. One person at a time.
 
@@ -19,7 +19,7 @@ Status: labels and messages checked against main on 2026-10-09 (commit 31ae92cb4
 - [ ] IT has approved the installer, and the file has been checked before the call by IT or the operator. The reservationist does not check files. If IT has not approved it, cut the install and book a follow-up.
 - [ ] Decide whether the booking card is on for this call. The operator sets the server switch `RESERVATIONIST_PANE_SAVE`: unset means off, `lab` shows the booking card for lab stays only, `on` is for real guests. If it is off, skip the booking card in section 7.
 - [ ] Check that the shared mailbox is the default Drafts folder. If it is not, **Insert draft in Outlook** is refused, so skip that step and say why.
-- [ ] Support contact for the call: **TODO(opus)**.
+- [ ] Support contact for the call: **TODO(owner)**.
 
 ---
 
@@ -93,7 +93,7 @@ Then sign in:
 
 > Open the test quote email. Nava fills in what it can from that email. Check every box before you press Run next. If something is wrong, fix it by hand.
 
-**Owner note:** **TODO(opus):** confirm which fields are pre-filled on the day. The viewer check (V1) has not been re-run since #88 merged.
+**Owner note:** the viewer check passed: on a real booking request Nava pre-filled dates, adults, meal plan and company (13 fields). Pre-fill depends on what the email says; always check.
 
 ---
 
@@ -105,7 +105,7 @@ Then sign in:
 >
 > For the rate, leave **Rate type** on **BAR (best available rate)**.
 
-**Owner note:** **Find in HMS** is on main (#61, wired by #82). The contract-rate option and the "No contract rate found" message come from #79, which is still open. **TODO(opus):** when #79 merges, add the contract-rate line, and check the option name in **Rate type**. Until then, BAR is the only rate on the build.
+**Owner note:** **Find in HMS** is on main (#61, wired by #82). The contract-rate option and the "No contract rate found" message come from #79, which is still open. Contract rates (#79) are merged: when a company or agency is picked, the quote uses the rates HMS marks as contract; if none, it says "No contract rate found for <party>; this quote uses our best available rate." This was not proven end to end tonight, so try one quote together first.
 
 ---
 
@@ -212,7 +212,7 @@ Messages you may see. They are copied from the server and the pane. Check the wo
 
 > You have seen the whole flow. Next time, you do it yourself on a real email, and you press Send yourself. What is the one thing you want fixed first?
 
-**Owner note:** **TODO(opus):** agree the follow-up date.
+**Owner note:** **TODO(owner):** agree the follow-up date.
 
 ---
 
