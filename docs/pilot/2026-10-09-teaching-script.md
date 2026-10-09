@@ -170,7 +170,7 @@ Then sign in:
 >
 > When a confirmation number shows, press **Copy confirmation** to copy it. Press **Open HMS** to open the HMS sign-in page in your browser, then find the booking by that number.
 
-**Owner note:** **Open HMS** goes to the HMS sign-in page only. It does not open the booking. **Find the booking in HMS** for voucher and proof-of-payment mail is merged (#73), but its live check is not recorded yet. **TODO(opus):** confirm it before the call.
+**Owner note:** **Open HMS** goes to the HMS sign-in page only. It does not open the booking. **Find the booking in HMS** for voucher and proof-of-payment mail is merged (#73), and the live viewer shows the card on real voucher emails (with "Save attachment"). If the voucher PDF is a scan, Nava says so and asks staff to search HMS by name.
 
 **Cancelling.**
 
