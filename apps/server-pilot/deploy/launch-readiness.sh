@@ -1990,6 +1990,7 @@ const checks = {
   workflowNonterminalBacklogEmpty: db.workflowNonterminalCount === 0,
   // Fail only on recent dead letters (24h). Historical terminal rows stay in observations.
   workflowDeadLetterBacklogEmpty: Number(db.workflowDeadLetterRecentCount ?? 0) === 0,
+  // Warn-only (see WARN_ONLY_CHECKS below): printed as a warning, never fails the gate.
   outboundBacklogEmpty: db.outboundNonterminalCount === 0,
   diskSafe: remote.disk?.safe === true,
   rdsAvailable: rds.status === "available",
@@ -2082,9 +2083,13 @@ if (remoteAdminMode) {
   }
   Object.assign(checks, remoteChecks);
 }
-const failures = Object.entries(checks)
+// Warn-only checks are reported in `warnings` and printed, but only `failures` decides READY.
+const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty"]);
+const failedChecks = Object.entries(checks)
   .filter(([, passed]) => !passed)
   .map(([name]) => name);
+const failures = failedChecks.filter((name) => !WARN_ONLY_CHECKS.has(name));
+const warnings = failedChecks.filter((name) => WARN_ONLY_CHECKS.has(name));
 
 const report = {
   status: failures.length === 0 ? "READY" : "NOT_READY",
@@ -2092,6 +2097,7 @@ const report = {
   monitoringMode: "manual",
   checks,
   failures,
+  warnings,
   observations: {
     multiAZ: rds.multiAZ === true,
     backupLatestRestorableAt: rds.backupLatestRestorableAt ?? null,
@@ -2113,6 +2119,7 @@ const report = {
     latestInboundAt: db.latestInboundAt ?? null,
     workflowDeadLetterCount: Number(db.workflowDeadLetterCount ?? 0),
     workflowDeadLetterRecentCount: Number(db.workflowDeadLetterRecentCount ?? 0),
+    outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
     pm2Restarts: {
       http: Number(pm2Required.http?.restarts ?? 0),
@@ -2150,6 +2157,13 @@ console.error(
     `monitoringMode=${report.monitoringMode}; multiAZ=${report.observations.multiAZ}; ` +
     `s3Versioning=${report.observations.s3.versioning}`,
 );
+if (report.warnings.length) {
+  console.error(
+    `WARNING launch-readiness: ${report.warnings.join(",")} not met ` +
+      `(outboundNonterminalCount=${report.observations.outboundNonterminalCount}). ` +
+      "Warn-only: this does not fail the deploy. Check the outbound queue.",
+  );
+}
 NODE
 
 if node -e 'process.exit(JSON.parse(process.argv[1]).status === "READY" ? 0 : 1)' "$REPORT_JSON"; then

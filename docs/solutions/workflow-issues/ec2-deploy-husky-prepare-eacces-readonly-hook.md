@@ -1,7 +1,7 @@
 ---
 title: EC2 ops-deploy fails at pnpm install when .husky/_/h is read-only
 date: 2026-08-06
-last_updated: 2026-08-06
+last_updated: 2026-10-09
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -55,7 +55,9 @@ Pilot EC2 deploy can sync a new git HEAD successfully and still abort before bui
 
 ### Fix
 
-Restore the owner write bit on the generated hook file, then re-run the on-box deploy. When the bundle is already synced, a full re-sync is unnecessary:
+Restore the owner write bit on the generated hook file, then re-run the on-box deploy. When the bundle is already synced, a full re-sync is unnecessary.
+
+As of 2026-10-09, `apps/server-pilot/deploy/ops-deploy.sh` runs this `chmod` over SSM right after the bundle sync, before its first on-box `pnpm install`. A missing hook is skipped. The manual step below is only needed when `deploy-ec2.sh` is run on the box directly:
 
 ```bash
 # On the EC2 box (e.g. via ssm-run-command.sh)
@@ -115,7 +117,7 @@ chmod u+w /home/ubuntu/repos/zero/.husky/_/h
 cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh
 ```
 
-If read-only mode recurs across deploys, make repair idempotent at the top of the on-box path (e.g. `chmod -R u+w .husky/_` before `pnpm install`) rather than hand-fixing each incident. That hardening was **not** verified as landed in this session; treat it as recommended follow-up, not done work.
+`ops-deploy.sh` now repairs only `.husky/_/h`. If read-only mode recurs in other hook files, the broader repair (`chmod -R u+w .husky/_` before `pnpm install`) is still not landed; treat it as recommended follow-up, not done work.
 
 Exact historical reason `.husky/_/h` became `0444` on the box was not established (prior deploy, tool, or umask). Do not assert a single provenance story.
 
