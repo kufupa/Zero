@@ -17,7 +17,6 @@ import { createOperationId, type MailLocation, type WorkstationEmailPayload } fr
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
-import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import { PaneMenu } from './pane-menu';
 import {
   createPaneVersionWatch,
@@ -1478,10 +1477,10 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       onKeyDownCapture={markInput}
       onInputCapture={markInput}
       onPointerDownCapture={markInput}
-      className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+      className="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
     >
-      {/* Fills the Outlook pane; never narrower than 320px. */}
-      <div className="shadow-xs relative flex min-h-screen w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
+      {/* Fills the Outlook pane height, so the body below scrolls with a visible bar; never narrower than 320px. */}
+      <div className="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
         <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
           <div className="flex items-center gap-2">
@@ -1600,7 +1599,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
         {shownScreen === 'welcome' && (
-          <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
+          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
                 <Building2 className="h-6 w-6" />
@@ -1639,7 +1638,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
         {/* SCREEN 2: SYSTEM & NAVA AI SERVICES CHECK */}
         {shownScreen === 'diagnostics' && (
-          <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
+          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
                 <Network className="h-6 w-6" />
@@ -1731,7 +1730,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
         {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
         {shownScreen === 'tour' && (
-          <div className="animate-in fade-in flex flex-1 flex-col p-3 duration-150">
+          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-3 duration-150">
             <div className="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center">
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
                 {tourSlideIndex === 0 && <Mail className="h-5 w-5" />}
@@ -1820,7 +1819,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
         {shownScreen === 'tool' && (
-          <main className={`flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5 ${NATIVE_VISIBLE_SCROLLBAR_CLASSES}`}>
+          <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
             {activeEmail ? (
               <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3">
