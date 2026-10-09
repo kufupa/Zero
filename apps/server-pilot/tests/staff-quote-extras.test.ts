@@ -240,6 +240,7 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
   it('prices office transfer per guest per day, with days defaulting to the nights of the stay', async () => {
     const byNights = await staffExtras({ officeTransferMinor: 20_000 });
     expect(byNights.lines[0]).toMatchObject({ description: 'Office transfer', quantity: 2, nights: 3, totalMinor: 120_000 });
+    expect(byNights.built.facts?.extras[0]).toMatchObject({ daysExplicit: false });
     const byDays = await staffExtras({ officeTransferMinor: 20_000, officeTransferDays: 4 });
     expect(byDays.lines[0]).toMatchObject({ quantity: 2, nights: 4, totalMinor: 160_000 });
     expect(byDays.built.facts?.extras[0]?.dates).toEqual([
@@ -248,6 +249,7 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
       '2026-10-14',
       '2026-10-15',
     ]);
+    expect(byDays.built.facts?.extras[0]).toMatchObject({ daysExplicit: true });
   });
 
   it('adds the staff qualifier to the dinner and lunch labels', async () => {

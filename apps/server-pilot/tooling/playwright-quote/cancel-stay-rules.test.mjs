@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  cancelNoteFor, penaltyRefusal,
+  cancelNoteFor, penaltyRefusal, runCancelDialog,
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
@@ -260,12 +260,14 @@ test('checkCdpEnv allows only a local borrowed browser with no credentials', () 
 
 test('cancel-stay.mjs never closes the browser, clicks OK only in the reason window, and guards main()', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  // The dialog decisions and their screenshots moved to cancel-stay-rules.mjs (runCancelDialog).
+  const flow = `${source}\n${await readFile(new URL('./cancel-stay-rules.mjs', import.meta.url), 'utf8')}`;
   assert.equal(/browser\.close\s*\(/.test(source), false);
   assert.match(source, /typeof browser\.disconnect === 'function'/);
   assert.match(source, /import \{[^}]*identityCheck[^}]*\} from '\.\/cancel-stay-rules\.mjs'/s);
   assert.match(source, /process\.argv\[1\] && resolve\(process\.argv\[1\]\) === fileURLToPath\(import\.meta\.url\)/);
   for (const name of ['window.png', 'found.png', 'opened.png', 'cancel-dialog.png', 'penalty.png', 'readback.png', 'failure.png']) {
-    assert.ok(source.includes(name), name);
+    assert.ok(flow.includes(name), name);
   }
   assert.equal((source.match(/=== 'OK'/g) || []).length, 1);
   const penaltyClicks = source.split('\n').filter((line) => /penalty/i.test(line) && /\.click\(/.test(line));
@@ -771,10 +773,135 @@ test('a penalty dialog refuses the run as refused_penalty, exit 2, and nothing e
   assert.equal(exitCodeFor('refused_penalty'), 2);
 });
 
-test('cancel-stay.mjs takes its note from cancelNoteFor and refuses a penalty before any OK click', async () => {
-  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /Lab proof cancel/);
-  assert.match(source, /note\.fill\(cancelNoteFor\(args\)\)/);
-  assert.match(source, /penaltyRefusal\(penaltyBefore\)/);
-  assert.match(source, /penaltyRefusal\(penaltyNow\)/);
+// ---- The cancel dialog run through a scripted dialog: the charge refusal, the single OK and the done line ----
+// Each test runs the real runCancelDialog. The scripted dialog answers the windows read and records every action, so a
+// test can prove what was and was not clicked. Nothing here touches a browser or HMS.
+const CHARGE = 'Cancellation Penalty of 2060.00 may be added to account.';
+const REASON_WINDOW = 'Cancellation Reason Test Reservations Duplicate Booking OK Cancel';
+const PREVIEW_ARGS = { confirmation: '57291630-1', arrival: '2027-09-14', mode: 'preview', reason: 'Test Reservations', allowRealGuest: false };
+const COMMIT_ARGS = { ...PREVIEW_ARGS, mode: 'commit', reason: 'Duplicate Booking' };
+const RECORD = { confirmation: '57291630-1', lastName: 'Labtest', arrival: '14-SEP-2027', status: 'Reserved' };
+const SETTLED = { statusAfter: 'Cancelled', cancelled: true, maskCleared: true, maskMs: 0, statusPolls: 1, statusMs: 0 };
+
+// windows[n] is what the n-th read of the open windows sees; the last snapshot repeats.
+function scriptedDialog({ windows, reasons = ['Test Reservations', 'Duplicate Booking'], record = RECORD }) {
+  const calls = [];
+  let reads = 0;
+  const io = {
+    mark: (name) => calls.push(`mark:${name}`),
+    shot: async (name) => {
+      calls.push(`shot:${name}`);
+    },
+    windowTexts: async () => {
+      calls.push('windows');
+      const snapshot = windows[Math.min(reads, windows.length - 1)];
+      reads += 1;
+      return snapshot;
+    },
+    fillNote: async (text) => {
+      calls.push(`fillNote:${text}`);
+    },
+    readReasons: async () => {
+      calls.push('readReasons');
+      return { items: null, texts: reasons, reasons: normalizeReasons(reasons) };
+    },
+    pickReason: async (_list, index) => {
+      calls.push(`pick:${index}`);
+    },
+    readRecord: async () => {
+      calls.push('readRecord');
+      return record;
+    },
+    close: async () => {
+      calls.push('close');
+    },
+    clickOk: async () => {
+      calls.push('clickOk');
+      return true;
+    },
+    waitAfterOk: async () => {
+      calls.push('waitAfterOk');
+    },
+    settle: async () => {
+      calls.push('settle');
+      return SETTLED;
+    },
+  };
+  return { io, calls };
+}
+
+async function runDialog(args, windows, options = {}) {
+  const dialog = scriptedDialog({ windows, ...options });
+  const result = { outcome: null, reasons: [], clickedOk: false, penaltyText: null, penaltyAmount: null, penaltyPending: false, refusal: null };
+  await runCancelDialog({ args, record: RECORD, result, io: dialog.io });
+  return { result, calls: dialog.calls };
+}
+
+test('a charge on the dialog at preview refuses the run: nothing is read, picked, closed or clicked', async () => {
+  const { result, calls } = await runDialog(PREVIEW_ARGS, [[REASON_WINDOW, CHARGE]]);
+  assert.equal(result.outcome, 'refused_penalty');
+  assert.equal(result.refusal, 'penalty_dialog_open');
+  assert.equal(result.penaltyText, CHARGE);
+  assert.equal(result.penaltyAmount, '2060.00');
+  assert.deepEqual(calls, ['windows', 'shot:penalty.png']);
+});
+
+test('a charge already open when the commit starts refuses it: no note typed, no reason picked, OK never clicked', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, CHARGE]]);
+  assert.equal(result.outcome, 'refused_penalty');
+  assert.equal(result.penaltyText, CHARGE);
+  assert.deepEqual(calls, ['windows', 'shot:penalty.png']);
+  assert.equal(calls.includes('clickOk'), false);
+});
+
+test('a charge that appears between the reason pick and the OK refuses it, and no OK is clicked', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW, CHARGE]]);
+  assert.equal(result.outcome, 'refused_penalty');
+  assert.equal(result.penaltyText, CHARGE);
+  assert.ok(calls.includes('pick:1'));
+  assert.equal(calls.includes('clickOk'), false);
+  assert.equal(calls.includes('settle'), false);
+  // The note goes in before the reason is read, as the live flow always did. Only the OK is withheld here.
+  assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
+});
+
+test('a charge that opens after the OK is recorded with its text, and nothing is clicked after the OK', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]]);
+  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.clickedOk, true);
+  assert.equal(result.penaltyPending, true);
+  assert.equal(result.penaltyText, CHARGE);
+  const afterOk = calls.slice(calls.indexOf('clickOk') + 1);
+  assert.deepEqual(afterOk.filter((call) => /^(pick|clickOk|fillNote|close|readRecord)/.test(call)), []);
+});
+
+test('a commit with no charge types the lab note, picks the reason, clicks one OK and settles to cancelled', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW]]);
+  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.penaltyText, null);
+  assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
+  assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
+});
+
+test('an on-mode commit types the staff reason as the note', async () => {
+  const onArgs = { ...COMMIT_ARGS, reason: 'Guest request', allowRealGuest: true };
+  const { result, calls } = await runDialog(onArgs, [[REASON_WINDOW]], { reasons: ['Guest request'] });
+  assert.equal(result.outcome, 'cancelled');
+  assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Guest request']);
+});
+
+test('a preview with no charge reads the reasons, closes the dialog and clicks nothing', async () => {
+  const { result, calls } = await runDialog(PREVIEW_ARGS, [[REASON_WINDOW]]);
+  assert.equal(result.outcome, 'preview_ok');
+  assert.deepEqual(result.reasons, ['Test Reservations', 'Duplicate Booking']);
+  assert.ok(calls.includes('close'));
+  assert.equal(calls.some((call) => call === 'clickOk' || call.startsWith('pick') || call.startsWith('fillNote')), false);
+});
+
+test('a reason HMS does not list closes the dialog and clicks no OK', async () => {
+  const { result, calls } = await runDialog({ ...COMMIT_ARGS, reason: 'Not on the list' }, [[REASON_WINDOW]]);
+  assert.equal(result.outcome, 'refused_reason_missing');
+  assert.equal(result.refusal, 'reason_not_in_list');
+  assert.ok(calls.includes('close'));
+  assert.equal(calls.includes('clickOk'), false);
 });

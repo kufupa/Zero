@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
+import { resolveAgentRunRecorder, type AgentRunRecorder } from './hitl-recorder.js';
 import {
   analyseCachePath,
   analyseSyncedSelection,
@@ -51,6 +52,8 @@ export type InboundAnalyseWarmDeps = {
   llmEnabled?: () => boolean;
   cacheDir?: string | null;
   promptVersion?: string;
+  /** HITL ledger sink. Undefined resolves the production recorder (off unless HITL_LEDGER=on). */
+  recorder?: AgentRunRecorder | null;
 };
 
 export type InboundAnalyseWarmResult = 'stored' | 'cached' | 'failed' | 'skipped';
@@ -171,6 +174,8 @@ async function runWarm(
     transportId: run.transportId,
     adapter: deps.adapter,
     llmEnabled,
+    recorder: resolveAgentRunRecorder(env, deps.recorder),
+    recordAs: { trigger: 'warmer', userId: null },
   });
   if (outcome.kind === 'cache_hit') return cachedHit(started);
   if (outcome.kind === 'luna') {

@@ -487,6 +487,36 @@ describe('QuoteWorkflowPanel', () => {
     expect(runButtons().every((button) => button.disabled)).toBe(true);
   });
 
+  it('puts Download Excel beside the PDF button and passes the click on', () => {
+    const onDownloadWorkbook = vi.fn();
+    const ready = {
+      ...sessionFromFixture('public-single'),
+      staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+      evidence: { kind: 'authorised' as const, selectionEpoch: 1, inputRevision: 1 },
+      selectedOfferIds: ['pub-1'],
+      reviewedReplyHtml: '<p>Full staff-edited reply</p>',
+    };
+    render(<QuoteWorkflowPanel session={ready} onDownloadWorkbook={onDownloadWorkbook} />);
+    const pdf = screen.getByRole('button', { name: /Prepare quotation PDF/i }) as HTMLButtonElement;
+    const excel = screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement;
+    expect(excel.parentElement).toBe(pdf.parentElement);
+    expect(excel.disabled).toBe(false);
+    fireEvent.click(excel);
+    expect(onDownloadWorkbook).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Download Excel disabled until a handler is wired', () => {
+    const ready = {
+      ...sessionFromFixture('public-single'),
+      staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+      evidence: { kind: 'authorised' as const, selectionEpoch: 1, inputRevision: 1 },
+      selectedOfferIds: ['pub-1'],
+      reviewedReplyHtml: '<p>Full staff-edited reply</p>',
+    };
+    render(<QuoteWorkflowPanel session={ready} />);
+    expect((screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('gives each date option its own Run button', () => {
     const onRunStep = vi.fn();
     const session = staggeredDatesSession();

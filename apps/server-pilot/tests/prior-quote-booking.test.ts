@@ -8,6 +8,7 @@ import {
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { buildStaffProposalFacts, staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import {
@@ -327,6 +328,142 @@ describe('priorStaffQuoteRequotePayload', () => {
       revision,
     );
     expect(again.facts?.extras[0]).toMatchObject({ chargeUnit: 'per_person_night', units: 2, dates: ['2026-10-12'] });
+  });
+
+  it('restores office transfer days only when staff typed them, so defaulted days follow the new stay', async () => {
+    const revision = await freshRevision();
+    const stay = revision.groups[0]!;
+    const stayNights = occupiedDates(stay.arrivalDate, stay.departureDate);
+    const typedDays = (count: number) => Array.from({ length: count }, (_, index) => `2026-10-${12 + index}`);
+    const payloadWithOffice = (dates: string[], extra: Record<string, unknown>) =>
+      priorStaffQuoteRequotePayload(
+        {
+          transportId: 't1',
+          threadId: 'thread-1',
+          state: 'succeeded',
+          metrics: {
+            staffQuoteAttestation: {
+              version: 1,
+              kind: 'staff_approved_quote',
+              transportId: 't1',
+              userId: 'u1',
+              threadId: 'thread-1',
+              messageId: 'mail-1',
+              sourceHash: 'a'.repeat(64),
+              selectionEpoch: 1,
+              inputRevision: 1,
+              inputDigest: 'digest',
+              authorizationId: revision.authorizationId,
+              revisionIds: [revision.id],
+              header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+              salesStrategy: 'BAR',
+            },
+            reservationistResult: {
+              quoteRevisionIds: [revision.id],
+              quoteRevisions: [revision],
+              proposalFacts: [
+                {
+                  ref: 'extras',
+                  facts: {
+                    revisionId: revision.id,
+                    authorizationId: revision.authorizationId,
+                    sourceRef: 'message:mail-1',
+                    sourceHash: 'ab'.repeat(32),
+                    extras: [
+                      {
+                        id: 'office-transfer',
+                        label: 'Office transfer',
+                        quantity: 1,
+                        units: 2 * dates.length,
+                        unitKind: 'person_service',
+                        unitMinor: 20_000,
+                        service: 'office_transfer',
+                        persons: [],
+                        dates,
+                        ...extra,
+                      },
+                    ],
+                    includedEntitlements: [],
+                  },
+                },
+              ],
+            },
+          },
+        },
+        revision.id,
+      );
+    // Days left blank are stored as the stay's nights and flagged as defaulted, so they are not restored.
+    const defaulted = payloadWithOffice(stayNights, { daysExplicit: false });
+    expect(defaulted).toMatchObject({ officeTransferMinor: 20_000 });
+    expect(defaulted).not.toHaveProperty('officeTransferDays');
+    // Typed days are restored, including when they happen to equal the stay's nights.
+    expect(payloadWithOffice(stayNights, { daysExplicit: true })).toMatchObject({
+      officeTransferDays: stayNights.length,
+    });
+    expect(payloadWithOffice(typedDays(4), { daysExplicit: true })).toMatchObject({ officeTransferDays: 4 });
+    // Facts stored before the flag: dates that differ from the stay's nights were typed.
+    expect(payloadWithOffice(typedDays(stayNights.length + 1), {})).toMatchObject({
+      officeTransferDays: stayNights.length + 1,
+    });
+    expect(payloadWithOffice(stayNights, {})).toMatchObject({ officeTransferMinor: 20_000 });
+    expect(payloadWithOffice(stayNights, {})).not.toHaveProperty('officeTransferDays');
+  });
+
+  it('re-quotes a defaulted office transfer over the new stay length', async () => {
+    // An unmutated synthetic revision keeps its digest id, which the builder checks (freshRevision edits it).
+    const revision = await syntheticRevision(['1850.00']);
+    const sourceHash = 'a'.repeat(64);
+    const scope = { messageId: 'mail-1', sourceHash };
+    const prepared = { authorizationId: revision.authorizationId };
+    const input = (departureDate: string, officeTransferDays?: number) =>
+      staffQuoteInput.parse({
+        messageId: 'mail-1',
+        sourceHash,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups: [
+          { id: 'g1', arrivalDate: '2026-10-12', departureDate, quantity: 1, adults: 2, childrenAges: [], board: 'bb' },
+        ],
+        officeTransferMinor: 20_000,
+        ...(officeTransferDays === undefined ? {} : { officeTransferDays }),
+      });
+    const stored = buildStaffProposalFacts(input('2026-10-13'), scope, prepared, revision);
+    const payload = priorStaffQuoteRequotePayload(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: {
+          staffQuoteAttestation: {
+            version: 1,
+            kind: 'staff_approved_quote',
+            transportId: 't1',
+            userId: 'u1',
+            threadId: 'thread-1',
+            messageId: 'mail-1',
+            sourceHash,
+            selectionEpoch: 1,
+            inputRevision: 1,
+            inputDigest: 'digest',
+            authorizationId: revision.authorizationId,
+            revisionIds: [revision.id],
+            header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+            salesStrategy: 'BAR',
+          },
+          reservationistResult: {
+            quoteRevisionIds: [revision.id],
+            quoteRevisions: [revision],
+            proposalFacts: [{ ref: 'extras', facts: stored.facts }],
+          },
+        },
+      },
+      revision.id,
+    );
+    expect(payload).toMatchObject({ officeTransferMinor: 20_000 });
+    expect(payload).not.toHaveProperty('officeTransferDays');
+    // The three-night re-quote charges three days, not the one night that was stored.
+    const again = buildStaffProposalFacts(input('2026-10-15', payload?.officeTransferDays), scope, prepared, revision);
+    expect(again.facts?.extras[0]?.dates).toHaveLength(3);
   });
 
   it('returns saved extras bundle refs for the matching revision', async () => {

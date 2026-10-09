@@ -665,6 +665,7 @@ export function QuoteWorkflowPanel({
   onReplyChange,
   onPreparePdf,
   onPreparePdfFor,
+  onDownloadWorkbook,
   onHandleReviewItem,
   onUndoReviewItem,
   onViewSource,
@@ -687,6 +688,7 @@ export function QuoteWorkflowPanel({
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
   onPreparePdfFor?: (stayKey: string) => void;
+  onDownloadWorkbook?: () => void;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   onViewSource?: (item: QuoteReviewItem) => void;
@@ -872,7 +874,12 @@ export function QuoteWorkflowPanel({
         <BookingCards draft={session.bookingDraft} groups={session.groups} paneSave={paneSave} />
       ) : null}
       {showReply ? (
-        <DocumentReview session={session} onReplyChange={onReplyChange} onPreparePdf={onPreparePdf} />
+        <DocumentReview
+          session={session}
+          onReplyChange={onReplyChange}
+          onPreparePdf={onPreparePdf}
+          onDownloadWorkbook={onDownloadWorkbook}
+        />
       ) : null}
     </div>
   );

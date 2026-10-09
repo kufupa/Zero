@@ -12,6 +12,7 @@ import {
   resolveAnalyseCacheDir,
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
+import { resolveAgentRunRecorder, type AgentRunRecorder } from '../../ai/hitl-recorder.js';
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
@@ -62,8 +63,8 @@ const paneStayInput = z.object({
 export type LoadSyncedSelection = (input: {
   transportId: string;
   internetMessageId?: string;
-  entryId: string;
-  storeId: string;
+  entryId?: string;
+  storeId?: string;
   signal?: AbortSignal;
 }) => Promise<SyncedQuoteSelection | null>;
 
@@ -78,19 +79,26 @@ export const quoteWorkflowLoaders: {
   /** Tests set a temp dir. Production uses apps/server-pilot/.private/luna-analyse-cache. */
   analyseCacheDir: string | null;
   promptVersion: string | null;
+  /** HITL ledger sink. Only read when HITL_LEDGER=on; production resolves the DB recorder. */
+  agentRunRecorder: AgentRunRecorder | null;
 } = {
   loadSyncedSelection: null,
   adapter: null,
   llmEnabled: null,
   analyseCacheDir: null,
   promptVersion: null,
+  agentRunRecorder: null,
 };
 
+/**
+ * Only internetMessageId selects the mail. storeId, entryId and folderEntryId are
+ * optional and unused, so the web preview can analyse a thread without Outlook ids.
+ */
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
-  storeId: z.string().min(1),
-  entryId: z.string().min(1),
-  folderEntryId: z.string().min(1),
+  storeId: z.string().optional(),
+  entryId: z.string().optional(),
+  folderEntryId: z.string().optional(),
   selectionEpoch: z.number().int(),
   treatAs: z.enum(['quote', 'create_booking']).optional(),
   staffNote: z.string().max(4000).optional(),
@@ -132,6 +140,8 @@ export const quoteWorkflowRouter = router({
         adapter: quoteWorkflowLoaders.adapter,
         llmEnabled: () =>
           quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env),
+        recorder: resolveAgentRunRecorder(process.env, quoteWorkflowLoaders.agentRunRecorder),
+        recordAs: { trigger: 'pane', userId: ctx.sessionUser.id },
       });
       if (outcome.kind === 'fallback') {
         console.warn('quote_workflow_fallback', outcome.reason);

@@ -314,7 +314,7 @@ export function buildStaffProposalFacts(
     unitMinor: number,
     persons: Array<{ id: string; age: number }>,
     dates: string[],
-    chargeUnit?: OtherChargeUnit,
+    options: { chargeUnit?: OtherChargeUnit; daysExplicit?: boolean } = {},
   ) => {
     extras.push({
       id,
@@ -326,7 +326,8 @@ export function buildStaffProposalFacts(
       service,
       persons,
       dates,
-      ...(chargeUnit ? { chargeUnit } : {}),
+      ...(options.chargeUnit ? { chargeUnit: options.chargeUnit } : {}),
+      ...(options.daysExplicit === undefined ? {} : { daysExplicit: options.daysExplicit }),
     });
   };
   if (input.dinnerAllowanceMinor && allowancePersons.length) {
@@ -358,6 +359,8 @@ export function buildStaffProposalFacts(
       input.officeTransferMinor,
       stayPersons,
       consecutiveDates(first.arrivalDate, input.officeTransferDays ?? nights.length),
+      // Typed days are restored on a re-quote; defaulted days follow the stay instead.
+      { daysExplicit: input.officeTransferDays !== undefined },
     );
   }
   if (input.shuttleRequested) {
@@ -382,9 +385,9 @@ export function buildStaffProposalFacts(
     if (!label) {
       extrasReviewItems.push(otherLabelReviewText(amountMinor));
     } else if (unit === 'per_person_night') {
-      personService('other', label, 'other', amountMinor, stayPersons, nights, unit);
+      personService('other', label, 'other', amountMinor, stayPersons, nights, { chargeUnit: unit });
     } else if (unit === 'per_person') {
-      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], unit);
+      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], { chargeUnit: unit });
     } else {
       extras.push({
         id: 'other',
@@ -440,6 +443,40 @@ export async function executeStaffQuote(
   await guard();
   return revision;
 }
+/**
+ * Why a staff-approved quote can no longer be exported, or null while it is still the current approval.
+ * Pure: the caller reads the latest generation and the current message from the database.
+ */
+export function staffQuoteCurrencyProblem(args: {
+  staff: Pick<StaffQuoteAttestation, 'userId' | 'threadId' | 'sourceHash' | 'header'>;
+  runGenerationId: string | null | undefined;
+  latestGenerationId: string | null | undefined;
+  currentMessage:
+    | { id: string; threadId: string; subject: string | null; textBody: string | null; htmlBody: string | null }
+    | null
+    | undefined;
+  userId: string;
+  party: { company: string; agency: string };
+}): string | null {
+  if (args.latestGenerationId !== args.runGenerationId)
+    return 'Newer stay inputs were approved; use the current quote';
+  const current = args.currentMessage;
+  if (
+    !current ||
+    args.staff.userId !== args.userId ||
+    args.staff.threadId !== current.threadId ||
+    args.staff.sourceHash !== staffQuoteSourceHash(current)
+  )
+    return 'Selected email changed; rerun the approved quote';
+  if (
+    !args.staff.header ||
+    args.party.company !== args.staff.header.company ||
+    args.party.agency !== args.staff.header.agency
+  )
+    return 'Party identity changed; rerun the approved quote';
+  return null;
+}
+
 export function attestStaffQuote(
   input: StaffQuoteInput,
   scope: StaffQuoteScope,
