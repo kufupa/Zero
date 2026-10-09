@@ -66,5 +66,5 @@ export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string
   // The switch is off, so no company or agency rate is checked. The copy does not say which rates the quote uses.
   if (outcome === 'refused_flag_off')
     return 'HMS rate lookup is turned off here, so company and agency rates are not checked.';
-  return "Luna couldn't check HMS for this name. Try again, or quote at public rates.";
+  return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
 }

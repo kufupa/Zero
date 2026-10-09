@@ -11,7 +11,7 @@ import type { StaffQuoteParty } from '../../lib/quote-workflow/types';
 import { useEffect, useRef, useState } from 'react';
 
 export const PARTY_PICKER_HINT =
-  'Pick the exact company or agency so Luna can get their rate. Takes about a minute.';
+  'Pick the exact company or agency so Nava can get their rate. Takes about a minute.';
 
 export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies. This takes about a minute.';
 
