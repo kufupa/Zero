@@ -7,6 +7,8 @@ import {
   main,
   normalizeName,
   parseLiveCheckArgs,
+  quoteCheckLine,
+  staffQuoteInputFor,
   partyCheckLine,
   quoteRequestFor,
   rateRows,
@@ -730,5 +732,116 @@ describe('main', () => {
     const bad = harness();
     expect(await main(['deploy'], bad.deps)).toBe(2);
     expect(bad.parsed()).toEqual([{ check: 'args', ok: false, error: 'unknown_command' }]);
+  });
+});
+
+describe('quote subcommand', () => {
+  // The flags a quote takes, in order. A value of undefined leaves its flag out.
+  const quoteArgs = (over: Record<string, string | undefined> = {}) => {
+    const flags: Record<string, string | undefined> = { arrival: '2026-10-12', nights: '3', adults: '2', room: 'STQN', ...over };
+    return ['quote', ...Object.entries(flags).filter(([, value]) => value !== undefined).flatMap(([key, value]) => [`--${key}`, value as string])];
+  };
+
+  it('reads the stay, the room and each picked party with its id and name', () => {
+    const out = parse(...quoteArgs({ agency: '113', 'agency-name': '360 degrees Travel', org: '49', 'org-name': 'Woolworths' }), '--dry-run');
+    expect(out).toEqual({
+      ok: true,
+      value: {
+        check: {
+          check: 'quote',
+          arrival: '2026-10-12',
+          nights: 3,
+          adults: 2,
+          room: 'STQN',
+          org: { nativeId: '49', name: 'Woolworths' },
+          agency: { nativeId: '113', name: '360 degrees Travel' },
+        },
+        dryRun: true,
+      },
+    });
+    const publicOnly = parse(...quoteArgs());
+    expect(publicOnly).toMatchObject({ ok: true, value: { check: { org: null, agency: null }, dryRun: false } });
+  });
+
+  it('refuses a missing or impossible stay, a room code HMS does not use, and a party picked without its id or name', () => {
+    expect(parse(...quoteArgs({ arrival: undefined }))).toEqual({ ok: false, error: 'arrival_invalid' });
+    expect(parse(...quoteArgs({ arrival: '2026-02-30' }))).toEqual({ ok: false, error: 'arrival_invalid' });
+    expect(parse(...quoteArgs({ nights: undefined }))).toEqual({ ok: false, error: 'nights_invalid' });
+    expect(parse(...quoteArgs({ nights: '0' }))).toEqual({ ok: false, error: 'nights_invalid' });
+    expect(parse(...quoteArgs({ nights: '31' }))).toEqual({ ok: false, error: 'nights_invalid' });
+    expect(parse(...quoteArgs({ adults: undefined }))).toEqual({ ok: false, error: 'adults_invalid' });
+    expect(parse(...quoteArgs({ adults: '10' }))).toEqual({ ok: false, error: 'adults_invalid' });
+    expect(parse(...quoteArgs({ room: undefined }))).toEqual({ ok: false, error: 'room_invalid' });
+    expect(parse(...quoteArgs({ room: 'stqn' }))).toEqual({ ok: false, error: 'room_invalid' });
+    expect(parse(...quoteArgs({ room: 'ST QN' }))).toEqual({ ok: false, error: 'room_invalid' });
+    expect(parse(...quoteArgs(), '--org', '49')).toEqual({ ok: false, error: 'org-name_required' });
+    expect(parse(...quoteArgs(), '--org-name', 'Woolworths')).toEqual({ ok: false, error: 'org-name_without_org' });
+    expect(parse(...quoteArgs(), '--agency', '113; drop', '--agency-name', 'Travel')).toEqual({ ok: false, error: 'native_id_invalid' });
+    expect(parse(...quoteArgs(), '--agency', '113', '--agency-name', 'bad\u0007name')).toEqual({ ok: false, error: 'name_invalid' });
+    expect(parse(...quoteArgs(), 'extra')).toEqual({ ok: false, error: 'unexpected_argument' });
+    expect(parse(...quoteArgs(), '--room-type', 'x')).toEqual({ ok: false, error: 'unknown_flag:room-type' });
+  });
+
+  it('builds the staff quote input the pane would send: one room group, and each picked party by its kind', () => {
+    const parsed = parse(...quoteArgs({ agency: '113', 'agency-name': '360 degrees Travel', org: '49', 'org-name': 'Woolworths' }));
+    if (!parsed.ok || parsed.value.check.check !== 'quote') throw new Error('expected a quote check');
+    const input = staffQuoteInputFor(parsed.value.check, 'message-1', 'a'.repeat(64));
+    expect(input.groups[0]).toMatchObject({
+      arrivalDate: '2026-10-12',
+      departureDate: '2026-10-15',
+      adults: 2,
+      roomCodes: ['STQN'],
+      board: 'room_only',
+    });
+    expect(input.parties).toEqual({
+      company: { kind: 'company', nativeId: '49', name: 'Woolworths' },
+      agency: { kind: 'agency', nativeId: '113', name: '360 degrees Travel' },
+    });
+  });
+
+  it('prints the public fallback with its copy, or the contract by its plan code and negotiated flag, and an outcome', () => {
+    const party = { company: null, agency: { nativeId: '113', name: '360 degrees Travel' } };
+    const copy = 'No contract rate found for 360 degrees Travel; this quote uses our best available rate.';
+    expect(
+      quoteCheckLine({ party, chosen: null, publicFallback: { copy }, totalMinor: 150000, outcome: 'quote', code: null, ms: 42 }),
+    ).toEqual({ check: 'quote', ok: true, party, publicFallback: true, copy, totalMinor: 150000, outcome: 'quote', ms: 42 });
+    const contract = quoteCheckLine({
+      party,
+      chosen: { planCode: 'WSF2B', isNegotiatedRate: true },
+      publicFallback: null,
+      totalMinor: 99000,
+      outcome: 'quote',
+      code: null,
+      ms: 7,
+    });
+    expect(contract).toMatchObject({ ok: true, contractChosen: { planCode: 'WSF2B', isNegotiatedRate: true }, totalMinor: 99000 });
+    expect(contract).not.toHaveProperty('publicFallback');
+    const refused = quoteCheckLine({
+      party,
+      chosen: null,
+      publicFallback: null,
+      totalMinor: null,
+      outcome: 'refused',
+      code: 'business_selected_price_unavailable',
+      ms: 3,
+    });
+    expect(refused).toMatchObject({ ok: false, outcome: 'refused', code: 'business_selected_price_unavailable' });
+  });
+
+  it('a dry run validates the arguments and the environment, and never takes the lock or reaches the server path', async () => {
+    const lines: string[] = [];
+    const code = await main([...quoteArgs({ org: '49', 'org-name': 'Woolworths' }), '--dry-run'], {
+      env: {},
+      spawnEnv: () => ({}),
+      writeLine: (line) => lines.push(line),
+      lock: () => {
+        throw new Error('the lock must not be taken on a dry run');
+      },
+    });
+    expect(code).toBe(1);
+    const report = JSON.parse(lines[0]!) as { check: string; dryRun: boolean; problems: string[] };
+    expect(report).toMatchObject({ check: 'quote', dryRun: true });
+    expect(report.problems).toContain('staff_quote_configuration_missing');
+    expect(report.problems).toContain('property_lock_unavailable');
   });
 });
