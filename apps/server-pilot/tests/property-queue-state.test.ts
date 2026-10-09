@@ -77,7 +77,7 @@ describe('describeHmsQueueStatus', () => {
       phaseIndex: 1,
       phaseCount: 3,
       runningForMs: 30_000,
-      message: 'Luna is working in HMS – step 1 of 3: Searching rates.',
+      message: 'Nava is working in HMS – step 1 of 3: Searching rates.',
     });
     expect(status.aheadCount).toBeUndefined();
     expect(status.etaMinutes).toBeUndefined();
@@ -93,7 +93,7 @@ describe('describeHmsQueueStatus', () => {
       phase: 'Checking the quote rules',
       phaseIndex: 2,
       phaseCount: 3,
-      message: 'Luna is working in HMS – step 2 of 3: Checking the quote rules.',
+      message: 'Nava is working in HMS – step 2 of 3: Checking the quote rules.',
     });
   });
 

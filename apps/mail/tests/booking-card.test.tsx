@@ -42,6 +42,7 @@ import type {
   QuoteAnalysis,
   QuoteOffer,
   QuoteSession,
+  StaffQuoteParties,
   StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 
@@ -103,7 +104,20 @@ const OPTIONS = {
   track: ['BAR', 'COR'],
   sourceOfBusiness: ['Travel Agent', 'E-Mail'],
   guaranteeType: ['Guaranteed By Agent', 'Confirmation Received'],
+  roomType: ['DLXKNG', 'STQN', 'SKNG'],
 };
+
+const PICKED: StaffQuoteParties = {
+  company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
+  agency: { kind: 'agency', nativeId: '571', name: 'Woolworths Travel' },
+};
+
+// The draft as the server builds it when the quote carries no agency or organization.
+function bareDraft(): BookingDraftReady {
+  const draft = draftReady();
+  for (const room of draft.draft.rooms) delete room.request.agency;
+  return draft;
+}
 
 function draftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraftReady {
   return {
@@ -155,7 +169,10 @@ function draftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraf
   };
 }
 
-function quotedSession(booking: BookingDraftReady | null = draftReady()): QuoteSession {
+function quotedSession(
+  booking: BookingDraftReady | null = draftReady(),
+  parties?: StaffQuoteParties,
+): QuoteSession {
   let session = reduceQuoteSession(initialQuoteSession(), {
     type: 'selection',
     binding: {
@@ -173,6 +190,10 @@ function quotedSession(booking: BookingDraftReady | null = draftReady()): QuoteS
     type: 'staff_source_ready',
     source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
   });
+  // Picks are header state and go out with the quote, so they are set before the quote runs.
+  if (parties) {
+    session = reduceQuoteSession(session, { type: 'patch_staff_header', header: { parties } });
+  }
   session = reduceQuoteSession(session, {
     type: 'staff_quote_ready',
     offer,
@@ -202,9 +223,10 @@ function quotedSession(booking: BookingDraftReady | null = draftReady()): QuoteS
     inputRevision: session.inputRevision,
   });
   if (!booking) return session;
+  // A pick above bumps the input revision, so the draft is for the revision the quote ran at.
   return reduceQuoteSession(session, {
     type: 'booking_draft_ready',
-    payload: booking,
+    payload: { ...booking, inputRevision: session.inputRevision },
     sourceHash: STAFF_HASH,
   });
 }
@@ -274,6 +296,53 @@ describe('booking cards', () => {
     fireEvent.change(track, { target: { value: 'COR' } });
     expect((track as HTMLSelectElement).value).toBe('COR');
     expect(session.bookingDraft?.draft.rooms[0]?.request.track).toBeUndefined();
+  });
+
+  it('renders room type as a select with the draft options and the quoted room type', () => {
+    render(<BookingCards draft={draftReady()} />);
+    const roomType = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    expect(roomType.map((field) => field.value)).toEqual(['STQN', 'STQN']);
+    expect(Array.from(roomType[0]!.options, (option) => option.textContent)).toEqual([
+      'Select room type',
+      'DLXKNG',
+      'STQN',
+      'SKNG',
+    ]);
+  });
+
+  it('fills an empty Organization and Booking agency from the picked company and agency', () => {
+    render(<BookingCards draft={bareDraft()} parties={PICKED} />);
+    expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
+    expect(fieldValues('Booking agency')).toEqual(['Woolworths Travel', 'Woolworths Travel']);
+  });
+
+  it('keeps the draft agency and staff text when the picks change', () => {
+    const { rerender } = render(<BookingCards draft={draftReady()} parties={PICKED} />);
+    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
+    expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
+    fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'Bidvest Bank' } });
+    const other = { company: { kind: 'company' as const, nativeId: '77', name: 'Other Co' } };
+    rerender(<BookingCards draft={draftReady()} parties={other} />);
+    expect(fieldValues('Organization')[0]).toBe('Bidvest Bank');
+    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
+  });
+
+  it('leaves the fields as the draft has them when nothing is picked', () => {
+    render(<BookingCards draft={draftReady()} />);
+    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
+    expect(fieldValues('Organization')).toEqual(['', '']);
+  });
+
+  it('does not fill from a pick without an HMS id', () => {
+    const typed = { company: { kind: 'company' as const, nativeId: '', name: 'Typed Co' } };
+    render(<BookingCards draft={bareDraft()} parties={typed} />);
+    expect(fieldValues('Organization')).toEqual(['', '']);
+  });
+
+  it('passes the picked company and agency from the quote to the booking card', () => {
+    render(<QuoteWorkflowPanel session={quotedSession(bareDraft(), PICKED)} />);
+    expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
+    expect(fieldValues('Booking agency')).toEqual(['Woolworths Travel', 'Woolworths Travel']);
   });
 });
 
@@ -441,6 +510,10 @@ function pickRoomChoices(index: number) {
   fireEvent.change(screen.getAllByLabelText('Guarantee')[index]!, { target: { value: 'Confirmation Received' } });
 }
 
+function fieldValues(label: string): string[] {
+  return screen.getAllByLabelText(label).map((field) => (field as HTMLInputElement).value);
+}
+
 function previewButton(index: number): HTMLButtonElement {
   return screen.getAllByRole('button', { name: 'Preview in HMS' })[index] as HTMLButtonElement;
 }
@@ -557,7 +630,7 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     const [booked, other] = Array.from(document.querySelectorAll('article'));
     const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
-    expect(bookedSelects).toHaveLength(3);
+    expect(bookedSelects).toHaveLength(4);
     for (const select of bookedSelects) expect(select.disabled).toBe(true);
     for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
   });
@@ -719,6 +792,17 @@ describe('booking card save modes and the note fields', () => {
     expect(bookButton(0)).toHaveProperty('disabled', true);
   });
 
+  it('sends the room type the staff select, and the draft keeps the quoted room type', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady();
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ roomType: 'DLXKNG' }));
+    expect(draft.draft.rooms[0]!.request.roomType).toBe('STQN');
+  });
+
   it('caps the reservation note at 2000 characters, and a prefilled agency over 100 characters waits for Preview', () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
@@ -804,7 +888,9 @@ describe('pane save helpers', () => {
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
     };
-    expect(paneStayInputForRoom(request, { track: '', sourceOfBusiness: 'E-Mail', guaranteeType: '' })).toEqual({
+    expect(
+      paneStayInputForRoom(request, { roomType: 'STQN', track: '', sourceOfBusiness: 'E-Mail', guaranteeType: '' }),
+    ).toEqual({
       stay: null,
       missing: ['last name', 'track', 'guarantee'],
     });

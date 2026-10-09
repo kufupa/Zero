@@ -1717,7 +1717,7 @@ describe('quote session staff review items', () => {
       ...s,
       bookingDraft: {
         draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
-        options: { track: [], sourceOfBusiness: [], guaranteeType: [] },
+        options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
         messageId: 'mail-1',
         selectionEpoch: 1,
         inputRevision: 1,
@@ -1743,7 +1743,12 @@ describe('quote session staff review items', () => {
         missing: [],
         flags: [] as string[],
       },
-      options: { track: ['BAR'], sourceOfBusiness: ['Travel Agent'], guaranteeType: ['Guaranteed By Agent'] },
+      options: {
+        track: ['BAR'],
+        sourceOfBusiness: ['Travel Agent'],
+        guaranteeType: ['Guaranteed By Agent'],
+        roomType: ['STQN'],
+      },
       messageId: 'mail-1',
       selectionEpoch: 1,
       inputRevision: 1,
