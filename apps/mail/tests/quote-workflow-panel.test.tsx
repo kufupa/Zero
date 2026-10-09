@@ -97,13 +97,14 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.queryByRole('button', { name: /Get rates from HMS/i })).toBeNull();
   });
 
-  it('renders one editable card per stay group with month and year dates', () => {
+  it('renders one stay card for groups on the same dates, with a row per room and month and year dates', () => {
     const onPatchGroup = vi.fn();
     render(
       <QuoteWorkflowPanel session={sessionFromFixture('mixed-same-dates')} onPatchGroup={onPatchGroup} />,
     );
     const arrivals = screen.getAllByLabelText(/Arrival/i);
-    expect(arrivals).toHaveLength(2);
+    expect(arrivals).toHaveLength(1);
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
     expect((arrivals[0] as HTMLInputElement).value).toBe('2026-10-16');
     fireEvent.change(screen.getAllByLabelText(/Adults/i)[0]!, { target: { value: '3' } });
     expect(onPatchGroup).toHaveBeenCalledWith('g-double', expect.objectContaining({ adults: 3 }));
@@ -119,7 +120,9 @@ describe('QuoteWorkflowPanel', () => {
     const onRunNext = vi.fn();
     const onRunStep = vi.fn();
     let session = sessionFromFixture('failed-run');
-    session = { ...session, steps: [{
+    // The fixture's free-text room is not a room type yet, and Get rates needs one.
+    const groups = session.groups.map((group) => ({ ...group, roomPreference: 'SKNG' }));
+    session = { ...session, groups, steps: [{
       id: 'quote-1',
       kind: 'quote_stay',
       title: 'Search availability for 12–14 Nov',

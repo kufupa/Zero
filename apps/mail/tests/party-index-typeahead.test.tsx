@@ -199,5 +199,5 @@ describe('the quote workflow header: the HMS list is asked with each field\'s ow
     expect(within(companyGroup).queryByRole('button', { name: 'Woolworths Travel' })).toBeNull();
     expect(within(agencyGroup).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
     expect(partyIndex.mock.calls.map(([query]) => query).sort()).toEqual(['Acme Travel', 'Woolworths']);
-  });
+  }, 15_000); // the cold import of the whole panel alone takes about 5 s on this VPS
 });

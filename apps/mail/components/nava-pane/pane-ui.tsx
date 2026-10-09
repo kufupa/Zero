@@ -126,6 +126,7 @@ export function PrimaryButton({
   loadingText,
   type = 'button',
   icon,
+  tone = 'blue',
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -135,6 +136,8 @@ export function PrimaryButton({
   loadingText?: string;
   type?: 'button' | 'submit';
   icon?: ReactNode;
+  /** Blue for the step's action; green for the reply that creates the draft. */
+  tone?: 'blue' | 'green';
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -151,7 +154,9 @@ export function PrimaryButton({
           type={type}
           onClick={onClick}
           disabled={disabled}
-          className="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+          className={`flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] ${
+            tone === 'green' ? 'bg-[#1a4332] hover:bg-[#143528]' : 'bg-[#0066cc] hover:bg-[#0052a3]'
+          }`}
         >
           {icon}
           {children}
@@ -185,7 +190,7 @@ export function SecondaryButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] ${className}`}
+      className={`flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] ${className}`}
     >
       {icon}
       {children}
@@ -208,7 +213,7 @@ export function LinkButton({
       type="button"
       onClick={onClick}
       aria-expanded={ariaExpanded}
-      className="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+      className="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
     >
       {children}
     </button>

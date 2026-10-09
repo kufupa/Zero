@@ -3,13 +3,17 @@ import {
   allocationTotal,
   amendmentOf,
   canCreatePdf,
+  groupStays,
+  newQuoteToken,
   optionLetter,
   pendingPdfStayKey,
   pickNextRunnableStep,
   quoteRunBlockReason,
   requestedQuoteKeys,
+  rowRoomCode,
   stayKeyForGroup,
   staffSourceReady,
+  stayTotals,
 } from '@/lib/quote-workflow/session';
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
@@ -26,6 +30,7 @@ import type {
   StaffQuoteHeader,
   StaffExtraField,
   StaffQuoteOtherUnit,
+  StayEditAction,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
 import {
@@ -50,7 +55,7 @@ import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RateCards } from './rate-cards';
-import { RequirementCard } from './requirement-card';
+import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
 
@@ -772,6 +777,24 @@ function OfferCard({
   );
 }
 
+/** The request's rooms and guests. The Available chip shows once HMS has found the selected stay. */
+function RequestTotals({ groups, available }: { groups: StayGroupRequirement[]; available: boolean }) {
+  const totals = stayTotals(groups);
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-[3px] border border-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5">
+      <div className="flex flex-col gap-0.5">
+        <span className="text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]">Total</span>
+        <span className="text-[13px] font-bold text-[#1e293b]">
+          {totals.rooms} {totals.rooms === 1 ? 'room' : 'rooms'} · {totals.guests} {totals.guests === 1 ? 'guest' : 'guests'}
+        </span>
+      </div>
+      {available ? (
+        <span className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[11px] font-bold text-[#1a4332]">Available</span>
+      ) : null}
+    </div>
+  );
+}
+
 function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   return (
     phase === 'idle' ||
@@ -788,13 +811,21 @@ function intentOf(session: QuoteSession): QuoteIntent | null {
   return session.analysis?.luna?.workflow ?? null;
 }
 
-/** Why "Get rates from HMS" cannot run now, or null when it can. */
+/**
+ * Why "Get rates from HMS" cannot run now, or null when it can. A runnable step's own wait shows first, as before;
+ * every row still needs a room type before rates run.
+ */
 function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undefined): string | null {
-  if (nextStep) return quoteRunBlockReason(session, nextStep);
+  if (nextStep) {
+    const stepWait = quoteRunBlockReason(session, nextStep);
+    if (stepWait) return stepWait;
+    return session.groups.some((group) => !rowRoomCode(group)) ? 'Choose a room type for each row.' : null;
+  }
   if (!session.groups.length) return 'Nava has not found a stay yet.';
   if (session.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
+  if (session.groups.some((group) => !rowRoomCode(group))) return 'Choose a room type for each row.';
   if (session.groups.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (session.steps.length > 0 && session.steps.every((step) => step.status === 'succeeded')) {
     return 'Already up to date.';
@@ -805,6 +836,7 @@ function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undef
 export function QuoteWorkflowPanel({
   session,
   onPatchGroup,
+  onStayAction,
   onRunNext,
   onRunStep,
   onSelectOffer,
@@ -837,6 +869,8 @@ export function QuoteWorkflowPanel({
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
+  /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
+  onStayAction?: (action: StayEditAction) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
   onSelectOffer?: (offerId: string) => void;
@@ -926,6 +960,7 @@ export function QuoteWorkflowPanel({
   }
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
+  const stays = groupStays(session.groups);
   const nextStep = pickNextRunnableStep(session.steps, session.runningStepId);
   const ratesReason = ratesBlockReason(session, nextStep);
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
@@ -971,15 +1006,26 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <Section step={1} title="Stay details">
-          {session.groups.map((group, index) => (
-            <RequirementCard
-              key={group.id}
-              group={group}
+          {stays.map((stay, index) => (
+            <StayCard
+              key={stay.id}
+              stayId={stay.id}
+              rows={stay.rows}
               index={index}
+              stayCount={stays.length}
               onPatch={onPatchGroup}
+              onStayAction={onStayAction}
               evidence={session.analysis?.luna?.evidence}
             />
           ))}
+          <div className="flex flex-col gap-2">
+            <SecondaryButton onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
+              Add stay
+            </SecondaryButton>
+            {session.groups.length ? (
+              <RequestTotals groups={session.groups} available={Boolean(session.staffQuote)} />
+            ) : null}
+          </div>
           <StaffPartyFields
             header={header}
             onPatch={onPatchStaffHeader}

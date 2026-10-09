@@ -197,7 +197,8 @@ describe('mounted pane step runner and current inputs', () => {
       inputRevision: number;
       groups: Array<{ arrivalDate?: string; departureDate?: string; quantity?: number }>;
     };
-    expect(request.inputRevision).toBeGreaterThan(1);
+    // No run was in flight, so the date edit kept the revision: the PDF gate needs evidence and results on one revision.
+    expect(request.inputRevision).toBe(1);
     expect(request.groups).toEqual([
       expect.objectContaining({ id: 'g1', arrivalDate: '2026-12-01', departureDate: '2026-12-03', quantity: 1 }),
     ]);
