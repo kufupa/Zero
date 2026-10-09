@@ -763,3 +763,32 @@ describe('the Find in HMS picker in the quote header', () => {
     ).toBeDefined();
   });
 });
+
+describe('an unread document is a needs-review row, never a stop', () => {
+  it('shows the Nava copy without the blocking line', () => {
+    const base = sessionFromFixture('agency-contract');
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      phase: 'requirements',
+      reviewItems: [
+        {
+          id: 'unread:doc',
+          kind: 'document_failure',
+          rank: 'unread_source',
+          text: "Nava can't read rooming.docx yet — open it if it has booking details.",
+          sourceLabel: 'rooming.docx',
+          sourceRef: 'doc',
+          sourceKind: 'attachment',
+          filename: 'rooming.docx',
+          reason: 'not a PDF',
+          blocking: false,
+        },
+      ],
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText("Nava can't read rooming.docx yet — open it if it has booking details.")).toBeDefined();
+    expect(screen.getByText('Needs review. Nava did not read this file.')).toBeDefined();
+    expect(screen.queryByText(/Blocks the quote/)).toBeNull();
+  });
+});

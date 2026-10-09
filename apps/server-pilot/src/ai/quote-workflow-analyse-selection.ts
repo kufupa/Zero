@@ -26,6 +26,7 @@ import type {
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
+import { attachmentMattersForReview } from './quote-attachment-review.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -140,10 +141,18 @@ function unreadAttachments(
   attachments: SyncedQuoteAttachment[],
   mode: 'bytes' | 'text' = 'bytes',
 ): SyncedQuoteAttachment[] {
-  if (mode === 'text') {
-    return attachments.filter((attachment) => !String(attachment.text ?? '').trim());
-  }
-  return attachments.filter((attachment) => !attachment.bytesPresent && !attachment.text);
+  const unread =
+    mode === 'text'
+      ? attachments.filter((attachment) => !String(attachment.text ?? '').trim())
+      : attachments.filter((attachment) => !attachment.bytesPresent && !attachment.text);
+  // Only files that may hold a booking count, so one unread signature never raises a row or the banner.
+  return unread.filter((attachment) =>
+    attachmentMattersForReview({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      byteSize: attachment.byteSize,
+    }),
+  );
 }
 
 function documentFailureItems(
@@ -154,13 +163,14 @@ function documentFailureItems(
     id: `unread:${attachment.id}`,
     kind: 'document_failure' as const,
     rank: 'unread_source' as const,
-    text: `Attachment ${attachment.filename} could not be read (${attachment.readFailure ?? 'unavailable'}). Review it manually.`,
+    text: `Nava can't read ${attachment.filename} yet — open it if it has booking details.`,
     sourceLabel: attachment.filename,
     sourceRef: attachment.id,
     sourceKind: 'attachment' as const,
     filename: attachment.filename,
     reason: attachment.readFailure ?? 'Content unavailable; review the original attachment.',
-    blocking: true as const,
+    // Needs review, never a stop: the quote can still run without an unread file.
+    blocking: false as const,
   }));
 }
 
