@@ -843,7 +843,17 @@ function staffQuoteInputProblem(check: QuoteCheck): string | null {
   }
 }
 
+/** A caught error as the harness prints it: the stage it came from, identifier-shaped name, code and message. No free text. */
+export type QuoteFailure = { stage: string; name: string; code: string | null; message: string };
+const IDENTIFIER_TEXT = /^[A-Za-z][A-Za-z0-9_.:-]{0,119}$/;
+export function quoteFailure(stage: string, error: unknown): QuoteFailure {
+  const name = error instanceof Error && IDENTIFIER_TEXT.test(error.name) ? error.name : 'unknown';
+  const message = error instanceof Error && IDENTIFIER_TEXT.test(error.message) ? error.message : 'message_redacted';
+  return { stage, name, code: quoteErrorCode(error), message };
+}
+
 export type QuoteLineInput = {
+  error?: QuoteFailure | null;
   party: { company: PartyPick | null; agency: PartyPick | null };
   chosen: { planCode: string; isNegotiatedRate: boolean } | null;
   publicFallback: { copy: string } | null;
@@ -863,6 +873,7 @@ export function quoteCheckLine(line: QuoteLineInput) {
     totalMinor: line.totalMinor,
     outcome: line.outcome,
     ...(line.code !== null ? { code: line.code } : {}),
+    ...(line.error ? { error: line.error } : {}),
     ms: line.ms,
   };
 }
@@ -879,13 +890,22 @@ function quoteErrorCode(error: unknown): string | null {
 async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Record<string, unknown>> {
   const started = Date.now();
   const party = { company: check.org, agency: check.agency };
-  const failed = (outcome: string, code: string | null) =>
-    quoteCheckLine({ party, chosen: null, publicFallback: null, totalMinor: null, outcome, code, ms: elapsed(started) });
+  const failed = (outcome: string, error: QuoteFailure | null) =>
+    quoteCheckLine({
+      party,
+      chosen: null,
+      publicFallback: null,
+      totalMinor: null,
+      outcome,
+      code: error?.code ?? null,
+      error,
+      ms: elapsed(started),
+    });
   let propertyCode: string;
   try {
     propertyCode = readInstalledStaffQuoteConfiguration().owner.propertyCode;
-  } catch {
-    return failed('refused_configuration_unavailable', null);
+  } catch (error) {
+    return failed('refused_configuration_unavailable', quoteFailure('configuration', error));
   }
   const messageId = `v8-live-check-${randomUUID()}`;
   const sourceHash = createHash('sha256').update(messageId).digest('hex');
@@ -903,12 +923,17 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
   const signal = new AbortController().signal;
   // The source behind the revision's rate, read from the same services call that priced it. No second HMS read.
   const captured: Array<{ source: { result: { groups: Array<{ id: string; options: QuoteOption[] }> } }; groupId: string; optionId: string }> = [];
+  // Where the attempt is, so a caught error names the step it came from.
+  let stage = 'prepare';
   const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
+    const label = attempt.request.rateContext ? 'party' : 'public';
+    stage = `${label}.services`;
     const services = getInstalledStaffQuoteServices(
       { authorizationId: attempt.authorizationId, authorizeContext: async () => true, signer },
       attempt.approval,
     );
     const resolveQuoteTask = services.resolveQuoteTask;
+    const authorizeGuestProposal = services.authorizeGuestProposal;
     return executeStaffQuote(
       attempt,
       {
@@ -916,12 +941,20 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
         resolveQuoteTask:
           resolveQuoteTask &&
           (async (quoteContext) => {
+            stage = `${label}.resolve_quote_task`;
             const resolved = await resolveQuoteTask(quoteContext);
+            stage = `${label}.after_resolve`;
             const selection = resolved.selections[0];
             if (selection) {
               captured.push({ source: await resolved.resolveSource(selection.sourceRef), groupId: selection.groupId, optionId: selection.optionId });
             }
             return resolved;
+          }),
+        authorizeGuestProposal:
+          authorizeGuestProposal &&
+          (async (quoteContext, revision, facts) => {
+            stage = `${label}.authorize_guest_proposal`;
+            return authorizeGuestProposal(quoteContext, revision, facts);
           }),
       },
       async () => true,
@@ -937,11 +970,14 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
       });
       return { ok: true as const, attempt };
     } catch (error) {
-      return { ok: false as const, code: quoteErrorCode(error) };
+      return { ok: false as const, failure: quoteFailure(stage, error) };
     }
   });
   if (!locked.ok) return failed(locked.outcome, null);
-  if (!locked.value.ok) return failed(locked.value.code === null ? 'execution_failure' : 'refused', locked.value.code);
+  if (!locked.value.ok) {
+    const failure = locked.value.failure;
+    return failed(failure.code === null ? 'execution_failure' : 'refused', failure);
+  }
   const { attempt } = locked.value;
   const picked = captured.at(-1);
   const option = picked?.source.result.groups.find((group) => group.id === picked.groupId)?.options.find((o) => o.id === picked.optionId);

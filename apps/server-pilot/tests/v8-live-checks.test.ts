@@ -8,6 +8,7 @@ import {
   normalizeName,
   parseLiveCheckArgs,
   quoteCheckLine,
+  quoteFailure,
   staffQuoteInputFor,
   partyCheckLine,
   quoteRequestFor,
@@ -843,5 +844,47 @@ describe('quote subcommand', () => {
     expect(report).toMatchObject({ check: 'quote', dryRun: true });
     expect(report.problems).toContain('staff_quote_configuration_missing');
     expect(report.problems).toContain('property_lock_unavailable');
+  });
+});
+
+describe('quote failure report', () => {
+  it('names the stage, keeps an identifier code and message, and prints no free text', () => {
+    const coded = Object.assign(new Error('business_selected_price_unavailable'), { code: 'business_selected_price_unavailable' });
+    expect(quoteFailure('party.resolve_quote_task', coded)).toEqual({
+      stage: 'party.resolve_quote_task',
+      name: 'Error',
+      code: 'business_selected_price_unavailable',
+      message: 'business_selected_price_unavailable',
+    });
+    const plain = new Error('native_quote_capture_scope_or_completeness_invalid');
+    expect(quoteFailure('public.after_resolve', plain)).toMatchObject({
+      code: null,
+      message: 'native_quote_capture_scope_or_completeness_invalid',
+    });
+    // A message with spaces may carry a name or an address: it is replaced, not printed.
+    expect(quoteFailure('public.services', new Error('Guest Jane Doe at 12 Main Road failed'))).toMatchObject({
+      message: 'message_redacted',
+    });
+    // A code that is not an identifier is not printed.
+    expect(quoteFailure('prepare', Object.assign(new Error('x'), { code: 'bad code' })).code).toBeNull();
+    expect(quoteFailure('prepare', 'not an error')).toMatchObject({ name: 'unknown', code: null, message: 'message_redacted' });
+  });
+
+  it('prints the error with its stage on the quote line', () => {
+    const line = quoteCheckLine({
+      party: { company: null, agency: null },
+      chosen: null,
+      publicFallback: null,
+      totalMinor: null,
+      outcome: 'execution_failure',
+      code: null,
+      error: { stage: 'public.authorize_guest_proposal', name: 'Error', code: null, message: 'staff_quote_proposal_unauthorized' },
+      ms: 5,
+    });
+    expect(line).toMatchObject({
+      ok: false,
+      outcome: 'execution_failure',
+      error: { stage: 'public.authorize_guest_proposal', message: 'staff_quote_proposal_unauthorized' },
+    });
   });
 });
