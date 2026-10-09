@@ -103,8 +103,10 @@ export async function runPartyIndexSweep(options: SweepOptions, seams: SweepSeam
   const seen = new Set(progress.entries.map((entry) => `${entry.kind}:${entry.nativeId}`));
   await seams.saveProgress(progress);
 
+  // The cap counts this session's runs. Runs saved by earlier sessions do not count, so re-running with the same cap resumes.
+  let sessionRuns = 0;
   while (progress.queue.length > 0) {
-    if (progress.runs >= options.maxRuns) {
+    if (sessionRuns >= options.maxRuns) {
       await seams.saveProgress(progress);
       return { status: 'paused', reason: 'max_runs', runs: progress.runs, pending: progress.queue.length };
     }
@@ -117,6 +119,7 @@ export async function runPartyIndexSweep(options: SweepOptions, seams: SweepSeam
       throw error;
     }
     progress.runs += 1;
+    sessionRuns += 1;
     const result = panePartyFindResultFromCli(item.kind, raw);
     if (!CLEAN_OUTCOMES.has(result.outcome)) {
       await seams.saveProgress(progress);

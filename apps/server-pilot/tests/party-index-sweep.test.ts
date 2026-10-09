@@ -189,6 +189,19 @@ describe('stopping and resuming', () => {
     expect(h.writes).toHaveLength(1);
   });
 
+  it('the run cap counts this session, so a re-run with the same cap resumes and finishes the sweep', async () => {
+    const h = harness(runner(quiet()));
+    let result = await runPartyIndexSweep(options({ maxRuns: 5 }), h.seams);
+    const pauses: number[] = [];
+    for (let session = 0; result.status === 'paused' && session < 20; session += 1) {
+      pauses.push(result.runs);
+      result = await runPartyIndexSweep(options({ maxRuns: 5 }), h.seams);
+    }
+    expect(pauses).toEqual([5, 10, 15, 20, 25, 30, 35, 40, 45, 50]);
+    expect(result).toMatchObject({ status: 'complete', runs: 52 });
+    expect(h.writes).toHaveLength(1);
+  });
+
   it('a fresh run ignores the saved progress and starts from A again', async () => {
     const calls: Array<{ kind: PanePartyKind; name: string }> = [];
     const h = harness(runner(quiet(), calls));
