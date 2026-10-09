@@ -7,6 +7,7 @@ import {
   resolvePriorQuoteForBooking,
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
+import { buildStaffProposalFacts, staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import {
@@ -271,6 +272,61 @@ describe('priorStaffQuoteRequotePayload', () => {
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
+  });
+
+  it('restores the chosen unit of an other charge on a re-quote, including a one-night per-guest-per-night charge', async () => {
+    const revision = await syntheticRevision();
+    const sourceHash = 'a'.repeat(64);
+    const input = staffQuoteInput.parse({
+      messageId: 'mail-1',
+      sourceHash,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-13', quantity: 1, adults: 2, childrenAges: [], board: 'bb' },
+      ],
+      other: { label: 'Laundry', amountMinor: 10_000, unit: 'per_person_night' },
+    });
+    const scope = { messageId: 'mail-1', sourceHash };
+    const built = buildStaffProposalFacts(input, scope, { authorizationId: revision.authorizationId }, revision);
+    const run = {
+      transportId: 't1',
+      threadId: 'thread-1',
+      state: 'succeeded',
+      metrics: {
+        staffQuoteAttestation: {
+          version: 1,
+          kind: 'staff_approved_quote',
+          transportId: 't1',
+          userId: 'u1',
+          threadId: 'thread-1',
+          messageId: 'mail-1',
+          sourceHash,
+          selectionEpoch: 1,
+          inputRevision: 1,
+          inputDigest: 'digest',
+          authorizationId: revision.authorizationId,
+          revisionIds: [revision.id],
+          header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+          salesStrategy: 'BAR',
+        },
+        reservationistResult: {
+          quoteRevisionIds: [revision.id],
+          quoteRevisions: [revision],
+          proposalFacts: [{ ref: 'extras', facts: built.facts }],
+        },
+      },
+    };
+    const payload = priorStaffQuoteRequotePayload(run as never, revision.id);
+    expect(payload?.other).toEqual({ label: 'Laundry', amountMinor: 10_000, unit: 'per_person_night' });
+    // Re-quoting from that payload charges the same unit: 2 guests x 1 night.
+    const again = buildStaffProposalFacts(
+      staffQuoteInput.parse({ ...input, other: payload!.other }),
+      scope,
+      { authorizationId: revision.authorizationId },
+      revision,
+    );
+    expect(again.facts?.extras[0]).toMatchObject({ chargeUnit: 'per_person_night', units: 2, dates: ['2026-10-12'] });
   });
 
   it('returns saved extras bundle refs for the matching revision', async () => {

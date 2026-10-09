@@ -314,6 +314,7 @@ export function buildStaffProposalFacts(
     unitMinor: number,
     persons: Array<{ id: string; age: number }>,
     dates: string[],
+    chargeUnit?: OtherChargeUnit,
   ) => {
     extras.push({
       id,
@@ -325,6 +326,7 @@ export function buildStaffProposalFacts(
       service,
       persons,
       dates,
+      ...(chargeUnit ? { chargeUnit } : {}),
     });
   };
   if (input.dinnerAllowanceMinor && allowancePersons.length) {
@@ -380,9 +382,9 @@ export function buildStaffProposalFacts(
     if (!label) {
       extrasReviewItems.push(otherLabelReviewText(amountMinor));
     } else if (unit === 'per_person_night') {
-      personService('other', label, 'other', amountMinor, stayPersons, nights);
+      personService('other', label, 'other', amountMinor, stayPersons, nights, unit);
     } else if (unit === 'per_person') {
-      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate]);
+      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], unit);
     } else {
       extras.push({
         id: 'other',
@@ -394,6 +396,7 @@ export function buildStaffProposalFacts(
         service: 'other',
         persons: [],
         dates: [first.arrivalDate],
+        chargeUnit: unit,
       });
     }
   }

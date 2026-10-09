@@ -203,8 +203,10 @@ function extrasHeaderFromFacts(
       out.shuttleMinor = row.unitMinor;
       out.shuttleTrips = row.units;
     } else if (row.service === 'other') {
+      // The unit the staff chose is stored on the fact. Facts stored before that fall back to the old inference.
       const unit: OtherChargeUnit =
-        row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person';
+        row.chargeUnit ??
+        (row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person');
       out.other = { label: row.label, amountMinor: row.unitMinor, unit };
     }
   }
