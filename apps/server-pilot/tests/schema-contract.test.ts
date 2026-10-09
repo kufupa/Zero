@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as schema from '../src/db/schema';
@@ -120,6 +121,157 @@ function createTableBody(ddl: string, table: string): string {
   return ddl.slice(start, end);
 }
 
+const ledgerDialect = new PgDialect();
+
+/** Collapses SQL text for comparison: no quotes, no table qualifiers, one case, single spaces. */
+function sqlKey(text: string): string {
+  return text
+    .replace(/"/g, '')
+    .replace(/\b[a-z_]+\./g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/** A Drizzle column's default as the SQL default would read: 'text' literals quoted, SQL rendered. */
+function drizzleDefault(column: unknown): string | null {
+  const { hasDefault, default: value } = column as { hasDefault: boolean; default?: unknown };
+  if (!hasDefault) return null;
+  if (value === undefined) return '<function>';
+  if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+  if (typeof value === 'object' && value !== null) {
+    return ledgerDialect.sqlToQuery(value as SQL).sql.replace(/\s+/g, ' ').trim();
+  }
+  return String(value);
+}
+
+type DdlColumn = { type: string; notNull: boolean; primary: boolean; defaultExpr: string | null };
+
+function ddlColumns(tableBody: string): Map<string, DdlColumn> {
+  const columns = new Map<string, DdlColumn>();
+  for (const line of tableBody.split('\n')) {
+    const match = /^  "([^"]+)" (.+?),?$/.exec(line);
+    if (!match) continue;
+    const [, name = '', rest = ''] = match;
+    const primary = / PRIMARY KEY/.test(rest);
+    columns.set(name, {
+      type: (rest.split(/ DEFAULT | NOT NULL| PRIMARY KEY| REFERENCES /)[0] ?? '')
+        .replace(/\s+/g, '')
+        .toLowerCase(),
+      notNull: primary || / NOT NULL/.test(rest),
+      primary,
+      defaultExpr:
+        rest.match(/ DEFAULT (.+?)(?= NOT NULL| PRIMARY KEY| REFERENCES |$)/)?.[1]?.trim() ?? null,
+    });
+  }
+  return columns;
+}
+
+type DdlIndex = { unique: boolean; columns: string[]; where: string | null };
+
+function ddlIndexes(ddl: string, table: string): Map<string, DdlIndex> {
+  const indexes = new Map<string, DdlIndex>();
+  const pattern =
+    /CREATE (UNIQUE )?INDEX IF NOT EXISTS "([^"]+)" ON "([^"]+)" \(([^)]*)\)(?: WHERE (.*?))?;/g;
+  for (const match of ddl.matchAll(pattern)) {
+    if (match[3] !== table) continue;
+    indexes.set(match[2] ?? '', {
+      unique: Boolean(match[1]),
+      columns: (match[4] ?? '').split(',').map((column) => column.trim().replace(/"/g, '')),
+      where: match[5] ?? null,
+    });
+  }
+  return indexes;
+}
+
+/** Foreign keys from inline REFERENCES and from ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY. */
+function ddlForeignKeys(ddl: string): Array<{ table: string; column: string; target: string; onDelete: string }> {
+  const keys: Array<{ table: string; column: string; target: string; onDelete: string }> = [];
+  const onDelete = (action: string | undefined) => action ?? 'no action';
+  for (const match of ddl.matchAll(
+    /ALTER TABLE "([^"]+)"\s+ADD CONSTRAINT "[^"]+"\s+FOREIGN KEY \("([^"]+)"\) REFERENCES "([^"]+)"\("[^"]+"\)(?: ON DELETE (\w+(?: \w+)?))?/g,
+  )) {
+    keys.push({ table: match[1] ?? '', column: match[2] ?? '', target: match[3] ?? '', onDelete: onDelete(match[4]) });
+  }
+  let table = '';
+  for (const line of ddl.split('\n')) {
+    const created = /CREATE TABLE IF NOT EXISTS "([^"]+)"/.exec(line);
+    if (created) table = created[1] ?? '';
+    const column = /^  "([^"]+)" .*REFERENCES "([^"]+)"\("[^"]+"\)(?: ON DELETE (\w+(?: \w+)?))?/.exec(line);
+    if (column && table) {
+      keys.push({ table, column: column[1] ?? '', target: column[2] ?? '', onDelete: onDelete(column[3]) });
+    }
+  }
+  return keys;
+}
+
+/**
+ * Every definition the hand-written 0046 DDL must carry for the four ledger tables: the column set, each
+ * column's type, nullability, primary flag and default, the index set with each index's uniqueness, columns
+ * and predicate, and the foreign keys with their targets and delete actions. Empty when they agree.
+ */
+function ledgerDefinitionDrift(ddl: string): string[] {
+  const drift: string[] = [];
+  const tables = [schema.aiAgentRun, schema.hitlEpisode, schema.hitlEvent, schema.hitlToolRun];
+  for (const table of tables) {
+    const config = getTableConfig(table);
+    const body = createTableBody(ddl, config.name);
+    if (!body) {
+      drift.push(`${config.name}: no CREATE TABLE`);
+      continue;
+    }
+    const columns = ddlColumns(body);
+    const drizzleNames = config.columns.map((column) => column.name).sort();
+    if (JSON.stringify(drizzleNames) !== JSON.stringify([...columns.keys()].sort())) {
+      drift.push(`${config.name}: column set ${drizzleNames} vs ${[...columns.keys()].sort()}`);
+    }
+    for (const column of config.columns) {
+      const ddlColumn = columns.get(column.name);
+      if (!ddlColumn) continue;
+      const where = `${config.name}.${column.name}`;
+      const drizzleType = column.getSQLType().replace(/\s+/g, '').toLowerCase();
+      if (drizzleType !== ddlColumn.type) drift.push(`${where}: type ${drizzleType} vs ${ddlColumn.type}`);
+      if (column.notNull !== ddlColumn.notNull) drift.push(`${where}: notNull ${column.notNull} vs ${ddlColumn.notNull}`);
+      if (Boolean(column.primary) !== ddlColumn.primary) drift.push(`${where}: primary key`);
+      const drizzleDefaultText = drizzleDefault(column);
+      if ((drizzleDefaultText ?? null) !== (ddlColumn.defaultExpr ?? null)) {
+        drift.push(`${where}: default ${drizzleDefaultText} vs ${ddlColumn.defaultExpr}`);
+      }
+    }
+    const ddlIdx = ddlIndexes(ddl, config.name);
+    const drizzleIdx = new Map(config.indexes.map((index) => [index.config.name, index.config]));
+    if (JSON.stringify([...drizzleIdx.keys()].sort()) !== JSON.stringify([...ddlIdx.keys()].sort())) {
+      drift.push(`${config.name}: index set ${[...drizzleIdx.keys()].sort()} vs ${[...ddlIdx.keys()].sort()}`);
+    }
+    for (const [name, index] of drizzleIdx) {
+      const ddlIndex = ddlIdx.get(name);
+      if (!ddlIndex) continue;
+      if (Boolean(index.unique) !== ddlIndex.unique) drift.push(`${name}: unique`);
+      const drizzleCols = index.columns.map((column: { name: string }) => column.name);
+      if (JSON.stringify(drizzleCols) !== JSON.stringify(ddlIndex.columns)) {
+        drift.push(`${name}: columns ${drizzleCols} vs ${ddlIndex.columns}`);
+      }
+      const drizzleWhere = index.where ? sqlKey(ledgerDialect.sqlToQuery(index.where).sql) : null;
+      const ddlWhere = ddlIndex.where ? sqlKey(ddlIndex.where) : null;
+      if (drizzleWhere !== ddlWhere) drift.push(`${name}: predicate ${drizzleWhere} vs ${ddlWhere}`);
+    }
+    const drizzleKeys = config.foreignKeys
+      .map((foreignKey) => {
+        const reference = foreignKey.reference();
+        return `${reference.columns[0]?.name}->${getTableConfig(reference.foreignTable).name}:${foreignKey.onDelete ?? 'no action'}`;
+      })
+      .sort();
+    const ddlKeys = ddlForeignKeys(ddl)
+      .filter((key) => key.table === config.name)
+      .map((key) => `${key.column}->${key.target}:${key.onDelete}`)
+      .sort();
+    if (JSON.stringify(drizzleKeys) !== JSON.stringify(ddlKeys)) {
+      drift.push(`${config.name}: foreign keys ${drizzleKeys} vs ${ddlKeys}`);
+    }
+  }
+  return drift;
+}
+
 describe('HITL decision ledger schema', () => {
   const ledgerTables = {
     aiAgentRun: schema.aiAgentRun,
@@ -142,22 +294,38 @@ describe('HITL decision ledger schema', () => {
     expect(schema.hitlToolRun.confirmationNo).toBeDefined();
   });
 
-  it('keeps the hand-written migration in step with every Drizzle table', () => {
+  it('keeps the hand-written migration in step with every Drizzle table, definition by definition', () => {
+    expect(ledgerDefinitionDrift(hitlMigrationDdl)).toEqual([]);
     for (const table of Object.values(ledgerTables)) {
       const config = getTableConfig(table);
-      const body = createTableBody(hitlMigrationDdl, config.name);
-      expect(body, config.name).not.toBe('');
-      for (const column of config.columns) {
-        expect(body, `${config.name}.${column.name}`).toMatch(
-          new RegExp(`^  "${column.name}" `, 'm'),
+      for (const check of config.checks) {
+        expect(createTableBody(hitlMigrationDdl, config.name), check.name).toContain(
+          `CONSTRAINT "${check.name}"`,
         );
       }
-      for (const check of config.checks) {
-        expect(body, check.name).toContain(`CONSTRAINT "${check.name}"`);
-      }
-      for (const index of config.indexes) {
-        expect(hitlMigrationDdl, index.config.name).toContain(`"${index.config.name}"`);
-      }
+    }
+  });
+
+  it('reports drift in types, nullability, defaults, index columns, predicates and uniqueness', () => {
+    const mutations: Array<[string, string, string]> = [
+      ['column type', '"trace_id" text NOT NULL', '"trace_id" varchar NOT NULL'],
+      ['nullability', '"source" text NOT NULL', '"source" text'],
+      ['default', `"agent" text DEFAULT 'luna' NOT NULL`, `"agent" text DEFAULT 'codex' NOT NULL`],
+      [
+        'index columns',
+        '"ai_agent_run_input_key_idx" ON "ai_agent_run" ("input_key")',
+        '"ai_agent_run_input_key_idx" ON "ai_agent_run" ("input_hash")',
+      ],
+      ['index predicate', 'WHERE "field_path" IS NOT NULL', 'WHERE "field_path" IS NULL'],
+      [
+        'index uniqueness',
+        'CREATE UNIQUE INDEX IF NOT EXISTS "hitl_episode_message_user_uidx"',
+        'CREATE INDEX IF NOT EXISTS "hitl_episode_message_user_uidx"',
+      ],
+    ];
+    for (const [label, from, to] of mutations) {
+      expect(hitlMigrationDdl.includes(from), label).toBe(true);
+      expect(ledgerDefinitionDrift(hitlMigrationDdl.replace(from, to)), label).not.toEqual([]);
     }
   });
 
