@@ -119,7 +119,7 @@ export function RequirementCard({
           <Stepper
             label={`Rooms for stay ${stayNumber}`}
             min={1}
-            value={group.quantity ?? 0}
+            value={group.quantity ?? null}
             onChange={(next) => onPatch?.(group.id, { quantity: next })}
           />
         </div>
@@ -130,7 +130,7 @@ export function RequirementCard({
           </span>
           <Stepper
             label={`Adult guests per room for stay ${stayNumber}`}
-            value={group.adults ?? 0}
+            value={group.adults ?? null}
             onChange={(next) => onPatch?.(group.id, { adults: next })}
           />
         </div>

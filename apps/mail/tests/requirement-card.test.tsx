@@ -70,3 +70,13 @@ describe('RequirementCard', () => {
     expect(screen.getByText('Default')).toBeTruthy();
   });
 });
+
+describe('RequirementCard: counts Nava did not find', () => {
+  it('shows a dash, not 0, for rooms and adults that are not entered, and + starts them at 1', () => {
+    const { onPatch } = renderCard(stay({ quantity: undefined, adults: undefined } as Partial<StayGroupRequirement>));
+    expect(screen.getByRole('group', { name: 'Rooms for stay 1' }).textContent).toContain('–');
+    expect(screen.getByRole('button', { name: 'Fewer: Rooms for stay 1' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1' }));
+    expect(onPatch).toHaveBeenLastCalledWith('g1', { adults: 1 });
+  });
+});

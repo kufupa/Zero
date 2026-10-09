@@ -215,7 +215,7 @@ export function LinkButton({
   );
 }
 
-/** − n + for a count, e.g. rooms. */
+/** − n + for a count, e.g. rooms. A null value is not entered yet: it shows "–", and + starts it at 1 (or min). */
 export function Stepper({
   value,
   onChange,
@@ -224,7 +224,7 @@ export function Stepper({
   label,
   disabled = false,
 }: {
-  value: number;
+  value: number | null;
   onChange: (next: number) => void;
   min?: number;
   max?: number;
@@ -240,20 +240,20 @@ export function Stepper({
         type="button"
         aria-label={`Fewer: ${label}`}
         className={buttonClass}
-        disabled={disabled || value <= min}
-        onClick={() => onChange(Math.max(min, value - 1))}
+        disabled={disabled || value === null || value <= min}
+        onClick={() => value !== null && onChange(Math.max(min, value - 1))}
       >
         −
       </button>
       <span aria-live="polite" className="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]">
-        {value}
+        {value ?? '–'}
       </span>
       <button
         type="button"
         aria-label={`More: ${label}`}
         className={buttonClass}
-        disabled={disabled || value >= max}
-        onClick={() => onChange(Math.min(max, value + 1))}
+        disabled={disabled || (value !== null && value >= max)}
+        onClick={() => onChange(value === null ? Math.max(min, 1) : Math.min(max, value + 1))}
       >
         +
       </button>
