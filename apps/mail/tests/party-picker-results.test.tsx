@@ -32,7 +32,7 @@ function picker(name: string, find: (query: string) => Promise<PartyFindReply>, 
 }
 
 function findButton(): HTMLButtonElement {
-  return screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
+  return screen.getByRole('button', { name: 'Search HMS now' }) as HTMLButtonElement;
 }
 
 describe('PartyPicker copy for a search HMS cut short', () => {

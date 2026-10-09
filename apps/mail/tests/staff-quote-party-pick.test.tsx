@@ -75,7 +75,7 @@ describe('PartyPicker', () => {
     );
     expect(screen.getByText(PARTY_PICKER_HINT)).toBeTruthy();
     expect(
-      (screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Search HMS now' }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(find).not.toHaveBeenCalled();
   });
@@ -95,7 +95,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker name="ABC" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
     expect(screen.getByRole('status').textContent).toContain('about a minute');
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'ABC Travel Holdings' })).toBeTruthy(),
@@ -115,7 +115,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker name="Nobody" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
     await waitFor(() => expect(screen.getByText(/No match in HMS/)).toBeTruthy());
     expect(onPick).not.toHaveBeenCalled();
   });
@@ -131,7 +131,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker name="360" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
     await waitFor(() => expect(screen.getByText("HMS search didn't apply — try again")).toBeTruthy());
     expect(screen.queryByText(/No match in HMS/)).toBeNull();
   });
@@ -147,7 +147,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker name="Tour" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
     await waitFor(() => expect(screen.getByText(PARTY_TRUNCATED_NOTE)).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Tourvest Branch One' })).toBeTruthy();
   });
@@ -159,7 +159,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker name="Safari" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
     await waitFor(() => expect(screen.getByText(/didn't apply/)).toBeTruthy());
   });
 
@@ -176,7 +176,7 @@ describe('PartyPicker', () => {
     );
     expect(screen.getByText('✓ ABC Travel (Pty) Ltd (HMS)')).toBeTruthy();
     // Find stays: the other kind (agency) can still be picked alongside the company.
-    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Search HMS now' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     expect(onClear).toHaveBeenCalledWith('company');
   });

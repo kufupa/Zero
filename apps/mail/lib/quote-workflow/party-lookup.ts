@@ -109,3 +109,51 @@ export function partyFromSuggestion(suggestion: PartySuggestion): StaffQuotePart
   if (suggestion.idStatus !== 'listed' || !suggestion.nativeId) return null;
   return { kind: suggestion.kind, nativeId: suggestion.nativeId, name: suggestion.name };
 }
+
+/**
+ * The HMS list the sweep wrote, searched locally (panePartyLookup.typeahead). It never reaches HMS. Empty when there is
+ * no list. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds.
+ */
+export type PartyIndexReply = {
+  source: 'index';
+  available: boolean;
+  updatedAt: string | null;
+  ageMs: number | null;
+  results: PartyCandidate[];
+};
+
+export type PartyIndexSearcher = (query: string) => Promise<PartyIndexReply>;
+
+type TrpcPartyIndexRoutes = {
+  panePartyLookup?: {
+    typeahead?: { query: (input: { query: string }) => Promise<PartyIndexReply> };
+  };
+};
+
+/** Binds panePartyLookup.typeahead off a tRPC client. Null when the route is missing. Functions are accepted, as in the other *FromTrpc helpers. */
+export function partyIndexFromTrpc(trpc: unknown): PartyIndexSearcher | null {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const typeahead = (trpc as TrpcPartyIndexRoutes).panePartyLookup?.typeahead;
+  if (!typeahead) return null;
+  return (query) => typeahead.query({ query });
+}
+
+/** Past this age the list may be out of date, and its heading says so. */
+export const PARTY_INDEX_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How old the list is, in words: "just now", "12 min ago", "3 h ago", "1 day ago", "9 days ago". */
+export function partyIndexAge(ageMs: number): string {
+  const minutes = Math.floor(Math.max(0, ageMs) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1 day ago' : `${days} days ago`;
+}
+
+/** The heading over the list's matches: "From HMS list (updated 3 h ago)", with a warning once the list is stale. */
+export function partyIndexHeading(ageMs: number): string {
+  const stale = ageMs > PARTY_INDEX_STALE_MS;
+  return `From HMS list (updated ${partyIndexAge(ageMs)}${stale ? ', may be out of date' : ''})`;
+}
