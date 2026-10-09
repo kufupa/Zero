@@ -183,6 +183,17 @@ describe('the built pane CSP and immutable mail release', () => {
     },
   );
 
+  it('serves the release id at /pane-version.json from the candidate that publishes that release', () => {
+    const { candidate, id, index, webRoot } = fixture('<script>const release=1</script>');
+    expect(runHelper('render', index, template, candidate, webRoot).status).toBe(0);
+    const rendered = readFileSync(candidate, 'utf8');
+    const version = rendered.match(/location = \/pane-version\.json \{\n([\s\S]*?)\n  \}/)?.[1] ?? '';
+    expect(version).toContain(`return 200 '{"release":"${id}"}';`);
+    expect(version).toContain('default_type application/json;');
+    expect(version).toMatch(/\bexpires -1;/);
+    expect(rendered).not.toMatch(/__NAVA_(?:RELEASE_ID|WEB_ROOT|PANE_SCRIPT_HASHES)__/);
+  });
+
   it('rejects both a changed staged index and a stale or altered Nginx policy', () => {
     const { candidate, index, webRoot } = fixture('<script>const release=1</script>');
     expect(runHelper('render', index, template, candidate, webRoot).status).toBe(0);
