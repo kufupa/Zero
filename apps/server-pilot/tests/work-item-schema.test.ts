@@ -72,7 +72,7 @@ describe('work item and work event vocabularies', () => {
     });
   });
 
-  it('refuses unknown statuses, kinds, actors and event types', async () => {
+  it('refuses unknown statuses, kinds and actors, and leaves event types to app code', async () => {
     await withIngestionDb(async ({ db, sql }) => {
       await seedInboxThread(db, {
         threadId: 'thread-1',
@@ -94,9 +94,11 @@ describe('work item and work event vocabularies', () => {
       await expect(
         sql`INSERT INTO work_event (work_item_id, actor_kind, type) VALUES (${item!.id}, 'robot', 'field.edit')`,
       ).rejects.toThrow('work_event_actor_kind_check');
+      // No CHECK on type: a new event type must not need a migration.
+      await sql`INSERT INTO work_event (work_item_id, actor_kind, type) VALUES (${item!.id}, 'user', 'field.delete')`;
       await expect(
-        sql`INSERT INTO work_event (work_item_id, actor_kind, type) VALUES (${item!.id}, 'user', 'field.delete')`,
-      ).rejects.toThrow('work_event_type_check');
+        sql`INSERT INTO work_event (work_item_id, actor_kind, type) VALUES (${item!.id}, 'user', 'approval.granted')`,
+      ).rejects.toThrow('work_event_approval_hash_check');
     });
   });
 });

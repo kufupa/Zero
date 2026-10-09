@@ -444,6 +444,16 @@ describe('Nava work item schema', () => {
       ],
       ['index predicate', 'WHERE "archived_at" IS NULL', 'WHERE "archived_at" IS NOT NULL'],
       [
+        'approval index predicate',
+        `WHERE "type" = 'approval.consumed'`,
+        `WHERE "type" = 'approval.granted'`,
+      ],
+      [
+        'mail link action',
+        '"source_message_id" text REFERENCES "message"("id") ON DELETE set null',
+        '"source_message_id" text REFERENCES "message"("id") ON DELETE cascade',
+      ],
+      [
         'foreign key action',
         '"work_item_id" uuid NOT NULL REFERENCES "work_item"("id") ON DELETE restrict',
         '"work_item_id" uuid NOT NULL REFERENCES "work_item"("id") ON DELETE cascade',
@@ -464,7 +474,6 @@ describe('Nava work item schema', () => {
       ['work_item_kind_check', MAIL_KINDS],
       ['work_item_status_check', WORK_ITEM_STATUSES],
       ['work_event_actor_kind_check', WORK_EVENT_ACTOR_KINDS],
-      ['work_event_type_check', WORK_EVENT_TYPES],
     ];
     for (const [name, values] of expected) {
       const line = lines.find((item) => item.includes(`CONSTRAINT "${name}"`));
@@ -472,6 +481,9 @@ describe('Nava work item schema', () => {
       const listed = [...(line ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]);
       expect(listed, name).toEqual([...values]);
     }
+    // Event types are validated in app code, so a new type never needs a migration.
+    expect(workMigrationDdl).not.toContain('work_event_type_check');
+    expect(WORK_EVENT_TYPES).toContain('approval.consumed');
   });
 
   it('extends ai_workflow_run with a nullable work item link and a smallint priority defaulting to 0', () => {

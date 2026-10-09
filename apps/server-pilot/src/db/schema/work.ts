@@ -33,6 +33,7 @@ export const MAIL_KINDS = [
 export const MAIL_EXTRACTION_STATUSES = ['succeeded', 'failed'] as const;
 export const WORK_ITEM_STATUSES = ['needs_you', 'review', 'done', 'dismissed'] as const;
 export const WORK_EVENT_ACTOR_KINDS = ['user', 'ai', 'system'] as const;
+/** Event type vocabulary. No DB CHECK (new types need no migration): writers must validate against it. */
 export const WORK_EVENT_TYPES = [
   'field.seed',
   'field.edit',
@@ -44,6 +45,7 @@ export const WORK_EVENT_TYPES = [
   'review.flag',
   'status.changed',
 ] as const;
+export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 
 /** One read of an admitted inbound message, per extractor version. Cascades with the message. */
 export const mailExtraction = pgTable(
@@ -74,7 +76,10 @@ export const mailExtraction = pgTable(
   ],
 );
 
-/** The work for one (thread, kind, source message). Stores only the status a person sees (KTD14). */
+/**
+ * The work for one (thread, kind, source message). Stores only the status a person sees (KTD14).
+ * Mail links are SET NULL: deleting the mail is never blocked and keeps the item and its events.
+ */
 export const workItem = pgTable(
   'work_item',
   {
@@ -82,12 +87,10 @@ export const workItem = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    threadId: text('thread_id')
-      .notNull()
-      .references(() => mailThread.id, { onDelete: 'cascade' }),
-    sourceMessageId: text('source_message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id').references(() => mailThread.id, { onDelete: 'set null' }),
+    sourceMessageId: text('source_message_id').references(() => message.id, {
+      onDelete: 'set null',
+    }),
     kind: text('kind').notNull(),
     // Set null: deleting an extraction version must not delete the work item.
     extractionId: uuid('extraction_id').references((): AnyPgColumn => mailExtraction.id, {
@@ -115,8 +118,9 @@ export const workItem = pgTable(
 
 /**
  * Append-only decision log per work item (KTD2). The authoritative HITL record, written in the same
- * transaction as the state change. A trigger in 0047 refuses UPDATE and DELETE. The FK is RESTRICT,
- * so deleting mail cannot erase approval history.
+ * transaction as the state change. A trigger in 0047 refuses UPDATE and DELETE. The FK is RESTRICT, and
+ * work_item's mail links are SET NULL, so deleting mail cannot erase approval history. A unique index
+ * makes each approval.consumed single-use per (work item, payload hash) (KTD12).
  */
 export const workEvent = pgTable(
   'work_event',
@@ -129,7 +133,7 @@ export const workEvent = pgTable(
     actorKind: text('actor_kind').notNull(),
     // No FK: a referential action would UPDATE this row, and the append-only trigger refuses it.
     actorUserId: text('actor_user_id'),
-    type: text('type').notNull(),
+    type: text('type').$type<WorkEventType>().notNull(),
     fieldPath: text('field_path'),
     aiValue: jsonb('ai_value'),
     value: jsonb('value'),
@@ -145,7 +149,13 @@ export const workEvent = pgTable(
       'work_event_actor_kind_check',
       sql`${t.actorKind} IN (${sqlList(WORK_EVENT_ACTOR_KINDS)})`,
     ),
-    check('work_event_type_check', sql`${t.type} IN (${sqlList(WORK_EVENT_TYPES)})`),
+    uniqueIndex('work_event_approval_consumed_uidx')
+      .on(t.workItemId, t.payloadHash)
+      .where(sql`${t.type} = 'approval.consumed'`),
+    check(
+      'work_event_approval_hash_check',
+      sql`${t.type} NOT IN ('approval.granted', 'approval.consumed') OR ${t.payloadHash} IS NOT NULL`,
+    ),
   ],
 );
 

@@ -2,8 +2,11 @@
 -- saved custom rates, and the ai_workflow_run columns and run kinds that queue work against them.
 -- Mirrors apps/server-pilot/src/db/schema/work.ts and the ai_workflow_run additions in src/db/schema/mail.ts;
 -- keep names, types and CHECK lists in sync.
--- ponytail: the append-only trigger covers UPDATE and DELETE only. TRUNCATE stays allowed because the
--- test helpers truncate with CASCADE.
+-- Deleting mail never touches work_event: work_item's thread, message and extraction links are SET NULL,
+-- so the item and its events outlive the mail. work_event.type has no CHECK (app code validates it), so new
+-- event types need no migration. One approval.consumed per (work item, payload hash) is a unique index.
+-- ponytail: the append-only trigger covers UPDATE and DELETE only. TRUNCATE stays allowed because
+-- deploy/pilot-db-wipe.sh and the test helpers truncate with CASCADE.
 ALTER TYPE "ai_workflow_run_kind" ADD VALUE IF NOT EXISTS 'inbound_extraction';--> statement-breakpoint
 ALTER TYPE "ai_workflow_run_kind" ADD VALUE IF NOT EXISTS 'quote_followup';--> statement-breakpoint
 ALTER TYPE "ai_workflow_run_kind" ADD VALUE IF NOT EXISTS 'hms_write';--> statement-breakpoint
@@ -25,8 +28,8 @@ CREATE TABLE IF NOT EXISTS "mail_extraction" (
 CREATE TABLE IF NOT EXISTS "work_item" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "transport_id" text NOT NULL REFERENCES "mailbox_transport"("id") ON DELETE cascade,
-  "thread_id" text NOT NULL REFERENCES "mail_thread"("id") ON DELETE cascade,
-  "source_message_id" text NOT NULL REFERENCES "message"("id") ON DELETE cascade,
+  "thread_id" text REFERENCES "mail_thread"("id") ON DELETE set null,
+  "source_message_id" text REFERENCES "message"("id") ON DELETE set null,
   "kind" text NOT NULL,
   "extraction_id" uuid REFERENCES "mail_extraction"("id") ON DELETE set null,
   "status" text DEFAULT 'needs_you' NOT NULL,
@@ -56,7 +59,7 @@ CREATE TABLE IF NOT EXISTS "work_event" (
   "expires_at" timestamp,
   "evidence" jsonb,
   CONSTRAINT "work_event_actor_kind_check" CHECK ("actor_kind" IN ('user', 'ai', 'system')),
-  CONSTRAINT "work_event_type_check" CHECK ("type" IN ('field.seed', 'field.edit', 'field.accept', 'field.reject', 'approval.granted', 'approval.consumed', 'review.ok', 'review.flag', 'status.changed'))
+  CONSTRAINT "work_event_approval_hash_check" CHECK ("type" NOT IN ('approval.granted', 'approval.consumed') OR "payload_hash" IS NOT NULL)
 );--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "custom_rate" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -88,6 +91,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "mail_extraction_message_version_uidx" ON "mai
 CREATE UNIQUE INDEX IF NOT EXISTS "work_item_thread_kind_source_uidx" ON "work_item" ("thread_id", "kind", "source_message_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "work_item_transport_status_updated_idx" ON "work_item" ("transport_id", "status", "updated_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "work_event_work_item_at_idx" ON "work_event" ("work_item_id", "at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "work_event_approval_consumed_uidx" ON "work_event" ("work_item_id", "payload_hash") WHERE "type" = 'approval.consumed';--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "ai_workflow_run_work_item_created_idx" ON "ai_workflow_run" ("work_item_id", "created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "custom_rate_transport_name_active_uidx" ON "custom_rate" ("transport_id", "name") WHERE "archived_at" IS NULL;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "work_event_append_only"()
