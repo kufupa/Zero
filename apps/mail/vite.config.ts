@@ -8,6 +8,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from 'vite';
 import dedent from 'dedent';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 /** Load `.env` from monorepo root (single file for `VITE_*`); no URL defaults in code. */
@@ -66,6 +67,11 @@ const plugins = [
 export default defineConfig({
   envDir: monorepoRoot,
   plugins: [...plugins],
+  define: {
+    // One id per build. root.tsx writes it into index.html; the release script reads it and nginx serves
+    // it, so an open pane can tell that a newer build is live (see lib/workstation/pane-release-watch.ts).
+    __PANE_BUILD__: JSON.stringify(process.env.NAVA_PANE_BUILD_ID || randomUUID()),
+  },
   server: {
     port: 3000,
     warmup: {

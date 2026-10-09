@@ -33,7 +33,7 @@ describe('Outlook pane Nginx route', () => {
     expect(version).toBeGreaterThan(paneStart);
     expect(spaFallback).toBeGreaterThan(version);
     expect(nginx.slice(version, spaFallback)).toMatch(
-      /location = \/pane-version\.json \{\s*default_type application\/json;\s*return 200 '\{"release":"__NAVA_RELEASE_ID__"\}';[\s\S]*?expires -1;\s*\}/,
+      /location = \/pane-version\.json \{\s*default_type application\/json;\s*return 200 '\{"release":"__NAVA_RELEASE_ID__","build":"__NAVA_PANE_BUILD__"\}';[\s\S]*?expires -1;\s*\}/,
     );
   });
 

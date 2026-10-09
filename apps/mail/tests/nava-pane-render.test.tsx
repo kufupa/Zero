@@ -187,6 +187,17 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+const LOADED_BUILD = 'build-loaded-0001';
+const NEWER_BUILD = 'build-newer-0002';
+
+/** The meta the served index.html carries (root.tsx). The page reads it at load. */
+function mountBuildMeta(content: string) {
+  const meta = document.createElement('meta');
+  meta.setAttribute('name', 'nava-pane-build');
+  meta.setAttribute('content', content);
+  document.head.appendChild(meta);
+}
+
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
@@ -197,6 +208,7 @@ describe('NavaPane', () => {
     sessionStorage.clear();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    document.head.querySelectorAll('meta[name="nava-pane-build"]').forEach((meta) => meta.remove());
     cleanup();
   });
 
@@ -207,22 +219,16 @@ describe('NavaPane', () => {
     expect(container.querySelector('footer')?.textContent).toContain('Pilot feedback');
   });
 
-  it('shows the served release as Build plus its first seven characters in the footer', async () => {
-    // The release check runs only in production builds (import.meta.env.PROD).
-    vi.stubEnv('PROD', true);
-    vi.stubGlobal(
-      'fetch',
-      async () => new Response(JSON.stringify({ release: 'c'.repeat(64) })),
-    );
+  it('shows the build this page was served, from its own meta, in the footer', () => {
+    mountBuildMeta(LOADED_BUILD);
     const { container } = render(<NavaPane bridge={fakeBridge} />);
-    await waitFor(() =>
-      expect(container.querySelector('footer')?.textContent).toContain('Build ccccccc'),
-    );
+    expect(container.querySelector('footer')?.textContent).toContain('Build build-l');
   });
-  it('holds a release reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
+  it('holds a build reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
     vi.stubEnv('PROD', true);
-    const served = { release: 'a'.repeat(64) };
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: served.release })));
+    mountBuildMeta(LOADED_BUILD);
+    const served = { build: LOADED_BUILD };
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
     render(<NavaPane bridge={fakeBridge} />);
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -232,7 +238,7 @@ describe('NavaPane', () => {
       op: { id: 2, type: 'mutation', path: 'workstation.x', input: undefined, context: {} },
       next: () => observable(() => () => {}),
     } as never).subscribe({});
-    served.release = 'b'.repeat(64);
+    served.build = NEWER_BUILD;
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -263,10 +269,11 @@ describe('NavaPane', () => {
       if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
     }
   });
-  it('tells staff to reopen the pane when a newer release is served and storage is blocked', async () => {
+  it('tells staff to reopen the pane when a newer build is served and storage is blocked', async () => {
     vi.stubEnv('PROD', true);
-    const served = { release: 'a'.repeat(64) };
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: served.release })));
+    mountBuildMeta(LOADED_BUILD);
+    const served = { build: LOADED_BUILD };
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
     const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
     Object.defineProperty(globalThis, 'sessionStorage', {
       configurable: true,
@@ -279,7 +286,7 @@ describe('NavaPane', () => {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       });
-      served.release = 'b'.repeat(64);
+      served.build = NEWER_BUILD;
       await act(async () => {
         window.dispatchEvent(new Event('focus'));
         await new Promise((resolve) => setTimeout(resolve, 20));

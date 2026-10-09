@@ -19,7 +19,8 @@ import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progr
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import {
   createPaneReleaseWatch,
-  fetchPaneRelease,
+  fetchPaneVersion,
+  loadedPaneBuild,
   PANE_RELEASE_POLL_MS,
   sessionPaneReloadGuard,
 } from '@/lib/workstation/pane-release-watch';
@@ -677,17 +678,18 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
   };
   const isBusyRef = useRef(isBusy);
   isBusyRef.current = isBusy;
-  const [paneRelease, setPaneRelease] = useState<string | null>(null);
+  // The build this page was served, read from its index.html at page load (never from a fetch).
+  const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
   const [newerReleaseServed, setNewerReleaseServed] = useState(false);
   useEffect(() => {
     // Dev and test servers serve no release file, so only released builds check.
-    if (!import.meta.env.PROD) return;
+    if (!import.meta.env.PROD || loadedBuild === null) return;
     const watch = createPaneReleaseWatch({
-      fetchRelease: () => fetchPaneRelease(),
+      loadedBuild,
+      fetchServed: () => fetchPaneVersion(),
       isBusy: () => isBusyRef.current(),
       reload: () => window.location.reload(),
       guard: sessionPaneReloadGuard(),
-      onLoaded: setPaneRelease,
       onNewerRelease: () => setNewerReleaseServed(true),
     });
     const poll = () => void watch.check();
@@ -698,7 +700,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       window.clearInterval(timer);
       window.removeEventListener('focus', poll);
     };
-  }, []);
+  }, [loadedBuild]);
 
   // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
   const pendingDinnerFallbackStepRef = useRef<string | null>(null);
@@ -1956,9 +1958,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         {/* Minimal Pilot Footer */}
         <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">
           <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10.5px] text-[#94a3b8]">
-            {paneRelease && (
+            {loadedBuild && (
               <>
-                <span>Build {paneRelease.slice(0, 7)}</span>
+                <span>Build {loadedBuild.slice(0, 7)}</span>
                 <span className="text-[#cbd5e1]">·</span>
               </>
             )}
