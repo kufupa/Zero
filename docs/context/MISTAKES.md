@@ -4,6 +4,7 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-09 | Planned the party index sweep as a 30-min background lane | The sweep writes the index only when every prefix is done, and truncated letters add 26 lookups each: hours, not 30 min. Found only at sprint start | Read the script's own docs (exit codes, write conditions) before putting it in a time-boxed plan |
 | 2026-10-09 | Shipped HMS runners that passed unit tests | Every EC2 create failed at the Guest Stay navigation (#85). Party lookup failed live on the same bug (#87). Only the live probe showed it | Unit tests cannot see the HMS DOM. Live-probe every runner on EC2 before calling it done |
 | 2026-10-09 | Selected the party dialog by ARIA role | The query went into the saved-search combo, not the name input. Run is an ExtJS `a.x-btn` with no ARIA role (#89) | Probe the real dialog. Select by visible text when the DOM has no roles |
 | 2026-10-09 | Tested the gate with a warm browser profile | The gate stuck 20/20 on first-run onboarding and blocked app-shell reads (#88). Husky EACCES broke the EC2 install (#86) | Test the gate with a fresh profile. The viewer skips onboarding, allows app-shell reads, and installs with `HUSKY=0` |
