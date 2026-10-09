@@ -5530,7 +5530,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
 </div>
 `;
 
-exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with its missing-guest and partial-read notes 1`] = `
+exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card without a missing-guest or partial-read note of its own 1`] = `
 <div>
   <div
     class="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
@@ -5674,21 +5674,6 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             >
               arriving 12 Nov 2026
             </p>
-            <div
-              class="rounded-[3px] border px-2.5 py-1.5 text-[11.5px] border-amber-300 bg-amber-50 text-amber-900"
-              role="alert"
-            >
-              <ul
-                class="flex list-disc flex-col gap-0.5 pl-4"
-              >
-                <li>
-                  Nava could not read the guest surname from this email. Find the booking by name in HMS.
-                </li>
-                <li>
-                  Part of the voucher couldn't be read — check the PDF.
-                </li>
-              </ul>
-            </div>
             <p
               class="text-[11px] text-[#64748b]"
             >

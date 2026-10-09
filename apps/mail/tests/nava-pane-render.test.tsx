@@ -505,7 +505,7 @@ describe('NavaPane', () => {
 
   it('shows no retired assistant name on any screen, including the voucher card', async () => {
     localStorage.removeItem('nava_onboarding_completed');
-    // A voucher whose guest surname could not be read: the card shows its missing-guest and partial-read notes.
+    // A voucher whose guest surname could not be read, with its PDF unread: the card adds no surname note of its own.
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
       messageId: 'mail-1',
@@ -616,7 +616,7 @@ describe('NavaPane screen states', () => {
     expect(container).toMatchSnapshot();
   });
 
-  it('voucher: an unreadable PDF keeps the card with its missing-guest and partial-read notes', async () => {
+  it('voucher: an unreadable PDF keeps the card without a missing-guest or partial-read note of its own', async () => {
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
       messageId: 'mail-1',
@@ -626,8 +626,9 @@ describe('NavaPane screen states', () => {
     });
     const { container } = render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading });
-    expect(card.textContent).toContain(VOUCHER_COPY.missingGuest);
-    expect(card.textContent).toContain(VOUCHER_COPY.partialRead);
+    expect(card.textContent).not.toContain(VOUCHER_COPY.missingGuest);
+    // No warning list: the quote panel names the unreadable file once.
+    expect(card.querySelector('ul')).toBeNull();
     await settle();
     expect(container).toMatchSnapshot();
   });
