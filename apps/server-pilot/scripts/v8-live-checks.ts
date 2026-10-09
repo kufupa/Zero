@@ -9,7 +9,7 @@
  *   rateshop (--org <nativeId> | --agency <nativeId> --name <party name>)
  *            [--arrival YYYY-MM-DD] [--nights 1-30] [--adults 1-9]
  *                                                        fetch-quote.mjs search only: no details, no rate click
- *   stay --conf <labtest conf>                           findStay (stay-lookup.mjs find path)
+ *   stay --conf <labtest conf>                           stay-lookup.mjs find (the pane's find CLI)
  *   <any> --dry-run                                      validates arguments and env; no lock, no spawn, no HMS
  *
  * Exit codes: 0 every check ok, 1 a check refused or failed (or a dry run found a problem), 2 bad arguments.
@@ -20,7 +20,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findStay, type PaneStayFindResult } from '../src/ai/pane-stay-lookup.js';
+import { buildStayLookupArgs, paneStayLookupEnabled } from '../src/ai/pane-stay-lookup.js';
 import { PANE_STAY_PROPERTY_CODE, paneStayPropertyLock, type PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
 import {
@@ -42,14 +42,15 @@ const PARTY_ROW_CAP = 80;
 const MAX_NIGHTS = 30;
 const MAX_ADULTS = 9;
 const DEFAULT_ARRIVAL_DAYS = 30;
-const CHILD_TIMEOUT_MS = { party: 5 * 60_000, deeplink: 10 * 60_000, rateshop: 10 * 60_000 };
+const CHILD_TIMEOUT_MS = { party: 5 * 60_000, deeplink: 10 * 60_000, rateshop: 10 * 60_000, stay: 5 * 60_000 };
 const CONFIRMATION = /^\d+-\d+$/;
 const STAY_ID = /^\d{1,12}$/;
 const NATIVE_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const LOOPBACK_CDP = /^(http|ws):\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/;
 const PARTY_OK = new Set(['resolved', 'ambiguous', 'no_match']);
 const DEEPLINK_OK = new Set(['observed']);
-const STAY_OK = new Set(['found', 'not_found', 'ambiguous']);
+// stay-lookup.mjs exits 0 only for found and not_found; every other outcome exits 1.
+const STAY_OK = new Set(['found', 'not_found']);
 const RATE_OK = new Set(['quote', 'no_match', 'unavailable']);
 const DROPPED_KEYS = new Set([
   'firstname', 'lastname', 'guestname', 'bookername', 'bookeremail', 'email', 'emailaddress', 'phone', 'phonenumber',
@@ -117,7 +118,6 @@ export type LiveCheckDeps = {
   lock: () => PaneStayLock | null;
   spawnEnv: () => NodeJS.ProcessEnv;
   runCli: (file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<CliRun>;
-  findStay: typeof findStay;
   newRunId: () => string;
 };
 
@@ -280,50 +280,82 @@ export function redactDeep(value: unknown): unknown {
   return value;
 }
 
+// `ok` needs exit code 0 and an outcome from the allowlist, so a run that exited non-zero is never ok.
 export function partyCheckLine(input: {
   kind: PartyKind;
   query: string;
   outcome: string;
+  exitCode: number | null;
+  resultOutcome: string | null;
   candidates: readonly PartyCandidate[];
   ms: number;
 }) {
-  const results = input.candidates
-    .map((candidate) => ({
-      kind: input.kind,
-      nativeId: String(candidate.nativeId ?? ''),
-      name: String(candidate.displayName ?? ''),
-    }))
-    .filter((row) => row.nativeId !== '');
+  // A failed run reports no candidates. A list from a run that exited non-zero is not a verified answer.
+  const failed = input.outcome === 'failed';
+  const results = failed
+    ? []
+    : input.candidates
+        .map((candidate) => ({
+          kind: input.kind,
+          nativeId: String(candidate.nativeId ?? ''),
+          name: String(candidate.displayName ?? ''),
+        }))
+        .filter((row) => row.nativeId !== '');
   return {
     check: 'party',
     kind: input.kind,
     query: input.query,
     outcome: input.outcome,
+    exitCode: input.exitCode,
+    resultOutcome: input.resultOutcome,
     results,
-    truncated: input.candidates.length >= PARTY_ROW_CAP,
-    ok: PARTY_OK.has(input.outcome),
+    truncated: !failed && input.candidates.length >= PARTY_ROW_CAP,
+    ok: input.exitCode === 0 && PARTY_OK.has(input.outcome),
     ms: input.ms,
   };
 }
 
+/** A check that never reached its CLI: refused by the lock or a flag. Never ok. */
+export function refusedLine(check: string, outcome: string, ms: number) {
+  return { check, outcome, exitCode: null, resultOutcome: null, ok: false, ms };
+}
+
+function textOf(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
 /** Booleans for agency, organization and note. The note text, guest names and agency names are never printed. */
-export function stayCheckLine(input: { result: PaneStayFindResult; reservationNote: boolean; ms: number }) {
-  const stay = input.result.stay;
-  const labtest = /^labtest$/i.test((stay?.lastName ?? '').trim());
+export function stayCheckLine(input: {
+  outcome: string;
+  reason: string | null;
+  exitCode: number | null;
+  arrivalMismatch: boolean;
+  stay: Record<string, unknown> | null;
+  reservationNote: boolean;
+  ms: number;
+}) {
+  const stay = input.stay;
+  const labtest = /^labtest$/i.test((textOf(stay?.lastName) ?? '').trim());
   return {
     check: 'stay',
-    outcome: input.result.outcome,
-    reason: input.result.reason,
+    outcome: input.outcome,
+    exitCode: input.exitCode,
+    resultOutcome: input.outcome,
+    reason: input.reason,
     labtest,
-    confirmation: labtest ? (stay?.confirmation ?? null) : null,
-    status: stay?.status ?? null,
-    arrival: stay?.arrival ?? null,
-    departure: stay?.departure ?? null,
-    hasBookingAgency: Boolean(stay?.bookingAgency),
-    hasOrganization: Boolean(stay?.organization),
+    confirmation: labtest ? textOf(stay?.confirmation) : null,
+    status: textOf(stay?.status),
+    arrival: textOf(stay?.arrival),
+    departure: textOf(stay?.departure),
+    hasBookingAgency: textOf(stay?.bookingAgency) !== null,
+    hasOrganization: textOf(stay?.organization) !== null,
     hasReservationNote: input.reservationNote,
-    arrivalMismatch: input.result.arrivalMismatch,
-    ok: STAY_OK.has(input.result.outcome),
+    arrivalMismatch: input.arrivalMismatch,
+    ok: input.exitCode === 0 && STAY_OK.has(input.outcome),
     ms: input.ms,
   };
 }
@@ -365,6 +397,8 @@ export function rateshopCheckLine(input: {
   nights: number;
   adults: number;
   outcome: string;
+  exitCode: number | null;
+  resultOutcome: string | null;
   rows: RateRow[];
   evidence: string | null;
   ms: number;
@@ -377,9 +411,12 @@ export function rateshopCheckLine(input: {
     nights: input.nights,
     adults: input.adults,
     outcome: input.outcome,
-    rows: input.rows,
+    exitCode: input.exitCode,
+    resultOutcome: input.resultOutcome,
+    // Rates come only from a run that exited 0. fetch-quote can write a quote and still exit 2 (incomplete audit).
+    rows: input.exitCode === 0 ? input.rows : [],
     evidence: input.evidence,
-    ok: RATE_OK.has(input.outcome),
+    ok: input.exitCode === 0 && RATE_OK.has(input.outcome),
     ms: input.ms,
   };
 }
@@ -418,7 +455,7 @@ function planFor(check: LiveCheck): Record<string, unknown> {
         lock: 'property',
       };
     case 'stay':
-      return { spawn: 'stay-lookup.mjs (findStay)', lock: 'property' };
+      return { spawn: 'stay-lookup.mjs (find)', lock: 'property' };
   }
 }
 
@@ -472,12 +509,23 @@ function runNodeCli(file: string, args: string[], env: NodeJS.ProcessEnv, timeou
   });
 }
 
-function lastJsonObject(stdout: string): Record<string, unknown> | null {
-  const line = stdout.split('\n').map((text) => text.trim()).findLast((text) => text.startsWith('{'));
-  if (line === undefined) return null;
+function jsonLines(stdout: string): Array<Record<string, unknown>> {
+  return stdout
+    .split('\n')
+    .map((text) => text.trim())
+    .filter((text) => text.startsWith('{'))
+    .flatMap((text) => {
+      try {
+        return [JSON.parse(text) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+}
+
+async function readJsonFile<T>(path: string): Promise<T | null> {
   try {
-    const parsed: unknown = JSON.parse(line);
-    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    return JSON.parse(await readFile(path, 'utf8')) as T;
   } catch {
     return null;
   }
@@ -487,7 +535,18 @@ function newRunDir(deps: LiveCheckDeps): string {
   return join(RUN_ROOT, deps.newRunId());
 }
 
-async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps) {
+type RateshopCheck = { source: RateSource; arrival: string; nights: number; adults: number };
+type PartyRun = { outcome: string; exitCode: number | null; resultOutcome: string | null; candidates: PartyCandidate[] };
+type QuoteRun = {
+  outcome: string;
+  exitCode: number | null;
+  resultOutcome: string | null;
+  rows: RateRow[];
+  evidence: string | null;
+};
+type StayResult = { outcome?: unknown; reason?: unknown; arrivalMismatch?: unknown; stay?: unknown };
+
+async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps): Promise<PartyRun> {
   const dir = newRunDir(deps);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const requestPath = join(dir, 'party-request.json');
@@ -498,12 +557,16 @@ async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps) {
   try {
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
     const run = await deps.runCli(PARTY_CLI, ['--request', requestPath], deps.spawnEnv(), CHILD_TIMEOUT_MS.party);
-    const envelope = lastJsonObject(run.stdout);
-    if (envelope === null) return { outcome: 'execution_failure', candidates: [] as PartyCandidate[] };
-    return {
-      outcome: typeof envelope.outcome === 'string' ? envelope.outcome : 'execution_failure',
-      candidates: Array.isArray(envelope.candidates) ? (envelope.candidates as PartyCandidate[]) : [],
-    };
+    const envelope = jsonLines(run.stdout).at(-1) ?? null;
+    const resultOutcome = textOf(envelope?.outcome);
+    const rawCandidates = envelope?.candidates;
+    const candidates = Array.isArray(rawCandidates) ? (rawCandidates as PartyCandidate[]) : [];
+    // A non-zero exit is a failed lookup. The envelope's own outcome is kept for the reader, and no candidates are reported.
+    if (run.code !== 0) return { outcome: 'failed', exitCode: run.code, resultOutcome, candidates: [] };
+    if (resultOutcome === null) {
+      return { outcome: 'execution_failure', exitCode: run.code, resultOutcome: null, candidates: [] };
+    }
+    return { outcome: resultOutcome, exitCode: run.code, resultOutcome, candidates };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -513,12 +576,22 @@ async function partyCheck(kind: PartyKind, name: string, deps: LiveCheckDeps) {
   const started = Date.now();
   const locked = await withPropertyLock(deps.lock(), () => partyLookup(kind, name, deps));
   if (!locked.ok) {
-    return partyCheckLine({ kind, query: name, outcome: locked.outcome, candidates: [], ms: elapsed(started) });
+    return partyCheckLine({
+      kind,
+      query: name,
+      outcome: locked.outcome,
+      exitCode: null,
+      resultOutcome: null,
+      candidates: [],
+      ms: elapsed(started),
+    });
   }
   return partyCheckLine({
     kind,
     query: name,
     outcome: locked.value.outcome,
+    exitCode: locked.value.exitCode,
+    resultOutcome: locked.value.resultOutcome,
     candidates: locked.value.candidates,
     ms: elapsed(started),
   });
@@ -531,36 +604,47 @@ async function deeplinkCheck(check: { conf: string; stayId: string | null }, dep
   const locked = await withPropertyLock(deps.lock(), () =>
     deps.runCli(PROBE_CLI, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.deeplink),
   );
-  if (!locked.ok) return [{ check: 'deeplink', outcome: locked.outcome, ok: false, ms: elapsed(started) }];
-  const records = locked.value.stdout
-    .split('\n')
-    .map((text) => text.trim())
-    .filter((text) => text.startsWith('{'))
-    .flatMap((text) => {
-      try {
-        return [JSON.parse(text) as Record<string, unknown>];
-      } catch {
-        return [];
-      }
+  if (!locked.ok) return [refusedLine('deeplink', locked.outcome, elapsed(started))];
+  const { code, stdout } = locked.value;
+  const records = jsonLines(stdout);
+  // A probe line is written once its own observation is complete. A child that exits non-zero did not finish cleanly,
+  // so none of its lines is reported ok.
+  const lines: Array<Record<string, unknown>> = records.map((record) => {
+    const probeOutcome = textOf(record.outcome);
+    return {
+      check: 'deeplink',
+      ...record,
+      outcome: code === 0 ? probeOutcome : 'failed',
+      resultOutcome: probeOutcome,
+      exitCode: code,
+      ok: code === 0 && probeOutcome !== null && DEEPLINK_OK.has(probeOutcome),
+    };
+  });
+  if (code !== 0) {
+    lines.push({
+      check: 'deeplink',
+      outcome: 'failed',
+      exitCode: code,
+      resultOutcome: null,
+      probesRecorded: records.length,
+      ok: false,
+      ms: elapsed(started),
     });
-  const lines: Array<Record<string, unknown>> = records.map((record) => ({
-    check: 'deeplink',
-    ...record,
-    ok: DEEPLINK_OK.has(String(record.outcome)),
-  }));
-  if (locked.value.code !== 0 || lines.length === 0) {
+  } else if (records.length === 0) {
     lines.push({
       check: 'deeplink',
       outcome: 'execution_failure',
-      exitCode: locked.value.code,
-      probesRecorded: lines.length,
+      exitCode: code,
+      resultOutcome: null,
+      probesRecorded: 0,
       ok: false,
+      ms: elapsed(started),
     });
   }
   return lines;
 }
 
-async function runQuoteSearch(check: { source: RateSource; arrival: string; nights: number; adults: number }, deps: LiveCheckDeps) {
+async function runQuoteSearch(check: RateshopCheck, deps: LiveCheckDeps): Promise<QuoteRun> {
   const dir = newRunDir(deps);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const requestPath = join(dir, 'quote-request.json');
@@ -574,22 +658,24 @@ async function runQuoteSearch(check: { source: RateSource; arrival: string; nigh
       deps.spawnEnv(),
       CHILD_TIMEOUT_MS.rateshop,
     );
-    const evidence = /^Evidence: (.+)$/m.exec(run.stdout)?.[1]?.trim() ?? null;
-    if (evidence === null) return { outcome: 'execution_failure', rows: [] as RateRow[], evidence: null };
-    const result = JSON.parse(await readFile(join(evidence, 'result.json'), 'utf8')) as QuoteResult;
-    return {
-      outcome: typeof result.outcome === 'string' ? result.outcome : 'execution_failure',
-      rows: rateRows(result),
-      evidence: relative(REPO_ROOT, evidence),
-    };
+    const evidenceDir = /^Evidence: (.+)$/m.exec(run.stdout)?.[1]?.trim() ?? null;
+    // fetch-quote writes result.json before it can exit 2, so the file's own outcome is read for a failed run too.
+    const result = evidenceDir === null ? null : await readJsonFile<QuoteResult>(join(evidenceDir, 'result.json'));
+    const resultOutcome = textOf(result?.outcome);
+    const evidence = evidenceDir === null ? null : relative(REPO_ROOT, evidenceDir);
+    if (run.code !== 0) return { outcome: 'failed', exitCode: run.code, resultOutcome, rows: [], evidence };
+    if (result === null || resultOutcome === null) {
+      return { outcome: 'execution_failure', exitCode: run.code, resultOutcome: null, rows: [], evidence };
+    }
+    return { outcome: resultOutcome, exitCode: run.code, resultOutcome, rows: rateRows(result), evidence };
   } catch {
-    return { outcome: 'execution_failure', rows: [] as RateRow[], evidence: null };
+    return { outcome: 'execution_failure', exitCode: null, resultOutcome: null, rows: [], evidence: null };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-async function rateshopCheck(check: { source: RateSource; arrival: string; nights: number; adults: number }, deps: LiveCheckDeps) {
+async function rateshopCheck(check: RateshopCheck, deps: LiveCheckDeps) {
   const started = Date.now();
   const locked = await withPropertyLock(deps.lock(), () => runQuoteSearch(check, deps));
   const common = {
@@ -599,39 +685,56 @@ async function rateshopCheck(check: { source: RateSource; arrival: string; night
     adults: check.adults,
     ms: elapsed(started),
   };
-  if (!locked.ok) return rateshopCheckLine({ ...common, outcome: locked.outcome, rows: [], evidence: null });
-  return rateshopCheckLine({ ...common, outcome: locked.value.outcome, rows: locked.value.rows, evidence: locked.value.evidence });
-}
-
-async function reservationNoteFlag(dir: string): Promise<boolean> {
-  try {
-    const raw = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as { stay?: { reservationNote?: unknown } | null };
-    const note = raw.stay?.reservationNote;
-    return typeof note === 'string' && note.trim() !== '';
-  } catch {
-    return false;
+  if (!locked.ok) {
+    return rateshopCheckLine({ ...common, outcome: locked.outcome, exitCode: null, resultOutcome: null, rows: [], evidence: null });
   }
+  return rateshopCheckLine({
+    ...common,
+    outcome: locked.value.outcome,
+    exitCode: locked.value.exitCode,
+    resultOutcome: locked.value.resultOutcome,
+    rows: locked.value.rows,
+    evidence: locked.value.evidence,
+  });
 }
 
 async function stayCheck(check: { conf: string }, deps: LiveCheckDeps) {
   const started = Date.now();
-  // findStay takes the property lock itself, so this check must not wrap it in another acquisition.
-  const run: { dir: string | null } = { dir: null };
+  if (!paneStayLookupEnabled(deps.env)) return refusedLine('stay', 'refused_flag_off', elapsed(started));
+  // The pane's find CLI and arguments, run directly so its exit code is read. The pane's own path ignores the code.
+  const outDir = newRunDir(deps);
   try {
-    const result = await deps.findStay(
-      { confirmation: check.conf },
-      {
-        lock: deps.lock,
-        onRun: (found) => {
-          run.dir = found.dir;
-        },
-      },
-    );
-    const reservationNote = run.dir === null ? false : await reservationNoteFlag(run.dir);
-    return stayCheckLine({ result, reservationNote, ms: elapsed(started) });
+    await mkdir(outDir, { recursive: true, mode: 0o700 });
+    const locked = await withPropertyLock(deps.lock(), async () => {
+      const [script = '', ...args] = buildStayLookupArgs({ mode: 'find', confirmation: check.conf, arrival: null }, outDir);
+      const run = await deps.runCli(script, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.stay);
+      return { run, result: await readJsonFile<StayResult>(join(outDir, 'result.json')) };
+    });
+    const ms = elapsed(started);
+    if (!locked.ok) return refusedLine('stay', locked.outcome, ms);
+    const { run, result } = locked.value;
+    const resultOutcome = textOf(result?.outcome);
+    if (run.code !== 0) {
+      return { check: 'stay', outcome: 'failed', exitCode: run.code, resultOutcome, reason: textOf(result?.reason), ok: false, ms };
+    }
+    if (result === null || resultOutcome === null) {
+      return { check: 'stay', outcome: 'execution_failure', exitCode: run.code, resultOutcome: null, reason: null, ok: false, ms };
+    }
+    const stay = objectOrNull(result.stay);
+    return stayCheckLine({
+      outcome: resultOutcome,
+      reason: textOf(result.reason),
+      exitCode: run.code,
+      arrivalMismatch: result.arrivalMismatch === true,
+      stay,
+      reservationNote: textOf(stay?.reservationNote) !== null,
+      ms,
+    });
+  } catch {
+    return { check: 'stay', outcome: 'execution_failure', exitCode: null, resultOutcome: null, reason: null, ok: false, ms: elapsed(started) };
   } finally {
-    // The lookup run holds the record screenshots and the guest's form values. Only booleans leave this process.
-    if (run.dir !== null) await rm(run.dir, { recursive: true, force: true }).catch(() => undefined);
+    // The lookup writes record screenshots and the guest's form values here. Only booleans leave this process.
+    await rm(outDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -667,7 +770,6 @@ function defaultDeps(overrides: Partial<LiveCheckDeps>): LiveCheckDeps {
     lock: () => paneStayPropertyLock(),
     spawnEnv: () => paneStaySpawnEnv(env),
     runCli: runNodeCli,
-    findStay,
     newRunId: () => `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`,
     ...overrides,
   };

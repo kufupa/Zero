@@ -18,7 +18,6 @@ import {
   type LiveCheckDeps,
   type QuoteResult,
 } from '../scripts/v8-live-checks.js';
-import type { PaneStayFields, PaneStayFindResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 
@@ -55,9 +54,6 @@ function harness(overrides: Partial<LiveCheckDeps> = {}) {
     runCli: async () => {
       throw new Error('runCli must not run in this test');
     },
-    findStay: async () => {
-      throw new Error('findStay must not run in this test');
-    },
     newRunId: () => 'run-test',
     ...overrides,
   };
@@ -68,7 +64,8 @@ function harness(overrides: Partial<LiveCheckDeps> = {}) {
   };
 }
 
-function stayFields(overrides: Partial<PaneStayFields> = {}): PaneStayFields {
+// The raw stay object stay-lookup.mjs writes to result.json (field names as the CLI writes them).
+function stayFields(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     status: 'Reserved',
     confirmation: '61143613-1',
@@ -89,20 +86,7 @@ function stayFields(overrides: Partial<PaneStayFields> = {}): PaneStayFields {
     guaranteeType: null,
     bookingAgency: null,
     organization: null,
-    ...overrides,
-  };
-}
-
-function findResult(overrides: Partial<PaneStayFindResult> = {}): PaneStayFindResult {
-  return {
-    outcome: 'found',
-    reason: null,
-    stay: stayFields(),
-    arrivalMismatch: false,
-    requestedArrival: null,
-    hmsArrival: '2027-10-12',
-    screenshots: [],
-    runId: null,
+    reservationNote: null,
     ...overrides,
   };
 }
@@ -225,6 +209,8 @@ describe('output builders', () => {
       kind: 'company',
       query: 'Acme',
       outcome: 'ambiguous',
+      exitCode: 0,
+      resultOutcome: 'ambiguous',
       candidates: [{ nativeId: 101, displayName: 'Acme Ltd', matchedOn: ['companyname'], address: '1 Example St' }],
       ms: 5,
     });
@@ -241,6 +227,8 @@ describe('output builders', () => {
       kind: 'agency',
       query: 'A',
       outcome: 'resolved',
+      exitCode: 0,
+      resultOutcome: 'resolved',
       candidates: Array.from({ length: 80 }, (_, index) => ({ nativeId: String(index + 1), displayName: `Agency ${index}` })),
       ms: 1,
     });
@@ -249,13 +237,19 @@ describe('output builders', () => {
 
   it('stay lines print booleans, and a confirmation only for a Labtest stay', () => {
     const labtest = stayCheckLine({
-      result: findResult({ stay: stayFields({ bookingAgency: 'Acme Travel', organization: null }) }),
+      outcome: 'found',
+      reason: null,
+      exitCode: 0,
+      arrivalMismatch: false,
+      stay: stayFields({ bookingAgency: 'Acme Travel', organization: null }),
       reservationNote: true,
       ms: 3,
     });
     expect(labtest).toMatchObject({
       check: 'stay',
       outcome: 'found',
+      exitCode: 0,
+      resultOutcome: 'found',
       labtest: true,
       confirmation: '61143613-1',
       status: 'Reserved',
@@ -268,11 +262,26 @@ describe('output builders', () => {
     });
     expect(JSON.stringify(labtest)).not.toContain('Acme Travel');
     const real = stayCheckLine({
-      result: findResult({ stay: stayFields({ lastName: 'Doe', confirmation: '12345-1' }) }),
+      outcome: 'found',
+      reason: null,
+      exitCode: 0,
+      arrivalMismatch: false,
+      stay: stayFields({ lastName: 'Doe', confirmation: '12345-1' }),
       reservationNote: false,
       ms: 3,
     });
     expect(real).toMatchObject({ labtest: false, confirmation: null, hasReservationNote: false });
+    // A non-zero exit is never ok, whatever the outcome says.
+    const exited = stayCheckLine({
+      outcome: 'found',
+      reason: null,
+      exitCode: 2,
+      arrivalMismatch: false,
+      stay: stayFields(),
+      reservationNote: false,
+      ms: 3,
+    });
+    expect(exited).toMatchObject({ ok: false, exitCode: 2 });
   });
 
   it('rate rows map contextual, public and unknown scopes, and keep displayed amounts only', () => {
@@ -419,18 +428,28 @@ describe('main', () => {
     expect(h.lines.join('\n')).not.toContain('Example St');
   });
 
-  it('stay reads the note flag from the lookup run, prints only booleans, and deletes the run directory', async () => {
-    const runDir = await scratchDir();
-    await writeFile(
-      join(runDir, 'result.json'),
-      JSON.stringify({ outcome: 'found', stay: { reservationNote: 'Quiet room please', lastName: 'Labtest' } }),
-    );
+  it('stay runs the pane find CLI under the lock, prints only booleans, and deletes its run directory', async () => {
+    let outDir = '';
     let sawLock = false;
     const h = harness({
-      findStay: async (_input, options) => {
-        sawLock = options.lock() !== null;
-        options.onRun?.({ runId: 'r1', dir: runDir });
-        return findResult({ stay: stayFields({ bookingAgency: 'Acme Travel', confirmation: '61143613-1' }) });
+      lock: () => {
+        sawLock = true;
+        return passLock;
+      },
+      runCli: async (file, args): Promise<CliRun> => {
+        expect(file.endsWith('stay-lookup.mjs')).toBe(true);
+        expect(args.slice(0, 4)).toEqual(['--mode', 'find', '--confirmation', '61143613-1']);
+        outDir = args[args.indexOf('--out') + 1] ?? '';
+        await writeFile(
+          join(outDir, 'result.json'),
+          JSON.stringify({
+            outcome: 'found',
+            reason: null,
+            arrivalMismatch: false,
+            stay: stayFields({ bookingAgency: 'Acme Travel', reservationNote: 'Quiet room please' }),
+          }),
+        );
+        return { code: 0, stdout: '{"outcome":"found"}\n' };
       },
     });
     expect(await main(['stay', '--conf', '61143613-1'], h.deps)).toBe(0);
@@ -442,6 +461,7 @@ describe('main', () => {
     expect(h.parsed()[0]).toMatchObject({
       check: 'stay',
       outcome: 'found',
+      exitCode: 0,
       labtest: true,
       confirmation: '61143613-1',
       hasBookingAgency: true,
@@ -449,7 +469,56 @@ describe('main', () => {
       hasReservationNote: true,
       ok: true,
     });
-    expect(existsSync(runDir)).toBe(false);
+    expect(existsSync(outDir)).toBe(false);
+  });
+
+  it('stay: a non-zero exit is a failed lookup, even when result.json says found, and reports no record fields', async () => {
+    const h = harness({
+      runCli: async (_file, args): Promise<CliRun> => {
+        const outDir = args[args.indexOf('--out') + 1] ?? '';
+        await writeFile(
+          join(outDir, 'result.json'),
+          JSON.stringify({ outcome: 'found', reason: null, stay: stayFields({ bookingAgency: 'Acme Travel' }) }),
+        );
+        return { code: 2, stdout: '' };
+      },
+    });
+    expect(await main(['stay', '--conf', '61143613-1'], h.deps)).toBe(1);
+    const [line] = h.parsed();
+    expect(line).toMatchObject({ check: 'stay', outcome: 'failed', exitCode: 2, resultOutcome: 'found', ok: false });
+    expect(line).not.toHaveProperty('hasBookingAgency');
+    expect(line).not.toHaveProperty('confirmation');
+    expect(h.lines.join('\n')).not.toContain('Acme Travel');
+  });
+
+  it('stay: ambiguous exits 1 in the find CLI, so it is reported failed with its own outcome and reason', async () => {
+    const h = harness({
+      runCli: async (_file, args): Promise<CliRun> => {
+        const outDir = args[args.indexOf('--out') + 1] ?? '';
+        await writeFile(join(outDir, 'result.json'), JSON.stringify({ outcome: 'ambiguous', reason: 'two records', stay: null }));
+        return { code: 1, stdout: '' };
+      },
+    });
+    expect(await main(['stay', '--conf', '61143613-1'], h.deps)).toBe(1);
+    expect(h.parsed()).toEqual([
+      expect.objectContaining({ check: 'stay', outcome: 'failed', exitCode: 1, resultOutcome: 'ambiguous', reason: 'two records', ok: false }),
+    ]);
+  });
+
+  it('stay refuses when the pane lookup is switched off, and never runs the CLI', async () => {
+    let spawned = false;
+    const h = harness({
+      env: { DATABASE_URL: 'postgres://db.invalid/app', PANE_STAY_LOOKUP: 'off' },
+      runCli: async (): Promise<CliRun> => {
+        spawned = true;
+        return { code: 0, stdout: '' };
+      },
+    });
+    expect(await main(['stay', '--conf', '61143613-1'], h.deps)).toBe(1);
+    expect(spawned).toBe(false);
+    expect(h.parsed()).toEqual([
+      { check: 'stay', outcome: 'refused_flag_off', exitCode: null, resultOutcome: null, ok: false, ms: expect.any(Number) },
+    ]);
   });
 
   it('deeplink passes each probe line through, marks navigation errors not ok, and redacts their URLs', async () => {
@@ -496,10 +565,26 @@ describe('main', () => {
     expect(h.lines.join('\n')).not.toContain('hms.example.test');
   });
 
-  it('deeplink reports execution_failure when the probe child exits non-zero without output', async () => {
+  it('deeplink: a non-zero exit is a failed run, so no probe line is ok, and a run-level failure line follows', async () => {
+    const probes = [
+      { id: 'P0_common_bare', httpStatus: 200, navError: null, redirects: 0, finalPath: '/web/base/COMMON', rows: null, class: 'SHELL_OR_BLANK', outcome: 'observed', evidence: '.private/x', ms: 9 },
+      { id: 'P3_osresv_get_confirmation', httpStatus: null, navError: 'goto failed', redirects: 0, finalPath: 'about:blank', rows: null, class: 'SHELL_OR_BLANK', outcome: 'navigation_error', evidence: '.private/x', ms: 11 },
+    ];
+    const h = harness({
+      runCli: async (): Promise<CliRun> => ({ code: 2, stdout: `${probes.map((probe) => JSON.stringify(probe)).join('\n')}\n` }),
+    });
+    expect(await main(['deeplink', '--conf', '61143613-1'], h.deps)).toBe(1);
+    const lines = h.parsed();
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatchObject({ check: 'deeplink', id: 'P0_common_bare', outcome: 'failed', resultOutcome: 'observed', exitCode: 2, ok: false });
+    expect(lines[1]).toMatchObject({ id: 'P3_osresv_get_confirmation', outcome: 'failed', resultOutcome: 'navigation_error', ok: false });
+    expect(lines[2]).toMatchObject({ check: 'deeplink', outcome: 'failed', exitCode: 2, probesRecorded: 2, ok: false });
+  });
+
+  it('deeplink reports a failed run when the probe child exits non-zero without output', async () => {
     const h = harness({ runCli: async (): Promise<CliRun> => ({ code: 2, stdout: '' }) });
     expect(await main(['deeplink', '--conf', '1-1'], h.deps)).toBe(1);
-    expect(h.parsed()).toEqual([expect.objectContaining({ check: 'deeplink', outcome: 'execution_failure', exitCode: 2, ok: false })]);
+    expect(h.parsed()).toEqual([expect.objectContaining({ check: 'deeplink', outcome: 'failed', exitCode: 2, ok: false })]);
   });
 
   it('rateshop sends the agency reference, reads the evidence result, and maps rows', async () => {
@@ -579,6 +664,57 @@ describe('main', () => {
         ],
       }),
     ]);
+  });
+
+  it('party: a non-zero exit is a failed lookup, even when the envelope says resolved, and reports no candidates', async () => {
+    const h = harness({
+      runCli: async (): Promise<CliRun> => ({
+        code: 2,
+        stdout: `${JSON.stringify({ outcome: 'resolved', candidates: [{ nativeId: 77, displayName: 'Acme Ltd' }] })}\n`,
+      }),
+    });
+    expect(await main(['party', 'Acme', '--kind', 'company'], h.deps)).toBe(1);
+    expect(h.parsed()).toEqual([
+      expect.objectContaining({
+        check: 'party',
+        kind: 'company',
+        outcome: 'failed',
+        exitCode: 2,
+        resultOutcome: 'resolved',
+        results: [],
+        ok: false,
+      }),
+    ]);
+  });
+
+  it('rateshop: a non-zero exit is a failed capture and never ok, even when result.json says quote', async () => {
+    const dir = await scratchDir();
+    await writeFile(
+      join(dir, 'result.json'),
+      JSON.stringify({
+        outcome: 'quote',
+        groups: [
+          {
+            id: 'live-check-1',
+            options: [
+              {
+                room: { code: 'KNG' },
+                rate: { code: 'BAR' },
+                rateScope: 'public',
+                nightly: [{ date: '2026-12-01', price: { currency: 'USD', amount: '210.00' } }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const h = harness({
+      runCli: async (): Promise<CliRun> => ({ code: 2, stdout: `Hotel Availability: quote\nEvidence: ${dir}\n` }),
+    });
+    expect(await main(['rateshop', '--org', '1234', '--arrival', '2026-12-01'], h.deps)).toBe(1);
+    const [line] = h.parsed();
+    expect(line).toMatchObject({ check: 'rateshop', outcome: 'failed', exitCode: 2, resultOutcome: 'quote', rows: [], ok: false });
+    expect(line.evidence).toEqual(expect.any(String));
   });
 
   it('party maps a lock deadline to refused_lock_busy when the lock wait runs out', async () => {
