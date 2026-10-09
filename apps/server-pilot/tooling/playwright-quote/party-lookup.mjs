@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,13 +171,6 @@ export function resultEnvelope(partial = {}) {
     screenshots: {},
     ...partial,
   };
-}
-
-async function menu(page, names) {
-  await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of names) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
-  }
 }
 
 async function clickLov(page, field) {
@@ -705,7 +699,7 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
     audit = await createAudit(directory, { trace: false });
     await login(page, secret);
     await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
-    await menu(page, ['Front Desk', 'Guest Stay']);
+    await openGuestStayScreen(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
     await page.locator('input[name="company"]:visible').waitFor();
     await audit.checkpoint('criteria');
