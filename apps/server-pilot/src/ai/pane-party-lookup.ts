@@ -6,6 +6,7 @@ import {
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { matchKey } from './party-match.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -117,8 +118,8 @@ export const PANE_PARTY_PER_KIND_CAP = 10;
 
 /** 0 for an exact name, 1 for a name that starts with the query, 2 for one that contains it, else 3. */
 function matchRank(query: string, name: string): number {
-  const wanted = query.replace(/\s+/g, ' ').trim().toLowerCase();
-  const found = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  const wanted = matchKey(query);
+  const found = matchKey(name);
   if (found === wanted) return 0;
   if (found.startsWith(wanted)) return 1;
   if (found.includes(wanted)) return 2;

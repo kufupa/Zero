@@ -43,14 +43,17 @@ export function lookupTruncated(loaded) {
   return Number(loaded) >= HMS_LOOKUP_PAGE_ROWS;
 }
 
-// Letters and digits in any script, case folded, accents folded (Zoë reads as Zoe). Spacing and punctuation never count,
-// so a filter that was applied is never failed on formatting. Names in Chinese or other scripts keep their characters.
-function matchKey(value) {
+// The one normalization for every name comparison (read-back, row matching, ranking). The server keeps the same function in
+// src/ai/party-match.ts, and a test holds the two equal. Accents and case fold. Letters and digits in any script are kept,
+// and every other run (spacing, punctuation, apostrophes) becomes one space: Société matches Societe, Pick ’n Pay matches
+// Pick n Pay.
+export function matchKey(value) {
   return String(value ?? '')
     .normalize('NFKD')
     .replace(/\p{M}+/gu, '')
     .toLocaleLowerCase('en')
-    .replace(/[^\p{L}\p{N}]+/gu, '');
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }
 
 /** True only when a filter input reads back the query that was typed into it. */
@@ -112,12 +115,13 @@ export function isLookupColumnLabel(value) {
 }
 
 export function rowsMatchingQuery(rows = [], needle) {
-  const q = String(needle || '').trim().toLowerCase();
-  if (!q) return rows;
+  const raw = String(needle || '').trim().toLowerCase();
+  const wanted = matchKey(needle);
+  if (!raw) return rows;
   return rows.filter((row) => {
-    const name = String(row.displayName || '').toLowerCase();
+    const name = matchKey(row.displayName);
     const id = String(row.nativeId || '').toLowerCase();
-    return name.includes(q) || id === q || id.includes(q);
+    return (wanted.length > 0 && name.includes(wanted)) || id === raw || id.includes(raw);
   });
 }
 

@@ -453,3 +453,36 @@ describe('panePartyLookup router', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('one name normalization for the runner and the server', () => {
+  it('the server and the runner agree on every name, so a row that matches in one matches in the other', async () => {
+    const { matchKey } = await import('../src/ai/party-match.js');
+    const runnerKey = (runner as unknown as { matchKey: (value: string) => string }).matchKey;
+    for (const sample of ['Société Générale', 'Pick ’n Pay', 'Zoë', '李明 有限公司', 'Woolworths (Pty) Ltd.', '  Tour   Vest ']) {
+      expect(matchKey(sample)).toBe(runnerKey(sample));
+    }
+  });
+
+  it('Societe matches Société, and Pick n Pay matches Pick ’n Pay, in the ranking', () => {
+    const merged = mergePartyKindResults(
+      [
+        {
+          outcome: 'ambiguous',
+          results: [
+            { kind: 'company', nativeId: '31', name: 'Pick ’n Pay Hypermarket' },
+            { kind: 'company', nativeId: '32', name: 'Société Générale' },
+            { kind: 'company', nativeId: '33', name: 'Unrelated Company' },
+          ],
+          truncated: false,
+        },
+      ],
+      'Pick n Pay',
+    );
+    expect(merged.results[0]?.nativeId).toBe('31');
+    const societe = mergePartyKindResults(
+      [{ outcome: 'resolved', results: [{ kind: 'company', nativeId: '32', name: 'Société Générale' }], truncated: false }],
+      'Societe',
+    );
+    expect(societe.results.map((row) => row.nativeId)).toEqual(['32']);
+  });
+});

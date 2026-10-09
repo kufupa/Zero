@@ -484,3 +484,22 @@ test('a processing mask that is hidden does not hold the lookup busy: the grid c
   assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'settled');
   assert.ok(clock.now < lookup.LOOKUP_IDLE_TIMEOUT_MS);
 });
+
+test('accents and punctuation do not drop a company whose name is the same text', () => {
+  const societe = lookup.classifyKindRows(
+    'organization',
+    [{ nativeId: '7', displayName: 'Société Générale', matchedOn: ['store'] }],
+    { query: { organizationName: 'Societe' } },
+  );
+  assert.equal(societe.outcome, 'resolved');
+  assert.deepEqual(societe.candidates.map((c) => c.nativeId), ['7']);
+  const pnp = lookup.classifyKindRows(
+    'organization',
+    [{ nativeId: '8', displayName: 'Pick ’n Pay Hypermarket', matchedOn: ['store'] }],
+    { query: { organizationName: 'Pick n Pay' } },
+  );
+  assert.equal(pnp.outcome, 'resolved');
+  assert.equal(lookup.filterReadsBack('Pick n Pay', 'Pick ’n Pay'), true);
+  assert.equal(lookup.filterReadsBack('Societe', 'Société'), true);
+  assert.deepEqual(lookup.rowsMatchingQuery([{ nativeId: '9', displayName: 'Zoë Travel' }], 'zoe').map((r) => r.nativeId), ['9']);
+});
