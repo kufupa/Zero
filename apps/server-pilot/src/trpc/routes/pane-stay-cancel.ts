@@ -1,4 +1,9 @@
-import { commitCancel, previewCancel } from '../../ai/pane-stay-cancel.js';
+import { commitCancel, paneCancelDigest, previewCancel } from '../../ai/pane-stay-cancel.js';
+import {
+  classifyCancelCommit,
+  classifyCancelPreview,
+  recordedToolRun,
+} from '../../ai/hitl-tool-run.js';
 import {
   PANE_RUN_ID_PATTERN,
   PANE_SCREENSHOT_NAME_PATTERN,
@@ -44,10 +49,22 @@ function paneOwner(ctx: { sessionUser: { id: string }; activeTransportId: string
 export const paneStayCancelRouter = router({
   previewCancel: mailboxProcedure
     .input(previewCancelInput)
-    .mutation(async ({ input, ctx }) => previewCancel({ ...input, owner: paneOwner(ctx) })),
+    .mutation(({ input, ctx }) =>
+      recordedToolRun(
+        { kind: 'cancel_preview', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
+        () => previewCancel({ ...input, owner: paneOwner(ctx) }),
+        (value) => classifyCancelPreview(value, paneCancelDigest(input)),
+      ),
+    ),
   commitCancel: mailboxProcedure
     .input(commitCancelInput)
-    .mutation(async ({ input, ctx }) => commitCancel({ ...input, owner: paneOwner(ctx) })),
+    .mutation(({ input, ctx }) =>
+      recordedToolRun(
+        { kind: 'cancel_commit', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
+        () => commitCancel({ ...input, owner: paneOwner(ctx) }),
+        (value) => classifyCancelCommit(value, input.confirmation, paneCancelDigest(input)),
+      ),
+    ),
   paneStayScreenshot: mailboxProcedure
     .input(paneStayScreenshotInput)
     .query(async ({ input, ctx }) =>

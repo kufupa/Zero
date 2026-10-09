@@ -11,6 +11,12 @@ import {
   readPaneStayScreenshot,
   registerPaneRun,
 } from '../../ai/pane-stay-save.js';
+import {
+  classifyFind,
+  classifySearch,
+  recordToolOutcome,
+  toolInputDigest,
+} from '../../ai/hitl-tool-run.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -38,14 +44,44 @@ const paneStayLookupScreenshotInput = z
   .strict();
 
 export const paneStayLookupRouter = router({
-  findStay: mailboxProcedure.input(findStayInput).mutation(async ({ input, ctx }) => {
+  findStay: mailboxProcedure
+    .input(findStayInput)
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'stay_lookup',
+          transportId: ctx.activeTransportId,
+          messageId: null,
+          userId: ctx.sessionUser.id,
+          inputDigest: toolInputDigest(input),
+        }),
+        classifyFind,
+        next,
+      ),
+    )
+    .mutation(async ({ input, ctx }) => {
     const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
     return findStay(input, {
       lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
       onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
     });
   }),
-  searchGuest: mailboxProcedure.input(searchGuestInput).mutation(async ({ input, ctx }) => {
+  searchGuest: mailboxProcedure
+    .input(searchGuestInput)
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'guest_search',
+          transportId: ctx.activeTransportId,
+          messageId: null,
+          userId: ctx.sessionUser.id,
+          inputDigest: toolInputDigest(input),
+        }),
+        classifySearch,
+        next,
+      ),
+    )
+    .mutation(async ({ input, ctx }) => {
     const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
     return searchGuest(input, {
       lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
