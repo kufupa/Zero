@@ -209,14 +209,21 @@ function rateShopServices(
       readQuote: async (request: any) => {
         sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
-        const rows = rateShopRows(request, hmsVisibleRows(request, rates), context);
+        // As the runner returns them: matches first, at most maxOptionsPerGroup rows. A cut row that is not an alternative
+        // marks the list cut.
+        const rank: Record<string, number> = { match: 0, alternative: 1, unresolved: 2 };
+        const ordered = rateShopRows(request, hmsVisibleRows(request, rates), context).sort(
+          (a, b) => rank[a.matchStatus]! - rank[b.matchStatus]!,
+        );
+        const rows = ordered.slice(0, normalized.maxOptionsPerGroup);
+        const cut = ordered.slice(normalized.maxOptionsPerGroup).some((row) => row.matchStatus !== 'alternative');
         // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
         const unfilteredFull =
           request.details === 'full' &&
           !request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
         // A party read whose calendar pages did not all load, or whose list was cut: its groups report it, as the runner does.
         const incomplete = Boolean(flags.incompleteParty && request.rateContext);
-        const truncated = Boolean(flags.truncatedParty && request.rateContext);
+        const truncated = Boolean(flags.truncatedParty && request.rateContext) || cut;
         const completeness = incomplete
           ? { search: 'partial', requiredFacts: 'partial' }
           : truncated
@@ -846,6 +853,25 @@ describe('a picked party is read once for every room type, and priced for the ro
       "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
+  });
+
+  it('the requested rooms keep the list a room-filtered read returns, so a wider read never fails the quote by its size', async () => {
+    // 30 room-only rows (the flagged one first) and 30 B&B alternatives for the requested rooms: 60 rows, more than one group
+    // may carry. The list keeps its first 50, as HMS would for the room filter, and only alternatives are left out.
+    const matches: Rate[] = [
+      { ...flagged('BCO1B'), room: 'STQN' },
+      ...Array.from({ length: 29 }, (_, i) => ({ ...BAR, code: `P${i}`, amounts: [`${700 + i}.00`], room: 'SKNG' })),
+    ];
+    const alternatives: Rate[] = Array.from({ length: 30 }, (_, i) => ({
+      ...BAR,
+      code: `B${i}`,
+      board: 'breakfast' as const,
+      amounts: [`${900 + i}.00`],
+      room: 'STQN',
+    }));
+    const { revision, fellBack } = await quoteWith(woolworths, [...matches, ...alternatives], { roomCodes: ['STQN', 'SKNG'] });
+    expect(fellBack).toBe(false);
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
   });
 
   it('a cut read falls back with the same honest copy, never as a hard failure, even when the requested room is flagged', async () => {

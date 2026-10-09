@@ -78,10 +78,15 @@ export function partyContractChoice<O extends { rateScope?: string }>(
 
 /** The Rate Shop's largest return per group (quote-contract.mjs MAX_OPTIONS). A picked party's summary asks for all of it. */
 const PARTY_SUMMARY_MAX_OPTIONS=200;
-/** Keeps each requested room's own options from a party read that asked HMS for every room type. */
-function narrowToRequestedRooms(source:QuoteSourceRecord,rooms:QuoteSourceRecord['request']['rooms']):QuoteSourceRecord{
+/**
+ * Keeps each requested room's own options from a party read that asked HMS for every room type, cut to the request's own
+ * limit as a room-filtered read is (the runner orders matches first). A cut row that is not an alternative may be a flagged
+ * row, so that group's search is not covered.
+ */
+function narrowToRequestedRooms(source:QuoteSourceRecord,rooms:QuoteSourceRecord['request']['rooms'],limit:number):QuoteSourceRecord{
  const wanted=new Map(rooms.map(room=>[room.id,room.required?.roomCodes??[]] as const));
- return{...source,result:{...source.result,groups:source.result.groups.map(group=>{const codes=wanted.get(group.id)??[];return codes.length?{...group,options:group.options.filter(option=>codes.includes(option.room.code))}:group;})}};
+ return{...source,result:{...source.result,groups:source.result.groups.map(group=>{const codes=wanted.get(group.id)??[],own=codes.length?group.options.filter(option=>codes.includes(option.room.code)):group.options,cut=own.slice(limit).some(option=>option.matchStatus!=='alternative');
+  return{...group,options:own.slice(0,limit),completeness:cut?{...group.completeness,search:'truncated'}:group.completeness};})}};
 }
 
 /** Pick a requested qualified option by exact total cents; unqualified alternatives never win. */
@@ -156,12 +161,12 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  // room-type filter, and other rooms must not crowd the requested room out of the read. The requested room types stay local.
  const partyRead=Boolean(request.rateContext);
  const searchRequest=partyRead?{...request,rooms:request.rooms.map(room=>{const required={...room.required};delete required.roomCodes;return{...room,required};}),maxOptionsPerGroup:PARTY_SUMMARY_MAX_OPTIONS,details:'summary'}:{...request,details:'summary'};
- const read=await readBound(searchRequest),summary=partyRead?{...read,source:narrowToRequestedRooms(read.source,request.rooms)}:read;observations.set(observationContextDigest(ctx),structuredClone(summary.source));
+ const read=await readBound(searchRequest),summary=partyRead?{...read,source:narrowToRequestedRooms(read.source,request.rooms,request.maxOptionsPerGroup)}:read;observations.set(observationContextDigest(ctx),structuredClone(summary.source));
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
  // A picked party's contract is confirmed or ruled out only by a read that covered every requested room. A cut list or a missing
  // page may hide a flagged row, so the quote is public and says so.
- if(staffApproval&&partyRead&&read.source.result.groups.some(group=>!partySearchCovered(group)||group.completeness.requiredFacts!=='complete'))throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
+ if(staffApproval&&partyRead&&summary.source.result.groups.some(group=>!partySearchCovered(group)||group.completeness.requiredFacts!=='complete'))throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
  const candidates=quoteOptionCandidates(summary.source);
  // A picked party's contract is never replaced silently by public rates. Staff: a contract on another board alone quotes the requested
  // board at public and the review says so; no contract on any board retries at public rates as before; a requested contract that
