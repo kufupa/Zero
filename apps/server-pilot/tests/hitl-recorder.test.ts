@@ -2,6 +2,7 @@ import {
   AGENT_RUN_RECORD_CAP_MS,
   analyseInputKey,
   createAgentRunRecorder,
+  ledgerTransaction,
   mergeEpisodeOnRun,
   recordAgentRunCapped,
   resolveAgentRunRecorder,
@@ -10,6 +11,7 @@ import {
   type EpisodeState,
   type OriginLookup,
 } from '../src/ai/hitl-recorder.js';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../src/db/client.js';
 
@@ -242,6 +244,25 @@ function originDb(answers: Array<Array<{ id: string }>>) {
   };
   return { db: chain as never, asked };
 }
+
+describe('ledgerTransaction', () => {
+  it('bounds the ledger transaction with lock and statement timeouts before it runs the write', async () => {
+    const executed: string[] = [];
+    const dialect = new PgDialect();
+    const tx = {
+      execute: vi.fn(async (query: unknown) => {
+        executed.push(dialect.sqlToQuery(query as never).sql);
+      }),
+    };
+    const db = { transaction: vi.fn(async (work: (t: unknown) => Promise<unknown>) => work(tx)) };
+    const result = await ledgerTransaction(db as never, async () => 'written');
+    expect(result).toBe('written');
+    expect(executed).toEqual([
+      "SET LOCAL lock_timeout = '250ms'",
+      "SET LOCAL statement_timeout = '250ms'",
+    ]);
+  });
+});
 
 describe('createAgentRunRecorder origin lookup', () => {
   it('links the hit to its producing run when that run is still a model run for the input', async () => {

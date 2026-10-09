@@ -7,7 +7,7 @@ import {
 } from '../db/schema/hitl.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isHitlLedgerEnabled, type EnvInput } from '../env.js';
-import { and, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 
 /**
@@ -20,6 +20,12 @@ import { getDb, type DB } from '../db/client.js';
 export const HITL_RETENTION_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 /** Longest an analyse waits on the ledger before it returns without analysisRunId. */
 export const AGENT_RUN_RECORD_CAP_MS = 300;
+/**
+ * Per-statement limits for ledger writes. A write that waits on a locked row aborts within these and frees its
+ * pooled connection. A write abandoned at the cap above therefore cannot hold a connection for long.
+ */
+export const LEDGER_LOCK_TIMEOUT_MS = 250;
+export const LEDGER_STATEMENT_TIMEOUT_MS = 250;
 /**
  * Cache entries written before their run was recorded name no producing run. For those, the origin is the
  * latest model run for the input recorded no later than the cache write plus one record cap.
@@ -159,6 +165,17 @@ export function mergeEpisodeOnRun(current: EpisodeState | null, run: EpisodeRun)
 
 type RecordOutcome = { id: string | null; code: 'ok' | 'error' | 'timeout' };
 
+type LedgerTx = Parameters<Parameters<DB['transaction']>[0]>[0];
+
+/** Runs a ledger write in one transaction whose statements are bounded by the limits above. */
+export function ledgerTransaction<T>(db: DB, work: (tx: LedgerTx) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${LEDGER_LOCK_TIMEOUT_MS}ms'`));
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${LEDGER_STATEMENT_TIMEOUT_MS}ms'`));
+    return work(tx);
+  });
+}
+
 /**
  * Records one run within AGENT_RUN_RECORD_CAP_MS. Never rejects. Resolves to the run id,
  * or null on error or timeout. Logs carry a code only, never field values.
@@ -286,7 +303,9 @@ export function createAgentRunRecorder(
         retentionExpiresAt: new Date(now.getTime() + HITL_RETENTION_WINDOW_MS),
       };
       if (run.trigger !== 'pane' || run.userId === null) {
-        await db.insert(aiAgentRun).values(row);
+        await ledgerTransaction(db, async (tx) => {
+          await tx.insert(aiAgentRun).values(row);
+        });
         return id;
       }
       const userId = run.userId;
@@ -301,7 +320,7 @@ export function createAgentRunRecorder(
         eq(hitlEpisode.messageId, run.messageId),
         eq(hitlEpisode.userId, userId),
       );
-      await db.transaction(async (tx) => {
+      await ledgerTransaction(db, async (tx) => {
         await tx.insert(aiAgentRun).values(row);
         const created = await tx
           .insert(hitlEpisode)
