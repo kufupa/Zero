@@ -742,14 +742,11 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
-  findParty,
   partySuggestions,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
-  /** Find in HMS for the header's company and agency. Null or absent leaves them as plain text. */
-  findParty?: PartyFinder | null;
   partySuggestions?: PartySuggestion[];
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onRunNext?: () => void;
