@@ -247,7 +247,7 @@ fi
 cd "$REPO_ROOT"
 echo "pnpm install (playwright pin)"
 # Quiet install: SSM keeps only the first ~24 KB of stdout, and the summary must fit.
-pnpm install --frozen-lockfile --reporter=silent
+HUSKY=0 pnpm install --frozen-lockfile --reporter=silent || { echo "gate: pnpm install failed" >&2; exit 2; }
 
 echo "run: ${RUN_ID}"
 echo "out: ${OUT_DIR}"
