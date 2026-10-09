@@ -1,0 +1,470 @@
+{
+  "schema": "entity-literals-baseline-v1",
+  "entries": [
+    {
+      "file": "src/ai/never-spam.ts",
+      "term": "pmbobo",
+      "count": 1
+    },
+    {
+      "file": "src/ai/never-spam.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "360travel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "atlantiscorporate",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "bidvest",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "cwt",
+      "count": 2
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "destini",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "mycwt",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "nexus",
+      "count": 2
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "nexustravel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "planettours",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "rennies",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "renniesbcdtravel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/party-aliases.ts",
+      "term": "tourvest",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "atlantiscorporate",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "bcdtravel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "bongi",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "booking.com",
+      "count": 6
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "corporatetraveller",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "destini",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "erevmax",
+      "count": 2
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "expedia",
+      "count": 5
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "expediapartnercentral",
+      "count": 8
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "hospitality.cloud",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "nexct",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "nexus",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "nexustravel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "pmbobo",
+      "count": 2
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "profitroom",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "rennies",
+      "count": 2
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "renniesbcdtravel",
+      "count": 1
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "reservecloud",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "synxis",
+      "count": 8
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "tbo.com",
+      "count": 2
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "tourvest",
+      "count": 3
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "travelit",
+      "count": 4
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "webbeds",
+      "count": 2
+    },
+    {
+      "file": "src/ai/triage.ts",
+      "term": "xl turners",
+      "count": 1
+    },
+    {
+      "file": "src/ai/worker.ts",
+      "term": "pmbobo",
+      "count": 2
+    },
+    {
+      "file": "src/ai/worker.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/ai/workflows/mail-triage.ts",
+      "term": "hospitality.cloud",
+      "count": 1
+    },
+    {
+      "file": "src/ai/workflows/mail-triage.ts",
+      "term": "pmbobo",
+      "count": 3
+    },
+    {
+      "file": "src/ai/workflows/mail-triage.ts",
+      "term": "reservecloud",
+      "count": 5
+    },
+    {
+      "file": "src/ai/workflows/mail-triage.ts",
+      "term": "synxis",
+      "count": 2
+    },
+    {
+      "file": "src/db/seed.ts",
+      "term": "kamala",
+      "count": 7
+    },
+    {
+      "file": "src/db/seed.ts",
+      "term": "kdouglas",
+      "count": 1
+    },
+    {
+      "file": "src/db/seed.ts",
+      "term": "martha",
+      "count": 7
+    },
+    {
+      "file": "src/db/seed.ts",
+      "term": "mthembu",
+      "count": 1
+    },
+    {
+      "file": "src/mail/channel-payload-contract.ts",
+      "term": "synxis",
+      "count": 1
+    },
+    {
+      "file": "src/mail/channel-payload-contract.ts",
+      "term": "webbeds",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-link.ts",
+      "term": "martha",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-link.ts",
+      "term": "mthembu",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-link.ts",
+      "term": "seabi",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "bongi",
+      "count": 2
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "booking.com",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "expedia",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "kamala",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "kdouglas",
+      "count": 1
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "kolanisi",
+      "count": 2
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "martha",
+      "count": 4
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "mthembu",
+      "count": 3
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "pmbobo",
+      "count": 3
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "reservecloud",
+      "count": 3
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "seabi",
+      "count": 3
+    },
+    {
+      "file": "src/mail/conversation-signals.ts",
+      "term": "synxis",
+      "count": 1
+    },
+    {
+      "file": "src/mail/ingest/promote-quarantine.ts",
+      "term": "pmbobo",
+      "count": 2
+    },
+    {
+      "file": "src/mail/ingest/promote-quarantine.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/mail/ingest/recover-parse-failure.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/mail/parse-channel-payload.ts",
+      "term": "synxis",
+      "count": 3
+    },
+    {
+      "file": "src/mail/parse-channel-payload.ts",
+      "term": "webbeds",
+      "count": 2
+    },
+    {
+      "file": "src/metrics/admin-dashboard-aggregates.ts",
+      "term": "pmbobo",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "agoda",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "booking.com",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "expedia",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "hotelbeds",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "synxis",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-conversation-signals-eval.ts",
+      "term": "travelclick",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "agoda",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "expedia",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "hotelbeds",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "kamala",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "martha",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "synxis",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-eval-lab.ts",
+      "term": "travelclick",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-link-residual-enumerator.ts",
+      "term": "martha",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-link-residual-enumerator.ts",
+      "term": "mthembu",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-link-residual-enumerator.ts",
+      "term": "reservecloud",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-link-residual-enumerator.ts",
+      "term": "seabi",
+      "count": 2
+    },
+    {
+      "file": "src/ops/centurion-link-residual-enumerator.ts",
+      "term": "synxis",
+      "count": 1
+    },
+    {
+      "file": "src/ops/centurion-triage-quality-audit.ts",
+      "term": "pmbobo",
+      "count": 4
+    },
+    {
+      "file": "src/ops/centurion-triage-quality-audit.ts",
+      "term": "reservecloud",
+      "count": 3
+    },
+    {
+      "file": "src/trpc/routes/admin-dashboard.ts",
+      "term": "pmbobo",
+      "count": 1
+    }
+  ]
+}
