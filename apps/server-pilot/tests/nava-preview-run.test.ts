@@ -263,6 +263,14 @@ describe('classifyTrpcRequest', () => {
     expect(decision.blocked).toEqual([{ procedure: 'workstation.bridgeTicket', reason: 'write' }]);
   });
 
+  it('allows the voucher lookup: a read of stored mail and attachments, with no HMS call', () => {
+    expect(classifyTrpcRequest(`${origin}quoteWorkflow.voucherFind?batch=1`)).toEqual({
+      allowed: true,
+      procedures: ['quoteWorkflow.voucherFind'],
+      blocked: [],
+    });
+  });
+
   it('allows the analysis mutation, which is read-only for HMS and mail', () => {
     expect(classifyTrpcRequest(`${origin}quoteWorkflow.analyseSelection?batch=1`).allowed).toBe(
       true,
