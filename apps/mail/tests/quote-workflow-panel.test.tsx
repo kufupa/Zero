@@ -402,6 +402,63 @@ describe('QuoteWorkflowPanel', () => {
     expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(false);
   });
 
+  it('keeps unreadable amount text on screen with an inline message, and saves nothing', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.blur(input);
+    expect(input.value).toBe('abc');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getByText('Enter an amount in rand, like 450 or 1,250.50')).toBeDefined();
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ dinnerAllowanceMinor: undefined });
+  });
+
+  it('reads R and thousands separators, and shows an inline message for an amount over R1,000,000', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'R 1,250.50' } });
+    fireEvent.blur(input);
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ dinnerAllowanceMinor: 125_050 });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '2,000,000' } });
+    expect(screen.getByText('Amounts above R1,000,000 are not accepted')).toBeDefined();
+    fireEvent.blur(input);
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ dinnerAllowanceMinor: 200_000_000 });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ dinnerAllowanceMinor: 125_050 });
+  });
+
+  it('caps shuttle trips at 50 with an inline message, and saves a count within the cap', () => {
+    const onPatchStaffHeader = vi.fn();
+    const base = sessionFromFixture('mixed-same-dates');
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...base, staffHeader: { ...base.staffHeader, shuttleRequested: true } }}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const trips = screen.getByLabelText('Shuttle trips') as HTMLInputElement;
+    fireEvent.change(trips, { target: { value: '60' } });
+    expect(screen.getByText('Up to 50 allowed')).toBeDefined();
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ shuttleTrips: 60 });
+    fireEvent.change(trips, { target: { value: '50' } });
+    expect(screen.queryByText('Up to 50 allowed')).toBeNull();
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ shuttleTrips: 50 });
+  });
+
   it('gives each date option its own Run button', () => {
     const onRunStep = vi.fn();
     const session = staggeredDatesSession();

@@ -11,6 +11,7 @@ import {
 } from '@/lib/quote-workflow/session';
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
+import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
 import type {
   QueueStatus,
@@ -85,6 +86,10 @@ function formatZarMinor(minor: number | undefined): string {
   return minor !== undefined && minor > 0 ? (minor / 100).toFixed(2).replace(/\.00$/, '') : '';
 }
 
+/**
+ * A rand amount typed by staff. Text that cannot be read, or an amount over the cap, stays on screen with an
+ * inline message. It is never silently cleared.
+ */
 function ZarMinorInput({
   ariaLabel,
   minor,
@@ -97,41 +102,107 @@ function ZarMinorInput({
   const formatted = formatZarMinor(minor);
   const [draft, setDraft] = useState(formatted);
   const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!focused) setDraft(formatted);
-  }, [formatted, focused]);
+    if (!focused && !error) setDraft(formatted);
+  }, [formatted, focused, error]);
   return (
-    <input
-      aria-label={ariaLabel}
-      className={fieldClass}
-      inputMode="decimal"
-      value={focused ? draft : formatted}
-      onFocus={() => {
-        setDraft(formatted);
-        setFocused(true);
-      }}
-      onBlur={() => {
-        setFocused(false);
-        const raw = draft.trim();
-        if (!raw) {
-          onMinorChange(undefined);
-          return;
-        }
-        const rand = Number(raw);
-        onMinorChange(Number.isFinite(rand) && rand > 0 ? Math.round(rand * 100) : undefined);
-      }}
-      onChange={(event) => {
-        const raw = event.target.value;
-        setDraft(raw);
-        if (!raw.trim()) {
-          onMinorChange(undefined);
-          return;
-        }
-        if (/\.\d{0,1}$/.test(raw) && raw.endsWith('.')) return;
-        const rand = Number(raw.trim());
-        if (Number.isFinite(rand) && rand > 0) onMinorChange(Math.round(rand * 100));
-      }}
-    />
+    <>
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? true : undefined}
+        className={fieldClass}
+        inputMode="decimal"
+        value={focused || error ? draft : formatted}
+        onFocus={() => {
+          setDraft(formatted);
+          setFocused(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          const result = parseZarInput(draft.replace(/\.$/, ''));
+          if (result.status === 'empty') {
+            setError(null);
+            onMinorChange(undefined);
+          } else if (result.status === 'ok') {
+            setError(null);
+            onMinorChange(result.minor);
+          } else {
+            setError(result.status === 'partial' ? EXTRA_AMOUNT_FORMAT_MESSAGE : result.message);
+          }
+        }}
+        onChange={(event) => {
+          const raw = event.target.value;
+          setDraft(raw);
+          const result = parseZarInput(raw);
+          setError(result.status === 'over_cap' ? result.message : null);
+          if (result.status === 'empty') onMinorChange(undefined);
+          else if (result.status === 'ok') onMinorChange(result.minor);
+        }}
+      />
+      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+    </>
+  );
+}
+
+/** A whole number of trips or days, up to max. Over the cap shows an inline message and is not saved. */
+function CountInput({
+  ariaLabel,
+  value,
+  max,
+  placeholder,
+  onValueChange,
+}: {
+  ariaLabel: string;
+  value: number | undefined;
+  max: number;
+  placeholder?: string;
+  onValueChange: (value: number | undefined) => void;
+}) {
+  const formatted = value === undefined ? '' : String(value);
+  const [draft, setDraft] = useState(formatted);
+  const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focused && !error) setDraft(formatted);
+  }, [formatted, focused, error]);
+  return (
+    <>
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? true : undefined}
+        className={fieldClass}
+        inputMode="numeric"
+        placeholder={placeholder}
+        value={focused || error ? draft : formatted}
+        onFocus={() => {
+          setDraft(formatted);
+          setFocused(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          const result = parseCountInput(draft, max);
+          if (result.status === 'ok') {
+            setError(null);
+            onValueChange(result.count);
+          } else if (result.status === 'empty') {
+            setError(null);
+            onValueChange(undefined);
+          } else {
+            setError(result.message);
+          }
+        }}
+        onChange={(event) => {
+          const raw = event.target.value;
+          setDraft(raw);
+          const result = parseCountInput(raw, max);
+          setError(result.status === 'over_cap' ? result.message : null);
+          if (result.status === 'ok') onValueChange(result.count);
+          else if (result.status === 'empty') onValueChange(undefined);
+        }}
+      />
+      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+    </>
   );
 }
 
@@ -260,18 +331,12 @@ function StaffHeaderFields({
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
           Office transfer days, optional (blank = nights of stay)
-          <input
-            aria-label="Office transfer days"
-            className={fieldClass}
-            inputMode="numeric"
+          <CountInput
+            ariaLabel="Office transfer days"
+            value={header.officeTransferDays}
+            max={31}
             placeholder="nights of stay"
-            value={header.officeTransferDays ?? ''}
-            onChange={(event) => {
-              const days = Number.parseInt(event.target.value, 10);
-              onPatch?.({
-                officeTransferDays: Number.isFinite(days) && days > 0 ? Math.min(days, 31) : undefined,
-              });
-            }}
+            onValueChange={(officeTransferDays) => onPatch?.({ officeTransferDays })}
           />
         </label>
       </div>
@@ -291,16 +356,12 @@ function StaffHeaderFields({
             <div className="grid grid-cols-2 gap-2">
               <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
                 Trips
-                <input
-                  aria-label="Shuttle trips"
-                  className={fieldClass}
-                  inputMode="numeric"
+                <CountInput
+                  ariaLabel="Shuttle trips"
+                  value={header.shuttleTrips}
+                  max={50}
                   placeholder="1"
-                  value={header.shuttleTrips ?? ''}
-                  onChange={(event) => {
-                    const trips = Number.parseInt(event.target.value, 10);
-                    onPatch?.({ shuttleTrips: Number.isFinite(trips) && trips > 0 ? Math.min(trips, 20) : undefined });
-                  }}
+                  onValueChange={(shuttleTrips) => onPatch?.({ shuttleTrips })}
                 />
               </label>
               <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
