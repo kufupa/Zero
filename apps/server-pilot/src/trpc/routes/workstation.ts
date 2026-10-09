@@ -44,6 +44,14 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { QuoteRevision, ImportedOffer } from '../../quote-proposal/quote-revision.js';
+import { quoteDigest } from '../../quote-proposal/quote-revision.js';
+import {
+  classifyBookingDraft,
+  classifyPdf,
+  classifyStaffQuote,
+  ledgerQuoteInput,
+  recordToolOutcome,
+} from '../../ai/hitl-tool-run.js';
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
 import { aiWorkflowRun, aiDraftGeneration, message } from '../../db/schema/mail.js';
@@ -522,7 +530,23 @@ export const workstationRouter = router({
         sourceHash: staffQuoteSourceHash(mail),
       };
     }),
-  executeStaffQuote: mailboxProcedure.input(staffQuoteInput).mutation(async ({ input, ctx }) => {
+  executeStaffQuote: mailboxProcedure
+    .input(staffQuoteInput)
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'quote',
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          userId: ctx.sessionUser.id,
+          input: ledgerQuoteInput(input),
+          inputDigest: quoteDigest(input),
+        }),
+        classifyStaffQuote,
+        next,
+      ),
+    )
+    .mutation(async ({ input, ctx }) => {
     const db = getDb(),
       [mail] = await db
         .select()
@@ -812,6 +836,19 @@ export const workstationRouter = router({
   }),
   prepareBookingDraft: mailboxProcedure
     .input(prepareBookingDraftInput)
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'booking_draft',
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          userId: ctx.sessionUser.id,
+          workflowRunId: input.workflowRunId,
+        }),
+        classifyBookingDraft,
+        next,
+      ),
+    )
     .mutation(async ({ input, ctx }) => {
       await awaitPendingStaffQuote(input.workflowRunId);
       const [bound] = await getDb()
@@ -1225,6 +1262,19 @@ export const workstationRouter = router({
     }),
   qualifiedQuoteProposalPdf: mailboxProcedure
     .input(qualifiedProposalInput)
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'pdf',
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          userId: ctx.sessionUser.id,
+          workflowRunId: input.workflowRunId,
+        }),
+        classifyPdf,
+        next,
+      ),
+    )
     .mutation(async ({ input, ctx }) => {
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
@@ -1450,6 +1500,19 @@ export const workstationRouter = router({
       qualifiedProposalInput
         .extend({ kind: z.enum(['imported_offer', 'approved_override']) })
         .strict(),
+    )
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'source_pdf',
+          transportId: ctx.activeTransportId,
+          messageId: input.messageId,
+          userId: ctx.sessionUser.id,
+          workflowRunId: input.workflowRunId,
+        }),
+        classifyPdf,
+        next,
+      ),
     )
     .mutation(async ({ input, ctx }) => {
       await awaitPendingStaffQuote(input.workflowRunId);

@@ -13,6 +13,7 @@ import {
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { resolveAgentRunRecorder, type AgentRunRecorder } from '../../ai/hitl-recorder.js';
+import { classifyStayCommit, classifyStayPreview, recordToolOutcome } from '../../ai/hitl-tool-run.js';
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
@@ -20,6 +21,7 @@ import {
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
   runPaneStay,
+  type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
@@ -155,7 +157,21 @@ export const quoteWorkflowRouter = router({
         'Live staff quote execution is workstation.executeStaffQuote. Do not call ai.enqueueHmsRead from this UI route.',
     };
   }),
-  previewStay: mailboxProcedure.input(paneStayInput).mutation(async ({ input, ctx }) => {
+  previewStay: mailboxProcedure
+    .input(paneStayInput)
+    .use(({ ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'stay_preview',
+          transportId: ctx.activeTransportId,
+          messageId: null,
+          userId: ctx.sessionUser.id,
+        }),
+        classifyStayPreview,
+        next,
+      ),
+    )
+    .mutation(async ({ input, ctx }) => {
     return runPaneStay({
       mode: 'preview',
       stay: input,
@@ -164,6 +180,18 @@ export const quoteWorkflowRouter = router({
   }),
   commitStay: mailboxProcedure
     .input(paneStayInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }))
+    .use(({ input, ctx, next }) =>
+      recordToolOutcome(
+        () => ({
+          kind: 'stay_commit',
+          transportId: ctx.activeTransportId,
+          messageId: null,
+          userId: ctx.sessionUser.id,
+        }),
+        (value: PaneStayResult) => classifyStayCommit(value, input.previewDigest),
+        next,
+      ),
+    )
     .mutation(async ({ input, ctx }) => {
       const { previewDigest, ...stay } = input;
       return runPaneStay({
