@@ -122,7 +122,7 @@ const policy = {
   levy: 'included' as const,
 };
 
-function groupInput(parties?: StaffQuoteParties, text: { company?: string; agency?: string } = {}) {
+function groupInput(parties?: StaffQuoteParties, text: { company?: string; agency?: string } = {}, roomCodes?: string[]) {
   return staffQuoteInput.parse({
     messageId: scope.messageId,
     sourceHash: scope.sourceHash,
@@ -137,6 +137,7 @@ function groupInput(parties?: StaffQuoteParties, text: { company?: string; agenc
         adults: 1,
         childrenAges: [],
         board: 'room_only',
+        ...(roomCodes ? { roomCodes } : {}),
       },
     ],
     ...text,
@@ -149,6 +150,14 @@ function resolvedContext(rateContext: Record<string, { nativeId: string; name: s
   return Object.fromEntries(
     Object.entries(rateContext ?? {}).map(([kind, ref]) => [kind, { id: ref.nativeId, name: ref.name }]),
   );
+}
+
+/** What HMS returns for a read's codes: an exact rate filter returns those rows; a room-type filter hides the flagged rows. */
+function hmsVisibleRows(request: any, rates: Rate[]): Rate[] {
+  const required = request.rooms[0]?.required ?? {};
+  if (required.rateCodes?.length) return rates.filter((rate) => required.rateCodes.includes(rate.code));
+  if (required.roomCodes?.length) return rates.filter((rate) => rate.rateScope !== 'contextual');
+  return rates;
 }
 
 /** The Rate Shop services for one staff attempt: every read is answered from the rows, under the attempt's context. */
@@ -167,7 +176,7 @@ function rateShopServices(
       readQuote: async (request: any) => {
         sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
-        const rows = rateShopRows(request, rates, context);
+        const rows = rateShopRows(request, hmsVisibleRows(request, rates), context);
         // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
         const unfilteredFull =
           request.details === 'full' &&
@@ -206,9 +215,9 @@ function rateShopServices(
 async function quoteWith(
   parties: StaffQuoteParties | undefined,
   rates: Rate[],
-  options: { header?: { company?: string; agency?: string }; readParty?: any; incompleteParty?: boolean } = {},
+  options: { header?: { company?: string; agency?: string }; readParty?: any; incompleteParty?: boolean; roomCodes?: string[] } = {},
 ) {
-  const confirmed = groupInput(parties, options.header);
+  const confirmed = groupInput(parties, options.header, options.roomCodes);
   const first = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
   const sent: any[] = [];
   const attempt = await quoteWithPartyFallback({
@@ -584,5 +593,52 @@ describe('a public-only party read is no contract only when its search covered e
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(true);
     expect(isPartyRateFailure(new Error(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(false);
+  });
+});
+
+describe("a picked party's flagged rows are read per requested room type", () => {
+  // The rows one room type returned from the rate shop: a flagged row, a public row and a conditional row.
+  const STQN_ROWS: Rate[] = [
+    { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['1750.00'], room: 'STQN' },
+    { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['1520.00'], room: 'STQN' },
+    { code: 'NCOR2B', label: 'Corporate Negotiated', rateScope: 'contextual', amounts: ['1600.00'], room: 'STQN' },
+    { code: 'NCORRO', label: 'Corporate Conditional', rateScope: 'unknown', amounts: ['1400.00'], room: 'STQN' },
+  ];
+  const woolworths = { company: company('49', 'Woolworths') };
+  const copy = 'No contract rate found for Woolworths; this quote uses our best available rate.';
+
+  it('prices the cheapest flagged row for the requested room, read without a room-type filter, then names that room and rate', async () => {
+    const { revision, fellBack, sent } = await quoteWith(woolworths, STQN_ROWS, { roomCodes: ['STQN'] });
+    expect(fellBack).toBe(false);
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
+    expect(partyContractReviewNote(woolworths, revision.groups)).toBeNull();
+    // The summary read asks HMS for every room type, so the flagged rows come back.
+    expect(sent[0]!.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(sent[0]!.rooms[0].required).not.toHaveProperty('roomCodes');
+    // The detail read is for the requested room type and the chosen rate, under the party context.
+    const detail = sent.find((request) => request.details === 'full');
+    expect(detail?.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(detail?.rooms[0].required).toMatchObject({ roomCodes: ['STQN'], rateCodes: ['BCO1B'] });
+  });
+
+  it('a flagged row for another room type does not price the requested room', async () => {
+    const otherRoom: Rate[] = [
+      { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['1750.00'], room: 'STQN' },
+      { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['1100.00'], room: 'DLXQN' },
+    ];
+    const { revision, fellBack, note } = await quoteWith(woolworths, otherRoom, { roomCodes: ['STQN'] });
+    expect(fellBack).toBe(true);
+    expect(note).toBeNull();
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyContractReviewNote(woolworths, revision.groups)).toBe(copy);
+  });
+
+  it('no flagged row for the requested room: the existing public quote runs, and says so', async () => {
+    const publicOnly = STQN_ROWS.filter((rate) => rate.rateScope !== 'contextual');
+    const { revision, fellBack, note } = await quoteWith(woolworths, publicOnly, { roomCodes: ['STQN'] });
+    expect(fellBack).toBe(true);
+    expect(note).toBeNull();
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyContractReviewNote(woolworths, revision.groups)).toBe(copy);
   });
 });
