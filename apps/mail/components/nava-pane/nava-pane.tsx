@@ -31,6 +31,7 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { beginMutation, endMutation, mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -1816,6 +1817,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               </div>
             )}
 
+            {/* TODO(voucher-find): mount VoucherFindCard (components/quote-workflow/voucher-find-card.tsx, #73) here once #73 merges. */}
             <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
             <VoucherFindCard
               key={activeEmail?.internetMessageId ?? 'no-email'}
@@ -1833,6 +1835,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               Nava&apos;s suggestions from this email. Check and correct them before running searches.
             </p>}
 
+            {/* TODO(party-picker): once #61/#79 merge, pass findParty={PANE_PARTY_FINDER} (partyFinderFromTrpc(trpcClient), module scope) and wire per docs/plans/v8-party-wiring-notes.md §2 (on feat/v8-party). */}
             <QuoteWorkflowPanel
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
@@ -1875,6 +1878,13 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               }}
               onPreparePdf={() => preparePdfFor(null)}
               onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
+              onDownloadWorkbook={() =>
+                void downloadStaffQuoteWorkbook({
+                  session: quoteSessionRef.current,
+                  mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
+                  notify: (message) => toast.warning(message),
+                })
+              }
             />
 
             <div className="flex flex-col gap-2.5">
