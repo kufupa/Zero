@@ -10,8 +10,9 @@ export const PILOT_CAPABILITIES = {
   hotelCategories: true,
   staleDraftWarning: true,
   catchupUpload: false,
-  // Pane Preview/Book in HMS stay off until the server flag RESERVATIONIST_PANE_SAVE is on.
+  // Pane Preview/Book in HMS stay off until the server flag RESERVATIONIST_PANE_SAVE is lab or on.
   paneSave: false,
+  paneSaveMode: 'off',
 } satisfies PilotCapabilities;
 
 export function canUseNaturalLanguageSearch(): boolean {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { router as tRouter, privateProcedure } from '../trpc.js';
 import type { PilotCapabilities } from '../../lib/driver/types.js';
 import { isCatchupUploadEnabled } from '../../env.js';
-import { paneStaySaveEnabled } from '../../ai/pane-stay-save.js';
+import { paneStaySaveEnabled, paneStaySaveMode } from '../../ai/pane-stay-save.js';
 
 export const pilotCapabilities = {
   ai: false,
@@ -15,6 +15,7 @@ export const pilotCapabilities = {
   staleDraftWarning: true,
   catchupUpload: false,
   paneSave: false,
+  paneSaveMode: 'off',
 } satisfies PilotCapabilities;
 
 export function getPilotCapabilities(): PilotCapabilities {
@@ -22,6 +23,7 @@ export function getPilotCapabilities(): PilotCapabilities {
     ...pilotCapabilities,
     catchupUpload: isCatchupUploadEnabled(),
     paneSave: paneStaySaveEnabled(),
+    paneSaveMode: paneStaySaveMode(),
   };
 }
 

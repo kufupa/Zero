@@ -1,11 +1,19 @@
 // Pane side of the HMS save path. Preview fills the stay in HMS and checks availability; Book saves it.
-// The server answers only when RESERVATIONIST_PANE_SAVE is on (brain.getCapabilities.paneSave). Every
+// The server answers only when RESERVATIONIST_PANE_SAVE is lab or on (brain.getCapabilities.paneSave). Every
 // refusal the server can return is mapped here to plain words plus the next step.
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export const PANE_SAVE_LAB_GUARD_COPY =
   'Saving is only switched on for test bookings right now. Book this one by hand in HMS.';
+
+export const PANE_CHILDREN_COPY = 'Bookings with children: enter in HMS for now';
+
+// HMS field limits. They mirror the server caps (pane-stay-save.ts) so an over-long value shows here, not as a refusal.
+export const PANE_RESERVATION_NOTE_MAX = 2000;
+export const PANE_PARTY_NAME_MAX = 100;
+export const PANE_BOOKER_NAME_MAX = 50;
+export const PANE_BOOKER_EMAIL_MAX = 80;
 
 export const PANE_PREVIEW_FAILED_COPY =
   'Luna could not finish the preview in HMS. Nothing was saved. Press Preview in HMS again.';
@@ -17,6 +25,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
+  pane_save_children_unsupported: PANE_CHILDREN_COPY,
   pane_save_property_mismatch:
     'This booking is for a different hotel than this HMS session. Book it by hand in HMS.',
   osress_reader_parked:
@@ -52,6 +61,11 @@ export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGu
   return (reason && REFUSAL_COPY[reason]) || REFUSED_FALLBACK;
 }
 
+/** lab: only Labtest stays arriving 2027 or later save. on: real guests save too. off: copy-only. */
+export type PaneSaveMode = 'off' | 'lab' | 'on';
+
+export type PaneStayParty = { nativeId?: string; name: string };
+
 // The stay as the server takes it (paneStayInput). Key order is fixed so the field key is stable.
 export type PaneStayInput = {
   firstName: string;
@@ -65,6 +79,11 @@ export type PaneStayInput = {
   ratePlan: string;
   track: string;
   guaranteeType: string;
+  bookingAgency?: PaneStayParty;
+  organization?: PaneStayParty;
+  reservationNote?: string;
+  bookerName?: string;
+  bookerEmail?: string;
 };
 
 // Mirrors the server's PaneStayResult from quoteWorkflow.previewStay / commitStay.
@@ -83,6 +102,8 @@ export type PaneStayClient = {
   commit: (stay: PaneStayInput, previewDigest: string) => Promise<PaneStayResult>;
   /** Screenshot as a PNG data URL, or null when the run is gone or not this owner's. */
   screenshot: (runId: string, name: string) => Promise<string | null>;
+  /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
+  mode?: () => PaneSaveMode | null;
 };
 
 type PaneStayTrpc = {
@@ -101,9 +122,25 @@ type PaneStayTrpc = {
     };
   };
   brain?: {
-    getCapabilities: { query: () => Promise<{ paneSave?: boolean }> };
+    getCapabilities: { query: () => Promise<{ paneSave?: boolean; paneSaveMode?: unknown }> };
   };
 };
+
+// The mode each tRPC client last reported. The pane page reads the flag and builds its client from one tRPC object.
+// The root tRPC client is a Proxy over a function, so typeof is 'function', not 'object'.
+const paneSaveModes = new WeakMap<object, PaneSaveMode>();
+
+function isClientKey(value: unknown): value is object {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null;
+}
+
+export function paneSaveModeOf(
+  capabilities: { paneSave?: boolean; paneSaveMode?: unknown } | null | undefined,
+): PaneSaveMode {
+  if (capabilities?.paneSave !== true) return 'off';
+  // A server that does not name the mode predates lab/on. Its only open mode was the Labtest guard, which is lab.
+  return capabilities.paneSaveMode === 'on' ? 'on' : 'lab';
+}
 
 export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   const row = (trpc ?? {}) as PaneStayTrpc;
@@ -124,20 +161,34 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
       const result = await screenshot.query({ runId, name });
       return result.status === 'ok' && result.dataUrl ? result.dataUrl : null;
     },
+    mode: () => (isClientKey(trpc) ? (paneSaveModes.get(trpc) ?? null) : null),
   };
 }
 
-// The server flag, read through the tRPC client. Any failure reads as off, so the card stays copy-only.
+// The server mode, read through the tRPC client. Any failure reads as off, so the card stays copy-only.
 export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
+  let mode: PaneSaveMode = 'off';
   try {
     const capabilities = await (trpc as PaneStayTrpc).brain?.getCapabilities.query();
-    return capabilities?.paneSave === true;
+    mode = paneSaveModeOf(capabilities);
   } catch {
-    return false;
+    mode = 'off';
   }
+  if (isClientKey(trpc)) paneSaveModes.set(trpc, mode);
+  return mode !== 'off';
 }
 
-export type PaneStayChoice = { track: string; sourceOfBusiness: string; guaranteeType: string };
+export type PaneStayChoice = {
+  track: string;
+  sourceOfBusiness: string;
+  guaranteeType: string;
+  /** Typed in the card. A blank value is not sent. */
+  bookingAgency?: string;
+  organization?: string;
+  reservationNote?: string;
+  bookerName?: string;
+  bookerEmail?: string;
+};
 
 // Builds the stay for one room from its draft request and the staff's selects. Returns the names still
 // missing when the stay cannot be sent yet.
@@ -173,6 +224,20 @@ export function paneStayInputForRoom(
   if (!choice.sourceOfBusiness) missing.push('source of business');
   if (!choice.track) missing.push('track');
   if (!choice.guaranteeType) missing.push('guarantee');
+  const bookingAgency = text(choice.bookingAgency);
+  const organization = text(choice.organization);
+  const reservationNote = text(choice.reservationNote);
+  const bookerName = text(choice.bookerName);
+  const bookerEmail = text(choice.bookerEmail);
+  // An over-long value is named here so Preview waits; the server would refuse it at the schema.
+  const tooLong: Array<[boolean, string]> = [
+    [bookingAgency.length > PANE_PARTY_NAME_MAX, `agency name (${PANE_PARTY_NAME_MAX} characters at most)`],
+    [organization.length > PANE_PARTY_NAME_MAX, `organization name (${PANE_PARTY_NAME_MAX} characters at most)`],
+    [reservationNote.length > PANE_RESERVATION_NOTE_MAX, `reservation note (${PANE_RESERVATION_NOTE_MAX} characters at most)`],
+    [bookerName.length > PANE_BOOKER_NAME_MAX, `booker name (${PANE_BOOKER_NAME_MAX} characters at most)`],
+    [bookerEmail.length > PANE_BOOKER_EMAIL_MAX, `booker email (${PANE_BOOKER_EMAIL_MAX} characters at most)`],
+  ];
+  for (const [over, name] of tooLong) if (over) missing.push(name);
   if (missing.length) return { stay: null, missing };
 
   const childAges = Array.isArray(request.childAges)
@@ -191,6 +256,11 @@ export function paneStayInputForRoom(
       ratePlan,
       track: choice.track,
       guaranteeType: choice.guaranteeType,
+      ...(bookingAgency ? { bookingAgency: { name: bookingAgency } } : {}),
+      ...(organization ? { organization: { name: organization } } : {}),
+      ...(reservationNote ? { reservationNote } : {}),
+      ...(bookerName ? { bookerName } : {}),
+      ...(bookerEmail ? { bookerEmail } : {}),
     },
     missing: [],
   };

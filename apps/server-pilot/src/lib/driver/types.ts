@@ -165,8 +165,10 @@ export interface PilotCapabilities {
   hotelCategories: true;
   staleDraftWarning: true;
   catchupUpload: boolean;
-  /** True only when RESERVATIONIST_PANE_SAVE=on: the pane may offer Preview/Commit. */
+  /** True when RESERVATIONIST_PANE_SAVE is lab or on: the pane may offer Preview and Book. */
   paneSave: boolean;
+  /** The save mode behind paneSave: off (copy-only), lab (Labtest stays only) or on (real guests). */
+  paneSaveMode: 'off' | 'lab' | 'on';
 }
 
 export interface ManagerConfig {

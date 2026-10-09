@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
-import { loadCreateRequest, loadCreateToolSchema, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
+import { loadCreateRequest, loadCreateToolSchema, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 
 const REQUIRED = [
@@ -41,8 +41,9 @@ async function menu(page, names) {
   }
 }
 
+// Reservation Note is a textarea; every other target is an input. Both carry the native name.
 async function fillNamed(page, name, value) {
-  const input = page.locator(`input[name="${name}"]:visible`).first();
+  const input = page.locator(`input[name="${name}"]:visible, textarea[name="${name}"]:visible`).first();
   await input.click();
   await input.fill(value);
   await input.press('Tab');
@@ -287,8 +288,10 @@ async function main() {
     await fillNamed(page, 'rateplan', stay.ratePlan);
     await fillNamed(page, 'track', stay.track);
     if (stop.stopBefore !== 'availability') {
-      if (stay.agency) await fillNamed(page, 'ta1', stay.agency);
-      if (stay.organization) await fillNamed(page, 'company', stay.organization);
+      // Party lookups, Reservation Note and booker fields. Empty values are skipped. LIVE-UNVERIFIED: see create-request.mjs.
+      for (const [name, value] of Object.entries(optionalPartyAndNoteFills(stay))) {
+        if (value) await fillNamed(page, name, value);
+      }
       if (stay.arAccount) await fillNamed(page, 'araccountname', stay.arAccount);
       if (stay.billingReference) await fillNamed(page, 'billingreference', stay.billingReference);
       if (Object.hasOwn(stay, 'profileId')) await fillNamed(page, 'guestid', String(stay.profileId));

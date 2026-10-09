@@ -4,11 +4,17 @@ import { useEffect, useState } from 'react';
 import type { BookingDraftReady, BookingRateCheck, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
   commitOutcome,
+  PANE_BOOKER_EMAIL_MAX,
+  PANE_BOOKER_NAME_MAX,
+  PANE_CHILDREN_COPY,
   PANE_COMMIT_UNREACHABLE_COPY,
+  PANE_PARTY_NAME_MAX,
   PANE_PREVIEW_FAILED_COPY,
+  PANE_RESERVATION_NOTE_MAX,
   paneStayInputForRoom,
   paneStayKey,
   previewOutcome,
+  type PaneSaveMode,
   type PaneStayClient,
   type PaneStayInput,
 } from '@/lib/quote-workflow/pane-stay-bind';
@@ -168,6 +174,10 @@ const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const PANE_BUTTON =
   'h-8 rounded-xs border border-[#0066cc] bg-[#0066cc] px-3 text-[12px] font-semibold text-white disabled:border-[#cbd5e1] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]';
+// The Book label names the mode, so a lab-only server never reads as a live save.
+const BOOK_LABEL: Record<'lab' | 'on', string> = { lab: 'Book (lab test only)', on: 'Book in HMS' };
+const textareaClass =
+  'outline-hidden w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 type PreviewView =
   | { status: 'running'; key: string }
@@ -272,6 +282,7 @@ function RoomSave({
   missing,
   save,
   screenshot,
+  bookLabel,
   onPreview,
   onBook,
 }: {
@@ -279,6 +290,7 @@ function RoomSave({
   missing: string[];
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
+  bookLabel: string;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
@@ -336,7 +348,7 @@ function RoomSave({
       ) : null}
       {fresh && stay ? (
         <p className="text-[12px] text-[#1e293b]">
-          {`Luna will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press Book in HMS.`}
+          {`Luna will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
         </p>
       ) : null}
       {commit?.status === 'running' ? (
@@ -378,7 +390,7 @@ function RoomSave({
           }}
           className={PANE_BUTTON}
         >
-          Book in HMS
+          {bookLabel}
         </button>
       </div>
       <p className="text-[11px] text-[#64748b]">
@@ -390,6 +402,77 @@ function RoomSave({
   );
 }
 
+// Editable party and note field for one room, with Copy beside it for pasting into HMS by hand.
+function RoomTextField({
+  label,
+  roomIndex,
+  value,
+  disabled,
+  maxLength,
+  multiline = false,
+  onChange,
+}: {
+  label: string;
+  roomIndex: number;
+  value: string;
+  disabled: boolean;
+  maxLength: number;
+  multiline?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex items-end gap-2">
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        {label}
+        {multiline ? (
+          <textarea
+            rows={3}
+            aria-label={label}
+            disabled={disabled}
+            maxLength={maxLength}
+            value={value}
+            className={textareaClass}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        ) : (
+          <input
+            type="text"
+            aria-label={label}
+            disabled={disabled}
+            maxLength={maxLength}
+            value={value}
+            className={fieldClass}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        )}
+      </label>
+      <CopyButton label={label} roomIndex={roomIndex} value={value} />
+    </div>
+  );
+}
+
+type RoomChoice = {
+  track: string;
+  sourceOfBusiness: string;
+  guaranteeType: string;
+  bookingAgency: string;
+  organization: string;
+  reservationNote: string;
+  bookerName: string;
+  bookerEmail: string;
+};
+
+const NO_CHOICE: RoomChoice = {
+  track: '',
+  sourceOfBusiness: '',
+  guaranteeType: '',
+  bookingAgency: '',
+  organization: '',
+  reservationNote: '',
+  bookerName: '',
+  bookerEmail: '',
+};
+
 export function BookingCards({
   draft,
   groups = [],
@@ -397,11 +480,14 @@ export function BookingCards({
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
-  /** Set only when the server pane save flag is on. Without it the card stays copy-only. */
+  /** Set only when the server pane save flag is lab or on. Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
 }) {
   const client = paneSave;
-  const [choices, setChoices] = useState<Record<string, { track: string; sourceOfBusiness: string; guaranteeType: string }>>(
+  // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
+  const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
+  const savesOn = mode !== 'off';
+  const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
         draft.draft.rooms.map((room) => {
@@ -412,6 +498,11 @@ export function BookingCards({
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
+              bookingAgency: textValue(room.request.agency),
+              organization: textValue(room.request.organization),
+              reservationNote: textValue(room.request.reservationNote),
+              bookerName: textValue(room.request.bookerName),
+              bookerEmail: textValue(room.request.bookerEmail),
             },
           ];
         }),
@@ -471,7 +562,7 @@ export function BookingCards({
     <section className="flex flex-col gap-2">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Booking draft</h3>
       <p className="text-[11px] text-[#64748b]">
-        {client
+        {savesOn
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
           : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
@@ -490,7 +581,12 @@ export function BookingCards({
       ))}
       {draft.draft.rooms.map((room) => {
         const key = `${room.groupId}:${room.roomIndex}`;
-        const choice = choices[key] ?? { track: '', sourceOfBusiness: '', guaranteeType: '' };
+        const choice = choices[key] ?? NO_CHOICE;
+        const setChoice = (patch: Partial<RoomChoice>) =>
+          setChoices((current) => ({
+            ...current,
+            [key]: { ...(current[key] ?? NO_CHOICE), ...patch },
+          }));
         // Once Book in HMS is running or has booked this room, its choices are frozen so the card cannot show a new value beside the saved one.
         const commitStatus = saves[key]?.commit?.status;
         const locked = commitStatus === 'running' || commitStatus === 'booked';
@@ -500,7 +596,6 @@ export function BookingCards({
         const arrival = textValue(request.arrival);
         const departure = textValue(request.departure);
         const childCount = Array.isArray(request.childAges) ? request.childAges.length : 0;
-        const party = textValue(request.agency) || textValue(request.organization);
         const roomIndex = room.roomIndex;
         return (
           <article
@@ -518,7 +613,22 @@ export function BookingCards({
             <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} />
             <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} />
-            <CopyRow roomIndex={roomIndex} label="Company or travel agent" value={party} />
+            <RoomTextField
+              roomIndex={roomIndex}
+              label="Booking agency"
+              value={choice.bookingAgency}
+              disabled={locked}
+              maxLength={PANE_PARTY_NAME_MAX}
+              onChange={(value) => setChoice({ bookingAgency: value })}
+            />
+            <RoomTextField
+              roomIndex={roomIndex}
+              label="Organization"
+              value={choice.organization}
+              disabled={locked}
+              maxLength={PANE_PARTY_NAME_MAX}
+              onChange={(value) => setChoice({ organization: value })}
+            />
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
                 Source of business
@@ -527,12 +637,7 @@ export function BookingCards({
                   aria-label="Source of business"
                   className={fieldClass}
                   value={choice.sourceOfBusiness}
-                  onChange={(event) =>
-                    setChoices((current) => ({
-                      ...current,
-                      [key]: { ...choice, sourceOfBusiness: event.target.value },
-                    }))
-                  }
+                  onChange={(event) => setChoice({ sourceOfBusiness: event.target.value })}
                 >
                   <option value="">Select source</option>
                   {draft.options.sourceOfBusiness.map((option) => (
@@ -552,12 +657,7 @@ export function BookingCards({
                   aria-label="Track"
                   className={fieldClass}
                   value={choice.track}
-                  onChange={(event) =>
-                    setChoices((current) => ({
-                      ...current,
-                      [key]: { ...choice, track: event.target.value },
-                    }))
-                  }
+                  onChange={(event) => setChoice({ track: event.target.value })}
                 >
                   <option value="">Select track</option>
                   {draft.options.track.map((option) => (
@@ -577,12 +677,7 @@ export function BookingCards({
                   aria-label="Guarantee"
                   className={fieldClass}
                   value={choice.guaranteeType}
-                  onChange={(event) =>
-                    setChoices((current) => ({
-                      ...current,
-                      [key]: { ...choice, guaranteeType: event.target.value },
-                    }))
-                  }
+                  onChange={(event) => setChoice({ guaranteeType: event.target.value })}
                 >
                   <option value="">Select guarantee</option>
                   {draft.options.guaranteeType.map((option) => (
@@ -599,17 +694,48 @@ export function BookingCards({
               label="Special requests"
               value={(group?.specialRequests ?? []).join('; ')}
             />
+            <RoomTextField
+              multiline
+              roomIndex={roomIndex}
+              label="Reservation note"
+              value={choice.reservationNote}
+              disabled={locked}
+              maxLength={PANE_RESERVATION_NOTE_MAX}
+              onChange={(value) => setChoice({ reservationNote: value })}
+            />
+            <RoomTextField
+              roomIndex={roomIndex}
+              label="Booker name"
+              value={choice.bookerName}
+              disabled={locked}
+              maxLength={PANE_BOOKER_NAME_MAX}
+              onChange={(value) => setChoice({ bookerName: value })}
+            />
+            <RoomTextField
+              roomIndex={roomIndex}
+              label="Booker contact (email)"
+              value={choice.bookerEmail}
+              disabled={locked}
+              maxLength={PANE_BOOKER_EMAIL_MAX}
+              onChange={(value) => setChoice({ bookerEmail: value })}
+            />
             {room.schemaErrors.map((error) => (
               <p key={error} className="text-[11px] text-amber-800">
                 {error}
               </p>
             ))}
-            {client ? (
+            {childCount > 0 ? (
+              <p role="note" className="text-[11.5px] text-amber-900">
+                {PANE_CHILDREN_COPY}
+              </p>
+            ) : null}
+            {client && savesOn && childCount === 0 ? (
               <RoomSave
                 stay={built.stay}
                 missing={built.missing}
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
+                bookLabel={mode === 'on' ? BOOK_LABEL.on : BOOK_LABEL.lab}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
               />
@@ -617,34 +743,6 @@ export function BookingCards({
           </article>
         );
       })}
-      {client ? null : (
-        <>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled
-              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-            >
-              Preview
-            </button>
-            <button
-              type="button"
-              disabled
-              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-            >
-              Book in HMS
-            </button>
-            <button
-              type="button"
-              disabled
-              className="h-8 rounded-xs border border-[#cbd5e1] bg-[#f8fafc] px-2 text-[12px] font-semibold text-[#94a3b8]"
-            >
-              Save draft
-            </button>
-          </div>
-          <p className="text-[11px] text-[#64748b]">Saving from this pane is coming soon. For now, copy each field into HMS.</p>
-        </>
-      )}
     </section>
   );
 }
