@@ -4,12 +4,17 @@ import {
   type InboundTriageWarmRun,
 } from '../src/ai/quote-workflow-warmer.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
-import type { AgentRunRecord, AgentRunRecorder } from '../src/ai/hitl-recorder.js';
+import {
+  CACHE_ORIGIN_SKEW_MS,
+  type AgentRunRecord,
+  type AgentRunRecorder,
+  type OriginLookup,
+} from '../src/ai/hitl-recorder.js';
 import { quoteWorkflowLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { analyseQuoteSelection } from '../src/ai/quote-workflow-llm.js';
 import { appRouter } from '../src/trpc/router.js';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { getDb } from '../src/db/client.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -72,27 +77,50 @@ function adapterReturning() {
   return { adapter: { invoke } as never, invoke };
 }
 
-type StoredRun = AgentRunRecord & { id: string };
+type StoredRun = AgentRunRecord & { id: string; createdAt: Date };
+type MemorySink = AgentRunRecorder & { runs: StoredRun[] };
 
-/** In-memory sink through the recorder seam. Origin lookup mirrors the DB recorder. */
-function memorySink(options: { delayMs?: number; fail?: boolean } = {}) {
+/**
+ * In-memory sink through the recorder seam. The origin lookup mirrors the DB recorder: the producing run wins
+ * while it is still a model run for the input; otherwise the latest model run for the input written by the
+ * cache time plus the skew. beforeOriginLookup runs first, to model another caller finishing in between.
+ */
+function memorySink(
+  options: {
+    delayMs?: number;
+    fail?: boolean;
+    beforeOriginLookup?: (sink: MemorySink) => Promise<void>;
+  } = {},
+): MemorySink {
   const runs: StoredRun[] = [];
-  const findOriginRunId = vi.fn(async (inputKey: string) => {
+  const isModelRunFor = (run: StoredRun, inputKey: string) =>
+    run.inputKey === inputKey &&
+    run.source === 'luna' &&
+    (run.cacheStatus === 'miss' || run.cacheStatus === 'backfill');
+  const findOriginRunId = vi.fn(async (lookup: OriginLookup) => {
+    if (options.beforeOriginLookup) await options.beforeOriginLookup(sink);
+    if (lookup.producingRunId) {
+      const producing = runs.find(
+        (run) => run.id === lookup.producingRunId && isModelRunFor(run, lookup.inputKey),
+      );
+      if (producing) return producing.id;
+    }
+    const latestBy = lookup.cacheWrittenAt
+      ? lookup.cacheWrittenAt.getTime() + CACHE_ORIGIN_SKEW_MS
+      : Number.POSITIVE_INFINITY;
     const origin = [...runs]
       .reverse()
-      .find(
-        (run) => run.inputKey === inputKey && run.source === 'luna' && run.cacheStatus === 'miss',
-      );
+      .find((run) => isModelRunFor(run, lookup.inputKey) && run.createdAt.getTime() <= latestBy);
     return origin?.id ?? null;
   });
   const record = vi.fn(async (run: AgentRunRecord) => {
     if (options.fail) throw new Error('connection refused by ledger host');
     if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
     const id = `run-${runs.length + 1}`;
-    runs.push({ ...run, id });
+    runs.push({ ...run, id, createdAt: new Date() });
     return id;
   });
-  const sink: AgentRunRecorder & { runs: StoredRun[] } = { runs, findOriginRunId, record };
+  const sink: MemorySink = { runs, findOriginRunId, record };
   return sink;
 }
 
@@ -270,6 +298,74 @@ describe('quoteWorkflow.analyseSelection HITL ledger', () => {
       modelId: null,
     });
     expect(sink.runs[1].inputKey).toBe(sink.runs[0].inputKey);
+  });
+
+  it('keeps a cache hit on the run that wrote its entry when a newer run for the input lands first', async () => {
+    process.env.HITL_LEDGER = 'on';
+    let raced = false;
+    const sink = memorySink({
+      // Another pane finishes the same input between this hit's cache read and its origin lookup.
+      beforeOriginLookup: async (current) => {
+        if (raced) return;
+        raced = true;
+        await current.record({ ...current.runs[0]! });
+      },
+    });
+    quoteWorkflowLoaders.agentRunRecorder = sink;
+    const first = await analyse();
+    expect(first).toMatchObject({ analysisRunId: 'run-1' });
+    const second = await analyse();
+    expect(raced).toBe(true);
+    expect(sink.runs.map((run) => run.cacheStatus)).toEqual(['miss', 'miss', 'hit']);
+    expect(sink.runs[2]).toMatchObject({ cacheStatus: 'hit', cachedFromRunId: 'run-1' });
+    expect(second).toMatchObject({ analysisRunId: 'run-3' });
+  });
+
+  it('links an entry that names no run to the latest model run written by its cache time', async () => {
+    process.env.HITL_LEDGER = 'on';
+    const sink = memorySink();
+    quoteWorkflowLoaders.agentRunRecorder = sink;
+    await analyse();
+    const [name] = await readdir(cacheDir);
+    const path = join(cacheDir, name!);
+    const entry = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    delete entry.analysisRunId;
+    await writeFile(path, JSON.stringify(entry));
+    // A model run recorded well after the entry was written must not become its origin.
+    await sink.record({ ...sink.runs[0]! });
+    sink.runs[1]!.createdAt = new Date(Date.now() + CACHE_ORIGIN_SKEW_MS + 60 * 60_000);
+    await analyse();
+    expect(sink.runs[2]).toMatchObject({ cacheStatus: 'hit', cachedFromRunId: 'run-1' });
+  });
+
+  it('puts the booking-search amendment into the first displayed snapshot as flat paths', async () => {
+    process.env.HITL_LEDGER = 'on';
+    const sink = memorySink();
+    quoteWorkflowLoaders.agentRunRecorder = sink;
+    quoteWorkflowLoaders.loadSyncedSelection = async () =>
+      synced({
+        bodyText: 'Please cancel booking C123 for Rambuda, arriving 2026-11-12, leaving 2026-11-14.',
+      });
+    const amend = {
+      ...lunaResult(),
+      output: {
+        ...lunaOutput(),
+        workflow: 'amend',
+        confirmationNumber: 'C123',
+        guestLastName: 'Rambuda',
+        arrival: '2026-11-12',
+        departure: '2026-11-14',
+      },
+    };
+    quoteWorkflowLoaders.adapter = { invoke: vi.fn(async () => amend) } as never;
+    await analyse();
+    expect(sink.runs[0]!.suggestedFields).toMatchObject({
+      'amendment.confirmationNumber': 'C123',
+      'amendment.guestLastName': 'Rambuda',
+      'amendment.arrival': '2026-11-12',
+      'amendment.departure': '2026-11-14',
+    });
+    expect(sink.runs[0]!.suggestedFields).not.toHaveProperty('amendment');
   });
 
   it('records nothing when the loader gives no message or thread ids', async () => {

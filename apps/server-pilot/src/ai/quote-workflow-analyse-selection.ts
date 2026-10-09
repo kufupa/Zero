@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ModelAdapter } from './bedrock/adapter.js';
@@ -108,15 +108,22 @@ export function analyseCachePath(input: {
   );
 }
 
-export async function readAnalyseCache(path: string): Promise<Record<string, unknown> | null> {
+/** A cache entry and when it was written. The write time bounds the origin lookup for entries that name no run. */
+export async function readAnalyseCacheEntry(
+  path: string,
+): Promise<{ payload: Record<string, unknown>; writtenAt: Date } | null> {
   try {
-    const raw = await readFile(path, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
+    const writtenAt = (await stat(path)).mtime;
+    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
+    return { payload: parsed as Record<string, unknown>, writtenAt };
   } catch {
     return null;
   }
+}
+
+export async function readAnalyseCache(path: string): Promise<Record<string, unknown> | null> {
+  return (await readAnalyseCacheEntry(path))?.payload ?? null;
 }
 
 /** Only a Luna-ready entry is reused; regex fallback is never cached. */
@@ -318,17 +325,35 @@ function usageOf(telemetry: QuoteWorkflowTelemetry | undefined): AgentRunDraft['
   };
 }
 
-/** The mapped suggestion the pane pre-fills, without the raw model output. */
+/**
+ * The mapped suggestion the pane pre-fills, without the raw model output. Every branch (fresh model answer,
+ * regex fallback, cache hit) uses this one helper, so the first displayed snapshot holds the same fields.
+ * Amendment fields (guest name, dates, confirmation) are flat paths such as "amendment.guestLastName".
+ */
 function suggestedFieldsOf(payload: Record<string, unknown>): Record<string, unknown> {
+  const amendment = payload.amendment;
+  const amendmentPaths: Record<string, unknown> =
+    amendment && typeof amendment === 'object' && !Array.isArray(amendment)
+      ? Object.fromEntries(
+          Object.entries(amendment as Record<string, unknown>).map(([key, value]) => [
+            `amendment.${key}`,
+            value ?? null,
+          ]),
+        )
+      : {};
   return {
     intent: payload.intent ?? null,
     groups: payload.groups ?? [],
     secondaryAsks: payload.secondaryAsks ?? [],
     alternatives: payload.alternatives ?? [],
+    ...amendmentPaths,
   };
 }
 
-/** Adds analysisRunId only when the run was recorded. The cache file never carries it. */
+/**
+ * Adds analysisRunId only when the run was recorded. A cache entry stores the id of the run that produced it,
+ * so a later hit links to that run and not to whichever run is newest for the input.
+ */
 function withAnalysisRunId<T extends object>(
   payload: T,
   analysisRunId: string | null,
@@ -363,9 +388,12 @@ export async function analyseSyncedSelection(
         })
       : null;
   if (cacheFile) {
-    const hit = await readAnalyseCache(cacheFile);
-    if (hit && isReusableAnalyseCache(hit)) {
-      const payload = { ...hit, sourceRevision: options.selectionEpoch };
+    const entry = await readAnalyseCacheEntry(cacheFile);
+    const hit = entry?.payload ?? null;
+    if (entry && hit && isReusableAnalyseCache(hit)) {
+      // The producing run id is link data for the ledger. It is not part of the answer the pane shows.
+      const { analysisRunId: producingRunId, ...cached } = hit;
+      const payload = { ...cached, sourceRevision: options.selectionEpoch };
       const analysisRunId = ledger
         ? await recordAgentRunCapped(ledger.recorder, {
             ...ledger.draft,
@@ -379,7 +407,9 @@ export async function analyseSyncedSelection(
             latencyMs: Date.now() - started,
             usage: null,
             output: null,
-            suggestedFields: suggestedFieldsOf(hit),
+            suggestedFields: suggestedFieldsOf(payload),
+            producingRunId: typeof producingRunId === 'string' ? producingRunId : null,
+            cacheWrittenAt: entry.writtenAt,
           })
         : null;
       return {
@@ -423,15 +453,8 @@ export async function analyseSyncedSelection(
       amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,
     };
-    let cached = false;
-    if (cacheFile && cacheDir) {
-      try {
-        await writeAnalyseCache(cacheDir, cacheFile, payload);
-        cached = true;
-      } catch {
-        /* analysis still returns; cache is best-effort */
-      }
-    }
+    // Record first, so the cache entry can name the run that produced it. Recording is capped, so the
+    // entry is written without a run id when the ledger is slow, off, or failed.
     const analysisRunId = ledger
       ? await recordAgentRunCapped(ledger.recorder, {
           ...ledger.draft,
@@ -445,14 +468,18 @@ export async function analyseSyncedSelection(
           latencyMs: llm.telemetry?.latencyMs ?? Date.now() - started,
           usage: usageOf(llm.telemetry),
           output: luna,
-          suggestedFields: {
-            intent: mapped.intent,
-            groups: mapped.groups,
-            secondaryAsks: mapped.secondaryAsks,
-            alternatives: mapped.alternatives,
-          },
+          suggestedFields: suggestedFieldsOf(payload),
         })
       : null;
+    let cached = false;
+    if (cacheFile && cacheDir) {
+      try {
+        await writeAnalyseCache(cacheDir, cacheFile, withAnalysisRunId(payload, analysisRunId));
+        cached = true;
+      } catch {
+        /* analysis still returns; cache is best-effort */
+      }
+    }
     return {
       payload: withAnalysisRunId(payload, analysisRunId),
       outcome: { kind: 'luna', cached } as const,
@@ -501,12 +528,7 @@ export async function analyseSyncedSelection(
         latencyMs: llm.telemetry?.latencyMs ?? Date.now() - started,
         usage: usageOf(llm.telemetry),
         output: null,
-        suggestedFields: {
-          intent: analysis.intent,
-          groups: analysis.groups,
-          secondaryAsks: analysis.secondaryAsks,
-          alternatives: analysis.alternatives,
-        },
+        suggestedFields: suggestedFieldsOf(payload),
       })
     : null;
   return {

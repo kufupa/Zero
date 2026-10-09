@@ -7,7 +7,7 @@ import {
 } from '../db/schema/hitl.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isHitlLedgerEnabled, type EnvInput } from '../env.js';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, lte } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 
 /**
@@ -20,6 +20,11 @@ import { getDb, type DB } from '../db/client.js';
 export const HITL_RETENTION_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 /** Longest an analyse waits on the ledger before it returns without analysisRunId. */
 export const AGENT_RUN_RECORD_CAP_MS = 300;
+/**
+ * Cache entries written before their run was recorded name no producing run. For those, the origin is the
+ * latest model run for the input recorded no later than the cache write plus one record cap.
+ */
+export const CACHE_ORIGIN_SKEW_MS = AGENT_RUN_RECORD_CAP_MS;
 
 export type AgentRunTrigger = (typeof AGENT_RUN_TRIGGERS)[number];
 export type AgentRunCacheStatus = (typeof AGENT_RUN_CACHE_STATUSES)[number];
@@ -56,14 +61,31 @@ export type AgentRunDraft = {
   output: unknown;
   /** The mapped suggestion the pane pre-fills. */
   suggestedFields: unknown;
+  /**
+   * Cache hits only. The run that produced the cached answer, as the cache entry names it. Null when the
+   * entry names none (written before recording succeeded).
+   */
+  producingRunId?: string | null;
+  /** Cache hits only. When the cache entry was written. Bounds the origin lookup for entries that name no run. */
+  cacheWrittenAt?: Date | null;
 };
 
 export type AgentRunRecord = AgentRunDraft & { cachedFromRunId: string | null };
 
+/** What a cache hit links to. Read from the cache entry, never from the newest run for the input. */
+export type OriginLookup = {
+  inputKey: string;
+  producingRunId: string | null;
+  cacheWrittenAt: Date | null;
+};
+
 /** Recorder seam. Tests inject an in-memory sink; production uses createAgentRunRecorder. */
 export type AgentRunRecorder = {
-  /** Latest model run (miss or backfill, Luna source) for this input key. Null when none. */
-  findOriginRunId(inputKey: string): Promise<string | null>;
+  /**
+   * The run a cache hit links to. The producing run wins when it is still a model run for this input. Otherwise
+   * it is the latest model run for the input recorded no later than the cache write (see CACHE_ORIGIN_SKEW_MS).
+   */
+  findOriginRunId(lookup: OriginLookup): Promise<string | null>;
   /** Persists one run and resolves to its id. Rejects on failure; callers cap and swallow. */
   record(run: AgentRunRecord): Promise<string>;
 };
@@ -149,7 +171,13 @@ export async function recordAgentRunCapped(
   const settled = (async (): Promise<RecordOutcome> => {
     try {
       const cachedFromRunId =
-        draft.cacheStatus === 'hit' ? await recorder.findOriginRunId(draft.inputKey) : null;
+        draft.cacheStatus === 'hit'
+          ? await recorder.findOriginRunId({
+              inputKey: draft.inputKey,
+              producingRunId: draft.producingRunId ?? null,
+              cacheWrittenAt: draft.cacheWrittenAt ?? null,
+            })
+          : null;
       return { id: await recorder.record({ ...draft, cachedFromRunId }), code: 'ok' };
     } catch {
       return { id: null, code: 'error' };
@@ -190,17 +218,31 @@ export function createAgentRunRecorder(
   if (!options.enabled) return null;
   const clock = options.now ?? (() => new Date());
   return {
-    async findOriginRunId(inputKey) {
+    async findOriginRunId({ inputKey, producingRunId, cacheWrittenAt }) {
+      const modelRunForInput = and(
+        eq(aiAgentRun.inputKey, inputKey),
+        eq(aiAgentRun.source, 'luna'),
+        inArray(aiAgentRun.cacheStatus, ['miss', 'backfill']),
+      );
+      if (producingRunId) {
+        // Verified, not trusted: the id must still name a model run for this input. Retention may have purged it.
+        const [producing] = await db
+          .select({ id: aiAgentRun.id })
+          .from(aiAgentRun)
+          .where(and(eq(aiAgentRun.id, producingRunId), modelRunForInput))
+          .limit(1);
+        if (producing) return producing.id;
+      }
+      const bounded = cacheWrittenAt
+        ? and(
+            modelRunForInput,
+            lte(aiAgentRun.createdAt, new Date(cacheWrittenAt.getTime() + CACHE_ORIGIN_SKEW_MS)),
+          )
+        : modelRunForInput;
       const [origin] = await db
         .select({ id: aiAgentRun.id })
         .from(aiAgentRun)
-        .where(
-          and(
-            eq(aiAgentRun.inputKey, inputKey),
-            eq(aiAgentRun.source, 'luna'),
-            inArray(aiAgentRun.cacheStatus, ['miss', 'backfill']),
-          ),
-        )
+        .where(bounded)
         .orderBy(desc(aiAgentRun.createdAt))
         .limit(1);
       return origin?.id ?? null;

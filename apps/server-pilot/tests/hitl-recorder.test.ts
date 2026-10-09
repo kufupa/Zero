@@ -8,6 +8,7 @@ import {
   type AgentRunDraft,
   type AgentRunRecorder,
   type EpisodeState,
+  type OriginLookup,
 } from '../src/ai/hitl-recorder.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../src/db/client.js';
@@ -226,6 +227,59 @@ describe('analyseInputKey', () => {
   });
 });
 
+/** A DB handle that answers the origin queries in order and records the conditions it was asked with. */
+function originDb(answers: Array<Array<{ id: string }>>) {
+  const asked: unknown[] = [];
+  const chain = {
+    select: () => chain,
+    from: () => chain,
+    where: (condition: unknown) => {
+      asked.push(condition);
+      return chain;
+    },
+    orderBy: () => chain,
+    limit: async () => answers.shift() ?? [],
+  };
+  return { db: chain as never, asked };
+}
+
+describe('createAgentRunRecorder origin lookup', () => {
+  it('links the hit to its producing run when that run is still a model run for the input', async () => {
+    const { db, asked } = originDb([[{ id: 'run-producer' }]]);
+    const recorder = createAgentRunRecorder(db, { enabled: true })!;
+    await expect(
+      recorder.findOriginRunId({
+        inputKey: 'key-1',
+        producingRunId: 'run-producer',
+        cacheWrittenAt: new Date('2026-10-09T09:00:00Z'),
+      }),
+    ).resolves.toBe('run-producer');
+    expect(asked).toHaveLength(1);
+  });
+
+  it('falls back to the latest model run written by the cache time when the producing run is gone', async () => {
+    const { db, asked } = originDb([[], [{ id: 'run-latest' }]]);
+    const recorder = createAgentRunRecorder(db, { enabled: true })!;
+    await expect(
+      recorder.findOriginRunId({
+        inputKey: 'key-1',
+        producingRunId: 'run-purged',
+        cacheWrittenAt: new Date('2026-10-09T09:00:00Z'),
+      }),
+    ).resolves.toBe('run-latest');
+    expect(asked).toHaveLength(2);
+  });
+
+  it('looks up by input key alone when the entry names no run and gives no write time', async () => {
+    const { db, asked } = originDb([[{ id: 'run-latest' }]]);
+    const recorder = createAgentRunRecorder(db, { enabled: true })!;
+    await expect(
+      recorder.findOriginRunId({ inputKey: 'key-1', producingRunId: null, cacheWrittenAt: null }),
+    ).resolves.toBe('run-latest');
+    expect(asked).toHaveLength(1);
+  });
+});
+
 describe('recordAgentRunCapped', () => {
   it('returns the id the recorder gives, with no origin lookup on a miss', async () => {
     const recorder: AgentRunRecorder = {
@@ -239,17 +293,43 @@ describe('recordAgentRunCapped', () => {
     );
   });
 
-  it('links a cache hit to the origin run found by input key', async () => {
+  it('looks up the origin by input key only when the cache entry names no producing run', async () => {
     const recorder: AgentRunRecorder = {
-      findOriginRunId: vi.fn(async (key: string) => (key === 'key-1' ? 'run-1' : null)),
+      findOriginRunId: vi.fn(async (lookup: OriginLookup) =>
+        lookup.inputKey === 'key-1' ? 'run-1' : null,
+      ),
       record: vi.fn(async () => 'run-2'),
     };
     await expect(
       recordAgentRunCapped(recorder, draft({ cacheStatus: 'hit', inputKey: 'key-1' })),
     ).resolves.toBe('run-2');
-    expect(recorder.findOriginRunId).toHaveBeenCalledWith('key-1');
+    expect(recorder.findOriginRunId).toHaveBeenCalledWith({
+      inputKey: 'key-1',
+      producingRunId: null,
+      cacheWrittenAt: null,
+    });
     expect(recorder.record).toHaveBeenCalledWith(
       expect.objectContaining({ cachedFromRunId: 'run-1' }),
+    );
+  });
+
+  it('hands the producing run and the write time to the origin lookup, so the link is never a guess', async () => {
+    const writtenAt = new Date('2026-10-09T09:00:00Z');
+    const recorder: AgentRunRecorder = {
+      findOriginRunId: vi.fn(async () => 'run-producer'),
+      record: vi.fn(async () => 'run-hit'),
+    };
+    await recordAgentRunCapped(
+      recorder,
+      draft({ cacheStatus: 'hit', producingRunId: 'run-producer', cacheWrittenAt: writtenAt }),
+    );
+    expect(recorder.findOriginRunId).toHaveBeenCalledWith({
+      inputKey: 'b'.repeat(64),
+      producingRunId: 'run-producer',
+      cacheWrittenAt: writtenAt,
+    });
+    expect(recorder.record).toHaveBeenCalledWith(
+      expect.objectContaining({ cachedFromRunId: 'run-producer' }),
     );
   });
 
