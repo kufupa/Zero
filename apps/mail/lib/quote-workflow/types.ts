@@ -46,6 +46,8 @@ export type StayGroupRequirement = {
   organisation?: string;
   specialRequests: string[];
   fields: Record<string, FactProvenance>;
+  /** HMS rate code pinned from a rate card. Cleared when staff change the board, dates or room type by hand. */
+  rateCode?: string;
 };
 
 export type QuoteReviewItemKind =
@@ -177,6 +179,26 @@ export type StaffQuoteSource = {
   sourceHash: string;
 };
 
+/** A rate HMS returned for one room group. The rate cards show these; the server sends them on executeStaffQuote. */
+export type RateOption = {
+  id: string;
+  groupId: string;
+  board: 'room_only' | 'bb' | 'dinner_bb';
+  boardLabel: string;
+  rateCode: string;
+  rateLabel: string;
+  roomCode: string;
+  roomLabel: string;
+  contract: boolean;
+  onlyContract: boolean;
+  matchesRequest: boolean;
+  perNightMinor: number;
+  totalMinor: number;
+  currency: string;
+  priced: 'full' | 'summary';
+  selected: boolean;
+};
+
 export type StaffQuoteAllocation = {
   workflowRunId: string;
   revisionRef: string;
@@ -202,6 +224,8 @@ export type StaffQuoteAllocation = {
   runId?: string | null;
   /** Screenshot file names for runId, in capture order. */
   screenshots?: string[];
+  /** Rate options from this run. Carried on the allocation because the pane dispatches the allocation alone. */
+  rateOptions?: RateOption[];
 };
 
 /** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the server re-checks it before any rate. */
@@ -485,6 +509,8 @@ export type QuoteSession = {
   handledSourceKey: string | null;
   reviewItems: QuoteReviewItem[];
   handledReviewItemIds: string[];
+  /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
+  rateOptions?: RateOption[];
   /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
   bookingDraft: BookingDraftReady | null;
   /** Staff override that re-runs analyseSelection as quote or booking. */

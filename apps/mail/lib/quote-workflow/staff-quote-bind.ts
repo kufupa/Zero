@@ -8,6 +8,7 @@ import type {
   QueueStatus,
   QuoteOffer,
   QuoteRunScreenshotResult,
+  RateOption,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -55,6 +56,8 @@ export type StaffQuoteGroupInput = {
   childrenAges: number[];
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
+  /** The HMS rate a rate card pinned. Absent means HMS picks the rate, as before. */
+  rateCode?: string;
 };
 
 export type ExecuteStaffQuoteInput = {
@@ -104,6 +107,8 @@ export type ExecuteStaffQuoteResult = {
   /** Optional so a pane built before the server change still parses the result. */
   runId?: string | null;
   screenshots?: string[];
+  /** Optional: an older server sends none. */
+  rateOptions?: RateOption[];
 };
 
 export type StaffQuoteSourceResult =
@@ -251,6 +256,7 @@ export function staffQuoteGroupsFromStay(
       childrenAges: [...group.childrenAges],
       board: group.board,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
+      ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
   }
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
@@ -299,6 +305,52 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
     });
   }
   return actions;
+}
+
+const RATE_OPTION_BOARDS = new Set<string>(['room_only', 'bb', 'dinner_bb']);
+
+/**
+ * The rate options on a staff quote result. An older server sends none, so the list is empty. A row missing a field
+ * the cards need is dropped, so one bad row never breaks the quote.
+ */
+export function readRateOptions(value: unknown): RateOption[] {
+  if (!Array.isArray(value)) return [];
+  const options: RateOption[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== 'object') continue;
+    const raw = row as Record<string, unknown>;
+    if (
+      typeof raw.id !== 'string' ||
+      typeof raw.groupId !== 'string' ||
+      typeof raw.board !== 'string' ||
+      !RATE_OPTION_BOARDS.has(raw.board) ||
+      typeof raw.rateCode !== 'string' ||
+      typeof raw.roomCode !== 'string' ||
+      !Number.isSafeInteger(raw.perNightMinor) ||
+      !Number.isSafeInteger(raw.totalMinor)
+    ) {
+      continue;
+    }
+    options.push({
+      id: raw.id,
+      groupId: raw.groupId,
+      board: raw.board as RateOption['board'],
+      boardLabel: typeof raw.boardLabel === 'string' ? raw.boardLabel : '',
+      rateCode: raw.rateCode,
+      rateLabel: typeof raw.rateLabel === 'string' ? raw.rateLabel : '',
+      roomCode: raw.roomCode,
+      roomLabel: typeof raw.roomLabel === 'string' ? raw.roomLabel : '',
+      contract: raw.contract === true,
+      onlyContract: raw.onlyContract === true,
+      matchesRequest: raw.matchesRequest !== false,
+      perNightMinor: raw.perNightMinor as number,
+      totalMinor: raw.totalMinor as number,
+      currency: typeof raw.currency === 'string' ? raw.currency : 'ZAR',
+      priced: raw.priced === 'summary' ? 'summary' : 'full',
+      selected: raw.selected === true,
+    });
+  }
+  return options;
 }
 
 export type BoundStaffSource =
@@ -602,6 +654,7 @@ export async function bindExecuteStaffQuote(args: {
     if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor <= 0) {
       return { status: 'unavailable', reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.' };
     }
+    const rateOptions = readRateOptions(result.rateOptions);
     const staffQuote: StaffQuoteAllocation = {
       workflowRunId: result.workflowRunId,
       revisionRef: result.revisionRef,
@@ -627,6 +680,7 @@ export async function bindExecuteStaffQuote(args: {
       screenshots: Array.isArray(result.screenshots)
         ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
         : [],
+      ...(rateOptions.length ? { rateOptions } : {}),
     };
     return {
       status: 'ok',
