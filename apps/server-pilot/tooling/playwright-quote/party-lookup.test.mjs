@@ -204,9 +204,14 @@ function fakeClock() {
   return { now: 0, advance(ms) { this.now += ms; } };
 }
 
+/** A "Processing request" locator whose first match is shown exactly while `shown()` is true. */
+function maskLocator(shown) {
+  return { count: async () => (shown() ? 1 : 0), nth: () => ({ isVisible: async () => shown() }) };
+}
+
 test('waitForFreshGrid: a mask still up at the timeout is busy, never settled', async () => {
   const clock = fakeClock();
-  const page = { getByText: () => ({ count: async () => 1 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const page = { getByText: () => maskLocator(() => true), waitForTimeout: async (ms) => clock.advance(ms) };
   const read = async () => ({ rows: [], loaded: 0 });
   assert.equal(await lookup.waitForFreshGrid(page, 'organization', '0\u0002', { now: () => clock.now, read }), 'busy');
   assert.ok(clock.now >= lookup.LOOKUP_IDLE_TIMEOUT_MS);
@@ -215,7 +220,7 @@ test('waitForFreshGrid: a mask still up at the timeout is busy, never settled', 
 test('waitForFreshGrid: a mask that shows and clears settles the grid', async () => {
   const clock = fakeClock();
   const page = {
-    getByText: () => ({ count: async () => (clock.now >= 1000 && clock.now < 3000 ? 1 : 0) }),
+    getByText: () => maskLocator(() => clock.now >= 1000 && clock.now < 3000),
     waitForTimeout: async (ms) => clock.advance(ms),
   };
   const read = async () => ({ rows: [], loaded: 0 });
@@ -224,7 +229,7 @@ test('waitForFreshGrid: a mask that shows and clears settles the grid', async ()
 
 test('waitForFreshGrid: no mask and no change inside the window is not verified, not an empty answer', async () => {
   const clock = fakeClock();
-  const page = { getByText: () => ({ count: async () => 0 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const page = { getByText: () => maskLocator(() => false), waitForTimeout: async (ms) => clock.advance(ms) };
   const read = async () => ({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
   const before = lookup.gridKey({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
   assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'not_verified');
@@ -233,7 +238,7 @@ test('waitForFreshGrid: no mask and no change inside the window is not verified,
 
 test('waitForFreshGrid: a grid that changes from the snapshot settles without a mask', async () => {
   const clock = fakeClock();
-  const page = { getByText: () => ({ count: async () => 0 }), waitForTimeout: async (ms) => clock.advance(ms) };
+  const page = { getByText: () => maskLocator(() => false), waitForTimeout: async (ms) => clock.advance(ms) };
   const read = async () => (clock.now >= 2000
     ? { rows: [{ nativeId: '206', displayName: 'Tourvest Test Profile' }], loaded: 1 }
     : { rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
@@ -244,7 +249,7 @@ test('waitForFreshGrid: a grid that changes from the snapshot settles without a 
 test('waitForFreshGrid: a reload that starts late, inside the window, still settles', async () => {
   const clock = fakeClock();
   const page = {
-    getByText: () => ({ count: async () => (clock.now >= 9000 && clock.now < 12000 ? 1 : 0) }),
+    getByText: () => maskLocator(() => clock.now >= 9000 && clock.now < 12000),
     waitForTimeout: async (ms) => clock.advance(ms),
   };
   const read = async () => ({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
@@ -300,6 +305,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
       getByRole: (role, o) => loc(`${desc} >> role=${role}:${String(o?.name)}`),
       getByText: (re) => loc(`${desc} >> text:${String(re)}`),
       count: async () => counts(desc),
+      isVisible: async () => counts(desc) > 0,
       click: async () => {
         if (desc.includes('^Run$')) {
           if (runThrows) throw new Error('click intercepted');
@@ -427,4 +433,54 @@ test('a grid that changed to rows the query did not filter is not verified, neve
   const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
   assert.equal(found.outcome, 'execution_failure');
   assert.equal(found.issues[0].detail, 'rows_do_not_answer_query');
+});
+
+test('names in any script match their own read-back: Chinese, and accents folded like Zoë and Société', () => {
+  assert.equal(lookup.filterReadsBack('李明', '李明'), true);
+  assert.equal(lookup.filterReadsBack('Zoë', 'Zoë'), true);
+  assert.equal(lookup.filterReadsBack('Zoë', 'ZOE'), true);
+  assert.equal(lookup.filterReadsBack('Société', 'Societe'), true);
+  assert.equal(lookup.filterReadsBack('李明', '李'), false);
+  assert.equal(lookup.filterReadsBack('Zoë', 'Zo'), false);
+  assert.equal(lookup.filterReadsBack('李明', ''), false);
+  assert.equal(lookup.filterReadsBack('!!!', '!!!'), false);
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '1', displayName: 'Société Générale' }, 'Société'), true);
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '2', displayName: '李明 有限公司' }, '李明'), true);
+  assert.equal(lookup.rowAnswersQuery({ nativeId: '3', displayName: 'Unrelated' }, '李明'), false);
+});
+
+test('a search for a Chinese company name is answered from its grid, not filter_not_applied', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const store = [{ companyid: 301, companyname: '李明 有限公司' }];
+  const page = searchPage({
+    clock,
+    store: () => store,
+    mask: () => clock.now >= busyFrom && clock.now < busyUntil,
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () =>
+    lookup.searchKind(page, { kind: 'organization', query: { organizationName: '李明' } }),
+  );
+  assert.equal(found.outcome, 'resolved');
+  assert.deepEqual(found.candidates.map((c) => c.nativeId), ['301']);
+});
+
+test('a processing mask that is hidden does not hold the lookup busy: the grid change settles it', async () => {
+  const clock = fakeClock();
+  const page = {
+    getByText: () => ({ count: async () => 1, nth: () => ({ isVisible: async () => false }) }),
+    waitForTimeout: async (ms) => clock.advance(ms),
+  };
+  const before = lookup.gridKey({ rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 });
+  const read = async () =>
+    clock.now >= 2000
+      ? { rows: [{ nativeId: '206', displayName: 'Tourvest Test Profile' }], loaded: 1 }
+      : { rows: [{ nativeId: '207', displayName: 'Unrelated Company' }], loaded: 1 };
+  assert.equal(await lookup.waitForFreshGrid(page, 'organization', before, { now: () => clock.now, read }), 'settled');
+  assert.ok(clock.now < lookup.LOOKUP_IDLE_TIMEOUT_MS);
 });

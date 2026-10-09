@@ -43,15 +43,20 @@ export function lookupTruncated(loaded) {
   return Number(loaded) >= HMS_LOOKUP_PAGE_ROWS;
 }
 
-// Letters and digits only, so case, spacing and punctuation never fail a filter that was applied.
-function filterKey(value) {
-  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+// Letters and digits in any script, case folded, accents folded (Zoë reads as Zoe). Spacing and punctuation never count,
+// so a filter that was applied is never failed on formatting. Names in Chinese or other scripts keep their characters.
+function matchKey(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLocaleLowerCase('en')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
 /** True only when a filter input reads back the query that was typed into it. */
 export function filterReadsBack(query, readBack) {
-  const key = filterKey(query);
-  return key.length > 0 && filterKey(readBack) === key;
+  const key = matchKey(query);
+  return key.length > 0 && matchKey(readBack) === key;
 }
 
 /** The lookup's filter never reached the window, so its grid is not the query's. Fails closed: never no_match. */
@@ -361,7 +366,7 @@ export async function waitForFreshGrid(page, kind, before, {
   const start = now();
   let sawBusy = false;
   while (now() - start < timeoutMs) {
-    const busy = (await page.getByText(/Processing request/i).count()) > 0;
+    const busy = await busyMaskVisible(page);
     if (busy) sawBusy = true;
     if (sawBusy && !busy) return 'settled';
     if (!sawBusy && gridKey(await read(page, kind)) !== before) return 'settled';
@@ -371,20 +376,30 @@ export async function waitForFreshGrid(page, kind, before, {
   return sawBusy ? 'busy' : 'not_verified';
 }
 
+/**
+ * True when a "Processing request" mask is on screen. A hidden mask is left over from an earlier load, not a search in
+ * progress, so it never holds the lookup busy.
+ */
+async function busyMaskVisible(page) {
+  const masks = page.getByText(/Processing request/i);
+  const count = await masks.count();
+  for (let i = 0; i < count; i += 1) {
+    if (await masks.nth(i).isVisible().catch(() => false)) return true;
+  }
+  return false;
+}
+
 async function snapshotGrid(page, kind) {
   return gridKey(await readVisibleGrid(page, kind));
 }
 
-/** Text for matching: case and runs of spaces do not count. */
-function normalizedText(value) {
-  return String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-/** A row answers the query when its name contains the query, or its id is the query. */
+/** A row answers the query when its name contains the query (in any script), or its id is the query. */
 export function rowAnswersQuery(row, needle) {
   const query = String(needle ?? '').trim();
   if (!query) return true;
-  return normalizedText(row.displayName).includes(normalizedText(query)) || String(row.nativeId ?? '') === query;
+  const wanted = matchKey(query);
+  const byName = wanted.length > 0 && matchKey(row.displayName).includes(wanted);
+  return byName || String(row.nativeId ?? '') === query;
 }
 
 /** True only when every row of a grid answers the query. One row that does not means the grid was not filtered. */
