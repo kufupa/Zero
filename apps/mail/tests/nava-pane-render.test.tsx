@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
+import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -46,6 +47,8 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     staffQuoteRunId: null as null | string,
     staffQuoteScreenshots: [] as string[],
     screenshotReads: [] as string[],
+    // Replaces the default quote analysis for one test (an amendment email, for example).
+    analysisOverride: null as null | Record<string, unknown>,
   },
 }));
 
@@ -164,7 +167,7 @@ vi.mock('../providers/query-provider', () => ({
     quoteWorkflow: {
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
-        mutate: async () => ({
+        mutate: async () => bridgeMockState.analysisOverride ?? ({
           status: 'ready' as const,
           intent: 'quote' as const,
           groups: [
@@ -524,5 +527,137 @@ describe('NavaPane', () => {
     expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
     await openTellNava();
     expect(staffVisibleText()).not.toMatch(/luna/i);
+  });
+});
+
+/**
+ * Characterisation for the block split: each first-run and tool state, asserted on what staff see and kept as a
+ * DOM snapshot. The split must leave every snapshot unchanged.
+ */
+describe('NavaPane screen states', () => {
+  beforeEach(() => {
+    localStorage.setItem('nava_onboarding_completed', 'true');
+    voucherFindQuery.mockReset();
+    voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
+  });
+
+  afterEach(() => {
+    bridgeMockState.analysisOverride = null;
+    localStorage.clear();
+    sessionStorage.clear();
+    cleanup();
+  });
+
+  /** Lets the analysis, source and voucher reads that follow the first render land before the DOM is read. */
+  const settle = () =>
+    act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+  it('welcome: a first run shows the account step and the four-step bar', () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    expect(screen.getByRole('heading', { name: 'Welcome to Nava' })).toBeDefined();
+    expect(screen.getByText('ropperman@legacyhotels.co.za')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Confirm Account & Connect' })).toBeDefined();
+    expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
+    expect(screen.queryByRole('main')).toBeNull();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('tool: a finished first run opens the quote tool on the selected email', async () => {
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    expect(screen.queryByRole('button', { name: '4. Quote Tool' })).toBeNull();
+    expect(container.querySelector('#quote-selected-message')?.textContent).toContain('Suite Availability Request');
+    expect(
+      await screen.findByText('Nava filled these in from the email. Check them before getting rates.'),
+    ).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('booking: an amendment email shows the change card with the guest request and the confirmation number', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '57291630-1',
+        guestLastName: 'Smith',
+        arrival: '2026-10-31',
+        departure: '2026-11-07',
+        requestedChange: 'Add the night of 31 Oct',
+      },
+    };
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    expect(card.textContent).toContain('Add the night of 31 Oct');
+    expect(card.textContent).toContain('57291630-1');
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('voucher: a voucher email shows the Find the booking card with the guest it names', async () => {
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading });
+    expect(card.textContent).toContain('Guest Smith');
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('voucher: an unreadable PDF keeps the card with its missing-guest and partial-read notes', async () => {
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: null, arrival: '2026-11-12' },
+      file: null,
+      unreadPdfs: 1,
+    });
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading });
+    expect(card.textContent).toContain(VOUCHER_COPY.missingGuest);
+    expect(card.textContent).toContain(VOUCHER_COPY.partialRead);
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('review: the system check results sit at the foot of the tool once the check ends', async () => {
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.keyDown(openPaneMenuItem('Run system check'), { key: 'Enter' });
+    expect(await screen.findByText('System check results')).toBeDefined();
+    expect(screen.getByText('4. Nava server reachable')).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('diagnostics: the connection step after a successful server ping', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
+    expect(await screen.findByText(/API server pinged at/)).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
+  });
+
+  it('tour: the first slide of the feature tour, opened once the server ping succeeds', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
+    await screen.findByText(/API server pinged at/);
+    fireEvent.click(screen.getByRole('button', { name: 'Next: 60-Second Feature Tour' }));
+    expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
+    await settle();
+    expect(container).toMatchSnapshot();
   });
 });
