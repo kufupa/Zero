@@ -4,11 +4,17 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
-import { PANE_RELOAD_GUARD_KEY } from '../lib/workstation/pane-release-watch';
+import { reloadPane } from '../lib/workstation/pane-release-watch';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
+
+// The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
+vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/workstation/pane-release-watch')>()),
+  reloadPane: vi.fn(),
+}));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
 const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate } = vi.hoisted(() => ({
@@ -213,6 +219,8 @@ describe('NavaPane', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(reloadPane).mockClear();
     localStorage.clear();
     sessionStorage.clear();
     vi.unstubAllGlobals();
@@ -254,34 +262,6 @@ describe('NavaPane', () => {
     expect(screen.getByText(/About Nava Reservationist · Build build-l/)).toBeDefined();
   });
 
-  it('holds a build reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
-    vi.stubEnv('PROD', true);
-    mountBuildMeta(LOADED_BUILD);
-    const served = { build: LOADED_BUILD };
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
-    render(<NavaPane bridge={fakeBridge} />);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-
-    const pendingMutation = countMutationsLink({} as never)({
-      op: { id: 2, type: 'mutation', path: 'workstation.x', input: undefined, context: {} },
-      next: () => observable(() => () => {}),
-    } as never).subscribe({});
-    served.build = NEWER_BUILD;
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).toBeNull();
-
-    pendingMutation.unsubscribe();
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    await waitFor(() => expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).not.toBeNull());
-  });
-
   it('mounts and renders when reading sessionStorage throws', () => {
     vi.stubEnv('PROD', true);
     vi.stubGlobal('fetch', async () => new Response('', { status: 404 }));
@@ -299,34 +279,6 @@ describe('NavaPane', () => {
       if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
     }
   });
-  it('tells staff to reopen the pane when a newer build is served and storage is blocked', async () => {
-    vi.stubEnv('PROD', true);
-    mountBuildMeta(LOADED_BUILD);
-    const served = { build: LOADED_BUILD };
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
-    const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
-    Object.defineProperty(globalThis, 'sessionStorage', {
-      configurable: true,
-      get() {
-        throw new DOMException('Access is denied', 'SecurityError');
-      },
-    });
-    try {
-      render(<NavaPane bridge={fakeBridge} />);
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      });
-      served.build = NEWER_BUILD;
-      await act(async () => {
-        window.dispatchEvent(new Event('focus'));
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      });
-      expect(screen.getByText('New version available — reopen the pane.')).toBeDefined();
-    } finally {
-      if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
-    }
-  });
-
   it('runs the connection check again after a successful one', async () => {
     pingMutate.mockClear();
     render(<NavaPane bridge={fakeBridge} />);
@@ -338,38 +290,142 @@ describe('NavaPane', () => {
     await waitFor(() => expect(pingMutate).toHaveBeenCalledTimes(2));
   });
 
-  it('keeps an unsent Tell Nava note through a trip off the tool, and holds reloads until it is sent', async () => {
+  /** Policy tests run on fake timers: the pane's clock is the thing under test. */
+  const flush = (ms = 0) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
+  /** The Tell Nava box appears once the selected email's analysis lands. */
+  async function tellNavaBox(): Promise<HTMLTextAreaElement> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const box = screen.queryByLabelText("Tell Nava what's wrong");
+      if (box) return box as HTMLTextAreaElement;
+      await flush(0);
+    }
+    throw new Error('the Tell Nava box did not appear');
+  }
+
+  /** Production build, the served index carries LOADED_BUILD, and the server reports NEWER_BUILD. */
+  function servePendingBuild() {
     vi.stubEnv('PROD', true);
     mountBuildMeta(LOADED_BUILD);
-    const served = { build: LOADED_BUILD };
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: served.build })));
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ release: 'a'.repeat(64), build: NEWER_BUILD })),
+    );
+  }
+
+  /** The same bridge with another email selected: a switch the pane must act on. */
+  const otherEmailBridge = {
+    ...fakeBridge,
+    activeEmail: { ...fakeBridge.activeEmail, entryId: '002', subject: 'Different Guest Request' },
+  } as unknown as PaneBridge;
+
+  it('shows the pending build in the status line and never reloads on its own', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
     render(<NavaPane bridge={fakeBridge} />);
+    await flush(0);
+    expect(screen.getByText('New version available — it will load when you open the next email.')).toBeDefined();
 
+    window.dispatchEvent(new Event('focus'));
+    await flush(6 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+  });
+
+  it('typing in the pane restarts the 15-minute idle clock', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    render(<NavaPane bridge={fakeBridge} />);
+    const note = await tellNavaBox();
+
+    await flush(10 * 60_000);
+    fireEvent.input(note, { target: { value: 'x' } });
+    fireEvent.input(note, { target: { value: '' } });
+    await flush(10 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+
+    await flush(6 * 60_000);
+    expect(vi.mocked(reloadPane)).toHaveBeenCalled();
+  });
+
+  it('an unsent Tell Nava note holds the idle reload until it is cleared or sent', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    render(<NavaPane bridge={fakeBridge} />);
+    const note = await tellNavaBox();
+    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
+
+    await flush(20 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+
+    // Clearing the note is input, so the idle clock starts again from here.
+    fireEvent.input(note, { target: { value: '' } });
+    await flush(14 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+    await flush(60_000);
+    expect(vi.mocked(reloadPane)).toHaveBeenCalled();
+  });
+
+  it('reloads once after 15 idle minutes with a pending build', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    render(<NavaPane bridge={fakeBridge} />);
+    await flush(0);
+
+    await flush(14 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+    await flush(60_000);
+    expect(vi.mocked(reloadPane)).toHaveBeenCalledTimes(1);
+  });
+
+  it('an email switch reloads before the new email renders', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    const { rerender } = render(<NavaPane bridge={fakeBridge} />);
+    await flush(0);
+
+    rerender(<NavaPane bridge={otherEmailBridge} />);
+    await flush(0);
+    expect(vi.mocked(reloadPane)).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Loading the latest Nava pane…')).toBeDefined();
+    expect(screen.queryByText('Different Guest Request')).toBeNull();
+  });
+
+  it('an in-flight mutation blocks both the email-switch reload and the idle reload', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    const { rerender } = render(<NavaPane bridge={fakeBridge} />);
+    await flush(0);
+
+    const pendingMutation = countMutationsLink({} as never)({
+      op: { id: 3, type: 'mutation', path: 'workstation.x', input: undefined, context: {} },
+      next: () => observable(() => () => {}),
+    } as never).subscribe({});
+
+    rerender(<NavaPane bridge={otherEmailBridge} />);
+    await flush(0);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+    expect(screen.getByText('Different Guest Request')).toBeDefined();
+
+    await flush(20 * 60_000);
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+
+    pendingMutation.unsubscribe();
+    await flush(60_000);
+    expect(vi.mocked(reloadPane)).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an unsent Tell Nava note through a trip off the tool screen', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
     const note = await screen.findByLabelText("Tell Nava what's wrong");
-    fireEvent.change(note, { target: { value: 'Three nights from 12 Nov' } });
-    fireEvent.blur(note);
+    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
 
-    // Check connection leaves the tool screen; coming back must show the same text.
     fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('button', { name: /4\. Quote Tool/i }));
-    expect((await screen.findByLabelText("Tell Nava what's wrong") as HTMLTextAreaElement).value).toBe(
+    expect(((await screen.findByLabelText("Tell Nava what's wrong")) as HTMLTextAreaElement).value).toBe(
       'Three nights from 12 Nov',
     );
-
-    // Unsent text holds the auto-reload while focus is away from the pane's inputs.
-    served.build = NEWER_BUILD;
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).toBeNull();
-
-    // Sending the note releases the hold: the next idle check reloads.
-    const sentNote = screen.getByLabelText("Tell Nava what's wrong");
-    fireEvent.submit(sentNote.closest('form') as HTMLFormElement);
-    await waitFor(() => {
-      window.dispatchEvent(new Event('focus'));
-      expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).not.toBeNull();
-    });
   });
 });

@@ -9,6 +9,15 @@ export function mutationsInFlight(): number {
   return inFlight;
 }
 
+/** Counts a write made outside tRPC (the native reply draft) in the same counter. Pair with endMutation. */
+export function beginMutation(): void {
+  inFlight += 1;
+}
+
+export function endMutation(): void {
+  inFlight = Math.max(0, inFlight - 1);
+}
+
 /**
  * Counts each tRPC mutation from start until it settles, errors or is cancelled. Every
  * pane write (quote prep, booking, stay lookup, cancel, PDF) goes through the shared client,

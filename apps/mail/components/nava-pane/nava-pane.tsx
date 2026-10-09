@@ -20,13 +20,17 @@ import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import { PaneMenu } from './pane-menu';
 import {
-  createPaneReleaseWatch,
+  createPaneVersionWatch,
   fetchPaneVersion,
   loadedPaneBuild,
+  PANE_IDLE_CHECK_MS,
   PANE_RELEASE_POLL_MS,
-  sessionPaneReloadGuard,
+  reloadAtEmailSwitch,
+  reloadAtIdle,
+  reloadPane,
+  type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
-import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { beginMutation, endMutation, mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -667,55 +671,73 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     setStaffNoteSent('');
   }, [selectedIdentity]);
 
-  // Stale-build check. Idle = no tRPC mutation or reply draft in flight, no unsent quote, booking or
-  // stay edits, and no focused input inside the pane. Reloading then loses nothing staff typed.
-  const paneRootRef = useRef<HTMLDivElement>(null);
-  const hasUnsentWork =
-    isDraftPending ||
-    quoteRunPending ||
-    quoteSession.runningStepId !== null ||
-    quoteSession.phase === 'analysing' ||
-    quoteSession.phase === 'native_pending' ||
+  // Unsent quote-session work that a reload would discard. Local field edits are not tracked one by one:
+  // any input in the pane resets the idle clock, and writes are counted, so no per-field checks are needed.
+  const quoteSessionDirty =
     combinedEdit !== null ||
     quoteSession.bookingDraft !== null ||
     unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
-  const isBusy = (): boolean => {
-    if (replyInFlight.current || mutationsInFlight() > 0 || hasUnsentWork) return true;
-    const active = document.activeElement;
-    return Boolean(
-      active &&
-        paneRootRef.current?.contains(active) &&
-        (active instanceof HTMLInputElement ||
-          active instanceof HTMLTextAreaElement ||
-          active instanceof HTMLSelectElement),
-    );
-  };
-  const isBusyRef = useRef(isBusy);
-  isBusyRef.current = isBusy;
   // The build this page was served, read from its index.html at page load (never from a fetch).
   const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
-  const [newerReleaseServed, setNewerReleaseServed] = useState(false);
+  // A newer build is live but not loaded. It loads at the next safe boundary: an email switch, or 15 idle minutes.
+  const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
+  const pendingBuildRef = useRef(pendingBuild);
+  pendingBuildRef.current = pendingBuild;
+  const quoteSessionDirtyRef = useRef(quoteSessionDirty);
+  quoteSessionDirtyRef.current = quoteSessionDirty;
+  // Input inside the pane (keys, typing, pointer) resets the idle clock.
+  const lastInputAtRef = useRef(Date.now());
+  const markInput = () => {
+    lastInputAtRef.current = Date.now();
+  };
   useEffect(() => {
     // Dev and test servers serve no release file, so only released builds check.
     if (!import.meta.env.PROD || loadedBuild === null) return;
-    const watch = createPaneReleaseWatch({
+    const watch = createPaneVersionWatch({
       loadedBuild,
       fetchServed: () => fetchPaneVersion(),
-      isBusy: () => isBusyRef.current(),
-      reload: () => window.location.reload(),
-      guard: sessionPaneReloadGuard(),
-      onNewerRelease: () => setNewerReleaseServed(true),
+      onPending: (served) => setPendingBuild(served),
     });
     const poll = () => void watch.check();
     poll();
     const timer = window.setInterval(poll, PANE_RELEASE_POLL_MS);
     window.addEventListener('focus', poll);
+    const idleTimer = window.setInterval(() => {
+      if (
+        reloadAtIdle({
+          pending: pendingBuildRef.current !== null,
+          mutationsInFlight: mutationsInFlight(),
+          quoteSessionDirty: quoteSessionDirtyRef.current,
+          idleMs: Date.now() - lastInputAtRef.current,
+        })
+      ) {
+        reloadPane();
+      }
+    }, PANE_IDLE_CHECK_MS);
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(idleTimer);
       window.removeEventListener('focus', poll);
     };
   }, [loadedBuild]);
+
+  // Email switch. A pending build loads before the new email renders, because panels reset on switch
+  // anyway. A mutation in flight keeps the pane on this build.
+  const renderedIdentityRef = useRef(selectedIdentity);
+  const reloadForSwitch =
+    selectedIdentity !== renderedIdentityRef.current &&
+    reloadAtEmailSwitch({ pending: pendingBuild !== null, mutationsInFlight: mutationsInFlight() });
+  const reloadForSwitchRef = useRef(false);
+  reloadForSwitchRef.current = reloadForSwitch;
+  // Sticky: once the switch reload is requested, the placeholder stays until the page is replaced.
+  const [switchReloading, setSwitchReloading] = useState(false);
+  useLayoutEffect(() => {
+    renderedIdentityRef.current = selectedIdentity;
+    if (!reloadForSwitchRef.current) return;
+    setSwitchReloading(true);
+    reloadPane();
+  }, [selectedIdentity]);
 
   // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
   const pendingDinnerFallbackStepRef = useRef<string | null>(null);
@@ -730,6 +752,13 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
         <p className="text-xs text-slate-500">Loading session…</p>
+      </div>
+    );
+  }
+  if (reloadForSwitch || switchReloading) {
+    return (
+      <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
+        <p className="text-xs text-slate-500">Loading the latest Nava pane…</p>
       </div>
     );
   }
@@ -801,6 +830,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
   const currentSubject = activeEmail?.subject || 'Suite Availability Request';
   const currentSender = activeEmail?.senderName || 'David Miller';
   const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
+
+  // The reply draft is a write to Outlook. It counts as in flight until it settles, like a tRPC mutation.
+  const trackedDraft = (scope: ReplyDraftScope) => {
+    beginMutation();
+    void handleInsertAiDraft(scope).finally(endMutation);
+  };
 
   const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected') => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
@@ -1403,7 +1438,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       : 'Draft the selected option only';
 
   return (
-    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm">
+    <div
+      onKeyDownCapture={markInput}
+      onInputCapture={markInput}
+      onPointerDownCapture={markInput}
+      className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+    >
       {/* Fills the Outlook pane; never narrower than 320px. */}
       <div className="shadow-xs relative flex min-h-screen w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
@@ -1470,9 +1510,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             </Button>
           </div>
         )}
-        {newerReleaseServed && (
+        {pendingBuild !== null && (
           <div role="status" className="m-3 mb-0 rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
-            <p>New version available — reopen the pane.</p>
+            <p>New version available — it will load when you open the next email.</p>
           </div>
         )}
         {selectionOutsideMailbox && (
@@ -1835,7 +1875,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 <Button
                   type="button"
                   aria-label={allOptionsDraft ? allOptionsLabel : 'Insert Draft in Outlook'}
-                  onClick={() => handleInsertAiDraft(allOptionsDraft ? 'all' : 'selected')}
+                  onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
                   disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
                   className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
                 >
@@ -1871,7 +1911,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                   <Button
                     type="button"
                     aria-label={selectedOptionLabel}
-                    onClick={() => handleInsertAiDraft('selected')}
+                    onClick={() => trackedDraft('selected')}
                     disabled={
                       !activeEmail ||
                       !supportsAction('CREATE_REPLY_DRAFT') ||

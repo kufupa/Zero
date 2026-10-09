@@ -1,18 +1,16 @@
 /**
- * Stale-build check for the Outlook pane. The page knows the build it was served: root.tsx
- * writes it into index.html as <meta name="nava-pane-build">, and the page reads it at load.
- * nginx answers PANE_VERSION_URL with the release it serves, and that release's build id.
- * When the served build differs from the loaded one, the page reloads once it is idle, so
- * staff pick up fixes without re-installing the add-in.
- *
- * The loaded identity is never taken from a fetch. A pane that loaded before a deploy stays
- * stale whether or not its first check ever succeeded.
+ * Stale-build check for the Outlook pane. The page knows the build it was served: root.tsx writes it
+ * into index.html and the page reads it at load. nginx answers PANE_VERSION_URL with the release it
+ * serves and that release's build. A different build is pending: the page keeps its content and says
+ * so. It reloads only at a safe boundary, never mid-work:
+ *   - an email switch: panels reset on switch anyway, so nothing typed is lost;
+ *   - PANE_IDLE_RELOAD_MS with no input in the pane, nothing in flight, and no dirty quote session.
  */
 export const PANE_VERSION_URL = '/pane-version.json';
 export const PANE_BUILD_META = 'nava-pane-build';
 export const PANE_RELEASE_POLL_MS = 5 * 60 * 1000;
-export const PANE_RELOAD_GAP_MS = 10 * 60 * 1000;
-export const PANE_RELOAD_GUARD_KEY = 'nava_pane_auto_reload_at';
+export const PANE_IDLE_RELOAD_MS = 15 * 60 * 1000;
+export const PANE_IDLE_CHECK_MS = 60 * 1000;
 
 const RELEASE_ID = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^[A-Za-z0-9._-]{8,64}$/;
@@ -47,86 +45,26 @@ export async function fetchPaneVersion(fetchImpl: typeof fetch = fetch): Promise
   }
 }
 
-export type PaneReloadGuard = {
-  /** False when the reload limit cannot survive a reload. Auto-reload is then off for this page. */
-  readonly persistent: boolean;
-  readAt(): number | null;
-  /** Records a reload. False when it could not be recorded, and the caller must not reload. */
-  writeAt(at: number): boolean;
-};
-
-/**
- * sessionStorage survives the reload it guards, so the 10-minute limit holds across it.
- * WebViews can block storage, or make even reading it throw. An in-memory record would
- * reset on the reload it guards, so in that case the guard is not persistent and the pane
- * never reloads itself.
- */
-export function sessionPaneReloadGuard(): PaneReloadGuard {
-  let storage: Storage | null = null;
-  try {
-    storage = typeof sessionStorage === 'undefined' ? null : sessionStorage;
-    // Probe: reading throws when storage is blocked.
-    storage?.getItem(PANE_RELOAD_GUARD_KEY);
-  } catch {
-    storage = null;
-  }
-  return {
-    persistent: storage !== null,
-    readAt() {
-      try {
-        const raw = storage?.getItem(PANE_RELOAD_GUARD_KEY);
-        const at = raw === null || raw === undefined ? NaN : Number(raw);
-        return Number.isFinite(at) ? at : null;
-      } catch {
-        return null;
-      }
-    },
-    writeAt(at) {
-      try {
-        storage?.setItem(PANE_RELOAD_GUARD_KEY, String(at));
-        return storage !== null;
-      } catch {
-        return false;
-      }
-    },
-  };
-}
-
-export type PaneReleaseWatchOptions = {
+export type PaneVersionWatchOptions = {
   /** The build this page runs, captured at page load. Never taken from a fetch. */
   loadedBuild: string;
   fetchServed: () => Promise<PaneVersion | null>;
-  /** True while staff work would be lost by a reload (in-flight mutation or unsent edits). */
-  isBusy: () => boolean;
-  reload: () => void;
-  guard: PaneReloadGuard;
-  now?: () => number;
-  /** Called when a different build is served but auto-reload is off, so staff can reopen the pane. */
-  onNewerRelease?: (served: PaneVersion) => void;
+  /** Called with the served version whenever it differs from the loaded build. It never reloads. */
+  onPending: (served: PaneVersion) => void;
 };
 
-export type PaneReleaseWatch = {
-  /** One check: reloads when the served build differs from the loaded one, the pane is idle, and the limit allows. */
+export type PaneVersionWatch = {
+  /** One check. Silent on failure. Concurrent calls share one request. */
   check(): Promise<void>;
 };
 
-export function createPaneReleaseWatch(options: PaneReleaseWatchOptions): PaneReleaseWatch {
-  const now = options.now ?? Date.now;
+export function createPaneVersionWatch(options: PaneVersionWatchOptions): PaneVersionWatch {
   let inFlight: Promise<void> | null = null;
 
   async function runCheck(): Promise<void> {
     const served = await options.fetchServed();
-    // Silent on failure. The loaded build is known from the page, so a missed check only delays the reload.
     if (served === null || served.build === options.loadedBuild) return;
-    if (!options.guard.persistent) {
-      options.onNewerRelease?.(served);
-      return;
-    }
-    if (options.isBusy()) return;
-    const lastReloadAt = options.guard.readAt();
-    if (lastReloadAt !== null && now() - lastReloadAt < PANE_RELOAD_GAP_MS) return;
-    if (!options.guard.writeAt(now())) return;
-    options.reload();
+    options.onPending(served);
   }
 
   return {
@@ -142,4 +80,29 @@ export function createPaneReleaseWatch(options: PaneReleaseWatchOptions): PaneRe
       return inFlight;
     },
   };
+}
+
+/** Email switch: a pending build loads before the new email renders, unless a mutation is in flight. */
+export function reloadAtEmailSwitch(state: { pending: boolean; mutationsInFlight: number }): boolean {
+  return state.pending && state.mutationsInFlight === 0;
+}
+
+/** Idle: no input in the pane for PANE_IDLE_RELOAD_MS, nothing in flight, and no dirty quote session. */
+export function reloadAtIdle(state: {
+  pending: boolean;
+  mutationsInFlight: number;
+  quoteSessionDirty: boolean;
+  idleMs: number;
+}): boolean {
+  return (
+    state.pending &&
+    state.mutationsInFlight === 0 &&
+    !state.quoteSessionDirty &&
+    state.idleMs >= PANE_IDLE_RELOAD_MS
+  );
+}
+
+/** The one place the pane reloads itself. Only the two boundary checks above call it. */
+export function reloadPane(): void {
+  window.location.reload();
 }
