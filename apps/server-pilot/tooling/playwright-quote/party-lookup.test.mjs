@@ -282,12 +282,49 @@ test('rows that do not answer the query make the grid unverified, row by row', (
   );
 });
 
+/** One response line for the fake page. Its body is read by the matcher, as a real request's would be. */
+function fakeResponse({ url, postData = '', status = 200 }) {
+  return {
+    url: () => url,
+    status: () => status,
+    request: () => ({ postData: () => postData, method: () => 'POST' }),
+    finished: async () => null,
+  };
+}
+
 /**
- * A fake page for searchKind. The lookup store, the Run control and the busy mask all follow the fake clock, so the
- * scenarios run without a browser and without waiting in real time.
+ * A fake page for searchKind. The lookup store, the Run control, the busy mask and the store's answer all follow the fake
+ * clock, so the scenarios run without a browser and without waiting in real time. `answer` is the store's answer to the Run
+ * click, { after, status, url, postData }; without it no answer comes. The clock moves in 50 ms steps, so a mask that shows
+ * and clears between two polls is still seen by a watcher armed before the click.
  */
-function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {} }) {
+function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {}, answer = null }) {
   const values = new Map();
+  const answerWaiters = [];
+  const pendingAnswers = [];
+  const maskWaiters = [];
+  const emitAnswer = (response) => {
+    for (const waiter of answerWaiters.splice(0)) {
+      if (waiter.predicate(response)) waiter.resolve(response);
+      else answerWaiters.push(waiter);
+    }
+  };
+  const flushAnswers = () => {
+    for (const item of pendingAnswers.splice(0)) {
+      if (item.at <= clock.now) emitAnswer(item.response);
+      else pendingAnswers.push(item);
+    }
+  };
+  const checkMask = () => {
+    if (!mask()) return;
+    for (const resolve of maskWaiters.splice(0)) resolve();
+  };
+  const scheduleAnswer = () => {
+    if (!answer) return;
+    const response = fakeResponse(answer);
+    if (answer.after <= 0) emitAnswer(response);
+    else pendingAnswers.push({ at: clock.now + answer.after, response });
+  };
   const counts = (desc) => {
     if (desc.includes('Processing request')) return mask() ? 1 : 0;
     if (desc.includes('^Run$')) return runButton ? 1 : 0;
@@ -306,10 +343,15 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
       getByText: (re) => loc(`${desc} >> text:${String(re)}`),
       count: async () => counts(desc),
       isVisible: async () => counts(desc) > 0,
+      waitFor: ({ state = 'visible' } = {}) => {
+        if (state !== 'visible' || !desc.includes('Processing request')) return Promise.resolve();
+        return new Promise((resolve) => maskWaiters.push(resolve));
+      },
       click: async () => {
         if (desc.includes('^Run$')) {
           if (runThrows) throw new Error('click intercepted');
           onRun();
+          scheduleAnswer();
         }
       },
       fill: async (v) => values.set(desc, String(v)),
@@ -321,7 +363,14 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
     return self;
   };
   const page = loc('page');
-  page.waitForTimeout = async (ms) => clock.advance(ms);
+  page.waitForTimeout = async (ms) => {
+    for (let elapsed = 0; elapsed < ms; elapsed += 50) {
+      clock.advance(Math.min(50, ms - elapsed));
+      checkMask();
+      flushAnswers();
+    }
+  };
+  page.waitForResponse = (predicate) => new Promise((resolve) => answerWaiters.push({ predicate, resolve }));
   page.setDefaultTimeout = () => {};
   return page;
 }
@@ -433,6 +482,97 @@ test('a grid that changed to rows the query did not filter is not verified, neve
   const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
   assert.equal(found.outcome, 'execution_failure');
   assert.equal(found.issues[0].detail, 'rows_do_not_answer_query');
+});
+
+// A synthetic path: the matcher reads the query in the request's URL or body, so the path does not matter.
+const ANSWER_URL = '/lookup/search';
+
+test('a fast answer with an empty grid is no_match, never a failure: the store answered for this query', async () => {
+  const clock = fakeClock();
+  const page = searchPage({
+    clock,
+    store: () => [],
+    answer: { after: 0, url: ANSWER_URL, postData: '{"organizationName":"Tourvest"}' },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'no_match');
+  assert.deepEqual(found.candidates, []);
+});
+
+test('a fast answer whose unchanged rows answer the query is resolved', async () => {
+  const clock = fakeClock();
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    answer: { after: 0, url: ANSWER_URL, postData: 'organizationName=Tourvest' },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.deepEqual(found.candidates.map((c) => c.nativeId), ['206']);
+});
+
+test('no answer to the search, and an empty grid that never changes, is a failure after the window, never no_match', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => [] });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].detail, 'grid_not_refreshed');
+});
+
+test('an answer that does not carry this query is not this search: an empty grid stays a failure', async () => {
+  const clock = fakeClock();
+  const page = searchPage({
+    clock,
+    store: () => [],
+    answer: { after: 0, url: ANSWER_URL, postData: '{"organizationName":"Unrelated Company"}' },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].detail, 'grid_not_refreshed');
+});
+
+test('an answer that is not 200 is a failure, never a read of the grid', async () => {
+  const clock = fakeClock();
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    answer: { after: 0, status: 500, url: ANSWER_URL, postData: '{"organizationName":"Tourvest"}' },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].detail, 'store_answer_failed');
+});
+
+test('a slow answer that lands while the mask shows is read once the mask clears and the grid agrees', async () => {
+  const clock = fakeClock();
+  let runAt = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    mask: () => clock.now >= runAt && clock.now < runAt + 2000,
+    onRun: () => {
+      runAt = clock.now;
+    },
+    answer: { after: 1000, url: ANSWER_URL, postData: '{"organizationName":"Tourvest"}' },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.deepEqual(found.candidates.map((c) => c.nativeId), ['206']);
+});
+
+test('a mask that shows and clears between two polls is still seen, so an unchanged grid is settled', async () => {
+  const clock = fakeClock();
+  let runAt = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    mask: () => clock.now >= runAt + 100 && clock.now < runAt + 200,
+    onRun: () => {
+      runAt = clock.now;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
 });
 
 test('names in any script match their own read-back: Chinese, and accents folded like Zoë and Société', () => {

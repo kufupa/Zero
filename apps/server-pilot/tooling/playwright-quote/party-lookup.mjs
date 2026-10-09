@@ -300,17 +300,73 @@ async function fillLookupFilter(page, kind, value) {
 }
 
 // Runs the lookup's search through its Run control. False when the window has no Run control or the click fails: the
-// search did not run, so nothing may be read from the grid.
+// search did not run, so nothing may be read from the grid. It returns as soon as the click lands. The completion watchers
+// (armLookupRun) are armed before the click, so a quick answer is not missed.
 async function runLookupFilter(page, kind) {
   const win = await lookupWindow(page, kind);
   for (const name of dialogRunNames(kind)) {
     const btn = win.getByRole('button', { name });
     if (!(await btn.count())) continue;
-    if (!(await btn.first().click().then(() => true, () => false))) return false;
-    await page.waitForTimeout(800);
-    return true;
+    return btn.first().click().then(() => true, () => false);
   }
   return false;
+}
+
+/** Decodes a URL or form body for matching. Text that does not decode is matched as it is. */
+function decodedText(value) {
+  const text = String(value ?? '');
+  try {
+    return decodeURIComponent(text.replace(/\+/g, ' '));
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * True when a response's URL or body carries the query as whole words, in any spelling matchKey folds. Only the query's own
+ * request carries it, so a response to another search or a background call never completes this one.
+ */
+function responseCarriesQuery(response, needle) {
+  const wanted = matchKey(needle);
+  if (!wanted) return false;
+  let body = '';
+  try {
+    body = response.request().postData() ?? '';
+  } catch {
+    body = '';
+  }
+  return ` ${matchKey(`${decodedText(response.url())} ${decodedText(body)}`)} `.includes(` ${wanted} `);
+}
+
+/**
+ * Arms the completion watchers for one Run click. Call it before the click, so an answer or a mask that lands during the
+ * click is never missed. `run.status` is 'answered' once the store answered 200 and the body is in (the response line alone
+ * is not yet the rows), 'failed' for any other answer, and 'none' when no answer carried the query before the timeout.
+ * `run.maskSeen` is set when the "Processing request" mask shows at any moment after arming.
+ */
+function armLookupRun(page, needle) {
+  const run = { status: 'pending', maskSeen: false };
+  page.waitForResponse((response) => responseCarriesQuery(response, needle), { timeout: LOOKUP_IDLE_TIMEOUT_MS }).then(
+    async (response) => {
+      if (response.status() !== 200) {
+        run.status = 'failed';
+        return;
+      }
+      const failure = typeof response.finished === 'function'
+        ? await response.finished().catch((error) => error || true)
+        : null;
+      run.status = failure ? 'failed' : 'answered';
+    },
+    () => {
+      run.status = 'none';
+    },
+  );
+  page.getByText(/Processing request/i).first()
+    .waitFor({ state: 'visible', timeout: LOOKUP_IDLE_TIMEOUT_MS })
+    .then(() => {
+      run.maskSeen = true;
+    }, () => {});
+  return run;
 }
 
 const GRID_HEADER_RE = /^(organization id|name|guest id|account|iata\/reference number|booking agency name|address|city|country|external id|last name|first name|second last name|restricted reason|email type|email address|contact last name)$/i;
@@ -355,10 +411,11 @@ export function gridKey(grid) {
 }
 
 /**
- * Decides whether a lookup's grid answers the search that was just run. It is settled when the "Processing request" mask
- * showed and then cleared, or when the grid changed from `before`, the grid read before the run. A mask still up at the
- * timeout is busy. With no mask and no change inside the window, the grid may still be the one from before the run, so
- * the answer is not verified. It is never read as no match.
+ * Decides whether a lookup's grid answers the search that was just run. With `run`, armed before the click, the search is
+ * settled once the store answered 200, the mask is gone, and two reads of the grid agree: an unchanged or empty grid is
+ * then a valid answer. Without a store answer, the grid is settled when the mask showed and then cleared, or when it changed
+ * from `before`, the grid read before the run. A mask still up at the timeout is busy. With no answer, no mask and no change
+ * inside the window, the answer is not verified. It is never read as no match.
  */
 export async function waitForFreshGrid(page, kind, before, {
   now = Date.now,
@@ -366,15 +423,28 @@ export async function waitForFreshGrid(page, kind, before, {
   changeWindowMs = LOOKUP_CHANGE_WINDOW_MS,
   pollMs = 500,
   read = readVisibleGrid,
+  run = null,
 } = {}) {
   const start = now();
   let sawBusy = false;
+  let previous = null;
   while (now() - start < timeoutMs) {
+    if (run?.status === 'failed') return 'answer_failed';
     const busy = await busyMaskVisible(page);
-    if (busy) sawBusy = true;
-    if (sawBusy && !busy) return 'settled';
-    if (!sawBusy && gridKey(await read(page, kind)) !== before) return 'settled';
-    if (!sawBusy && now() - start >= changeWindowMs) return 'not_verified';
+    if (busy || run?.maskSeen) sawBusy = true;
+    if (run?.status === 'answered') {
+      if (busy) {
+        previous = null;
+      } else {
+        const key = gridKey(await read(page, kind));
+        if (key === previous) return 'settled';
+        previous = key;
+      }
+    } else {
+      if (sawBusy && !busy) return 'settled';
+      if (!sawBusy && gridKey(await read(page, kind)) !== before) return 'settled';
+      if (!sawBusy && now() - start >= changeWindowMs) return 'not_verified';
+    }
     await page.waitForTimeout(pollMs);
   }
   return sawBusy ? 'busy' : 'not_verified';
@@ -497,16 +567,20 @@ async function readSettledGrid(page, kind, request, needle) {
   return classifyKindRows(kind, grid.rows, request, grid.loaded);
 }
 
-// One filtered lookup, fail-closed. `fill` puts the query into the window. The grid is read only after the search ran
-// and settled. Any step that cannot be verified is a failure, never no_match.
+// One filtered lookup, fail-closed. `fill` puts the query into the window. The grid is read only after the search ran and
+// settled. Any step that cannot be verified is a failure, never no_match.
 async function filteredLookup(page, kind, request, fill) {
   const before = await snapshotGrid(page, kind);
   if (!(await fill())) return filterNotApplied();
+  const needle = queryNeedle(request);
+  // Armed before the Run click, so an answer that lands during the click is never missed.
+  const run = armLookupRun(page, needle);
   if (!(await runLookupFilter(page, kind))) return filterNotVerified('run_not_clicked');
-  const settled = await waitForFreshGrid(page, kind, before);
+  const settled = await waitForFreshGrid(page, kind, before, { run });
   if (settled === 'busy') return lookupBusyTimeout();
+  if (settled === 'answer_failed') return filterNotVerified('store_answer_failed');
   if (settled !== 'settled') return filterNotVerified('grid_not_refreshed');
-  return readSettledGrid(page, kind, request, queryNeedle(request));
+  return readSettledGrid(page, kind, request, needle);
 }
 
 /** Searches one lookup kind by the request's query. Every answer comes from a verified, settled grid. */
@@ -559,14 +633,17 @@ export async function searchKind(page, request) {
   const searchText = guestWin.getByText(/^Search$/);
   const searchAnchor = guestWin.locator('a').filter({ hasText: /^Search$/ });
   const clicked = (locator) => locator.click().then(() => true, () => false);
+  // Armed before the Search click, so an answer that lands during the click is never missed.
+  const run = armLookupRun(page, queryNeedle(request));
   let searched;
   if (await searchBtn.count()) searched = await clicked(searchBtn.first());
   else if (await searchAnchor.count()) searched = await clicked(searchAnchor.last());
   else if (await searchText.count()) searched = await clicked(searchText.last());
   else searched = (await fillLookupFilter(page, 'guest', request.query.lastName)) && (await runLookupFilter(page, 'guest'));
   if (!searched) return filterNotVerified('search_not_clicked');
-  const settled = await waitForFreshGrid(page, 'guest', before);
+  const settled = await waitForFreshGrid(page, 'guest', before, { run });
   if (settled === 'busy') return lookupBusyTimeout();
+  if (settled === 'answer_failed') return filterNotVerified('store_answer_failed');
   if (settled !== 'settled') return filterNotVerified('grid_not_refreshed');
   const profileErr = page.getByText(/Cannot retrieve profile:/i);
   if (await profileErr.count()) {
