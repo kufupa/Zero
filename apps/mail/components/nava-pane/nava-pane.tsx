@@ -17,6 +17,12 @@ import { createOperationId, type MailLocation, type WorkstationEmailPayload } fr
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
+import {
+  createPaneReleaseWatch,
+  fetchPaneRelease,
+  PANE_RELEASE_POLL_MS,
+  sessionPaneReloadGuard,
+} from '@/lib/workstation/pane-release-watch';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -644,6 +650,52 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       setPingErrorMessage(err instanceof Error ? err.message : 'Connection failed');
     }
   };
+
+  // Stale-build check. Idle = no reply or HMS run in flight, no unsent quote, booking or stay edits,
+  // and no focused input inside the pane. Reloading then loses nothing staff typed.
+  const paneRootRef = useRef<HTMLDivElement>(null);
+  const hasUnsentWork =
+    isDraftPending ||
+    quoteRunPending ||
+    quoteSession.runningStepId !== null ||
+    quoteSession.phase === 'analysing' ||
+    quoteSession.phase === 'native_pending' ||
+    combinedEdit !== null ||
+    quoteSession.bookingDraft !== null ||
+    hasStaffStayEdits(quoteSession);
+  const isBusy = (): boolean => {
+    if (replyInFlight.current || hasUnsentWork) return true;
+    const active = document.activeElement;
+    return Boolean(
+      active &&
+        paneRootRef.current?.contains(active) &&
+        (active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          active instanceof HTMLSelectElement),
+    );
+  };
+  const isBusyRef = useRef(isBusy);
+  isBusyRef.current = isBusy;
+  const [paneRelease, setPaneRelease] = useState<string | null>(null);
+  useEffect(() => {
+    // Dev and test servers serve no release file, so only released builds check.
+    if (!import.meta.env.PROD) return;
+    const watch = createPaneReleaseWatch({
+      fetchRelease: () => fetchPaneRelease(),
+      isBusy: () => isBusyRef.current(),
+      reload: () => window.location.reload(),
+      guard: sessionPaneReloadGuard(),
+      onLoaded: setPaneRelease,
+    });
+    const poll = () => void watch.check();
+    poll();
+    const timer = window.setInterval(poll, PANE_RELEASE_POLL_MS);
+    window.addEventListener('focus', poll);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', poll);
+    };
+  }, []);
 
   // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
   const pendingDinnerFallbackStepRef = useRef<string | null>(null);
@@ -1331,7 +1383,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       : 'Draft the selected option only';
 
   return (
-    <div className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
+    <div ref={paneRootRef} className="flex min-h-screen w-full justify-center bg-[#f1f3f6] font-['Segoe_UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif]">
       {/* Strict 380px pane container */}
       <div className="shadow-xs relative flex min-h-screen w-[380px] min-w-[360px] max-w-[400px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
@@ -1896,6 +1948,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         {/* Minimal Pilot Footer */}
         <footer className="mt-auto flex shrink-0 items-center justify-center border-t border-[#f1f5f9] px-3 py-2 text-center">
           <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10.5px] text-[#94a3b8]">
+            {paneRelease && (
+              <>
+                <span>Build {paneRelease.slice(0, 7)}</span>
+                <span className="text-[#cbd5e1]">·</span>
+              </>
+            )}
             <span>
               Pilot feedback:{' '}
               <a href="mailto:aroransh17@gmail.com" className="text-[#64748b] hover:underline">

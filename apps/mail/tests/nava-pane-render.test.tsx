@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
@@ -192,6 +192,8 @@ describe('NavaPane', () => {
   afterEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     cleanup();
   });
 
@@ -200,5 +202,18 @@ describe('NavaPane', () => {
     expect(container.querySelector('header')?.textContent).toContain('Nava AI Reservationist');
     expect(container.querySelector('main')).not.toBeNull();
     expect(container.querySelector('footer')?.textContent).toContain('Pilot feedback');
+  });
+
+  it('shows the served release as Build plus its first seven characters in the footer', async () => {
+    // The release check runs only in production builds (import.meta.env.PROD).
+    vi.stubEnv('PROD', true);
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ release: 'c'.repeat(64) })),
+    );
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(container.querySelector('footer')?.textContent).toContain('Build ccccccc'),
+    );
   });
 });
