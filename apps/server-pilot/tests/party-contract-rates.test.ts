@@ -302,3 +302,85 @@ describe('suggestions for the picker', () => {
     ]);
   });
 });
+
+describe('a party-rate failure falls back to public rates, and only a typed failure does', () => {
+  it('classifies by type: our PartyRateFailure and the business evidence error with a party code; never a plain Error', async () => {
+    const { PartyRateFailure, isPartyRateFailure } = await import('../src/ai/party-rate-failure.js');
+    const { ReservationistTaskEvidenceUnavailable } = await import('../src/ai/reservationist-execution.js');
+    expect(isPartyRateFailure(new PartyRateFailure('staff_quote_party_unavailable'))).toBe(true);
+    expect(isPartyRateFailure(new ReservationistTaskEvidenceUnavailable('business_party_identity_unavailable', []))).toBe(true);
+    expect(isPartyRateFailure(new ReservationistTaskEvidenceUnavailable('native_quote_no_matching_rate', []))).toBe(false);
+    // A plain Error with a party code as its message is not judged by that text.
+    expect(isPartyRateFailure(new Error('staff_quote_party_unavailable'))).toBe(false);
+    expect(isPartyRateFailure(Object.assign(new Error('x'), { code: 'business_party_identity_unavailable' }))).toBe(false);
+  });
+
+  it('when HMS cannot price the picked company, the quote retries at public rates and says so in plain copy', async () => {
+    const { quoteWithPartyFallback, partyRateFallbackNote, prepareStaffQuote, executeStaffQuote } = await import(
+      '../src/ai/staff-quote-workflow.js'
+    );
+    const { PartyRateFailure } = await import('../src/ai/party-rate-failure.js');
+    const parties = { company: company('49', 'Woolworths') };
+    const normalizer2 = normalizer;
+    const readFor = (request: any) => {
+      const normalized = normalizer2.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
+      // The party's rate is not priceable (only an unflagged plan). The public request has BAR.
+      const rates = request.rateContext ? [NAME_ONLY] : [BAR];
+      return {
+        ref: 'source:1',
+        sha256: 'b'.repeat(64),
+        toolVersion: 'fixture',
+        observedAt: new Date().toISOString(),
+        request: normalized,
+        result: {
+          outcome: 'quote',
+          propertyCode: 'HRCEN',
+          groups: normalized.rooms.map((r: any) => ({
+            id: r.id,
+            request: r,
+            completeness: { search: 'complete', requiredFacts: 'complete' },
+            options: rates.map((rate) => rateOption(rate, resolvedContext(request.rateContext))),
+          })),
+        },
+      };
+    };
+    const runAttempt = async (attempt: ReturnType<typeof prepareStaffQuote>) =>
+      executeStaffQuote(
+        attempt,
+        createReservationistBusinessServices(
+          {
+            authorizationId: attempt.authorizationId,
+            authorizeContext: async () => true,
+            signer,
+            readQuote: async (request: any) => readFor(request),
+            resolvePolicy: async () => policy,
+          },
+          attempt.approval,
+        ),
+        async () => true,
+      );
+    const confirmed = groupInput(parties);
+    const outcome = await quoteWithPartyFallback({
+      input: confirmed,
+      first: prepareStaffQuote(confirmed, scope, signer, new AbortController().signal),
+      retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
+      run: runAttempt,
+    });
+    expect(outcome.fellBack).toBe(true);
+    expect(outcome.result.groups[0]!.rateCode).toBe('BARRO');
+    expect(outcome.note).toBe(partyRateFallbackNote(['Woolworths']));
+    expect(outcome.note).toBe("HMS couldn't apply the contract rate for Woolworths, so these are public rates. Check in HMS.");
+    // A plain Error is not a party-rate failure, so it is not swallowed by the fallback.
+    await expect(
+      quoteWithPartyFallback({
+        input: confirmed,
+        first: prepareStaffQuote(confirmed, scope, signer, new AbortController().signal),
+        retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
+        run: async () => {
+          throw new Error('staff_quote_party_unavailable');
+        },
+      }),
+    ).rejects.toThrow('staff_quote_party_unavailable');
+    expect(new PartyRateFailure('staff_quote_party_invalid').code).toBe('staff_quote_party_invalid');
+  });
+});

@@ -16,6 +16,7 @@ import {
   type AuthorizedProposalFacts,
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { isPartyRateFailure } from './party-rate-failure.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -144,23 +145,7 @@ export function partyContractReviewNote(
   return groups.some((group) => !isPublicRateCode(group.rateCode)) ? null : partyNoContractNote(partyNames(parties));
 }
 
-/** Codes a picked party can cause when HMS will not price its rate. The retry at public rates is for these only. */
-const PARTY_RATE_FAILURE_CODES: ReadonlySet<string> = new Set([
-  'business_party_identity_unavailable',
-  'business_party_lookup_unavailable',
-  'business_party_source_unbound',
-  'business_selected_price_unavailable',
-  'business_selected_joint_inventory_unavailable',
-  'staff_quote_party_unavailable',
-  'staff_quote_party_invalid',
-  'staff_quote_party_changed',
-]);
-
-export function isPartyRateFailure(error: unknown): boolean {
-  const code =
-    error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
-  return PARTY_RATE_FAILURE_CODES.has(code);
-}
+export { isPartyRateFailure, PartyRateFailure } from './party-rate-failure.js';
 
 /** The review note for a quote that fell back to public rates because HMS could not apply the contract rate. */
 export function partyRateFallbackNote(names: readonly string[]): string {
