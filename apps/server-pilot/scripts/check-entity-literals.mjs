@@ -7,7 +7,10 @@
  * the baseline is lowered. tests/ is not scanned.
  *
  *   node scripts/check-entity-literals.mjs                   check (pnpm check:entities)
- *   node scripts/check-entity-literals.mjs --print-baseline  print the current baseline JSON
+ *   node scripts/check-entity-literals.mjs --print-baseline  print the baseline lowered to current counts
+ *
+ * --print-baseline only shrinks: it drops entries that are gone and lowers counts, but never adds a
+ * new file/term pair or raises a count, so it cannot be used to launder a new literal.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -102,10 +105,15 @@ export function findEntityLiterals({ root = SERVER_ROOT, terms = SEEDS } = {}) {
   return groups.sort((a, b) => a.file.localeCompare(b.file) || a.term.localeCompare(b.term));
 }
 
-export function baselineFor(findings) {
+/** The baseline lowered to `findings`: gone entries dropped, counts lowered, nothing added or raised. */
+export function shrinkBaseline(findings, baseline) {
+  const found = new Map(findings.map((f) => [`${f.file}\0${f.term}`, f.count]));
   return {
     schema: 'entity-literals-baseline-v1',
-    entries: findings.map(({ file, term, count }) => ({ file, term, count })),
+    entries: baseline.entries.flatMap(({ file, term, count }) => {
+      const now = Math.min(count, found.get(`${file}\0${term}`) ?? 0);
+      return now > 0 ? [{ file, term, count: now }] : [];
+    }),
   };
 }
 
@@ -134,11 +142,11 @@ export function checkEntityLiterals({ root = SERVER_ROOT, terms = SEEDS, baselin
 }
 
 function main(argv) {
+  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
   if (argv.includes('--print-baseline')) {
-    process.stdout.write(`${JSON.stringify(baselineFor(findEntityLiterals()), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(shrinkBaseline(findEntityLiterals(), baseline), null, 2)}\n`);
     return 0;
   }
-  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
   const { findings, violations } = checkEntityLiterals({ baseline });
   if (violations.length) {
     for (const violation of violations) console.error(`check:entities ${violation}`);

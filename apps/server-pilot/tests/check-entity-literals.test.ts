@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { checkEntityLiterals } from '../scripts/check-entity-literals.mjs';
+import { checkEntityLiterals, findEntityLiterals, shrinkBaseline } from '../scripts/check-entity-literals.mjs';
 
 const EMPTY_BASELINE = { schema: 'entity-literals-baseline-v1', entries: [] };
 const SERVER_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -85,6 +85,30 @@ describe('check-entity-literals', () => {
     rmSync(path.join(root, 'src/ai/triage.ts'));
     expect(checkEntityLiterals({ root, baseline: exact }).violations).toEqual([
       "stale baseline in src/ai/triage.ts: 'synxis' baseline 2, found 0; lower it",
+    ]);
+  });
+
+  it('regenerates the baseline only downwards, never adding a new literal or raising a count', () => {
+    write('src/ai/triage.ts', "const a = 'synxis';\nconst b = 'travelit'; const c = 'travelit';\n");
+    write('src/ai/pricing.ts', "const partner = 'Woolworths';\n");
+    const baseline = {
+      schema: 'entity-literals-baseline-v1',
+      entries: [
+        { file: 'src/ai/triage.ts', term: 'synxis', count: 3 },
+        { file: 'src/ai/triage.ts', term: 'travelit', count: 1 },
+        { file: 'src/ai/old.ts', term: 'agoda', count: 1 },
+      ],
+    };
+
+    const shrunk = shrinkBaseline(findEntityLiterals({ root }), baseline);
+
+    expect(shrunk.entries).toEqual([
+      { file: 'src/ai/triage.ts', term: 'synxis', count: 1 },
+      { file: 'src/ai/triage.ts', term: 'travelit', count: 1 },
+    ]);
+    expect(checkEntityLiterals({ root, baseline: shrunk }).violations).toEqual([
+      "new literal in src/ai/pricing.ts: 'woolworths' x1 (baseline 0) at line 1",
+      "new literal in src/ai/triage.ts: 'travelit' x2 (baseline 1) at line 2, 2",
     ]);
   });
 
