@@ -8,6 +8,11 @@ import { attachment, message } from '../db/schema/mail.js';
 import { isGuestSurname } from './pane-stay-lookup.js';
 import { and, asc, eq } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
+import { isScannedPdfVisionEnabled } from '../env.js';
+import { maskCardNumbers } from './card-mask.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
+import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
+import { renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
@@ -344,5 +349,119 @@ export async function readVoucherAttachmentText(
   } catch {
     reader = async () => ({ text: null, reason: 'storage unavailable' });
   }
-  return readQuoteAttachments(files, reader);
+  return readScannedVoucherPages(await readQuoteAttachments(files, reader), {
+    enabled: isScannedPdfVisionEnabled(process.env),
+    adapter: azureVisionAdapter(),
+    signal: AbortSignal.timeout(VISION_DEADLINE_MS),
+  });
+}
+
+// Vision fallback for scanned voucher PDFs (SCANNED_PDF_VISION=on). Same Azure Luna route as the quote analyse.
+const VISION_MODEL_ID = 'gpt-6-luna';
+const VISION_DEADLINE_MS = 20_000;
+const VISION_SYSTEM_PROMPT =
+  'You read one scanned hotel booking voucher, sent as page images. Return JSON only: the guest surname, the arrival and departure dates (YYYY-MM-DD), and the confirmation or order number, each copied as printed. Use null for anything you cannot see. Never return a payment card number, card expiry date or security code.';
+const VISION_FIELDS = [
+  ['surname', 'Surname'],
+  ['arrival', 'Arrival'],
+  ['departure', 'Departure'],
+  ['confirmationNumber', 'Confirmation'],
+] as const;
+const VISION_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: Object.fromEntries(VISION_FIELDS.map(([key]) => [key, { type: ['string', 'null'] }])),
+  required: VISION_FIELDS.map(([key]) => key),
+  additionalProperties: false,
+};
+
+/** The Azure Luna route the quote analyse uses. Null when Azure is not configured. */
+function azureVisionAdapter(): ModelAdapter | null {
+  try {
+    return new LunaModelAdapter({
+      model: createAzureLunaModel(),
+      reasoningEffort: 'medium',
+      routeId: 'azure_quote',
+      modelId: VISION_MODEL_ID,
+      protocol: 'azure-openai-responses',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** The model's fields as labelled lines, the shape the voucher reader already parses. Null when it read none. */
+function visionFieldsText(output: Record<string, unknown>): string | null {
+  const lines = VISION_FIELDS.flatMap(([key, label]) => {
+    const value = output[key];
+    const clean = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+    return clean ? [`${label}: ${clean}`] : [];
+  });
+  return lines.length > 0 ? maskCardNumbers(lines.join('\n')) : null;
+}
+
+/** One scanned PDF in, its fields out as masked text: one model call. Null when the render or the model gives nothing. */
+async function scannedVoucherText(
+  pdf: Uint8Array,
+  options: { adapter: ModelAdapter; signal: AbortSignal; runner?: SandboxRunner },
+): Promise<string | null> {
+  const started = Date.now();
+  const pages = await renderPdfPagesForVision(Buffer.from(pdf), {
+    runner: options.runner,
+    signal: options.signal,
+  });
+  if (!pages) {
+    console.info('scanned_voucher_vision', { code: 'render_failed', ms: Date.now() - started });
+    return null;
+  }
+  try {
+    const result = await options.adapter.invoke({
+      modelId: VISION_MODEL_ID,
+      systemPrompt: VISION_SYSTEM_PROMPT,
+      userPrompt: 'The voucher pages are attached as images, in order.',
+      images: pages,
+      responseSchema: VISION_RESPONSE_SCHEMA,
+      signal: options.signal,
+    });
+    const text = visionFieldsText(result.output);
+    console.info('scanned_voucher_vision', {
+      code: text ? 'read' : 'no_fields',
+      pages: pages.length,
+      ms: Date.now() - started,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      costUsd: result.usage.estimatedCostUsd,
+      rateTableVersion: result.usage.rateTableVersion,
+    });
+    return text;
+  } catch {
+    console.info('scanned_voucher_vision', {
+      code: 'model_failed',
+      pages: pages.length,
+      ms: Date.now() - started,
+    });
+    return null;
+  }
+}
+
+/**
+ * Vision fallback for voucher PDFs with no embedded text. Each such file renders its first pages inside the sandbox and
+ * gets one model call. A file that reads nothing keeps its unread state, so the one unread notice still shows.
+ */
+export async function readScannedVoucherPages(
+  entries: SyncedQuoteAttachment[],
+  options: { enabled: boolean; adapter: ModelAdapter | null; signal: AbortSignal; runner?: SandboxRunner },
+): Promise<SyncedQuoteAttachment[]> {
+  const adapter = options.enabled ? options.adapter : null;
+  if (!adapter) return entries;
+  return Promise.all(
+    entries.map(async (entry) => {
+      if (entry.text?.trim() || !entry.pdf) return entry;
+      const text = await scannedVoucherText(entry.pdf, {
+        adapter,
+        signal: options.signal,
+        runner: options.runner,
+      });
+      return text ? { ...entry, text } : entry;
+    }),
+  );
 }

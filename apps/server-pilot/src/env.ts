@@ -205,6 +205,14 @@ export function isHitlLedgerEnabled(input: EnvInput = process.env): boolean {
   return input.HITL_LEDGER === 'on';
 }
 
+/**
+ * Vision fallback for scanned voucher PDFs. Only the exact value `on` enables it; unset, `off`, or anything else keeps
+ * voucher reads text-only.
+ */
+export function isScannedPdfVisionEnabled(input: EnvInput = process.env): boolean {
+  return input.SCANNED_PDF_VISION === 'on';
+}
+
 /** Check whether catch-up manual mail dump upload is enabled at runtime. */
 export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
   const val = input.CATCHUP_UPLOAD_ENABLED;
