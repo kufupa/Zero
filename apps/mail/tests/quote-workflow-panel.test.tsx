@@ -714,10 +714,10 @@ describe('the Find in HMS picker in the quote header', () => {
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('shows one Find in HMS picker per field when a finder is passed, and none without one', () => {
     const { unmount } = render(<QuoteWorkflowPanel session={headerSession({})} findParty={noMatch} />);
-    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Search HMS now' })).toHaveLength(2);
     unmount();
     render(<QuoteWorkflowPanel session={headerSession({})} />);
-    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Search HMS now' })).toBeNull();
   });
 
   it('drops a pick only when its own field is edited away from its name', () => {
@@ -757,7 +757,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
     render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />);
     expect(screen.getAllByText(/Pick the exact company or agency so Nava can get their rate/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Find in HMS' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Search HMS now' })[0]!);
     expect(
       await screen.findByText("Nava couldn't check HMS for this name. Try again, or quote at public rates."),
     ).toBeDefined();
