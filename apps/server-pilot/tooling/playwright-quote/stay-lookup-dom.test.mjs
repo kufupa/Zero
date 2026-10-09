@@ -224,6 +224,7 @@ const EXPECTED_STAY = {
   guaranteeType: 'Non-Guaranteed Individual',
   bookingAgency: null,
   organization: null,
+  reservationNote: null,
 };
 
 test('record form fixture: every shown field pairs with its label, across for attributes, span labels and nested trigger wrappers', async () => {

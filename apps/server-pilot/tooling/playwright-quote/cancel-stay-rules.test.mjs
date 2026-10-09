@@ -343,6 +343,8 @@ test('formLabelKey maps on-screen record labels and ignores the required-field d
   assert.equal(formLabelKey('Source Of Business:'), 'sourceOfBusiness');
   assert.equal(formLabelKey('Primary Booking Agency:•'), 'bookingAgency');
   assert.equal(formLabelKey('Organization:'), 'organization');
+  assert.equal(formLabelKey('Reservation Note / Billing Instructions:'), 'reservationNote');
+  assert.equal(formLabelKey('Cancellation Note:'), null);
   assert.equal(formLabelKey('Room Type:'), 'roomType');
   assert.equal(formLabelKey('Room Type for Charge:'), null);
   assert.equal(formLabelKey('Child 0 - 02:'), null);
@@ -396,7 +398,15 @@ test('stayFromFormPairs maps the record form labels to typed fields', () => {
     guaranteeType: 'Non-Guaranteed Indi...',
     bookingAgency: null,
     organization: null,
+    reservationNote: null,
   });
+});
+
+test('stayFromFormPairs reads the reservation note textarea as text, and null when it is empty', () => {
+  const filled = stayFromFormPairs([{ label: 'Reservation Note / Billing Instructions:', value: 'Quiet room requested' }]);
+  assert.equal(filled.stay.reservationNote, 'Quiet room requested');
+  const empty = stayFromFormPairs([{ label: 'Reservation Note / Billing Instructions:', value: '   ' }]);
+  assert.equal(empty.stay.reservationNote, null);
 });
 
 test('stayFromFormPairs leaves a field null when two different values conflict, and ignores blanks', () => {

@@ -481,6 +481,7 @@ const FORM_FIELD_BY_LABEL = new Map([
   ['guarantee type', 'guaranteeType'],
   ['primary booking agency', 'bookingAgency'],
   ['organization', 'organization'],
+  ['reservation note / billing instructions', 'reservationNote'],
 ]);
 export const STAY_FIELDS = [...FORM_FIELD_BY_LABEL.values()];
 const STAY_COUNT_FIELDS = new Set(['nights', 'adults', 'children']);
