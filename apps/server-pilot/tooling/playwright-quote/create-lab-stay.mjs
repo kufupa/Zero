@@ -34,11 +34,21 @@ async function shot(page, dir, name) {
   return path;
 }
 
-async function menu(page, names) {
+// On the EC2 browser (no tunnel latency) a Guest Stay click made while Front Desk is still expanding is dropped and the
+// screen never opens (same trap as cancel-stay.mjs openGuestStay). Wait for New Record, and click Guest Stay again if
+// it has not appeared.
+export async function openGuestStayForCreate(page, { attempts = 3, waitMs = 8000 } = {}) {
+  const node = (name) => page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) });
+  const newRecord = page.locator('[data-qtip="New Record (Ctrl+N)"]');
   await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of names) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
+  await node('Front Desk').click();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await page.waitForTimeout(800);
+    await node('Guest Stay').click();
+    const opened = await newRecord.first().waitFor({ state: 'visible', timeout: waitMs }).then(() => true, () => false);
+    if (opened) return;
   }
+  throw new Error('GUEST_STAY_NOT_OPENED');
 }
 
 // Reservation Note is a textarea; every other target is an input. Both carry the native name.
@@ -217,7 +227,7 @@ async function main() {
   const result = { guest: stay, held: false, saved: false, cancelled: false };
   try {
     await login(page, secret);
-    await menu(page, ['Front Desk', 'Guest Stay']);
+    await openGuestStayForCreate(page);
     if (process.env.LAB_CANCEL_CONFIRMATION) {
       const confirmation = process.env.LAB_CANCEL_CONFIRMATION;
       const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
