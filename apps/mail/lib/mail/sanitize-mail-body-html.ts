@@ -18,9 +18,12 @@ function isAllowedImageSource(src: string, shouldLoadImages: boolean): boolean {
 }
 
 /**
- * Layout and text properties only. None of them takes url(), so inline style cannot fetch a remote
- * resource. Positioning, background-image and list-style are left out on purpose.
+ * Layout and text properties only. Positioning, background-image and list-style are left out on
+ * purpose. Values carrying a CSS function that can load or run something (url, image-set,
+ * expression), a CSS escape or an HTML bracket are dropped.
  */
+const SAFE_STYLE_VALUE = /^(?![\s\S]*(?:url|image|image-set|expression)\s*\()[^\\<>]*$/i;
+
 const INLINE_STYLE_RULES = Object.fromEntries(
   [
     'background-color',
@@ -61,7 +64,7 @@ const INLINE_STYLE_RULES = Object.fromEntries(
     'vertical-align',
     'white-space',
     'width',
-  ].map((property) => [property, [/.*/]]),
+  ].map((property) => [property, [SAFE_STYLE_VALUE]]),
 );
 
 /**

