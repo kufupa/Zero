@@ -62,8 +62,8 @@ const paneStayInput = z.object({
 export type LoadSyncedSelection = (input: {
   transportId: string;
   internetMessageId?: string;
-  entryId: string;
-  storeId: string;
+  entryId?: string;
+  storeId?: string;
   signal?: AbortSignal;
 }) => Promise<SyncedQuoteSelection | null>;
 
@@ -86,11 +86,15 @@ export const quoteWorkflowLoaders: {
   promptVersion: null,
 };
 
+/**
+ * Only internetMessageId selects the mail. storeId, entryId and folderEntryId are
+ * optional and unused, so the web preview can analyse a thread without Outlook ids.
+ */
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
-  storeId: z.string().min(1),
-  entryId: z.string().min(1),
-  folderEntryId: z.string().min(1),
+  storeId: z.string().optional(),
+  entryId: z.string().optional(),
+  folderEntryId: z.string().optional(),
   selectionEpoch: z.number().int(),
   treatAs: z.enum(['quote', 'create_booking']).optional(),
   staffNote: z.string().max(4000).optional(),

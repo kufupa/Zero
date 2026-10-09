@@ -64,6 +64,8 @@ export interface ParsedMessage {
   threadId?: string;
   attachments?: ParsedMessageAttachment[];
   isDraft?: boolean;
+  /** Stored direction from mail.get. Absent on older payloads. */
+  direction?: 'inbound' | 'outbound';
   debugHeaders?: MailDebugHeaderLine[];
   listUnsubscribe?: string;
   listUnsubscribePost?: string;
