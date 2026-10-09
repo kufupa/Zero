@@ -12,6 +12,7 @@ import {
 import {
   canSearchVoucher,
   VOUCHER_COPY,
+  voucherConflictLines,
   voucherFindClientFromTrpc,
   voucherGuestLine,
   type VoucherFindReply,
@@ -41,11 +42,17 @@ export function VoucherFindCard({
   internetMessageId,
   trpc,
   download = downloadAttachmentViaBlob,
+  syncCommitted = null,
+  syncPending = false,
 }: {
   internetMessageId: string | null;
   trpc: unknown;
   /** Saves one attachment. The default fetches the signed URL and downloads the bytes. */
   download?: (input: AttachmentAccessInput) => Promise<void>;
+  /** The mailbox sync's committed count. An email the server had not stored yet is checked again when it advances. */
+  syncCommitted?: number | null;
+  /** True while the mailbox sync still has mail to store. Only then does an unstored email show the waiting note. */
+  syncPending?: boolean;
 }) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc), [trpc]);
   const searchClient = useMemo(() => amendSearchClientFromTrpc(trpc), [trpc]);
@@ -53,6 +60,8 @@ export function VoucherFindCard({
   const [search, setSearch] = useState<SearchStatus | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
   const mounted = useRef(false);
+  const [checkRound, setCheckRound] = useState(0);
+  const committedSeen = useRef(syncCommitted);
 
   useEffect(() => {
     mounted.current = true;
@@ -62,6 +71,7 @@ export function VoucherFindCard({
   }, []);
 
   // A new email starts clean: the last email's voucher, search and save state must not show under it.
+  // A new round (after a sync commit) starts the same way, and the cancelled round's answer is dropped.
   useEffect(() => {
     setReply(null);
     setSearch(null);
@@ -79,12 +89,34 @@ export function VoucherFindCard({
     return () => {
       live = false;
     };
-  }, [findClient, internetMessageId]);
+  }, [findClient, internetMessageId, checkRound]);
 
-  if (!reply || reply.status !== 'voucher') return null;
+  // An email the server has not stored yet is checked again when the sync commits. So is a check still in flight,
+  // because it may have read the store before the commit. A settled voucher or non-voucher is not checked again.
+  useEffect(() => {
+    if (committedSeen.current === syncCommitted) return;
+    committedSeen.current = syncCommitted;
+    if (reply === null || reply.status === 'unsynced') setCheckRound((round) => round + 1);
+  }, [reply, syncCommitted]);
+
+  if (!reply) return null;
+  if (reply.status === 'unsynced') {
+    if (!syncPending) return null;
+    return (
+      <section aria-label={VOUCHER_COPY.heading} className={panelClass}>
+        <p className={headingClass}>{VOUCHER_COPY.heading}</p>
+        <p role="status" className={infoNoteClass}>
+          {VOUCHER_COPY.waitingForSync}
+        </p>
+      </section>
+    );
+  }
+  if (reply.status !== 'voucher') return null;
   const { guest, file } = reply;
   const line = voucherGuestLine(guest);
   const canSearch = canSearchVoucher(guest) && searchClient !== null;
+  const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
+  const arrivalConflict = (guest.conflicts?.arrivals.length ?? 0) > 1;
 
   const runSearch = async () => {
     if (!canSearchVoucher(guest)) return;
@@ -119,12 +151,17 @@ export function VoucherFindCard({
       <p className={headingClass}>{VOUCHER_COPY.heading}</p>
       <p className={captionClass}>{VOUCHER_COPY.caption}</p>
       {line ? <p className={valueClass}>{line}</p> : null}
-      {guest.lastName === null ? (
+      {guest.lastName === null && !surnameConflict ? (
         <p className={warnNoteClass}>{VOUCHER_COPY.missingGuest}</p>
       ) : null}
-      {guest.lastName !== null && guest.arrival === null ? (
+      {guest.lastName !== null && guest.arrival === null && !arrivalConflict ? (
         <p className={warnNoteClass}>{VOUCHER_COPY.missingArrival}</p>
       ) : null}
+      {voucherConflictLines(guest).map((text) => (
+        <p key={text} className={warnNoteClass}>
+          {text}
+        </p>
+      ))}
       {canSearch ? (
         <button
           type="button"

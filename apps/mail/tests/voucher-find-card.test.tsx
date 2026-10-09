@@ -4,6 +4,7 @@
 import {
   canSearchVoucher,
   VOUCHER_COPY,
+  voucherConflictLines,
   voucherFindClientFromTrpc,
   voucherGuestLine,
   type VoucherFindReply,
@@ -204,5 +205,123 @@ describe('voucher find bind and copy', () => {
     expect(canSearchVoucher({ lastName: 'Smith', arrival: '2026-11-12' })).toBe(true);
     expect(canSearchVoucher({ lastName: 'Smith', arrival: null })).toBe(false);
     expect(canSearchVoucher({ lastName: null, arrival: '2026-11-12' })).toBe(false);
+  });
+});
+
+describe('voucher find card: waiting for the sync', () => {
+  it('shows the waiting note while the sync is pending, then checks again when it commits and shows the voucher', async () => {
+    const voucherFind = vi
+      .fn<(input: { internetMessageId: string }) => Promise<VoucherFindReply>>()
+      .mockResolvedValueOnce({ status: 'unsynced' })
+      .mockResolvedValue(VOUCHER);
+    const trpc = {
+      quoteWorkflow: { voucherFind: { query: voucherFind } },
+      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+    };
+    const { rerender } = render(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} syncPending />,
+    );
+    expect(await screen.findByText(VOUCHER_COPY.waitingForSync)).toBeTruthy();
+    expect(voucherFind).toHaveBeenCalledTimes(1);
+    rerender(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        syncCommitted={6}
+        syncPending={false}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(voucherFind).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(VOUCHER_COPY.waitingForSync)).toBeNull();
+  });
+
+  it('shows nothing for an unsynced email when no sync is pending, and does not check again without a commit', async () => {
+    const voucherFind = vi.fn(async (_input: { internetMessageId: string }) => ({ status: 'unsynced' as const }));
+    const trpc = { quoteWorkflow: { voucherFind: { query: voucherFind } } };
+    const { container, rerender } = render(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} syncPending={false} />,
+    );
+    await waitFor(() => expect(voucherFind).toHaveBeenCalledTimes(1));
+    expect(container.textContent).toBe('');
+    rerender(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} syncPending={false} />,
+    );
+    expect(voucherFind).toHaveBeenCalledTimes(1);
+  });
+
+  it('a check still in flight when the sync commits is run again, and its late answer cannot replace the new one', async () => {
+    let settleFirst: (reply: VoucherFindReply) => void = () => undefined;
+    const voucherFind = vi
+      .fn<(input: { internetMessageId: string }) => Promise<VoucherFindReply>>()
+      .mockImplementationOnce(() => new Promise<VoucherFindReply>((resolve) => { settleFirst = resolve; }))
+      .mockResolvedValue(VOUCHER);
+    const trpc = {
+      quoteWorkflow: { voucherFind: { query: voucherFind } },
+      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+    };
+    const { rerender } = render(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} />,
+    );
+    await waitFor(() => expect(voucherFind).toHaveBeenCalledTimes(1));
+    rerender(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={6} />,
+    );
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(voucherFind).toHaveBeenCalledTimes(2);
+    settleFirst({ status: 'unsynced' });
+    await waitFor(() => expect(screen.getByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy());
+    expect(screen.queryByText(VOUCHER_COPY.waitingForSync)).toBeNull();
+  });
+});
+
+describe('voucher find card: values that disagree', () => {
+  it('names the candidate surnames, and offers no search and no missing-name note', async () => {
+    const reply: VoucherFindReply = {
+      status: 'voucher',
+      messageId: 'm1',
+      guest: {
+        lastName: null,
+        arrival: '2026-11-12',
+        conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] },
+      },
+      file: VOUCHER.file,
+    };
+    const { trpc, searchGuest } = fakeTrpc({ reply });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    expect(await screen.findByText(`${VOUCHER_COPY.conflictLastNames} Smith, Jones.`)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+    expect(screen.queryByText(VOUCHER_COPY.missingGuest)).toBeNull();
+    expect(searchGuest).not.toHaveBeenCalled();
+  });
+
+  it('names the candidate arrival dates, and offers no search', async () => {
+    const reply: VoucherFindReply = {
+      status: 'voucher',
+      messageId: 'm1',
+      guest: {
+        lastName: 'Smith',
+        arrival: null,
+        conflicts: { lastNames: [], arrivals: ['2026-11-12', '2027-06-08'] },
+      },
+      file: VOUCHER.file,
+    };
+    const { trpc } = fakeTrpc({ reply });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    expect(
+      await screen.findByText(
+        `${VOUCHER_COPY.conflictArrivals} ${formatStayDate('2026-11-12')}, ${formatStayDate('2027-06-08')}.`,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+    expect(screen.queryByText(VOUCHER_COPY.missingArrival)).toBeNull();
+  });
+
+  it('lists nothing when the voucher agrees with itself', () => {
+    expect(voucherConflictLines({ lastName: 'Smith', arrival: '2026-11-12' })).toEqual([]);
+    expect(
+      voucherConflictLines({ lastName: null, arrival: null, conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] } }),
+    ).toEqual([`${VOUCHER_COPY.conflictLastNames} Smith, Jones.`]);
   });
 });

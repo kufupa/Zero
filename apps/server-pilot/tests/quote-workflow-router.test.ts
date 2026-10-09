@@ -1399,6 +1399,34 @@ describe('quoteWorkflow.voucherFind', () => {
     });
   });
 
+  it('reads the voucher-named PDF even after three unrelated PDFs, and every PDF only when none is voucher-named', async () => {
+    const readText = vi.fn(async (_files: Array<{ id: string; filename: string; sizeBytes: number }>) => []);
+    voucherLoaders.readText = readText;
+    voucherLoaders.candidate = async () => ({
+      messageId: 'm1',
+      subject: 'Proof of payment',
+      bodyText: 'Attached.',
+      attachments: [
+        attachmentRow('s1', 'statement-1.pdf'),
+        attachmentRow('s2', 'statement-2.pdf'),
+        attachmentRow('s3', 'statement-3.pdf'),
+        attachmentRow('v', 'Smith_VCH_1879000.pdf'),
+      ],
+    });
+    await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host' });
+    expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['v']);
+
+    readText.mockClear();
+    voucherLoaders.candidate = async () => ({
+      messageId: 'm2',
+      subject: 'Proof of payment',
+      bodyText: 'Attached.',
+      attachments: [attachmentRow('p1', 'payment-1.pdf'), attachmentRow('p2', 'payment-2.pdf')],
+    });
+    await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'def@host' });
+    expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['p1', 'p2']);
+  });
+
   it('refuses an empty Message-ID at the schema', async () => {
     await expect(
       mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '' }),

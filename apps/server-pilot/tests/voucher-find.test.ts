@@ -4,6 +4,7 @@ import {
   isVoucherMail,
   pickVoucherFile,
   surnameFrom,
+  voucherReadFiles,
 } from '../src/ai/voucher-find.js';
 import { describe, expect, it } from 'vitest';
 
@@ -116,21 +117,107 @@ describe('guest and arrival from the voucher text', () => {
     ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
   });
 
-  it('leaves a field null when labelled lines disagree, instead of picking one', () => {
+  it('leaves a field null when labelled lines disagree, instead of picking one, and lists the values for staff', () => {
     expect(
       extractVoucherGuest({
         subject: 'Voucher',
         bodyText: 'Guest: Smith\nGuest: Jones\nArrival: 12 Nov 2026',
         attachmentTexts: [],
       }),
-    ).toEqual({ lastName: null, arrival: '2026-11-12' });
+    ).toEqual({
+      lastName: null,
+      arrival: '2026-11-12',
+      conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] },
+    });
     expect(
       extractVoucherGuest({
         subject: 'Voucher',
         bodyText: 'Guest: Smith\nArrival: 12 Nov 2026\n(earlier) Arrival: 08 Jun 2027',
         attachmentTexts: [],
       }),
+    ).toEqual({
+      lastName: 'Smith',
+      arrival: null,
+      conflicts: { lastNames: [], arrivals: ['2026-11-12', '2027-06-08'] },
+    });
+  });
+
+  it('reads every labelled value on one line, so two guests or two arrivals on a line are a conflict', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith  Guest: Jones',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: null, arrival: null, conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] } });
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith  Arrival: 12 Nov 2026  Arrival: 08 Jun 2027',
+        attachmentTexts: [],
+      }),
+    ).toEqual({
+      lastName: 'Smith',
+      arrival: null,
+      conflicts: { lastNames: [], arrivals: ['2026-11-12', '2027-06-08'] },
+    });
+  });
+
+  it('a multi-word guest name keeps its surname when another label follows on the line', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Mary Smith  Arrival: 12 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
+  it('a value stops at the next label, so a departure date is never read as the arrival', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith  Arrival: TBA  Departure: 15 Nov 2026',
+        attachmentTexts: [],
+      }),
     ).toEqual({ lastName: 'Smith', arrival: null });
+  });
+
+  it('a conflict across the email and the voucher PDF text is also left for staff', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith\nArrival: 12 Nov 2026',
+        attachmentTexts: ['GUEST: Jones, Ann\nARRIVAL 2026-11-12'],
+      }),
+    ).toEqual({
+      lastName: null,
+      arrival: '2026-11-12',
+      conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] },
+    });
+    // The same surname in another spelling is one guest, not a conflict.
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith\nArrival: 12 Nov 2026',
+        attachmentTexts: ['GUEST: SMITH, John\nARRIVAL 2026-11-12'],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
+  it('reads voucher files first, and only falls back to every PDF when no PDF is voucher-named', () => {
+    const receipt1 = file('r1', 'receipt-1.pdf');
+    const receipt2 = file('r2', 'receipt-2.pdf');
+    const receipt3 = file('r3', 'receipt-3.pdf');
+    const voucher = file('v', 'Smith_VCH_1879000.pdf');
+    expect(voucherReadFiles([receipt1, receipt2, receipt3, voucher]).map((f) => f.id)).toEqual(['v']);
+    expect(voucherReadFiles([receipt1, receipt2]).map((f) => f.id)).toEqual(['r1', 'r2']);
+    expect(
+      voucherReadFiles([file('i', 'Smith_VCH_1.pdf', { isInline: true }), file('p', 'logo.png'), receipt1]).map(
+        (f) => f.id,
+      ),
+    ).toEqual(['r1']);
+    expect(voucherReadFiles([])).toEqual([]);
   });
 
   it('ignores company, agency and sender lines, and never returns a reference number', () => {

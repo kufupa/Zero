@@ -20,8 +20,17 @@ const ATTACHMENT_TEXT_CHARS = 20_000;
 const LABEL_TAIL_CHARS = 60;
 
 export type VoucherFile = { id: string; filename: string; mimeType: string; sizeBytes: number };
-/** What the voucher says about the guest. Each field is null when it is missing or ambiguous; nothing is guessed. */
-export type VoucherGuest = { lastName: string | null; arrival: string | null };
+/** The distinct values that disagreed, for staff to choose from. An empty list means that field did not conflict. */
+export type VoucherConflicts = { lastNames: string[]; arrivals: string[] };
+/**
+ * What the voucher says about the guest. Each field is null when it is missing or ambiguous; nothing is guessed.
+ * `conflicts` is present only when two or more different surnames or arrival days were read.
+ */
+export type VoucherGuest = {
+  lastName: string | null;
+  arrival: string | null;
+  conflicts?: VoucherConflicts;
+};
 export type VoucherFindReply =
   | { status: 'unsynced' }
   | { status: 'not_voucher' }
@@ -48,6 +57,16 @@ export function isVoucherMail(input: {
 
 function isPdfRow(row: QuoteAttachmentRow): boolean {
   return row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
+}
+
+/**
+ * The PDFs whose text is read for the guest. Voucher-named PDFs come first, so unrelated PDFs cannot push the voucher
+ * out of the reader's file and size caps. Payment mail with no voucher-named PDF falls back to every visible PDF.
+ */
+export function voucherReadFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRow[] {
+  const pdfs = files.filter((file) => !file.isInline && isPdfRow(file));
+  const named = pdfs.filter((file) => VOUCHER_FILE.test(file.filename));
+  return named.length > 0 ? named : pdfs;
 }
 
 /** The file staff upload to HMS Documents: a voucher-named file, else the first PDF, else the first file. */
@@ -140,10 +159,15 @@ export function dayFromText(text: string): string | null {
   return null;
 }
 
-const GUEST_LABEL =
-  /\b(?:guest(?:\s+name)?|lead\s+guest|passenger(?:\s+name)?|travell?er|surname|last\s+name|name\s+of\s+guest)\s*:\s*(.+)$/i;
-const ARRIVAL_LABEL =
-  /\b(?:arrival(?:\s+date)?|arrives?|arriving|check[\s-]?in(?:\s+date)?)\s*:?\s*(.*)$/i;
+// Label starts, global so one line can carry several labelled values ("Guest: Smith  Guest: Jones").
+const GUEST_LABEL_START =
+  /\b(?:guest(?:\s+name)?|lead\s+guest|passenger(?:\s+name)?|travell?er|surname|last\s+name|name\s+of\s+guest)\s*:/gi;
+const ARRIVAL_LABEL_START = /\b(?:arrival(?:\s+date)?|arrives?|arriving|check[\s-]?in(?:\s+date)?)\s*:?/gi;
+// Known voucher labels that end a value on the same line. Only these, so a name such as "Mary Smith  Arrival:" is cut
+// after "Smith", and "Arrival: TBA  Departure: 15 Nov" gives no arrival.
+const KNOWN_LABELS =
+  'guest(?: name)?|lead guest|passenger(?: name)?|travell?er|surname|last name|name of guest|arrival(?: date)?|arrives?|arriving|check[ -]?in(?: date)?|departure(?: date)?|check[ -]?out(?: date)?|room(?: type)?|rate(?: plan)?|nights?|adults?|children|confirmation(?: number)?|reference|booking(?: number)?|voucher|company|agency|organi[sz]ation|contact|booked by';
+const NEXT_LABEL = new RegExp(`\\s+(?=(?:${KNOWN_LABELS})\\s*:)`, 'i');
 // Lines about the company, agency, contact or sender are not the guest, even when they say "name".
 const NOT_THE_GUEST =
   /\b(?:company|agency|organi[sz]ation|corporate|contact|booked\s+by|your\s+name)\b|^\s*from\s*:/i;
@@ -151,8 +175,8 @@ const TITLE = /^(?:mr|mrs|ms|miss|mstr|dr|prof)\.?$/i;
 
 /** The surname from a guest-name value: "Smith, John", "SMITH/JOHN MR", "Mr John Smith" all give the surname. */
 export function surnameFrom(value: string): string | null {
-  // The value ends at a column gap, a sentence end, or the next "Label:" on the same line.
-  const first = value.split(/\s{2,}|\||\t|[.;](?:\s|$)|\s+(?=[A-Za-z][A-Za-z ]{0,30}:)/)[0]!.trim();
+  // The value ends at a column gap, a sentence end, or the next known label on the same line.
+  const first = value.split(new RegExp(`\\s{2,}|\\||\\t|[.;](?:\\s|$)|${NEXT_LABEL.source}`, 'i'))[0]!.trim();
   const separated = /[,/]/.test(first);
   const words = first
     .split(/[,/]/)[0]!
@@ -164,9 +188,21 @@ export function surnameFrom(value: string): string | null {
   return surname && isGuestSurname(surname) ? surname : null;
 }
 
+// Each labelled value on one line. A value runs from its label to the next label of the same kind, and stops at the
+// next label of any kind. "Guest: Smith  Guest: Jones" gives two values; nothing on the line is skipped.
+function labelledValues(line: string, start: RegExp): string[] {
+  const matches = [...line.matchAll(start)];
+  return matches.map((match, index) => {
+    const from = match.index + match[0].length;
+    const to = matches[index + 1]?.index ?? line.length;
+    return (line.slice(from, to).trimStart().split(NEXT_LABEL)[0] ?? '').trimEnd();
+  });
+}
+
 /**
- * Surname and arrival from the email text and the voucher's own PDF text. A value counts only when every labelled line
- * agrees, so two surnames or two arrival days leave that field null for staff to read.
+ * Surname and arrival from the email text and the voucher's own PDF text. A field counts only when every labelled value
+ * agrees. When two or more different values appear, the field stays null and the values are listed for staff, never
+ * the first one read.
  */
 export function extractVoucherGuest(input: {
   subject: string;
@@ -182,20 +218,30 @@ export function extractVoucherGuest(input: {
   const days = new Set<string>();
   for (const line of sources.join('\n').split(/\r?\n/)) {
     if (!NOT_THE_GUEST.test(line)) {
-      const guest = GUEST_LABEL.exec(line);
-      const surname = guest ? surnameFrom(guest[1]!) : null;
-      if (surname) surnames.set(surname.toLowerCase(), surname);
+      for (const value of labelledValues(line, GUEST_LABEL_START)) {
+        const surname = surnameFrom(value);
+        // The first spelling wins, so "Smith" and "SMITH" are one guest and keep the spelling read first.
+        if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
+      }
     }
-    const arrival = ARRIVAL_LABEL.exec(line);
-    const day = arrival ? dayFromText(arrival[1]!.slice(0, LABEL_TAIL_CHARS)) : null;
-    if (day) days.add(day);
+    for (const value of labelledValues(line, ARRIVAL_LABEL_START)) {
+      const day = dayFromText(value.slice(0, LABEL_TAIL_CHARS));
+      if (day) days.add(day);
+    }
   }
-  const [onlySurname] = surnames.values();
-  const [onlyDay] = days;
-  return {
-    lastName: surnames.size === 1 && onlySurname ? onlySurname : null,
-    arrival: days.size === 1 && onlyDay ? onlyDay : null,
+  const lastNames = [...surnames.values()];
+  const arrivals = [...days];
+  const guest: VoucherGuest = {
+    lastName: lastNames.length === 1 ? lastNames[0]! : null,
+    arrival: arrivals.length === 1 ? arrivals[0]! : null,
   };
+  if (lastNames.length > 1 || arrivals.length > 1) {
+    guest.conflicts = {
+      lastNames: lastNames.length > 1 ? lastNames : [],
+      arrivals: arrivals.length > 1 ? arrivals : [],
+    };
+  }
+  return guest;
 }
 
 // The stored message and its attachment rows, found by the exact Message-ID for this transport. No S3 reads here.

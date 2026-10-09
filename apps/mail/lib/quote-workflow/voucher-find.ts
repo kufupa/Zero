@@ -6,8 +6,15 @@ import { formatStayDate } from './amend-find';
  * staff's click and saves the voucher file. It never books, changes or invents a confirmation number.
  */
 
+/** The values a voucher gives in more than one form. Present only when two or more differ. */
+export type VoucherConflicts = { lastNames: string[]; arrivals: string[] };
+
 /** What the voucher says. Each field is null when it is missing or ambiguous in the email. */
-export type VoucherGuest = { lastName: string | null; arrival: string | null };
+export type VoucherGuest = {
+  lastName: string | null;
+  arrival: string | null;
+  conflicts?: VoucherConflicts;
+};
 
 export type VoucherFile = { id: string; filename: string; mimeType: string; sizeBytes: number };
 
@@ -42,6 +49,9 @@ export const VOUCHER_COPY = {
     'Luna could not read the guest surname from this email. Find the booking by name in HMS.',
   missingArrival:
     'Luna could not read the arrival date from this email. Find the booking by name in HMS.',
+  conflictLastNames: 'More than one guest name is on this voucher. Luna did not pick one:',
+  conflictArrivals: 'More than one arrival date is on this voucher. Luna did not pick one:',
+  waitingForSync: 'Waiting for this email to sync. Luna checks it again when the sync lands.',
   search: 'Find the booking in HMS',
   searching: 'Luna is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',
@@ -59,6 +69,18 @@ export function voucherGuestLine(guest: VoucherGuest): string | null {
     guest.arrival ? `arriving ${formatStayDate(guest.arrival)}` : null,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** Notes for the values that disagree. Each one lists the candidates, so staff choose; nothing is picked. */
+export function voucherConflictLines(guest: VoucherGuest): string[] {
+  const lines: string[] = [];
+  const names = guest.conflicts?.lastNames ?? [];
+  if (names.length > 1) lines.push(`${VOUCHER_COPY.conflictLastNames} ${names.join(', ')}.`);
+  const days = guest.conflicts?.arrivals ?? [];
+  if (days.length > 1) {
+    lines.push(`${VOUCHER_COPY.conflictArrivals} ${days.map((day) => formatStayDate(day)).join(', ')}.`);
+  }
+  return lines;
 }
 
 /** The search can run only with a surname and an arrival day read from the email. */

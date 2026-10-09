@@ -19,6 +19,7 @@ import {
   loadVoucherCandidate,
   pickVoucherFile,
   readVoucherAttachmentText,
+  voucherReadFiles,
   type VoucherCandidate,
   type VoucherFindReply,
 } from '../../ai/voucher-find.js';
@@ -187,7 +188,7 @@ export const quoteWorkflowRouter = router({
     });
     if (!voucher) return { status: 'not_voucher' };
     const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(
-      files,
+      voucherReadFiles(files),
       AbortSignal.timeout(15_000),
     );
     return {

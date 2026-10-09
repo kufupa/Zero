@@ -1696,6 +1696,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               key={activeEmail?.internetMessageId ?? 'no-email'}
               internetMessageId={activeEmail?.internetMessageId ?? null}
               trpc={trpcClient}
+              syncCommitted={sync.status?.committed ?? null}
+              syncPending={
+                sync.status
+                  ? sync.status.discovered > sync.status.committed && !sync.status.userPaused
+                  : false
+              }
             />
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
