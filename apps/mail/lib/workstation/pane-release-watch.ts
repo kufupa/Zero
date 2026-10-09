@@ -26,45 +26,46 @@ export async function fetchPaneRelease(fetchImpl: typeof fetch = fetch): Promise
 }
 
 export type PaneReloadGuard = {
+  /** False when the reload limit cannot survive a reload. Auto-reload is then off for this page. */
+  readonly persistent: boolean;
   readAt(): number | null;
-  /** False when the time could not be recorded; the caller must then not reload. */
+  /** Records a reload. False when it could not be recorded, and the caller must not reload. */
   writeAt(at: number): boolean;
 };
 
 /**
- * sessionStorage survives the reload it guards, so a reload loop cannot restart it.
- * WebViews can block storage or make even reading `sessionStorage` throw. Every access
- * is guarded, and the time is also kept in memory, so the pane mounts either way and
- * still rate-limits reloads within this page.
+ * sessionStorage survives the reload it guards, so the 10-minute limit holds across it.
+ * WebViews can block storage, or make even reading it throw. An in-memory record would
+ * reset on the reload it guards, so in that case the guard is not persistent and the pane
+ * never reloads itself.
  */
 export function sessionPaneReloadGuard(): PaneReloadGuard {
-  let memoryAt: number | null = null;
-  const storage = (): Storage | null => {
-    try {
-      return typeof sessionStorage === 'undefined' ? null : sessionStorage;
-    } catch {
-      return null;
-    }
-  };
+  let storage: Storage | null = null;
+  try {
+    storage = typeof sessionStorage === 'undefined' ? null : sessionStorage;
+    // Probe: reading throws when storage is blocked.
+    storage?.getItem(PANE_RELOAD_GUARD_KEY);
+  } catch {
+    storage = null;
+  }
   return {
+    persistent: storage !== null,
     readAt() {
       try {
-        const raw = storage()?.getItem(PANE_RELOAD_GUARD_KEY);
+        const raw = storage?.getItem(PANE_RELOAD_GUARD_KEY);
         const at = raw === null || raw === undefined ? NaN : Number(raw);
-        if (Number.isFinite(at)) return at;
+        return Number.isFinite(at) ? at : null;
       } catch {
-        // Blocked storage: fall back to the in-memory record.
+        return null;
       }
-      return memoryAt;
     },
     writeAt(at) {
-      memoryAt = at;
       try {
-        storage()?.setItem(PANE_RELOAD_GUARD_KEY, String(at));
+        storage?.setItem(PANE_RELOAD_GUARD_KEY, String(at));
+        return storage !== null;
       } catch {
-        // Blocked storage: the in-memory record still rate-limits this page.
+        return false;
       }
-      return true;
     },
   };
 }
@@ -78,6 +79,8 @@ export type PaneReleaseWatchOptions = {
   now?: () => number;
   /** Called once with the release this page was loaded from. */
   onLoaded?: (release: string) => void;
+  /** Called when a newer release is served but auto-reload is off, so staff can reopen the pane. */
+  onNewerRelease?: (release: string) => void;
 };
 
 export type PaneReleaseWatch = {
@@ -99,7 +102,12 @@ export function createPaneReleaseWatch(options: PaneReleaseWatchOptions): PaneRe
       options.onLoaded?.(served);
       return;
     }
-    if (served === loaded || options.isBusy()) return;
+    if (served === loaded) return;
+    if (!options.guard.persistent) {
+      options.onNewerRelease?.(served);
+      return;
+    }
+    if (options.isBusy()) return;
     const lastReloadAt = options.guard.readAt();
     if (lastReloadAt !== null && now() - lastReloadAt < PANE_RELOAD_GAP_MS) return;
     if (!options.guard.writeAt(now())) return;

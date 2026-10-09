@@ -678,6 +678,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
   const isBusyRef = useRef(isBusy);
   isBusyRef.current = isBusy;
   const [paneRelease, setPaneRelease] = useState<string | null>(null);
+  const [newerReleaseServed, setNewerReleaseServed] = useState(false);
   useEffect(() => {
     // Dev and test servers serve no release file, so only released builds check.
     if (!import.meta.env.PROD) return;
@@ -687,6 +688,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       reload: () => window.location.reload(),
       guard: sessionPaneReloadGuard(),
       onLoaded: setPaneRelease,
+      onNewerRelease: () => setNewerReleaseServed(true),
     });
     const poll = () => void watch.check();
     poll();
@@ -1449,6 +1451,11 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
             <Button type="button" size="sm" onClick={refreshAuthorization}>
               Try again
             </Button>
+          </div>
+        )}
+        {newerReleaseServed && (
+          <div role="status" className="m-3 mb-0 rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
+            <p>New version available — reopen the pane.</p>
           </div>
         )}
         {selectionOutsideMailbox && (

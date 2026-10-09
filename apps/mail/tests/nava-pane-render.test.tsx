@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { PANE_RELOAD_GUARD_KEY } from '../lib/workstation/pane-release-watch';
@@ -259,6 +259,32 @@ describe('NavaPane', () => {
     try {
       const { container } = render(<NavaPane bridge={fakeBridge} />);
       expect(container.querySelector('header')?.textContent).toContain('Nava Reservationist');
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
+    }
+  });
+  it('tells staff to reopen the pane when a newer release is served and storage is blocked', async () => {
+    vi.stubEnv('PROD', true);
+    const served = { release: 'a'.repeat(64) };
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: served.release })));
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied', 'SecurityError');
+      },
+    });
+    try {
+      render(<NavaPane bridge={fakeBridge} />);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      served.release = 'b'.repeat(64);
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(screen.getByText('New version available — reopen the pane.')).toBeDefined();
     } finally {
       if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
     }

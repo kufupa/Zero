@@ -15,6 +15,7 @@ const T0 = 1_800_000_000_000;
 function memoryGuard(): PaneReloadGuard {
   const state: { at: number | null } = { at: null };
   return {
+    persistent: true,
     readAt: () => state.at,
     writeAt: (at: number) => {
       state.at = at;
@@ -30,6 +31,7 @@ function harness(options: { guard?: PaneReloadGuard } = {}) {
   const guard = options.guard ?? memoryGuard();
   const reload = vi.fn();
   const onLoaded = vi.fn();
+  const onNewerRelease = vi.fn();
   const watch = createPaneReleaseWatch({
     fetchRelease: async () => served.release,
     isBusy: () => busy.value,
@@ -37,8 +39,9 @@ function harness(options: { guard?: PaneReloadGuard } = {}) {
     guard,
     now: () => clock.now,
     onLoaded,
+    onNewerRelease,
   });
-  return { watch, served, busy, clock, guard, reload, onLoaded };
+  return { watch, served, busy, clock, guard, reload, onLoaded, onNewerRelease };
 }
 
 describe('pane release watch', () => {
@@ -79,7 +82,7 @@ describe('pane release watch', () => {
   });
 
   it('stays silent when the release fetch fails, before or after the baseline', async () => {
-    const { watch, served, reload, onLoaded } = harness();
+    const { watch, served, reload, onLoaded, onNewerRelease } = harness();
     served.release = null;
     await expect(watch.check()).resolves.toBeUndefined();
     expect(onLoaded).not.toHaveBeenCalled();
@@ -88,6 +91,7 @@ describe('pane release watch', () => {
     served.release = null;
     await expect(watch.check()).resolves.toBeUndefined();
     expect(reload).not.toHaveBeenCalled();
+    expect(onNewerRelease).not.toHaveBeenCalled();
   });
 
   it('never reloads twice within the gap, so a flipping release cannot loop the pane', async () => {
@@ -114,12 +118,24 @@ describe('pane release watch', () => {
 
   it('fails closed when the reload time cannot be recorded', async () => {
     const { watch, served, reload } = harness({
-      guard: { readAt: () => null, writeAt: () => false },
+      guard: { persistent: true, readAt: () => null, writeAt: () => false },
     });
     await watch.check();
     served.release = RELEASE_B;
     await watch.check();
     expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('turns auto-reload off, and reports the newer release, when the guard is not persistent', async () => {
+    const { watch, served, reload, onNewerRelease } = harness({
+      guard: { persistent: false, readAt: () => null, writeAt: () => false },
+    });
+    await watch.check();
+    served.release = RELEASE_B;
+    await watch.check();
+    await watch.check();
+    expect(reload).not.toHaveBeenCalled();
+    expect(onNewerRelease).toHaveBeenCalledWith(RELEASE_B);
   });
 });
 
@@ -156,20 +172,21 @@ describe('sessionPaneReloadGuard', () => {
     delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
   });
 
-  it('records the last reload time in sessionStorage', () => {
+  it('records the last reload time in sessionStorage and is persistent', () => {
     const values = new Map<string, string>();
     vi.stubGlobal('sessionStorage', {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => void values.set(key, value),
     });
     const guard = sessionPaneReloadGuard();
+    expect(guard.persistent).toBe(true);
     expect(guard.readAt()).toBeNull();
     expect(guard.writeAt(T0)).toBe(true);
     expect(values.get(PANE_RELOAD_GUARD_KEY)).toBe(String(T0));
     expect(guard.readAt()).toBe(T0);
   });
 
-  it('keeps the guard in memory when storage methods throw', () => {
+  it('is not persistent when storage methods throw, so auto-reload stays off', () => {
     vi.stubGlobal('sessionStorage', {
       getItem: () => {
         throw new DOMException('denied', 'SecurityError');
@@ -179,12 +196,12 @@ describe('sessionPaneReloadGuard', () => {
       },
     });
     const guard = sessionPaneReloadGuard();
+    expect(guard.persistent).toBe(false);
     expect(guard.readAt()).toBeNull();
-    expect(guard.writeAt(T0)).toBe(true);
-    expect(guard.readAt()).toBe(T0);
+    expect(guard.writeAt(T0)).toBe(false);
   });
 
-  it('does not throw when reading sessionStorage itself throws, and still rate-limits reloads', async () => {
+  it('is not persistent when reading sessionStorage itself throws; the watch never reloads', async () => {
     Object.defineProperty(globalThis, 'sessionStorage', {
       configurable: true,
       get() {
@@ -192,23 +209,26 @@ describe('sessionPaneReloadGuard', () => {
       },
     });
     const guard = sessionPaneReloadGuard();
-    const clock = { now: T0 };
+    expect(guard.persistent).toBe(false);
     const reload = vi.fn();
+    const onNewerRelease = vi.fn();
     const served = { release: RELEASE_A };
     const watch = createPaneReleaseWatch({
       fetchRelease: async () => served.release,
       isBusy: () => false,
       reload,
       guard,
-      now: () => clock.now,
+      onNewerRelease,
     });
     await watch.check();
     served.release = RELEASE_B;
     await watch.check();
-    expect(reload).toHaveBeenCalledTimes(1);
-    clock.now = T0 + 60_000;
-    served.release = RELEASE_A;
     await watch.check();
-    expect(reload).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+    expect(onNewerRelease).toHaveBeenCalledWith(RELEASE_B);
+  });
+
+  it('is not persistent when sessionStorage does not exist', () => {
+    expect(sessionPaneReloadGuard().persistent).toBe(false);
   });
 });
